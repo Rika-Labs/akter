@@ -1,0 +1,79 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "futureFlags": { "affectedUsingTaskInputs": true },
+  "globalDependencies": ["tsconfig.json"],
+  "globalPassThroughEnv": ["GOMAXPROCS"],
+  "tasks": {
+    "transit": {
+      "dependsOn": ["^transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**"]
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "!test/**"],
+      "env": ["NODE_ENV"]
+    },
+    "typecheck": {
+      "dependsOn": ["transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**"],
+      "outputs": [".cache/typecheck.tsbuildinfo"]
+    },
+    "lint": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.md",
+        "!docs/**",
+        "$TURBO_ROOT$/.oxlintrc.json",
+        "$TURBO_ROOT$/tooling/oxlint/anti-slop/**"
+      ],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build", "transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
+      "outputs": [],
+      "env": ["CI"]
+    },
+    "@project/ui#test": {
+      "dependsOn": ["build", "transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
+      "outputs": [],
+      "env": ["CI"]
+    },
+    "@project/infra#transit": {
+      "dependsOn": ["^transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.md",
+        "$TURBO_ROOT$/.github/src/**",
+        "$TURBO_ROOT$/.github/test/**"
+      ]
+    },
+    "@project/infra#lint": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.md",
+        "$TURBO_ROOT$/.github/**/*.ts",
+        "$TURBO_ROOT$/.oxlintrc.json",
+        "$TURBO_ROOT$/tooling/oxlint/anti-slop/**"
+      ]
+    },
+    "test:integration": {
+      "dependsOn": ["^build", "transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
+      "cache": false,
+      "passThroughEnv": ["TEST_DATABASE_URL"]
+    },
+    "//#lint:root": {
+      "inputs": ["*.ts", ".amp/plugins/**", ".oxlintrc.json", "tooling/oxlint/anti-slop/**"],
+      "outputs": []
+    },
+    "dev": { "dependsOn": ["^build"], "cache": false, "persistent": true, "passThroughEnv": ["*"] },
+    "deploy": { "cache": false },
+    "destroy": { "cache": false },
+    "migrate": { "cache": false }
+  }
+}

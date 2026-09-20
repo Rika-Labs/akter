@@ -1,0 +1,25 @@
+name: Trusted policy
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  branch:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun .github/src/check-branch.ts

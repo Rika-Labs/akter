@@ -1,0 +1,22 @@
+name: Change
+description: A bug, feature, or maintenance task
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What should happen, and what happens now?
+    validations:
+      required: true
+  - type: textarea
+    id: flow
+    attributes:
+      label: Flow
+      description: Add a small diagram or code example when useful.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Reproduction, logs, or a test that distinguishes correct behavior.
+    validations:
+      required: true

@@ -1,0 +1,17 @@
+CREATE TABLE "user" (id text PRIMARY KEY, name text NOT NULL, email text NOT NULL UNIQUE, email_verified boolean NOT NULL DEFAULT false, image text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE organization (id text PRIMARY KEY, name text NOT NULL, slug text NOT NULL UNIQUE, logo text, metadata text, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE session (id text PRIMARY KEY, token text NOT NULL UNIQUE, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), ip_address text, user_agent text, user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE, active_organization_id text);
+CREATE INDEX session_user_idx ON session(user_id);
+CREATE TABLE account (id text PRIMARY KEY, account_id text NOT NULL, provider_id text NOT NULL, user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE, access_token text, refresh_token text, id_token text, access_token_expires_at timestamptz, refresh_token_expires_at timestamptz, scope text, password text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX account_user_idx ON account(user_id);
+CREATE TABLE verification (id text PRIMARY KEY, identifier text NOT NULL, value text NOT NULL, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX verification_identifier_idx ON verification(identifier);
+CREATE TABLE member (id text PRIMARY KEY, organization_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE, role text NOT NULL DEFAULT 'member', created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(organization_id, user_id));
+CREATE INDEX member_user_idx ON member(user_id);
+CREATE TABLE invitation (id text PRIMARY KEY, organization_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE, email text NOT NULL, role text, status text NOT NULL DEFAULT 'pending', expires_at timestamptz NOT NULL, inviter_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE, created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX invitation_org_idx ON invitation(organization_id);
+CREATE INDEX invitation_email_idx ON invitation(email);
+CREATE TABLE project (id text PRIMARY KEY, organization_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE, name text NOT NULL CHECK (length(name) BETWEEN 1 AND 120), status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')), created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX project_org_idx ON project(organization_id);
+CREATE TABLE organization_billing (organization_id text PRIMARY KEY REFERENCES organization(id) ON DELETE CASCADE, subscription_id text NOT NULL, customer_id text NOT NULL, plan text NOT NULL CHECK(plan IN ('free','pro')), status text NOT NULL, renewal_date timestamptz, event_at timestamptz NOT NULL);
+CREATE TABLE billing_webhook (id text PRIMARY KEY, received_at timestamptz NOT NULL DEFAULT now());

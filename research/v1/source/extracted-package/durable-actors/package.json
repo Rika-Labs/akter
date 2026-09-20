@@ -1,0 +1,57 @@
+{
+  "name": "durable-actors-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "packageManager": "bun@1.3.0",
+  "engines": {
+    "node": ">=24 <27",
+    "bun": ">=1.3.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "infra"
+  ],
+  "scripts": {
+    "dev": "bun run docs:prepare && bun run --cwd apps/docs dev",
+    "docs:prepare": "node scripts/prepare-docs.mjs",
+    "build": "turbo run build",
+    "typecheck": "tsc -p tsconfig.check.json --noEmit",
+    "test": "turbo run test",
+    "test:bun": "bun test test/runtime",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint --type-aware --deny-warnings .",
+    "lint:effect": "node scripts/effect-diagnostics.mjs",
+    "setup:toolchain": "node scripts/setup-toolchain.mjs",
+    "check:scaffold": "node scripts/check-scaffold.mjs",
+    "check:exports": "node scripts/check-exports.mjs",
+    "check:packages": "node scripts/check-packages.mjs",
+    "check": "bun run check:scaffold && bun run format:check && bun run lint && bun run lint:effect && bun run typecheck && bun run test && bun run build && bun run check:exports",
+    "cost:model": "node scripts/cost-model.mjs",
+    "changeset": "changeset",
+    "version:packages": "changeset version",
+    "release:check": "node scripts/release-check.mjs",
+    "infra:preview": "node scripts/not-implemented.mjs infrastructure-preview",
+    "test:chaos": "node scripts/not-implemented.mjs chaos-conformance"
+  },
+  "devDependencies": {
+    "effect": "4.0.0-rc.115",
+    "typescript": "7.0.2",
+    "@effect/tsgo": "0.45.0",
+    "oxlint": "1.82.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "oxfmt": "0.14.0",
+    "turbo": "2.5.8",
+    "vitest": "5.0.0",
+    "@effect/vitest": "4.0.0-rc.115",
+    "@types/node": "24.6.0",
+    "@types/bun": "1.3.0",
+    "@changesets/cli": "2.29.7",
+    "publint": "0.3.14",
+    "@arethetypeswrong/cli": "0.18.2"
+  },
+  "trustedDependencies": []
+}

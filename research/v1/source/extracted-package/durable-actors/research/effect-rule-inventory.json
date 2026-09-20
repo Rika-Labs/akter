@@ -1,0 +1,28 @@
+{
+  "source": "https://github.com/Effect-TS/tsgo/blob/main/README.md",
+  "sourceSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "inventoryMethod": "Extract named diagnostic rows from captured official documentation; runtime sentinel verifies activation. Review before upgrades.",
+  "documentedInventoryComplete": false,
+  "pluginName": "@effect/tsgo",
+  "pluginNameFoundInSource": false,
+  "count": 17,
+  "rules": {
+    "classSelfMismatch": "error",
+    "duplicatePackage": "error",
+    "floatingEffect": "error",
+    "floatingEffectInVitest": "error",
+    "layerMergeAllWithDependencies": "error",
+    "leakingRequirements": "error",
+    "missingEffectContext": "error",
+    "missingEffectError": "error",
+    "missingLayerContext": "error",
+    "missingReturnYieldStar": "error",
+    "missingStarInYieldEffectGen": "error",
+    "promiseInEffectSuccess": "error",
+    "runEffectInsideEffect": "error",
+    "scopeInLayerEffect": "error",
+    "strictEffectProvide": "error",
+    "tryCatchInEffectGen": "error",
+    "unsafeEffectTypeAssertion": "error"
+  }
+}

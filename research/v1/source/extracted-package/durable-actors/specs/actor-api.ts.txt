@@ -1,0 +1,41 @@
+// DESIGN ONLY: these @durable-actors factories do not exist in this skeleton.
+// The goal is a typechecked spike against the pinned Effect release before implementation.
+import { Effect, Schema } from "effect"
+import { Rpc, RpcGroup } from "effect/unstable/rpc"
+import { Actor, Actors, Database } from "@durable-actors/core"
+
+const Rename = Rpc.make("Rename", {
+  payload: { title: Schema.String },
+  success: Schema.Void,
+})
+const Get = Rpc.make("Get", {
+  success: Schema.Struct({ id: Schema.String, title: Schema.String }),
+})
+const TodoProtocol = RpcGroup.make(Rename, Get)
+const Todo = Actor.make("Todo", { protocol: TodoProtocol, database: TodoDatabase })
+
+const TodoLive = Todo.toLayer({
+  Rename: Effect.fn("Todo.Rename")(function* ({ title }, turn) {
+    const sql = yield* Database
+    // Future runtime binds this client to its fenced local transaction.
+    yield* sql`UPDATE todos SET title = ${title} WHERE id = ${turn.address.actorId}`
+    // Record event/outgoing intentions through turn-bound capabilities; no external call here.
+  }),
+  Get: Effect.fn("Todo.Get")(function* (_, turn) {
+    const repo = yield* TodoRepo
+    return yield* repo.get(turn.address.actorId)
+  }),
+})
+
+// Actor resolution and submission are runtime Effects; descriptors open no connection.
+const program = Effect.gen(function* () {
+  const actors = yield* Actors
+  const todo = yield* actors.get(Todo, "todo-123")
+  const receipt = yield* todo.submit("Rename", { title: "Ship" }, {
+    idempotencyKey: "operation-123",
+  })
+  return yield* receipt.await
+})
+
+// Actual runtime/provider Layer assembly comes after conformance gates.
+// Do not use Layer.mergeAll to pretend sibling dependency requirements are wired.

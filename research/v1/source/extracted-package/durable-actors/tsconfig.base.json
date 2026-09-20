@@ -1,0 +1,46 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": false,
+    "forceConsistentCasingInFileNames": true,
+    "types": [],
+    "plugins": [
+      {
+        "name": "@effect/tsgo",
+        "diagnosticSeverity": {
+          "classSelfMismatch": "error",
+          "duplicatePackage": "error",
+          "floatingEffect": "error",
+          "floatingEffectInVitest": "error",
+          "layerMergeAllWithDependencies": "error",
+          "leakingRequirements": "error",
+          "missingEffectContext": "error",
+          "missingEffectError": "error",
+          "missingLayerContext": "error",
+          "missingReturnYieldStar": "error",
+          "missingStarInYieldEffectGen": "error",
+          "promiseInEffectSuccess": "error",
+          "runEffectInsideEffect": "error",
+          "scopeInLayerEffect": "error",
+          "strictEffectProvide": "error",
+          "tryCatchInEffectGen": "error",
+          "unsafeEffectTypeAssertion": "error"
+        }
+      }
+    ]
+  }
+}

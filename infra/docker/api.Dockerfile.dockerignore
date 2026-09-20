@@ -1,0 +1,13 @@
+.git
+**/node_modules
+.alchemy
+.env*
+**/.env*
+.amp
+**/dist
+**/coverage
+.local
+.turbo
+.proof
+test-results
+evidence

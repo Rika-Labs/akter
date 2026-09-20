@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "import"
+  ],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "no-debugger": "error",
+    "typescript/no-explicit-any": "error"
+  },
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "apps/docs/public/**",
+    "specs/**",
+    "research/**",
+    "test/diagnostic-sentinel/**",
+    ".validation/**"
+  ]
+}

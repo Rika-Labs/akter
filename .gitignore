@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.turbo/
+.cache/
+coverage/
+.env
+.env.*
+!.env.example
+.amp/portals/
+.amp/in/
+.amp/email/
+.proof/
+.alchemy/
+.local/
+*.tsbuildinfo
+test-results/

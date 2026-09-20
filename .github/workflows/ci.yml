@@ -1,0 +1,95 @@
+name: Verify
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: project
+          POSTGRES_PASSWORD: project
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U project -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Restore Bun package cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
+      - name: Restore incremental typecheck state
+        uses: actions/cache@v5
+        with:
+          path: |
+            apps/*/.cache/typecheck.tsbuildinfo
+            packages/*/.cache/typecheck.tsbuildinfo
+            tooling/*/.cache/typecheck.tsbuildinfo
+            infra/.cache/typecheck.tsbuildinfo
+          key: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-${{ github.sha }}
+          restore-keys: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-
+      - name: Set up Turborepo Remote Cache
+        if: >-
+          github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: vercel/setup-turborepo-remote-cache-action@v1.0.0
+        with:
+          team: ${{ vars.TURBO_TEAM }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Verify and record executable evidence
+        id: verify
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GOMAXPROCS: "1"
+          TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/sha.txt
+          test "$(cat evidence/sha.txt)" = "$HEAD_SHA"
+          bun run prepare
+          if [[ -n "$BASE_SHA" ]]; then
+            export TURBO_SCM_BASE="$BASE_SHA" TURBO_SCM_HEAD="$HEAD_SHA"
+            bun run check:ci --affected 2>&1 | tee evidence/check.log
+          else
+            bun run check:ci 2>&1 | tee evidence/check.log
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.verify.outcome != 'skipped'
+        with:
+          name: evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            evidence/
+            .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

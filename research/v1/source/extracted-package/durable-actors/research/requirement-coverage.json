@@ -1,0 +1,74 @@
+{
+  "brief": "context/REQUEST.md",
+  "research": [
+    "RESEARCH_SOURCES.md",
+    "docs/RESEARCH_METHOD.md",
+    "docs/RESEARCH_LIMITATIONS.md",
+    "docs/tech/"
+  ],
+  "product": [
+    "docs/VISION.md",
+    "docs/PRODUCT.md",
+    "docs/PRINCIPLES.md",
+    "docs/V1_SCOPE.md",
+    "docs/NON_GOALS.md",
+    "docs/GTM.md"
+  ],
+  "architecture": [
+    "docs/ARCHITECTURE.md",
+    "docs/DURABILITY.md",
+    "docs/CONSISTENCY.md",
+    "docs/SYSTEM_DIAGRAMS.md",
+    "docs/SECURITY_THREAT_MODEL.md"
+  ],
+  "interfaces": [
+    "docs/API_DESIGN.md",
+    "docs/INTERFACES.md",
+    "specs/actor-api.ts.txt"
+  ],
+  "storage": [
+    "docs/DATABASE.md",
+    "docs/TURSO.md",
+    "docs/POSTGRES.md",
+    "docs/MIGRATIONS.md",
+    "docs/PROJECTIONS.md",
+    "docs/PROJECTION_ACTORS.md"
+  ],
+  "bun_node": [
+    "docs/BUN.md",
+    "docs/BUN_NODE_COMPATIBILITY.md",
+    "toolchain.lock.json"
+  ],
+  "monorepo": [
+    "docs/MONOREPO.md",
+    "docs/PACKAGE_BOUNDARIES.md",
+    "specs/package-graph.json"
+  ],
+  "toolchain": [
+    "docs/EFFECT_STYLE.md",
+    "docs/CI_CD.md",
+    "research/effect-rule-inventory.json"
+  ],
+  "operations": [
+    "docs/DEPLOYMENT.md",
+    "docs/INFRASTRUCTURE.md",
+    "docs/SELF_HOSTING.md",
+    "docs/CLOUD_ARCHITECTURE.md",
+    "docs/OPERATIONS_RUNBOOKS.md"
+  ],
+  "economics": [
+    "docs/COST_MODEL.md",
+    "docs/PRICING.md",
+    "models/unit-economics.json"
+  ],
+  "execution": [
+    "docs/EXECUTION_ORDER.md",
+    "docs/ROADMAP.md",
+    "docs/IMPLEMENTATION_BACKLOG.md",
+    "docs/VALIDATION_GATES.md"
+  ],
+  "validation": [
+    "VALIDATION.md",
+    "validation/results.json"
+  ]
+}

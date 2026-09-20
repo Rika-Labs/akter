@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "types": ["bun"],
+    "plugins": [{ "name": "@effect/language-service", "diagnostics": false }]
+  },
+  "include": ["**/*.ts", ".github/**/*.ts", ".amp/plugins/**/*.ts"],
+  "exclude": ["node_modules", "dist", ".local"]
+}

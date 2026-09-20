@@ -1,0 +1,4 @@
+body { margin: 0; font-family: system-ui, sans-serif; line-height: 1.6; }
+main { max-width: 72rem; padding: 3rem 2rem; margin: auto; }
+input { font: inherit; padding: .7rem; width: min(32rem, 90%); }
+li { margin: .35rem 0; }

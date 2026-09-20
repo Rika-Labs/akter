@@ -1,0 +1,36 @@
+{
+  "name": "@durable-actors/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./Database": {
+      "types": "./dist/database.d.ts",
+      "import": "./dist/database.js",
+      "default": "./dist/database.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "effect": "4.0.0-rc.115"
+  },
+  "devDependencies": {
+    "effect": "4.0.0-rc.115",
+    "vitest": "5.0.0"
+  }
+}

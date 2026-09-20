@@ -1,0 +1,178 @@
+{
+  "researchDate": "2026-09-17",
+  "effectSourceRevision": "9ad9891e24058065bcd445772e005f8ce4b3e42f",
+  "opencodeSourceRevision": "5a8335857b0ebec44ef6aa1d52b339cf25c329ca",
+  "nodeBaseline": "24",
+  "nodeForwardLane": "26",
+  "packages": {
+    "effect": {
+      "selected": "4.0.0-rc.115",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@effect/platform-bun": {
+      "selected": "4.0.0-rc.115",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@effect/platform-node": {
+      "selected": "4.0.0-rc.115",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@effect/sql-libsql": {
+      "selected": "4.0.0-rc.115",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@effect/sql-pg": {
+      "selected": "4.0.0-rc.115",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@effect/vitest": {
+      "selected": "4.0.0-rc.115",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "typescript": {
+      "selected": "7.0.2",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@effect/tsgo": {
+      "selected": "0.45.0",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "oxlint": {
+      "selected": "1.82.0",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "oxlint-tsgolint": {
+      "selected": "7.0.2001",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "vitest": {
+      "selected": "5.0.0",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": true,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "oxfmt": {
+      "selected": "0.14.0",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "turbo": {
+      "selected": "2.5.8",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "vite": {
+      "selected": "7.1.7",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@changesets/cli": {
+      "selected": "2.29.7",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "publint": {
+      "selected": "0.3.14",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@arethetypeswrong/cli": {
+      "selected": "0.18.2",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "alchemy": {
+      "selected": "0.76.0",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@types/bun": {
+      "selected": "1.3.0",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "@types/node": {
+      "selected": "24.6.0",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    },
+    "bun": {
+      "selected": "1.3.0",
+      "registry_confirmed": false,
+      "forced_compatibility_pin": false,
+      "engines": {},
+      "peerDependencies": {},
+      "license": "not confirmed"
+    }
+  },
+  "note": "Exact selected versions are research/bootstrap pins, not a runtime compatibility certification. See VALIDATION.md."
+}

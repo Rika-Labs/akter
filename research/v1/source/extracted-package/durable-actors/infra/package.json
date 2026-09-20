@@ -1,0 +1,12 @@
+{
+  "name": "@durable-actors/infra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "preview": "node ../scripts/not-implemented.mjs alchemy-preview"
+  },
+  "devDependencies": {
+    "alchemy": "0.76.0"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "@durable-actors/platform-bun",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@durable-actors/core": "workspace:*",
+    "@effect/platform-bun": "4.0.0-rc.115"
+  },
+  "peerDependencies": {
+    "effect": "4.0.0-rc.115"
+  },
+  "devDependencies": {
+    "effect": "4.0.0-rc.115",
+    "vitest": "5.0.0"
+  }
+}

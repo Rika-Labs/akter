@@ -1,0 +1,28 @@
+# Development PostgreSQL only. This is not a working actor deployment.
+services:
+  control-postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: durable
+      POSTGRES_PASSWORD: local-development-only
+      POSTGRES_DB: durable_control
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - control-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U durable -d durable_control"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  projection-postgres:
+    image: postgres:17-alpine
+    profiles: ["projections"]
+    environment:
+      POSTGRES_USER: projection
+      POSTGRES_PASSWORD: local-development-only
+      POSTGRES_DB: app_projection
+    ports:
+      - "127.0.0.1:5433:5432"
+volumes:
+  control-data:

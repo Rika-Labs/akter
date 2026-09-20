@@ -1,0 +1,68 @@
+{
+  "name": "durable-actors",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*",
+      "tooling/*",
+      "infra"
+    ],
+    "catalog": {
+      "effect": "4.0.0-rc.116",
+      "@effect/platform-browser": "4.0.0-rc.116",
+      "@effect/platform-bun": "4.0.0-rc.116",
+      "@effect/platform-node": "4.0.0-rc.116",
+      "@effect/sql-pg": "4.0.0-rc.116",
+      "@effect/vitest": "4.0.0-rc.116",
+      "typescript": "7.0.2",
+      "vitest": "4.1.11",
+      "foldkit": "0.162.0",
+      "@stylexjs/stylex": "0.19.1",
+      "@stylexjs/babel-plugin": "0.19.1",
+      "alchemy": "2.0.0-beta.79",
+      "@alchemy.run/better-auth": "2.0.0-beta.79",
+      "drizzle-orm": "1.0.0-rc.5-ab785fc",
+      "drizzle-kit": "1.0.0-rc.5-ab785fc",
+      "better-auth": "1.7.5",
+      "@distilled.cloud/core": "1.0.0-rc.12",
+      "@distilled.cloud/github": "1.0.0-rc.12",
+      "@distilled.cloud/infisical": "1.0.0-rc.12",
+      "@distilled.cloud/resend": "1.0.0-rc.12",
+      "@distilled.cloud/polar": "1.0.0-rc.12"
+    }
+  },
+  "type": "module",
+  "scripts": {
+    "prepare": "effect-tsgo patch --oxlint",
+    "dev": "bun --env-file=.env run turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "GOMAXPROCS=1 turbo run typecheck --concurrency=100%",
+    "test": "turbo run test --concurrency=100%",
+    "test:integration": "turbo run test:integration --concurrency=100%",
+    "proof:check": "git ls-files --cached --others --exclude-standard -z | xargs -0 bunx --no-install proof lint --rules ./proof.rules.ts --format json",
+    "lint:directives": "bun tooling/oxlint/src/Directives.ts",
+    "lint": "bun run lint:directives && GOMAXPROCS=1 turbo run lint lint:root --concurrency=100%",
+    "lint:root": "oxlint --type-aware --deny-warnings --threads 1 *.ts .amp/plugins",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "check": "bun run lint:directives && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100%",
+    "check:ci": "bun run lint:directives && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration --concurrency=100% --summarize"
+  },
+  "devDependencies": {
+    "@ampcode/plugin": "0.0.0-20260919001729-g2c73376",
+    "@effect/platform-bun": "catalog:",
+    "@effect/tsgo": "0.45.0",
+    "@rikalabs/proof": "0.5.2",
+    "@types/bun": "1.3.10",
+    "@types/node": "24.12.2",
+    "effect": "catalog:",
+    "oxfmt": "0.66.0",
+    "oxlint": "1.82.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "turbo": "2.11.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "packageManager": "bun@1.4.2"
+}

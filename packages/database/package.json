@@ -1,0 +1,25 @@
+{
+  "name": "@project/database",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts",
+    "./migrate": "./src/migrate.ts"
+  },
+  "scripts": {
+    "migrate": "bun src/migrate.ts",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@effect/sql-pg": "catalog:",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}

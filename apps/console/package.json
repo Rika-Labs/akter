@@ -1,0 +1,28 @@
+{
+  "name": "@project/console",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": "./src/server.ts"
+  },
+  "scripts": {
+    "build": "bun src/build.ts",
+    "dev": "PORT=${CONSOLE_PORT:-3000} bun --watch src/main.ts",
+    "start": "bun dist/main.js",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/console/test"
+  },
+  "dependencies": {
+    "@effect/platform-browser": "catalog:",
+    "@project/ui": "workspace:*",
+    "effect": "catalog:",
+    "foldkit": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@types/bun": "1.4.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

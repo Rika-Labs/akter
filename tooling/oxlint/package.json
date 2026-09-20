@@ -1,0 +1,19 @@
+{
+  "name": "@project/oxlint-rules",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 src test",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/oxlint/test"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@oxlint/plugins": "1.82.0",
+    "effect": "catalog:",
+    "oxc-parser": "0.150.0"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
+  }
+}

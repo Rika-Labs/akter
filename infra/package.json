@@ -1,0 +1,23 @@
+{
+  "name": "@project/infra",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun --bun ../node_modules/vitest/vitest.mjs run --root .. infra/test .github/test",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "bun run --cwd .. oxlint --type-aware --deny-warnings --threads 1 infra .github",
+    "plan": "bun src/cli.ts plan"
+  },
+  "dependencies": {
+    "@distilled.cloud/github": "catalog:",
+    "@distilled.cloud/infisical": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "alchemy": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.10",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

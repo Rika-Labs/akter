@@ -1,0 +1,625 @@
+{
+  "E01": {
+    "title": "Effect v4 package snapshot",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/packages/effect/package.json",
+    "notes": "Inspected source snapshot identifies 4.0.0-rc.115. A repository version is not proof that every registry artifact is available.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "E02": {
+    "title": "Effect Cluster entity example",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/ai-docs/src/80_cluster/10_entities.ts",
+    "notes": "Messages are volatile unless persisted annotation is set; sequential handlers by default; activation-local Ref; maxIdleTime; typed clients.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "E03": {
+    "title": "SQL runner ownership",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/packages/effect/src/unstable/cluster/SqlRunnerStorage.ts",
+    "notes": "Reserved/rebuildable PostgreSQL connection and advisory lock behavior; assess current hardening, not an old issue headline.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "E04": {
+    "title": "Cluster message persistence contract",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/packages/effect/src/unstable/cluster/MessageStorage.ts",
+    "notes": "Shard-wide recovery queries, deduplication, replies and transaction wrapper; no cross-database transaction guarantee.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "E05": {
+    "title": "Workflow Activity",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/packages/effect/src/unstable/workflow/Activity.ts",
+    "notes": "Activity requires WorkflowEngine/WorkflowInstance. Only completed activity results memoized; replay can repeat external effects.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "E06": {
+    "title": "Effect EventLog",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/packages/effect/src/unstable/eventlog/EventLog.ts",
+    "notes": "Typed handler runs before journal entry commits; not interchangeable with a database CDC broker.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "E07": {
+    "title": "Effect libSQL package",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/packages/sql/libsql/package.json",
+    "notes": "Inspected rc.115 package depends on @libsql/client ^0.18.0.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "E08": {
+    "title": "Effect Vitest package",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/packages/vitest/package.json",
+    "notes": "Inspected rc.115 package requires Vitest >=5 <6.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "E09": {
+    "title": "Effect SQL client",
+    "url": "https://github.com/Effect-TS/effect/blob/9ad9891e24058065bcd445772e005f8ce4b3e42f/packages/effect/src/unstable/sql/SqlClient.ts",
+    "notes": "Transaction and reserved-connection API reference; bind each database role independently.",
+    "kind": "pinned source reference",
+    "research_date": "2026-09-17"
+  },
+  "E10": {
+    "title": "Effect v4 API index",
+    "url": "https://effect.website/docs/v4/api/effect",
+    "notes": "Module availability and unstable import paths. Supplied user export also inspected.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "E11": {
+    "title": "Effect TypeScript-Go tooling",
+    "url": "https://github.com/Effect-TS/tsgo/blob/main/README.md",
+    "notes": "Observed support matrix: @effect/tsgo 0.45.0; TypeScript 7.0.2; Oxlint 1.81/1.82; oxlint-tsgolint 7.0.2001.",
+    "kind": "source",
+    "research_date": "2026-09-17"
+  },
+  "E12": {
+    "title": "Effect Oxlint integration guide",
+    "url": "https://github.com/Effect-TS/tsgo/blob/main/docs/README.md",
+    "notes": "Resolve the patching/configuration syntax from the selected version, not an invented plugin interface.",
+    "kind": "source",
+    "research_date": "2026-09-17"
+  },
+  "E13": {
+    "title": "Effect platform Bun",
+    "url": "https://github.com/Effect-TS/effect/tree/main/packages/platform-bun",
+    "notes": "Runtime implementations; exact exports must be checked against pinned release.",
+    "kind": "source",
+    "research_date": "2026-09-17"
+  },
+  "E14": {
+    "title": "Effect Vite integration",
+    "url": "https://github.com/Effect-TS/effect/tree/main/packages/vite",
+    "notes": "Candidate integration; availability and APIs require compatibility gate. Do not invent effect/vite imports.",
+    "kind": "source reference",
+    "research_date": "2026-09-17"
+  },
+  "O01": {
+    "title": "OpenCode service conventions",
+    "url": "https://github.com/anomalyco/opencode/blob/5a8335857b0ebec44ef6aa1d52b339cf25c329ca/packages/opencode/AGENTS.md",
+    "notes": "Flat modules, small Interface, Context.Service, layer/defaultLayer, named Effect.fn, scoped workspace state. Application conventions are not actor semantics.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "O02": {
+    "title": "OpenCode v2 instructions",
+    "url": "https://github.com/anomalyco/opencode/blob/5a8335857b0ebec44ef6aa1d52b339cf25c329ca/specs/v2/instructions.md",
+    "notes": "Additional architecture guidance; use as design inspiration, not copied implementation.",
+    "kind": "pinned source",
+    "research_date": "2026-09-17"
+  },
+  "B01": {
+    "title": "Bun Node compatibility",
+    "url": "https://bun.com/docs/runtime/nodejs-compat",
+    "notes": "Bun tracks Node compatibility; compatibility is not completeness and requires our own production path tests.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B02": {
+    "title": "Bun isolated installs",
+    "url": "https://bun.com/docs/pm/isolated-installs",
+    "notes": "Isolated dependency layout helps expose phantom dependencies.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B03": {
+    "title": "Bun workspaces/catalogs",
+    "url": "https://bun.com/docs/pm/catalogs",
+    "notes": "Shared version catalogs and workspaces; registry packaging must rewrite workspace references correctly.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B04": {
+    "title": "Bun install",
+    "url": "https://bun.com/docs/pm/cli/install",
+    "notes": "Lockfile and trusted dependency lifecycle policies.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B05": {
+    "title": "Bun testing",
+    "url": "https://bun.com/docs/test",
+    "notes": "Native runtime test runner; not a substitute for @effect/vitest APIs.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B06": {
+    "title": "Bun bundler",
+    "url": "https://bun.com/docs/bundler",
+    "notes": "Build targets and executable compilation; does not replace declaration generation/type checking.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B07": {
+    "title": "Bun SQLite",
+    "url": "https://bun.com/docs/runtime/sqlite",
+    "notes": "Local runtime-specific database, not a remote durable fleet backend.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B08": {
+    "title": "Bun HTTP server",
+    "url": "https://bun.com/docs/runtime/http/server",
+    "notes": "Server/WebSocket APIs belong in Bun adapter, not portable actor core.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B09": {
+    "title": "Bun package publication",
+    "url": "https://bun.com/docs/pm/cli/publish",
+    "notes": "Packaging capabilities; trusted publication compatibility must be checked before release.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "B10": {
+    "title": "Node release schedule",
+    "url": "https://github.com/nodejs/Release/blob/main/schedule.json",
+    "notes": "Select Node 24 LTS support baseline for Sept 2026; Node 26 is additional forward compatibility lane.",
+    "kind": "source",
+    "research_date": "2026-09-17"
+  },
+  "T01": {
+    "title": "libSQL versus Turso Database",
+    "url": "https://docs.turso.tech/libsql",
+    "notes": "The maintained SQLite fork and newer Rust rewrite are different engine/driver compatibility targets.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "T02": {
+    "title": "Turso pricing",
+    "url": "https://turso.tech/pricing.md",
+    "notes": "Observed plan labels Free/Developer/Scaler/Pro/Enterprise, monthly $0/$5.99/$29/$499/custom; rates and limits must be timestamped.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "T03": {
+    "title": "Turso JavaScript SDK",
+    "url": "https://docs.turso.tech/sdk/ts/reference",
+    "notes": "Inspect transactions, client disposal, protocol, and limitations for selected endpoint.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "T04": {
+    "title": "Turso Platform API",
+    "url": "https://docs.turso.tech/api-reference/introduction",
+    "notes": "Provisioning/control API is separate from SQL data-plane client.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "T05": {
+    "title": "libSQL repository",
+    "url": "https://github.com/tursodatabase/libsql",
+    "notes": "Self-hosted engine/server source; not a promise of Cloud feature or economics parity.",
+    "kind": "source",
+    "research_date": "2026-09-17"
+  },
+  "P01": {
+    "title": "PlanetScale PostgreSQL pooling",
+    "url": "https://planetscale.com/docs/postgres/connecting/pgbouncer",
+    "notes": "Transaction pool on port 6432; session-sensitive locks require suitable direct/session connection.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "P02": {
+    "title": "PlanetScale PostgreSQL pricing",
+    "url": "https://planetscale.com/docs/postgres/pricing",
+    "notes": "Instance, storage, replica and pooling costs need region/configuration-specific pricing.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "P03": {
+    "title": "Neki preview",
+    "url": "https://planetscale.com/changelog/neki",
+    "notes": "Platform-preview announcement Sept 10 2026. Not selected for V1.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "P04": {
+    "title": "PostgreSQL advisory locks",
+    "url": "https://www.postgresql.org/docs/current/explicit-locking.html",
+    "notes": "Session-level and transaction-level advisory locks have different lifetime requirements.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "Q01": {
+    "title": "SQLite triggers",
+    "url": "https://www.sqlite.org/lang_createtrigger.html",
+    "notes": "Transactional row-trigger mechanism; OLD/NEW semantics; test compatibility with target engine.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "Q02": {
+    "title": "SQLite transaction model",
+    "url": "https://www.sqlite.org/lang_transaction.html",
+    "notes": "Write transaction and locking semantics; supports analysis of local receipts/fence checks.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "Q03": {
+    "title": "Electric Shapes",
+    "url": "https://electric-sql.com/docs/guides/shapes",
+    "notes": "PostgreSQL data distribution/filtering; not automatic capture from authoritative actor databases.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "Q04": {
+    "title": "PowerSync architecture",
+    "url": "https://docs.powersync.com/architecture/overview",
+    "notes": "Backend-authoritative sync and client upload model; different authority direction from source actor databases.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "Q05": {
+    "title": "Debezium outbox routing",
+    "url": "https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html",
+    "notes": "Useful outbox transport pattern; not a ready-made actor-fleet discovery system.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "Q06": {
+    "title": "Materialize documentation",
+    "url": "https://materialize.com/docs/",
+    "notes": "Incremental views are a substantial specialized query engine; do not quietly implement one inside ProjectionActor.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C01": {
+    "title": "Rivet actor documentation",
+    "url": "https://rivet.dev/docs/actors",
+    "notes": "Closest general actor platform; current feature claims must come from docs, not blanket superiority claims.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C02": {
+    "title": "Rivet Effect SDK",
+    "url": "https://rivet.dev/changelog/2026-06-16-introducing-the-effect-sdk/",
+    "notes": "Effect integration means Effect-native alone is not differentiation.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C03": {
+    "title": "Rivet Cloud",
+    "url": "https://rivet.dev/cloud/",
+    "notes": "Managed cloud and pricing reference; historical prices not assumed current.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C04": {
+    "title": "Cloudflare Durable Objects",
+    "url": "https://developers.cloudflare.com/durable-objects/",
+    "notes": "Runtime-owned identity/storage/lifecycle; use for architectural comparison.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C05": {
+    "title": "Durable Objects pricing",
+    "url": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+    "notes": "Requests, duration and storage meters; not directly comparable to our internal messages.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C06": {
+    "title": "Cloudflare D1 limits",
+    "url": "https://developers.cloudflare.com/d1/platform/limits/",
+    "notes": "Separate DB hosting candidate with provider-specific API and limits.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C07": {
+    "title": "Orleans persistence",
+    "url": "https://learn.microsoft.com/en-us/dotnet/orleans/grains/grain-persistence",
+    "notes": "Pluggable grain state, not inherently a private SQL database per entity.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C08": {
+    "title": "Dapr actors",
+    "url": "https://docs.dapr.io/developing-applications/building-blocks/actors/actors-overview",
+    "notes": "Virtual identity, activation and shared transactional actor state store.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C09": {
+    "title": "Akka persistence plugins",
+    "url": "https://doc.akka.io/libraries/akka-core/current/persistence-journals.html",
+    "notes": "Journal/snapshot persistence architecture; licensing/release policy separate assessment.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C10": {
+    "title": "Temporal durable execution",
+    "url": "https://docs.temporal.io/workflows",
+    "notes": "Procedure replay/activity orchestration, not automatic actor-local SQL semantics.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C11": {
+    "title": "Effect Agent",
+    "url": "https://effect-agent.com/",
+    "notes": "Future agent competitor; do not implement agent package during actor bootstrapping.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C12": {
+    "title": "mvSQLite",
+    "url": "https://github.com/losfair/mvsqlite",
+    "notes": "FoundationDB VFS research alternative; operational and maintenance diligence required.",
+    "kind": "source reference",
+    "research_date": "2026-09-17"
+  },
+  "C13": {
+    "title": "Cloud Backed SQLite",
+    "url": "https://sqlite.org/cloudsqlite/doc/trunk/www/index.wiki",
+    "notes": "Storage component rather than hosted actor platform; supported object stores and write semantics matter.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C14": {
+    "title": "SlateDB",
+    "url": "https://slatedb.io/docs/",
+    "notes": "Object-store KV design; not an arbitrary SQL database replacement.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "C15": {
+    "title": "Neon branching",
+    "url": "https://neon.com/docs/introduction/branching",
+    "notes": "Coarser tenant/workspace relational isolation option, not a drop-in SQLite actor DB.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D01": {
+    "title": "Railway monorepos",
+    "url": "https://docs.railway.com/guides/monorepo",
+    "notes": "Service build/start boundaries and watch paths.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D02": {
+    "title": "Railway private networking",
+    "url": "https://docs.railway.com/guides/private-networking",
+    "notes": "Must validate per-replica identity/routing, not use one load-balanced address as runner identity.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D03": {
+    "title": "Railway configuration",
+    "url": "https://docs.railway.com/reference/config-as-code",
+    "notes": "Config schema for deployment scaffold.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D04": {
+    "title": "Railway resource pricing",
+    "url": "https://railway.com/pricing",
+    "notes": "Meter and plan source; model unverified rates as assumptions.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D05": {
+    "title": "Alchemy",
+    "url": "https://alchemy.run/",
+    "notes": "Infrastructure-as-code choice; resolve exact version/provider support before runnable stack.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D06": {
+    "title": "Blacksmith documentation",
+    "url": "https://docs.blacksmith.sh/",
+    "notes": "CI runner labels, cache and security model; runner availability is account-dependent.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D07": {
+    "title": "npm trusted publishers",
+    "url": "https://docs.npmjs.com/trusted-publishers/",
+    "notes": "Validate supported hosted CI environments; keep release job independent from Blacksmith.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D08": {
+    "title": "Turborepo configuration",
+    "url": "https://turborepo.com/docs/reference/configuration",
+    "notes": "Task graph, cached outputs, environment inputs; not a substitute for dependency architecture.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D09": {
+    "title": "Oxlint configuration",
+    "url": "https://oxc.rs/docs/guide/usage/linter/config",
+    "notes": "Choose supported config file; use current parser, do not assume arbitrary TypeScript config support.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D10": {
+    "title": "Oxfmt configuration",
+    "url": "https://oxc.rs/docs/guide/usage/formatter/config",
+    "notes": "Formatter configuration and ignore rules; root .oxfmtrc.json chosen for simplicity.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D11": {
+    "title": "Vite documentation",
+    "url": "https://vite.dev/guide/",
+    "notes": "App development/build tool; not mandatory library compiler.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D12": {
+    "title": "Vitest documentation",
+    "url": "https://vitest.dev/guide/",
+    "notes": "@effect/vitest peer compatibility controls major version.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D13": {
+    "title": "Changesets",
+    "url": "https://github.com/changesets/changesets",
+    "notes": "Version/changelog workflow, separate from registry authentication.",
+    "kind": "source",
+    "research_date": "2026-09-17"
+  },
+  "D14": {
+    "title": "Renovate",
+    "url": "https://docs.renovatebot.com/",
+    "notes": "Group coupled compiler/Effect toolchain updates.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D15": {
+    "title": "publint",
+    "url": "https://publint.dev/docs/",
+    "notes": "Package manifest and export-map inspection.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D16": {
+    "title": "Are The Types Wrong",
+    "url": "https://github.com/arethetypeswrong/arethetypeswrong.github.io",
+    "notes": "Published package type-resolution checks.",
+    "kind": "source",
+    "research_date": "2026-09-17"
+  },
+  "D17": {
+    "title": "Trivy SBOM",
+    "url": "https://trivy.dev/docs/latest/guide/supply-chain/attestation/sbom/",
+    "notes": "Container/SBOM scanning; not proof of actor correctness.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "D18": {
+    "title": "GitHub workflow security",
+    "url": "https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions",
+    "notes": "Least privilege, immutable action pins, untrusted PR precautions.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A01": {
+    "title": "S3 consistency",
+    "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html",
+    "notes": "Object-store consistency does not create atomicity with actor database commits.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A02": {
+    "title": "Cloudflare R2 pricing",
+    "url": "https://developers.cloudflare.com/r2/pricing/",
+    "notes": "S3-compatible storage alternative, request/storage billing; ecosystem egress still exists.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A03": {
+    "title": "Tigris docs",
+    "url": "https://www.tigrisdata.com/docs/",
+    "notes": "Object storage candidate, regional placement and S3 API compatibility must be tested.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A04": {
+    "title": "Valkey",
+    "url": "https://valkey.io/",
+    "notes": "Shared ephemeral cache candidate; loss must not affect correctness.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A05": {
+    "title": "Redis docs",
+    "url": "https://redis.io/docs/latest/",
+    "notes": "Compatibility/licensing and hosted service options require current terms.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A06": {
+    "title": "Dragonfly",
+    "url": "https://www.dragonflydb.io/docs/",
+    "notes": "Alternative cache; command compatibility and licenses are not assumed identical.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A07": {
+    "title": "Garnet",
+    "url": "https://microsoft.github.io/garnet/",
+    "notes": "Alternative RESP implementation; assess only if cache is actual bottleneck.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A08": {
+    "title": "Upstash Redis",
+    "url": "https://upstash.com/docs/redis/overall/getstarted",
+    "notes": "Managed cache option; request/connection/latency economics vary.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A09": {
+    "title": "AWS Secrets Manager",
+    "url": "https://docs.aws.amazon.com/secretsmanager/latest/userguide/intro.html",
+    "notes": "Choose control-plane-managed secrets, grants, rotation and audit.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A10": {
+    "title": "Better Auth",
+    "url": "https://www.better-auth.com/docs/installation",
+    "notes": "Dashboard authentication candidate; does not implement actor authorization.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A11": {
+    "title": "OpenTelemetry collector",
+    "url": "https://opentelemetry.io/docs/collector/",
+    "notes": "OTLP decouples runtime telemetry from vendor; implement cardinality/redaction discipline.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A12": {
+    "title": "Grafana Cloud pricing",
+    "url": "https://grafana.com/pricing/",
+    "notes": "Managed observability candidate; cost/cardinality constraints apply.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A13": {
+    "title": "Apache 2.0 license",
+    "url": "https://www.apache.org/licenses/LICENSE-2.0",
+    "notes": "Recommended framework license subject to owner/legal approval; do not license owner material without approval.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  },
+  "A14": {
+    "title": "SeaweedFS S3-compatible storage",
+    "url": "https://github.com/seaweedfs/seaweedfs",
+    "notes": "Self-host candidate to evaluate against S3 conformance tests; not interchangeable merely because an S3 endpoint exists.",
+    "kind": "source reference",
+    "research_date": "2026-09-17"
+  },
+  "D19": {
+    "title": "VitePress",
+    "url": "https://vitepress.dev/guide/getting-started",
+    "notes": "Future documentation publishing candidate; initial archive uses a minimal Vite documentation portal.",
+    "kind": "official documentation",
+    "research_date": "2026-09-17"
+  }
+}
