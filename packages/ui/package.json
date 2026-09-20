@@ -23,8 +23,8 @@
     "foldkit": "catalog:"
   },
   "devDependencies": {
-    "@babel/core": "7.28.5",
-    "@babel/plugin-transform-typescript": "7.28.5",
+    "@babel/core": "7.29.7",
+    "@babel/plugin-transform-typescript": "7.29.7",
     "@effect/platform-bun": "catalog:",
     "@stylexjs/babel-plugin": "catalog:",
     "@types/babel__core": "7.20.5",
