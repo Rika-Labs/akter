@@ -60,7 +60,7 @@ jobs:
         if: >-
           github.actor != 'dependabot[bot]' &&
           (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: vercel/setup-turborepo-remote-cache-action@v1.0.0
+        uses: vercel/setup-turborepo-remote-cache-action@v1.1.0
         with:
           team: ${{ vars.TURBO_TEAM }}
       - run: bun install --frozen-lockfile --ignore-scripts
