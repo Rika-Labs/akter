@@ -1,6 +1,6 @@
 services:
   postgres:
-    command: /usr/lib/postgresql/15/bin/postgres -D .local/postgres -h 127.0.0.1 -p "$PORT" -k /tmp
+    command: /usr/lib/postgresql/18/bin/postgres -D .local/postgres18 -h 127.0.0.1 -p "$PORT" -k /tmp
     port: 5432
   console:
     command: bash .agents/start-service console

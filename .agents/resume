@@ -4,4 +4,4 @@ cd "$(dirname "$0")/.."
 # Services are supervised by Amp; do not install dependencies or restart them here.
 test -f bun.lock
 test -d node_modules
-test -f .local/postgres/PG_VERSION
+test -f .local/postgres18/PG_VERSION

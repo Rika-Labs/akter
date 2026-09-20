@@ -5,9 +5,12 @@ cd "$(dirname "$0")/.."
 if [[ "$(bun --version 2>/dev/null || true)" != "1.4.2" ]]; then
   npm install --global --force bun@1.4.2
 fi
-if [[ ! -x /usr/lib/postgresql/15/bin/initdb ]]; then
+if [[ ! -x /usr/lib/postgresql/18/bin/initdb ]]; then
   sudo apt-get update -qq
-  sudo apt-get install -y postgresql-15
+  sudo apt-get install -y postgresql-common ca-certificates
+  sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+  sudo apt-get update -qq
+  sudo apt-get install -y postgresql-18
 fi
 bun install --frozen-lockfile
 if [[ ! -e .env ]]; then
@@ -19,14 +22,14 @@ git config --local core.hooksPath .githooks
 bun run build --filter @project/console
 
 # Disposable orb-local data, never a remote DATABASE_URL. No server survives setup.
-if [[ ! -f .local/postgres/PG_VERSION ]]; then
-  mkdir -p .local/postgres .local/postgres-socket
-  /usr/lib/postgresql/15/bin/initdb -D .local/postgres -U project --auth=trust >/dev/null
-  /usr/lib/postgresql/15/bin/pg_ctl -D .local/postgres -l .local/postgres-setup.log \
+if [[ ! -f .local/postgres18/PG_VERSION ]]; then
+  mkdir -p .local/postgres18 .local/postgres-socket
+  /usr/lib/postgresql/18/bin/initdb -D .local/postgres18 -U project --auth=trust >/dev/null
+  /usr/lib/postgresql/18/bin/pg_ctl -D .local/postgres18 -l .local/postgres-setup.log \
     -o "-h 127.0.0.1 -p 5439 -k $PWD/.local/postgres-socket" -w start
-  trap '/usr/lib/postgresql/15/bin/pg_ctl -D .local/postgres -m fast -w stop' EXIT
-  /usr/lib/postgresql/15/bin/createdb -h 127.0.0.1 -p 5439 -U project project
-  /usr/lib/postgresql/15/bin/pg_ctl -D .local/postgres -m fast -w stop
+  trap '/usr/lib/postgresql/18/bin/pg_ctl -D .local/postgres18 -m fast -w stop' EXIT
+  /usr/lib/postgresql/18/bin/createdb -h 127.0.0.1 -p 5439 -U project project
+  /usr/lib/postgresql/18/bin/pg_ctl -D .local/postgres18 -m fast -w stop
   trap - EXIT
 fi
 echo 'Ready. Run amp orb services ensure to start PostgreSQL, server and console.'

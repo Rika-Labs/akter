@@ -9,14 +9,14 @@ jobs:
   branch:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: main
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: 1.4.2
-      - uses: actions/cache@v6
+      - uses: actions/cache@v6.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}

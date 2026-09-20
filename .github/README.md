@@ -102,8 +102,8 @@ Dependabot remains configured for ordinary non-major dependency PRs. Catalog upd
 - Effect and its adapters stay on `4.0.0-rc.116`; the npm `latest` tag on Effect's older major is not an upgrade. Vitest 5 matches the adapter's peer range.
 - Drizzle ORM and Kit use the matching `rc5` snapshot `1.0.0-rc.5-5935859`; this is an intentional prerelease channel, not a stable-version claim.
 - Oxlint/plugins stay at `1.82.0` with `oxlint-tsgolint` `7.0.2001`. `@effect/tsgo` `0.45.0` rejects the newer Oxlint patch target; update this cohort together when supported.
-- Babel stays on the latest compatible 7.x line; Babel 8 requires a separate StyleX/build-tool migration. Node types stay on 24.x rather than following the newest Node major.
-- CI and Compose use PostgreSQL 17.11. PostgreSQL 18 is a major storage upgrade, not an image-tag refresh. The orb setup still uses distribution PostgreSQL 15; do not reuse that data directory with a different major binary.
+- Babel uses 8.0.6 with the newest v8 TypeScript transform (8.0.0-rc.6). Babel supplies its own types; StyleX is loaded through Babel's plugin resolver. Node types use 26.6.2. The application runtime remains Bun 1.4.2.
+- CI and Compose use PostgreSQL 18.6. Orb setup installs PostgreSQL 18 from the official PGDG repository. Compose mounts the v18 image at `/var/lib/postgresql`, using a separate `postgres18` volume; orbs use `.local/postgres18`. Older volumes/directories are preserved, not migrated or deleted. Existing development data needs an explicit dump/restore or reviewed major-version upgrade before reuse.
 
 Frozen installation, the Effect compiler patch, and full workspace checks are required after changing these pins. Historical `research/` snapshots are not active dependency manifests and remain unchanged.
 

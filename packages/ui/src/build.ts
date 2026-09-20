@@ -25,7 +25,7 @@ const build = Effect.fnUntraced(function* () {
         plugins: [
           ["@babel/plugin-transform-typescript", {}],
           [
-            stylexPlugin,
+            "@stylexjs/babel-plugin",
             {
               dev: false,
               runtimeInjection: false,
