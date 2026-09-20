@@ -1,17 +1,16 @@
 {
-  "name": "@project/worker",
+  "name": "@project/gateway",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "dev": "bun --watch src/main.ts",
-    "start": "bun src/main.ts",
-    "build": "bun build src/main.ts --target=bun --packages=external --outdir=dist",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
   },
   "dependencies": {
-    "@project/runtime": "workspace:*",
-    "@project/work": "workspace:*",
+    "@project/protocol": "workspace:*",
     "effect": "catalog:"
   }
 }

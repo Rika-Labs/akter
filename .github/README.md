@@ -6,7 +6,7 @@ Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<
 
 ## Turborepo remote cache
 
-`Verify` uses `vercel/setup-turborepo-remote-cache-action@v1.0.0` with job-scoped
+`Verify` uses `vercel/setup-turborepo-remote-cache-action@v1.1.0` with job-scoped
 `id-token: write` and the repository-accessible organization/repository variable
 `TURBO_TEAM`. The action exchanges GitHub OIDC for a short-lived cache token and
 exports `TURBO_TOKEN` and `TURBO_TEAM` before `bun run check:ci`.
@@ -37,7 +37,7 @@ root TypeScript configuration, lint plugins, Vitest configuration, and the
 `.github` sources consumed by infra are included in their owning checks.
 The real-Turbo regression test exercises these invalidation boundaries.
 
-Blacksmith automatically accelerates upstream `actions/cache@v5`. All three
+Blacksmith automatically accelerates upstream `actions/cache@v6`. All three
 workflows cache Bun's package store, not mutable `node_modules`. Verify also
 restores TypeScript incremental metadata using a toolchain/configuration key and
 a per-commit snapshot. TypeScript validates that state on a Turbo miss; Turbo
@@ -61,7 +61,7 @@ task execution before changing runner sizes or introducing more jobs.
 
 As suites grow, shard the slow package rather than every package. Vitest already
 accepts `--shard=1/4` through a filtered Turbo invocation, for example
-`bun run test --filter=@project/web -- --shard=1/4`. Allocate one Blacksmith job per
+`bun run test --filter=@project/console -- --shard=1/4`. Allocate one Blacksmith job per
 shard only when measured execution savings exceed repeated checkout/install cost;
 merge blob reports and require every shard before publishing aggregate evidence.
 Keep shard arguments in the Turbo invocation so each shard gets a distinct cache
@@ -96,6 +96,16 @@ bun .github/src/update-catalogs.ts package.json --write  # local manifest + Bun 
 The adapter uses standard `npm view` registry metadata, updates default/named Bun catalogs, and excludes majors/downgrades/prereleases. Effect, Alchemy/BetterAuth, FoldKit, TS/native and Oxlint are a coupled cohort: changes are held for explicit compatibility work. Prerelease pins never silently promote, even to stable. Test updates with `bun run check`, build, and provider typecheck before review. No publishing or automatic merge is included.
 
 Dependabot remains configured for ordinary non-major dependency PRs. Catalog updates are local commands; there is no GitHub Amp plugin or webhook/scheduled dispatch to orbs.
+
+### Compatibility pins (2026-09-20 audit)
+
+- Effect and its adapters stay on `4.0.0-rc.116`; the npm `latest` tag on Effect's older major is not an upgrade. Vitest 5 matches the adapter's peer range.
+- Drizzle ORM and Kit use the matching `rc5` snapshot `1.0.0-rc.5-5935859`; this is an intentional prerelease channel, not a stable-version claim.
+- Oxlint/plugins stay at `1.82.0` with `oxlint-tsgolint` `7.0.2001`. `@effect/tsgo` `0.45.0` rejects the newer Oxlint patch target; update this cohort together when supported.
+- Babel stays on the latest compatible 7.x line; Babel 8 requires a separate StyleX/build-tool migration. Node types stay on 24.x rather than following the newest Node major.
+- CI and Compose use PostgreSQL 17.11. PostgreSQL 18 is a major storage upgrade, not an image-tag refresh. The orb setup still uses distribution PostgreSQL 15; do not reuse that data directory with a different major binary.
+
+Frozen installation, the Effect compiler patch, and full workspace checks are required after changing these pins. Historical `research/` snapshots are not active dependency manifests and remain unchanged.
 
 Blacksmith runner startup and Vercel OIDC authentication have been exercised in GitHub Actions. Proof and its TypeSafe provider now install from npm without sibling checkouts. Pin action refs to reviewed immutable revisions before enabling in a sensitive repository; current version tags are conventional bootstrap refs.
 

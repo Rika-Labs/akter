@@ -16,7 +16,7 @@ if [[ ! -e .env ]]; then
   unset secret
 fi
 git config --local core.hooksPath .githooks
-bun run build --filter @project/web
+bun run build --filter @project/console
 
 # Disposable orb-local data, never a remote DATABASE_URL. No server survives setup.
 if [[ ! -f .local/postgres/PG_VERSION ]]; then
@@ -29,4 +29,4 @@ if [[ ! -f .local/postgres/PG_VERSION ]]; then
   /usr/lib/postgresql/15/bin/pg_ctl -D .local/postgres -m fast -w stop
   trap - EXIT
 fi
-echo 'Ready. Run amp orb services ensure to start PostgreSQL, API and web.'
+echo 'Ready. Run amp orb services ensure to start PostgreSQL, server and console.'

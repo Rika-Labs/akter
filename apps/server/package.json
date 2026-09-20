@@ -22,7 +22,9 @@
     "@project/contracts": "workspace:*",
     "@project/database": "workspace:*",
     "@project/email": "workspace:*",
+    "@project/gateway": "workspace:*",
     "@project/observability": "workspace:*",
+    "@project/runtime": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
