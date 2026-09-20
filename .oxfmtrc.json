@@ -1,5 +1,11 @@
 {
   "semi": false,
   "printWidth": 100,
-  "ignorePatterns": ["bun.lock", "**/dist/**", ".local/**", "tooling/oxlint/anti-slop/**"]
+  "ignorePatterns": [
+    "bun.lock",
+    "**/dist/**",
+    ".local/**",
+    "research/**",
+    "tooling/oxlint/anti-slop/**"
+  ]
 }

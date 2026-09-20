@@ -44,8 +44,8 @@
     "lint:directives": "bun tooling/oxlint/src/Directives.ts",
     "lint": "bun run lint:directives && GOMAXPROCS=1 turbo run lint lint:root --concurrency=100%",
     "lint:root": "oxlint --type-aware --deny-warnings --threads 1 *.ts .amp/plugins",
-    "format": "oxfmt .",
-    "format:check": "oxfmt --check .",
+    "format": "oxfmt . '!research/**'",
+    "format:check": "oxfmt --check . '!research/**'",
     "check": "bun run lint:directives && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100%",
     "check:ci": "bun run lint:directives && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration --concurrency=100% --summarize"
   },
