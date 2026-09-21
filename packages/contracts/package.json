@@ -1,5 +1,5 @@
 {
-  "name": "@project/contracts",
+  "name": "@durable-actors/contracts",
   "private": true,
   "type": "module",
   "exports": {

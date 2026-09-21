@@ -20,11 +20,37 @@
         "vitest": "catalog:",
       },
     },
-    "apps/console": {
-      "name": "@project/console",
+    "apps/api": {
+      "name": "@durable-actors/api",
       "dependencies": {
+        "@durable-actors/accounts": "workspace:*",
+        "@durable-actors/billing": "workspace:*",
+        "@durable-actors/contracts": "workspace:*",
+        "@durable-actors/email": "workspace:*",
+        "@durable-actors/observability": "workspace:*",
+        "@durable-actors/postgres": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
+      },
+    },
+    "apps/cli": {
+      "name": "@durable-actors/cli",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+    },
+    "apps/console": {
+      "name": "@durable-actors/console",
+      "dependencies": {
+        "@durable-actors/ui": "workspace:*",
         "@effect/platform-browser": "catalog:",
-        "@project/ui": "workspace:*",
         "effect": "catalog:",
         "foldkit": "catalog:",
       },
@@ -35,38 +61,35 @@
         "vitest": "catalog:",
       },
     },
-    "apps/server": {
-      "name": "@project/server",
+    "apps/edge": {
+      "name": "@durable-actors/edge",
       "dependencies": {
-        "@effect/platform-bun": "catalog:",
-        "@effect/sql-pg": "catalog:",
-        "@project/auth": "workspace:*",
-        "@project/billing": "workspace:*",
-        "@project/contracts": "workspace:*",
-        "@project/database": "workspace:*",
-        "@project/email": "workspace:*",
-        "@project/gateway": "workspace:*",
-        "@project/observability": "workspace:*",
-        "@project/runtime": "workspace:*",
         "effect": "catalog:",
       },
-      "devDependencies": {
-        "@effect/vitest": "catalog:",
-        "@types/pg": "8.23.1",
-        "pg": "8.23.0",
-        "vitest": "catalog:",
+    },
+    "examples/chat": {
+      "name": "@durable-actors/chat",
+      "dependencies": {
+        "durable-actors": "workspace:*",
+        "effect": "catalog:",
       },
     },
-    "apps/worker": {
-      "name": "@project/worker",
+    "examples/coding-agent": {
+      "name": "@durable-actors/coding-agent",
       "dependencies": {
-        "@project/runtime": "workspace:*",
-        "@project/work": "workspace:*",
+        "durable-actors": "workspace:*",
+        "effect": "catalog:",
+      },
+    },
+    "examples/counter": {
+      "name": "@durable-actors/counter",
+      "dependencies": {
+        "durable-actors": "workspace:*",
         "effect": "catalog:",
       },
     },
     "infra": {
-      "name": "@project/infra",
+      "name": "@durable-actors/infra",
       "dependencies": {
         "@distilled.cloud/github": "catalog:",
         "@distilled.cloud/infisical": "catalog:",
@@ -80,19 +103,19 @@
         "vitest": "catalog:",
       },
     },
-    "packages/auth": {
-      "name": "@project/auth",
+    "packages/accounts": {
+      "name": "@durable-actors/accounts",
       "dependencies": {
         "@alchemy.run/better-auth": "catalog:",
-        "@project/database": "workspace:*",
-        "@project/email": "workspace:*",
+        "@durable-actors/email": "workspace:*",
+        "@durable-actors/postgres": "workspace:*",
         "alchemy": "catalog:",
         "better-auth": "catalog:",
         "effect": "catalog:",
       },
     },
     "packages/billing": {
-      "name": "@project/billing",
+      "name": "@durable-actors/billing",
       "dependencies": {
         "@distilled.cloud/polar": "catalog:",
         "effect": "catalog:",
@@ -102,28 +125,40 @@
         "vitest": "catalog:",
       },
     },
-    "packages/blobs": {
-      "name": "@project/blobs",
-      "dependencies": {
-        "@project/protocol": "workspace:*",
-        "effect": "catalog:",
-      },
-    },
-    "packages/cli": {
-      "name": "@project/cli",
-      "dependencies": {
-        "@project/sdk": "workspace:*",
-        "effect": "catalog:",
-      },
-    },
     "packages/contracts": {
-      "name": "@project/contracts",
+      "name": "@durable-actors/contracts",
       "dependencies": {
         "effect": "catalog:",
       },
     },
-    "packages/database": {
-      "name": "@project/database",
+    "packages/deployments": {
+      "name": "@durable-actors/deployments",
+      "dependencies": {
+        "durable-actors": "workspace:*",
+        "effect": "catalog:",
+      },
+    },
+    "packages/durable-actors": {
+      "name": "durable-actors",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+    },
+    "packages/email": {
+      "name": "@durable-actors/email",
+      "dependencies": {
+        "@distilled.cloud/resend": "catalog:",
+        "effect": "catalog:",
+      },
+    },
+    "packages/observability": {
+      "name": "@durable-actors/observability",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+    },
+    "packages/postgres": {
+      "name": "@durable-actors/postgres",
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
@@ -135,69 +170,8 @@
         "@types/pg": "8.23.1",
       },
     },
-    "packages/drizzle": {
-      "name": "@project/drizzle",
-      "dependencies": {
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-      },
-    },
-    "packages/email": {
-      "name": "@project/email",
-      "dependencies": {
-        "@distilled.cloud/resend": "catalog:",
-        "effect": "catalog:",
-      },
-    },
-    "packages/gateway": {
-      "name": "@project/gateway",
-      "dependencies": {
-        "@project/protocol": "workspace:*",
-        "effect": "catalog:",
-      },
-    },
-    "packages/observability": {
-      "name": "@project/observability",
-      "dependencies": {
-        "effect": "catalog:",
-      },
-    },
-    "packages/protocol": {
-      "name": "@project/protocol",
-      "dependencies": {
-        "effect": "catalog:",
-      },
-    },
-    "packages/realtime": {
-      "name": "@project/realtime",
-      "dependencies": {
-        "@project/protocol": "workspace:*",
-        "effect": "catalog:",
-      },
-    },
-    "packages/runtime": {
-      "name": "@project/runtime",
-      "dependencies": {
-        "@project/protocol": "workspace:*",
-        "effect": "catalog:",
-      },
-    },
-    "packages/sdk": {
-      "name": "@project/sdk",
-      "dependencies": {
-        "@project/protocol": "workspace:*",
-        "effect": "catalog:",
-      },
-    },
-    "packages/testing": {
-      "name": "@project/testing",
-      "dependencies": {
-        "@project/protocol": "workspace:*",
-        "effect": "catalog:",
-      },
-    },
     "packages/ui": {
-      "name": "@project/ui",
+      "name": "@durable-actors/ui",
       "dependencies": {
         "@effect/platform-browser": "catalog:",
         "@stylexjs/stylex": "catalog:",
@@ -214,15 +188,15 @@
         "vitest": "catalog:",
       },
     },
-    "packages/work": {
-      "name": "@project/work",
+    "tooling/databases": {
+      "name": "@durable-actors/databases",
       "dependencies": {
-        "@project/protocol": "workspace:*",
+        "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
       },
     },
     "tooling/oxlint": {
-      "name": "@project/oxlint-rules",
+      "name": "@durable-actors/oxlint",
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "@oxlint/plugins": "1.82.0",
@@ -231,6 +205,13 @@
       },
       "devDependencies": {
         "vitest": "catalog:",
+      },
+    },
+    "tooling/structure": {
+      "name": "@durable-actors/structure",
+      "dependencies": {
+        "@effect/platform-bun": "catalog:",
+        "effect": "catalog:",
       },
     },
   },
@@ -425,6 +406,44 @@
     "@distilled.cloud/stripe": ["@distilled.cloud/stripe@1.0.0-rc.12", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.12" }, "peerDependencies": { "effect": ">=4.0.0-rc.115 || >=4.0.0" } }, "sha512-4OuZF362yU66G1jDFDgRFFv8ZNRPZ6lw8Wrd5R/isRNHpGgvggLNlKg1QXWEQaTcRzn3RBXczqQCVwQV9IRZDQ=="],
 
     "@dual-bundle/import-meta-resolve": ["@dual-bundle/import-meta-resolve@4.2.1", "", {}, "sha512-id+7YRUgoUX6CgV0DtuhirQWodeeA7Lf4i2x71JS/vtA5pRb/hIGWlw+G6MeXvsM+MXrz0VAydTGElX1rAfgPg=="],
+
+    "@durable-actors/accounts": ["@durable-actors/accounts@workspace:packages/accounts"],
+
+    "@durable-actors/api": ["@durable-actors/api@workspace:apps/api"],
+
+    "@durable-actors/billing": ["@durable-actors/billing@workspace:packages/billing"],
+
+    "@durable-actors/chat": ["@durable-actors/chat@workspace:examples/chat"],
+
+    "@durable-actors/cli": ["@durable-actors/cli@workspace:apps/cli"],
+
+    "@durable-actors/coding-agent": ["@durable-actors/coding-agent@workspace:examples/coding-agent"],
+
+    "@durable-actors/console": ["@durable-actors/console@workspace:apps/console"],
+
+    "@durable-actors/contracts": ["@durable-actors/contracts@workspace:packages/contracts"],
+
+    "@durable-actors/counter": ["@durable-actors/counter@workspace:examples/counter"],
+
+    "@durable-actors/databases": ["@durable-actors/databases@workspace:tooling/databases"],
+
+    "@durable-actors/deployments": ["@durable-actors/deployments@workspace:packages/deployments"],
+
+    "@durable-actors/edge": ["@durable-actors/edge@workspace:apps/edge"],
+
+    "@durable-actors/email": ["@durable-actors/email@workspace:packages/email"],
+
+    "@durable-actors/infra": ["@durable-actors/infra@workspace:infra"],
+
+    "@durable-actors/observability": ["@durable-actors/observability@workspace:packages/observability"],
+
+    "@durable-actors/oxlint": ["@durable-actors/oxlint@workspace:tooling/oxlint"],
+
+    "@durable-actors/postgres": ["@durable-actors/postgres@workspace:packages/postgres"],
+
+    "@durable-actors/structure": ["@durable-actors/structure@workspace:tooling/structure"],
+
+    "@durable-actors/ui": ["@durable-actors/ui@workspace:packages/ui"],
 
     "@effect/ai-typesafe": ["@effect/ai-typesafe@4.0.0-rc.116", "", { "peerDependencies": { "effect": "^4.0.0-rc.116" } }, "sha512-yk3PFGCwAHajpTVs7VkCbywgCxbVWDFm90mxjRkTktQZcET8qkenZbNf576V3aWHuKKfp1kDfsWNLdxd/345UA=="],
 
@@ -740,50 +759,6 @@
 
     "@prisma/query-plan-executor": ["@prisma/query-plan-executor@7.2.0", "", {}, "sha512-EOZmNzcV8uJ0mae3DhTsiHgoNCuu1J9mULQpGCh62zN3PxPTd+qI9tJvk5jOst8WHKQNwJWR3b39t0XvfBB0WQ=="],
 
-    "@project/auth": ["@project/auth@workspace:packages/auth"],
-
-    "@project/billing": ["@project/billing@workspace:packages/billing"],
-
-    "@project/blobs": ["@project/blobs@workspace:packages/blobs"],
-
-    "@project/cli": ["@project/cli@workspace:packages/cli"],
-
-    "@project/console": ["@project/console@workspace:apps/console"],
-
-    "@project/contracts": ["@project/contracts@workspace:packages/contracts"],
-
-    "@project/database": ["@project/database@workspace:packages/database"],
-
-    "@project/drizzle": ["@project/drizzle@workspace:packages/drizzle"],
-
-    "@project/email": ["@project/email@workspace:packages/email"],
-
-    "@project/gateway": ["@project/gateway@workspace:packages/gateway"],
-
-    "@project/infra": ["@project/infra@workspace:infra"],
-
-    "@project/observability": ["@project/observability@workspace:packages/observability"],
-
-    "@project/oxlint-rules": ["@project/oxlint-rules@workspace:tooling/oxlint"],
-
-    "@project/protocol": ["@project/protocol@workspace:packages/protocol"],
-
-    "@project/realtime": ["@project/realtime@workspace:packages/realtime"],
-
-    "@project/runtime": ["@project/runtime@workspace:packages/runtime"],
-
-    "@project/sdk": ["@project/sdk@workspace:packages/sdk"],
-
-    "@project/server": ["@project/server@workspace:apps/server"],
-
-    "@project/testing": ["@project/testing@workspace:packages/testing"],
-
-    "@project/ui": ["@project/ui@workspace:packages/ui"],
-
-    "@project/work": ["@project/work@workspace:packages/work"],
-
-    "@project/worker": ["@project/worker@workspace:apps/worker"],
-
     "@puppeteer/browsers": ["@puppeteer/browsers@3.2.2", "", { "dependencies": { "modern-tar": "^0.8.4", "yargs": "^18.0.0" }, "peerDependencies": { "proxy-agent": ">=8.0.1", "yauzl": "^2.10.0 || ^3.4.0" }, "optionalPeers": ["proxy-agent", "yauzl"], "bin": { "browsers": "lib/main-cli.js" } }, "sha512-q2BU4YfO9h/Wt7IcWPcggpOOqLk2Tbs1hDwolvKZrweRjy751OJBKMN9zO5bfD0pzU7X/tvKw/exQds4pM/LOg=="],
 
     "@redis/bloom": ["@redis/bloom@6.2.1", "", { "peerDependencies": { "@redis/client": "^6.2.1" } }, "sha512-huQgNLaCIZfQ9SeLn4q9124uOUd8HbZDYHwwUzNcRgHqCHiHKl2dDxMqJCeWh8cMqZAoWuHR8XnWbDMIf+o7ag=="],
@@ -991,6 +966,8 @@
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
 
     "drizzle-orm": ["drizzle-orm@1.0.0-rc.5-5935859", "", { "peerDependencies": { "@aws-sdk/client-rds-data": ">=3", "@cloudflare/workers-types": ">=4", "@drizzle-team/minipg": ">=0.3.2", "@effect/sql-d1": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-libsql": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-mysql2": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-pg": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-pglite": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-bun": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-do": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-node": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-wasm": ">=4.0.0-beta.105 || >=4.0.0", "@electric-sql/pglite": ">=0.2.0", "@libsql/client": ">=0.10.0", "@libsql/client-wasm": ">=0.10.0", "@neondatabase/serverless": ">=0.10.0", "@op-engineering/op-sqlite": ">=17", "@opentelemetry/api": "^1.4.1", "@planetscale/database": ">=1.13", "@sinclair/typebox": ">=0.34.8", "@sqlitecloud/drivers": ">=1.0.653", "@tidbcloud/serverless": "*", "@tursodatabase/database": ">=0.7.1", "@tursodatabase/database-common": ">=0.7.1", "@tursodatabase/database-wasm": ">=0.7.1", "@tursodatabase/serverless": ">=1.4.0", "@tursodatabase/sync": ">=0.7.1", "@types/better-sqlite3": "*", "@types/mssql": "^9.1.4", "@types/pg": "*", "@types/sql.js": "*", "@upstash/redis": ">=1.34.7", "@vercel/postgres": ">=0.8.0", "@xata.io/client": "*", "arktype": ">=2.0.0", "better-sqlite3": ">=9.3.0", "bun-types": "*", "effect": ">=4.0.0-beta.105 || >=4.0.0", "expo-sqlite": ">=14.0.0", "mssql": "^11.0.1", "mysql2": ">=2", "pg": ">=8", "postgres": ">=3", "sql.js": ">=1", "sqlite3": ">=5", "typebox": ">=1.2.0", "valibot": ">=1.0.0-beta.7", "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["@aws-sdk/client-rds-data", "@cloudflare/workers-types", "@drizzle-team/minipg", "@effect/sql-d1", "@effect/sql-libsql", "@effect/sql-mysql2", "@effect/sql-pg", "@effect/sql-pglite", "@effect/sql-sqlite-bun", "@effect/sql-sqlite-do", "@effect/sql-sqlite-node", "@effect/sql-sqlite-wasm", "@electric-sql/pglite", "@libsql/client", "@libsql/client-wasm", "@neondatabase/serverless", "@op-engineering/op-sqlite", "@opentelemetry/api", "@planetscale/database", "@sinclair/typebox", "@sqlitecloud/drivers", "@tidbcloud/serverless", "@tursodatabase/database", "@tursodatabase/database-common", "@tursodatabase/database-wasm", "@tursodatabase/serverless", "@tursodatabase/sync", "@types/better-sqlite3", "@types/mssql", "@types/pg", "@types/sql.js", "@upstash/redis", "@vercel/postgres", "@xata.io/client", "arktype", "better-sqlite3", "bun-types", "effect", "expo-sqlite", "mssql", "mysql2", "pg", "postgres", "sql.js", "sqlite3", "typebox", "valibot", "zod"] }, "sha512-PkVjyxhamD7IOVfpDMn3BmV9afyvj3eeLvIPind3NmPv+cfv6/jh6GN0fHP0zzgrprGx/jGE4mkE0ttRFlzHwA=="],
+
+    "durable-actors": ["durable-actors@workspace:packages/durable-actors"],
 
     "effect": ["effect@4.0.0-rc.116", "", {}, "sha512-nawqJHSjHV8XIBRZNZ+D7cLZpN3kkSjzy6aiT9ofKENsl7xAMFKEoDa0itN5JFl3GUQ1PIN1T1HNlva5+xyO/A=="],
 

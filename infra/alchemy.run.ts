@@ -55,7 +55,7 @@ export default Alchemy.Stack(
     const database = yield* Planetscale.PostgresDatabase("Database", {
       name: spec.key,
       clusterSize: "PS_10",
-      migrations: "./packages/database/migrations",
+      migrations: "./packages/postgres/migrations",
     }).pipe(retain(!spec.ephemeral))
 
     const role = yield* Planetscale.PostgresRole("AppRole", {
@@ -84,9 +84,9 @@ export default Alchemy.Stack(
     const api = yield* Railway.Service("Api", {
       project,
       environment: project,
-      name: "server",
+      name: "api",
       context: ".",
-      dockerfilePath: "infra/docker/server.Dockerfile",
+      dockerfilePath: "infra/docker/api/Dockerfile",
       port: 3001,
       publicDomain: true,
       healthcheck: "/health",
@@ -104,7 +104,7 @@ export default Alchemy.Stack(
       environment: project,
       name: "console",
       context: ".",
-      dockerfilePath: "infra/docker/console.Dockerfile",
+      dockerfilePath: "infra/docker/console/Dockerfile",
       port: 3000,
       publicDomain: true,
       healthcheck: "/health",

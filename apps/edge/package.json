@@ -1,0 +1,12 @@
+{
+  "name": "@durable-actors/edge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "name": "@project/console",
+  "name": "@durable-actors/console",
   "private": true,
   "type": "module",
   "exports": {
@@ -14,8 +14,8 @@
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/console/test"
   },
   "dependencies": {
+    "@durable-actors/ui": "workspace:*",
     "@effect/platform-browser": "catalog:",
-    "@project/ui": "workspace:*",
     "effect": "catalog:",
     "foldkit": "catalog:"
   },

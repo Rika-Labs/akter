@@ -1,5 +1,5 @@
 {
-  "name": "@project/infra",
+  "name": "@durable-actors/infra",
   "private": true,
   "type": "module",
   "scripts": {

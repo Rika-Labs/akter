@@ -1,5 +1,5 @@
 {
-  "name": "@project/billing",
+  "name": "@durable-actors/billing",
   "private": true,
   "type": "module",
   "exports": {

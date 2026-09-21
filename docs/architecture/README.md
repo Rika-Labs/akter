@@ -10,3 +10,4 @@
 - [Storage layout](03-storage-layout.md)
 - [Dispatch and fencing](04-dispatch.md)
 - [Adapters](05-adapters.md)
+- [Repository structure](repository-structure.md)

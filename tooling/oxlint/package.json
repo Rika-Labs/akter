@@ -1,5 +1,5 @@
 {
-  "name": "@project/oxlint-rules",
+  "name": "@durable-actors/oxlint",
   "private": true,
   "type": "module",
   "scripts": {

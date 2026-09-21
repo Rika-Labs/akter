@@ -1,10 +1,11 @@
 {
-  "name": "durable-actors",
+  "name": "@durable-actors/monorepo",
   "private": true,
   "workspaces": {
     "packages": [
       "apps/*",
       "packages/*",
+      "examples/*",
       "tooling/*",
       "infra"
     ],

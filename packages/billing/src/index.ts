@@ -13,7 +13,7 @@ export class Billing extends Context.Service<
     checkout(organizationId: string): Effect.Effect<{ url: string }, BillingError>
     portal(organizationId: string): Effect.Effect<{ url: string }, BillingError>
   }
->()("@project/billing/Billing") {}
+>()("@durable-actors/billing/Billing") {}
 
 export const disabledLayer = Layer.succeed(Billing, {
   checkout: () => Effect.fail(BillingError.make({ message: "Billing is not configured" })),

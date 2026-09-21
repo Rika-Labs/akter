@@ -32,4 +32,4 @@ if [[ ! -f .local/postgres18/PG_VERSION ]]; then
   /usr/lib/postgresql/18/bin/pg_ctl -D .local/postgres18 -m fast -w stop
   trap - EXIT
 fi
-echo 'Ready. Run amp orb services ensure to start PostgreSQL, server and console.'
+echo 'Ready. Run amp orb services ensure to start PostgreSQL, api and console.'

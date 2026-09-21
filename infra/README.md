@@ -1,6 +1,6 @@
 # Remote infrastructure
 
-`@project/infra` pins Alchemy **2.0.0-beta.79** and Effect **4.0.0-rc.116**. The installed Alchemy peer requirement is `>=4.0.0-rc.115 || >=4.0.0`; rc116 typechecks. All provider API calls use Alchemy or published Distilled packages. No infrastructure was provisioned by this implementation.
+`@durable-actors/infra` pins Alchemy **2.0.0-beta.79** and Effect **4.0.0-rc.116**. The installed Alchemy peer requirement is `>=4.0.0-rc.115 || >=4.0.0`; rc116 typechecks. All provider API calls use Alchemy or published Distilled packages. No infrastructure was provisioned by this implementation.
 
 ## Commands (repository root)
 
@@ -26,7 +26,7 @@ Manifest example (replace the expiry at invocation):
 
 `plan` is an offline validated lifecycle description, **not a cloud diff**. `deploy` invokes installed Alchemy from repository root with `context: "."`, so the local working tree, including uncommitted files, is uploaded. Dockerfile-specific ignore files exclude secrets, state, Git metadata, dependencies and generated artifacts. Alchemy limits local uploads to 32 MiB/10,000 entries and rejects symlinks/non-ASCII paths. Review the upload contents before approval. A generated root `bun.lock` and all workspace manifests are required.
 
-One Railway project per lifecycle identity owns two Bun services: web port 3000 and API port 3001, both `/health`. PlanetScale Postgres is remote for every environment. **Only Alchemy's PostgresDatabase owns SQL migrations** from `packages/database/migrations`; do not also execute the database package migration command during API startup or CI deployment. Axiom datasets are per identity. Infisical `listSecretsV4` retrieves `/deployments/<id>` in the selected stage using `INFISICAL_TOKEN` and `INFISICAL_PROJECT_ID`; values are redacted at the infra boundary and not printed. Include `BETTER_AUTH_SECRET`, provider application secrets, and Axiom ingest token there. Provider bootstrap credentials come from Alchemy profiles/environment, not those application secrets.
+One Railway project per lifecycle identity owns two Bun services: web port 3000 and API port 3001, both `/health`. PlanetScale Postgres is remote for every environment. **Only Alchemy's PostgresDatabase owns SQL migrations** from `packages/postgres/migrations`; do not also execute the database package migration command during API startup or CI deployment. Axiom datasets are per identity. Infisical `listSecretsV4` retrieves `/deployments/<id>` in the selected stage using `INFISICAL_TOKEN` and `INFISICAL_PROJECT_ID`; values are redacted at the infra boundary and not printed. Include `BETTER_AUTH_SECRET`, provider application secrets, and Axiom ingest token there. Provider bootstrap credentials come from Alchemy profiles/environment, not those application secrets.
 
 `appOrigin` is a required HTTPS callback origin at deployment. Both services receive APP_ORIGIN; web receives API_ORIGIN. When CLOUDFLARE_ZONE_ID is set, Cloudflare owns proxied CNAME DNS only, pointing to Railway; Railway owns application execution and custom domain TLS. Certificate validation/verification TXT requirements must be verified against the real domain after approved provisioning. No Workers runtime, database, or local database substitute is introduced.
 

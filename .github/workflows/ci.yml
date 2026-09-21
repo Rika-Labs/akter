@@ -52,6 +52,7 @@ jobs:
           path: |
             apps/*/.cache/typecheck.tsbuildinfo
             packages/*/.cache/typecheck.tsbuildinfo
+            examples/*/.cache/typecheck.tsbuildinfo
             tooling/*/.cache/typecheck.tsbuildinfo
             infra/.cache/typecheck.tsbuildinfo
           key: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-${{ github.sha }}

@@ -20,7 +20,7 @@ export class EmailError extends Schema.TaggedError<EmailError>()("EmailError", {
 export class Email extends Context.Service<
   Email,
   { send(message: Message): Effect.Effect<void, EmailError> }
->()("@project/email/Email") {}
+>()("@durable-actors/email/Email") {}
 
 export const captureLayer = (directory: string) =>
   Layer.effect(

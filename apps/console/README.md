@@ -1,16 +1,16 @@
 # Server-rendered web
 
-`@project/console` is a Bun HTTP boundary around FoldKit's official
+`@durable-actors/console` is a Bun HTTP boundary around FoldKit's official
 `foldkit/experimental/server` renderer. Rendering explicitly uses
 `isHydratable: false`. There is no browser entrypoint, React, hydration, inline
 JavaScript, or client-rendered application. Every interaction is an HTML form or
-ordinary link. `@project/ui` owns the compiled StyleX components and light/dark
+ordinary link. `@durable-actors/ui` owns the compiled StyleX components and light/dark
 semantic tokens.
 
 ## Build and run
 
 From `apps/console`, run `bun run build`, then `bun run start`. Build compiles
-`@project/ui` first, bundles the server to `dist/main.js`, and copies the CSS to
+`@durable-actors/ui` first, bundles the server to `dist/main.js`, and copies the CSS to
 `dist/styles.css`. **Start requires both generated files**; it does not build.
 The production artifact is the entire `apps/console/dist` directory.
 
@@ -46,7 +46,7 @@ name, status }], billing: { plan, status, renewalDate? } }`. All scalar fields
   `/accept-invitation?invitationId=...`. Verification callbacks go to dashboard.
 
 The schemas in `src/http.ts` decode every consumed JSON boundary. They can be
-replaced with matching exports from the parent's `@project/contracts/http` when
+replaced with matching exports from the parent's `@durable-actors/contracts/http` when
 integrated. Settings displays existing organization details read-only; no update
 API was agreed.
 

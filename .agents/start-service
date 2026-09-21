@@ -6,9 +6,9 @@ case "${1:-}" in
     export APP_ORIGIN="${PUBLIC_URL%/}"
     exec bun --env-file=.env apps/console/dist/main.js
     ;;
-  server)
+  api)
     export APP_ORIGIN="${APP_ORIGIN%/}"
-    exec bun --env-file=.env apps/server/src/main.ts
+    exec bun --env-file=.env apps/api/src/main.ts
     ;;
-  *) echo 'Expected console or server' >&2; exit 2 ;;
+  *) echo 'Expected console or api' >&2; exit 2 ;;
 esac

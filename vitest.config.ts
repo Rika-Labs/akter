@@ -4,8 +4,12 @@ export default defineConfig({
   test: {
     include: [
       "apps/*/test/**/*.test.ts",
+      "apps/*/src/**/*.test.ts",
       "packages/*/test/**/*.test.ts",
+      "packages/*/src/**/*.test.ts",
+      "examples/*/src/**/*.test.ts",
       "tooling/*/test/**/*.test.ts",
+      "tooling/*/src/**/*.test.ts",
       "infra/test/**/*.test.ts",
       ".github/test/**/*.test.ts",
     ],

@@ -1,5 +1,5 @@
 {
-  "name": "@project/observability",
+  "name": "@durable-actors/observability",
   "private": true,
   "type": "module",
   "exports": {

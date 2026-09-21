@@ -36,13 +36,13 @@
       "outputs": [],
       "env": ["CI"]
     },
-    "@project/ui#test": {
+    "@durable-actors/ui#test": {
       "dependsOn": ["build", "transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
       "outputs": [],
       "env": ["CI"]
     },
-    "@project/infra#transit": {
+    "@durable-actors/infra#transit": {
       "dependsOn": ["^transit"],
       "inputs": [
         "$TURBO_DEFAULT$",
@@ -51,7 +51,7 @@
         "$TURBO_ROOT$/.github/test/**"
       ]
     },
-    "@project/infra#lint": {
+    "@durable-actors/infra#lint": {
       "dependsOn": ["transit"],
       "inputs": [
         "$TURBO_DEFAULT$",

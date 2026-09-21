@@ -7,7 +7,7 @@ when the answer needed interpretation (veto if wrong), `delegated` when the owne
 or `gated` when a verification must pass before the decision is claimed.
 
 The typechecked sketch that embodies this ledger is [framework/Actor.ts](framework/Actor.ts); the
-testing surface is [framework/Testing.ts](framework/Testing.ts). The latest round is §3.6 (151–172); the
+testing surface is [framework/Testing.ts](framework/Testing.ts). The latest round is §3.7 (173–180, repository structure); the
 comparison against Rivet's Effect SDK and Cloudflare Durable Objects is [COMPARISON.md](COMPARISON.md).
 
 ## 0. Foundations (carried from v3)
@@ -368,6 +368,23 @@ session created at sandbox start, `TurnDone.error` for failed turns, `Idle` time
 loop following `state.changes`); structural `E2BSdk` / `OpenCodeSdk` types in `example/services.ts` instead of adding
 `e2b` and `@opencode-ai/sdk` as dependencies; `ActorTest.layer({ as })` (renamed from `caller`); the `catchReasons` /
 `orElse` caveat recorded rather than hidden.
+
+## 3.7. Round 8 — repository structure (173–180)
+
+The monorepo layout, adopted from the Whorl restructure contract. Normative text is
+[docs/architecture/repository-structure.md](../../docs/architecture/repository-structure.md) and
+[ADR 0001](../../docs/decisions/0001-repository-structure.md); these rows record the owner's answers.
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 173 | Tree | `apps/{api,console,edge,cli}`, `packages/{durable-actors,deployments,accounts,billing,email,contracts,observability,postgres}`, `examples/*`, `infra`, `tooling/{oxlint,structure,databases}`. The nine `export {}` runtime scaffolds, `apps/server` and `apps/worker` are gone; `auth → accounts`, `database → postgres`, `server → api`, `@project/* → @durable-actors/*`; the root package is `@durable-actors/monorepo` because the unscoped name is the framework's. | Decision 151's four entries need one package with folders, not thirteen packages. | Bun workspaces | settled |
+| 174 | Runtime construction | `Actors.layer(...)` from `durable-actors/runtime`; no `Actor.layer` on the root. The `Actors` tag is what every `X.get` already requires, and the browser rule is a folder, not a tree-shaking promise. Earlier rows keep the `Actor.layer` spelling as history. | Owner answered "actors" to the `ActorRuntime.layer` / `Actor.layer` question. | `Layer` | settled (interpreted) |
+| 175 | Actor files | Role folders: `<actor>/{contract,layer,queries}.ts` plus `workflows/` and `effects/` beside them; kebab-case everywhere. The research corpus's `Chat.ts` / `Chat.server.ts` stays as research. | Owner: "I like role folders". | — | settled |
+| 176 | Examples | `examples/{counter,chat,coding-agent}` are workspace packages ported from `example/`; they are the end-to-end corpus, not documentation. | Owner: "yes do examples". | Bun workspaces | settled |
+| 177 | CLI | `apps/cli` publishes `@durable-actors/cli` with bin `durable` (`durable login`, `durable dev`, `durable deploy`, `durable migrate`, `durable dead-letters`); no `bin` until the first command exists. | Owner picked `durable`; `actors` is taken on npm as a package name anyway. | `effect/unstable/cli` | settled |
+| 178 | Control-plane actors | `packages/deployments` (`Deployment`, `Runners` singleton, `UsageMeter`) run embedded in `apps/api`; no `apps/worker`, no `apps/runner` (a managed runner is the customer's served container started by a `Deployment` effect). | Owner: "embedded in apps/api". | `Actors.layer` | settled |
+| 179 | Test databases | `tooling/databases` owns disposable Postgres / Neki / PGlite; `tooling/structure` owns the tree checker and `src/exemptions.ts`. | Owner picked `tooling/databases` over Whorl's `tooling/testing` (would collide with `durable-actors/testing`). | — | settled |
+| 180 | Exemptions | `packages/ui` stays a separate StyleX compile unit until `apps/console/src/build.ts` runs the transform; template `test/` directories stay until each package is rewritten on the framework; `research/` is outside the structure rules. Each is one row in `tooling/structure/src/exemptions.ts`. | A broken console build is worse than one listed exemption. | — | settled (my pick) |
 
 ## 4. Verification gates (must pass before the decision is claimed)
 

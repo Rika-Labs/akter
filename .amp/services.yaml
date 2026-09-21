@@ -9,8 +9,8 @@ services:
     portal:
       title: Durable Actors Console
       description: Local development with captured email and no live billing credentials.
-  server:
-    command: bash .agents/start-service server
+  api:
+    command: bash .agents/start-service api
     port: 3001
     health: /health
     env:
