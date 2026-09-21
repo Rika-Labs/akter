@@ -132,7 +132,7 @@ bun run check
 
 `check` runs repository structure validation, formatting, lint, typechecks, tests, and builds. These checks validate the current monorepo; passing them does not establish an actor runtime that has not been implemented.
 
-Database integration checks use `bun run check:ci` with an explicitly configured disposable Postgres instance through `TEST_DATABASE_URL`; never point that variable at a production database. See [CI and verification](.github/README.md). If installation or compiler patching fails on a different Bun version, use the pinned version and retry the frozen install rather than editing dependency versions.
+Database integration checks use `bun run check:ci` with an explicitly configured disposable Postgres instance through `TEST_DATABASE_URL`; never point that variable at a production database. See [CI and verification](.github/ci.md). If installation or compiler patching fails on a different Bun version, use the pinned version and retry the frozen install rather than editing dependency versions.
 
 ## Status
 
