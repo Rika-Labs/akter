@@ -180,7 +180,7 @@
       },
       "devDependencies": {
         "@babel/core": "8.0.6",
-        "@babel/plugin-transform-typescript": "8.0.0-rc.6",
+        "@babel/plugin-transform-typescript": "8.0.6",
         "@effect/platform-bun": "catalog:",
         "@stylexjs/babel-plugin": "catalog:",
         "@types/bun": "1.4.2",
@@ -199,7 +199,7 @@
       "name": "@durable-actors/oxlint",
       "dependencies": {
         "@effect/platform-bun": "catalog:",
-        "@oxlint/plugins": "1.82.0",
+        "@oxlint/plugins": "1.83.0",
         "effect": "catalog:",
         "oxc-parser": "0.150.0",
       },
@@ -327,7 +327,7 @@
 
     "@babel/plugin-syntax-typescript": ["@babel/plugin-syntax-typescript@8.0.3", "", { "dependencies": { "@babel/helper-plugin-utils": "^8.0.1" }, "peerDependencies": { "@babel/core": "^8.0.0" } }, "sha512-jmTPwps7oSQSZaV1SxkQ3C12UWyufGysGc5OzDpZzvPAIX4mO7dJT3hoqkWVrSImvkcMiknir1iLN1SNV/CZzg=="],
 
-    "@babel/plugin-transform-typescript": ["@babel/plugin-transform-typescript@8.0.0-rc.6", "", { "dependencies": { "@babel/helper-annotate-as-pure": "^8.0.0-rc.6", "@babel/helper-create-class-features-plugin": "^8.0.0-rc.6", "@babel/helper-plugin-utils": "^8.0.0-rc.6", "@babel/helper-skip-transparent-expression-wrappers": "^8.0.0-rc.6", "@babel/plugin-syntax-typescript": "^8.0.0-rc.6" }, "peerDependencies": { "@babel/core": "^8.0.0-rc.6" } }, "sha512-dCs2FcdGkauwKbs7w7hXATlq8T8e6QZz1F/PIO6xAyhyxk/iaqMXqgdhfIrWQQkzvjeYgW43WW8SVX1zpyFLjA=="],
+    "@babel/plugin-transform-typescript": ["@babel/plugin-transform-typescript@8.0.6", "", { "dependencies": { "@babel/helper-annotate-as-pure": "^8.0.0", "@babel/helper-create-class-features-plugin": "^8.0.6", "@babel/helper-plugin-utils": "^8.0.1", "@babel/helper-skip-transparent-expression-wrappers": "^8.0.0", "@babel/plugin-syntax-typescript": "^8.0.3" }, "peerDependencies": { "@babel/core": "^8.0.0" } }, "sha512-WF3yRlQtClzScvQbWct00ix63+w3DPiyU0WmCBU4YqK539n3VvJFElElpevoD8wfu6953CbiNoUZBi2B7/5jXw=="],
 
     "@babel/template": ["@babel/template@8.0.0", "", { "dependencies": { "@babel/code-frame": "^8.0.0", "@babel/parser": "^8.0.0", "@babel/types": "^8.0.0" } }, "sha512-eAD0QW/AlbamBbw0FeGiwasbCVPq5ncW0HNVyLP3B9czqLyh4gvw+5JTSNt6le9+ziAU7mqDZsKTHf3jTb4chQ=="],
 
@@ -749,7 +749,7 @@
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.82.0", "", { "os": "win32", "cpu": "x64" }, "sha512-VTVoRIWJTb+wvUX8EYoPArfFH02whuR10goFXE/LHRRX33ajRrFgqbcONXZMiF4C5rnattfkm87HqYn8jb8hmQ=="],
 
-    "@oxlint/plugins": ["@oxlint/plugins@1.82.0", "", {}, "sha512-IDF4UXBNOaCeLoEpVxf5Bg85KOWdeuBEkbo1rGzS2vXcbD+GT1asBSeeTC+5BgW6NFTHVByd6N5giHsFPGtwAA=="],
+    "@oxlint/plugins": ["@oxlint/plugins@1.83.0", "", {}, "sha512-qD64wr6SS1DL7YbJQ8WWjyUfFfrJsvAy9Vo0sG/PYUQy30w0uemN2h6j4xuvj4noyETDpzcGC20sv+FH7GrN5A=="],
 
     "@prisma/debug": ["@prisma/debug@7.2.0", "", {}, "sha512-YSGTiSlBAVJPzX4ONZmMotL+ozJwQjRmZweQNIq/ER0tQJKJynNkRB3kyvt37eOfsbMCXk3gnLF6J9OJ4QWftw=="],
 
