@@ -1,8 +1,10 @@
 # Worked example: a DNS ordering API with only actors
 
-Written in the surface proposed in [DX.md](DX.md) (89–134). Not typechecked: the sketch in `framework/Actor.ts`
-does not yet have `state`, `internal`, `Actor.ephemeral`, `WorkflowRun` or `Actor.singleton`. Everything else
-(turn model, intents, outbox, workflows, cron, Cluster placement) is decided in [DECISIONS.md](DECISIONS.md).
+Rewritten on 2026-09-21 against decisions 151–171: one kind (`Actor.make`), `singleton: true` for cluster-wide
+work, `Cron.every(...)` as a lifecycle policy, workflows as members of the actor that owns them,
+framework-minted ids, and `vars` for per-activation memory. Not typechecked here; the typechecked surface is
+[framework/Actor.ts](framework/Actor.ts) and the examples under [example/](example). Everything else (turn
+model, intents, outbox, workflows, cron, Cluster placement) is decided in [DECISIONS.md](DECISIONS.md).
 
 ## The product
 
@@ -14,13 +16,16 @@ limits, propagation waits of minutes to hours, and millions of zones that each n
 
 ## Actors
 
-| Kind | Name | One per | Holds | Why this kind |
+There is one kind, `Actor.make` (decision 157). What differs between the rows below is which members an actor
+declares, whether it is a `singleton`, and whether its id is minted, named or absent.
+
+| Spelling | Name | One per | Holds | Why |
 | --- | --- | --- | --- | --- |
-| `Actor.make` | `Order` | order id | `orders` row (status, amounts: queried across actors), events for the status page | identity + commands over time; reportable |
-| `Actor.workflow` | `Fulfil` | order id (idempotency key) | steps: charge → register → zone → propagation | a process with a start and an end; durable sleeps while waiting |
-| `Actor.make` | `Domain` | fqdn | `dns_records` rows, `state` (serial, nameservers, expiry), outbox `PushZone` | one writer per zone; serial must never go backwards |
-| `Actor.ephemeral` | `RegistrarLane` | registrar × lane | in-memory token bucket | rate limiting needs serialization, not durability; never a transaction per token |
-| `Actor.cron` | `Reconcile` | cluster | every 6 h: SQL for stuck orders → `Escalate` intents | cross-actor sweep, one runner |
+| `Actor.make` (minted id) | `Order` | order id, minted by `Order.create()` | `orders` row (status, amounts: queried across actors), events for the status page, the `Fulfil` workflow | identity + commands over time; reportable |
+| `workflows: [Fulfil]` on `Order` | `Fulfil` | `(order, key)` | steps: charge → register → zone → propagation | a process with a start and an end; durable sleeps while waiting |
+| `Actor.make` (named id) | `Domain` | fqdn | `dns_records` rows, `state` (serial, nameservers, expiry), outbox `PushZone` | one writer per zone; serial must never go backwards |
+| `Actor.make`, no durable members | `RegistrarLane` | registrar × lane | `vars`: an in-memory token bucket | rate limiting needs serialization, not durability; an actor that declares no `state`/`tables`/`events`/`effects` touches no durable rows |
+| `Actor.make` (`singleton: true`) | `Reconcile` | cluster | `Cron.every("0 */6 * * *", Sweep)`: SQL for stuck orders → `Escalate` intents | cross-actor sweep, one instance cluster-wide |
 | service on `Database` | `Reports` | — | `orders by status per tenant` | plain SQL; no fan-out because it is one database |
 
 Nothing else. No queue, no job runner, no cache, no scheduler: intents, the outbox and workflow sleeps are those.
@@ -28,8 +33,8 @@ Nothing else. No queue, no job runner, no cache, no scheduler: intents, the outb
 ## Contracts (clients import these)
 
 ```ts
-// Ids.ts
-export const OrderId  = Schema.String.pipe(Schema.brand("OrderId"))
+// Ids.ts — an order id is minted by the framework, so `Order.id` is its schema (decision 164); the app owns
+// the other two id spaces
 export const Fqdn     = Schema.String.pipe(Schema.pattern(/^[a-z0-9-]+(\.[a-z0-9-]+)+$/), Schema.brand("Fqdn"))
 export const LaneId   = Schema.String.pipe(Schema.brand("LaneId"))
 export const OrderStatus = Schema.Literals(["placed", "paid", "registered", "zone_ready", "live", "failed", "cancelled"])
@@ -44,7 +49,7 @@ export class NotCancellable  extends Schema.TaggedError<NotCancellable>()("NotCa
 }
 
 export class OrderSummary extends Schema.Class<OrderSummary>("OrderSummary")({
-  orderId: OrderId, domain: Fqdn, status: OrderStatus, amountCents: Schema.Number, placedAt: Schema.DateTimeUtc,
+  orderId: Schema.String, domain: Fqdn, status: OrderStatus, amountCents: Schema.Number, placedAt: Schema.DateTimeUtc,
   failure: Schema.optionalKey(Schema.String)
 }) {}
 
@@ -78,13 +83,23 @@ export const Failed     = Actor.command("Failed",     { input: { stage: Schema.S
 
 export const Status = Actor.query("Status", { description: "Current order summary.", output: OrderSummary })
 
+/** A durable execution owned by `Order` (decision 158): one live run per order per `key`. Body: Order.server.ts. */
+export const Fulfil = Actor.workflow("Fulfil", {
+  description: "Charge, register, provision, wait for propagation; reports each stage back to the owning order.",
+  input: { domain: Fqdn, customerId: Schema.String, years: Schema.Int, cardToken: Schema.Redacted(Schema.String) },
+  output: Schema.Struct({ registrarRef: Schema.String }),
+  errors: [DomainTaken, PaymentDeclined]
+})
+
+// no `id`: the framework mints a UUIDv7 per order (decision 164). `Order.create()` returns a handle to a fresh
+// one, `Order.id` is the branded `OrderId` schema, `Order.get(id)` comes back to it later.
 export const Order = Actor.make("Order", {
   description: "One domain order from placement to live DNS.",
-  id: OrderId,
   tables: [orders],
   commands: [Place, Cancel, Escalate, Paid, Registered, ZoneReady, WentLive, Failed],
   internal: [Paid, Registered, ZoneReady, WentLive, Failed, Escalate],
   queries: [Status],
+  workflows: [Fulfil],
   events: [OrderPlaced, OrderPaid, OrderRegistered, OrderLive, OrderFailed, OrderCancelled],
   effects: [NotifyCustomer],
   lifecycle: [
@@ -106,10 +121,12 @@ export class RecordConflict extends Schema.TaggedError<RecordConflict>()("Record
 export class RecordChanged  extends Schema.TaggedClass<RecordChanged>()("RecordChanged", { serial: Schema.Int, record: DnsRecord, op: Schema.Literals(["add", "remove"]) }) {}
 export class ZoneRegistered extends Schema.TaggedClass<ZoneRegistered>()("ZoneRegistered", { registrarRef: Schema.String }) {}
 export class PushZone       extends Schema.TaggedClass<PushZone>()("PushZone", { serial: Schema.Int }) {}     // outbox: idempotent by serial
+// a renewal needs a NEW order, and order ids are minted: minting happens outside the turn, in the executor
+export class RequestRenewal extends Schema.TaggedClass<RequestRenewal>()("RequestRenewal", { domain: Fqdn, years: Schema.Int, expiresAt: Schema.DateTimeUtc }) {}
 
 export const records = Actor.table("dns_records", { id: "text", name: "text", type: "text", value: "text", ttl: "integer" })
 
-export const Register     = Actor.command("Register",     { input: { orderId: OrderId, registrarRef: Schema.String, nameservers: Schema.Array(Schema.String), years: Schema.Int } })
+export const Register     = Actor.command("Register",     { input: { orderId: Schema.String, registrarRef: Schema.String, nameservers: Schema.Array(Schema.String), years: Schema.Int } })
 export const AddRecord    = Actor.command("AddRecord",    { description: "Add a record; bumps the zone serial and pushes the zone.", input: { name: Schema.String, type: RecordType, value: Schema.String, ttl: Schema.Int }, output: DnsRecord, errors: [RecordConflict] })
 export const RemoveRecord = Actor.command("RemoveRecord", { input: { id: Schema.String } })
 export const CheckExpiry  = Actor.command("CheckExpiry")
@@ -124,7 +141,7 @@ export const Domain = Actor.make("Domain", {
   internal: [Register, CheckExpiry],
   queries: [Zone],
   events: [ZoneRegistered, RecordChanged],
-  effects: [PushZone],
+  effects: [PushZone, RequestRenewal],
   lifecycle: [
     Lifecycle.createdBy(Register),
     Hibernate.after("2 minutes"),
@@ -138,26 +155,32 @@ export const Domain = Actor.make("Domain", {
 // RegistrarLane.ts — the only hot spot, and it is in memory
 export class RateLimited extends Schema.TaggedError<RateLimited>()("RateLimited", { retryAfterMs: Schema.Int }, { httpApiStatus: 429 }) {}
 export const Acquire = Actor.command("Acquire", { errors: [RateLimited] })
-export const RegistrarLane = Actor.ephemeral("RegistrarLane", {
+// an ordinary actor that declares no `state`, `tables`, `events` or `effects`: it touches no durable rows, and
+// `vars` (decision 160) are dropped when the activation hibernates. Durability is not a flag (decision 157).
+export const RegistrarLane = Actor.make("RegistrarLane", {
   description: "Token bucket for one registrar lane. Forgets its count on restart; the registrar's own limit is the backstop.",
   id: LaneId,
-  memory: { tokens: Schema.Number, refilledAt: Schema.DateTimeUtc },
+  vars: {
+    tokens: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(2000))),
+    refilledAt: Schema.OptionFromOptionalKey(Schema.DateTimeUtc)
+  },
   commands: [Acquire],
   lifecycle: [Hibernate.after("5 minutes"), Mailbox.capacity(10_000)]
 })
 export const LANES = 16
 export const laneFor = (domain: Fqdn): LaneId => LaneId.make(`${tld(domain)}:${hash(domain) % LANES}`)
 
-// Fulfil.ts
-export const Fulfil = Actor.workflow("Fulfil", {
-  description: "Charge, register, provision, wait for propagation; reports each stage to the Order.",
-  input: { orderId: OrderId, domain: Fqdn, customerId: Schema.String, years: Schema.Int, cardToken: Schema.Redacted(Schema.String) },
-  errors: [DomainTaken, PaymentDeclined],
-  idempotencyKey: ({ orderId }) => orderId                           // Place twice → one execution
+// Reconcile.ts — a singleton actor, not a separate cron kind (decisions 157, 170). `Cron.every` is a lifecycle
+// policy on a zero-input command of the same actor; for a singleton it ticks once cluster-wide.
+export const Sweep = Actor.command("Sweep", {
+  description: "Escalate orders stuck for more than 24h. Runs every 6 hours on its own; safe to call by hand."
 })
-
-// Reconcile.ts
-export const Reconcile = Actor.cron("Reconcile", { description: "Escalate orders stuck for more than 24h.", cron: "0 */6 * * *" })
+export const Reconcile = Actor.make("Reconcile", {
+  description: "Cluster-wide reconciliation sweep over stuck orders.",
+  singleton: true,                                                   // `Reconcile.get()` takes no id
+  commands: [Sweep],
+  lifecycle: [Cron.every("0 */6 * * *", Sweep, { skipIfOlderThan: "1 hour" })]
+})
 ```
 
 ## Server files
@@ -169,27 +192,34 @@ export const OrderLive = Order.toLayer({
     const amountCents = yield* Pricing.quote(input.domain, input.years)
     yield* ctx.rows(orders).insert({ domain: input.domain, status: "placed", customer_id: input.customerId, amount_cents: amountCents, placed_at: ctx.now })
     yield* ctx.emit(new OrderPlaced({ domain: input.domain }))
-    yield* ctx.workflows.start(Fulfil, { orderId: ctx.id, ...input })          // intent: committed with this turn
+    // a workflow intent (decision 158): the engine starts the run after COMMIT; one run per (order, key)
+    yield* ctx.self.Fulfil.start(input, { key: input.domain })
     return yield* summary(ctx)
   }),
   Cancel: Effect.fn(function*(ctx) {
     const row = yield* ctx.rows(orders).oneOrDie()                               // createdBy(Place) guarantees the row
     if (row.status !== "placed") return yield* new NotCancellable({ status: row.status })
     yield* ctx.rows(orders).update({ status: "cancelled" })
-    yield* ctx.workflows.cancel(Fulfil, ctx.id)                                  // intent: engine interrupts the run
+    yield* ctx.self.Fulfil.cancel(row.domain)                                    // intent: engine interrupts the run
     yield* ctx.emit(new OrderCancelled({}))
   }),
   Paid:       (ctx, { chargeId })     => advance(ctx, "paid",       new OrderPaid({ chargeId })),
   Registered: (ctx, { registrarRef }) => advance(ctx, "registered", new OrderRegistered({ registrarRef })),
   ZoneReady:  (ctx)                   => ctx.rows(orders).update({ status: "zone_ready" }),
-  WentLive:   (ctx)                   => advance(ctx, "live", new OrderLive({})).pipe(
-                                           Effect.andThen(ctx.perform(new NotifyCustomer({ customerId: ctx.rowsCache?.customer_id ?? "", template: "live" })))),
+  WentLive: Effect.fn(function*(ctx) {
+    const row = yield* ctx.rows(orders).oneOrDie()
+    yield* advance(ctx, "live", new OrderLive({}))
+    yield* ctx.perform(new NotifyCustomer({ customerId: row.customer_id, template: "live" }))
+  }),
   Failed: Effect.fn(function*(ctx, { stage, reason }) {
+    const row = yield* ctx.rows(orders).oneOrDie()
     yield* ctx.rows(orders).update({ status: "failed", failure: `${stage}: ${reason}` })
     yield* ctx.emit(new OrderFailed({ stage, reason }))
-    yield* ctx.perform(new NotifyCustomer({ customerId: (yield* ctx.rows(orders).oneOrDie()).customer_id, template: "failed" }))
+    yield* ctx.perform(new NotifyCustomer({ customerId: row.customer_id, template: "failed" }))
   }),
-  Escalate: (ctx) => ctx.perform(new NotifyCustomer({ customerId: "ops", template: "stuck" }))
+  Escalate: (ctx) => ctx.perform(new NotifyCustomer({ customerId: "ops", template: "stuck" })),
+  // the workflow body is a member handler, next to the commands (decision 158); spelled out below
+  Fulfil: fulfil
 }, {
   effects: {
     NotifyCustomer: (ctx, n) => Mailer.send(n.customerId, n.template)            // at least once; Mailer is idempotent on (orderId, template)
@@ -224,7 +254,7 @@ export const DomainLive = Domain.toLayer({
   RemoveRecord: …,
   CheckExpiry: (ctx) =>
     DateTime.distance(ctx.now, ctx.state.expiresAt) < Duration.toMillis("30 days")
-      ? ctx.actors.get(Order, /* renewal order */ OrderId.make(`renew-${ctx.id}-${DateTime.formatIso(ctx.state.expiresAt)}`)).Place.send(…)
+      ? ctx.perform(new RequestRenewal({ domain: ctx.id, years: 1, expiresAt: ctx.state.expiresAt }))
       : Effect.void
 }, {
   effects: {
@@ -232,6 +262,16 @@ export const DomainLive = Domain.toLayer({
       Effect.gen(function*() {
         const zone = yield* Nameservers.render(ctx.id)                            // reads committed rows; serial is the idempotency key
         yield* Nameservers.push(ctx.id, serial, zone)
+      }),
+    // outside the turn: mint an order id, then place the order. Effects are at-least-once and a minted id is
+    // fresh on every attempt, so the receipt cannot dedupe this one: the app dedupes on (domain, expiresAt)
+    // with one SELECT over `orders` before minting
+    RequestRenewal: (ctx, renewal) =>
+      Effect.gen(function*() {
+        const reports = yield* Reports
+        if (yield* reports.hasRenewal(renewal.domain, renewal.expiresAt)) return
+        const order = yield* Order.create()
+        yield* order.Place({ domain: renewal.domain, customerId: "renewal", years: renewal.years, cardToken: Redacted.make("stored") })
       })
   }
 })
@@ -246,23 +286,29 @@ export const RegistrarLaneLive = RegistrarLane.toLayer({
   Acquire: Effect.fn(function*(ctx) {
     const rate = 2000 / 3600_000                                                  // tokens per ms
     const now = ctx.now
-    const refilled = Math.min(2000, ctx.memory.tokens + DateTime.distance(ctx.memory.refilledAt, now) * rate)
+    // `vars` are per-activation and typed (decision 160); `ctx.vars.set` replaces them for this activation
+    const since = Option.match(ctx.vars.refilledAt, { onNone: () => 0, onSome: (at) => DateTime.distance(at, now) })
+    const refilled = Math.min(2000, ctx.vars.tokens + since * rate)
     if (refilled < 1) return yield* new RateLimited({ retryAfterMs: Math.ceil((1 - refilled) / rate) })
-    yield* ctx.memory.set({ tokens: refilled - 1, refilledAt: now })
+    yield* ctx.vars.set({ tokens: refilled - 1, refilledAt: Option.some(now) })
   })
 })
 ```
 
 ```ts
-// Fulfil.server.ts
-export const FulfilLive = Fulfil.toLayer(Effect.fn(function*(ctx, input) {
-  const order  = yield* ctx.actors.get(Order, input.orderId)                      // System("workflow", onBehalfOf: whoever placed it)
-  const domain = yield* ctx.actors.get(Domain, input.domain)
-  const lane   = yield* ctx.actors.get(RegistrarLane, laneFor(input.domain))
+// Order.server.ts, continued — the workflow body. `ctx` is a WorkflowContext: `ctx.owner` is a handle to the
+// owning order (request/reply is allowed here, including internal commands), `ctx.key` is the domain.
+const fulfil = Effect.fn(function*(ctx, input) {
+  const order  = ctx.owner                                                        // System("workflow", onBehalfOf: whoever placed it)
+  const domain = ctx.actors.get(Domain, input.domain)
+  const lane   = ctx.actors.get(RegistrarLane, laneFor(input.domain))
 
-  const charge = yield* ctx.activity("charge",
-    Payments.charge({ idempotencyKey: input.orderId, token: input.cardToken, amountCents: yield* Pricing.quote(input.domain, input.years) }),
-    { retry: Schedule.exponential("1 second").pipe(Schedule.compose(Schedule.recurs(5))) })   // PaymentDeclined is not retried: declared error
+  const charge = yield* ctx.activity("charge", {
+    output: Schema.Struct({ id: Schema.String }),
+    errors: [PaymentDeclined],                                                    // declared errors are not retried
+    run: Payments.charge({ idempotencyKey: ctx.owner.id, token: input.cardToken, amountCents: yield* Pricing.quote(input.domain, input.years) }),
+    retry: Schedule.exponential("1 second").pipe(Schedule.compose(Schedule.recurs(5)))
+  })
   yield* order.Paid({ chargeId: charge.id })
 
   // registrar lane: wait in durable sleep, not in a thread
@@ -270,33 +316,46 @@ export const FulfilLive = Fulfil.toLayer(Effect.fn(function*(ctx, input) {
     Effect.catchTag("RateLimited", (e) => ctx.sleep(Duration.millis(e.retryAfterMs)).pipe(Effect.andThen(lane.Acquire()))),
     Effect.retry({ while: (e) => e._tag === "RateLimited", times: 100 })
   )
-  const reg = yield* ctx.activity("register", Registrar.register(input.domain, input.years, { idempotencyKey: input.orderId }))
-  yield* domain.Register({ orderId: input.orderId, registrarRef: reg.ref, nameservers: reg.nameservers, years: input.years })
+  const reg = yield* ctx.activity("register", {
+    output: Schema.Struct({ ref: Schema.String, nameservers: Schema.Array(Schema.String) }),
+    errors: [DomainTaken],
+    run: Registrar.register(input.domain, input.years, { idempotencyKey: ctx.owner.id })
+  })
+  yield* domain.Register({ orderId: ctx.owner.id, registrarRef: reg.ref, nameservers: reg.nameservers, years: input.years })
   yield* order.Registered({ registrarRef: reg.ref })
   yield* order.ZoneReady()
 
   // propagation: up to 2 hours, zero compute while waiting
   for (let attempt = 0; attempt < 240; attempt++) {
-    if (yield* ctx.activity(`propagation-${attempt}`, Resolver.servesZone(input.domain, reg.nameservers))) {
-      return yield* order.WentLive()
+    const answered = yield* ctx.activity(`propagation-${attempt}`, {
+      output: Schema.Boolean,
+      run: Resolver.servesZone(input.domain, reg.nameservers)
+    })
+    if (answered) {
+      yield* order.WentLive()
+      return { registrarRef: reg.ref }
     }
     yield* ctx.sleep("30 seconds")
   }
   yield* order.Failed({ stage: "propagation", reason: "timeout" })
-}).pipe(
-  Effect.tapError((e) => Effect.flatMap(ctx.actors.get(Order, input.orderId), (o) => o.Failed({ stage: e._tag, reason: e.message })))   // declared errors reach the order
-))
+  return { registrarRef: reg.ref }
+})   // a declared failure of the run reaches the order through `ctx.owner.Failed`, sent before it propagates
 
-// Reconcile.server.ts — cross-actor sweep with one SQL query
-export const ReconcileLive = Reconcile.toLayer(Effect.gen(function*() {
-  const stuck = yield* Reports.stuck({ olderThan: "24 hours" })                    // SELECT tenant_id, actor_id FROM orders WHERE status NOT IN ('live','failed','cancelled') AND placed_at < …
-  yield* Effect.forEach(stuck, ({ tenant, id }) => Order.get(id, { tenant }).pipe(Effect.flatMap((o) => o.Escalate())), { concurrency: 16 })
-}))
+// Reconcile.server.ts — cross-actor sweep with one SQL query, inside the singleton's `Sweep` turn
+export const ReconcileLive = Reconcile.toLayer({
+  Sweep: Effect.fn(function*(ctx) {
+    const reports = yield* Reports
+    const stuck = yield* reports.stuck({ olderThan: "24 hours" })                  // SELECT tenant_id, actor_id FROM orders WHERE status NOT IN ('live','failed','cancelled') AND placed_at < …
+    // inside a turn there is no request/reply: `Escalate` goes out as an intent, committed with this turn
+    yield* Effect.forEach(stuck, ({ tenant, id }) => ctx.actors.get(Order, id, { tenant }).Escalate.send(), { discard: true })
+  })
+})
 
 // Reports.ts — not an actor; it is one database
 export class Reports extends Context.Service<Reports, {
   readonly byStatus: (tenant: TenantId) => Effect.Effect<ReadonlyArray<{ status: OrderStatus; n: number }>, SqlError>
-  readonly stuck: (o: { olderThan: Duration.Input }) => Effect.Effect<ReadonlyArray<{ tenant: TenantId; id: OrderId }>, SqlError>
+  readonly stuck: (o: { olderThan: Duration.Input }) => Effect.Effect<ReadonlyArray<{ tenant: TenantId; id: typeof Order.id.Type }>, SqlError>
+  readonly hasRenewal: (domain: Fqdn, expiresAt: DateTime.Utc) => Effect.Effect<boolean, SqlError>
 }>()("app/Reports") {
   static readonly layer = Layer.effect(Reports, Effect.map(Database, ({ drizzle }) => ({ byStatus: …, stuck: … })))
 }
@@ -306,13 +365,13 @@ export class Reports extends Context.Service<Reports, {
 
 ```ts
 // server.ts
-export const AppLive = Layer.mergeAll(OrderLive, OrderReads, DomainLive, DomainReads, RegistrarLaneLive, FulfilLive, ReconcileLive).pipe(
+// `OrderLive` carries the `Fulfil` body, so there is no separate workflow layer (decision 158)
+export const AppLive = Layer.mergeAll(OrderLive, OrderReads, DomainLive, DomainReads, RegistrarLaneLive, ReconcileLive).pipe(
   Layer.provide(Layer.mergeAll(Payments.layer, Registrar.layer, Nameservers.layer, Resolver.layer, Mailer.layer, Pricing.layer, Reports.layer)),
+  // optional (decision 155): leave `Actor.serve` out to embed the actors in this process and call them as Effects
   Layer.provideMerge(Actor.serve({
-    actors: [Order, Domain],                       // RegistrarLane is not served: internal to the cluster
-    workflows: [Fulfil],
-    auth: Actor.auth.bearer((token) => ApiKeys.verify(token)),      // → Principal { userId, orgId: reseller, roles }
-    docs: true
+    actors: [Order, Domain, Reconcile],            // RegistrarLane is not served: internal to the cluster
+    auth: Actor.auth.bearer((token) => ApiKeys.verify(token))       // → Principal { userId, orgId: reseller, roles }
   })),
   Layer.provide(Actor.layer({
     principal: PrincipalSchema,
@@ -332,17 +391,19 @@ POST /actors/Order/ord_8f3/Place          Authorization: Bearer …   x-command-
 GET  /actors/Order/ord_8f3/Status
 GET  /actors/Order/ord_8f3/events?after=0                      text/event-stream: OrderPlaced, OrderPaid, …, OrderLive
 POST /actors/Domain/example.com/AddRecord
-GET  /llms.txt   /openapi.json   /actors/Order.md
+POST /actors/Reconcile/singleton/Sweep                         a singleton is reachable under the id "singleton"
+GET  /openapi.json
 ```
 
 ```ts
-// reseller frontend
+// reseller frontend: the browser-safe Promise client from `durable-actors/client`
 const orders = Order.client({ baseUrl, headers: { authorization: `Bearer ${key}` }, timeoutInMs: 10_000 })
-const summary = await orders.get(orderId).Place({ domain, customerId, years: 2, cardToken }, { signal })    // commandId minted here, reused on retry
-for await (const e of orders.get(orderId).events({ after: 0, signal })) render(e.event)
+const created = await orders.create()                                                       // fresh minted order id
+const summary = await created.Place({ domain, customerId, years: 2, cardToken }, { signal }) // commandId minted here, reused on retry
+for await (const e of orders.get(created.id).events({ after: 0, signal })) render(e.event)
 
-// support agent
-export const SupportTools = Actor.toolkit([Order, Domain])       // Order_Status, Order_Cancel, Domain_AddRecord, … ; internal commands absent
+// support agent: there is no AI-specific surface (decision 153). Tools are generated from `/openapi.json`,
+// and internal commands (`Paid`, `Registered`, …) are absent from it by construction.
 ```
 
 ## How it scales
@@ -358,7 +419,7 @@ export const SupportTools = Actor.toolkit([Order, Domain])       // Order_Status
 | reporting | `Reports` runs SQL over `orders` | one query; no fan-out over actors |
 | regions | `shardGroup: (tenant) => region` | eu compute for eu resellers; the database is still one |
 | history growth | `Events.keep("90 days")`, `Receipts.keep("7 days")` | purge jobs are the framework's |
-| ops | `Reconcile` cron, `Escalate` internal command, `SupportTools` toolkit, `/actors/Order.md` | agents and humans use the same contract |
+| ops | the `Reconcile` singleton, the `Escalate` internal command, `/openapi.json` | agents and humans use the same contract |
 
 Capacity, honestly: one order is about 7 turns (Place, Paid, Registered, ZoneReady, WentLive on `Order`; Register on
 `Domain`; one `Acquire` in memory) plus 3–240 activities, so sustained orders/s ≈ (runners × pool size) / (7 × commit
@@ -373,18 +434,19 @@ it.layer(TestLive)("DNS ordering", (it) => {
   it.effect("Place is exactly-once through a crash before commit, and starts one workflow", () =>
     Effect.gen(function*() {
       const test = yield* ActorTest
-      const order = yield* test.actor(Order, OrderId.make("o1"))
+      const order = yield* test.actor(Order, Order.id.make("o1"))
       yield* order.crash({ at: "beforeCommit", command: "Place", times: 1 })
       yield* order.handle.Place({ domain: Fqdn.make("example.com"), customerId: "c1", years: 1, cardToken: Redacted.make("tok") })
       expect((yield* order.turns).map((t) => t.trigger)).toEqual(["call", "redelivery"])
-      expect(yield* test.workflows.running(Fulfil)).toHaveLength(1)
+      // one run of the owner's workflow, keyed by the domain
+      expect(yield* order.workflow(Fulfil, { key: "example.com" }).inspect).toSatisfy(Option.isSome)
     }))
 
   it.effect("propagation waits on the durable clock and the order goes live", () =>
     Effect.gen(function*() {
       const test = yield* ActorTest
       yield* Resolver.test.answerAfter(3)                                            // false, false, false, true
-      const order = yield* test.actor(Order, OrderId.make("o2"))
+      const order = yield* test.actor(Order, Order.id.make("o2"))
       yield* order.handle.Place({ … })
       yield* test.effects.run                                                        // Fulfil activities execute
       yield* test.clock.advance("90 seconds")                                        // three sleeps

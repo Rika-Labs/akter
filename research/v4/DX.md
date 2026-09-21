@@ -1,5 +1,13 @@
 # Durable Actors — DX / AX audit (v4, round 5, 2026-09-21)
 
+> **Superseded on 2026-09-21 by decisions 151–171** where this round proposed kinds, AI adapters or served
+> documentation: there is one kind (`Actor.make`, with `singleton: true` and `Cron.every` in `lifecycle`), no
+> `Actor.toolkit` / `Actor.mcp` / `llms.txt` / `docs` option, `vars` instead of a `memory` declaration,
+> workflows as members of their owner, framework-minted ids when no `id` is declared, one framework error
+> (`ActorError` with a `reason`), and an ambient `CurrentCaller` that the edge sets per request. The findings
+> below are kept as written history; each affected section carries its own note and its code blocks have been
+> updated to the current spelling.
+
 A nitpicky pass over [framework/Actor.ts](framework/Actor.ts), [framework/Testing.ts](framework/Testing.ts)
 and the examples, against decisions 1–88 in [DECISIONS.md](DECISIONS.md) (none re-opened) and against
 published SDK / agent-experience guidance. Every finding has: where it is now, what to do instead
@@ -29,7 +37,7 @@ parameters, success, failure, failureMode })` and `Toolkit.make` / `McpServer.to
 | Parse, don't validate: decode at the boundary, hand typed values inward. | Alexis King | 97, 106 |
 | Tool descriptions read as docstrings; params namespaced and `_id` suffixed; error text tells the model what to do next; output size is budgeted. | Anthropic tool-use guide, MCP spec (`isError` results are not protocol errors) | 96, 115 |
 | Type errors are the agent's feedback loop: the lowest-effort path must be the correct one. | Encore "agent experience" | 89, 95, 98, 110, 113 |
-| `llms.txt`: H1, blockquote summary, H2 sections of links, `## Optional`; `.md` twins of every page. | llmstxt.org | 116, 121 |
+| Machine-readable docs come from the contract, not from prose kept in sync by hand. | llmstxt.org (rejected for this framework by decision 153: `/openapi.json` only) | 116, 121 |
 | AGENTS.md carries runnable verification commands; SKILL.md ≤ 500 lines, third-person description. | agents.md, Anthropic skills | 121, 122 |
 | Effect conventions: `X.make`, `X.toLayer`, `X.of`, `layer` / `layerConfig`, `Context.Service` ids `"pkg/Name"` matching the export, `Context.Reference` for ambient defaults, `Effect.withSpan("Module/op")`, `@since` / `@category` JSDoc. | effect-smol source | 93, 111, 112, 118, 123 |
 | Restate: a *shared* context is structurally read-only; retry-after on retryable errors; rpc options carry the idempotency key. | Restate TS SDK | 103, 105 |
@@ -42,27 +50,34 @@ Format: **now** → **proposal** → source / decision touched → **pick**. Cod
 
 ### Caller and tenant
 
-**89. The caller is captured at `get`, not piped into every call.**
-Now: [Actor.ts#L322-L327](framework/Actor.ts#L322-L327) — every handle method has `R = CurrentCaller`, so
-[usage.ts](example/usage.ts) pipes `Actor.as(principal)` onto every call and streams need
-`Stream.provideService(CurrentCaller, …)`. Proposal: `get` requires `Actors | CurrentCaller` and binds the
-caller into the handle; methods have `R = never`. Both spellings work: ambient (`Actor.as` on `get` or on
-the whole program, the HTTP middleware, `ActorTest.layer({ as })`) and explicit `get(id, { as })`.
+**89. The caller is ambient, and bound at `get`; it is never piped into every call.**
+
+> Refined on 2026-09-21 by decision 154: the caller reference is a `Context.Reference` defaulting to
+> `Anonymous`, so no handle ever has it in `R` and nothing has to be provided at all. The default path is "the
+> auth middleware set it for this request"; `X.get(id, { as })` binds an explicit caller per handle; the
+> pipeable is a scoped override for scripts and tests.
+
+Then: every handle method carried the caller as a requirement, so [usage.ts](example/usage.ts) had to pipe a
+caller onto every call and streams needed `Stream.provideService(…)`. Now: `get` resolves the runtime, reads
+the ambient caller once and binds it into the handle; every method is a plain Effect with `R = never`.
 
 ```ts
-readonly get: (id: Id["Type"], options?: GetOptions) => Effect.Effect<Handle<…>, never, Actors | CurrentCaller>
+readonly get: (id: Id["Type"], options?: GetOptions) => Effect.Effect<Handle<…>, never, Actors>
 interface GetOptions { readonly tenant?: TenantId; readonly as?: Principal | Caller }
 
-// usage
-const counter = yield* Counter.get(id).pipe(Actor.as(principal))
+// usage: the edge already set the caller — nothing to pass
+const counter = yield* Counter.get(id)
 yield* counter.Increment(1)                                   // R = never
+// an explicit caller for one handle: a script, an ops tool, a test
 const room = yield* Chat.get(roomId, { as: principal })
-const transcript: Stream.Stream<Message, NotAMember | ActorUnavailable> = room.Transcript()
+const transcript: Stream.Stream<Message, NotAMember | ActorError> = room.Transcript()
+// a scoped override for a whole program (a CLI, a seed script)
+yield* program.pipe(Actor.as(principal))
 ```
 Decision 36 ("every outside call attributed") holds: attribution moves from the call to the handle, and a
-handle without a caller cannot exist. Decision 81 (Anonymous default in tests) holds. Source: Encore
-(lowest-effort path is correct), Azure (credential bound at client construction). **Pick: a** (both
-ambient and `{ as }`). Alt b: `{ as }` only, no ambient.
+handle always has a caller — `Anonymous` if nobody said otherwise. Decision 81 (Anonymous default in tests)
+holds. Source: Encore (lowest-effort path is correct), Azure (credential bound at client construction).
+**Pick: a** (ambient default + `{ as }`).
 
 **90. Tenant is derived from the principal once, in `Actor.layer`.**
 Now: `Tenant` is a `Context.Reference` defaulting to `"default"` ([Actor.ts#L99](framework/Actor.ts#L99));
@@ -82,7 +97,7 @@ Now: `Caller.System` has `source` and an optional Cluster `EntityAddress`; a tim
 `System("timer")` and the handler has lost Alice. Proposal: `{ _tag: "System"; source; ref?: ActorRef;
 onBehalfOf: Option<Principal> }`, propagated into intents, timers, cron ticks, workflow starts and effect
 executors from the turn that created them; plus `ctx.principal: Option<Principal>` (the user, or the
-`onBehalfOf` of a system caller). `W.start` requires `CurrentCaller` like `get`.
+`onBehalfOf` of a system caller). A workflow start reads the ambient caller exactly like `get` does.
 
 ```ts
 SendMessage: Effect.fn(function*(ctx, input) {
@@ -96,18 +111,24 @@ anyone. Proposal: `auth: Auth<R>` required; `Actor.auth.none` for public endpoin
 and `Actor.auth.header(name, decode)` helpers. **Pick: a.**
 
 **93. Service ids match export names.**
-`CurrentCaller` is keyed `"durable-actors/Caller"` ([Actor.ts#L96](framework/Actor.ts#L96)). Effect keys
+The caller reference was keyed `"durable-actors/Caller"` while the export was named differently. Effect keys
 every service `"pkg/ExportName"`; error output prints the key. → `"durable-actors/CurrentCaller"`. **Pick: a.**
 
 **94. `id` is required on `Actor.make`.**
-Now: defaults to `Schema.String` ([Actor.ts#L643](framework/Actor.ts#L643)); decision 6 chose branded ids and
-the default silently opts out. `id: Schema.String` stays allowed, but written. **Pick: a.**
+
+> Superseded on 2026-09-21 by decision 164: `id` is *optional* again, but omitting it no longer means "any
+> string" — it means the framework mints the id. No `id` ⇒ minted (`X.create()` returns a handle to a fresh
+> UUIDv7, `X.id` is the branded `${Name}Id` schema); `id: Schema` ⇒ named (`X.get(id)`); `singleton: true` ⇒
+> `X.get()` with no id. The unbranded default this finding objected to is gone either way.
+
+Then: `id` defaulted to an unbranded string schema, and decision 6 chose branded ids, so the default silently
+opted out of the decision. **Pick: a** (no unbranded default).
 
 ### Contract
 
 **95. `internal: [...]` commands.**
 Now: [AgentSession.ts#L30-L37](example/AgentSession.ts#L30-L37) exposes `ModelReplied` and `ToolFinished`
-(results of effect executors) on the outside handle, the Promise client, HTTP and any toolkit: a browser can
+(results of effect executors) on the outside handle, the Promise client and HTTP: a browser can
 forge a model reply. Proposal:
 
 ```ts
@@ -119,14 +140,18 @@ export const AgentSession = Actor.make("AgentSession", {
 })
 ```
 Internal commands exist on `ctx.self`, `ctx.actors`, workflow handles and `EffectContext.self`; they are
-absent from `Handle`, `PromiseHandle`, HTTP, `Actor.toolkit` (type-level `Exclude<Cs[number], Is[number]>`,
-verified) and `turn()` rejects a non-System caller with a defect. **Pick: a.**
+absent from `Handle`, `PromiseHandle` and HTTP (type-level `Exclude<Cs[number], Is[number]>`,
+verified), and `turn()` rejects a non-System caller with a defect. **Pick: a.**
 
 **96. `description` on actors, commands, queries, streams, workflows.**
-Optional string. It flows to `OpenApi.Description` on the Rpc, `Tool.make({ description })` in `Actor.toolkit`,
-MCP tool listings, `/llms.txt` and `/actors/{name}.md`. `Actor.toolkit([...])` is a *type error* when an
-included actor or non-internal command has no description (same literal-type technique as 110), because a
-tool without a description is the one thing every tool-use guide forbids.
+
+> Refined on 2026-09-21 by decision 153: descriptions stay, and the only consumer is `/openapi.json` (plus
+> humans reading the contract). There is no toolkit to gate, so the "type error without a description"
+> proposal has nothing to attach to; the examples describe every public member by convention.
+
+Optional string. It flows to `OpenApi.Description` on the Rpc and to the generated OpenAPI document, which is
+what an agent's tool layer is built from. A description is the one thing every tool-use guide insists on, so
+write one for every member a client can call.
 
 ```ts
 export const SendMessage = Actor.command("SendMessage", {
@@ -134,7 +159,7 @@ export const SendMessage = Actor.command("SendMessage", {
   input: { body: Schema.String }, output: Message, errors: [InvalidMessage, NotAMember]
 })
 ```
-**Pick: a** (optional + toolkit gate). Alt b: required everywhere.
+**Pick: a** (optional, by convention everywhere public). Alt b: required by the type.
 
 **97. `errors` are yieldable tagged errors with an HTTP status; default 422.**
 Now: `Errors extends ReadonlyArray<Schema.Top>` accepts any schema, so `errors: [Schema.String]` compiles
@@ -154,7 +179,7 @@ Now: `EventsOptions.from` "exclusive" ([Actor.ts#L292](framework/Actor.ts#L292))
 rc.116 streams own their scope (`Stream.fromPubSub: Stream<A>`), so `R = never`. **Pick: a.**
 
 **100. `ActorRef` replaces Cluster's `EntityAddress` in user code.**
-Now: `handle.address`, `ctx.address`, `Caller.System.actor`, and app services like `RoomAccess.requireMember(caller,
+Now: an `address` field on the handle and on `ctx`, `Caller.System.actor`, and app services like `RoomAccess.requireMember(caller,
 room: EntityAddress)` all import `effect/unstable/cluster`. Proposal: `ActorRef = { actor: string; tenant: TenantId;
 id: string }` as a `Schema.Class` (serializable, printable, usable as a map key via `ActorRef.key(ref)`), exposed as
 `handle.ref` / `ctx.ref`; `EntityAddress` stays internal. **Pick: a.**
@@ -162,7 +187,7 @@ id: string }` as a `Schema.Class` (serializable, printable, usable as a map key 
 **101. `Policy` namespace, individual exports kept.**
 `Hibernate`, `Mailbox`, `Defects`, `Delivery`, `Effects`, `Commands`, `Receipts`, `Events`, `Cron`, `Lifecycle` are
 ten top-level exports next to `Actor`; an agent typing `Actor.` cannot find them. Add `Policy = { Hibernate, … }`
-(re-export) and list it in `llms.txt`. Names from decisions 21–23/30 unchanged. `Effects.retry` reads oddly next to
+(re-export) and give it its own `@category` in the generated docs. Names from decisions 21–23/30 unchanged. `Effects.retry` reads oddly next to
 the `effect` package and `effects: [...]`; kept because it is decided (23), noted here so nobody trips on it later.
 **Pick: a** (add namespace). Alt b: leave as is.
 
@@ -194,6 +219,15 @@ yield* ctx.db.select().from(messages).innerJoin(…)
 ### Errors
 
 **105. Framework errors say what happened and what to do.**
+
+> Superseded on 2026-09-21 by decision 167: the separate classes below collapsed into **one** framework error,
+> `ActorError { reason, isRetryable, retryAfter, … }` with `reason` in
+> `ActorUnavailable | MailboxFull | Timeout | CommandConflict | NotCreated | Unauthorized | InvalidInput | TransportError`.
+> Handles are typed `ActorError.Of<…>`, narrowed per method, and call sites use
+> `Effect.catchReasons("ActorError", { NotCreated: …, … })`. Note that `catchReasons` without an `orElse` keeps
+> the full error in `E`: exhaustive handling at a call site needs an `orElse`. Everything this finding asked
+> for — actionable `message`, literal-union `reason`, `retryAfter`, HTTP status — is on that one error.
+
 Now: `CommandConflict { commandId }`, `ActorUnavailable { reason, cause }`, `NotCreated { id }`, `Unauthorized { reason:
 string }` have no `message`, no actor/command context, no retry hint. Proposal (all `Schema.TaggedError`, all with
 `httpApiStatus`, all with `override get message()`):
@@ -244,7 +278,7 @@ Now: the contract has `lifecycle: [Hibernate.after(…)]` (policies, data) and t
 Decision 11 put hooks in the server file; it did not require the key name. **Pick: a.**
 
 **110. Request/reply inside a turn is a *readable* type error.**
-Verified: `InsideTurn<R>` turns `Effect<…, …, Actors | CurrentCaller>` used in a handler into a literal type
+Verified: `InsideTurn<R>` turns an `Effect<…, …, Actors>` used in a handler into a literal type
 `"Request/reply inside a turn is not allowed: use ctx.actors.get(Other, id).Command.send(...)"`. Decisions 12/13 gain a
 message instead of a generic "not assignable". **Pick: a.**
 
@@ -267,8 +301,8 @@ Now: `CommandId` defaults to `undefined` = "server generates" ([Actor.ts#L100](f
 does not match and the command applies twice. Proposal: the handle method mints a UUID when it *runs* (inside
 `Effect.suspend`, so the same Effect value re-run mints again, but the `Delivery.retry` loop around one run reuses
 it); `Actor.commandId(key)` overrides (decision 15); the Promise client does the same and sends `x-command-id`;
-`turn()` never generates. Raw HTTP callers that omit the header get one minted by the server and a warning in
-`/llms.txt`: "send `x-command-id` to make retries safe". Azure: repeatability ids are SDK-generated and stable
+`turn()` never generates. Raw HTTP callers that omit the header get one minted by the server; the OpenAPI
+description of the header says "send `x-command-id` to make retries safe". Azure: repeatability ids are SDK-generated and stable
 across retries; Stripe: the key is reused on retry. **Pick: a** (this one is a bug, not taste).
 
 **114. Promise client options.**
@@ -280,45 +314,57 @@ for await (const e of chat.get(roomId).events(MessageAdded, { after: 0, signal }
 Thrown errors are the contract's `Schema.TaggedError` instances (decision 79) plus `InvalidInput | Unauthorized |
 TransportError`. **Pick: a.**
 
-**115. `Actor.toolkit` and `Actor.mcp`.**
-```ts
-export const AgentTools = Actor.toolkit([Chat, Counter])          // Effect Toolkit; requires descriptions (96)
-// tools: Chat_SendMessage, Chat_Recent, Counter_Increment, … ; params = { id: RoomId } & input
-// failureMode: "return" → declared errors come back as { _tag, ...fields, message } tool results, not protocol errors
-export const AgentToolsLive = AgentTools.layer                     // Layer<…, never, Actors | CurrentCaller>
-export const McpLive = Actor.mcp({ actors: [Chat, Counter], name: "durable-actors", version: "1" })  // McpServer.toolkit
-```
-Internal commands (95) and streams are excluded; queries become read-only tools; every tool response is capped by
-`Actor.toolkit([...], { maxOutputBytes })`. Anthropic: namespace tools, `_id` params, actionable error text. **Pick: a.**
+**115. A generated tool surface (`toolkit` / MCP).**
+
+> Superseded on 2026-09-21 by decision 153: there is **no AI-specific surface**. No `Actor.toolkit`, no
+> `Actor.mcp`. The primitives are what make agents easy to build — typed contracts, events with a cursor,
+> effects with dead letters, workflows with `waitFor`, connections — and `/openapi.json` is what a tool layer
+> is generated from, in any language, by tooling we do not own.
+
+The proposal was a generated Effect `Toolkit` (one tool per public command/query, `Actor_Command` names, the id
+as a parameter, declared errors returned as tool results rather than protocol errors) plus an MCP server over
+the same list. What we ship instead: the OpenAPI document, and an actor whose `run` loop and workflow members
+make the *agent itself* a durable actor (see [example/CodingAgent.ts](example/CodingAgent.ts)).
 
 **116. `Actor.serve` also serves documentation.**
-`/llms.txt` (H1, blockquote, `## Actors`, `## Errors`, `## Optional`), `/openapi.json` (from the Rpc groups, with
-`description` and `deprecated`), `/actors/{name}.md` (one page per actor: commands, inputs, errors, curl example with
-`x-command-id`). Off by default? No: on by default, `docs: false` to disable. **Pick: a.**
 
-**117. `deprecated: true` on a command, query or stream** → `OpenApi.Deprecated`, tool description prefix, `llms.txt`
-section. **Pick: a.**
+> Superseded on 2026-09-21 by decision 153: `Actor.serve({ actors, auth, openapi?, path? })` serves the actors
+> and `/openapi.json`. There is no `docs` option, no `llms.txt` and no per-actor markdown page — one generated
+> artifact that cannot drift, instead of three.
+
+The proposal was a documentation bundle at the edge: an `llms.txt` index, the OpenAPI document, and a markdown
+page per actor with curl examples. Only the middle one survived. **Pick: OpenAPI only.**
+
+**117. `deprecated: true` on a command, query or stream** → `OpenApi.Deprecated` in the generated document.
+**Pick: a.**
 
 **118. Configuration is Effect configuration.**
 ```ts
 Database.layer({ url: Redacted.make("postgres://…"), neki: false, migrate: "auto" })
 Database.layerConfig()   // DATABASE_URL (redacted), DATABASE_NEKI, DATABASE_MIGRATE
-Topology.fromConfig()    // ACTORS_TOPOLOGY=single|http|k8s, ACTORS_LISTEN_*, ACTORS_ADVERTISE_*
+Topology.fromConfig()    // ACTORS_TOPOLOGY=single|http, ACTORS_LISTEN_*, ACTORS_ADVERTISE_*
 ```
 `url: string` today ([Actor.ts#L128](framework/Actor.ts#L128)) prints secrets in error output. **Pick: a.**
 
 **119. Workflows return a run handle, not a string.**
-Now: `Onboard.start(input)` returns `Effect<string>`. Proposal:
+
+> Refined on 2026-09-21 by decision 158: a workflow is a *member* of the actor that owns it, so it is started
+> on that actor's handle (`user.Onboard.start(input, { key })`), rehydrated with `user.Onboard.run(key)`, and
+> started from inside a turn as an intent (`ctx.self.Onboard.start(input, { key })`). The run handle below is
+> unchanged.
+
 ```ts
-const run = yield* Onboard.start({ userId, roomId })      // Effect<WorkflowRun<Out, Err>, never, Actors | CurrentCaller>
+const user = yield* User.get(alice.userId)
+const run = yield* user.Onboard.start({ roomId }, { key: roomId })   // one live run per (owner, key)
 run.id                                                    // ExecutionId (branded)
+run.key
 yield* run.result                                         // Effect<Out, Err | WorkflowInterrupted>
 yield* run.poll                                           // Effect<Option<Exit<Out, Err>>>
 yield* run.interrupt
-const again = yield* Onboard.run(run.id)                  // rehydrate from an id
+const again = yield* user.Onboard.run(roomId)             // rehydrate: Option<WorkflowRun<…>>
 ```
-Azure `begin*` pollers; compiles to `WorkflowEngine.poll / interrupt / resume`. Decision 24 keeps `execute` and
-`start`; `start`'s return type changes. **Pick: a.**
+Azure `begin*` pollers; compiles to `WorkflowEngine.poll / interrupt / resume`. Decision 24's `start` keeps its
+name; its return type changes. **Pick: a.**
 
 ### Testing
 
@@ -336,8 +382,12 @@ yield* room.crash({ at: "beforeCommit", command: "SendMessage" })
 
 ### Documentation for agents
 
-**121. Ship `llms.txt`, an AGENTS.md snippet and a skill.** `packages/durable-actors/llms.txt` (mirrors the served
-one), `AGENTS.md` block with `bunx tsc --noEmit -p …` / `bun test` commands, and
+**121. Ship an AGENTS.md snippet and a skill.**
+
+> Superseded in part on 2026-09-21 by decision 153: no `llms.txt` ships and none is served. The AGENTS.md
+> snippet and the skill stay; the generated `/openapi.json` is the machine-readable artifact.
+
+An `AGENTS.md` block with `bunx tsc --noEmit -p …` / `bun test` commands, and
 `skills/building-durable-actors/SKILL.md` (≤ 500 lines, third-person description, a contract/server/test template
 and the ten rules: branded ids, `internal`, descriptions, intents not calls in turns, `x-command-id`, …). **Pick: a.**
 
@@ -345,7 +395,7 @@ and the ten rules: branded ids, `internal`, descriptions, intents not calls in t
 file under `examples/` that `bun test` executes against PGlite. (Azure: "copy-pasteable, tested".) **Pick: a.**
 
 **123. `@since` / `@category` JSDoc on every export**, categories `constructors | contexts | policies | errors |
-clients | testing`, so generated docs and `llms.txt` sections come from one source. **Pick: a.**
+clients | testing`, so the generated API docs come from one source. **Pick: a.**
 
 **124. Kept after review (no change).** `(ctx, input)` handler order; `X.of(handlers, { hooks, effects })`; declared
 `errors` (not inferred) — inference would leak implementation errors into the contract and the Rpc error schema needs
@@ -357,13 +407,13 @@ the list anyway; `Actor.commandId` pipe for user-supplied keys; `Turn` ambient s
 | Item | `Actor.ts` | `Testing.ts` | examples | DECISIONS |
 | --- | --- | --- | --- | --- |
 | 89–91 | `GetOptions.as`, `get` R, `Caller.System.onBehalfOf`, `ctx.principal`, `layer({ tenant })` | `layer({ as })` | usage, tests, Chat.server | 8, 35, 36, 81 (extend) |
-| 92–94 | `serve({ auth })` required, `Actor.auth.none/bearer/header`, key rename, `id` required | | usage, sdk.test, Counter | 6 (enforce) |
+| 92–94 | `serve({ auth })` required, `Actor.auth.none/bearer/header`, key rename, id modes (minted / named / singleton) | | usage, sdk.test, Counter | 6 (enforce), 164 |
 | 95–102 | `internal`, `description`, `AnyError`, `Policy<C>`, `after`, `ActorRef`, `Policy` ns, `toQueryLayer` | | AgentSession, Chat, Chat.queries | 5, 22, 49c (names) |
 | 103–104 | `ScopedRead`, `Scoped.one/all/insert/upsert` | | Counter.server, Chat.server | 9, 10 (sugar) |
 | 105–107 | error classes, `InvalidInput`, `TransportError`, `x-request-id` | `serve` | sdk.test | 26 (extend) |
 | 108–112 | executors `(ctx, effect)`, `hooks`, `InsideTurn`, `Actors` shape, spans | | all server files | 11 (key name), 12/13 (message) |
-| 113–115 | commandId minting, `client(options)`, `toolkit`, `mcp` | `serve` | AgentSession.client, usage | 15, 20, 40 |
-| 116–119 | `serve({ docs })`, `deprecated`, `layerConfig`, `Topology.fromConfig`, `WorkflowRun` | | usage, Onboard | 24 (start type) |
+| 113–115 | commandId minting, `client(options)`; no AI adapters (153) | `serve` | browser, usage | 15, 20, 40, 153 |
+| 116–119 | `serve({ openapi })`, `deprecated`, `layerConfig`, `Topology.fromConfig`, `WorkflowRun` | | usage, User | 24 (start type), 153, 158 |
 | 120–123 | | `test.actor` | all tests | 62–88 (extend) |
 
 ## 4. The framework in full force (proposed shape)
@@ -523,43 +573,93 @@ export const ChatReads = Chat.toQueryLayer({
 })
 ```
 
-### `Onboard.ts` / `Onboard.server.ts` — workflow with a run handle
+### `User.ts` / `User.server.ts` — a workflow as a member of its owner
 ```ts
+// contract: the workflow is declared next to the commands and listed in `workflows`
 export const Onboard = Actor.workflow("Onboard", {
-  description: "Create the user's first room, wait for their first message, nudge after a day.",
-  input: { userId: UserId, roomId: RoomId },
+  description: "Welcome the user in a room, wait a day for their first message, nudge them by email otherwise.",
+  input: { roomId: RoomId },
   output: Schema.Struct({ nudged: Schema.Boolean }),
-  errors: [NotAMember],
-  idempotencyKey: ({ userId }) => userId
+  errors: [NotAMember]
+})
+export const User = Actor.make("User", {
+  description: "One actor per user: room memberships, first-message tracking, and the onboarding workflow.",
+  id: UserId,
+  commands: [Join, NoteMessage],
+  internal: [NoteMessage],
+  workflows: [Onboard],
+  events: [Joined, FirstMessage],
+  state: { rooms: Schema.Record(RoomId, Schema.Boolean).pipe(Schema.withDecodingDefault(Effect.succeed({}))) },
+  lifecycle: [Hibernate.after("1 minute"), Events.keep("forever")]
 })
 
-export const OnboardLive = Onboard.toLayer(Effect.fn(function*(ctx, { userId, roomId }) {
-  const room = yield* ctx.actors.get(Chat, roomId)                                  // System("workflow", onBehalfOf: starter)
-  yield* room.SendMessage({ body: "welcome" })
-  const first = yield* ctx.waitFor(room.events(MessageAdded, { after: 0 }), (e) => e.event.message.authorId === userId)
-    .pipe(Effect.timeoutOption("1 day"), ctx.activity("wait-first-message"))
-  if (Option.isSome(first)) return { nudged: false }
-  yield* ctx.activity("nudge", Mailer.send(userId, "still there?"))
-  return { nudged: true }
-}))
+// server: the body lives next to the command handlers, with `(ctx, input)`
+export const UserLive = User.toLayer(
+  Effect.gen(function*() {
+    const mailer = yield* Mailer
+    return User.of({
+      Join: Effect.fn(function*(ctx, { roomId }) {
+        if (roomId in ctx.state.rooms) return
+        yield* ctx.state.set({ rooms: { ...ctx.state.rooms, [roomId]: false } })
+        yield* ctx.emit(new Joined({ roomId }))
+        yield* ctx.self.Onboard.start({ roomId }, { key: roomId })          // intent: started after COMMIT
+      }),
+      NoteMessage: Effect.fn(function*(ctx, { roomId, messageId }) {
+        if (ctx.state.rooms[roomId] === true) return
+        yield* ctx.state.set({ rooms: { ...ctx.state.rooms, [roomId]: true } })
+        yield* ctx.emit(new FirstMessage({ roomId, messageId }))
+      }),
+      Onboard: Effect.fn(function*(ctx, { roomId }) {
+        const room = ctx.actors.get(Chat, roomId)                           // request/reply is allowed here
+        yield* ctx.activity("welcome", {
+          output: Message,
+          errors: [InvalidMessage, NotAMember],
+          run: room.SendMessage({ body: `welcome, ${ctx.owner.id}` }),
+          retry: Schedule.exponential("1 second")
+        }).pipe(Effect.catchTag("InvalidMessage", () => Effect.void))
+        // waits on the OWNER actor's events (decision 166) → Option<FirstMessage>
+        const first = yield* ctx.waitFor(FirstMessage, { where: (e) => e.roomId === roomId, timeout: "1 day" })
+        if (Option.isSome(first)) return { nudged: false }
+        yield* ctx.activity("nudge", {
+          output: Schema.Void,
+          errors: [],
+          run: mailer.send(ctx.owner.id, "still there?").pipe(Effect.orDie)
+        })
+        return { nudged: true }
+      })
+    })
+  })
+)
 ```
 
 ### `usage.ts` — Effect client
 ```ts
 export const program = Effect.gen(function*() {
-  const room = yield* Chat.get(RoomId.make("room-1"))                 // caller: ambient (see bottom)
-  const msg = yield* room.SendMessage({ body: "hi" })                 // E = InvalidMessage | NotAMember | CommandConflict | ActorUnavailable
+  // the caller is ambient: over HTTP the auth middleware set it, in a test `ActorTest.layer({ as })` did
+  const room = yield* Chat.get(RoomId.make("room-1"))
+  const msg = yield* room.SendMessage({ body: "hi" })                 // E = InvalidMessage | NotAMember | ActorError
   yield* room.SendMessage({ body: "hi again" }).pipe(Actor.commandId(httpIdempotencyKey))
   const recent = yield* room.Recent({ limit: 20 })                    // E = NotAMember (no cluster hop)
-  const live: Stream.Stream<Message, NotAMember | ActorUnavailable> = room.Transcript()
+  const live: Stream.Stream<Message, NotAMember | ActorError> = room.Transcript()
 
+  // an explicit caller for one handle, instead of the ambient one
   const admin = yield* Chat.get(RoomId.make("room-1"), { as: adminPrincipal })
   yield* admin.SendMessage({ body: "pinned" })
 
-  const run = yield* Onboard.start({ userId: alice.userId, roomId: RoomId.make("room-1") })
+  // a workflow is started on its owner's handle, keyed per room (decision 158)
+  const user = yield* User.get(alice.userId)
+  const run = yield* user.Onboard.start({ roomId: RoomId.make("room-1") }, { key: "room-1" })
   const outcome = yield* run.result                                   // Effect<{ nudged }, NotAMember | WorkflowInterrupted>
-  return { msg, recent, live, outcome, runId: run.id }
-}).pipe(Actor.as(alice))
+
+  // reasons, not classes (decision 167); `catchReasons` without `orElse` keeps ActorError in E
+  const resilient = yield* room.SendMessage({ body: "retry me" }).pipe(
+    Effect.catchReasons("ActorError", { MailboxFull: () => Effect.succeed(msg), Timeout: () => Effect.succeed(msg) })
+  )
+  return { msg, recent, live, outcome, runId: run.id, resilient }
+})
+
+// a script or a CLI with no edge in front of it: one scoped override for the whole program
+export const seed = program.pipe(Actor.as(alice))
 ```
 
 ### `browser.ts` — Promise client
@@ -570,27 +670,25 @@ export const send = (roomId: RoomId, body: string, signal?: AbortSignal) =>
 export const follow = async function*(roomId: RoomId, signal: AbortSignal) {
   for await (const e of chat.get(roomId).events(MessageAdded, { after: 0, signal })) yield e.event.message
 }
-// thrown: InvalidMessage | NotAMember | CommandConflict | ActorUnavailable | InvalidInput | Unauthorized | TransportError
+// thrown: InvalidMessage | NotAMember | ActorError | InvalidInput | Unauthorized | TransportError
 ```
 
-### `agent.ts` — tools and MCP
-```ts
-export const AgentTools = Actor.toolkit([Chat, Counter], { maxOutputBytes: 32_000 })
-// Chat_SendMessage({ id: RoomId, body }), Chat_Recent({ id, limit }), Counter_Increment({ id, n }) …
-export const AgentToolsLive = AgentTools.layer          // Layer<Toolkit handlers, never, Actors | CurrentCaller>
-export const McpLive = Actor.mcp({ actors: [Chat, Counter], name: "durable-actors", version: "1" })
-```
+### agents — no adapter, just the primitives
+There is no AI-specific surface (decision 153): no toolkit constructor, no MCP server, no `llms.txt`. An agent
+consumes `/openapi.json` like any other client, and an agent *is* an actor — see
+[example/CodingAgent.ts](example/CodingAgent.ts): commands for prompts and aborts, internal commands for
+executor results, a `Live` connection for token deltas, a `Ship` workflow member for multi-turn jobs, `vars`
+for per-activation handles and `state` for what must survive hibernation.
 
-### `server.ts` — runtime, auth, docs, config
+### `server.ts` — runtime, auth, config
 ```ts
-export const AppLive = Layer.mergeAll(ChatLive, ChatReads, CounterLive, CounterReads, OnboardLive, NightlyLive).pipe(
+export const AppLive = Layer.mergeAll(ChatLive, ChatReads, CounterLive, CounterReads, UserLive, NightlyLive).pipe(
   Layer.provide(Layer.mergeAll(RoomAccessLive, MailerLive)),
+  // optional (decision 155): drop `serve` to embed the actors and call them as Effects in this process
   Layer.provideMerge(Actor.serve({
-    actors: [Chat, Counter],
-    workflows: [Onboard],
-    auth: Actor.auth.bearer((token) => Sessions.verify(token)),     // Effect<Principal, Unauthorized, Sessions>
-    docs: true                                                       // /llms.txt, /openapi.json, /actors/Chat.md
-  })),
+    actors: [Chat, Counter, User, Nightly],                          // singletons are listed too: /actors/Nightly/singleton/ResetAll
+    auth: Actor.auth.bearer((token) => Sessions.verify(token))       // Effect<Principal, Unauthorized, Sessions>
+  })),                                                               // serves every public member + /openapi.json
   Layer.provide(Actor.layer({ principal: PrincipalSchema, tenant: (p) => TenantId.make(p.orgId), topology: Topology.fromConfig() })),
   Layer.provide(Database.layerConfig())                              // DATABASE_URL (Redacted), DATABASE_NEKI, DATABASE_MIGRATE
 )
@@ -650,55 +748,58 @@ it.layer(TestLive)("Chat", (it) => {
 })
 ```
 
-### `llms.txt` (served and shipped)
+### What `Actor.serve` publishes
+
+> Superseded on 2026-09-21 by decision 153: the `llms.txt` document this section drafted is not shipped and not
+> served. One generated artifact, `/openapi.json`, carries the same information and cannot drift from the
+> contract.
+
 ```
-# durable-actors
-
-> Durable actors on one relational database, built on Effect. Contract files declare commands, queries,
-> streams, events and effects; server files implement them; every command is one transaction.
-
-## Actors
-- [Chat](/actors/Chat.md): A chat room. Commands: SendMessage. Queries: Recent. Streams: Transcript.
-- [Counter](/actors/Counter.md): …
-
-## Rules
-- Send `x-command-id` (any UUID) with every command and reuse it when you retry.
-- Declared errors return 4xx with `{ _tag, ...fields, message }`; `ActorUnavailable` (503) is retryable.
-
-## Optional
-- [OpenAPI](/openapi.json)
+POST /actors/Chat/{roomId}/SendMessage      x-command-id: <uuid>   (reuse it when you retry)
+GET  /actors/Chat/{roomId}/Recent?limit=20
+GET  /actors/Chat/{roomId}/events?after=0   text/event-stream
+GET  /actors/Chat/{roomId}/Live             WebSocket (a connection member)
+POST /actors/CodingAgent                    mint an id (minted-id actors only)
+GET  /openapi.json                          descriptions, inputs, declared errors, `deprecated`
 ```
+Declared errors return 4xx with `{ _tag, ...fields, message }`; an `ActorError` with a retryable reason returns
+503 with `Retry-After`.
 
 ## 5. Pick list
 
 Everything above defaults to **a**. Answer only where you disagree.
 
+> Resolved on 2026-09-21 by decisions 151–171. Rows superseded by the outcome: **94** (id modes: minted /
+> named / singleton, 164), **96** and **116** (no toolkit to gate, no `docs` option — OpenAPI only, 153),
+> **130** (no `durable-actors/react`; `framework/React.ts` was deleted), **132** and **133** (no kinds: one
+> `Actor.make`, `singleton: true`, `vars`, 157/160/164).
+
 | # | a | b |
 | --- | --- | --- |
-| 89 | ambient `Actor.as` on `get` *and* `get(id, { as })` | `{ as }` only |
+| 89 | ambient caller + `get(id, { as })` | `{ as }` only |
 | 90 | `Actor.layer({ tenant })` derivation | keep per-call `Actor.tenant` only |
 | 91 | `onBehalfOf` + `ctx.principal` | keep `Caller.principal(caller)` only |
 | 92 | `auth` required, `Actor.auth.none` explicit | keep optional |
-| 94 | `id` required | keep `Schema.String` default |
+| 94 | ~~`id` required~~ → id modes: minted / named / singleton (164) | keep an unbranded default |
 | 95 | `internal: [...]` | separate `Actor.internalCommand` constructor |
-| 96 | optional `description`, toolkit requires it | required everywhere |
+| 96 | optional `description` (no toolkit to gate, 153) | required everywhere |
 | 97 | default 422 for declared errors | require `httpApiStatus` on every error |
 | 101 | add `Policy` namespace | leave ten top-level exports |
 | 102 | `toQueryLayer` / `queries` | keep `queries()` / `queryDefs` |
 | 104 | `one / all / insert / upsert` sugar | pass-throughs only |
 | 109 | server key `hooks:` | keep `lifecycle:` on both sides |
 | 113 | client mints commandId, stable across retries | keep server-generated (double-apply on retry) |
-| 116 | docs endpoints on by default | opt-in `docs: true` |
+| 116 | ~~docs endpoints~~ → `/openapi.json` only (153) | no generated docs at all |
 | 119 | `WorkflowRun` handle | keep `start → string` |
 | 120 | `test.actor` + `layer({ as })` | flat API only |
 | 125 | keyed state in `actor_state`, sync reads | one JSONB blob (c: no state) |
 | 126 | `Actor.connection` sessions | streams + events only |
 | 127 | `run` loop on the activation | workflows only |
 | 129 | 1 s poll + sleep-then-poll + `NOTIFY` | poll interval only |
-| 130 | SSE events + OpenAPI + `durable-actors/react` | OpenAPI only |
+| 130 | SSE events + OpenAPI (~~+ a React subpath~~: dropped) | OpenAPI only |
 | 131 | `Actor.blob` | `bytea` table, no helper |
-| 132 | no `Actor.job`; add `Actor.singleton` | neither |
-| 133 | `Actor.ephemeral` kind | `Actor.make(…, { durable: false })` |
+| 132 | ~~add a singleton kind~~ → `singleton: true` on `Actor.make` (157) | a separate constructor |
+| 133 | ~~an ephemeral kind~~ → an actor with `vars` and no durable members (157, 160) | a `durable: false` flag |
 
 ## 6. Closing the gaps against Rivet / Durable Objects (125–131)
 
@@ -733,7 +834,13 @@ under and skip the `SELECT` when the fence returns the same generation. **Pick: 
 Alt b: one JSONB blob per actor. Alt c: keep 9a, no state.
 
 **126. Connections: typed bidirectional sessions on the activation.**
-Gap: DO WebSocket hibernation and Rivet `c.conn` / `broadcast` / `useActor`. Proposal: a fourth contract kind.
+
+> Refined on 2026-09-21 by decision 163: connections are a *member* kind, not a fourth actor kind, and DO-style
+> hibernation *is* offered — `Connections.park` (the default) lets the activation hibernate while the sockets
+> stay open at the edge, and the next frame wakes it; `Connections.keepAwake` is the opt-out. The handler reads
+> `ctx.conn.state` (≤ 16 KiB, survives hibernation like DO's `serializeAttachment`) and `ctx.conn.resumed`.
+
+Gap: DO WebSocket hibernation and Rivet `c.conn` / `broadcast`. Proposal: a connection member.
 
 ```ts
 // Chat.ts
@@ -763,13 +870,20 @@ Members: (ctx) => ctx.connections.list.pipe(Effect.map((cs) => cs.map((c) => c.c
 Runtime: the client opens a WebSocket to any HTTP runner (`RpcServer.layerProtocolWebsocket`); the runner
 subscribes to the actor over the existing non-persisted forked stream rpc and forwards inbound frames as
 non-persisted `Live$frame` rpcs correlated by connection id (`Rpc.fork`, outside the mailbox). `ctx.connections`
-is an in-memory registry in the activation closure. An open connection keeps the actor awake (verified: forked
-requests stay in `activeRequests`); DO-style "hibernate with sockets attached" is not offered. Promise client:
+is an in-memory registry in the activation closure. Whether an open connection keeps the actor awake is a
+policy: `Connections.park` (default) parks the socket at the edge and lets the activation hibernate, so
+per-connection durability lives in `ctx.conn.state`; `Connections.keepAwake` keeps it resident. Promise client:
 `const live = chat.get(id).Live({ since }, { signal }); for await (const f of live) …; live.send(new Typing(…))`.
 **Pick: a.** Alt b: no connections; streams + events only.
 
 **127. `run`: a long-lived activation loop that stays inside the transaction rule.**
-Gap: Rivet `run: async (c) => for await (const msg of c.queue.iter())`. Proposal: `X.of(handlers, { run })`.
+
+> Refined on 2026-09-21 by decisions 159, 165 and 169: `run` is an option of
+> `X.toLayer(handlers, { hooks, effects, run, shardGroup, spanAttributes })`, and it is sugar for a
+> `forkScoped` fiber inside the activation scope — started on wake, interrupted on sleep. The loop's `ctx`
+> carries `vars` (not a `memory` declaration) and `ctx.state.changes`, a `Stream` of committed state snapshots.
+
+Gap: Rivet `run: async (c) => for await (const msg of c.queue.iter())`. Proposal: `X.toLayer(handlers, { run })`.
 
 ```ts
 run: (ctx) =>                       // started on wake, interrupted on sleep; no db, no rows: durable effects are intents
@@ -784,8 +898,8 @@ run: (ctx) =>                       // started on wake, interrupted on sleep; no
     Stream.runDrain
   )
 ```
-`ctx` here is the wake context plus `events` (live, cursor-able), `state` (committed snapshot, refreshed after
-each turn), `self` / `actors` intents, `connections`, `memory` (the closure). The loop never opens a transaction;
+`ctx` here is the wake context plus `events` (live, cursor-able), `state` (committed snapshot, plus
+`ctx.state.changes` as a stream), `self` / `actors` intents, `connections` and `vars`. The loop never opens a transaction;
 `ModelReplied` is a normal turn that advances `processedUpTo`, so a crash replays from the cursor. A `run` fiber
 does not keep the actor awake; use `ctx.self.Tick.after(...)` if it must. **Pick: a.** Alt b: workflows only.
 
@@ -812,16 +926,19 @@ than at the next poll. Postgres only; on Neki (2) stands and (3) is a gate. **Pi
 **130. Client reach: SSE for events, OpenAPI for languages, a React hook for browsers.**
 Gap: Rivet ships JS/Python/Rust/Swift clients and `useActor`. Proposal: `Actor.serve` exposes
 `GET /actors/{name}/{id}/events?after=<seq>` as Server-Sent Events (no client library needed in any language),
-`/openapi.json` (116) feeds `openapi-ts` / `openapi-generator` for typed Python/Swift/Rust clients, and a
-`durable-actors/react` subpath:
+`/openapi.json` (116) feeds `openapi-ts` / `openapi-generator` for typed Python/Swift/Rust clients.
+
+> Superseded on 2026-09-21 by decision 151: the React subpath proposed here does not exist and
+> `framework/React.ts` was deleted. A UI cache/subscription layer proves nothing about durable actors; browsers
+> use the Promise client from `durable-actors/client` plus the SSE and WebSocket endpoints directly.
 
 ```ts
-const room = useActor(Chat, roomId)                       // Promise client + events, suspense-free
-const recent = useQuery(room.Recent, { limit: 50 })       // refetch on MessageAdded
-const live = useConnection(room.Live, { since: 0 })       // frames + send
-await room.SendMessage({ body })
+// what a browser actually writes (durable-actors/client)
+const chat = Chat.client({ baseUrl, headers: { authorization: `Bearer ${token}` } })
+await chat.get(roomId).SendMessage({ body })
+for await (const e of chat.get(roomId).events(MessageAdded, { after: 0, signal })) render(e.event)
 ```
-**Pick: a.**
+**Pick: SSE + OpenAPI + the Promise client.**
 
 **131. Blobs: large per-actor binaries outside the state cap.**
 Gap: DO/Rivet keep a CRDT document or an embedding matrix as a file in the object's SQLite. Proposal:
@@ -832,65 +949,94 @@ exempt from `State.maxBytes`. **Pick: a.** Alt b: `Actor.table` with `bytea` and
 
 ## 7. Kinds, members, runtime: the taxonomy under `Actor.` (132–134)
 
+> **Superseded on 2026-09-21 by decisions 157, 160, 164, 170 and 171**: the answer to "how many kinds?" turned
+> out to be **one**. `Actor.make` is the only kind; there is no `Actor.ephemeral`, `Actor.cron`,
+> `Actor.singleton` or `Actor.job`, and no `durable: false` flag either. Durability is not a flag and not a
+> kind: an actor that declares no `state`, `tables`, `events` or `effects` touches none of those rows.
+> `singleton: true` gives `X.get()` with no id plus cluster-wide cron and `run`; cron is the lifecycle policy
+> `Cron.every(expr, Cmd, { skipIfOlderThan })` on a zero-input command of the same actor (per-actor timer for
+> named and minted actors, `Sharding.registerSingleton` for singletons); a workflow is a *member*. The
+> `Members` bag is `commands, internal, queries, streams, connections, workflows, events, effects, tables,
+> blobs, state, vars, migrations, lifecycle`. The section below is kept for the argument; its code has been
+> rewritten to the surface that shipped.
+
 The question "should there be `Actor.job` / `Actor.connection` as actor types?" comes from `Actor.` holding three
-levels with nothing marking which is which: **kinds** (`make`, `workflow`, `cron`) that `toLayer` and that Cluster
-places; **members** (`command`, `query`, `stream`, `table`, and proposed `connection`, `blob`) that only mean
-something inside a kind; and **runtime** (`layer`, `serve`, `auth`, `as`, `tenant`, `commandId`, `toolkit`, `mcp`).
+levels with nothing marking which is which: **kinds** that `toLayer` and that Cluster places; **members**
+(`command`, `query`, `stream`, `connection`, `workflow`, `table`, `blob`, `migration`) that only mean
+something inside a kind; and **runtime** (`layer`, `serve`, `auth`, `as`, `anonymous`, `tenant`, `commandId`).
 Effect's own `HttpApiEndpoint → HttpApiGroup → HttpApi` is the same three-level ladder, in three modules. Decisions
 2/24/30 fixed the names under one namespace, so the fix is to make the levels visible, not to rename.
 
-**132. Four kinds, and `Actor.job` is not one of them.**
+**132. One kind, and neither a job nor a cron is one.**
 
-| Kind | One per | Turn model | Compiles to | Use when |
+| Spelling | One per | Turn model | Compiles to | Use when |
 | --- | --- | --- | --- | --- |
 | `Actor.make` | id (tenant, id) | transaction per command, receipts, state/tables/events/effects | `Entity` (`Persisted: true`) | it has an identity and receives commands over time |
-| `Actor.workflow` | execution (idempotency key) | durable steps, one linear run | `Workflow` + `ClusterWorkflowEngine` | a process with a start and an end: onboarding, a payment, *a job* |
-| `Actor.cron` | cluster | one `execute` per tick | `ClusterCron.make` | recurring cluster-wide work |
-| `Actor.singleton` (new) | cluster | one long-lived `run` | `Singleton.make(name, run, { shardGroup })` | a leader/poller/reaper that must run exactly once cluster-wide |
-| `Actor.ephemeral` (new, 133) | id | in memory, no transaction, no receipts | `Entity` (`Persisted: false`, Cluster's default) | presence, cursors, game ticks, anything that may forget on restart |
+| `Actor.make`, no `id` | minted id | as above; `X.create()` mints a UUIDv7 | `Entity` | the id belongs to the framework, not the app |
+| `Actor.make({ singleton: true })` | cluster | as above, plus a resident boot activation for cron and `run` | `Entity` + `Sharding.registerSingleton` | a leader/poller/reaper that must run exactly once cluster-wide |
+| `Actor.make` with only `vars` | id | serialized turns, no durable rows | `Entity` | presence, cursors, rate-limit lanes: anything that may forget on restart |
+| `Actor.workflow` in `workflows: [...]` | (owner, key) | durable steps, one linear run | `Workflow` + `ClusterWorkflowEngine` | a process with a start and an end: onboarding, a payment, *a job* |
 
-A "job" is a workflow with one activity (`W.start(input)` → run handle, retries from `Activity`), a per-actor delayed
-job is `ctx.self.X.after(d, input)`, and a recurring one is `Actor.cron`. A separate `Actor.job` would be a fourth
-spelling of the same thing. **Pick: a** (no `Actor.job`; add `Actor.singleton`). Alt b: also no `singleton`, express
-it as `Actor.cron` with a continuous `run`.
+A "job" is a workflow member (`X.W.start(input, { key })` → run handle, retries from `Activity`), a per-actor
+delayed job is `ctx.self.X.after(d, input)`, and a recurring one is `Cron.every(...)` in `lifecycle`. A separate
+`Actor.job` would be a fourth spelling of the same thing. **Pick: one kind.**
 
 ```ts
-export const Reaper = Actor.singleton("Reaper", {
-  description: "Purges expired receipts and events cluster-wide.",
-  shardGroup: "default"
+// a singleton whose work is a `run` loop (example/Reaper.ts, example/Reaper.server.ts)
+export const Reaper = Actor.make("Reaper", {
+  description: "Retries young dead letters and logs old ones, cluster-wide, once a minute.",
+  singleton: true,                                   // Reaper.get() takes no id; a boot activation stays resident
+  commands: [Pause, Resume],
+  state: { paused: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))) }
 })
-export const ReaperLive = Reaper.toLayer(Effect.forever(purgeOnce.pipe(Effect.delay("1 minute"))))   // R: Database
+export const ReaperLive = Reaper.toLayer({
+  Pause: (ctx) => ctx.state.set({ paused: true }),
+  Resume: (ctx) => ctx.state.set({ paused: false })
+}, {
+  run: (ctx) => sweepOnce(ctx).pipe(Effect.delay("1 minute"), Effect.forever)
+})
+
+// a cluster-wide cron: a lifecycle policy on a zero-input command (example/Nightly.ts)
+export const Nightly = Actor.make("Nightly", {
+  singleton: true,
+  commands: [ResetAll],
+  lifecycle: [Cron.every("0 3 * * *", ResetAll, { skipIfOlderThan: "1 hour" })]
+})
 ```
 
-**133. `Actor.ephemeral`: the same contract kinds, none of the durability.**
-This is the kind that closes the latency weakness for workloads that do not need durability. Same `command / query /
-stream / connection` members, same handle shape, same `Actor.serve`; but no `state:`/`tables:`/`events:`/`effects:`,
-no `db` on the context, no receipts, so the handle's `E` is `ErrOf<C> | ActorUnavailable` (no `CommandConflict`, no
-`NotCreated`), `ctx.memory` is the only state, and `Hibernate.after` drops it. `Cron`, `Delivery.retry`, `Mailbox`,
-`Commands.timeout` policies apply; `Events.keep`, `Receipts.keep`, `Effects.retry`, `Lifecycle.createdBy` are
-rejected at the type level (`Policy<Kind>`).
+**133. No durability without a kind: `vars` and nothing else declared.**
+This is what closes the latency gap for workloads that do not need durability, and it needs no new constructor.
+The same `command / query / stream / connection` members, the same handle shape, the same `Actor.serve`; declare
+no `state`/`tables`/`events`/`effects` and the turn writes no rows. `ctx.vars` is the only mutable state and
+`Hibernate.after` drops it. A query cannot see `vars` (queries run on the caller's node against committed
+rows), so expose a stream instead.
 
 ```ts
-export const Cursor = Actor.ephemeral("Cursor", {
+export const Cursor = Actor.make("Cursor", {
   description: "Live cursor positions for one document. Forgets everything when idle.",
   id: DocId,
-  memory: { cursors: Schema.Record(UserId, Position) },        // typed in-memory state, initial from Schema defaults
+  // per-activation memory (decision 160): typed, defaulted from the schema, dropped on hibernation
+  vars: { cursors: Schema.Record(UserId, Position).pipe(Schema.withDecodingDefault(Effect.succeed({}))) },
   commands: [Move],
+  streams: [Positions],
   connections: [Live],
-  lifecycle: [Hibernate.after("30 seconds"), Mailbox.capacity(1000)]
+  lifecycle: [Hibernate.after("30 seconds"), Mailbox.capacity(1000), Connections.park]
 })
 // Cursor.server.ts
-Move: (ctx, pos) => ctx.memory.update((m) => ({ cursors: { ...m.cursors, [ctx.principalOrDie.userId]: pos } }))
-                     .pipe(Effect.andThen(ctx.connections.broadcast(new Moved({ pos }))))
+Move: Effect.fn(function*(ctx, position) {
+  const principal = yield* Option.match(ctx.principal, { onNone: () => new NotSignedIn(), onSome: Effect.succeed })
+  yield* ctx.vars.update((v) => ({ cursors: { ...v.cursors, [principal.userId]: position } }))
+  yield* ctx.connections.broadcast(new Moved({ userId: principal.userId, position }))
+}),
+Positions: (ctx) => Stream.succeed(ctx.vars.cursors)
 ```
-Commands still serialize through the mailbox (`concurrency: 1`), so an ephemeral actor is a single-writer in-memory
-object placed by Cluster: the Rivet/DO model, opt-in per actor, with the same contracts. Testing: `ActorTest` works
-unchanged (`inspect` returns `memory` instead of rows). **Pick: a.** Alt b: `Actor.make(name, { durable: false })`
-(rejected by me: a flag that changes `E`, `ctx` and allowed policies is a kind, and kinds deserve a constructor).
+Commands still serialize through the mailbox (`concurrency: 1`), so such an actor is a single-writer in-memory
+object placed by Cluster: the Rivet/DO model, per actor, with the same contracts. Testing: `ActorTest` works
+unchanged (`inspect` returns `vars` instead of rows). **Pick: `vars`, no kind and no flag.**
 
 **134. Make the levels visible without renaming.**
-JSDoc `@category kinds | members | policies | runtime | clients | testing` (123) drives the generated docs and the
-`llms.txt` sections; `Actor.make` and friends carry `_kind: "actor" | "ephemeral" | "workflow" | "cron" | "singleton"`
-and members `_kind: "command" | "query" | "stream" | "connection" | "table" | "blob"`; the skill's first section is the
-table in 132 ("which kind?"). Members never appear in `Actor.serve({ actors })` or `Actor.toolkit([...])` (type error).
-**Pick: a.**
+JSDoc `@category kinds | members | policies | runtime | clients | testing` (123) drives the generated API docs;
+`Actor.make` carries `_kind: "actor"` with a `mode: "minted" | "named" | "singleton"`, and members carry
+`_kind: "command" | "query" | "stream" | "connection" | "workflow" | "table" | "blob" | "migration"`; the
+skill's first section is the table in 132 ("which spelling?"). Members never appear in
+`Actor.serve({ actors })` (type error). **Pick: a.**

@@ -12,7 +12,9 @@
  *                 RunnerStorage (per-address shard locks that expire on the Clock) and a Runners.make bus
  *   time       →  TestClock: DeliverAt timers, Hibernate.after, Effects.retry, Commands.timeout and DurableClock all read Clock
  *   executors  →  held by default; run, fail or override on demand
- *   caller     →  one default CurrentCaller for the whole test; Actor.as overrides per call
+ *   caller     →  one default CurrentCaller for the whole test (`ActorTest.layer({ as })`); `test.actor(X, id, { as })`
+ *                 and `Actor.as` override per handle / per call
+ *   workflows  →  members of their owner: `test.actor(User, id).workflow(Onboard).crashActivity("welcome", { at })`
  *
  * What the framework does durably is observed through the tables (actor_generations, actor_timers,
  * actor_events, actor_outbox, actor_dead_letters, actor_receipts, cluster_messages) and through the
@@ -27,6 +29,7 @@ import type { EntityAddress, RunnerAddress } from "effect/unstable/cluster"
 import type { HttpClient } from "effect/unstable/http/HttpClient"
 import type {
   ActorEvent,
+  ActorRef,
   Actors,
   AnyActor,
   AnyCommand,
@@ -35,22 +38,28 @@ import type {
   AnyWorkflow,
   Auth,
   Caller,
-  CurrentCaller,
   Database,
   EffectExecutors,
   EventsOf,
+  Handle,
+  IdArgs,
   Principal,
   TenantId,
-  TurnReport
+  TurnReport,
+  WorkflowHandle
 } from "./Actor.ts"
 
 /** Structural extractors: concrete definitions are not assignable to `ActorDefinition<any, …>` (see `HandleOf`). */
 export type IdOf<A> = A extends { readonly id: infer Id extends Schema.Top } ? Id["Type"] : never
-type IdSchemaOf<A> = A extends { readonly id: infer Id extends Schema.Top } ? Id : never
+/** The declared keyed state as a value (decision 125); `{}` for an actor without `state`. */
+export type StateOf<A> = A extends { readonly state: infer S extends Schema.Struct.Fields } ? Schema.Struct.Type<S> : {}
+type MembersOf<A> = A extends AnyActor ? A : never
 type CommandsTupleOf<A> = A extends { readonly commands: infer Cs extends ReadonlyArray<AnyCommand> } ? Cs : never
 export type CommandsOf<A> = CommandsTupleOf<A>[number]
 export type CommandTagsOf<A> = CommandsOf<A>["tag"]
 export type EffectsOf<A> = A extends { readonly effects: ReadonlyArray<infer Ef extends AnyTagged> } ? Ef : never
+export type WorkflowsOf<A> = A extends { readonly workflows: infer Ws extends ReadonlyArray<AnyWorkflow> } ? Ws[number] : never
+export type WorkflowTagsOf<A> = WorkflowsOf<A>["tag"]
 export type PromiseClientOf<A> = A extends { readonly client: (...args: any) => infer P } ? P : never
 /** Requirements of a fakes object, read off each executor's returned Effect. */
 type ExecutorServices<X> = {
@@ -140,6 +149,11 @@ export interface ActorState<A extends AnyActor> {
   readonly deadLetters: ReadonlyArray<DeadLetter<EffectsOf<A>["Type"]>>
   readonly receipts: ReadonlyArray<Receipt>
   readonly events: ReadonlyArray<ActorEvent<EventsOf<A>["Type"]>>
+  /**
+   * The committed keyed state, decoded through the declared schema and its `migrations` exactly as the next turn would
+   * load it (decisions 125, 162); `None` when no turn has written state yet. Reading it here never wakes the actor.
+   */
+  readonly state: Option.Option<StateOf<A>>
   readonly rows: <T extends AnyTable>(table: T) => Effect.Effect<ReadonlyArray<RowOf<T>>>
 }
 
@@ -206,7 +220,7 @@ export interface EffectsHarness {
    * `Entity.toLayer<Handlers extends HandlersFrom<Rpcs>>`: the fakes object is the type parameter, so
    * `effect`/`ctx` are contextually typed and requirements are derived from the fakes' return types.
    */
-  readonly override: <A extends AnyActor, const X extends Partial<EffectExecutors<IdSchemaOf<A>, CommandsTupleOf<A>, EffectsOf<A>, any>>>(
+  readonly override: <A extends AnyActor, const X extends Partial<EffectExecutors<A, any>>>(
     actor: A,
     executors: X & NoExtraKeys<X, EffectsOf<A>["Type"]["_tag"]>
   ) => Effect.Effect<void, never, Scope.Scope | ExecutorServices<X>>
@@ -311,11 +325,70 @@ export interface WorkflowState {
     readonly exit: Option.Option<Exit.Exit<unknown, unknown>>
   }>
   readonly sleepingUntil: Option.Option<DateTime.Utc>
+  /** the owner event a `ctx.waitFor` is parked on, if any */
+  readonly waitingFor: Option.Option<string>
 }
+/**
+ * Where an activity can die (decision 143). `beforeBody`: nothing ran, the engine retries the activity. `afterBodyBeforeResult`:
+ * the body's side effects happened (a command was sent), the result was not persisted: the retry replays through the
+ * receipt the framework keyed on `${executionId}:${activity}`. `afterResult`: the result is durable, the workflow fiber
+ * dies before the next step: resumption skips the activity. `Effect.die` inside a body is *not* process loss (the engine
+ * may record it as a result); this hook is.
+ */
+export type ActivityCrashPoint = "beforeBody" | "afterBodyBeforeResult" | "afterResult"
+/** Workflows are members (decision 158): every operation names the owner and the member. */
 export interface WorkflowsHarness {
-  readonly inspect: (workflow: AnyWorkflow, executionId: string) => Effect.Effect<WorkflowState>
-  /** the next `times` runs of this activity die before their result is persisted */
-  readonly crashActivity: (workflow: AnyWorkflow, activity: string, options?: { readonly times?: number }) => Effect.Effect<void>
+  readonly inspect: <A extends AnyActor>(owner: A, id: IdOf<A>, workflow: WorkflowsOf<A>, options?: { readonly key?: string }) => Effect.Effect<Option.Option<WorkflowState>>
+  /** the next `times` runs of this activity die at `at` (default `beforeBody`, once) */
+  readonly crashActivity: <A extends AnyActor>(
+    owner: A,
+    id: IdOf<A>,
+    workflow: WorkflowsOf<A>,
+    activity: string,
+    options?: { readonly at?: ActivityCrashPoint; readonly times?: number }
+  ) => Effect.Effect<void>
+  /** waits (live time, bounded) until the run under `key` is parked on `waitFor` / `sleep` or has finished */
+  readonly settled: <A extends AnyActor>(owner: A, id: IdOf<A>, workflow: WorkflowsOf<A>, options?: { readonly key?: string; readonly timeout?: Duration.Input }) => Effect.Effect<WorkflowState, TimedOut>
+}
+
+/**
+ * One actor, bound once (decision 120): the outside handle plus every harness operation for this id, so a test reads
+ * `counter.crash({ at: "after-commit" })` instead of repeating `(Counter, id)` on each call. `as` overrides the test's
+ * default caller for this handle only.
+ */
+export interface BoundActor<A extends AnyActor> {
+  readonly handle: Handle<A>
+  /**
+   * The handle a `System` caller sees: internal commands included, request/reply allowed, the same handle a workflow
+   * body gets as `ctx.owner`. For delivering `SandboxReady` / `TurnDone`-style commands directly instead of driving
+   * the executor or run loop that would normally send them. Caller is `System("actor", { onBehalfOf: as })`.
+   */
+  readonly system: WorkflowHandle<MembersOf<A>>
+  readonly ref: ActorRef
+  readonly id: IdOf<A>
+  readonly inspect: Effect.Effect<ActorState<A>>
+  readonly turns: Effect.Effect<ReadonlyArray<TurnRecord<A>>>
+  readonly next: (options?: { readonly timeout?: Duration.Input }) => Effect.Effect<TurnRecord<A>, TimedOut>
+  readonly effects: Effect.Effect<ReadonlyArray<PendingEffect<EffectsOf<A>["Type"]>>>
+  readonly rows: <T extends AnyTable>(table: T) => Effect.Effect<ReadonlyArray<RowOf<T>>>
+  /**
+   * Writes rows the way an *older* deployment would have left them, bypassing the current schema: `state` is stored
+   * as-is (so a V1 shape can be seeded and the next turn must run `migrations` over it), `rows` insert into a declared
+   * table under this actor's `(tenant_id, actor_id)`. Seeding never wakes the actor and never bumps the generation.
+   */
+  readonly seed: (data: {
+    readonly state?: unknown
+    readonly rows?: ReadonlyArray<{ readonly table: AnyTable; readonly values: Record<string, unknown> }>
+  }) => Effect.Effect<void>
+  readonly crash: (options: { readonly at: CrashPoint; readonly command?: CommandTagsOf<A>; readonly times?: number }) => Effect.Effect<void>
+  readonly pause: (options: { readonly at: CrashPoint; readonly command?: CommandTagsOf<A> }) => Effect.Effect<Paused, never, Scope.Scope>
+  readonly staleGeneration: Effect.Effect<void>
+  readonly redeliver: (commandId: string) => Effect.Effect<void>
+  readonly workflow: <W extends WorkflowsOf<A>>(workflow: W, options?: { readonly key?: string }) => {
+    readonly inspect: Effect.Effect<Option.Option<WorkflowState>>
+    readonly crashActivity: (activity: string, options?: { readonly at?: ActivityCrashPoint; readonly times?: number }) => Effect.Effect<void>
+    readonly settled: (options?: { readonly timeout?: Duration.Input }) => Effect.Effect<WorkflowState, TimedOut>
+  }
 }
 
 /** `Actor.serve` on an in-process HttpServer test client: the real Rpc serialization, no port. */
@@ -347,8 +420,11 @@ export interface Options {
   readonly runners?: number
   /** the app's principal schema, needed to round-trip `CurrentCaller` through envelope headers; default passes the value through unchecked */
   readonly principal?: Schema.Top & { readonly Type: Principal }
-  /** default `CurrentCaller` for the test fiber (default `Anonymous`); `Actor.as` still wins per call */
-  readonly caller?: Caller
+  /**
+   * default `CurrentCaller` for the test fiber (default `Anonymous`): a `Principal` or a full `Caller`;
+   * `Actor.as`, `X.get(id, { as })` and `test.actor(X, id, { as })` still win per call (decision 120)
+   */
+  readonly as?: Principal | Caller
   /** default `"hold"` */
   readonly effects?: "hold" | "run"
 }
@@ -365,6 +441,13 @@ export class ActorTest extends Context.Service<ActorTest, {
   /** runs `self` and returns its Exit together with every turn that committed meanwhile */
   readonly record: <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.Effect<Recorded<A, E>, never, R>
   readonly inspect: <A extends AnyActor>(actor: A, id: IdOf<A>) => Effect.Effect<ActorState<A>>
+  /**
+   * `X.get(id)` plus the harness, bound to one id (decision 120). Named and singleton ids take the same arguments as
+   * `X.get`; a minted actor is bound with the id `X.create()` returned. The default caller is the layer's `as`.
+   */
+  readonly actor: <A extends AnyActor>(actor: A, ...args: [...IdArgs<A>, options?: { readonly as?: Principal | Caller; readonly tenant?: TenantId }]) => Effect.Effect<BoundActor<A>>
+  /** `X.create()` plus the harness: mints the id and binds it (minted actors only, decision 164). */
+  readonly create: <A extends AnyActor & { readonly mode: "minted" }>(actor: A, options?: { readonly as?: Principal | Caller; readonly tenant?: TenantId }) => Effect.Effect<BoundActor<A>>
   readonly effects: EffectsHarness
   readonly faults: Faults
   readonly cluster: ClusterHarness
@@ -391,10 +474,11 @@ export class ActorTest extends Context.Service<ActorTest, {
 }>()("durable-actors/testing/ActorTest") {
   /**
    * `Actor.layer` over TestRunner (or the in-process multi-runner bus) and a PGlite `Database`, plus
-   * a recording/fault-injecting `TurnHooks` and the default `CurrentCaller`. Requires nothing: the
-   * TestClock comes from `it.effect` / `it.layer` (`@effect/vitest` test services).
+   * a recording/fault-injecting `TurnHooks` and the default `CurrentCaller` (a `Context.Reference`, so it is set,
+   * not provided: it never appears in the layer's output). Requires nothing: the TestClock comes from
+   * `it.effect` / `it.layer` (`@effect/vitest` test services).
    */
-  static readonly layer: (options?: Options) => Layer.Layer<ActorTest | Actors | Database | CurrentCaller> = undefined as never
+  static readonly layer: (options?: Options) => Layer.Layer<ActorTest | Actors | Database> = undefined as never
 }
 
 /** Command sequences drawn from the actor's own input schemas (`Arbitrary.schema(command.input)`). */

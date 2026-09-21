@@ -1,7 +1,8 @@
-// Contract file: an ephemeral actor — live cursors, no tables, no events, no effects, no durable state.
+// Contract file: a "durable" actor that stores nothing durable — live cursors. No tables, no state, no events, no effects.
+// Durability is not a flag (decision 157): an actor that declares none of those never touches those rows.
 import { Effect, Schema } from "effect"
-import { Actor, Hibernate, Mailbox } from "../framework/Actor.ts"
-import { DocId } from "./Doc.ts" // an ephemeral actor can share an id with a durable one
+import { Actor, Connections, Hibernate, Mailbox } from "../framework/Actor.ts"
+import { DocId } from "./Doc.ts" // two actors may share an id space: Cursor/doc-1 and Doc/doc-1 are different refs
 import { UserId } from "./Principal.ts"
 
 export const Position = Schema.Struct({ line: Schema.Number, column: Schema.Number })
@@ -22,8 +23,9 @@ export const Move = Actor.command("Move", {
   input: Position,
   errors: [NotSignedIn]
 })
-export const Positions = Actor.query("Positions", {
-  description: "Every known cursor position, keyed by user id. Empty once the activation has hibernated.",
+// a stream, not a query: queries run on the caller's node against committed rows and cannot see `vars` (decision 160)
+export const Positions = Actor.stream("Positions", {
+  description: "The current cursor map, then one element per change. Empty once the activation has hibernated.",
   output: Schema.Record(UserId, Position)
 })
 // no params and no client frames: the browser only listens
@@ -32,16 +34,20 @@ export const Live = Actor.connection("Live", {
   server: Schema.Union([Moved, Left])
 })
 
-export const Cursor = Actor.ephemeral("Cursor", {
+export const Cursor = Actor.make("Cursor", {
   description: "Live cursor positions for one document. Forgets everything when idle.",
   id: DocId,
-  // the only state there is: a closure on the activation, dropped by `Hibernate.after`
-  memory: {
+  // per-activation memory (decision 160): typed, defaulted from the schema, dropped by `Hibernate.after`
+  vars: {
     cursors: Schema.Record(UserId, Position).pipe(Schema.withDecodingDefault(Effect.succeed({})))
   },
   commands: [Move],
-  queries: [Positions],
+  streams: [Positions],
   connections: [Live],
-  // no tables, events, effects or state to govern: an ephemeral actor rejects those policies
-  lifecycle: [Hibernate.after("30 seconds"), Mailbox.capacity(1000)]
+  lifecycle: [
+    Hibernate.after("30 seconds"),
+    Mailbox.capacity(1000),
+    // open sockets do not keep the activation resident; the edge parks them and the next frame wakes it (decision 163)
+    Connections.park
+  ]
 })

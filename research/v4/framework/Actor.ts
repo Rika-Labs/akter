@@ -1,39 +1,43 @@
 /**
  * Durable Actors — proposed public surface (typecheck-only sketch, Effect 4.0.0-rc.116).
- * Embodies DECISIONS.md 1–150. Everything compiles down to Effect primitives:
+ * Embodies DECISIONS.md 1–170. One primitive, `Actor.make`; everything else is a member of an actor,
+ * a policy on it, or runtime wiring. Everything compiles down to Effect primitives:
  *
- *   primitives  Actor.make        →  RpcGroup.make + Entity.fromRpcGroup, Persisted: true, one transaction per command ("turn")
- *               Actor.ephemeral   →  the same Entity, Persisted: false, no transaction, `memory` in the activation closure
- *               Workflow.make     →  Workflow.make + Activity.make + DurableClock + DurableDeferred   (alias: Actor.workflow)
- *   facilities  Durable.cron      →  ClusterCron.make (one run per schedule, cluster-wide)              (alias: Actor.cron)
- *               Durable.singleton →  Singleton.make(name, run, { shardGroup })                          (alias: Actor.singleton)
+ *   kind      Actor.make                                    →  RpcGroup.make + Entity.fromRpcGroup, Persisted: true, one transaction per command ("turn");
+ *                                                              `singleton: true` adds Sharding.registerSingleton for the boot activation
  *   members   Actor.command / query / stream / connection   →  Rpc.make (stream: true for streams and connections)
- *             Actor.table / blob                             →  drizzle pgTable with (tenant_id, actor_id); actor_blobs
- *   runtime   Actor.layer / serve / auth / toolkit / mcp     →  Sharding + WorkflowEngine; HttpRouter + RpcServer; ai/Toolkit; McpServer
- *   ambient   Actor.as / tenant / commandId                  →  Effect.provideService on CurrentCaller / Tenant / CommandId
+ *             Actor.workflow                                →  Workflow.make({ name: "Owner/Member" }) + Activity.make + DurableClock + DurableDeferred
+ *             Actor.table / blob                            →  drizzle pgTable with (tenant_id, actor_id); actor_blobs
+ *             Actor.migration                               →  upcast of the stored state row on load, inside the turn transaction
+ *   policies  Hibernate, Mailbox, Defects, Delivery, Effects, Commands, Receipts, Events, State, Cron, Lifecycle, Connections
+ *   runtime   Actor.layer / serve / auth                    →  Sharding + WorkflowEngine; HttpRouter + RpcServer (serve is optional: decision 155)
+ *   ambient   Actor.as / anonymous / tenant / commandId     →  Effect.provideService on CurrentCaller / Tenant / CommandId
+ *   errors    ActorError { reason }                         →  the Effect 4 `HttpClientError` shape; `Effect.catchReasons("ActorError", …)`
  *
  * The wrapping adds the contracts the framework promises: a generation fence, receipts keyed by a
  * client-minted commandId, typed channels everywhere, intents/events/effects committed with the turn,
  * "retryable = defect", and a caller on every handle.
+ *
+ * Every context, handle and handler type is parameterised by a `Members` bag, so `CommandContext<typeof Chat>`
+ * and `Handle<typeof Chat>` are the spellings an app uses (the definition object *is* the bag).
  *
  * `Drizzle`, `OwnedTable`, `Scoped` are placeholders for drizzle-orm/effect-postgres types so this file
  * typechecks from the repo root, where only `effect` is hoisted. Runtime internals are `declare`d.
  *
  * @since 0.1.0
  */
-import { Cause, Config, Context, Cron as EffectCron, DateTime, Duration, Effect, Exit, Layer, Option, Redacted, Schedule, Schema, Scope, Stream } from "effect"
+import { Cause, Config, Context, DateTime, Duration, Effect, Exit, Layer, Option, Redacted, Schedule, Schema, Scope, Stream } from "effect"
 import type { ConfigError } from "effect/Config"
 import { Rpc, RpcGroup, RpcSchema } from "effect/unstable/rpc"
 import { ClusterSchema, Entity, EntityAddress, Sharding } from "effect/unstable/cluster"
-import { AlreadyProcessingMessage, EntityNotAssignedToRunner, MailboxFull, PersistenceError } from "effect/unstable/cluster/ClusterError"
+import * as ClusterError from "effect/unstable/cluster/ClusterError"
 import { Workflow as EffectWorkflow, WorkflowEngine } from "effect/unstable/workflow"
-import type { Tool, Toolkit } from "effect/unstable/ai"
 import type { Headers } from "effect/unstable/http/Headers"
 import type { SqlClient } from "effect/unstable/sql/SqlClient"
 import type { SqlError } from "effect/unstable/sql/SqlError"
 
 // ---------------------------------------------------------------------------------------------------
-// Identity: tenant, ref, principal, caller
+// Identity: tenant, ref, principal, caller (decisions 8, 35, 89–91, 154, 156)
 // ---------------------------------------------------------------------------------------------------
 
 /** @category identity */
@@ -70,8 +74,8 @@ export class ActorRef extends Schema.Class<ActorRef>("durable-actors/ActorRef")(
  */
 export interface Principal {}
 
-/** @category identity */
-export type SystemSource = "timer" | "cron" | "workflow" | "actor" | "effect" | "run" | "singleton"
+/** Who the framework acts as when it starts work itself (decision 157: no `singleton` / `run` — those are the actor). @category identity */
+export type SystemSource = "timer" | "cron" | "workflow" | "actor" | "effect"
 
 /**
  * Who a command / query / stream / connection runs for. `System` covers everything the framework starts
@@ -95,16 +99,19 @@ export const Caller = {
   }),
   /** the user, or the principal a system caller acts for */
   principal: (caller: Caller): Option.Option<Principal> =>
-    caller._tag === "User" ? Option.some(caller.principal) : caller._tag === "System" ? caller.onBehalfOf : Option.none()
+    caller._tag === "User" ? Option.some(caller.principal) : caller._tag === "System" ? caller.onBehalfOf : Option.none(),
+  /** the caller for a whole layer graph: a worker process, a test file, a CLI (decision 154) */
+  layer: (who: Principal | Caller): Layer.Layer<never> => Layer.succeed(CurrentCaller, toCaller(who))
 }
 
 /**
- * No default: a handle cannot exist without a caller (decision 89). `X.get(id)` requires it from the
- * context or takes it as `{ as }`; inside turns, workflows, cron, singletons and executors the framework
- * provides `System`.
+ * The ambient caller (decision 154). A `Context.Reference`, so it always has a value: `Anonymous` unless the HTTP
+ * middleware, `Actor.as`, `Caller.layer`, `get(id, { as })` or the framework (inside turns, workflows, executors:
+ * `System`) set it. Handles therefore never require `CurrentCaller`; authorization is the actor's decision, made
+ * against `ctx.caller`, never a missing service.
  * @category identity
  */
-export class CurrentCaller extends Context.Service<CurrentCaller, Caller>()("durable-actors/CurrentCaller") {}
+export const CurrentCaller = Context.Reference<Caller>("durable-actors/CurrentCaller", { defaultValue: () => Caller.anonymous })
 
 /** Ambient values with defaults. Set for a call with `Actor.tenant` / `Actor.commandId`. @category runtime */
 export const Tenant = Context.Reference<TenantId>("durable-actors/Tenant", { defaultValue: () => TenantId.make("default") })
@@ -115,9 +122,9 @@ export const Tenant = Context.Reference<TenantId>("durable-actors/Tenant", { def
  */
 export const CommandId = Context.Reference<string | undefined>("durable-actors/CommandId", { defaultValue: () => undefined })
 
-/** Binds the tenant for the `get` / `Actors.get` / `W.start` inside `self`. A handle keeps the tenant it was resolved with. @category runtime */
+/** Binds the tenant for the `get` / `Actors.get` inside `self`. A handle keeps the tenant it was resolved with. @category runtime */
 export const tenant = (id: TenantId) => <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.provideService(self, Tenant, id)
-/** @category runtime */
+/** Sets the ambient caller for `self`: a whole program, a request, one call. @category runtime */
 export const as = (who: Principal | Caller) => <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.provideService(self, CurrentCaller, toCaller(who))
 /** @category runtime */
 export const anonymous = <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.provideService(self, CurrentCaller, Caller.anonymous)
@@ -128,10 +135,54 @@ const isCaller = (who: Principal | Caller): who is Caller => typeof who === "obj
 const toCaller = (who: Principal | Caller): Caller => isCaller(who) ? who : Caller.user(who)
 
 // ---------------------------------------------------------------------------------------------------
-// Errors (decisions 26, 105, 106). Every framework error says what happened and what to do next.
+// Errors (decisions 26, 105, 106, 167): one `ActorError`, a `reason` per situation, every message says what to do next
 // ---------------------------------------------------------------------------------------------------
 
-/** Same commandId, different payload: the receipt does not match. On every command's `E`. @category errors */
+/** Cluster could not deliver after `Delivery.retry`. `cause` keeps the original Cluster error. @category errors */
+export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("ActorUnavailable", {
+  ref: ActorRef,
+  command: Schema.String,
+  code: Schema.Literals(["not_assigned", "already_processing", "persistence"]),
+  retryAfter: Schema.Option(Schema.Duration),
+  cause: Schema.Union([ClusterError.AlreadyProcessingMessage, ClusterError.PersistenceError, ClusterError.EntityNotAssignedToRunner])
+}, { httpApiStatus: 503 }) {
+  readonly retryable = true
+  override get message(): string {
+    return `${this.ref}: ${this.command} was not delivered (${this.code}). Retry ${formatAfter(this.retryAfter)} with the same commandId.`
+  }
+}
+
+/** The mailbox is at `Mailbox.capacity`: back-pressure, not loss. @category errors */
+export class MailboxFull extends Schema.TaggedError<MailboxFull>()("MailboxFull", {
+  ref: ActorRef,
+  command: Schema.String,
+  capacity: Schema.Number,
+  retryAfter: Schema.Option(Schema.Duration)
+}, { httpApiStatus: 503 }) {
+  readonly retryable = true
+  override get message(): string {
+    return `${this.ref}: mailbox full (${this.capacity}). Retry ${formatAfter(this.retryAfter)} with the same commandId.`
+  }
+}
+
+/**
+ * The caller stopped waiting (`Delivery.timeout`); the turn may still commit. Retrying with the same commandId
+ * replays the receipt instead of running the handler twice.
+ * @category errors
+ */
+export class Timeout extends Schema.TaggedError<Timeout>()("Timeout", {
+  ref: ActorRef,
+  command: Schema.String,
+  commandId: Schema.String,
+  after: Schema.Duration
+}, { httpApiStatus: 504 }) {
+  readonly retryable = true
+  override get message(): string {
+    return `${this.ref}: no reply to ${this.command} within ${Duration.format(this.after)}. Retry with commandId ${this.commandId} to get the receipt.`
+  }
+}
+
+/** Same commandId, different payload: the receipt does not match. @category errors */
 export class CommandConflict extends Schema.TaggedError<CommandConflict>()("CommandConflict", {
   ref: ActorRef,
   command: Schema.String,
@@ -140,31 +191,6 @@ export class CommandConflict extends Schema.TaggedError<CommandConflict>()("Comm
   readonly retryable = false
   override get message(): string {
     return `${this.ref}: commandId ${this.commandId} was already used for ${this.command} with a different input. Reuse the same input to replay the receipt, or use a new commandId.`
-  }
-}
-
-/** Cluster could not deliver after `Delivery.retry`. `cause` keeps the original Cluster error. @category errors */
-export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("ActorUnavailable", {
-  ref: ActorRef,
-  command: Schema.String,
-  reason: Schema.Literals(["mailbox_full", "already_processing", "persistence", "not_assigned"]),
-  retryAfter: Schema.Option(Schema.Duration),
-  cause: Schema.Union([MailboxFull, AlreadyProcessingMessage, PersistenceError, EntityNotAssignedToRunner])
-}, { httpApiStatus: 503 }) {
-  readonly retryable = true
-  override get message(): string {
-    const after = Option.match(this.retryAfter, { onNone: () => "shortly", onSome: (d) => `after ${Duration.format(d)}` })
-    return `${this.ref}: ${this.command} was not delivered (${this.reason}). Retry ${after} with the same commandId.`
-  }
-}
-
-/** The request carried no usable credentials: `Actor.auth` rejected the headers. @category errors */
-export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthorized", {
-  reason: Schema.Literals(["missing_credentials", "invalid_credentials", "expired"])
-}, { httpApiStatus: 401 }) {
-  readonly retryable = false
-  override get message(): string {
-    return `Unauthorized: ${this.reason.replace("_", " ")}. Send a valid credential in the Authorization header.`
   }
 }
 
@@ -179,9 +205,19 @@ export class NotCreated extends Schema.TaggedError<NotCreated>()("NotCreated", {
   }
 }
 
+/** The request carried no usable credentials: `Actor.auth` rejected the headers. @category errors */
+export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthorized", {
+  code: Schema.Literals(["missing_credentials", "invalid_credentials", "expired"])
+}, { httpApiStatus: 401 }) {
+  readonly retryable = false
+  override get message(): string {
+    return `Unauthorized: ${this.code.replace("_", " ")}. Send a valid credential in the Authorization header.`
+  }
+}
+
 /**
- * Boundary only (decision 106): thrown by the Promise client and served over HTTP when the body fails
- * the input schema. Never on an Effect handle's `E`: its inputs are typed.
+ * Boundary only (decision 106): the Promise client and HTTP when the body fails the input schema. Never on an
+ * Effect handle: its inputs are typed.
  * @category errors
  */
 export class InvalidInput extends Schema.TaggedError<InvalidInput>()("InvalidInput", {
@@ -206,6 +242,42 @@ export class TransportError extends Schema.TaggedError<TransportError>()("Transp
   }
 }
 
+const formatAfter = (after: Option.Option<Duration.Duration>) => Option.match(after, { onNone: () => "shortly", onSome: (d) => `after ${Duration.format(d)}` })
+
+/** Every way the framework itself can fail a call. Declared (application) errors are never inside an `ActorError`. @category errors */
+export type ActorErrorReason = ActorUnavailable | MailboxFull | Timeout | CommandConflict | NotCreated | Unauthorized | InvalidInput | TransportError
+
+/**
+ * The one framework error (decision 167), shaped like Effect 4's `HttpClientError`: `_tag: "ActorError"`, the situation
+ * in `reason`. Handles type it as `ActorError.Of<…>` narrowed to the reasons that method can produce, so
+ * `Effect.catchReasons("ActorError", { MailboxFull: …, CommandConflict: … })` is exhaustive per call site and a query
+ * cannot be caught for a delivery failure it cannot have. `isRetryable` / `retryAfter` are what a retry policy needs;
+ * the HTTP status comes from the reason's `httpApiStatus`.
+ * @category errors
+ */
+export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", {
+  reason: Schema.Union([ActorUnavailable, MailboxFull, Timeout, CommandConflict, NotCreated, Unauthorized, InvalidInput, TransportError])
+}) {
+  static readonly of = <R extends ActorErrorReason>(reason: R): ActorError.Of<R> => new ActorError({ reason }) as ActorError.Of<R>
+  get isRetryable(): boolean {
+    return this.reason.retryable
+  }
+  get retryAfter(): Option.Option<Duration.Duration> {
+    return "retryAfter" in this.reason ? this.reason.retryAfter : Option.none()
+  }
+  override get message(): string {
+    return this.reason.message
+  }
+}
+export declare namespace ActorError {
+  /**
+   * `ActorError` whose `reason` is known to be one of `R`; what every handle method is typed with. Collapses to
+   * `never` when `R` is `never`, so a method that cannot fail the framework way (a workflow's owner call on an actor
+   * without `Lifecycle.createdBy`) has exactly its declared errors in `E`.
+   */
+  export type Of<R extends ActorErrorReason> = [R] extends [never] ? never : ActorError & { readonly reason: R }
+}
+
 /**
  * Declared errors are yieldable tagged errors (decision 97): `errors: [Schema.String]` does not compile.
  * A declared error without `httpApiStatus` maps to 422 on HTTP.
@@ -214,7 +286,7 @@ export class TransportError extends Schema.TaggedError<TransportError>()("Transp
 export type AnyError = Schema.Top & { readonly Type: { readonly _tag: string } & Cause.YieldableError }
 
 // ---------------------------------------------------------------------------------------------------
-// Database, tables, rows (decisions 9, 10, 32, 64, 103, 104, 118)
+// Database, tables, rows (decisions 9, 10, 32, 64, 103, 104, 118, 156)
 // ---------------------------------------------------------------------------------------------------
 
 /** Placeholder for `EffectPgDatabase` from drizzle-orm/effect-postgres (same PgClient, joins Effect transactions). */
@@ -272,7 +344,12 @@ export interface Scoped<T extends AnyTable> extends ScopedRead<T> {
 export const table = <const Name extends string, const Cols extends Record<string, ColumnKind>>(name: Name, columns: Cols): OwnedTable<Name, Cols> =>
   ({ _kind: "table", name, columns })
 
-/** Nominal service: `PgClient` structurally extends `SqlClient`, so we never key on either directly. @category runtime */
+/**
+ * Nominal service: `PgClient` structurally extends `SqlClient`, so we never key on either directly. One database per
+ * deployment; tenants are rows (decision 156): every framework table carries `tenant_id`, Postgres enforces it with
+ * row-level security (`set_config('actor.tenant_id', …, true)` inside the turn transaction), Neki shards on it.
+ * @category runtime
+ */
 export class Database extends Context.Service<Database, {
   readonly sql: SqlClient
   readonly drizzle: Drizzle
@@ -290,7 +367,7 @@ export class Database extends Context.Service<Database, {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Members: command, query, stream, connection, blob (decisions 2, 19, 95–97, 117, 126, 131)
+// Members: command, query, stream, connection, workflow, blob, migration (decisions 2, 19, 95–97, 117, 126, 131, 158, 162)
 // ---------------------------------------------------------------------------------------------------
 
 /** @category members */
@@ -325,8 +402,8 @@ export interface StreamDef<Tag extends string, In extends Schema.Top | undefined
 }
 /**
  * A typed bidirectional session on the activation (decision 126): `server` frames go actor → client,
- * `client` frames go client → actor (ephemeral signals; durable changes are commands). `state` is
- * per-connection, in memory.
+ * `client` frames go client → actor (live signals; durable changes are commands). `state` is per-connection
+ * and survives hibernation at the edge (decision 163: ≤ 16 KiB, serialised with the parked socket).
  * @category members
  */
 export interface ConnectionDef<
@@ -348,16 +425,45 @@ export interface ConnectionDef<
   readonly description: Desc
   readonly deprecated: boolean
 }
+/**
+ * A durable execution owned by an actor (decision 158): started from the owner's handle, from `ctx.self` inside a
+ * turn, or from another workflow. Compiles to `Workflow.make({ name: "Owner/Tag" })`; the execution key is
+ * `[deployment, tenant, ownerId, key]`, so one live run per owner per `key`.
+ * @category members
+ */
+export interface WorkflowDef<Tag extends string, In extends Schema.Struct.Fields, Out extends Schema.Top, Errors extends ReadonlyArray<AnyError>, Desc extends string | undefined = string | undefined> {
+  readonly _kind: "workflow"
+  readonly tag: Tag
+  readonly input: Schema.Struct<In>
+  readonly output: Out
+  readonly errors: Errors
+  readonly description: Desc
+  readonly deprecated: boolean
+}
 /** A large per-actor binary outside the state cap (decision 131): rows in `actor_blobs(tenant_id, actor_id, key, seq, data)`. @category members */
 export interface BlobDef<Key extends string> {
   readonly _kind: "blob"
   readonly key: Key
 }
+/**
+ * One step of the state's history (decision 162). `actor_state` rows carry the version they were written with;
+ * a turn that loads an older row runs the chain `from → to` up to the declared `state`, inside its transaction,
+ * and writes the current version back with the turn. Old code never reads new rows: the runner manifest rejects it.
+ * @category members
+ */
+export interface Migration<From extends Schema.Top, To extends Schema.Top> {
+  readonly _kind: "migration"
+  readonly from: From
+  readonly to: To
+  readonly upcast: (old: From["Type"]) => To["Type"]
+}
 export type AnyCommand = Command<string, any, any, any, any>
 export type AnyQuery = QueryDef<string, any, any, any, any>
 export type AnyStream = StreamDef<string, any, any, any, any>
 export type AnyConnection = ConnectionDef<string, any, any, any, any, any, any>
+export type AnyWorkflow = WorkflowDef<string, any, any, any, any>
 export type AnyBlob = BlobDef<string>
+export type AnyMigration = Migration<any, any>
 /** Events and effects are `Schema.TaggedClass` values. */
 export type AnyTagged = Schema.Top & { readonly Type: { readonly _tag: string } }
 
@@ -367,12 +473,12 @@ const normalizeInput = (input: unknown): Schema.Top | undefined =>
   input === undefined ? undefined : Schema.isSchema(input) ? input : Schema.Struct(input as Schema.Struct.Fields)
 
 interface Definition<In, Out, Errors, Desc> {
-  /** one or two sentences for humans, OpenAPI, tools and llms.txt; `Actor.toolkit` requires it (decision 96) */
+  /** one or two sentences for humans and OpenAPI */
   readonly description?: Desc
   readonly input?: In
   readonly output?: Out
   readonly errors?: Errors
-  /** `OpenApi.Deprecated`, tool description prefix, llms.txt section (decision 117) */
+  /** `OpenApi.Deprecated` (decision 117) */
   readonly deprecated?: boolean
 }
 
@@ -442,27 +548,65 @@ export const connection = <
   deprecated: def.deprecated ?? false
 }) as any
 
+/** Input is struct fields: the persisted payload is the input plus the framework's envelope (decision 144). @category members */
+export const workflow = <
+  const Tag extends string,
+  const In extends Schema.Struct.Fields,
+  Out extends Schema.Top = typeof Schema.Void,
+  const Errors extends ReadonlyArray<AnyError> = [],
+  const Desc extends string | undefined = undefined
+>(tag: Tag, def: {
+  readonly description?: Desc
+  readonly input: In
+  readonly output?: Out
+  readonly errors?: Errors
+  readonly deprecated?: boolean
+}): WorkflowDef<Tag, In, Out, Errors, Desc> => ({
+  _kind: "workflow",
+  tag,
+  input: Schema.Struct(def.input),
+  output: def.output ?? Schema.Void,
+  errors: def.errors ?? [],
+  description: def.description,
+  deprecated: def.deprecated ?? false
+}) as any
+
 /** @category members */
 export const blob = <const Key extends string>(key: Key): BlobDef<Key> => ({ _kind: "blob", key })
 
+/** `Actor.migration(StateV1, StateV2, (old) => ({ ...old, tags: [] }))`; the last `to` in `migrations` must be the declared `state`. @category members */
+export const migration = <From extends Schema.Top, To extends Schema.Top>(from: From, to: To, upcast: (old: From["Type"]) => To["Type"]): Migration<From, To> =>
+  ({ _kind: "migration", from, to, upcast })
+
 // ---------------------------------------------------------------------------------------------------
-// Policies (decisions 21–23, 27, 52, 98, 101, 125, 133): contract-side, serializable, `Policy<C>` names this actor's commands
+// Policies (decisions 21–23, 27, 52, 98, 101, 125, 163, 170): contract-side, serializable, `Policy<C>` names this actor's commands
 // ---------------------------------------------------------------------------------------------------
 
 export interface HibernatePolicy { readonly _tag: "Hibernate"; readonly after: Duration.Input } // Entity.toLayer maxIdleTime
 export interface MailboxPolicy { readonly _tag: "MailboxCapacity"; readonly size: number | "unbounded" } // Entity.toLayer mailboxCapacity
 export interface DefectsPolicy { readonly _tag: "DefectRetry"; readonly schedule: Schedule.Schedule<any, unknown> } // Entity.toLayer defectRetryPolicy
 export interface DeliveryPolicy { readonly _tag: "DeliveryRetry"; readonly schedule: Schedule.Schedule<any, unknown> } // client-side retry before ActorUnavailable
+export interface DeliveryTimeoutPolicy { readonly _tag: "DeliveryTimeout"; readonly after: Duration.Input } // caller stops waiting → ActorError(Timeout)
 export interface EffectsPolicy { readonly _tag: "EffectsRetry"; readonly schedule: Schedule.Schedule<any, unknown> } // outbox executor retry before dead-letter
 export interface CommandTimeoutPolicy { readonly _tag: "CommandTimeout"; readonly after: Duration.Input } // turn(): handler timeout → defect → redelivery
 export interface LockWaitPolicy { readonly _tag: "LockWait"; readonly after: Duration.Input } // turn(): SET LOCAL lock_timeout on the generation fence
 export interface ReceiptsPolicy { readonly _tag: "ReceiptsRetention"; readonly keep: Duration.Input } // actor_receipts purge (never before cluster_messages)
 export interface EventsPolicy { readonly _tag: "EventsRetention"; readonly keep: Duration.Input | "forever" } // actor_events purge
 export interface StatePolicy { readonly _tag: "StateMaxBytes"; readonly bytes: number | `${number} KiB` | `${number} MiB` } // exceeding is a defect: "move `x` to a table"
-/** Per-actor timer re-armed after each run. Only zero-input commands: cron cannot supply a payload. */
-export interface CronPolicy<C extends AnyCommand> { readonly _tag: "Cron"; readonly expression: string; readonly command: C }
+/**
+ * Per-actor timer re-armed after each run; a singleton's cron is the cluster-wide schedule (decision 170). Only zero-input
+ * commands: cron cannot supply a payload. `skipIfOlderThan` drops ticks the actor slept through instead of replaying them.
+ */
+export interface CronPolicy<C extends AnyCommand> { readonly _tag: "Cron"; readonly expression: string; readonly command: C; readonly skipIfOlderThan: Option.Option<Duration.Input> }
 /** Explicit creation: every other command fails with `NotCreated` until this one has run. */
 export interface CreatedBy<C extends AnyCommand> { readonly _tag: "CreatedBy"; readonly command: C }
+/**
+ * What open connections do to hibernation (decision 163, Durable Object semantics). `park` (default): the activation
+ * sleeps on `Hibernate.after` with sockets open; the edge keeps `conn.state` (≤ 16 KiB) and the next inbound frame,
+ * broadcast or `NOTIFY actor_wake` re-runs the handler with `ctx.conn.resumed = true`. `keepAwake`: an open connection
+ * counts as activity.
+ */
+export interface ConnectionsPolicy { readonly _tag: "Connections"; readonly mode: "park" | "keepAwake" }
 
 /**
  * Contract-side lifecycle. `C` is the actor's own command union, so `Cron.every(expr, Foreign)` and
@@ -474,6 +618,7 @@ export type Policy<C extends AnyCommand = AnyCommand> =
   | MailboxPolicy
   | DefectsPolicy
   | DeliveryPolicy
+  | DeliveryTimeoutPolicy
   | EffectsPolicy
   | CommandTimeoutPolicy
   | LockWaitPolicy
@@ -482,8 +627,7 @@ export type Policy<C extends AnyCommand = AnyCommand> =
   | StatePolicy
   | CronPolicy<C>
   | CreatedBy<C>
-/** What an ephemeral actor may declare: no receipts, events, effects, state or creation to govern (decision 133). @category policies */
-export type EphemeralPolicy<C extends AnyCommand = AnyCommand> = Extract<Policy<C>, { readonly _tag: "Hibernate" | "MailboxCapacity" | "DefectRetry" | "DeliveryRetry" | "CommandTimeout" | "Cron" }>
+  | ConnectionsPolicy
 
 /** @category policies */
 export const Hibernate = {
@@ -499,7 +643,9 @@ export const Defects = {
 }
 /** @category policies */
 export const Delivery = {
-  retry: (schedule: Schedule.Schedule<any, unknown>): DeliveryPolicy => ({ _tag: "DeliveryRetry", schedule })
+  retry: (schedule: Schedule.Schedule<any, unknown>): DeliveryPolicy => ({ _tag: "DeliveryRetry", schedule }),
+  /** how long a caller waits for a reply before `ActorError(Timeout)`; default `"30 seconds"` */
+  timeout: (after: Duration.Input): DeliveryTimeoutPolicy => ({ _tag: "DeliveryTimeout", after })
 }
 /** @category policies */
 export const Effects = {
@@ -524,46 +670,112 @@ export const State = {
 }
 /** @category policies */
 export const Cron = {
-  every: <C extends Command<string, undefined, any, any, any>>(expression: string, command: C): CronPolicy<C> => ({ _tag: "Cron", expression, command })
+  every: <C extends Command<string, undefined, any, any, any>>(expression: string, command: C, options?: { readonly skipIfOlderThan?: Duration.Input }): CronPolicy<C> =>
+    ({ _tag: "Cron", expression, command, skipIfOlderThan: Option.fromNullishOr(options?.skipIfOlderThan) })
 }
 /** @category policies */
 export const Lifecycle = {
   /** Opt-in to explicit creation. The creating command itself never fails with `NotCreated`. */
   createdBy: <C extends AnyCommand>(command: C): CreatedBy<C> => ({ _tag: "CreatedBy", command })
 }
+/** @category policies */
+export const Connections = {
+  park: { _tag: "Connections", mode: "park" } as ConnectionsPolicy,
+  keepAwake: { _tag: "Connections", mode: "keepAwake" } as ConnectionsPolicy
+}
 /** One place to find every policy when typing `Policy.` (decision 101); the individual exports stay. @category policies */
-export const Policy = { Hibernate, Mailbox, Defects, Delivery, Effects, Commands, Receipts, Events, State, Cron, Lifecycle }
+export const Policy = { Hibernate, Mailbox, Defects, Delivery, Effects, Commands, Receipts, Events, State, Cron, Lifecycle, Connections }
 
 // ---------------------------------------------------------------------------------------------------
-// Type helpers
+// The Members bag: one type parameter for every context, handle and handler type
 // ---------------------------------------------------------------------------------------------------
 
+/**
+ * What `Actor.make` was given, as types. A definition object satisfies this structurally, so
+ * `CommandContext<typeof Chat>`, `Handle<typeof Chat>`, `EventsOf<typeof Chat>` are the app-side spellings.
+ * @category kinds
+ */
+export interface Members {
+  readonly id: Schema.Top
+  readonly commands: ReadonlyArray<AnyCommand>
+  readonly internal: ReadonlyArray<AnyCommand>
+  readonly queries: ReadonlyArray<AnyQuery>
+  readonly streams: ReadonlyArray<AnyStream>
+  readonly connections: ReadonlyArray<AnyConnection>
+  readonly workflows: ReadonlyArray<AnyWorkflow>
+  readonly events: ReadonlyArray<AnyTagged>
+  readonly effects: ReadonlyArray<AnyTagged>
+  readonly tables: ReadonlyArray<AnyTable>
+  readonly state: Schema.Struct.Fields
+  readonly vars: Schema.Struct.Fields
+  readonly blobs: ReadonlyArray<AnyBlob>
+  readonly migrations: ReadonlyArray<AnyMigration>
+  readonly lifecycle: ReadonlyArray<Policy<any>>
+}
+/** How ids come to be (decision 164). @category kinds */
+export type IdMode = "minted" | "named" | "singleton"
+/** Structural minimum shared by everything that takes "an actor": identity and id mode. @category kinds */
+export interface AnyActor extends Members {
+  readonly _kind: "actor"
+  readonly name: string
+  readonly description: string | undefined
+  readonly mode: IdMode
+}
+
+type Cmds<M extends Members> = M["commands"][number]
+type Wfs<M extends Members> = M["workflows"][number]
+type Evs<M extends Members> = M["events"][number]
+type Efs<M extends Members> = M["effects"][number]
+/** Outside handles, HTTP and the Promise client see only non-internal commands (decision 95). */
+type Public<M extends Members> = Exclude<Cmds<M>, M["internal"][number]>
 type Args<C> = C extends { readonly input: infer I } ? (I extends Schema.Top ? [input: I["Type"]] : []) : []
 type ParamsArgs<N> = N extends { readonly params: infer P } ? (P extends Schema.Top ? [params: P["Type"]] : []) : []
 type OutOf<C> = C extends { readonly output: infer O extends Schema.Top } ? O["Type"] : never
 type ErrOf<C> = C extends { readonly errors: infer Er extends ReadonlyArray<Schema.Top> } ? Er[number]["Type"] : never
+type InputOf<W> = W extends { readonly input: infer I extends Schema.Top } ? I["Type"] : never
 type ServerOf<N> = N extends { readonly server: infer S extends Schema.Top } ? S["Type"] : never
 type ClientOf<N> = N extends { readonly client: infer S extends Schema.Top } ? S["Type"] : never
 type ConnStateOf<N> = N extends { readonly state: infer S extends Schema.Struct.Fields } ? S : {}
 type ErrorSchemaOf<Er extends ReadonlyArray<Schema.Top>> = Er extends readonly [] ? typeof Schema.Never : Schema.Union<Er>
+/** `get(id)` for named and minted ids, `get()` for a singleton. */
+export type IdArgs<A> = A extends { readonly mode: "singleton" } ? [] : A extends { readonly id: infer Id extends Schema.Top } ? [id: Id["Type"]] : never
+export type IdOf<A> = A extends { readonly id: infer Id extends Schema.Top } ? Id["Type"] : never
+export type EventsOf<A extends Members> = Evs<A>
+export type StateOf<A extends Members> = StateValues<A["state"]>
+export type VarsOf<A extends Members> = StateValues<A["vars"]>
+export type HandleOf<A extends Members> = Handle<A>
 
-/** `NotCreated` is added to every command except the one named by `Lifecycle.createdBy`. */
-type CreatingTag<Ps extends ReadonlyArray<Policy<any>>> = Extract<Ps[number], { readonly _tag: "CreatedBy" }>["command"]["tag"]
-type CreationError<Ps extends ReadonlyArray<Policy<any>>, C extends AnyCommand> = [Extract<Ps[number], { readonly _tag: "CreatedBy" }>] extends [never] ? never
-  : C["tag"] extends CreatingTag<Ps> ? never
+/** `NotCreated` is a possible reason on every command except the one named by `Lifecycle.createdBy`. */
+type CreatingTag<M extends Members> = Extract<M["lifecycle"][number], { readonly _tag: "CreatedBy" }>["command"]["tag"]
+type CreationReason<M extends Members, C extends { readonly tag: string }> = [Extract<M["lifecycle"][number], { readonly _tag: "CreatedBy" }>] extends [never] ? never
+  : C["tag"] extends CreatingTag<M> ? never
   : NotCreated
-/** Outside handles, HTTP, the Promise client and toolkits see only non-internal commands (decision 95). */
-type Public<Cs extends ReadonlyArray<AnyCommand>, Is extends ReadonlyArray<AnyCommand>> = Exclude<Cs[number], Is[number]>
+/** What a Cluster hop can do to a call; queries never take one (decision 4). */
+type DeliveryReason = ActorUnavailable | MailboxFull | Timeout
+type CommandFailure<M extends Members, C extends AnyCommand> = ActorError.Of<DeliveryReason | CommandConflict | CreationReason<M, C>>
+type WorkflowStartFailure<M extends Members, W extends AnyWorkflow> = ActorError.Of<DeliveryReason | CreationReason<M, W>>
+
+// ---------------------------------------------------------------------------------------------------
+// State, vars, blobs (decisions 125, 131, 136, 160, 165)
+// ---------------------------------------------------------------------------------------------------
 
 /** Keyed state (decision 125): synchronous reads, `set` writes only the dirty keys at commit. */
 export type StateValues<S extends Schema.Struct.Fields> = Schema.Struct.Type<S>
 export type StateHandle<S extends Schema.Struct.Fields> = Readonly<StateValues<S>> & {
   readonly set: (patch: Partial<StateValues<S>>) => Effect.Effect<void>
 }
-/** Ephemeral memory (decision 133) and per-connection state: in the activation closure, typed by the declared fields. */
-export type MemoryHandle<M extends Schema.Struct.Fields> = Readonly<StateValues<M>> & {
-  readonly set: (patch: Partial<StateValues<M>>) => Effect.Effect<void>
-  readonly update: (f: (current: StateValues<M>) => StateValues<M>) => Effect.Effect<void>
+/** The committed snapshot outside a turn, plus `changes`: one element per committed turn that wrote state (decision 165). */
+export type StateSnapshot<S extends Schema.Struct.Fields> = Readonly<StateValues<S>> & {
+  readonly changes: Stream.Stream<StateValues<S>>
+}
+/**
+ * Per-activation, typed, in memory (decision 160): caches, cursors, clients. Initial values come from the schema
+ * defaults; `Hibernate.after` drops them. Not agent memory: nothing here survives sleep. Non-serialisable things
+ * (an SDK client, a socket) are closure variables in the Effect form of `toLayer`, not `vars`.
+ */
+export type VarsHandle<V extends Schema.Struct.Fields> = Readonly<StateValues<V>> & {
+  readonly set: (patch: Partial<StateValues<V>>) => Effect.Effect<void>
+  readonly update: (f: (current: StateValues<V>) => StateValues<V>) => Effect.Effect<void>
 }
 
 /**
@@ -584,15 +796,15 @@ export interface BlobRead {
 
 /**
  * Request/reply inside a turn is a readable type error (decision 110). A handler whose Effect needs
- * `Actors` or `CurrentCaller` called an outside handle; the fix is named in the key.
+ * `Actors` called an outside handle; the fix is named in the key.
  */
-export type InsideTurn<R> = [Extract<R, Actors | CurrentCaller>] extends [never] ? unknown
+export type InsideTurn<R> = [Extract<R, Actors>] extends [never] ? unknown
   : { readonly "Request/reply inside a turn is not allowed: use ctx.actors.get(Other, id).Command.send(...) or ctx.self.Command.send(...)": never }
 
 /**
  * Runtime twin of `InsideTurn` (decision 146). The type check only sees requirements, and a handle bound before the
  * turn has `R = never`, so `turn()` also sets this reference around the handler and every outside operation
- * (`X.get`, handle methods, `Actors.get`, `W.start`) dies when it finds it `true`. Not a user customization point.
+ * (`X.get`, handle methods, `Actors.get`) dies when it finds it `true`. Not a user customization point.
  * @internal
  */
 export const InActorTurn = Context.Reference<boolean>("durable-actors/InActorTurn", { defaultValue: () => false })
@@ -604,14 +816,14 @@ export const outsideTurn = <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effec
       : self)
 
 // ---------------------------------------------------------------------------------------------------
-// Handles (decisions 7, 17, 19, 20, 89, 95, 99, 100, 114, 119, 126)
+// Handles (decisions 7, 17, 19, 20, 89, 95, 99, 100, 114, 119, 126, 154, 158, 167)
 // ---------------------------------------------------------------------------------------------------
 
 /** @category clients */
 export interface GetOptions {
   /** explicit tenant; otherwise `Actor.layer({ tenant })` derives it from the principal, else the ambient `Tenant` reference */
   readonly tenant?: TenantId
-  /** bind the caller here instead of taking it from the context */
+  /** bind the caller here instead of taking it from `CurrentCaller` */
   readonly as?: Principal | Caller
 }
 export interface IntentOptions {
@@ -650,66 +862,69 @@ export interface Connection<Server, Client> {
   readonly close: Effect.Effect<void>
 }
 
+export const ExecutionId = Schema.String.pipe(Schema.brand("ExecutionId"))
+export type ExecutionId = typeof ExecutionId.Type
+export class WorkflowInterrupted extends Schema.TaggedError<WorkflowInterrupted>()("WorkflowInterrupted", {
+  executionId: ExecutionId
+}) {
+  override get message(): string {
+    return `workflow execution ${this.executionId} was interrupted`
+  }
+}
+/** A running (or finished) execution: `WorkflowEngine.poll / interrupt` behind a handle (decision 119). @category clients */
+export interface WorkflowRun<Out, Err> {
+  readonly id: ExecutionId
+  /** the owner-scoped key the run was started under (`"default"` when none was given) */
+  readonly key: string
+  /** waits for completion */
+  readonly result: Effect.Effect<Out, Err | WorkflowInterrupted>
+  readonly poll: Effect.Effect<Option.Option<Exit.Exit<Out, Err>>>
+  readonly interrupt: Effect.Effect<void>
+}
+/** `x.Review.start(input)` / `x.Review.run(key)` on an outside handle (decision 158). */
+export interface WorkflowMethod<M extends Members, W extends AnyWorkflow> {
+  /** starts a run keyed by `key` (default `"default"`); a live run under the same key is joined, not duplicated */
+  readonly start: (input: InputOf<W>, options?: { readonly key?: string }) => Effect.Effect<WorkflowRun<OutOf<W>, ErrOf<W>>, WorkflowStartFailure<M, W>>
+  /** rehydrates the run under `key`; `None` when none was ever started */
+  readonly run: (key?: string) => Effect.Effect<Option.Option<WorkflowRun<OutOf<W>, ErrOf<W>>>>
+}
+
 /** Inside a turn, other actors (and self) are reachable only as durable intents. */
 export interface IntentMethod<C> {
   readonly send: (...args: [...Args<C>, options?: IntentOptions]) => Effect.Effect<void>
   readonly after: (delay: Duration.Input, ...args: [...Args<C>, options?: IntentOptions]) => Effect.Effect<void>
   readonly at: (when: DateTime.Utc, ...args: [...Args<C>, options?: IntentOptions]) => Effect.Effect<void>
 }
-export type IntentHandle<Cs extends ReadonlyArray<AnyCommand>> = {
-  readonly [C in Cs[number] as C["tag"]]: IntentMethod<C>
+/** Workflow intents commit with the turn: the engine starts (or interrupts) the run after COMMIT. */
+export interface WorkflowIntent<W> {
+  readonly start: (input: InputOf<W>, options?: { readonly key?: string }) => Effect.Effect<void>
+  readonly cancel: (key?: string) => Effect.Effect<void>
 }
+export type IntentHandle<M extends Members> =
+  & { readonly [C in Cmds<M> as C["tag"]]: IntentMethod<C> }
+  & { readonly [W in Wfs<M> as W["tag"]]: WorkflowIntent<W> }
 
 /** The outside handle: caller bound at `get`, so every method has `R = never` (decision 89). @category clients */
-export type Handle<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Is extends ReadonlyArray<AnyCommand>,
-  Qs extends ReadonlyArray<AnyQuery>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  Ev extends AnyTagged,
-  Ps extends ReadonlyArray<Policy<any>>
-> =
-  & { readonly id: Id["Type"]; readonly ref: ActorRef }
-  & { readonly [C in Public<Cs, Is> as C["tag"]]: (...args: Args<C>) => Effect.Effect<OutOf<C>, ErrOf<C> | CommandConflict | ActorUnavailable | CreationError<Ps, C>> }
-  /** queries run on the caller's node against committed rows: no Cluster hop, no ActorUnavailable */
-  & { readonly [Q in Qs[number] as Q["tag"]]: (...args: Args<Q>) => Effect.Effect<OutOf<Q>, ErrOf<Q>> }
+export type Handle<M extends Members> =
+  & { readonly id: IdOf<M>; readonly ref: ActorRef }
+  & { readonly [C in Public<M> as C["tag"]]: (...args: Args<C>) => Effect.Effect<OutOf<C>, ErrOf<C> | CommandFailure<M, C>> }
+  /** queries run on the caller's node against committed rows: no Cluster hop, so no ActorError */
+  & { readonly [Q in M["queries"][number] as Q["tag"]]: (...args: Args<Q>) => Effect.Effect<OutOf<Q>, ErrOf<Q>> }
   /** streams run on the actor's node but are forked past the mailbox, and are live only (not persisted) */
-  & { readonly [S in Ss[number] as S["tag"]]: (...args: Args<S>) => Stream.Stream<OutOf<S>, ErrOf<S> | ActorUnavailable> }
+  & { readonly [S in M["streams"][number] as S["tag"]]: (...args: Args<S>) => Stream.Stream<OutOf<S>, ErrOf<S> | ActorError.Of<DeliveryReason>> }
   /** connections are scoped: closing the scope closes the socket */
-  & { readonly [N in Cn[number] as N["tag"]]: (...args: ParamsArgs<N>) => Effect.Effect<Connection<ServerOf<N>, ClientOf<N>>, ErrOf<N> | ActorUnavailable, Scope.Scope> }
-  & { readonly events: EventsMethod<Ev> }
+  & { readonly [N in M["connections"][number] as N["tag"]]: (...args: ParamsArgs<N>) => Effect.Effect<Connection<ServerOf<N>, ClientOf<N>>, ErrOf<N> | ActorError.Of<DeliveryReason>, Scope.Scope> }
+  & { readonly [W in Wfs<M> as W["tag"]]: WorkflowMethod<M, W> }
+  & { readonly events: EventsMethod<Evs<M>> }
 
 /** Inside a workflow the caller is `System("workflow", { onBehalfOf })`, internal commands are reachable, and delivery failures are the engine's problem. */
-export type WorkflowHandle<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Qs extends ReadonlyArray<AnyQuery>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Ev extends AnyTagged,
-  Ps extends ReadonlyArray<Policy<any>>
-> =
-  & { readonly id: Id["Type"]; readonly ref: ActorRef }
-  & { readonly [C in Cs[number] as C["tag"]]: (...args: Args<C>) => Effect.Effect<OutOf<C>, ErrOf<C> | CreationError<Ps, C>> }
-  & { readonly [Q in Qs[number] as Q["tag"]]: (...args: Args<Q>) => Effect.Effect<OutOf<Q>, ErrOf<Q>> }
-  & { readonly [S in Ss[number] as S["tag"]]: (...args: Args<S>) => Stream.Stream<OutOf<S>, ErrOf<S>> }
-  & { readonly events: EventsMethod<Ev> }
-
-/** Ephemeral handles: no receipts, so no `CommandConflict`; no creation, so no `NotCreated`; queries go to the activation (memory lives there). */
-export type EphemeralHandle<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Is extends ReadonlyArray<AnyCommand>,
-  Qs extends ReadonlyArray<AnyQuery>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>
-> =
-  & { readonly id: Id["Type"]; readonly ref: ActorRef }
-  & { readonly [C in Public<Cs, Is> as C["tag"]]: (...args: Args<C>) => Effect.Effect<OutOf<C>, ErrOf<C> | ActorUnavailable> }
-  & { readonly [Q in Qs[number] as Q["tag"]]: (...args: Args<Q>) => Effect.Effect<OutOf<Q>, ErrOf<Q> | ActorUnavailable> }
-  & { readonly [S in Ss[number] as S["tag"]]: (...args: Args<S>) => Stream.Stream<OutOf<S>, ErrOf<S> | ActorUnavailable> }
-  & { readonly [N in Cn[number] as N["tag"]]: (...args: ParamsArgs<N>) => Effect.Effect<Connection<ServerOf<N>, ClientOf<N>>, ErrOf<N> | ActorUnavailable, Scope.Scope> }
+export type WorkflowHandle<M extends Members> =
+  & { readonly id: IdOf<M>; readonly ref: ActorRef }
+  & { readonly [C in Cmds<M> as C["tag"]]: (...args: Args<C>) => Effect.Effect<OutOf<C>, ErrOf<C> | ActorError.Of<CreationReason<M, C>>> }
+  & { readonly [Q in M["queries"][number] as Q["tag"]]: (...args: Args<Q>) => Effect.Effect<OutOf<Q>, ErrOf<Q>> }
+  & { readonly [S in M["streams"][number] as S["tag"]]: (...args: Args<S>) => Stream.Stream<OutOf<S>, ErrOf<S>> }
+  & { readonly [W in Wfs<M> as W["tag"]]: WorkflowMethod<M, W> }
+  & { readonly events: EventsMethod<Evs<M>> }
 
 /** Trailing options on every Promise-client call (decision 114). @category clients */
 export interface CallOptions {
@@ -725,25 +940,23 @@ export interface PromiseConnection<Server, Client> extends AsyncIterable<Server>
   readonly send: (frame: Client) => Promise<void>
   readonly close: () => void
 }
-/** Derived, Promise-based client for non-Effect callers (browsers, coding agents). Same error classes, thrown, plus `InvalidInput | Unauthorized | TransportError`. @category clients */
-export type PromiseHandle<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Is extends ReadonlyArray<AnyCommand>,
-  Qs extends ReadonlyArray<AnyQuery>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  Ev extends AnyTagged
-> =
-  & { readonly id: Id["Type"] }
-  & { readonly [C in Public<Cs, Is> as C["tag"]]: (...args: [...Args<C>, options?: CallOptions]) => Promise<OutOf<C>> }
-  & { readonly [Q in Qs[number] as Q["tag"]]: (...args: [...Args<Q>, options?: StreamOptions]) => Promise<OutOf<Q>> }
-  & { readonly [S in Ss[number] as S["tag"]]: (...args: [...Args<S>, options?: StreamOptions]) => AsyncIterable<OutOf<S>> }
-  & { readonly [N in Cn[number] as N["tag"]]: (...args: [...ParamsArgs<N>, options?: StreamOptions]) => PromiseConnection<ServerOf<N>, ClientOf<N>> }
+/** Derived, Promise-based client for non-Effect callers (browsers, scripts). Throws `ActorError` (reasons include `InvalidInput | Unauthorized | TransportError`) and the declared errors. @category clients */
+export type PromiseHandle<M extends Members> =
+  & { readonly id: IdOf<M> }
+  & { readonly [C in Public<M> as C["tag"]]: (...args: [...Args<C>, options?: CallOptions]) => Promise<OutOf<C>> }
+  & { readonly [Q in M["queries"][number] as Q["tag"]]: (...args: [...Args<Q>, options?: StreamOptions]) => Promise<OutOf<Q>> }
+  & { readonly [S in M["streams"][number] as S["tag"]]: (...args: [...Args<S>, options?: StreamOptions]) => AsyncIterable<OutOf<S>> }
+  & { readonly [N in M["connections"][number] as N["tag"]]: (...args: [...ParamsArgs<N>, options?: StreamOptions]) => PromiseConnection<ServerOf<N>, ClientOf<N>> }
+  & {
+    readonly [W in Wfs<M> as W["tag"]]: {
+      readonly start: (input: InputOf<W>, options?: { readonly key?: string } & StreamOptions) => Promise<{ readonly id: ExecutionId; readonly key: string }>
+      readonly result: (key?: string, options?: StreamOptions) => Promise<OutOf<W>>
+    }
+  }
   & {
     readonly events: {
-      (options?: EventsOptions & StreamOptions): AsyncIterable<ActorEvent<Ev["Type"]>>
-      <E extends Ev>(event: E, options?: EventsOptions & StreamOptions): AsyncIterable<ActorEvent<E["Type"]>>
+      (options?: EventsOptions & StreamOptions): AsyncIterable<ActorEvent<Evs<M>["Type"]>>
+      <E extends Evs<M>>(event: E, options?: EventsOptions & StreamOptions): AsyncIterable<ActorEvent<E["Type"]>>
     }
   }
 /** @category clients */
@@ -753,20 +966,13 @@ export interface ClientOptions {
   readonly fetch?: typeof fetch
   readonly timeoutInMs?: number
 }
-export interface PromiseClient<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Is extends ReadonlyArray<AnyCommand>,
-  Qs extends ReadonlyArray<AnyQuery>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  Ev extends AnyTagged
-> {
-  readonly get: (id: Id["Type"], options?: { readonly tenant?: TenantId }) => PromiseHandle<Id, Cs, Is, Qs, Ss, Cn, Ev>
+export interface PromiseClient<A extends AnyActor> {
+  readonly get: (...args: [...IdArgs<A>, options?: { readonly tenant?: TenantId }]) => PromiseHandle<A>
+  readonly create: A extends { readonly mode: "minted" } ? (options?: { readonly tenant?: TenantId }) => PromiseHandle<A> : never
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Contexts (decisions 9–13, 21–24, 91, 100, 103, 104, 108, 125–127, 131)
+// Contexts (decisions 9–13, 21–24, 91, 100, 103, 104, 108, 125–127, 131, 136, 158, 160, 163, 165)
 // ---------------------------------------------------------------------------------------------------
 
 export interface ConnectionInfo {
@@ -774,15 +980,15 @@ export interface ConnectionInfo {
   readonly caller: Caller
   readonly openedAt: DateTime.Utc
 }
-/** Broadcast is queued inside a command and flushed after COMMIT (like `emit`, not persisted); immediate elsewhere. */
-export interface Connections<Cn extends ReadonlyArray<AnyConnection>> {
-  readonly broadcast: (frame: ServerOf<Cn[number]>, options?: { readonly except?: ConnectionId }) => Effect.Effect<void>
+/** Broadcast is queued inside a command and flushed after COMMIT (like `emit`, not persisted); immediate elsewhere. Parked connections are woken by it. */
+export interface ConnectionsHandle<M extends Members> {
+  readonly broadcast: (frame: ServerOf<M["connections"][number]>, options?: { readonly except?: ConnectionId }) => Effect.Effect<void>
   readonly list: Effect.Effect<ReadonlyArray<ConnectionInfo>>
 }
 
-interface Identity<Id extends Schema.Top> {
+interface Identity<M extends Members> {
   readonly ref: ActorRef
-  readonly id: Id["Type"]
+  readonly id: IdOf<M>
   readonly tenantId: TenantId
   readonly now: DateTime.Utc
 }
@@ -791,622 +997,125 @@ interface Attributed {
   /** the user, or the principal a system caller acts for (decision 91) */
   readonly principal: Option.Option<Principal>
 }
+/** What every context on the activation reads without a transaction: committed rows, the state snapshot, blobs, vars. */
+interface ActivationRead<M extends Members> extends Identity<M> {
+  readonly db: Drizzle
+  readonly rows: <T extends M["tables"][number]>(table: T) => ScopedRead<T>
+  readonly state: StateSnapshot<M["state"]>
+  readonly blob: <B extends M["blobs"][number]>(blob: B) => BlobRead
+  readonly vars: VarsHandle<M["vars"]>
+}
 
 /** One transaction; the fence has been taken; `rows`, `state`, `blob` write into it. @category contexts */
-export interface CommandContext<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Ev extends AnyTagged,
-  Ef extends AnyTagged,
-  S extends Schema.Struct.Fields,
-  Bs extends ReadonlyArray<AnyBlob>,
-  Cn extends ReadonlyArray<AnyConnection>
-> extends Identity<Id>, Attributed {
+export interface CommandContext<M extends Members> extends Identity<M>, Attributed {
   /** minted by the caller (or the edge); receipts key on it; stable across retries (decision 113) */
   readonly commandId: string
   /** joined to the turn transaction: joins and anything `rows` cannot say */
   readonly db: Drizzle
   /** declared `tables`, pre-scoped to this actor */
-  readonly rows: <T extends AnyTable>(table: T) => Scoped<T>
+  readonly rows: <T extends M["tables"][number]>(table: T) => Scoped<T>
   /** declared `state` keys, loaded after the fence; `ctx.state.count` reads, `yield* ctx.state.set({...})` writes */
-  readonly state: StateHandle<S>
-  readonly blob: <B extends Bs[number]>(blob: B) => BlobHandle
-  /** durable intents to self; no request/reply inside a turn */
-  readonly self: IntentHandle<Cs>
+  readonly state: StateHandle<M["state"]>
+  /** declared `vars`: per-activation memory, not part of the transaction */
+  readonly vars: VarsHandle<M["vars"]>
+  readonly blob: <B extends M["blobs"][number]>(blob: B) => BlobHandle
+  /** durable intents to self — commands, timers and this actor's workflows; no request/reply inside a turn */
+  readonly self: IntentHandle<M>
   /** durable intents to other actors */
   readonly actors: ActorIntents
-  readonly workflows: {
-    readonly start: <W extends AnyWorkflow>(workflow: W, input: WorkflowInput<W>) => Effect.Effect<void>
-    /** intent: the engine interrupts the run after COMMIT */
-    readonly cancel: <W extends AnyWorkflow>(workflow: W, idempotencyKey: string) => Effect.Effect<void>
-  }
   readonly timers: {
     readonly cancel: (key: string) => Effect.Effect<void>
   }
   /** typed to the actor's declared `events`; delivered after commit */
-  readonly emit: (event: Ev["Type"]) => Effect.Effect<void>
+  readonly emit: (event: Evs<M>["Type"]) => Effect.Effect<void>
   /** typed to the actor's declared `effects`; executed after commit, at least once, by the executor in the server file */
-  readonly perform: (effect: Ef["Type"]) => Effect.Effect<void>
-  readonly connections: Connections<Cn>
+  readonly perform: (effect: Efs<M>["Type"]) => Effect.Effect<void>
+  readonly connections: ConnectionsHandle<M>
   /** tombstones this generation, deletes the declared `tables` rows and purges timers; later commands recreate the actor (or fail `NotCreated`) */
   readonly terminate: Effect.Effect<void>
 }
 /** Ambient access to the current turn from deep inside handler code. Present only inside a command handler. @category contexts */
-export class Turn extends Context.Service<Turn, CommandContext<any, any, any, any, any, any, any>>()("durable-actors/Turn") {}
+export class Turn extends Context.Service<Turn, CommandContext<any>>()("durable-actors/Turn") {}
 
-/** Runs on the caller's node. No fence, no receipt, no transaction; reads are structurally read-only (decision 103). @category contexts */
-export interface QueryContext<Id extends Schema.Top, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>> extends Identity<Id>, Attributed {
+/** Runs on the caller's node. No fence, no receipt, no transaction, no activation (so no `vars`); reads are structurally read-only (decision 103). @category contexts */
+export interface QueryContext<M extends Members> extends Identity<M>, Attributed {
   readonly db: Drizzle
-  readonly rows: <T extends AnyTable>(table: T) => ScopedRead<T>
+  readonly rows: <T extends M["tables"][number]>(table: T) => ScopedRead<T>
   /** committed snapshot */
-  readonly state: Readonly<StateValues<S>>
-  readonly blob: <B extends Bs[number]>(blob: B) => BlobRead
+  readonly state: Readonly<StateValues<M["state"]>>
+  readonly blob: <B extends M["blobs"][number]>(blob: B) => BlobRead
 }
-export class Query extends Context.Service<Query, QueryContext<any, any, any>>()("durable-actors/Query") {}
+export class Query extends Context.Service<Query, QueryContext<any>>()("durable-actors/Query") {}
 
 /**
  * Runs on the actor's node, forked past `concurrency: 1` (Rpc.fork), so a long stream never blocks
  * commands. Live only: the rpc is annotated `Persisted: false`, a reconnect starts a fresh stream.
  * @category contexts
  */
-export interface StreamContext<Id extends Schema.Top, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>, Ev extends AnyTagged, Cn extends ReadonlyArray<AnyConnection>>
-  extends QueryContext<Id, S, Bs> {
-  readonly events: EventsMethod<Ev>
-  readonly connections: Connections<Cn>
+export interface StreamContext<M extends Members> extends ActivationRead<M>, Attributed {
+  readonly events: EventsMethod<Evs<M>>
+  readonly connections: ConnectionsHandle<M>
 }
-/** A connection handler runs on the activation for the life of the socket. @category contexts */
-export interface ConnectionContext<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  S extends Schema.Struct.Fields,
-  Bs extends ReadonlyArray<AnyBlob>,
-  Ev extends AnyTagged,
-  Cn extends ReadonlyArray<AnyConnection>,
-  N extends AnyConnection
-> extends StreamContext<Id, S, Bs, Ev, Cn> {
+/**
+ * A connection handler runs on the activation for the life of the socket. Under `Connections.park` (default) the
+ * activation may sleep with the socket open; the handler is re-run on wake with `conn.resumed = true` and the same
+ * `conn.state`, and `inbound` continues from the frame that woke it.
+ * @category contexts
+ */
+export interface ConnectionContext<M extends Members, N extends AnyConnection> extends StreamContext<M> {
   readonly conn: {
     readonly id: ConnectionId
     readonly caller: Caller
-    readonly state: MemoryHandle<ConnStateOf<N>>
+    /** per-connection, ≤ 16 KiB, kept by the edge across hibernation (decision 163) */
+    readonly state: VarsHandle<ConnStateOf<N>>
+    /** `true` when this handler run continues a parked socket rather than opening a new one */
+    readonly resumed: boolean
   }
-  /** durable intents from a connection handler (a durable change is still a command); typed to this actor's commands */
-  readonly self: IntentHandle<Cs>
+  /** durable intents from a connection handler (a durable change is still a command); typed to this actor's commands and workflows */
+  readonly self: IntentHandle<M>
 }
 
 /**
- * OnWake / OnSleep: no transaction, no caller, so nothing here writes (decision 136): rows, state and blobs
+ * OnWake / OnSleep / OnDefect: no transaction, no caller, so nothing here writes (decision 136): rows, state and blobs
  * are the committed snapshot. Maintenance that writes (compaction, backfills) is an `internal` command the
  * hook schedules with `ctx.self`.
  * @category contexts
  */
-export interface WakeContext<Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>> extends Identity<Id> {
-  readonly db: Drizzle
-  readonly rows: <T extends AnyTable>(table: T) => ScopedRead<T>
-  readonly state: Readonly<StateValues<S>>
-  readonly blob: <B extends Bs[number]>(blob: B) => BlobRead
-  readonly self: IntentHandle<Cs>
+export interface WakeContext<M extends Members> extends ActivationRead<M> {
+  readonly self: IntentHandle<M>
 }
 /**
- * `run` (decision 127): a long-lived loop on the activation, started on wake, interrupted on sleep. No
- * transaction, no `rows` writes: durable changes are intents; `state` is the committed snapshot,
- * refreshed after each turn. A `run` fiber does not keep the actor awake.
+ * `run` (decision 127, 169): a long-lived loop on the activation, started on wake, interrupted on sleep — sugar for
+ * `Effect.forkScoped` in the Effect form of `toLayer`, whose scope *is* the activation. No transaction, no `rows`
+ * writes: durable changes are intents; `state` is the committed snapshot, refreshed after each turn. A `run` fiber
+ * does not keep the actor awake.
  * @category contexts
  */
-export interface RunContext<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  S extends Schema.Struct.Fields,
-  Bs extends ReadonlyArray<AnyBlob>,
-  Ev extends AnyTagged,
-  Cn extends ReadonlyArray<AnyConnection>
-> extends WakeContext<Id, Cs, S, Bs> {
-  readonly events: EventsMethod<Ev>
+export interface RunContext<M extends Members> extends WakeContext<M> {
+  readonly events: EventsMethod<Evs<M>>
   readonly actors: ActorIntents
-  readonly connections: Connections<Cn>
+  readonly connections: ConnectionsHandle<M>
 }
 
 /** Outbox executor context. There is no `db`: results come back to the actor as intents on `ctx.self`. @category contexts */
-export interface EffectContext<Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>> extends Identity<Id> {
+export interface EffectContext<M extends Members> extends Identity<M> {
   readonly commandId: string
   readonly attempt: number
   readonly principal: Option.Option<Principal>
-  readonly self: IntentHandle<Cs>
+  readonly self: IntentHandle<M>
 }
 
-/** Ephemeral command context: memory instead of rows, in-memory intents to self, no emit/perform/db. @category contexts */
-export interface MemoryContext<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  M extends Schema.Struct.Fields,
-  Cn extends ReadonlyArray<AnyConnection>
-> extends Identity<Id>, Attributed {
-  readonly commandId: string
-  readonly memory: MemoryHandle<M>
-  /** in-memory intents (lost with the activation) */
-  readonly self: IntentHandle<Cs>
-  readonly actors: ActorIntents
-  readonly connections: Connections<Cn>
-}
-export interface MemoryReadContext<Id extends Schema.Top, M extends Schema.Struct.Fields, Cn extends ReadonlyArray<AnyConnection>> extends Identity<Id>, Attributed {
-  readonly memory: Readonly<StateValues<M>>
-  readonly connections: Connections<Cn>
-}
-export interface MemoryConnectionContext<Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, M extends Schema.Struct.Fields, Cn extends ReadonlyArray<AnyConnection>, N extends AnyConnection>
-  extends MemoryReadContext<Id, M, Cn> {
-  readonly conn: {
-    readonly id: ConnectionId
-    readonly caller: Caller
-    readonly state: MemoryHandle<ConnStateOf<N>>
-  }
-  readonly self: IntentHandle<Cs>
-}
-
-// ---------------------------------------------------------------------------------------------------
-// Server-side: handlers, hooks, executors, run (decisions 11, 23, 108, 109, 127)
-// ---------------------------------------------------------------------------------------------------
-
-export interface Hook<R> {
-  readonly _tag: "OnCreate" | "OnWake" | "OnSleep" | "OnEffectFailed"
-  readonly run: (...args: ReadonlyArray<any>) => Effect.Effect<void, never, R>
-}
-
-export type HandlersFor<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  Ev extends AnyTagged,
-  Ef extends AnyTagged,
-  S extends Schema.Struct.Fields,
-  Bs extends ReadonlyArray<AnyBlob>,
-  R
-> =
-  & { readonly [C in Cs[number] as C["tag"]]: (ctx: CommandContext<Id, Cs, Ev, Ef, S, Bs, Cn>, ...args: Args<C>) => Effect.Effect<OutOf<C>, ErrOf<C>, R> }
-  & { readonly [St in Ss[number] as St["tag"]]: (ctx: StreamContext<Id, S, Bs, Ev, Cn>, ...args: Args<St>) => Stream.Stream<OutOf<St>, ErrOf<St>, R> }
-  & { readonly [N in Cn[number] as N["tag"]]: (ctx: ConnectionContext<Id, Cs, S, Bs, Ev, Cn, N>, ...args: [...ParamsArgs<N>, inbound: Stream.Stream<ClientOf<N>>]) => Stream.Stream<ServerOf<N>, ErrOf<N>, R> }
-
-export type QueryHandlersFor<Id extends Schema.Top, Qs extends ReadonlyArray<AnyQuery>, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>, R> = {
-  readonly [Q in Qs[number] as Q["tag"]]: (ctx: QueryContext<Id, S, Bs>, ...args: Args<Q>) => Effect.Effect<OutOf<Q>, ErrOf<Q>, R>
-}
-
-/** `(ctx, effect)`: the same argument order as every other handler (decision 108). */
-export type EffectExecutors<Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Ef extends AnyTagged, R> = {
-  readonly [E in Ef as E["Type"]["_tag"]]: (ctx: EffectContext<Id, Cs>, effect: E["Type"]) => Effect.Effect<void, unknown, R>
-}
-
-/** Server-side: hooks and executors carry code, so they live with `toLayer` / `X.of` under `hooks:` (decision 109). */
-export interface ServeOptions<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Ef extends AnyTagged,
-  Ev extends AnyTagged,
-  S extends Schema.Struct.Fields,
-  Bs extends ReadonlyArray<AnyBlob>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  RX
-> {
-  readonly hooks?: ReadonlyArray<Hook<RX>>
-  readonly effects?: EffectExecutors<Id, Cs, Ef, RX>
-  readonly run?: (ctx: RunContext<Id, Cs, S, Bs, Ev, Cn>) => Effect.Effect<void, never, RX>
-}
-
-export const ServeTypeId = "~durable-actors/Serve" as const
-export type ServeTypeId = typeof ServeTypeId
-
-/** What `X.of(handlers, options)` returns: the handlers plus the closure the activation captured. */
-export interface Serve<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  Ev extends AnyTagged,
-  Ef extends AnyTagged,
-  S extends Schema.Struct.Fields,
-  Bs extends ReadonlyArray<AnyBlob>,
-  R,
-  RX
-> {
-  readonly [ServeTypeId]: ServeTypeId
-  readonly handlers: HandlersFor<Id, Cs, Ss, Cn, Ev, Ef, S, Bs, R>
-  readonly hooks?: ReadonlyArray<Hook<RX>>
-  readonly effects?: EffectExecutors<Id, Cs, Ef, RX>
-  readonly run?: (ctx: RunContext<Id, Cs, S, Bs, Ev, Cn>) => Effect.Effect<void, never, RX>
-}
-
-type RpcOfDef<D> = D extends Command<infer T, infer I, infer O, infer Er, any>
-  ? Rpc.Rpc<T, I extends Schema.Top ? I : typeof Schema.Void, O, ErrorSchemaOf<Er>>
-  : D extends QueryDef<infer T, infer I, infer O, infer Er, any>
-    ? Rpc.Rpc<T, I extends Schema.Top ? I : typeof Schema.Void, O, ErrorSchemaOf<Er>>
-    : D extends StreamDef<infer T, infer I, infer O, infer Er, any>
-      ? Rpc.Rpc<T, I extends Schema.Top ? I : typeof Schema.Void, RpcSchema.Stream<O, ErrorSchemaOf<Er>>, typeof Schema.Never>
-      : never
-export type RpcsOf<Ds extends ReadonlyArray<AnyCommand | AnyQuery | AnyStream>> = Extract<RpcOfDef<Ds[number]>, Rpc.Any>
-
-// ---------------------------------------------------------------------------------------------------
-// Kinds: Actor.make (decisions 1–13, 89–134)
-// ---------------------------------------------------------------------------------------------------
-
-/** @category kinds */
-export interface ActorDefinition<
-  Name extends string,
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Is extends ReadonlyArray<AnyCommand>,
-  Qs extends ReadonlyArray<AnyQuery>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  Ev extends AnyTagged,
-  Ef extends AnyTagged,
-  S extends Schema.Struct.Fields,
-  Bs extends ReadonlyArray<AnyBlob>,
-  Ps extends ReadonlyArray<Policy<any>>,
-  Desc extends string | undefined
-> {
-  readonly _kind: "actor"
-  readonly name: Name
-  readonly description: Desc
-  readonly id: Id
-  readonly commands: Cs
-  readonly internal: Is
-  readonly queries: Qs
-  readonly streams: Ss
-  readonly connections: Cn
-  readonly events: ReadonlyArray<Ev>
-  readonly effects: ReadonlyArray<Ef>
-  readonly tables: ReadonlyArray<AnyTable>
-  readonly state: S
-  readonly blobs: Bs
-  readonly lifecycle: Ps
-  /**
-   * `const counter = yield* Counter.get(id)` — resolves the runtime and binds the caller once; methods
-   * are then plain Effects with `R = never`. `{ as }` binds the caller explicitly; otherwise it comes
-   * from the context (`Actor.as` on the program, the HTTP middleware, `ActorTest.layer({ as })`).
-   */
-  readonly get: {
-    (id: Id["Type"], options: GetOptions & { readonly as: Principal | Caller }): Effect.Effect<Handle<Id, Cs, Is, Qs, Ss, Cn, Ev, Ps>, never, Actors>
-    (id: Id["Type"], options?: GetOptions): Effect.Effect<Handle<Id, Cs, Is, Qs, Ss, Cn, Ev, Ps>, never, Actors | CurrentCaller>
-  }
-  /** Promise client derived from `rpcs` over HTTP/WebSocket; mints `x-command-id` per call and reuses it on retry. */
-  readonly client: (options: ClientOptions) => PromiseClient<Id, Cs, Is, Qs, Ss, Cn, Ev>
-  /** Lives in the server file. Handlers may be an object or an Effect returning `X.of(...)` (one closure per activation). */
-  readonly toLayer: {
-    <R, RX = never>(
-      handlers: HandlersFor<Id, Cs, Ss, Cn, Ev, Ef, S, Bs, R> & InsideTurn<R>,
-      options?: ServeOptions<Id, Cs, Ef, Ev, S, Bs, Cn, RX>
-    ): Layer.Layer<never, never, Exclude<R | RX, Turn | Query> | Actors>
-    <R, RX, RB>(
-      build: Effect.Effect<Serve<Id, Cs, Ss, Cn, Ev, Ef, S, Bs, R, RX>, never, RB>
-    ): Layer.Layer<never, never, Exclude<R | RB | RX, Scope.Scope | Turn | Query> | Actors>
-  }
-  /** Queries never touch the entity: they read committed rows on the caller's node (decisions 4, 102). */
-  readonly toQueryLayer: {
-    <R>(handlers: QueryHandlersFor<Id, Qs, S, Bs, R>): Layer.Layer<never, never, Exclude<R, Query> | Database>
-    <R, RB>(build: Effect.Effect<QueryHandlersFor<Id, Qs, S, Bs, R>, never, RB>): Layer.Layer<never, never, Exclude<R | RB, Query | Scope.Scope> | Database>
-  }
-  /** packages the handlers with the activation closure's hooks, executors and run loop */
-  readonly of: <R, RX = never>(
-    handlers: HandlersFor<Id, Cs, Ss, Cn, Ev, Ef, S, Bs, R> & InsideTurn<R>,
-    options?: ServeOptions<Id, Cs, Ef, Ev, S, Bs, Cn, RX>
-  ) => Serve<Id, Cs, Ss, Cn, Ev, Ef, S, Bs, R, RX>
-  /** identity with contextual typing, for query handlers returned from an Effect */
-  readonly ofQueries: <R>(handlers: QueryHandlersFor<Id, Qs, S, Bs, R>) => QueryHandlersFor<Id, Qs, S, Bs, R>
-  /** first turn ever for this id; runs inside that turn's transaction before the command handler */
-  readonly onCreate: <R>(run: (ctx: CommandContext<Id, Cs, Ev, Ef, S, Bs, Cn>) => Effect.Effect<void, never, R>) => Hook<R>
-  readonly onWake: <R>(run: (ctx: WakeContext<Id, Cs, S, Bs>) => Effect.Effect<void, never, R>) => Hook<R>
-  readonly onSleep: <R>(run: (ctx: WakeContext<Id, Cs, S, Bs>) => Effect.Effect<void, never, R>) => Hook<R>
-  /** runs inside a turn: the dead-lettered effect is delivered to the actor as a framework command after `Effects.retry` is exhausted */
-  readonly onEffectFailed: <R>(
-    run: (ctx: CommandContext<Id, Cs, Ev, Ef, S, Bs, Cn>, effect: Ef["Type"], cause: Cause.Cause<unknown>) => Effect.Effect<void, never, R>
-  ) => Hook<R>
-  /** escape hatches: the Effect primitives underneath */
-  readonly rpcs: RpcGroup.RpcGroup<RpcsOf<[...Cs, ...Qs, ...Ss]>>
-  readonly entity: Entity.Entity<Name, RpcsOf<[...Cs, ...Ss]>>
-}
-
-/** Structural minimum shared by every actor kind, for APIs that only need identity (decision 134: members are not servable). */
-export interface AnyActor {
-  readonly _kind: "actor" | "ephemeral"
-  readonly name: string
-  readonly description: string | undefined
-  readonly id: Schema.Top
-}
-export type HandleOf<A extends { readonly get: (...args: any) => Effect.Effect<any, any, any> }> = Effect.Success<ReturnType<A["get"]>>
-/**
- * Structural, not `infer` on `ActorDefinition`: a concrete definition is not assignable to
- * `ActorDefinition<any, …>`, because the `any` tuples collapse `Handle`'s mapped types into string
- * index signatures. The same reason `HandleOf` reads `get` instead of destructuring the definition.
- */
-export type EventsOf<A> = A extends { readonly events: ReadonlyArray<infer Ev extends AnyTagged> } ? Ev : never
-export type StateOf<A> = A extends { readonly state: infer S extends Schema.Struct.Fields } ? StateValues<S> : never
-export type MemoryOf<A> = A extends { readonly memory: infer M extends Schema.Struct.Fields } ? StateValues<M> : never
-
-export interface ActorIntents {
-  readonly get: {
-    <Name extends string, Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Is extends ReadonlyArray<AnyCommand>, Qs extends ReadonlyArray<AnyQuery>, Ss extends ReadonlyArray<AnyStream>, Cn extends ReadonlyArray<AnyConnection>, Ev extends AnyTagged, Ef extends AnyTagged, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>, Ps extends ReadonlyArray<Policy<any>>, Desc extends string | undefined>(
-      actor: ActorDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, Ev, Ef, S, Bs, Ps, Desc>,
-      id: Id["Type"],
-      options?: { readonly tenant?: TenantId }
-    ): IntentHandle<Cs>
-    <Name extends string, Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Is extends ReadonlyArray<AnyCommand>, Qs extends ReadonlyArray<AnyQuery>, Ss extends ReadonlyArray<AnyStream>, Cn extends ReadonlyArray<AnyConnection>, M extends Schema.Struct.Fields, Ps extends ReadonlyArray<EphemeralPolicy<any>>, Desc extends string | undefined>(
-      actor: EphemeralDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, M, Ps, Desc>,
-      id: Id["Type"],
-      options?: { readonly tenant?: TenantId }
-    ): IntentHandle<Cs>
-  }
-}
-
-/** @category kinds */
-export const make = <
-  const Name extends string,
-  Id extends Schema.Top,
-  const Cs extends ReadonlyArray<AnyCommand>,
-  const Is extends ReadonlyArray<Cs[number]> = [],
-  const Qs extends ReadonlyArray<AnyQuery> = [],
-  const Ss extends ReadonlyArray<AnyStream> = [],
-  const Cn extends ReadonlyArray<AnyConnection> = [],
-  const Ev extends AnyTagged = never,
-  const Ef extends AnyTagged = never,
-  const S extends Schema.Struct.Fields = {},
-  const Bs extends ReadonlyArray<AnyBlob> = [],
-  const Ps extends ReadonlyArray<Policy<Cs[number]>> = [],
-  const Desc extends string | undefined = undefined
->(
-  name: Name,
-  def: {
-    readonly description?: Desc
-    /** required (decision 94): branded ids are the default, `Schema.String` is a choice you write down */
-    readonly id: Id
-    readonly commands: Cs
-    /** reachable from `ctx.self`, `ctx.actors`, workflows and executors; absent from handles, HTTP and tools (decision 95) */
-    readonly internal?: Is
-    readonly queries?: Qs
-    readonly streams?: Ss
-    readonly connections?: Cn
-    readonly events?: ReadonlyArray<Ev>
-    readonly effects?: ReadonlyArray<Ef>
-    readonly tables?: ReadonlyArray<AnyTable>
-    /**
-     * keyed state in `actor_state`, loaded after the fence (decision 125). A missing row decodes `{}`, so every
-     * key needs `Schema.withDecodingDefault(...)` or `Schema.optionalKey(...)`: a bare `Schema.Number` key makes
-     * the first turn die with a defect naming the key.
-     */
-    readonly state?: S
-    readonly blobs?: Bs
-    readonly lifecycle?: Ps
-    /** passed through to `Entity.toLayer`; the framework already sets actor/id/tenant/command/commandId (decision 112) */
-    readonly spanAttributes?: Record<string, string>
-  }
-): ActorDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, Ev, Ef, S, Bs, Ps, Desc> => {
-  const commands = def.commands
-  const queries = (def.queries ?? []) as unknown as Qs
-  const streams = (def.streams ?? []) as unknown as Ss
-  const connections = (def.connections ?? []) as unknown as Cn
-  const lifecycle = (def.lifecycle ?? []) as unknown as Ps
-  assertUniqueTags(name, [...commands, ...queries, ...streams, ...connections])
-  const policy = <T extends Policy["_tag"]>(tag: T) =>
-    (lifecycle as ReadonlyArray<Policy>).find((p): p is Extract<Policy, { _tag: T }> => p._tag === tag)
-  const toRpc = (d: AnyCommand | AnyQuery | AnyStream) =>
-    Rpc.make(d.tag, {
-      payload: d.input ?? Schema.Void,
-      success: d.output,
-      error: d.errors.length === 0 ? Schema.Never : Schema.Union(d.errors),
-      stream: d._kind === "stream"
-    })
-  // commands and queries are persisted (receipts, redelivery); streams and connections are live only
-  const group = (ds: ReadonlyArray<AnyCommand | AnyQuery | AnyStream>, persisted: boolean) =>
-    RpcGroup.make(...ds.map(toRpc)).annotateRpcs(ClusterSchema.Persisted, persisted) as any
-
-  const rpcs = group([...commands, ...queries], true).merge(group(streams, false)) as any
-  const entity = Entity.fromRpcGroup(name, group(commands, true).merge(group(streams, false))) as any
-
-  const self: ActorDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, Ev, Ef, S, Bs, Ps, Desc> = {
-    _kind: "actor",
-    name,
-    description: def.description as Desc,
-    id: def.id,
-    commands,
-    internal: (def.internal ?? []) as unknown as Is,
-    queries,
-    streams,
-    connections,
-    events: def.events ?? [],
-    effects: def.effects ?? [],
-    tables: def.tables ?? [],
-    state: (def.state ?? {}) as S,
-    blobs: (def.blobs ?? []) as unknown as Bs,
-    lifecycle,
-    get: ((id: Id["Type"], options?: GetOptions) =>
-      Effect.gen(function*() {
-        const actors = yield* Actors
-        const caller = options?.as !== undefined ? toCaller(options.as) : yield* CurrentCaller
-        return actors.get(self, id, { tenant: options?.tenant, as: caller })
-      })) as any,
-    client: (options) => makePromiseClient(self, options),
-    toLayer: ((build: unknown, options?: ServeOptions<Id, Cs, Ef, Ev, S, Bs, Cn, any>) =>
-      entity
-        .toLayer(
-          Effect.gen(function*() {
-            const address = yield* Entity.CurrentAddress
-            const built = Effect.isEffect(build) ? yield* (build as Effect.Effect<any>) : build
-            const serve = built[ServeTypeId] === ServeTypeId ? built : { handlers: built, ...options }
-            const handlers: Record<string, (...args: Array<any>) => Effect.Effect<any, any, any> | Stream.Stream<any, any, any>> = serve.handlers
-            const wired: Record<string, (env: any) => unknown> = {}
-            for (const d of commands) {
-              wired[d.tag] = (env) => turn(address, env, lifecycle, serve, (ctx) => handlers[d.tag]!(ctx, env.payload) as Effect.Effect<any, any, any>)
-            }
-            for (const d of streams) {
-              // Rpc.fork skips the entity's concurrency semaphore (RpcServer.ts: "if the handler requested forking")
-              wired[d.tag] = (env) => Rpc.fork(streamTurn(address, (ctx) => handlers[d.tag]!(ctx, env.payload) as Stream.Stream<any, any, any>))
-            }
-            return wired
-          }),
-          {
-            concurrency: 1,
-            maxIdleTime: policy("Hibernate")?.after ?? Duration.minutes(1),
-            mailboxCapacity: policy("MailboxCapacity")?.size,
-            defectRetryPolicy: policy("DefectRetry")?.schedule,
-            spanAttributes: def.spanAttributes
-          }
-        )
-        .pipe(Layer.provide(Layer.effect(Sharding.Sharding, Effect.map(ActorRuntime, (a) => a.sharding))))) as any,
-    toQueryLayer: ((build: unknown) =>
-      Layer.effectDiscard(
-        Effect.gen(function*() {
-          const handlers = Effect.isEffect(build) ? yield* (build as Effect.Effect<any>) : build
-          yield* registerQueries(self, handlers as Record<string, unknown>)
-        })
-      )) as any,
-    of: (handlers, options) => ({ [ServeTypeId]: ServeTypeId, handlers, ...options }) as any,
-    ofQueries: (handlers) => handlers,
-    onCreate: (run) => ({ _tag: "OnCreate", run }),
-    onWake: (run) => ({ _tag: "OnWake", run }),
-    onSleep: (run) => ({ _tag: "OnSleep", run }),
-    onEffectFailed: (run) => ({ _tag: "OnEffectFailed", run }),
-    rpcs,
-    entity
-  }
-  return self
-}
-
-// ---------------------------------------------------------------------------------------------------
-// Kinds: Actor.ephemeral (decision 133)
-// ---------------------------------------------------------------------------------------------------
-
-export type EphemeralHandlersFor<
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Qs extends ReadonlyArray<AnyQuery>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  M extends Schema.Struct.Fields,
-  R
-> =
-  & { readonly [C in Cs[number] as C["tag"]]: (ctx: MemoryContext<Id, Cs, M, Cn>, ...args: Args<C>) => Effect.Effect<OutOf<C>, ErrOf<C>, R> }
-  & { readonly [Q in Qs[number] as Q["tag"]]: (ctx: MemoryReadContext<Id, M, Cn>, ...args: Args<Q>) => Effect.Effect<OutOf<Q>, ErrOf<Q>, R> }
-  & { readonly [St in Ss[number] as St["tag"]]: (ctx: MemoryReadContext<Id, M, Cn>, ...args: Args<St>) => Stream.Stream<OutOf<St>, ErrOf<St>, R> }
-  & { readonly [N in Cn[number] as N["tag"]]: (ctx: MemoryConnectionContext<Id, Cs, M, Cn, N>, ...args: [...ParamsArgs<N>, inbound: Stream.Stream<ClientOf<N>>]) => Stream.Stream<ServerOf<N>, ErrOf<N>, R> }
-
-export interface EphemeralServeOptions<Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, M extends Schema.Struct.Fields, Cn extends ReadonlyArray<AnyConnection>, RX> {
-  readonly hooks?: ReadonlyArray<Hook<RX>>
-  readonly run?: (ctx: MemoryContext<Id, Cs, M, Cn>) => Effect.Effect<void, never, RX>
-}
-
-/**
- * The same members and handle shape as `Actor.make`, none of the durability: no transaction, receipts,
- * tables, state, events or effects. `memory` is the only state and `Hibernate.after` drops it. The
- * Rivet / Durable Object model, opt-in per actor.
- * @category kinds
- */
-export interface EphemeralDefinition<
-  Name extends string,
-  Id extends Schema.Top,
-  Cs extends ReadonlyArray<AnyCommand>,
-  Is extends ReadonlyArray<AnyCommand>,
-  Qs extends ReadonlyArray<AnyQuery>,
-  Ss extends ReadonlyArray<AnyStream>,
-  Cn extends ReadonlyArray<AnyConnection>,
-  M extends Schema.Struct.Fields,
-  Ps extends ReadonlyArray<EphemeralPolicy<any>>,
-  Desc extends string | undefined
-> {
-  readonly _kind: "ephemeral"
-  readonly name: Name
-  readonly description: Desc
-  readonly id: Id
-  readonly commands: Cs
-  readonly internal: Is
-  readonly queries: Qs
-  readonly streams: Ss
-  readonly connections: Cn
-  readonly memory: M
-  readonly lifecycle: Ps
-  readonly get: {
-    (id: Id["Type"], options: GetOptions & { readonly as: Principal | Caller }): Effect.Effect<EphemeralHandle<Id, Cs, Is, Qs, Ss, Cn>, never, Actors>
-    (id: Id["Type"], options?: GetOptions): Effect.Effect<EphemeralHandle<Id, Cs, Is, Qs, Ss, Cn>, never, Actors | CurrentCaller>
-  }
-  readonly client: (options: ClientOptions) => PromiseClient<Id, Cs, Is, Qs, Ss, Cn, never>
-  readonly toLayer: {
-    <R, RX = never>(handlers: EphemeralHandlersFor<Id, Cs, Qs, Ss, Cn, M, R> & InsideTurn<R>, options?: EphemeralServeOptions<Id, Cs, M, Cn, RX>): Layer.Layer<never, never, Exclude<R | RX, Turn | Query> | Actors>
-    <R, RX, RB>(build: Effect.Effect<EphemeralServe<Id, Cs, Qs, Ss, Cn, M, R, RX>, never, RB>): Layer.Layer<never, never, Exclude<R | RB | RX, Scope.Scope | Turn | Query> | Actors>
-  }
-  readonly of: <R, RX = never>(handlers: EphemeralHandlersFor<Id, Cs, Qs, Ss, Cn, M, R> & InsideTurn<R>, options?: EphemeralServeOptions<Id, Cs, M, Cn, RX>) => EphemeralServe<Id, Cs, Qs, Ss, Cn, M, R, RX>
-  readonly onWake: <R>(run: (ctx: MemoryContext<Id, Cs, M, Cn>) => Effect.Effect<void, never, R>) => Hook<R>
-  readonly onSleep: <R>(run: (ctx: MemoryContext<Id, Cs, M, Cn>) => Effect.Effect<void, never, R>) => Hook<R>
-  readonly rpcs: RpcGroup.RpcGroup<RpcsOf<[...Cs, ...Qs, ...Ss]>>
-  readonly entity: Entity.Entity<Name, RpcsOf<[...Cs, ...Qs, ...Ss]>>
-}
-export interface EphemeralServe<Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Qs extends ReadonlyArray<AnyQuery>, Ss extends ReadonlyArray<AnyStream>, Cn extends ReadonlyArray<AnyConnection>, M extends Schema.Struct.Fields, R, RX> {
-  readonly [ServeTypeId]: ServeTypeId
-  readonly handlers: EphemeralHandlersFor<Id, Cs, Qs, Ss, Cn, M, R>
-  readonly hooks?: ReadonlyArray<Hook<RX>>
-  readonly run?: (ctx: MemoryContext<Id, Cs, M, Cn>) => Effect.Effect<void, never, RX>
-}
-
-/** @category kinds */
-export const ephemeral = <
-  const Name extends string,
-  Id extends Schema.Top,
-  const Cs extends ReadonlyArray<AnyCommand>,
-  const Is extends ReadonlyArray<Cs[number]> = [],
-  const Qs extends ReadonlyArray<AnyQuery> = [],
-  const Ss extends ReadonlyArray<AnyStream> = [],
-  const Cn extends ReadonlyArray<AnyConnection> = [],
-  const M extends Schema.Struct.Fields = {},
-  const Ps extends ReadonlyArray<EphemeralPolicy<Cs[number]>> = [],
-  const Desc extends string | undefined = undefined
->(
-  name: Name,
-  def: {
-    readonly description?: Desc
-    readonly id: Id
-    readonly commands: Cs
-    readonly internal?: Is
-    readonly queries?: Qs
-    readonly streams?: Ss
-    readonly connections?: Cn
-    /** typed in-memory state; initial value from the schema defaults */
-    readonly memory?: M
-    /** `Events.keep`, `Receipts.keep`, `Effects.retry`, `Lifecycle.createdBy`, `State.maxBytes` are rejected here */
-    readonly lifecycle?: Ps
-  }
-): EphemeralDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, M, Ps, Desc> => makeEphemeral(name, def) as any
-
-// ---------------------------------------------------------------------------------------------------
-// Kinds: Actor.workflow (decisions 24, 119)
-// ---------------------------------------------------------------------------------------------------
-
-export const ExecutionId = Schema.String.pipe(Schema.brand("ExecutionId"))
-export type ExecutionId = typeof ExecutionId.Type
-
-export class WorkflowInterrupted extends Schema.TaggedError<WorkflowInterrupted>()("WorkflowInterrupted", {
-  executionId: ExecutionId
-}) {
-  override get message(): string {
-    return `workflow execution ${this.executionId} was interrupted`
-  }
-}
-
-/** A running (or finished) execution: `WorkflowEngine.poll / interrupt / resume` behind a handle (decision 119). @category clients */
-export interface WorkflowRun<Out, Err> {
-  readonly id: ExecutionId
-  /** waits for completion */
-  readonly result: Effect.Effect<Out, Err | WorkflowInterrupted>
-  readonly poll: Effect.Effect<Option.Option<Exit.Exit<Out, Err>>>
-  readonly interrupt: Effect.Effect<void>
-}
-
-export interface WorkflowActors {
-  readonly get: <Name extends string, Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Is extends ReadonlyArray<AnyCommand>, Qs extends ReadonlyArray<AnyQuery>, Ss extends ReadonlyArray<AnyStream>, Cn extends ReadonlyArray<AnyConnection>, Ev extends AnyTagged, Ef extends AnyTagged, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>, Ps extends ReadonlyArray<Policy<any>>, Desc extends string | undefined>(
-    actor: ActorDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, Ev, Ef, S, Bs, Ps, Desc>,
-    id: Id["Type"],
-    options?: { readonly tenant?: TenantId }
-  ) => WorkflowHandle<Id, Cs, Qs, Ss, Ev, Ps>
-}
-
-export interface WorkflowContext {
+/** What a workflow body sees (decisions 24, 119, 158, 166). @category contexts */
+export interface WorkflowContext<M extends Members> {
   readonly executionId: ExecutionId
+  /** the owner-scoped key this run was started under */
+  readonly key: string
   /** `System("workflow", { onBehalfOf })`: who started it */
   readonly principal: Option.Option<Principal>
+  /** the owning actor: full request/reply, internal commands included (there is no turn to hold open) */
+  readonly owner: WorkflowHandle<M>
+  /** other actors, same rules */
+  readonly actors: WorkflowActors
   /**
    * Activity.make: the result is persisted, so output/errors need schemas. The framework pipes
    * `Actor.commandId(`${executionId}:${name}`)` around `run`, so command calls inside an activity
@@ -1423,143 +1132,348 @@ export interface WorkflowContext {
   ) => Effect.Effect<Out["Type"], Errors[number]["Type"], R>
   /** DurableClock.sleep */
   readonly sleep: (duration: Duration.Input) => Effect.Effect<void>
-  /** full handles: request/reply is fine inside a workflow (there is no turn to hold open) */
-  readonly actors: WorkflowActors
   /**
-   * DurableDeferred + a framework intent that resolves it when the actor emits `event`; `None` on
-   * timeout. `event` is constrained to `EventsOf<typeof actor>`.
+   * DurableDeferred resolved by the owner's next matching event (decision 166); `None` on timeout. The registration is
+   * acknowledged by the owner before this returns, so an event emitted meanwhile is not lost (decision 144).
    */
-  readonly waitFor: <Name extends string, Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Is extends ReadonlyArray<AnyCommand>, Qs extends ReadonlyArray<AnyQuery>, Ss extends ReadonlyArray<AnyStream>, Cn extends ReadonlyArray<AnyConnection>, Ev extends AnyTagged, Ef extends AnyTagged, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>, Ps extends ReadonlyArray<Policy<any>>, Desc extends string | undefined, E extends Ev>(
-    actor: ActorDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, Ev, Ef, S, Bs, Ps, Desc>,
-    id: Id["Type"],
+  readonly waitFor: <E extends Evs<M>>(
     event: E,
-    options?: { readonly timeout?: Duration.Input }
+    options?: { readonly where?: (event: E["Type"]) => boolean; readonly timeout?: Duration.Input }
   ) => Effect.Effect<Option.Option<E["Type"]>>
 }
-/** @category kinds */
-export interface WorkflowDefinition<Name extends string, In extends Schema.Struct.Fields, Out extends Schema.Top, Errors extends ReadonlyArray<AnyError>, Desc extends string | undefined> {
-  readonly _kind: "workflow"
-  readonly name: Name
-  readonly description: Desc
-  readonly input: Schema.Struct<In>
-  readonly output: Out
-  readonly errors: Errors
-  /** run to completion (durable; resumes after crashes) */
-  readonly execute: {
-    (input: Schema.Struct.Type<In>, options: { readonly as: Principal | Caller }): Effect.Effect<Out["Type"], Errors[number]["Type"], Actors>
-    (input: Schema.Struct.Type<In>): Effect.Effect<Out["Type"], Errors[number]["Type"], Actors | CurrentCaller>
-  }
-  /** start and return a run handle; a second `start` with the same idempotency key returns the same run */
-  readonly start: {
-    (input: Schema.Struct.Type<In>, options: { readonly as: Principal | Caller }): Effect.Effect<WorkflowRun<Out["Type"], Errors[number]["Type"]>, never, Actors>
-    (input: Schema.Struct.Type<In>): Effect.Effect<WorkflowRun<Out["Type"], Errors[number]["Type"]>, never, Actors | CurrentCaller>
-  }
-  /** rehydrate a run handle from its id */
-  readonly run: (id: ExecutionId) => Effect.Effect<WorkflowRun<Out["Type"], Errors[number]["Type"]>, never, Actors>
-  readonly toLayer: <R>(
-    run: (ctx: WorkflowContext, input: Schema.Struct.Type<In>) => Effect.Effect<Out["Type"], Errors[number]["Type"], R>
-  ) => Layer.Layer<never, never, Exclude<R, Scope.Scope> | Actors>
-  readonly workflow: EffectWorkflow.Workflow<Name, Schema.Struct<In>, Out, ErrorSchemaOf<Errors>>
+
+export interface ActorIntents {
+  readonly get: <A extends AnyActor>(actor: A, ...args: [...IdArgs<A>, options?: { readonly tenant?: TenantId }]) => IntentHandle<A>
 }
-export type AnyWorkflow = WorkflowDefinition<string, any, any, any, any>
-export type WorkflowInput<W> = W extends WorkflowDefinition<any, infer In, any, any, any> ? Schema.Struct.Type<In> : never
+export interface WorkflowActors {
+  readonly get: <A extends AnyActor>(actor: A, ...args: [...IdArgs<A>, options?: { readonly tenant?: TenantId }]) => WorkflowHandle<A>
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Server-side: handlers, hooks, executors, run (decisions 11, 23, 108, 109, 127, 159, 161, 169)
+// ---------------------------------------------------------------------------------------------------
+
+export interface Hook<R> {
+  readonly _tag: "OnCreate" | "OnWake" | "OnSleep" | "OnEffectFailed" | "OnDefect"
+  readonly run: (...args: ReadonlyArray<any>) => Effect.Effect<void, never, R>
+}
+
+/** Commands, streams, connections and workflow bodies, keyed by tag; `(ctx, input)` everywhere (decision 108). */
+export type HandlersFor<M extends Members, R> =
+  & { readonly [C in Cmds<M> as C["tag"]]: (ctx: CommandContext<M>, ...args: Args<C>) => Effect.Effect<OutOf<C>, ErrOf<C>, R> }
+  & { readonly [St in M["streams"][number] as St["tag"]]: (ctx: StreamContext<M>, ...args: Args<St>) => Stream.Stream<OutOf<St>, ErrOf<St>, R> }
+  & { readonly [N in M["connections"][number] as N["tag"]]: (ctx: ConnectionContext<M, N>, ...args: [...ParamsArgs<N>, inbound: Stream.Stream<ClientOf<N>>]) => Stream.Stream<ServerOf<N>, ErrOf<N>, R> }
+  & { readonly [W in Wfs<M> as W["tag"]]: (ctx: WorkflowContext<M>, input: InputOf<W>) => Effect.Effect<OutOf<W>, ErrOf<W>, R> }
+
+export type QueryHandlersFor<M extends Members, R> = {
+  readonly [Q in M["queries"][number] as Q["tag"]]: (ctx: QueryContext<M>, ...args: Args<Q>) => Effect.Effect<OutOf<Q>, ErrOf<Q>, R>
+}
+
+/** `(ctx, effect)`: the same argument order as every other handler (decision 108). */
+export type EffectExecutors<M extends Members, R> = {
+  readonly [E in Efs<M> as E["Type"]["_tag"]]: (ctx: EffectContext<M>, effect: E["Type"]) => Effect.Effect<void, unknown, R>
+}
+
+/** Server-side: hooks and executors carry code, so they live with `toLayer` / `X.of` (decision 109). */
+export interface ServeOptions<M extends Members, RX> {
+  readonly hooks?: ReadonlyArray<Hook<RX>>
+  readonly effects?: EffectExecutors<M, RX>
+  readonly run?: (ctx: RunContext<M>) => Effect.Effect<void, never, RX>
+  /** placement (decisions 128, 159): `ClusterSchema.ShardGroup` for this actor; overrides `Actor.layer({ shardGroup })` */
+  readonly shardGroup?: string | ((ref: ActorRef) => string)
+  /** passed through to `Entity.toLayer`; the framework already sets actor/id/tenant/command/commandId (decisions 112, 168) */
+  readonly spanAttributes?: Record<string, string>
+}
+
+export const ServeTypeId = "~durable-actors/Serve" as const
+export type ServeTypeId = typeof ServeTypeId
+
+/** What `X.of(handlers, options)` returns: the handlers plus the closure the activation captured. */
+export interface Serve<M extends Members, R, RX> extends ServeOptions<M, RX> {
+  readonly [ServeTypeId]: ServeTypeId
+  readonly handlers: HandlersFor<M, R>
+}
+
+type RpcOfDef<D> = D extends Command<infer T, infer I, infer O, infer Er, any>
+  ? Rpc.Rpc<T, I extends Schema.Top ? I : typeof Schema.Void, O, ErrorSchemaOf<Er>>
+  : D extends QueryDef<infer T, infer I, infer O, infer Er, any>
+    ? Rpc.Rpc<T, I extends Schema.Top ? I : typeof Schema.Void, O, ErrorSchemaOf<Er>>
+    : D extends StreamDef<infer T, infer I, infer O, infer Er, any>
+      ? Rpc.Rpc<T, I extends Schema.Top ? I : typeof Schema.Void, RpcSchema.Stream<O, ErrorSchemaOf<Er>>, typeof Schema.Never>
+      : never
+export type RpcsOf<Ds extends ReadonlyArray<AnyCommand | AnyQuery | AnyStream>> = Extract<RpcOfDef<Ds[number]>, Rpc.Any>
+
+// ---------------------------------------------------------------------------------------------------
+// The kind: Actor.make (decisions 1–13, 89–134, 157, 158, 164)
+// ---------------------------------------------------------------------------------------------------
+
+/** Framework-minted ids (decision 164): UUIDv7 branded per actor, `X.id` is the schema. */
+export type MintedId<Name extends string> = Schema.brand<Schema.String, `${Name}Id`>
+/** A singleton's only id. */
+export const SingletonId = Schema.Literal("singleton")
+export type SingletonId = typeof SingletonId
+type ModeOf<Id, Single> = Single extends true ? "singleton" : Id extends Schema.Top ? "named" : "minted"
+type IdSchemaOf<Name extends string, Id, Single> = Single extends true ? SingletonId : Id extends Schema.Top ? Id : MintedId<Name>
 
 /** @category kinds */
-export const workflow = <
+export type ActorDefinition<Name extends string, Mode extends IdMode, M extends Members, Desc extends string | undefined> =
+  & M
+  & {
+    readonly _kind: "actor"
+    readonly name: Name
+    readonly description: Desc
+    readonly mode: Mode
+    /**
+     * `const counter = yield* Counter.get(id)` — resolves the runtime and binds the caller once; methods are then
+     * plain Effects with `R = never`. The caller is the ambient `CurrentCaller` unless `{ as }` says otherwise.
+     * A singleton takes no id.
+     */
+    readonly get: (...args: [...IdArgs<{ readonly mode: Mode; readonly id: M["id"] }>, options?: GetOptions]) => Effect.Effect<Handle<M>, never, Actors>
+    /** Minted ids only: a fresh UUIDv7 handle. Nothing is written until the first command (decision 164). */
+    readonly create: Mode extends "minted" ? (options?: GetOptions) => Effect.Effect<Handle<M>, never, Actors>
+      : Mode extends "named" ? `${Name} declares its own ids: mint one and call get(id)`
+      : `${Name} is a singleton: call get()`
+    /** Promise client derived from `rpcs` over HTTP/WebSocket; mints `x-command-id` per call and reuses it on retry. */
+    readonly client: (options: ClientOptions) => PromiseClient<ActorDefinition<Name, Mode, M, Desc>>
+    /**
+     * Lives in the server file. Handlers may be an object or an Effect returning `X.of(...)`. The Effect form runs once
+     * per activation inside the activation's `Scope` (decision 169): `Effect.addFinalizer` runs on sleep,
+     * `Effect.forkScoped` fibers are interrupted on sleep. A singleton's layer also registers the boot activation
+     * (`Sharding.registerSingleton`), so its crons tick without a caller.
+     */
+    readonly toLayer: {
+      <R, RX = never>(handlers: HandlersFor<M, R> & InsideTurn<R>, options?: ServeOptions<M, RX>): Layer.Layer<never, never, Exclude<R | RX, Turn | Query> | Actors>
+      <R, RX, RB>(build: Effect.Effect<Serve<M, R, RX>, never, RB>): Layer.Layer<never, never, Exclude<R | RB | RX, Scope.Scope | Turn | Query> | Actors>
+    }
+    /** Queries never touch the entity: they read committed rows on the caller's node (decisions 4, 102). */
+    readonly toQueryLayer: {
+      <R>(handlers: QueryHandlersFor<M, R>): Layer.Layer<never, never, Exclude<R, Query> | Database>
+      <R, RB>(build: Effect.Effect<QueryHandlersFor<M, R>, never, RB>): Layer.Layer<never, never, Exclude<R | RB, Query | Scope.Scope> | Database>
+    }
+    /** packages the handlers with the activation closure's hooks, executors and run loop */
+    readonly of: <R, RX = never>(handlers: HandlersFor<M, R> & InsideTurn<R>, options?: ServeOptions<M, RX>) => Serve<M, R, RX>
+    /** identity with contextual typing, for query handlers returned from an Effect */
+    readonly ofQueries: <R>(handlers: QueryHandlersFor<M, R>) => QueryHandlersFor<M, R>
+    /** first turn ever for this id; runs inside that turn's transaction before the command handler */
+    readonly onCreate: <R>(run: (ctx: CommandContext<M>) => Effect.Effect<void, never, R>) => Hook<R>
+    readonly onWake: <R>(run: (ctx: WakeContext<M>) => Effect.Effect<void, never, R>) => Hook<R>
+    readonly onSleep: <R>(run: (ctx: WakeContext<M>) => Effect.Effect<void, never, R>) => Hook<R>
+    /** runs inside a turn: the dead-lettered effect is delivered to the actor as a framework command after `Effects.retry` is exhausted */
+    readonly onEffectFailed: <R>(run: (ctx: CommandContext<M>, effect: Efs<M>["Type"], cause: Cause.Cause<unknown>) => Effect.Effect<void, never, R>) => Hook<R>
+    /**
+     * A deterministic defect (decision 161: state over `State.maxBytes`, a decode failure, an internal command from a
+     * non-System caller): the turn rolled back, the caller got a `Die`, the actor stays resident. Not the retryable
+     * defects of F4, which restart the activation instead.
+     */
+    readonly onDefect: <R>(run: (ctx: WakeContext<M>, command: string, cause: Cause.Cause<unknown>) => Effect.Effect<void, never, R>) => Hook<R>
+    /** escape hatches: the Effect primitives underneath */
+    readonly rpcs: RpcGroup.RpcGroup<RpcsOf<[...M["commands"], ...M["queries"], ...M["streams"]]>>
+    readonly entity: Entity.Entity<Name, RpcsOf<[...M["commands"], ...M["streams"]]>>
+  }
+
+/**
+ * The one kind (decision 157). Durability is not a flag: an actor that declares no `state`, `tables`, `events` or
+ * `effects` never touches those rows, and its commands still run as fenced, receipted turns. Ids: none declared ⇒
+ * minted (`X.create()`), `id: Schema` ⇒ named (`X.get(id)`), `singleton: true` ⇒ `X.get()` (decision 164).
+ * @category kinds
+ */
+export const make = <
   const Name extends string,
-  const In extends Schema.Struct.Fields,
-  Out extends Schema.Top = typeof Schema.Void,
-  const Errors extends ReadonlyArray<AnyError> = [],
+  Id extends Schema.Top | undefined = undefined,
+  Single extends boolean = false,
+  const Cs extends ReadonlyArray<AnyCommand> = [],
+  const Is extends ReadonlyArray<Cs[number]> = [],
+  const Qs extends ReadonlyArray<AnyQuery> = [],
+  const Ss extends ReadonlyArray<AnyStream> = [],
+  const Cn extends ReadonlyArray<AnyConnection> = [],
+  const Ws extends ReadonlyArray<AnyWorkflow> = [],
+  const Ev extends AnyTagged = never,
+  const Ef extends AnyTagged = never,
+  const Ts extends ReadonlyArray<AnyTable> = [],
+  const S extends Schema.Struct.Fields = {},
+  const V extends Schema.Struct.Fields = {},
+  const Bs extends ReadonlyArray<AnyBlob> = [],
+  const Ms extends ReadonlyArray<AnyMigration> = [],
+  const Ps extends ReadonlyArray<Policy<Cs[number]>> = [],
   const Desc extends string | undefined = undefined
 >(
   name: Name,
   def: {
     readonly description?: Desc
-    readonly input: In
-    readonly output?: Out
-    readonly errors?: Errors
-    readonly idempotencyKey: (input: Schema.Struct.Type<In>) => string
+    /** omit for framework-minted ids; a branded schema for ids the app owns (decision 164) */
+    readonly id?: Id
+    /**
+     * Exactly one instance cluster-wide; `get()` takes no id. The framework registers a boot activation
+     * (`Sharding.registerSingleton`) that keeps it resident on one runner, so `Hibernate.after` is ignored, a
+     * `Cron` policy ticks without a caller and `run` starts at boot (decision 170). Everything else is an ordinary
+     * actor: fenced turns, receipts, state, events, effects.
+     */
+    readonly singleton?: Single
+    readonly commands?: Cs
+    /** reachable from `ctx.self`, `ctx.actors`, workflows and executors; absent from handles and HTTP (decision 95) */
+    readonly internal?: Is
+    readonly queries?: Qs
+    readonly streams?: Ss
+    readonly connections?: Cn
+    /** durable executions this actor owns (decision 158); bodies live in `toLayer` next to the command handlers */
+    readonly workflows?: Ws
+    readonly events?: ReadonlyArray<Ev>
+    readonly effects?: ReadonlyArray<Ef>
+    readonly tables?: Ts
+    /**
+     * keyed state in `actor_state`, loaded after the fence (decision 125). A missing row decodes `{}`, so every
+     * key needs `Schema.withDecodingDefault(...)` or `Schema.optionalKey(...)`: a bare `Schema.Number` key makes
+     * the first turn die with a defect naming the key.
+     */
+    readonly state?: S
+    /** typed per-activation memory (decision 160); same default rule as `state` */
+    readonly vars?: V
+    readonly blobs?: Bs
+    /** the state's history, oldest first; the last `to` is the declared `state` (decision 162) */
+    readonly migrations?: Ms
+    readonly lifecycle?: Ps
   }
-): WorkflowDefinition<Name, In, Out, Errors, Desc> => {
-  const output = (def.output ?? Schema.Void) as Out
-  const errors = (def.errors ?? []) as Errors
-  // The persisted payload is the app input plus an envelope (decision 144): the tenant and the caller the run acts
-  // for. Effect derives the execution id from (name, key) only, so the key is namespaced by deployment and tenant;
-  // a resumed run rebuilds its context from this envelope, never from the runner's ambient defaults.
-  const wf = EffectWorkflow.make(name, {
-    payload: { ...def.input, __tenant: TenantId, __deployment: DeploymentId, __onBehalfOf: Schema.Option(Schema.Unknown) },
-    idempotencyKey: (p: any) => JSON.stringify([p.__deployment, p.__tenant, def.idempotencyKey(p)]),
-    success: output,
-    error: errors.length === 0 ? Schema.Never : Schema.Union(errors)
-  }) as any
-  return {
-    _kind: "workflow",
+): ActorDefinition<Name, ModeOf<Id, Single>, {
+  readonly id: IdSchemaOf<Name, Id, Single>
+  readonly commands: Cs
+  readonly internal: Is
+  readonly queries: Qs
+  readonly streams: Ss
+  readonly connections: Cn
+  readonly workflows: Ws
+  readonly events: ReadonlyArray<Ev>
+  readonly effects: ReadonlyArray<Ef>
+  readonly tables: Ts
+  readonly state: S
+  readonly vars: V
+  readonly blobs: Bs
+  readonly migrations: Ms
+  readonly lifecycle: Ps
+}, Desc> => {
+  const commands = (def.commands ?? []) as unknown as Cs
+  const queries = (def.queries ?? []) as unknown as Qs
+  const streams = (def.streams ?? []) as unknown as Ss
+  const connections = (def.connections ?? []) as unknown as Cn
+  const workflows = (def.workflows ?? []) as unknown as Ws
+  const lifecycle = (def.lifecycle ?? []) as unknown as Ps
+  const mode: IdMode = def.singleton === true ? "singleton" : def.id !== undefined ? "named" : "minted"
+  const id = (def.singleton === true ? SingletonId : def.id ?? Schema.String.pipe(Schema.brand(`${name}Id`))) as any
+  assertUniqueTags(name, [...commands, ...queries, ...streams, ...connections, ...workflows])
+  assertMigrationChain(name, def.migrations ?? [], def.state ?? {})
+  const policy = <T extends Policy["_tag"]>(tag: T) =>
+    (lifecycle as ReadonlyArray<Policy>).find((p): p is Extract<Policy, { _tag: T }> => p._tag === tag)
+  const toRpc = (d: AnyCommand | AnyQuery | AnyStream) =>
+    Rpc.make(d.tag, {
+      payload: d.input ?? Schema.Void,
+      success: d.output,
+      error: d.errors.length === 0 ? Schema.Never : Schema.Union(d.errors),
+      stream: d._kind === "stream"
+    })
+  // commands and queries are persisted (receipts, redelivery); streams and connections are live only
+  const group = (ds: ReadonlyArray<AnyCommand | AnyQuery | AnyStream>, persisted: boolean) =>
+    RpcGroup.make(...ds.map(toRpc)).annotateRpcs(ClusterSchema.Persisted, persisted) as any
+
+  const rpcs = group([...commands, ...queries], true).merge(group(streams, false)) as any
+  const entity = Entity.fromRpcGroup(name, group(commands, true).merge(group(streams, false))) as any
+  // one Effect Workflow per member, namespaced by the owner (decision 158); the payload carries the envelope (decision 144)
+  const engineWorkflows = Object.fromEntries(workflows.map((w) => [
+    w.tag,
+    EffectWorkflow.make(`${name}/${w.tag}`, {
+      payload: { ...w.input.fields, __tenant: TenantId, __deployment: DeploymentId, __owner: Schema.String, __key: Schema.String, __onBehalfOf: Schema.Option(Schema.Unknown) },
+      idempotencyKey: (p: any) => JSON.stringify([p.__deployment, p.__tenant, p.__owner, p.__key]),
+      success: w.output,
+      error: w.errors.length === 0 ? Schema.Never : Schema.Union(w.errors)
+    })
+  ]))
+
+  const get = (...args: ReadonlyArray<any>) =>
+    Effect.gen(function*() {
+      const [entityId, options]: [unknown, GetOptions | undefined] = mode === "singleton" ? ["singleton", args[0]] : [args[0], args[1]]
+      const actors = yield* Actors
+      const caller = options?.as !== undefined ? toCaller(options.as) : yield* CurrentCaller
+      return (actors.get as any)(self, entityId, { tenant: options?.tenant, as: caller })
+    })
+
+  const self = {
+    _kind: "actor",
     name,
-    description: def.description as Desc,
-    input: Schema.Struct(def.input),
-    output,
-    errors,
-    execute: ((input: Schema.Struct.Type<In>, options?: { readonly as: Principal | Caller }) =>
-      withCaller(options, Effect.flatMap(ActorRuntime, (rt) => Effect.provideService(wf.execute(input), WorkflowEngine.WorkflowEngine, rt.engine)))) as any,
-    start: ((input: Schema.Struct.Type<In>, options?: { readonly as: Principal | Caller }) =>
-      withCaller(options, Effect.flatMap(ActorRuntime, (rt) => startWorkflow(wf, rt, input)))) as any,
-    run: ((id: ExecutionId) => Effect.map(ActorRuntime, (rt) => workflowRun(wf, rt, id))) as any,
-    toLayer: ((run: (ctx: WorkflowContext, input: any) => Effect.Effect<any, any, any>) =>
-      wf.toLayer((payload: any, executionId: string) => Effect.flatMap(ActorRuntime, (rt) => run(makeWorkflowContext(ExecutionId.make(executionId), rt), payload)))
-        .pipe(Layer.provide(Layer.effect(WorkflowEngine.WorkflowEngine, Effect.map(ActorRuntime, (a) => a.engine))))) as any,
-    workflow: wf
-  }
+    description: def.description,
+    mode,
+    id,
+    commands,
+    internal: (def.internal ?? []) as unknown as Is,
+    queries,
+    streams,
+    connections,
+    workflows,
+    events: def.events ?? [],
+    effects: def.effects ?? [],
+    tables: (def.tables ?? []) as unknown as Ts,
+    state: (def.state ?? {}) as S,
+    vars: (def.vars ?? {}) as V,
+    blobs: (def.blobs ?? []) as unknown as Bs,
+    migrations: (def.migrations ?? []) as unknown as Ms,
+    lifecycle,
+    get,
+    create: mode === "minted"
+      ? (options?: GetOptions) => Effect.flatMap(Effect.flatMap(Actors, (a) => a.mint(self)), (fresh) => get(fresh, options))
+      : mode === "named"
+      ? `${name} declares its own ids: mint one and call get(id)`
+      : `${name} is a singleton: call get()`,
+    client: (options: ClientOptions) => makePromiseClient(self, options),
+    toLayer: (build: unknown, options?: ServeOptions<any, any>) =>
+      entity
+        .toLayer(
+          Effect.gen(function*() {
+            const address = yield* Entity.CurrentAddress
+            const built = Effect.isEffect(build) ? yield* (build as Effect.Effect<any>) : build
+            const serve = built[ServeTypeId] === ServeTypeId ? built : { handlers: built, ...options }
+            const handlers: Record<string, (...args: Array<any>) => Effect.Effect<any, any, any> | Stream.Stream<any, any, any>> = serve.handlers
+            const wired: Record<string, (env: any) => unknown> = {}
+            for (const d of commands) {
+              wired[d.tag] = (env) => turn(address, env, lifecycle, serve, (ctx) => handlers[d.tag]!(ctx, env.payload) as Effect.Effect<any, any, any>)
+            }
+            for (const d of streams) {
+              // Rpc.fork skips the entity's concurrency semaphore (RpcServer.ts: "if the handler requested forking")
+              wired[d.tag] = (env) => Rpc.fork(streamTurn(address, (ctx) => handlers[d.tag]!(ctx, env.payload) as Stream.Stream<any, any, any>))
+            }
+            yield* registerWorkflows(self, engineWorkflows, handlers)
+            return wired
+          }),
+          {
+            concurrency: 1,
+            maxIdleTime: policy("Hibernate")?.after ?? Duration.minutes(1),
+            mailboxCapacity: policy("MailboxCapacity")?.size,
+            defectRetryPolicy: policy("DefectRetry")?.schedule,
+            spanAttributes: options?.spanAttributes
+          }
+        )
+        .pipe(
+          Layer.provide(Layer.effect(Sharding.Sharding, Effect.map(ActorRuntime, (a) => a.sharding))),
+          mode === "singleton" ? Layer.provideMerge(singletonBoot(self, options?.shardGroup)) : (l: Layer.Layer<any, any, any>) => l
+        ),
+    toQueryLayer: (build: unknown) =>
+      Layer.effectDiscard(
+        Effect.gen(function*() {
+          const handlers = Effect.isEffect(build) ? yield* (build as Effect.Effect<any>) : build
+          yield* registerQueries(self, handlers as Record<string, unknown>)
+        })
+      ),
+    of: (handlers: unknown, options?: ServeOptions<any, any>) => ({ [ServeTypeId]: ServeTypeId, handlers, ...options }),
+    ofQueries: (handlers: unknown) => handlers,
+    onCreate: (run: unknown) => ({ _tag: "OnCreate", run }),
+    onWake: (run: unknown) => ({ _tag: "OnWake", run }),
+    onSleep: (run: unknown) => ({ _tag: "OnSleep", run }),
+    onEffectFailed: (run: unknown) => ({ _tag: "OnEffectFailed", run }),
+    onDefect: (run: unknown) => ({ _tag: "OnDefect", run }),
+    rpcs,
+    entity
+  } as any
+  return self
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Kinds: Actor.cron, Actor.singleton (decisions 22, 132)
-// ---------------------------------------------------------------------------------------------------
-
-/** A cluster-wide cron job (one run per schedule, not one per actor). The framework's caller is `System("cron")`. @category kinds */
-export interface CronDefinition<Name extends string, Desc extends string | undefined> {
-  readonly _kind: "cron"
-  readonly name: Name
-  readonly description: Desc
-  readonly cron: EffectCron.Cron
-  readonly toLayer: <R>(run: Effect.Effect<void, never, R>) => Layer.Layer<never, never, Exclude<R, Scope.Scope | CurrentCaller> | Actors>
-}
-/** `ClusterCron.make({ name, cron, execute, shardGroup })`: the schedule is owned by the cluster, not by each runner. @category kinds */
-export const cron = <const Name extends string, const Desc extends string | undefined = undefined>(
-  name: Name,
-  options: { readonly description?: Desc; readonly cron: string; readonly shardGroup?: string }
-): CronDefinition<Name, Desc> => {
-  const parsed = EffectCron.parse(options.cron) as unknown as EffectCron.Cron
-  return {
-    _kind: "cron",
-    name,
-    description: options.description as Desc,
-    cron: parsed,
-    toLayer: ((run: Effect.Effect<void, never, any>) => clusterCronLayer(name, parsed, run, options.shardGroup)) as any
-  }
-}
-
-/** One long-lived `run` that exists exactly once cluster-wide: a leader, poller or reaper (decision 132). @category kinds */
-export interface SingletonDefinition<Name extends string, Desc extends string | undefined> {
-  readonly _kind: "singleton"
-  readonly name: Name
-  readonly description: Desc
-  readonly shardGroup: string
-  readonly toLayer: <R>(run: Effect.Effect<void, never, R>) => Layer.Layer<never, never, Exclude<R, Scope.Scope | CurrentCaller> | Actors>
-}
-/** `Singleton.make(name, run, { shardGroup })`. The caller inside is `System("singleton")`. @category kinds */
-export const singleton = <const Name extends string, const Desc extends string | undefined = undefined>(
-  name: Name,
-  options?: { readonly description?: Desc; readonly shardGroup?: string }
-): SingletonDefinition<Name, Desc> => ({
-  _kind: "singleton",
-  name,
-  description: options?.description as Desc,
-  shardGroup: options?.shardGroup ?? "default",
-  toLayer: ((run: Effect.Effect<void, never, any>) => singletonLayer(name, run, options?.shardGroup ?? "default")) as any
-})
-
-// ---------------------------------------------------------------------------------------------------
-// Runtime: Actors, ActorRuntime, layer, topology, auth, serve, toolkit, mcp (decisions 90, 92, 111, 115, 116, 118, 128, 129)
+// Runtime: Actors, ActorRuntime, layer, topology, auth, serve (decisions 90, 92, 111, 118, 128, 129, 155, 168)
 // ---------------------------------------------------------------------------------------------------
 
 export interface DeadLetter {
@@ -1574,18 +1488,9 @@ export interface DeadLetter {
 
 /** The public runtime (decision 111): `actors.get(Counter, id)` is the non-sugared form of `Counter.get(id)`. @category runtime */
 export class Actors extends Context.Service<Actors, {
-  readonly get: {
-    <Name extends string, Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Is extends ReadonlyArray<AnyCommand>, Qs extends ReadonlyArray<AnyQuery>, Ss extends ReadonlyArray<AnyStream>, Cn extends ReadonlyArray<AnyConnection>, Ev extends AnyTagged, Ef extends AnyTagged, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>, Ps extends ReadonlyArray<Policy<any>>, Desc extends string | undefined>(
-      actor: ActorDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, Ev, Ef, S, Bs, Ps, Desc>,
-      id: Id["Type"],
-      options: { readonly tenant?: TenantId; readonly as: Caller }
-    ): Handle<Id, Cs, Is, Qs, Ss, Cn, Ev, Ps>
-    <Name extends string, Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Is extends ReadonlyArray<AnyCommand>, Qs extends ReadonlyArray<AnyQuery>, Ss extends ReadonlyArray<AnyStream>, Cn extends ReadonlyArray<AnyConnection>, M extends Schema.Struct.Fields, Ps extends ReadonlyArray<EphemeralPolicy<any>>, Desc extends string | undefined>(
-      actor: EphemeralDefinition<Name, Id, Cs, Is, Qs, Ss, Cn, M, Ps, Desc>,
-      id: Id["Type"],
-      options: { readonly tenant?: TenantId; readonly as: Caller }
-    ): EphemeralHandle<Id, Cs, Is, Qs, Ss, Cn>
-  }
+  readonly get: <A extends AnyActor>(actor: A, ...args: [...IdArgs<A>, options: { readonly tenant?: TenantId; readonly as: Caller }]) => Handle<A>
+  /** a fresh UUIDv7 in the actor's brand (`Crypto.randomUUIDv7`); `X.create()` is `mint` + `get` */
+  readonly mint: <A extends AnyActor & { readonly mode: "minted" }>(actor: A) => Effect.Effect<IdOf<A>>
   readonly deadLetters: {
     readonly list: (options?: { readonly ref?: ActorRef; readonly limit?: number }) => Effect.Effect<ReadonlyArray<DeadLetter>>
     /** puts the effect back in the outbox with `attempt = 0` */
@@ -1605,7 +1510,6 @@ export class ActorRuntime extends Context.Service<ActorRuntime, {
 export type Topology =
   | { readonly _tag: "Single" } // SingleRunner.layer
   | { readonly _tag: "Http"; readonly listen: { readonly host: string; readonly port: number }; readonly advertise: { readonly host: string; readonly port: number } } // HttpRunner.layerHttp + RunnerHealth.layerPing
-  | { readonly _tag: "K8s" } // HttpRunner.layerHttp + RunnerHealth.layerK8s
 
 export const Topology = {
   single: (): Topology => ({ _tag: "Single" }),
@@ -1613,14 +1517,17 @@ export const Topology = {
     readonly listen: { readonly host: string; readonly port: number }
     readonly advertise: { readonly host: string; readonly port: number }
   }): Topology => ({ _tag: "Http", ...options }),
-  k8s: (): Topology => ({ _tag: "K8s" }),
-  /** `ACTORS_TOPOLOGY=single|http|k8s`, `ACTORS_LISTEN_HOST/PORT`, `ACTORS_ADVERTISE_HOST/PORT` (decision 118) */
+  /** `ACTORS_TOPOLOGY=single|http`, `ACTORS_LISTEN_HOST/PORT`, `ACTORS_ADVERTISE_HOST/PORT` (decision 118) */
   fromConfig: (options?: { readonly prefix?: string }): Config.Config<Topology> => topologyConfig(options?.prefix ?? "ACTORS")
 }
 
 /**
  * Runtime layer: one per process. It builds the runner from `topology` and provides `Sharding` and
- * `WorkflowEngine` internally, so actor layers only ever require `Actors`.
+ * `WorkflowEngine` internally, so actor layers only ever require `Actors`. Three ways to run it (decision 155):
+ * embedded (this layer inside the app's own process), served (`Actor.serve` in a separate process), hosted
+ * (the same layer, our runners, Neki). Cluster RPC spans are named `durable-actors.<Actor>/<Command>` with
+ * `rpc.system.name`, `rpc.service`, `rpc.method` and the turn attributes; trace context rides the envelope
+ * (decision 168, provided by Effect RPC).
  * @category runtime
  */
 export declare const layer: (options: {
@@ -1633,7 +1540,7 @@ export declare const layer: (options: {
   /** derive the tenant from the principal once (decision 90); `get(id, { tenant })` still overrides */
   readonly tenant?: (principal: Principal) => TenantId
   readonly topology: Topology | Config.Config<Topology>
-  /** compute placement (decision 128): `ClusterSchema.ShardGroup` for every entity; runners opt in with `ACTORS_SHARD_GROUPS` */
+  /** default placement (decision 128) for every actor; `X.toLayer(…, { shardGroup })` overrides per actor (159) */
   readonly shardGroup?: (tenant: TenantId) => string
   /** `entityMessagePollInterval`; default `"1 second"` (decision 129), plus sleep-then-poll for self-armed timers and `LISTEN actor_wake` on Postgres */
   readonly pollInterval?: Duration.Input
@@ -1643,84 +1550,37 @@ export declare const layer: (options: {
 export interface Auth<R> {
   readonly handler: (headers: Headers) => Effect.Effect<Caller, Unauthorized, R>
 }
-/** `auth` is required on `serve` (decision 92); anonymous is spelled out. @category runtime */
+/** `auth` is required on `serve` (decision 92); anonymous is spelled out. Handlers fail with the `Unauthorized` reason; the edge wraps it. @category runtime */
 export const auth = {
   make: <R>(handler: (headers: Headers) => Effect.Effect<Principal, Unauthorized, R>): Auth<R> => ({ handler: (h) => Effect.map(handler(h), Caller.user) }),
   none: { handler: () => Effect.succeed(Caller.anonymous) } as Auth<never>,
   bearer: <R>(verify: (token: string) => Effect.Effect<Principal, Unauthorized, R>): Auth<R> => ({
     handler: (headers) => {
       const value = headers["authorization"]
-      if (value === undefined || !value.startsWith("Bearer ")) return Effect.fail(new Unauthorized({ reason: "missing_credentials" }))
+      if (value === undefined || !value.startsWith("Bearer ")) return Effect.fail(new Unauthorized({ code: "missing_credentials" }))
       return Effect.map(verify(value.slice("Bearer ".length)), Caller.user)
     }
   }),
   header: <R>(name: string, decode: (value: string) => Effect.Effect<Principal, Unauthorized, R>): Auth<R> => ({
     handler: (headers) => {
       const value = headers[name.toLowerCase()]
-      return value === undefined ? Effect.fail(new Unauthorized({ reason: "missing_credentials" })) : Effect.map(decode(value), Caller.user)
+      return value === undefined ? Effect.fail(new Unauthorized({ code: "missing_credentials" })) : Effect.map(decode(value), Caller.user)
     }
   })
 }
 
 /**
- * HTTP entrypoint: `/actors/{name}/{id}/{Command}` for every public command, query, stream (SSE) and
- * connection (WebSocket) of the given actors, `/actors/{name}/{id}/events` as SSE, `/workflows/{name}`
- * for `start`/`run`, and — on by default (decision 116) — `/llms.txt`, `/openapi.json`, `/actors/{name}.md`.
- * Echoes the commandId as `x-request-id` (decision 107).
+ * Optional HTTP entrypoint (decision 155): `/actors/{name}/{id}/{Command}` for every public command, query, stream (SSE)
+ * and connection (WebSocket), `/actors/{name}/{id}/events` (SSE), `/actors/{name}/{id}/{Workflow}/start|result`,
+ * `/actors/{name}` (POST: create, minted ids). `/openapi.json` unless `openapi: false`. Echoes the commandId as
+ * `x-request-id` (decision 107). Nothing AI-specific (decision 153): OpenAPI is what tools and agents consume.
  * @category runtime
  */
 export declare const serve: <R = never>(options: {
   readonly actors: ReadonlyArray<AnyActor>
-  readonly workflows?: ReadonlyArray<AnyWorkflow>
   readonly auth: Auth<R>
-  readonly docs?: boolean
+  readonly openapi?: boolean
   readonly path?: string
-}) => Layer.Layer<never, never, Actors | Exclude<R, Scope.Scope>>
-
-type PublicCommandsOf<A> = A extends { readonly commands: infer Cs extends ReadonlyArray<AnyCommand>; readonly internal: infer Is extends ReadonlyArray<AnyCommand> } ? Exclude<Cs[number], Is[number]> : never
-type QueriesOf<A> = A extends { readonly queries: infer Qs extends ReadonlyArray<AnyQuery> } ? Qs[number] : never
-type Undescribed<A> = A extends { readonly name: infer N extends string; readonly description: infer D }
-  ? (
-    | (D extends string ? never : `Actor.toolkit: ${N} has no description`)
-    | { [C in PublicCommandsOf<A> | QueriesOf<A> as C["tag"]]: C["description"] extends string ? never : `Actor.toolkit: ${N}.${C["tag"]} has no description` }[(PublicCommandsOf<A> | QueriesOf<A>)["tag"]]
-  )
-  : never
-/** Every actor and every public command/query must carry a description (decision 96): the element becomes the message otherwise. */
-export type ToolkitReady<As extends ReadonlyArray<AnyActor>> = { readonly [K in keyof As]: [Undescribed<As[K]>] extends [never] ? As[K] : Undescribed<As[K]> }
-export type ToolNames<A> = A extends { readonly name: infer N extends string } ? `${N}_${(PublicCommandsOf<A> | QueriesOf<A>)["tag"]}` : never
-
-/**
- * An Effect `Toolkit` for the given actors: `Chat_SendMessage`, `Chat_Recent`, …; `failureMode: "return"`; internal
- * commands and streams excluded (decision 115). The caller is a per-call dependency, not a layer input (decision 145):
- * each tool is `Tool.make(name, { dependencies: [Actors, CurrentCaller] })`, so `Actors | CurrentCaller` surfaces where
- * the tool is *called* (the agent loop, which already has a request/turn caller), and `layer` builds with nothing.
- * @category runtime
- */
-export interface ActorToolkit<As extends ReadonlyArray<AnyActor>> {
-  readonly toolkit: Toolkit.Toolkit<{ readonly [N in ToolNames<As[number]>]: Tool.Any }>
-  /** handlers: every tool call becomes `actor.get(id)` under the caller of the calling fiber + the command */
-  readonly layer: Layer.Layer<never, never, Actors>
-  readonly names: ReadonlyArray<ToolNames<As[number]>>
-}
-/** @category runtime */
-export declare const toolkit: <const As extends ReadonlyArray<AnyActor>>(
-  actors: As & ToolkitReady<As>,
-  options?: { readonly maxOutputBytes?: number }
-) => ActorToolkit<As>
-/**
- * `McpServer.toolkit` over `Actor.toolkit`. The caller is established per invocation, never at layer level (decision
- * 145): over HTTP the same `Auth` as `Actor.serve` runs on the `/mcp` request and the adapter provides `CurrentCaller`
- * to the tool handler for that invocation (gated: `McpRequestContext` carries no headers, so the bridge is ours);
- * on stdio there is no request, so the process names who it acts as. Caller-supplied MCP metadata is never a principal.
- * @category runtime
- */
-export declare const mcp: <const As extends ReadonlyArray<AnyActor>, R = never>(options: {
-  readonly actors: As & ToolkitReady<As>
-  readonly name: string
-  readonly version: string
-  readonly transport:
-    | { readonly _tag: "http"; readonly path: string; readonly auth: Auth<R> }
-    | { readonly _tag: "stdio"; readonly as: Principal | Caller }
 }) => Layer.Layer<never, never, Actors | Exclude<R, Scope.Scope>>
 
 // ---------------------------------------------------------------------------------------------------
@@ -1736,11 +1596,12 @@ export interface TurnReport {
   readonly caller: Caller
   readonly generation: number
   /**
-   * why this turn ran: an outside call, a durable intent, a due timer, a per-actor cron tick, a dead-lettered effect, or
-   * redelivery — the same requestId seen again, either rewritten by the EntityManager after a defect restart (in memory,
-   * same runner) or re-read from storage after the shard moved. Cluster does not label this; `turn()` tracks requestIds.
+   * why this turn ran: an outside call, a durable intent, a due timer, a cron tick, a dead-lettered effect, a workflow
+   * start/cancel, or redelivery — the same requestId seen again, either rewritten by the EntityManager after a defect
+   * restart (in memory, same runner) or re-read from storage after the shard moved. Cluster does not label this;
+   * `turn()` tracks requestIds.
    */
-  readonly trigger: "call" | "intent" | "timer" | "cron" | "effect-failed" | "redelivery"
+  readonly trigger: "call" | "intent" | "timer" | "cron" | "effect-failed" | "workflow" | "redelivery"
   /** receipt hit: the handler did not run, the stored Exit was replayed */
   readonly replayed: boolean
   readonly exit: Exit.Exit<unknown, unknown>
@@ -1748,8 +1609,10 @@ export interface TurnReport {
   readonly performed: ReadonlyArray<{ readonly _tag: string }>
   readonly intents: ReadonlyArray<{ readonly to: ActorRef; readonly command: string; readonly input: unknown; readonly key?: string; readonly deliverAt?: DateTime.Utc }>
   readonly cancelledTimers: ReadonlyArray<string>
-  readonly workflowsStarted: ReadonlyArray<{ readonly name: string; readonly input: unknown }>
+  readonly workflowsStarted: ReadonlyArray<{ readonly workflow: string; readonly key: string; readonly input: unknown }>
   readonly stateWritten: ReadonlyArray<string>
+  /** a migration chain ran on load: `from → to` versions */
+  readonly migrated: Option.Option<{ readonly from: number; readonly to: number }>
   readonly terminated: boolean
 }
 export interface TurnHooksShape {
@@ -1767,64 +1630,46 @@ export const TurnHooks = Context.Reference<TurnHooksShape>("durable-actors/TurnH
 
 /**
  * One transaction per command. Not implemented here; see README "Turn".
- * BEGIN → SELECT actor_generations … FOR UPDATE → receipt lookup → load actor_state → (OnCreate on first turn) → handler
- *       → actor_state (dirty keys) / actor_events / actor_outbox / cluster_messages / receipt → TurnHooks.beforeCommit → COMMIT
- *       → TurnHooks.afterCommit → flush connection broadcasts → NOTIFY actor_wake.
+ * BEGIN → set_config('actor.tenant_id') → SELECT actor_generations … FOR UPDATE → receipt lookup → load actor_state (+ migrations)
+ *       → (OnCreate on first turn) → handler → actor_state (dirty keys) / actor_events / actor_outbox / cluster_messages / receipt
+ *       → TurnHooks.beforeCommit → COMMIT → TurnHooks.afterCommit → flush connection broadcasts → NOTIFY actor_wake.
  * Wrapped in `Effect.withSpan("durable-actors/turn", { actor, id, tenant, command, commandId, caller, trigger, replayed })`
  * and `Effect.annotateLogs({ actor, id, commandId })` (decision 112).
- * Retryable conditions (stale generation, lock timeout, commit-unknown, CommandTimeout) are defects.
+ * Retryable conditions (stale generation, lock timeout, commit-unknown, CommandTimeout) are defects that restart the
+ * activation (F4); deterministic defects roll back, ack with Die and keep the actor resident (decision 161).
+ * On Neki the intents go to `actor_outbox` in the tenant shard and are relayed to `cluster_messages` after COMMIT (decision 156).
  */
 declare const turn: <A, E, R>(
   address: EntityAddress.EntityAddress,
   envelope: unknown,
   lifecycle: ReadonlyArray<Policy>,
-  serve: { readonly hooks?: ReadonlyArray<Hook<any>>; readonly effects?: unknown; readonly run?: unknown } | undefined,
-  body: (ctx: CommandContext<any, any, any, any, any, any, any>) => Effect.Effect<A, E, R>
-) => Effect.Effect<A, E | CommandConflict, Exclude<R, Turn> | ActorRuntime>
+  serve: ServeOptions<any, any> | undefined,
+  body: (ctx: CommandContext<any>) => Effect.Effect<A, E, R>
+) => Effect.Effect<A, E | ActorError, Exclude<R, Turn> | ActorRuntime>
 declare const streamTurn: <A, E, R>(
   address: EntityAddress.EntityAddress,
-  body: (ctx: StreamContext<any, any, any, any, any>) => Stream.Stream<A, E, R>
+  body: (ctx: StreamContext<any>) => Stream.Stream<A, E, R>
 ) => Stream.Stream<A, E, Exclude<R, Query> | ActorRuntime>
-declare const makeEphemeral: (name: string, def: unknown) => unknown
 /** Query handlers are registered in-process by the query layer; `handle.Query()` runs them here, against Database. */
 declare const registerQueries: (actor: AnyActor, handlers: Record<string, unknown>) => Effect.Effect<void, never, Database>
-declare const clusterCronLayer: (name: string, cron: EffectCron.Cron, run: Effect.Effect<void, never, any>, shardGroup: string | undefined) => Layer.Layer<never, never, Actors>
-declare const singletonLayer: (name: string, run: Effect.Effect<void, never, any>, shardGroup: string) => Layer.Layer<never, never, Actors>
-declare const makePromiseClient: <Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, Is extends ReadonlyArray<AnyCommand>, Qs extends ReadonlyArray<AnyQuery>, Ss extends ReadonlyArray<AnyStream>, Cn extends ReadonlyArray<AnyConnection>, Ev extends AnyTagged>(
-  actor: ActorDefinition<any, Id, Cs, Is, Qs, Ss, Cn, Ev, any, any, any, any, any>,
-  options: ClientOptions
-) => PromiseClient<Id, Cs, Is, Qs, Ss, Cn, Ev>
-declare const makeWorkflowContext: (executionId: ExecutionId, runtime: ActorRuntime["Service"]) => WorkflowContext
-declare const startWorkflow: (wf: unknown, runtime: ActorRuntime["Service"], input: unknown) => Effect.Effect<WorkflowRun<any, any>, never, CurrentCaller>
-declare const workflowRun: (wf: unknown, runtime: ActorRuntime["Service"], id: ExecutionId) => WorkflowRun<any, any>
+/** `wf.toLayer` per member, bodies wrapped with the owner handle and `waitFor`; provided `WorkflowEngine` from `ActorRuntime`. */
+declare const registerWorkflows: (actor: AnyActor, workflows: Record<string, unknown>, handlers: Record<string, unknown>) => Effect.Effect<void, never, ActorRuntime>
+/** `Sharding.registerSingleton(name, wake)`: the boot activation that lets a singleton's crons and `run` start without a caller. */
+declare const singletonBoot: (actor: AnyActor, shardGroup: string | ((ref: ActorRef) => string) | undefined) => Layer.Layer<never, never, Actors>
+declare const makePromiseClient: <A extends AnyActor>(actor: A, options: ClientOptions) => PromiseClient<A>
 declare const topologyConfig: (prefix: string) => Config.Config<Topology>
 declare const assertUniqueTags: (actor: string, members: ReadonlyArray<{ readonly tag: string }>) => void
-const withCaller = <A, E, R>(options: { readonly as: Principal | Caller } | undefined, self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-  options === undefined ? self : Effect.provideService(self, CurrentCaller, toCaller(options.as)) as Effect.Effect<A, E, R>
+/** each `to` is the next `from`; the last `to` is the declared state */
+declare const assertMigrationChain: (actor: string, migrations: ReadonlyArray<AnyMigration>, state: Schema.Struct.Fields) => void
 
 /**
- * The namespace an agent types `Actor.` into. Levels (decision 134): kinds `make | ephemeral | workflow |
- * cron | singleton`; members `command | query | stream | connection | table | blob`; runtime
- * `layer | serve | auth | toolkit | mcp`; ambient `as | anonymous | tenant | commandId`.
+ * The namespace an agent types `Actor.` into. Levels (decisions 134, 157): the kind `make`; members `command | query |
+ * stream | connection | workflow | table | blob | migration`; runtime `layer | serve | auth`; ambient `as | anonymous |
+ * tenant | commandId`.
  */
 export const Actor = {
-  make, ephemeral, workflow, cron, singleton,
-  command, query, stream, connection, table, blob,
-  layer, serve, auth, toolkit, mcp,
+  make,
+  command, query, stream, connection, workflow, table, blob, migration,
+  layer, serve, auth,
   as, anonymous, tenant, commandId
 }
-
-/**
- * The second primitive by its own name (decision 135): a workflow is a durable execution, not an actor,
- * even though `ClusterWorkflowEngine` runs it on an Entity. `Actor.workflow` stays as the settled spelling;
- * new docs and the skill use `Workflow.make`. Same definition object, same `toLayer`, same `ctx.workflows.start`.
- * @category kinds
- */
-export const Workflow = { make: workflow }
-
-/**
- * Runtime facilities that are neither actors nor workflows (decision 135): cluster-wide schedules and
- * leaders, plus the ambient binders. `Actor.cron` / `Actor.singleton` remain aliases.
- * @category runtime
- */
-export const Durable = { cron, singleton, as, anonymous, tenant, commandId }

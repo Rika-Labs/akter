@@ -13,6 +13,7 @@ import {
 } from "./Chat.ts"
 import { Counter, CounterId } from "./Counter.ts"
 import { Mailer } from "./Mailer.ts"
+import { User } from "./User.ts"
 
 export class RoomAccess extends Context.Service<RoomAccess, {
   readonly requireMember: (caller: Caller, room: ActorRef) => Effect.Effect<void, NotAMember>
@@ -38,8 +39,12 @@ export const ChatLive = Chat.toLayer(
         yield* ctx.rows(messages).insert({ id: message.id, author_id: authorId, body, sent_at: ctx.now })
         yield* ctx.emit(new MessageAdded({ message }))
         yield* ctx.perform(new SendEmail({ messageId: message.id, to: "room@example.com", body }))
-        // cross-actor durable intent, same transaction
+        // cross-actor durable intents, same transaction: delivered after COMMIT, never if the turn rolls back
         yield* ctx.actors.get(Counter, CounterId.make("messages-sent")).Increment.send(1)
+        if (Option.isSome(ctx.principal)) {
+          // `NoteMessage` is internal on User: reachable from a turn, not from outside
+          yield* ctx.actors.get(User, ctx.principal.value.userId).NoteMessage.send({ roomId: ctx.id, messageId: message.id })
+        }
         // queued inside a command, flushed after COMMIT (like emit, but not persisted)
         yield* ctx.connections.broadcast(message)
         yield* Effect.logInfo("message appended") // actor/id/commandId annotated by turn()

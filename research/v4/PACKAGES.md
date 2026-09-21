@@ -1,7 +1,14 @@
 # Durable Actors — what is an actor, what is the framework, what is a package (round 6, 2026-09-21)
 
+> **Superseded on 2026-09-21 by decisions 151–171** in the parts that name packages and kinds: the package is
+> `durable-actors` with four subpaths (`durable-actors`, `/runtime`, `/client`, `/testing`) — never
+> `@rika/...`, no `/identity`, `/actors`, `/workflows`, `/pg`, `/http`, `/ai`, `/admin` or `/server` — and
+> there is one kind, `Actor.make`, with `singleton: true`, `Cron.every` as a lifecycle policy and workflows as
+> members, so `Durable.*` and `Workflow.make` do not exist. The reasoning about boundaries below still holds;
+> the code blocks have been updated to the current spelling.
+
 The question was: with decisions 1–134 settled, what should *not* be an actor, what should *not* be in the
-framework, and what should be extracted — reacting to the proposed `@rika/durable` split (actors / events
+framework, and what should be extracted — reacting to a proposed multi-package split (actors / events
 "Topic" / workflows / runtime / testing). The Oracle reviewed the whole surface ([framework/Actor.ts](framework/Actor.ts),
 [DECISIONS.md](DECISIONS.md), [DX.md](DX.md), the examples, [DNS-ORDERING.md](DNS-ORDERING.md)) against the
 rc.116 sources. Every claim below that names an Effect internal was checked in `node_modules/effect/src`.
@@ -9,12 +16,13 @@ Decisions are 135–150 in [DECISIONS.md](DECISIONS.md) §3.5; veto by editing t
 
 ## The verdict in one paragraph
 
-Ship **one distribution with module boundaries**, not five release trains. Two user-facing primitives now,
-`Actor` and `Workflow`; `cron` and `singleton` are runtime facilities under `Durable`. **`Topic` is deferred**: on
+Ship **one distribution with module boundaries**, not five release trains. One user-facing primitive,
+`Actor.make`; workflows are members of the actor that owns them, and cron and singletons are options on the same
+constructor (`Cron.every` in `lifecycle`, `singleton: true`). **`Topic` is deferred**: on
 one Postgres it is a new broker subsystem (partitions, offsets, consumer groups, retention gaps), not a wrapper,
 and none of the examples need it; a projection actor fed by intents covers cross-actor fan-out today. The
-runtime substrate becomes a real boundary (`DurableRuntime.layer`) with a small option set. Testing stays one
-environment (`ActorTest`, aliased `DurableTest`) with a per-primitive fault seam. Four real bugs came out of the
+runtime substrate becomes a real boundary (`Actor.layer` on `durable-actors/runtime`) with a small option set.
+Testing stays one environment (`ActorTest` on `durable-actors/testing`) with a per-primitive fault seam. Four real bugs came out of the
 review and are fixed in the sketch: writable blobs on wake, workflow keys without tenant, toolkit/MCP wanting a
 caller at layer build, and `InsideTurn` bypassable through a captured handle.
 
@@ -26,22 +34,30 @@ engine bookkeeping, not the consistency contract the app sees.
 
 | Program | Is | Because | Spelling |
 | --- | --- | --- | --- |
-| Chat, Counter, Doc, DNS `Order`, DNS `Domain` | durable actor | identity, ordered commands, receipts, events, timers | `Actor.make` |
-| Cursor, DNS `RegistrarLane` | ephemeral actor | identity + serialized in-memory mutations; forgets on restart (a lane is admission control, not a hard quota) | `Actor.ephemeral` |
-| AgentSession | durable actor + activation `run` | session identity, cancel/approve/results are actor state; the model loop is not a workflow. A prompt that must finish with no client attached needs a workflow or an effect, not a stronger `run` | `Actor.make` |
-| Onboard, DNS `Fulfil` | workflow | an execution with a start and an end; identity is (deployment, tenant, key) | `Workflow.make` (alias `Actor.workflow`) |
-| Nightly, DNS `Reconcile` | cron facility | the tick is not an actor; its targets are | `Durable.cron` (alias `Actor.cron`) |
-| Reaper | singleton facility | cluster-owned maintenance; framework retention must not depend on app SQL | `Durable.singleton` (alias `Actor.singleton`) |
+| Chat, Counter, Doc, DNS `Order`, DNS `Domain` | actor | identity, ordered commands, receipts, events, timers | `Actor.make` |
+| Cursor, DNS `RegistrarLane` | actor with no durable members | identity + serialized mutations of `vars`; forgets on hibernation (a lane is admission control, not a hard quota) | `Actor.make` with `vars` and no `state`/`tables`/`events`/`effects` |
+| CodingAgent, AgentSession | actor + activation `run` | session identity, cancel/approve/results are actor state; the model loop is not a workflow. A prompt that must finish with no client attached needs a workflow or an effect, not a stronger `run` | `Actor.make` + `run` in `toLayer` |
+| `User.Onboard`, `CodingAgent.Ship`, DNS `Order.Fulfil` | workflow member | an execution with a start and an end; identity is (deployment, tenant, owner, key) | `Actor.workflow` in `workflows: [...]` |
+| Nightly, DNS `Reconcile` | cron on a singleton | the tick is not its own kind: it is a lifecycle policy naming a zero-input command | `Actor.make({ singleton: true, lifecycle: [Cron.every(...)] })` |
+| Reaper | singleton | cluster-owned maintenance; framework retention must not depend on app SQL | `Actor.make({ singleton: true })` + `run` |
 | Reports | SQL service | already not an actor | `Effect.Service` on `Database` |
 
 Rejected: "workflows have no identity / no mailbox, so they are not actors". They have both; what they lack is an
 *open-ended command API*. Rejected: "finite lifetime is the line" — actors terminate, workflows can wait forever.
 
 ```ts
-// new docs and the skill use these; the settled Actor.* spellings stay as aliases
-export const Onboard = Workflow.make("Onboard", { input: { userId: UserId, roomId: RoomId }, output: Schema.Struct({ nudged: Schema.Boolean }), idempotencyKey: ({ userId }) => userId })
-export const Nightly = Durable.cron("nightly-reset", { cron: "0 3 * * *" })
-export const Reaper  = Durable.singleton("Reaper", { description: "Purges expired receipts cluster-wide." })
+// one constructor (decision 157); see example/User.ts, example/Nightly.ts, example/Reaper.ts
+export const Onboard = Actor.workflow("Onboard", { description: "…", input: { roomId: RoomId }, output: Schema.Struct({ nudged: Schema.Boolean }), errors: [NotAMember] })
+export const User = Actor.make("User", { id: UserId, commands: [Join], workflows: [Onboard], state: { rooms: … } })
+
+export const ResetAll = Actor.command("ResetAll", { description: "Reset the well-known counters." })
+export const Nightly = Actor.make("Nightly", {
+  description: "Nightly maintenance: resets the well-known counters at 03:00 UTC.",
+  singleton: true,
+  commands: [ResetAll],
+  lifecycle: [Cron.every("0 3 * * *", ResetAll, { skipIfOlderThan: "1 hour" })]
+})
+export const Reaper = Actor.make("Reaper", { description: "Retries young dead letters cluster-wide.", singleton: true, commands: [Pause, Resume], state: { paused: … } })
 ```
 
 ## 2. What is not in the framework
@@ -51,118 +67,101 @@ faithful failure tests*. Adapters make it reachable; they are not it.
 
 | Surface | Decision | Why |
 | --- | --- | --- |
-| `Actor.serve`, `Actor.auth` | move → `/http` | contract-derived RPC/OpenAPI/SSE is product, not turn execution; caller *propagation* stays core, credential *verification* is an edge concern |
-| `Actor.toolkit`, `Actor.mcp` | move → `/ai` | same contracts, different dependency graph; the caller is per invocation (§6) |
+| `Actor.serve`, `Actor.auth` | keep on `/runtime`, **optional to call** (decision 155) | contract-derived RPC/OpenAPI/SSE is product, not turn execution; caller *propagation* stays core, credential *verification* is an edge concern. Embedded apps never call `serve` |
+| AI adapters (`toolkit`, `mcp`) | **not built** (decision 153) | the primitives — contracts, events with a cursor, effects with dead letters, workflows with `waitFor`, connections — are what make agents easy to write; `/openapi.json` is what tools consume |
 | `framework/React.ts` | **delete from v1** | a UI cache/subscription layer proves nothing about durable actors and is under-typed |
 | Promise client | keep, implementation → `/client` | browser adoption; never pulls `effect/unstable/sql` |
 | `Actor.blob` | keep core, **writes only inside turns** | atomic bytes next to metadata is real; it is rows, not S3 |
-| `Actor.connection` | keep contract core, transport → `/http` | per-activation sessions with typed frames are the realtime story |
+| `Actor.connection` | keep the contract on the root, transport on `/runtime` | per-activation sessions with typed frames are the realtime story; `Connections.park` lets the activation hibernate while sockets stay open (decision 163) |
 | `Lifecycle.createdBy`, `ctx.terminate`, `State.maxBytes` | keep core | prevent mutating nonexistent domain objects; only the turn owner can coordinate generation + cleanup; the small-state/large-table split is what keeps turns cheap |
-| `Actors.deadLetters` | move → `/admin` (`ActorAdmin`) | recovery is essential; unrestricted admin on every `Actors` client is not |
-| `Topology.k8s` | **delete from v1** | `Topology.http` is enough; add k8s when its discovery/health contract is implemented |
-| barrel | narrow | `ServeTypeId`, `Serve`, `Hook`, `InsideTurn`, `InActorTurn`, `RpcsOf`, `HandlersFor`, `Drizzle/ColumnKind/ColumnType` placeholders are internal or `/actors/server`; `X.entity` is exposed from `/actors/server`, not the root |
+| `Actors.deadLetters` | keep on `Actors` (`list / retry / discard`) | recovery is essential, and the `Reaper` singleton's `run` loop is the canonical consumer; a separate admin subpath was dropped with the multi-subpath split |
+| a Kubernetes topology | **not built** | `Topology.single()` and `Topology.http({ listen, advertise })` (plus `Topology.fromConfig()`) are enough; add more when its discovery/health contract is implemented |
+| barrel | narrow | `ServeTypeId`, `Serve`, `Hook`, `InsideTurn`, `InActorTurn`, `RpcsOf`, `HandlersFor`, `Drizzle/ColumnKind/ColumnType` placeholders are internal; `X.entity` is an escape hatch, not part of the documented surface |
 
 `ctx.terminate` is specified, not softened: a transactional lifecycle transition plus declared-data cleanup. Not
 permission to delete receipts still needed for replay, not compensation of started effects, not erasure of history.
 
 ## 3. Package layout
 
-One npm distribution (`@rika/durable`, or the same tree under `durable-actors`), explicit subpaths, lockstep
-versions. Refines decision 61; keeps its browser rule: the root never re-exports `/pg`, `/runtime`, `/actors/server`.
+Superseded on 2026-09-21 by decision 151: the thirteen-subpath tree below was cut to four, because every extra
+subpath is a decision a reader has to make before writing a contract. What survived is the browser rule of
+decision 61 (the root never pulls `effect/unstable/sql`) and lockstep versions in one npm distribution.
 
 ```text
-@rika/durable
-├── .                    Actor, Workflow, Durable, policies, identity + boundary errors (browser-safe)
-├── /identity            Principal (the one augmentation target), Caller, CurrentCaller, TenantId, DeploymentId, ActorRef
-├── /actors              actor contracts and the Effect-facing handle API (browser-safe)
-├── /actors/server       actor backend: turn(), receipts, outbox, X.entity, Actor.layer compat
-├── /workflows           Workflow.make contracts (browser-safe)
-├── /workflows/server    ClusterWorkflowEngine wiring + the actor↔workflow integration (start intent, activity commandId, waitFor)
-├── /runtime             DurableRuntime.layer, Topology, RuntimeControl
-├── /pg                  Database, Postgres/Neki adapter, migrations
-├── /http                serve, Auth, connections transport, OpenAPI/llms.txt
-├── /ai                  toolkit, mcp
-├── /client              Promise client, TransportError
-├── /admin               ActorAdmin (dead letters, migrations, drain)
-├── /testing             ActorTest (= DurableTest), harnesses per primitive
-└── /server              DurableServer.serve: the opinionated composition of the above
+durable-actors                     # never @rika/...
+├── .                    Actor (make, command, query, stream, connection, workflow, table, blob, migration,
+│                        serve, auth, as, anonymous, tenant, commandId), Policy (Hibernate, Mailbox, Defects,
+│                        Delivery, Effects, Commands, Receipts, Events, State, Cron, Lifecycle, Connections),
+│                        Actors, ActorError, Principal/Caller/CurrentCaller/TenantId/ActorRef (browser-safe)
+├── /runtime             Actor.layer, Topology (single / http / fromConfig), Database
+├── /client              Promise client, TransportError (browser-safe; no effect/unstable/sql)
+└── /testing             ActorTest
 ```
 
-Absent from v1: `/events`, `Topic`, `Projection`, `/react`, S3 segment APIs, `Topology.k8s`.
+Absent: `/events`, `Topic`, `Projection`, `/react`, S3 segment APIs, a Kubernetes topology, and the
+`/identity`, `/actors`, `/workflows`, `/pg`, `/http`, `/ai`, `/admin`, `/server` subpaths this section proposed.
 
 **Type → owner**
 
 | Type / API | Owner |
 | --- | --- |
-| `TenantId`, `Tenant`, `DeploymentId`, `Principal`, `Caller`, `CurrentCaller`, `ActorRef` | `/identity` (browser-safe; `Caller.System` references `ActorRef`, so it lives here — no universal `ResourceRef`) |
-| `CommandId`, `Actor.commandId`, `CommandConflict`, `NotCreated`, `ActorUnavailable`, `Turn`, contexts, policies, events, intents | `/actors` |
-| `ExecutionId`, `WorkflowRun`, `WorkflowInterrupted`, `WorkflowContext` | `/workflows` |
-| `Database` | `/pg` |
-| `Topology`, runtime options, `RuntimeControl` | `/runtime` |
-| `Auth` | `/http` |
-| `Unauthorized`, `InvalidInput` | root boundary errors |
+| `TenantId`, `Tenant`, `DeploymentId`, `Principal`, `Caller`, `CurrentCaller`, `ActorRef` | root (browser-safe; `Caller.System` references `ActorRef`, so it lives here — no universal `ResourceRef`) |
+| `CommandId`, `Actor.commandId`, `ActorError` (with its reasons), `Turn`, contexts, policies, events, intents | root |
+| `ExecutionId`, `WorkflowRun`, `WorkflowInterrupted`, `WorkflowContext`, `Actor.workflow` | root (a workflow is a member) |
+| `Database`, `Topology`, `Actor.layer`, runtime options, `RuntimeControl` | `/runtime` |
+| `Actor.serve`, `Auth`, `Unauthorized`, `InvalidInput` | root (`serve` is optional to call, decision 155) |
 | `TransportError`, call options | `/client` |
-| dead-letter ops | `/admin` |
-| `TurnHooks`, `TurnReport`, activity fault hooks | actors/workflows internally; re-exported only by `/testing` |
-| `ActorToolkit`, tool name types | `/ai` |
+| dead-letter ops (`Actors.deadLetters.list / retry / discard`) | root |
+| `TurnHooks`, `TurnReport`, activity fault hooks | internal; re-exported only by `/testing` |
 
 ```ts
-// one augmentation target; every other path re-exports the same interface
-declare module "@rika/durable/identity" {
+// one augmentation target: the root
+declare module "durable-actors" {
   interface Principal { readonly userId: UserId; readonly orgId: OrgId; readonly roles: ReadonlyArray<"member" | "admin"> }
 }
 ```
 
-### `server.ts` after the split
+### `server.ts` with the subpaths that exist
 
-Same registrations as [example/server.ts](example/server.ts); the runtime boundary is explicit, HTTP and MCP share one
-`auth`, and there is no process-wide anonymous caller.
+Same registrations as [example/server.ts](example/server.ts); the runtime boundary is explicit, and there is no
+process-wide anonymous caller — `CurrentCaller` defaults to `Anonymous` and the auth middleware sets it per
+request (decision 154).
 
 ```ts
 import { Layer } from "effect"
-import { DeploymentId, TenantId } from "@rika/durable/identity"
-import { DurableRuntime, Topology } from "@rika/durable/runtime"
-import { Database } from "@rika/durable/pg"
-import * as ActorServer from "@rika/durable/actors/server"
-import * as WorkflowServer from "@rika/durable/workflows/server"
-import { Auth } from "@rika/durable/http"
-import { DurableServer } from "@rika/durable/server"
+import { Actor, DeploymentId, TenantId } from "durable-actors"
+import { Database, Topology } from "durable-actors/runtime"
 
-const RuntimeLive = DurableRuntime.layer({
-  deployment: DeploymentId.make("chat-production"),
-  principal: PrincipalSchema,
-  tenant: (p) => TenantId.make(p.orgId),
-  topology: Topology.fromConfig(),
-  shardGroup: (tenant) => (tenant.startsWith("eu-") ? "eu" : "default"),
-  shardGroups: ["default", "eu"],
-  pollInterval: "1 second"
-}).pipe(Layer.provideMerge(Database.layerConfig()))
-
-const FrameworkLive = WorkflowServer.layer.pipe(Layer.provideMerge(ActorServer.layer), Layer.provideMerge(RuntimeLive))
+const auth = Actor.auth.bearer(verify)
 
 const Registrations = Layer.mergeAll(
-  ChatLive, ChatReads, CounterLive, CounterReads, AgentSessionLive, CursorLive, DocLive, DocReads, OnboardLive, NightlyLive, ReaperLive
+  ChatLive, ChatReads, CounterLive, CounterReads, CodingAgentLive, CursorLive, DocLive, DocReads, UserLive, NightlyLive, ReaperLive
 ).pipe(
-  Layer.provide(Layer.mergeAll(RoomAccessLive, MailerLive, ModelLive, ToolsLive)),
-  Layer.provideMerge(FrameworkLive)
+  Layer.provide(Layer.mergeAll(RoomAccessLive, MailerLive, ModelLive, ToolsLive))
 )
 
-const auth = Auth.bearer(verify)
-
-export const AppLive = DurableServer.serve({
-  listen: { host: "0.0.0.0", port: 3000 },
-  actors: [Chat, Counter, AgentSession, Cursor, Doc],
-  workflows: [Onboard],
-  auth,
-  docs: true,
-  mcp: { actors: [Chat, Counter, Doc], name: "durable-actors", version: "1", path: "/mcp" } // same auth, per invocation
-}).pipe(Layer.provide(Registrations))
+// optional (decision 155): drop `Actor.serve` to embed the actors in this process and call them as Effects
+export const AppLive = Registrations.pipe(
+  Layer.provideMerge(Actor.serve({
+    actors: [Chat, Counter, CodingAgent, Cursor, Doc, User, Nightly, Reaper],
+    auth
+  })),
+  Layer.provide(Actor.layer({
+    deployment: DeploymentId.make("chat-production"),
+    principal: PrincipalSchema,
+    tenant: (p) => TenantId.make(p.orgId),
+    topology: Topology.fromConfig(),
+    shardGroup: (tenant) => (tenant.startsWith("eu-") ? "eu" : "default"),
+    pollInterval: "1 second"
+  })),
+  Layer.provide(Database.layerConfig())
+)
 
 export const main = Layer.launch(AppLive)
 ```
 
-`DurableRuntime.layer` requires exactly one `Database`; it takes no `objectStorage`, no `auth`, no executor bag, no
-migration callbacks. `Actor.layer` remains the settled spelling on `/actors/server` and forwards to it.
+`Actor.layer` requires exactly one `Database`; it takes no `objectStorage`, no `auth`, no executor bag, no
+migration callbacks. There is no separate workflow layer: a workflow body ships with its owner's `toLayer`.
 
 ## 4. The verbs inside a turn (no `publish`, no universal `dispatch`)
 
@@ -172,7 +171,7 @@ Each verb encodes a different recovery rule; collapsing them saves autocomplete 
 | --- | --- | --- |
 | `ctx.emit(event)` | append a fact to *this actor's* history | yes (live delivery after COMMIT) |
 | `ctx.self.X.send / after / at`, `ctx.actors.get(A, id).X.send` | durable delivery to a known actor | yes (`cluster_messages`, decision 46) |
-| `ctx.workflows.start / cancel` | a workflow control intent | yes (a specialized intent) |
+| `ctx.self.W.start / cancel` (a workflow member) | a workflow control intent | yes (a specialized intent) |
 | `ctx.perform(effect)` | run an external side effect at least once | yes (outbox row) |
 | `ctx.connections.broadcast(frame)` | best-effort live hint | **no** — a process can die between COMMIT and broadcast |
 
@@ -181,7 +180,7 @@ Place: Effect.fn(function*(ctx, input) {
   yield* ctx.rows(orders).insert({ /* … */ })
   yield* ctx.emit(new OrderPlaced({ domain: input.domain }))
   yield* ctx.actors.get(SalesProjection, projectionIdFor(ctx.id)).OrderPlaced.send({ orderId: ctx.id, domain: input.domain })
-  yield* ctx.workflows.start(Fulfil, { orderId: ctx.id, ...input })
+  yield* ctx.self.Fulfil.start(input, { key: input.domain })     // `Fulfil` is in this actor's `workflows: [...]`
   yield* ctx.perform(new SendConfirmation({ orderId: ctx.id, email: input.email }))
 })
 ```
@@ -230,15 +229,20 @@ and the factory passed the app key straight through. The persisted payload now c
 `__onBehalfOf`; the key is `JSON.stringify([deployment, tenant, appKey])`; a resumed run rebuilds its context from
 the envelope, never from the runner's ambient defaults. `Actor.layer({ deployment })` (`DeploymentId`) is new.
 
-**Caller at layer build for toolkit/MCP (fixed at the type level; MCP bridge gated).** `Tool.make({ dependencies })`
-exists in rc.116, so the caller is a per-*call* dependency and `AgentTools.layer` needs only `Actors`. For MCP,
-`McpServer.registerToolkit` excludes only `McpRequestContext` from startup requirements and that context carries no
-headers, so the adapter must provide `CurrentCaller` inside each invocation itself: over HTTP with the same `Auth`
-as `serve`; on stdio with an explicit `as`. The `Layer.succeed(CurrentCaller, Caller.anonymous)` workaround is gone.
+**Caller at layer build for the AI adapters (moot: the adapters are not built).**
+
+> Superseded on 2026-09-21 by decisions 153 and 154: there is no `Actor.toolkit` and no `Actor.mcp`, so no
+> adapter has to source a caller. The general fix survives and is now the rule everywhere: `CurrentCaller` is a
+> `Context.Reference` defaulting to `Anonymous`, the HTTP auth middleware sets it per request, and no handle
+> ever carries `CurrentCaller` in `R`.
+
+The original finding: a caller cannot be supplied when a tool *layer* is built, only when a tool is *called*.
+With the ambient reference that is automatic — the layer needs only `Actors`, and each request runs under the
+caller its credentials decoded to. A script or a test that wants a specific caller binds it at the handle:
 
 ```ts
-Actor.mcp({ actors: [Chat, Counter, Doc], name, version, transport: { _tag: "http", path: "/mcp", auth } })
-Actor.mcp({ actors: [Chat, Counter, Doc], name, version, transport: { _tag: "stdio", as: localAgent } })
+const room = yield* Chat.get(roomId, { as: principal })              // explicit, per handle
+yield* program.pipe(Actor.as(localAgent))                             // scoped override, e.g. a CLI or a script
 ```
 
 **`InsideTurn` bypass (runtime twin added).** The type check sees requirements, but a handle bound before the turn has
@@ -257,10 +261,12 @@ One environment (database, clock, runners, serialization, `settle`), several sea
 | cluster | runner transport/storage ownership (`cluster.kill / isolate`) |
 
 ```ts
-export { ActorTest, ActorTest as DurableTest }
-const test = yield* DurableTest
+import { ActorTest } from "durable-actors/testing"        // one name, no alias
+const test = yield* ActorTest
 const room = yield* test.actor(Chat, roomId)
-yield* test.workflow(Onboard).crashActivity("welcome", { at: "afterBodyBeforeResult", times: 1 })
+const user = yield* test.actor(User, alice.userId)
+// a workflow is reached through its owner, keyed like it was started
+yield* user.workflow(Onboard, { key: roomId }).crashActivity("welcome", { at: "afterBodyBeforeResult", times: 1 })
 yield* room.handle.SendMessage({ body: "hello" })
 yield* test.settle
 ```
@@ -274,7 +280,7 @@ groups (compute placement) and Neki shard groups (data placement) are different 
 What the runtime exposes so a control plane can drive it: a stable `DeploymentId` (never a code version); a manifest
 of installed contracts + required migrations so an incompatible runner is rejected at start, not at decode; explicit
 readiness and drain; configuration without ambient globals; edge-owned auth where a tenant override is routing, not
-authorization; operator capability (`/admin`) separate from customer endpoints.
+authorization; operator capability (dead letters, drain) reachable without exposing it on customer endpoints.
 
 ```ts
 interface RuntimeControl {
@@ -282,7 +288,7 @@ interface RuntimeControl {
   readonly status: Effect.Effect<{ deployment: DeploymentId; state: "starting" | "ready" | "draining"; shardGroups: ReadonlyArray<string> }>
   readonly drain: Effect.Effect<void>
 }
-export const deployment = { contracts: { actors: [Chat, Counter], workflows: [Onboard] }, registrations: Registrations }
+export const deployment = { contracts: { actors: [Chat, Counter, User] }, registrations: Registrations }  // workflows ride their owners
 ```
 
 Managed runners and bring-your-own runners use the same contract; start with BYO if platform scope matters.
@@ -293,22 +299,28 @@ Arbitrary customer code sharing a process and a credential is a separate sandbox
 | Finding | Verdict |
 | --- | --- |
 | plain `Schema.Class` frames cannot switch on `_tag` | real; mixed-frame connections use `TaggedClass` (`MessageFrame \| Typing`); a single-frame connection may stay plain |
-| toolkit/MCP need `CurrentCaller` at layer level | real bug; fixed above |
+| AI adapters need a caller at layer level | was a real bug; moot since decision 153 dropped the adapters, and decision 154 made the caller ambient with a per-handle `{ as }` override |
 | singleton/`run` need `catchCause` for `E = never` | the `E = never` is right; a *blanket* catch is wrong — it turns a failed loop into a completed worker. Handle expected failures; no `X.onRun` helper |
-| ephemeral queries carry `ActorUnavailable` | correct: their state lives only on the activation |
+| queries on an actor whose state is only `vars` carry `ActorError` | correct: `vars` live on the activation, and a query runs on the caller's node against committed rows — use a stream instead (see `example/Cursor.ts`) |
 | `ReadOptions.where` has no ranges | acceptable v1 sugar as long as `ctx.db` is the typed escape hatch; no second SQL DSL |
 | `ctx.state.set` is `Partial` | correct patch semantics; document omitted-vs-deleted keys |
 | `Actor.tenant` on a bound handle is a no-op | correct binding; apply it at `get` (documented) |
 
 ## 10. Ranked next changes to `Actor.ts`
 
+> Superseded on 2026-09-21 by decisions 151–171: items 3, 5, 6, 7 and 8 assumed AI adapters, a `/actors/server`
+> split, a `DurableRuntime.layer` boundary, `Workflow.make` / `Durable.*` aliases and `/admin` / `/http` / `/ai`
+> subpaths. None of those exist: one kind, four subpaths, no AI surface.
+
 1. runtime turn-boundary enforcement in `turn()` and on captured handles — **done (sketch)**
 2. workflow tenant/deployment key + persisted caller, plus a cross-tenant isolation test — **factory done; test pending**
-3. AI caller ownership; typed tools (today the toolkit map is `Tool.Any`, which erases parameter/success/error types) — **layer fixed; typing pending**
+3. ~~AI caller ownership; typed tools~~ — dropped (decision 153)
 4. read-only blobs off-turn; compaction as a command — **done**
-5. browser-safe contracts vs backend construction (`Actor.make` currently builds the Entity inline; move to `/actors/server`) — pending
-6. `DurableRuntime.layer` boundary; `Actor.layer` forwards — pending
-7. `Workflow.make`, `Durable.cron/singleton` aliases — **done**
-8. `/admin` for dead letters; `/http`, `/ai` adapters — pending
+5. browser-safe contracts vs backend construction (`Actor.make` currently builds the Entity inline; the split is
+   internal, not a subpath) — pending
+6. `Actor.layer` on `durable-actors/runtime` as the one runtime boundary — **done (sketch)**
+7. one kind: `Actor.make` with `singleton: true`, `Cron.every` in `lifecycle`, workflows as members — **done**
+8. dead letters stay on `Actors`; `serve` stays on the root and is optional to call — **done**
 9. narrow the public barrel — pending
-10. reconcile fixtures: migrate `example/*.test.ts` and `typecheck.ts` to 89–150, implement `test.actor`/`Options.as`, drop React/k8s — pending
+10. reconcile fixtures: migrate `example/*.test.ts` and `typecheck.ts` to 151–171, implement `test.actor`/`Options.as`,
+    drop React and the extra topologies — **done for the examples; harness pending**

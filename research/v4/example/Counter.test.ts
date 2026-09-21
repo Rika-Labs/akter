@@ -2,14 +2,14 @@
 import { it } from "@effect/vitest"
 import { expect } from "vitest"
 import { Effect, Exit, Layer } from "effect"
-import { Actor } from "../framework/Actor.ts"
+import { Actor, Caller } from "../framework/Actor.ts"
 import { ActorTest, Scripts } from "../framework/Testing.ts"
 import type { Model } from "../framework/Testing.ts"
 import { CountChanged, Counter, CounterId, Overflow } from "./Counter.ts"
 import { CounterLive, CounterReads } from "./Counter.server.ts"
-import { UserId } from "./Principal.ts"
+import { OrgId, UserId } from "./Principal.ts"
 
-const principal = { userId: UserId.make("u1"), roles: ["member"] as const }
+const principal = { userId: UserId.make("u1"), orgId: OrgId.make("acme"), roles: ["member"] as const }
 
 // one layer per describe block: fresh tenant, in-memory cluster, PGlite, held effects, Anonymous caller
 const TestLive = Layer.mergeAll(CounterLive, CounterReads).pipe(Layer.provideMerge(ActorTest.layer()))
@@ -51,7 +51,8 @@ it.layer(TestLive)("Counter", (it) => {
 
       // same commandId, different payload: the receipt does not match
       const conflict = yield* counter.Increment(1).pipe(Actor.commandId("k1"), Effect.flip)
-      expect(conflict._tag).toBe("CommandConflict")
+      // the framework's single error, narrowed by its reason (decision 167)
+      expect(conflict._tag === "ActorError" && conflict.reason._tag).toBe("CommandConflict")
     }))
 
   it.effect("the idle timer fires after an hour of virtual time and is replaced, not duplicated", () =>
@@ -72,7 +73,7 @@ it.layer(TestLive)("Counter", (it) => {
       const reset = yield* test.turns.next(Counter, id)
       expect(reset.command).toBe("Reset")
       expect(reset.trigger).toBe("timer")
-      expect(reset.caller).toEqual({ _tag: "System", source: "timer", actor: reset.address })
+      expect(reset.caller).toEqual(Caller.system("timer", { ref: reset.ref }))
       expect((yield* test.inspect(Counter, id)).timers).toEqual([])
     }))
 
@@ -80,16 +81,17 @@ it.layer(TestLive)("Counter", (it) => {
     Effect.gen(function*() {
       const test = yield* ActorTest
       const id = CounterId.make("c4")
-      const counter = yield* Counter.get(id)
+      // the bound form (decision 120): one `test.actor` call gives the handle and every harness operation for this id
+      const counter = yield* test.actor(Counter, id, { as: principal })
 
-      yield* test.faults.crash(Counter, id, { at: "after-commit", command: "Increment" })
-      const n = yield* counter.Increment(2).pipe(Actor.as(principal))
+      yield* counter.crash({ at: "after-commit", command: "Increment" })
+      const n = yield* counter.handle.Increment(2)
       expect(n).toBe(2)
 
-      const turns = yield* test.turns.of(Counter, id)
+      const turns = yield* counter.turns
       expect(turns.map((t) => [t.trigger, t.replayed])).toEqual([["call", false], ["redelivery", true]])
       // one event, one timer, one receipt: nothing was applied twice
-      const state = yield* test.inspect(Counter, id)
+      const state = yield* counter.inspect
       expect(state.events).toHaveLength(1)
       expect(state.receipts).toHaveLength(1)
     }))

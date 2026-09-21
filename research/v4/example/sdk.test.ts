@@ -6,12 +6,13 @@ import { Actor, Unauthorized } from "../framework/Actor.ts"
 import { ActorTest, conformance, describeConformance } from "../framework/Testing.ts"
 import { Counter, CounterId, Overflow } from "./Counter.ts"
 import { CounterLive, CounterReads } from "./Counter.server.ts"
-import { PrincipalSchema, UserId } from "./Principal.ts"
+import { OrgId, PrincipalSchema, UserId } from "./Principal.ts"
 
-const auth = Actor.auth((headers) =>
-  headers["x-user"] === undefined
-    ? Effect.fail(new Unauthorized({ reason: "missing x-user" }))
-    : Effect.succeed({ userId: UserId.make(headers["x-user"]), roles: ["member"] as const })
+// `auth.header` decodes one named header; a missing header is `missing_credentials` before any turn runs
+const auth = Actor.auth.header("x-user", (value) =>
+  value.length === 0
+    ? Effect.fail(new Unauthorized({ code: "invalid_credentials" }))
+    : Effect.succeed({ userId: UserId.make(value), orgId: OrgId.make("acme"), roles: ["member"] as const })
 )
 
 const TestLive = Layer.mergeAll(CounterLive, CounterReads).pipe(
@@ -30,7 +31,7 @@ it.layer(TestLive)("sdk", (it) => {
       expect(thrown.cause).toEqual(new Overflow({ max: 1_000 }))
 
       const handled = (yield* test.turns.of(Counter, CounterId.make("c1")))[0]
-      expect(handled?.caller).toEqual({ _tag: "User", principal: { userId: "alice", roles: ["member"] } })
+      expect(handled?.caller).toEqual({ _tag: "User", principal: { userId: "alice", orgId: "acme", roles: ["member"] } })
     }))
 
   it.effect("no credentials: Unauthorized at the edge, no turn ran", () =>
@@ -39,7 +40,7 @@ it.layer(TestLive)("sdk", (it) => {
       const server = yield* test.serve({ actors: [Counter], auth })
       const anonymous = server.client(Counter).get(CounterId.make("c2"))
       const thrown = yield* Effect.tryPromise(() => anonymous.Increment(1)).pipe(Effect.flip)
-      expect(thrown.cause).toEqual(new Unauthorized({ reason: "missing x-user" }))
+      expect(thrown.cause).toEqual(new Unauthorized({ code: "missing_credentials" }))
       expect(yield* test.turns.of(Counter, CounterId.make("c2"))).toEqual([])
     }))
 
