@@ -1,7 +1,8 @@
 // Type assertions for the proposed surface. `Eq` is strict: `any` is not equal to anything else.
 // Run: bunx tsc --noEmit -p research/v4/tsconfig.json
-import type { Duration, Effect, Layer, Option, Scope, Stream } from "effect"
-import { Effect as E, Schema } from "effect"
+import type { Duration, Effect, Exit, Layer, Option, Scope, Stream } from "effect"
+import { Cause, Effect as E, Schema } from "effect"
+import type { Arbitrary } from "effect/unstable/arbitrary"
 import type { ActorEvent, ActorUnavailable, CommandConflict, CurrentCaller, EventsOf, HandleOf, IntentOptions, NotCreated } from "./framework/Actor.ts"
 import { Actor, Actors, Cron, Database, Hibernate, Lifecycle } from "./framework/Actor.ts"
 import { Chat, InvalidMessage, Message, MessageAdded, NotAMember, RoomId, SendEmail } from "./example/Chat.ts"
@@ -14,6 +15,8 @@ import { Onboard } from "./example/Onboard.ts"
 import { OnboardLive } from "./example/Onboard.server.ts"
 import { AgentSessionLive } from "./example/AgentSession.server.ts"
 import { AppLive, program, ticks } from "./example/usage.ts"
+import type { ActorState, Model, Script, Step, TurnRecord } from "./framework/Testing.ts"
+import { ActorTest, Scripts } from "./framework/Testing.ts"
 
 type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
 export const _sanity: Eq<any, string> = false
@@ -139,3 +142,41 @@ export const _badActorsGet = E.gen(function*() {
 // @ts-expect-error a Principal is not a bare string
 export const _badPrincipal = Actor.as("u1")
 export const _schemaSanity: Eq<typeof Schema.String.Type, string> = true
+
+// durable-actors/testing: the harness is typed per actor, so a test cannot inspect, crash or fail the wrong thing
+type CounterTurn = TurnRecord<typeof Counter>
+export const _turnExit: Eq<Extract<CounterTurn, { command: "Increment" }>["exit"], Exit.Exit<number, Overflow>> = true
+export const _turnResetExit: Eq<Extract<CounterTurn, { command: "Reset" }>["exit"], Exit.Exit<void, never>> = true
+export const _turnEmitted: Eq<CounterTurn["emitted"], ReadonlyArray<CountChanged>> = true
+export const _turnId: Eq<CounterTurn["id"], CounterId> = true
+// narrowing on `command` narrows `exit`, as a test would in a `switch`
+export const _turnExitNarrow = (turn: CounterTurn) => turn.command === "Increment" ? turn.exit : null
+export const _turnExitNarrowType: Eq<Exclude<ReturnType<typeof _turnExitNarrow>, null>, Exit.Exit<number, Overflow>> = true
+export const _step: Eq<Step<typeof Counter>, { readonly command: "Increment"; readonly input: number; readonly commandId?: string } | { readonly command: "Reset"; readonly input: undefined; readonly commandId?: string }> = true
+export const _deadLetter: Eq<ActorState<typeof Chat>["deadLetters"][number]["effect"], SendEmail> = true
+export const _stateEvents: Eq<ActorState<typeof Chat>["events"][number]["event"], MessageAdded> = true
+export const _testLayer: Eq<ReturnType<typeof ActorTest.layer>, Layer.Layer<ActorTest | Actors | Database | CurrentCaller>> = true
+const counterScripts = Scripts.arbitrary(Counter, { commands: ["Increment"] })
+export const _scripts: Eq<typeof counterScripts, Arbitrary.Arbitrary<Script<typeof Counter>>> = true
+declare const test: ActorTest["Service"]
+// override infers the executor's requirements: a fake that needs a service surfaces it in R
+export const _overrideR = test.effects.override(Chat, { SendEmail: () => E.flatMap(RoomAccess, () => E.void) })
+export const _overrideRType: Eq<Effect.Services<typeof _overrideR>, Scope.Scope | RoomAccess> = true
+export const _overrideNoR = test.effects.override(Chat, { SendEmail: () => E.void })
+export const _overrideNoRType: Eq<Effect.Services<typeof _overrideNoR>, Scope.Scope> = true
+// fakes see typed `effect` and `ctx`, not `any`
+export const _overrideTyped = test.effects.override(Chat, { SendEmail: (effect, ctx) => E.log(effect.to.toUpperCase(), ctx.attempt.toFixed()) })
+export const _badTesting = () => {
+  // @ts-expect-error CounterId is not a RoomId
+  test.inspect(Chat, CounterId.make("c1"))
+  // @ts-expect-error Decrement is not a Counter command
+  test.faults.crash(Counter, CounterId.make("c1"), { at: "before-commit", command: "Decrement" })
+  // @ts-expect-error CountChanged is an event, not one of Chat's effects
+  test.effects.fail(Chat, CountChanged, Cause.die("x"))
+  // @ts-expect-error a Counter script cannot carry a Chat command
+  test.run(Counter, CounterId.make("c1"), { steps: [{ command: "SendMessage", input: { id: "m", body: "b" } }] })
+  // @ts-expect-error CallModel is an AgentSession effect, not a Chat one
+  test.effects.override(Chat, { CallModel: () => E.void })
+  // @ts-expect-error the model's step sees typed steps: `input` on Reset is undefined
+  const _m: Model<typeof Counter, number> = { initial: 0, step: (n, s) => s.command === "Reset" ? n + s.input : n, observe: () => E.succeed(0) }
+}

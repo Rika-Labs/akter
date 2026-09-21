@@ -31,6 +31,8 @@ status, is in [DECISIONS.md](DECISIONS.md).
 | [example/Nightly.ts](example/Nightly.ts), [example/Nightly.server.ts](example/Nightly.server.ts) | A cluster-wide cron job: `Actor.cron(name, { cron })`, one run per schedule. |
 | [example/AgentSession.ts](example/AgentSession.ts), [example/AgentSession.server.ts](example/AgentSession.server.ts), [example/AgentSession.client.ts](example/AgentSession.client.ts) | The reference program: a coding-agent session (prompts, token stream, tool calls, model/tool effects whose results return as intents, browser client). |
 | [example/usage.ts](example/usage.ts) | Client program, Promise client, and the server layer graph. |
+| [framework/Testing.ts](framework/Testing.ts) | The `durable-actors/testing` subpath: `ActorTest` service and `ActorTest.layer(...)`, typed turn log, durable-state inspection, held effects, fault injection, in-process multi-runner cluster, workflow inspection, in-process HTTP server, model-based checks, `Scripts.arbitrary`, conformance suite. Runtime `declare`d. |
+| [example/Counter.test.ts](example/Counter.test.ts), [example/Chat.test.ts](example/Chat.test.ts), [example/AgentSession.test.ts](example/AgentSession.test.ts), [example/Onboard.test.ts](example/Onboard.test.ts), [example/cluster.test.ts](example/cluster.test.ts), [example/sdk.test.ts](example/sdk.test.ts) | Test files written against that surface (typecheck-only; root `vitest.config.ts` does not include `research/`). Exactly-once under crashes, receipts, timers on virtual time, held/failed/overridden effects, event replay, workflow activity retries, rebalance without double apply, Promise SDK over a test server, PGlite/Postgres/Neki conformance. |
 
 ## The surface
 
@@ -153,6 +155,8 @@ Layer.mergeAll(CounterLive, ChatLive, ChatReads, OnboardLive, NightlyLive, Agent
 | `ctx.terminate` | Tombstones the generation, deletes the declared `tables` rows and the actor's timers in the turn transaction |
 | `ctx.waitFor(Actor, id, Event)` | `DurableDeferred` plus a framework intent the actor resolves when it emits the event |
 | `Actor.layer({ principal, topology })` | `Topology.single()` → `SingleRunner.layer`; `Topology.http({ listen, advertise })` → `HttpRunner.layerHttp` + `RunnerHealth.layerPing`; `Topology.k8s()` → `HttpRunner.layerHttp` + `RunnerHealth.layerK8s`. `Sharding` and `WorkflowEngine` are provided inside, so actor layers only require `Actors` and the app only provides `Database.layer(...)` |
+| `TurnHooks` | `Context.Reference` with an inert default; `turn()` calls `beforeHandler` / `beforeCommit` / `afterCommit`. Production never provides it. The test harness provides one that records every `TurnReport` and dies at the requested crash point |
+| `ActorTest.layer({ database, runners, effects })` | `Actor.layer` over `TestRunner.layer` (`Sharding` + `Runners.layerNoop` + `MessageStorage.layerMemory` + `RunnerStorage.layerMemory`) for one runner, or N `Sharding` instances over one in-memory `MessageStorage`, a harness `RunnerStorage` (per-address shard locks expiring on the `Clock`) and a `Runners.make` in-process bus; `Database.layer` on PGlite over `pglite-socket` (or a Postgres/Neki url); `TestClock` from `@effect/vitest`; a recording `TurnHooks`; executors wrapped so `"hold"` parks outbox rows until `test.effects.run` |
 
 ## Lifecycle policies
 
@@ -192,6 +196,34 @@ listeners before the outer commit, and on Neki `cluster_*` and business rows liv
 - `CounterLive: Layer<never, never, Actors>`; `ChatLive: Layer<never, never, RoomAccess | Actors>`; `ChatReads: Layer<never, never, RoomAccess | Database>`; `NightlyLive` / `AgentSessionLive`: `Layer<never, never, Actors>`; full app `Layer<never, ConfigError | SqlError, never>`
 - Handlers reject undeclared errors, missing handlers, wrong input types and unknown commands; query handlers are rejected by `toLayer` and command handlers by `queries`; `ctx.emit` rejects a non-event, `ctx.perform` rejects a non-effect, a query context has no `emit`, `Cron.every` rejects a command that takes input, `Actor.as` rejects a non-`Principal`, and `actors.get` rejects an id of the wrong brand.
 - Inside `Effect.fn(function*(ctx, input))`, `ctx` and `input` are contextually typed; spans are opened by the framework, so handlers do not name them.
+- Testing: `TurnRecord<typeof Counter>` is a union discriminated on `command`, so `turn.exit` is `Exit<number, Overflow>` once `command === "Increment"`; `Step<typeof Counter>` carries each command's input type (`undefined` for zero-arg commands); `ActorState<typeof Chat>["deadLetters"][number]["effect"]` is `SendEmail`; `test.effects.override(Chat, { SendEmail: (effect, ctx) => … })` types `effect` and `ctx`, derives the fakes' requirements into the returned Effect (`Scope | RoomAccess`), and rejects an effect of another actor; `test.faults.crash` rejects an unknown command; `test.run(Counter, …)` rejects a Chat step; `ActorTest.layer()` is `Layer<ActorTest | Actors | Database | CurrentCaller>` with no requirements.
+
+## Testing
+
+The rule: a test never mocks the actor. Every test runs the real `turn()`, the real Cluster entity,
+the real tables and the real serialization; only the edges are swapped (database, transport, time,
+executors, caller). See [framework/Testing.ts](framework/Testing.ts) and the `example/*.test.ts` files.
+
+| Edge | Production | Test |
+| --- | --- | --- |
+| database | `Database.layer({ url })` on Postgres / Neki | PGlite in-process over `pglite-socket` (same `PgClient`); `database: { url }` runs the same test on Postgres or Neki |
+| transport | `Topology.http` / `Topology.k8s` | `TestRunner.layer` (in-memory `MessageStorage` + `RunnerStorage`, `Runners.layerNoop`); `runners: n` builds n `Sharding`s on one in-memory `MessageStorage`, a harness `RunnerStorage` and an in-process `Runners.make` bus with `simulateRemoteSerialization: true` |
+| time | `Clock` | `TestClock`; every durable delay (`DeliverAt` timers, `Hibernate.after`, `Effects.retry`, `Commands.timeout`, `DurableClock`, `shardLockExpiration`) reads it, and `test.clock.advance` steps by `entityMessagePollInterval` and settles between steps |
+| executors | run after COMMIT with `Effects.retry` | held: `ctx.perform` writes the outbox row and nothing runs until `test.effects.run` / `drain`; `fail` injects a cause for the next n attempts; `override` swaps in typed fakes |
+| caller | `CurrentCaller` from the Rpc middleware | one default per layer (`Anonymous` unless `caller` is set); `Actor.as` still wins per call |
+| observation | spans, metrics | `TurnHooks`: the harness records every `TurnReport` (trigger, replayed, exit, emitted, performed, intents, generation) and can die at `before-handler`, `before-commit` or `after-commit` |
+
+What a test can do, all typed per actor:
+
+- `test.inspect(Counter, id)` → `ActorState`: `exists`, `generation`, `resident`, `timers`, `pendingIntents`, `outbox`, `deadLetters`, `receipts`, `events`, `rows(table)`
+- `test.turns.of(Counter, id)` / `next` / `test.record(effect)` → the committed turns, `exit` typed per command
+- `test.effects.pending / run / drain / fail / override`
+- `test.faults.crash / staleGeneration / holdLock (Postgres) / redeliver / chaos`
+- `test.cluster.runners / runnerOf / kill / start / isolate` (with `runners: n`)
+- `test.workflows.inspect / crashActivity`
+- `test.serve({ actors, auth })` → the Promise SDK and OpenAPI over an in-process `HttpServer.layerTestClient`
+- `test.run(actor, id, script, { concurrency })` and `test.check(actor, id, model, script)` with `Scripts.arbitrary(actor)` for `it.effect.prop`
+- `describeConformance(it)` inside `it.layer(ActorTest.layer({ database }))`: the §3 gates as one suite that must pass on PGlite, Postgres and Neki
 
 ## Verification gates
 
@@ -208,3 +240,15 @@ Nothing below is claimed until the evidence exists.
    routable address; the mechanism (and whether it is stable across restarts) must be confirmed.
 4. **PGlite limits for the lock tests.** Fencing, concurrency and recovery tests must run on real
    Postgres; PGlite's single-connection model cannot express the `FOR UPDATE` contention cases.
+5. **PGlite under Bun.** `@electric-sql/pglite` + `pglite-socket` must run under Bun's test runner
+   (vitest here) fast enough for one fresh database per `it.layer` block, and the framework and
+   `SqlMessageStorage` migrations must apply on it.
+6. **In-process multi-runner cluster.** Neither stock `RunnerStorage` fits: `layerMemory.acquire`
+   grants every requested shard to any caller (verified in rc.116 source), and `SqlRunnerStorage`
+   expires locks against the database's `now()`, so `TestClock` cannot expire a killed runner's
+   shards. The harness provides its own `RunnerStorage` (per-address ownership, expiry on `Clock`,
+   `shardLockExpiration` default 35s) and a `Runners.make` bus; both must be shown to drive N
+   `Sharding` instances in one process.
+7. **Crash points are real crashes.** `TurnHooks.beforeCommit` dying must abort the transaction
+   (no partial write), and dying in `afterCommit` must leave the entity's reply undelivered so Cluster
+   redelivers, or the harness has to interrupt the activation fiber instead of failing the hook.

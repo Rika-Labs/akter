@@ -33,7 +33,7 @@
  * `Drizzle`, `OwnedTable`, `Scoped` are placeholders for drizzle-orm/effect-postgres types so this
  * file typechecks from the repo root, where only `effect` is hoisted. Runtime internals are `declare`d.
  */
-import { Cause, Context, Cron as EffectCron, DateTime, Duration, Effect, Layer, Option, Schedule, Schema, Scope, Stream } from "effect"
+import { Cause, Context, Cron as EffectCron, DateTime, Duration, Effect, Exit, Layer, Option, Schedule, Schema, Scope, Stream } from "effect"
 import type { ConfigError } from "effect/Config"
 import { Rpc, RpcGroup, RpcSchema } from "effect/unstable/rpc"
 import { ClusterSchema, Entity, EntityAddress, Sharding } from "effect/unstable/cluster"
@@ -796,10 +796,45 @@ export interface Auth<R> {
 }
 export const auth = <R>(handler: (headers: Headers) => Effect.Effect<Principal, Unauthorized, R>): Auth<R> => ({ handler })
 
+/** What a turn did, as `turn()` reports it to `TurnHooks` before and after COMMIT. */
+export interface TurnReport {
+  readonly address: EntityAddress.EntityAddress
+  readonly tenantId: TenantId
+  readonly command: string
+  readonly commandId: string
+  readonly caller: Caller
+  readonly generation: number
+  /** why this turn ran: an outside call, a durable intent, a due timer, a per-actor cron tick, a dead-lettered effect, or Cluster redelivery */
+  readonly trigger: "call" | "intent" | "timer" | "cron" | "effect-failed" | "redelivery"
+  /** receipt hit: the handler did not run, the stored Exit was replayed */
+  readonly replayed: boolean
+  readonly exit: Exit.Exit<unknown, unknown>
+  readonly emitted: ReadonlyArray<{ readonly _tag: string }>
+  readonly performed: ReadonlyArray<{ readonly _tag: string }>
+  readonly intents: ReadonlyArray<{ readonly actor: string; readonly id: string; readonly command: string; readonly input: unknown; readonly key?: string; readonly deliverAt?: DateTime.Utc }>
+  readonly cancelledTimers: ReadonlyArray<string>
+  readonly workflowsStarted: ReadonlyArray<{ readonly name: string; readonly input: unknown }>
+  readonly terminated: boolean
+}
+/**
+ * The one seam `turn()` exposes. Inert by default; `durable-actors/testing` provides an implementation
+ * that records every turn and injects faults (a hook that dies at `beforeCommit` is a crash mid-turn;
+ * one that dies at `afterCommit` is "committed, reply lost", which Cluster resolves by redelivery).
+ */
+export interface TurnHooksShape {
+  readonly beforeHandler: (turn: Pick<TurnReport, "address" | "tenantId" | "command" | "commandId" | "caller" | "generation" | "trigger">) => Effect.Effect<void>
+  readonly beforeCommit: (turn: TurnReport) => Effect.Effect<void>
+  readonly afterCommit: (turn: TurnReport) => Effect.Effect<void>
+}
+export const TurnHooks = Context.Reference<TurnHooksShape>("durable-actors/TurnHooks", {
+  defaultValue: () => ({ beforeHandler: () => Effect.void, beforeCommit: () => Effect.void, afterCommit: () => Effect.void })
+})
+
 /**
  * One transaction per command. Not implemented here; see README "Turn".
  * BEGIN → SELECT actor_generations … FOR UPDATE → receipt lookup → (OnCreate on first turn) → handler
- *       → actor_events / actor_outbox / cluster_messages / receipt → COMMIT → NOTIFY.
+ *       → actor_events / actor_outbox / cluster_messages / receipt → TurnHooks.beforeCommit → COMMIT
+ *       → TurnHooks.afterCommit → NOTIFY.
  * Retryable conditions (stale generation, lock timeout, commit-unknown, CommandTimeout) are defects.
  */
 declare const turn: <A, E, R>(
@@ -844,7 +879,4 @@ export declare const serve: <R = never>(options: {
   readonly auth?: Auth<R>
 }) => Layer.Layer<never, never, Actors | Exclude<R, Scope.Scope>>
 
-/** `Actor.layer` over TestRunner + ClusterWorkflowEngine; the test provides Database (real Postgres). */
-export declare const testLayer: Layer.Layer<Actors, never, Database>
-
-export const Actor = { make, command, query, stream, workflow, cron, table, layer, testLayer, serve, auth, tenant, as, anonymous, commandId }
+export const Actor = { make, command, query, stream, workflow, cron, table, layer, serve, auth, tenant, as, anonymous, commandId }
