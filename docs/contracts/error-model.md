@@ -5,22 +5,19 @@
 **Owner role:** API/runtime.  
 **Change policy:** error code changes require client compatibility review.
 
-Core categories:
+The framework MUST expose one tagged framework error:
 
-| Error             | Retry               | Disclosure                    |
-| ----------------- | ------------------- | ----------------------------- |
-| Invalid input     | no                  | safe                          |
-| Unauthenticated   | after auth          | safe                          |
-| Unauthorized      | no                  | non-disclosing                |
-| Wrong owner       | no                  | explicit to authorized caller |
-| Stale generation  | yes                 | safe                          |
-| Duplicate command | observe receipt     | safe                          |
-| Command conflict  | no                  | safe                          |
-| Unavailable       | yes                 | safe                          |
-| Timeout           | depends on boundary | safe                          |
-| Unknown effect    | reconcile           | safe, prominent               |
-| Expired receipt   | new identity        | safe                          |
-| Cursor expired    | resync              | safe                          |
-| Unsupported query | no                  | actionable                    |
+```text
+ActorError {
+  reason: ActorUnavailable | MailboxFull | Timeout | CommandConflict |
+          NotCreated | Unauthorized | InvalidInput | TransportError
+  isRetryable
+  retryAfter
+}
+```
 
-Effect failures, Promise rejections, HTTP responses, WebSocket frames, and CLI output must preserve the same semantic category.
+Effect programs MUST catch it with `catchTag("ActorError")` or branch with `catchReasons`. Declared application errors MUST remain their declared classes and MUST never be wrapped in `ActorError`. `InvalidInput` and `TransportError` are boundary-only and MUST NOT appear in a typed in-process handle's error channel.
+
+`ActorUnavailable`, `MailboxFull`, and `Timeout` are retryable according to `isRetryable` and SHOULD reuse the same command id. `CommandConflict`, `NotCreated`, `Unauthorized`, and `InvalidInput` are not retryable without changing caller input or credentials. A timeout means the turn may still commit.
+
+`Unauthorized.reason.code` MUST carry the stable credential code. HTTP, WebSocket, Promise client, and Effect client mappings MUST preserve the reason, retry metadata, command id/request id, and declared-error identity.

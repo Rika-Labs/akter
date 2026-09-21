@@ -7,10 +7,22 @@
     "./node_modules/@effect/tsgo/oxlint-presets/effect-native.json",
     "./node_modules/@effect/tsgo/oxlint-presets/style.json"
   ],
-  "categories": { "correctness": "error" },
+  "categories": {
+    "correctness": "error"
+  },
   "jsPlugins": [
-    { "name": "anti-slop", "specifier": "./tooling/oxlint/anti-slop/index.ts" },
-    { "name": "anti-slop-effect", "specifier": "./tooling/oxlint/anti-slop/effect/index.ts" }
+    {
+      "name": "anti-slop",
+      "specifier": "./tooling/oxlint/anti-slop/index.ts"
+    },
+    {
+      "name": "anti-slop-effect",
+      "specifier": "./tooling/oxlint/anti-slop/effect/index.ts"
+    },
+    {
+      "name": "durable-actors",
+      "specifier": "./tooling/oxlint/src/structure.ts"
+    }
   ],
   "rules": {
     "oxc/no-accumulating-spread": "error",
@@ -36,7 +48,13 @@
     "anti-slop-effect/no-manual-tag-comparison": "error",
     "anti-slop-effect/no-manual-tagged-construction": "error",
     "anti-slop-effect/no-service-constructor-imports": "error",
-    "anti-slop-effect/prefer-effect-match": "error"
+    "anti-slop-effect/prefer-effect-match": "error",
+    "durable-actors/filename-kebab-case": "error",
+    "durable-actors/no-parent-echo-in-filename": "error",
+    "durable-actors/no-role-suffix-filename": "error",
+    "durable-actors/no-generic-directory-segment": "error",
+    "durable-actors/no-barrel-index": "error",
+    "durable-actors/no-runtime-import-outside-runtime": "error"
   },
   "ignorePatterns": ["**/dist/**", ".local/**", "tooling/oxlint/anti-slop/**", "**/templates/**"]
 }

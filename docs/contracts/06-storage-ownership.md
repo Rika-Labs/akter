@@ -5,10 +5,10 @@
 **Owner role:** database/runtime.  
 **Change policy:** Drizzle, Postgres, and each backend adapter must agree on the supported query matrix.
 
-Business tables remain ordinary relational tables. Ownership metadata is derived from trusted actor context and is not an ordinary caller-controlled input.
+`actor_state` MUST use keyed rows scoped by `(tenant_id, actor, actor_id, key)`. A command turn MUST decode stored values through the complete `migrations` chain before the handler and MUST write the current shape at commit. `State.maxBytes` MUST be enforced before commit.
 
-Reads are authorized separately from writes. Actor handlers receive actor-scoped mutation capabilities; dashboards, queries, and background phases receive only the authority they need.
+`Actor.table()` business tables MUST include trusted `tenant_id` and `actor_id` ownership columns. `OwnedTable`/`Scoped` mutation is available only in command turns; `ScopedRead` is select-only. The public contract exposes Drizzle types, while the framework binds builders to its transaction and scope. Unsupported or raw mutation that cannot preserve ownership MUST be rejected.
 
-The framework must define behavior for single-row updates, broad predicates, joins, upserts, cascades, deletes, raw SQL, and mixed-owner targets. “The database filtered it out” is not an ownership error contract.
+One database serves a deployment. Every framework and business table MUST carry `tenant_id` with composite indexes; optional RLS MUST be applied per table. Tenant placement uses runtime `shardGroup` for compute and Neki shard placement for data, never a database per tenant.
 
-Drizzle syntax is the developer-facing query model. Re-exporting a symbol does not by itself make a builder transaction-bound, yieldable, or ownership-safe.
+The `Database` tag is the explicit escape hatch for authorized cross-actor reads. It MUST NOT grant command-turn authority. See [security](10-security.md) and storage cases in [conformance](../verification/01-conformance.md).

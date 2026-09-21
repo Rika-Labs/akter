@@ -5,10 +5,12 @@
 **Owner role:** runtime/reliability.  
 **Change policy:** retention changes require restore and external-effect review.
 
-A receipt records the logical command identity, actor identity, request hash, authorization context, status, result or error, attempt history, and retention boundary.
+Every command MUST have a stable command id minted by the Effect handle or Promise client before delivery. Delivery retries MUST reuse it; `turn()` MUST NOT mint it.
 
-The same command ID with the same request returns or observes the existing logical result. Reusing it with a different request is a permanent conflict. A lost response after commit is recovered through the receipt, not by blindly executing the handler again.
+Receipts MUST be keyed by tenant, actor identity, and command id and MUST bind the command name and payload hash. The same id and payload MUST replay the committed output or declared failure without running the handler. The same id with a different command or payload MUST fail with `ActorError` whose reason is `CommandConflict`.
 
-Receipt retention bounds deduplication. The runtime must expose expiry rather than implying an identity remains safe forever.
+Receipt insertion, handler consequences, and receipt completion MUST share the command-turn transaction. A crash after commit but before reply MUST recover by replaying the receipt. A crash before commit MUST leave no receipt or consequence and MUST permit redelivery.
 
-`unknown` is a first-class status for an external operation whose provider outcome cannot yet be determined. It is not equivalent to failure.
+Receipt retention defines the deduplication horizon and MUST be explicit. Framework retry guidance MUST use `ActorError.isRetryable` and `retryAfter`; declared failures MUST never be wrapped.
+
+Verification: invariants R1–R3 in [invariants](../verification/invariants.md) and the before/after commit rows in [failure cases](../verification/02-failure-matrix.md).

@@ -1,46 +1,42 @@
 # 01 — The problem
 
+**Responsibility:** define the problem, customer promise, and product intent.  
+**Authority:** product intent.  
+**Owner role:** product direction.  
+**Change policy:** a change requires product sign-off and a matching contract update when a promise shifts.
+
 ## Vision
 
-Durable Actors exists for applications whose important things have identity, memory, behavior, and ongoing work.
+Important application concepts—rooms, documents, accounts, devices, orders, and agents—have identity, mutable state, live clients, and work that must survive failure. Teams usually assemble those concepts from HTTP handlers, SQL, locks, retries, schedulers, background processes, and WebSockets. Correctness then lives in the gaps between systems.
 
-Examples include:
-
-- a customer account;
-- a team or project;
-- a chat room;
-- a document or collaborative session;
-- an IoT device;
-- an agent;
-- a workflow;
-- a subscription or order.
-
-Today, these are usually implemented with tables, API handlers, queues, workers, cron, WebSockets, caches, retry tables, and ad hoc locking. Each feature invents its own coordination rules.
-
-Durable Actors gives each important thing a durable runtime so its behavior can be expressed together.
+Durable Actors makes the application concept the coordination boundary. One actor owns an identity, serializes its commands, commits relational facts, and continues work after a process disappears.
 
 ## The customer promise
 
-> Build stateful applications without building distributed systems by hand.
+> Build stateful, realtime applications without hand-building the distributed-systems glue.
 
-The framework should make it straightforward to create a thing that can:
+An actor can:
 
-- receive commands;
-- own mutations;
-- read relational data;
-- communicate with other things;
-- publish realtime updates;
-- schedule future work;
-- call external services;
-- survive process failure;
-- reconnect clients;
-- remain inspectable with ordinary database tools.
+- receive typed commands and expose typed reads;
+- own keyed state and relational business rows;
+- emit durable events with a cursor;
+- run workflows, cron, timers, and external effects;
+- hold typed connections and broadcast live hints;
+- hibernate and rebuild its activation;
+- attribute work to an ambient caller;
+- remain inspectable in Postgres and ordinary observability tools.
+
+## Product intent
+
+Durable Actors is an Effect-native actor framework. It is not a workflow-only product: workflows are members of the actor that owns their identity and data. It is not a separate background-work product: scheduling and effects are consequences of actor turns. It has no AI-specific product surface; an agent is simply an actor, and contract-derived OpenAPI is available to external tool generators.
 
 ## We are not building
 
-- another private key-value store;
-- a hosted-only edge platform;
-- a replacement for SQL;
-- a generic function-as-a-service product;
-- a hostile-code sandbox;
-- a promise that every distributed operation is globally atomic or exactly once.
+- a private replacement for relational data;
+- a hosted-only platform;
+- arbitrary JavaScript continuation checkpointing;
+- hostile-code isolation;
+- globally atomic distributed application logic;
+- exactly-once outcomes from external providers that offer no idempotency or reconciliation mechanism.
+
+See [the product model](02-product-model.md) for the unit that replaces this glue and [boundaries](08-boundaries.md) for the guarantees we refuse to blur.

@@ -1,7 +1,7 @@
 import { expect, it } from "vitest"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, FileSystem, ManagedRuntime } from "effect"
-import { violations } from "../src/Directives.ts"
+import { violations } from "./directives.ts"
 
 it("rejects every directive scope and ESLint aliases, including attempts to disable this check", () => {
   for (const prefix of ["oxlint", "eslint"])
@@ -49,7 +49,7 @@ it("the CLI checks untracked and tracked source, honors gitignore, and fails out
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const root = yield* fs.makeTempDirectoryScoped()
-        const script = new URL("../src/Directives.ts", import.meta.url).pathname
+        const script = new URL("./directives.ts", import.meta.url).pathname
         const run = () => Bun.spawnSync(["bun", script], { cwd: root })
 
         expect(run().exitCode).not.toBe(0)

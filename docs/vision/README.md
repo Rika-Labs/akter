@@ -1,6 +1,11 @@
 # Durable Actors vision
 
-These documents describe what Durable Actors is trying to become. They are intentionally separate from implementation plans and research.
+**Responsibility:** index the vision documents and their reading order.  
+**Authority:** product intent.  
+**Owner role:** product direction.  
+**Change policy:** a change requires product sign-off and a matching contract update when a promise shifts.
+
+These documents state the settled v4 product intent: an Effect-native durable actor framework with relational data, realtime connections, durable execution, strong testing, and three deployment modes. They describe why the product exists, what developers should believe, and where its guarantees stop; they are not claims that every surface is already implemented.
 
 ## Reading order
 
@@ -13,15 +18,10 @@ These documents describe what Durable Actors is trying to become. They are inten
 7. [Deployment and ownership](07-deployment.md)
 8. [Boundaries](08-boundaries.md)
 
-Each document answers one question:
+## Through-line
 
-- What problem are we solving?
-- What should an actor mean to an application developer?
-- How should relational data and actor authority fit together?
-- What must survive failure?
-- How should realtime behavior feel?
-- What should the APIs feel like?
-- Where should the system run and who operates it?
-- What must we deliberately refuse to promise?
+`Actor.make` is the one primitive. An actor owns identity and serialized mutation; keyed state and `OwnedTable` rows commit with receipts and events; workflows are actor members; cron, timers, and effects continue work; typed connections provide realtime behavior; `Actors.layer`, `Actor.serve`, and hosted runners provide embedded, served, and hosted operation.
 
-These are product direction, not proof that the runtime already exists. Implementation contracts and conformance tests must turn each accepted statement into something falsifiable.
+The product is actor-first. It does not split application behavior into unrelated infrastructure products, and it does not introduce an AI-specific surface. The reference examples—counter, chat, and coding agent—must prove the model end to end.
+
+Implementation contracts live in the framework and architecture documentation. Research records explain how the design was reached; settled vision takes precedence over superseded proposals.

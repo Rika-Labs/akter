@@ -3,16 +3,30 @@
 **Responsibility:** connect contracts to named tests.  
 **Authority:** verification.  
 **Owner role:** verification/reliability.
+**Change policy:** a change requires the conformance suite to be updated in the same change.
 
-1. Only one actor generation can commit.
-2. A foreign mutation cannot partially succeed.
-3. A committed event has committed source state.
-4. A rolled-back command emits no durable event.
-5. One retained command identity creates one logical transition.
-6. Work intent commits before post-commit delivery.
-7. Unknown external outcomes are not silently treated as failure.
-8. A subscription never silently skips a committed event.
-9. Restore never creates dual writable authority.
-10. Process memory is never the only source of business truth.
+Each invariant MUST have a named executable case in `describeConformance` or an integration suite. PGlite covers fast transactional cases; real Postgres covers contention; Neki covers pinning, locality, and relay behavior; multi-runner and served HTTP harnesses cover routing and edge attribution.
 
-Every invariant must have a unit, integration, crash, and—where relevant—multi-process test.
+| ID  | Invariant                                                        | Required evidence                                                                |
+| --- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| A1  | Only the current generation commits.                             | Two contenders plus stale generation; real Postgres and Neki locking gates.      |
+| A2  | Request/reply never crosses a turn boundary.                     | Captured handle dies with the required message and all writes roll back.         |
+| A3  | Off-turn contexts cannot mutate durable actor data.              | Type tests plus runtime rejection of unsupported mutation paths.                 |
+| T1  | One framework-owned transaction contains every turn consequence. | Before-COMMIT crash leaves no receipt, state, row, event, intent, or effect.     |
+| T2  | Deterministic defects roll back without evicting the actor.      | Size, decode, and internal-caller cases assert `Die`, `onDefect`, and residency. |
+| R1  | One retained command id and payload creates one transition.      | Concurrent duplicate and after-COMMIT redelivery replay one receipt.             |
+| R2  | Reusing a command id for different input is a conflict.          | `ActorError.reason` is `CommandConflict`; no handler run.                        |
+| R3  | Declared failures replay unchanged.                              | Same class and payload through Effect, HTTP, and Promise client.                 |
+| M1  | Rolled-back intents are never delivered.                         | Intent rollback gate on SQL message storage.                                     |
+| M2  | Neki relay publishes each committed intent exactly once.         | Relay crash/restart around source COMMIT and destination insert.                 |
+| E1  | Events exist only for committed turns and remain cursor ordered. | Rollback, replay, retention-gap, and multi-runner feed cases.                    |
+| S1  | State migration is complete and atomic.                          | Seed old row, upcast in next turn, commit current shape; invalid chain rejected. |
+| S2  | Every row remains tenant scoped.                                 | Cross-tenant reads/writes, workflow equal-key isolation, optional RLS cases.     |
+| C1  | Parked sockets survive activation hibernation.                   | Connection park gate, restored state, resumed flag, wake on frame/broadcast.     |
+| W1  | Workflow identity includes owner and tenant.                     | Equal keys across tenants/owners never join; resume preserves attribution.       |
+| W2  | Owner-event waiting has no registration gap.                     | Event in the start-to-wait race resolves the durable wait.                       |
+| G1  | Exactly one singleton is resident cluster-wide.                  | Two runners, one `run`, one cron tick, movement after runner kill.               |
+| H1  | HTTP caller identity is per request.                             | Concurrent distinct tokens differ; missing credentials fail before any turn.     |
+| O1  | Observability names are stable.                                  | Span assertion for `durable-actors.<Actor>/<Command>` and correlated command id. |
+
+The mapping from these invariants to normative guarantees is in [runtime contracts](../contracts/README.md); crash expectations are in the [failure matrix](02-failure-matrix.md).

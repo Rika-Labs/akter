@@ -5,18 +5,10 @@
 **Owner role:** storage/runtime.  
 **Change policy:** every adapter must run the same transaction conformance suite.
 
-One actor turn transaction includes, when used:
+The command-turn transaction MUST atomically include the generation fence, receipt, state migration and dirty state, actor-owned business rows, durable events, timers, workflow intents, actor-message intents, and effect outbox rows used by that turn. A failed transaction MUST expose none of them.
 
-- owned business rows;
-- command receipt;
-- durable events;
-- timer records;
-- outgoing messages;
-- activity, job, and workflow intents;
-- ownership/version fences.
+External calls, WebSocket writes, `ctx.connections.broadcast`, streams, workflow execution, and effect execution MUST occur outside the transaction. `ctx.connections.broadcast` is best-effort and MUST NOT be described as transactional.
 
-Nothing externally visible may be published before the outer transaction commits. Savepoints do not create an external commit boundary.
+On ordinary Postgres, local intents MAY be inserted into `cluster_messages` in the turn transaction. On Neki, a cross-shard-group write MUST NOT be assumed atomic: the turn MUST write `actor_outbox` in the tenant shard, and a relay MUST move the intent to `cluster_messages` after COMMIT exactly once using the intent id.
 
-External calls, WebSocket writes, unbounded streams, and long model calls are outside this transaction. Their intent is recorded locally and delivered after commit.
-
-Ordinary Postgres can provide this boundary within one transaction domain. A sharded backend must explicitly prove locality; SQL protocol compatibility alone is insufficient.
+Adapters MUST prove locking, connection pinning, rollback, and relay recovery through the gates in [conformance](../verification/01-conformance.md). SQL protocol compatibility alone is insufficient.

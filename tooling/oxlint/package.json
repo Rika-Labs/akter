@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --deny-warnings --threads 1 src test",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/oxlint/test"
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/oxlint/src/directives.test.ts && node ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/oxlint/src/rules"
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",

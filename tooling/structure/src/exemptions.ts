@@ -1,9 +1,11 @@
-// Every deviation from docs/architecture/repository-structure.md is listed here with its reason.
-// The tree checker fails on an exemption that no longer matches a path, so stale entries cannot linger.
-
 export interface Exemption {
   readonly path: string
-  readonly rule: "no-ui-package" | "tests-beside-sources" | "structure-rules"
+  readonly rule:
+    | "no-ui-package"
+    | "tests-beside-sources"
+    | "index-not-entry"
+    | "wildcard-exports"
+    | "structure-rules"
   readonly reason: string
 }
 
@@ -37,15 +39,21 @@ export const exemptions: ReadonlyArray<Exemption> = [
     reason: "Moves with packages/ui.",
   },
   {
-    path: "tooling/oxlint/test",
-    rule: "tests-beside-sources",
-    reason:
-      "Directives test predates the structure contract; anti-slop rule tests already sit beside their rules.",
-  },
-  {
     path: "infra/test",
     rule: "tests-beside-sources",
     reason: "Lifecycle test predates the structure contract.",
+  },
+  {
+    path: ".github/test",
+    rule: "tests-beside-sources",
+    reason:
+      "CI fixture tests exercise .github/src generators; they move beside their sources with the next CI rework.",
+  },
+  {
+    path: "tooling/oxlint/anti-slop",
+    rule: "structure-rules",
+    reason:
+      "Vendored rule corpus (see ANTI-SLOP-LICENSE): upstream file layout, index modules and shared/ segments are kept intact so diffs against upstream stay reviewable.",
   },
   {
     path: "research",

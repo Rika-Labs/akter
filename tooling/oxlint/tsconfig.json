@@ -1,5 +1,7 @@
 {
   "extends": "../../tsconfig.json",
-  "include": ["anti-slop", "src", "test"],
-  "compilerOptions": { "noUncheckedIndexedAccess": false }
+  "include": ["anti-slop", "src"],
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": false
+  }
 }

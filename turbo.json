@@ -1,6 +1,8 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "futureFlags": { "affectedUsingTaskInputs": true },
+  "futureFlags": {
+    "affectedUsingTaskInputs": true
+  },
   "globalDependencies": ["tsconfig.json"],
   "globalPassThroughEnv": ["GOMAXPROCS"],
   "tasks": {
@@ -26,7 +28,8 @@
         "!**/*.md",
         "!docs/**",
         "$TURBO_ROOT$/.oxlintrc.json",
-        "$TURBO_ROOT$/tooling/oxlint/anti-slop/**"
+        "$TURBO_ROOT$/tooling/oxlint/anti-slop/**",
+        "$TURBO_ROOT$/tooling/oxlint/src/**"
       ],
       "outputs": []
     },
@@ -68,12 +71,29 @@
       "passThroughEnv": ["TEST_DATABASE_URL"]
     },
     "//#lint:root": {
-      "inputs": ["*.ts", ".amp/plugins/**", ".oxlintrc.json", "tooling/oxlint/anti-slop/**"],
+      "inputs": [
+        "*.ts",
+        ".amp/plugins/**",
+        ".oxlintrc.json",
+        "tooling/oxlint/anti-slop/**",
+        "tooling/oxlint/src/**"
+      ],
       "outputs": []
     },
-    "dev": { "dependsOn": ["^build"], "cache": false, "persistent": true, "passThroughEnv": ["*"] },
-    "deploy": { "cache": false },
-    "destroy": { "cache": false },
-    "migrate": { "cache": false }
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true,
+      "passThroughEnv": ["*"]
+    },
+    "deploy": {
+      "cache": false
+    },
+    "destroy": {
+      "cache": false
+    },
+    "migrate": {
+      "cache": false
+    }
   }
 }

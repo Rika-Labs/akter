@@ -3,7 +3,12 @@
 **Responsibility:** define the relational query experience.  
 **Authority:** API design.  
 **Owner role:** database/API.
+**Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-Use Drizzle semantics rather than inventing a proprietary query language. Re-export only stable, useful Drizzle surface through documented subpaths. Do not re-export database drivers, pools, dialect internals, migration CLIs, or unrelated runtime globals merely for convenience.
+Actor-owned tables use Drizzle semantics and gain `tenant_id` and `actor_id` ownership columns. The framework does not invent a separate query language or re-export drivers, pools, dialect internals, migration CLIs, or unrelated runtime globals.
 
-The adapter must define how builders become Effect-yieldable, how they bind to the current transaction, which mutations receive ownership enforcement, and which query forms are unsupported. TypeScript types are not a substitute for runtime authority.
+Inside a command turn, `ctx.rows(table)` is scoped to the current tenant and actor and provides `one`, `all`, `insert`, and `upsert`; `ctx.db` is the Drizzle escape hatch for joins and advanced statements. Writes use the framework-owned turn transaction and therefore commit atomically with the generation fence, receipt, state, events, intents, timers, and effects.
+
+Queries and other off-turn phases receive `ScopedRead` and cannot mutate through the typed API. Runtime scoping and database constraints enforce ownership; TypeScript types alone are not authority.
+
+There is one database per deployment. Tenants are rows, isolated by `tenant_id`, composite indexes, and optional RLS. Placement is selected with `shardGroup`, not separate tenant databases. Table schema changes use normal SQL migrations; keyed actor state uses `Actor.migration` upcasts.

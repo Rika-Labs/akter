@@ -1,50 +1,37 @@
 # 02 — The product model
 
+**Responsibility:** define the actor primitive and its execution model.  
+**Authority:** product intent.  
+**Owner role:** product direction.  
+**Change policy:** a change requires product sign-off and a matching contract update when a promise shifts.
+
 ## Vision
 
-An actor is a durable application boundary around an identity and its behavior.
+An actor is an identity plus serialized mutation under one transaction. `Actor.make` is the only actor constructor. Its contract may declare commands, queries, streams, connections, workflows, events, effects, tables, blobs, keyed state, per-activation `vars`, migrations, and lifecycle policies.
 
-An actor has:
+Actors may use framework-minted ids, application-defined names, or `singleton: true`. `Cron.every` schedules a command on the same actor. `Hibernate.after` lets an idle activation sleep. `Connections.park` lets the activation hibernate while WebSocket-style connections remain parked and can wake it.
 
-- an address;
-- a command mailbox;
-- authority over defined business rows;
-- short serialized command turns;
-- durable receipts and events;
-- timers and outgoing work;
-- optional realtime connections and subscriptions;
-- an activation that can be created, stopped, and rebuilt.
-
-The actor is not a private database. It is not an always-running process. It is not an arbitrary JavaScript fiber checkpoint.
-
-## The developer mental model
+## The turn model
 
 ```text
-address → command → transaction → committed facts → delivery / observation
+command → generation fence → receipt → handler → commit
 ```
 
-An actor may sleep between turns. Its identity, business facts, receipts, events, and future work remain durable.
+These steps run in one database transaction. The commit may include keyed state, OwnedTable rows, events, timers, actor intents, workflow intents, effect obligations, and the receipt. A retained receipt makes retrying the same command id replay the logical result instead of applying the handler twice. Declared application failures are recorded and replayed too.
 
-## The authority model
+Outside a command turn, state is read-only. `ctx.state` is a `StateSnapshot`; its `changes` stream publishes committed snapshots. `vars` are typed activation-local values and deliberately disappear when the activation hibernates.
 
-Actors own mutation, not visibility.
+## One primitive, several modes
 
-Authorized application code, dashboards, and queries may observe relational state. Actor commands are the normal path for changing actor-owned business facts. A foreign actor cannot silently mutate those facts through ordinary SQL.
+- A durable domain object declares the state and members it needs.
+- A transient coordination actor can declare only `vars`; its commands remain serialized and fenced, but it has no declared durable data.
+- A cluster-wide service uses `singleton: true`.
+- A finite durable operation is an `Actor.workflow` member of its owning actor.
 
-## One context
+An activation is not the actor. Processes may stop, move, or restart while identity, committed data, receipts, events, and future obligations remain.
 
-Application code starts with one context and uses capabilities from it:
+## Authority
 
-```ts
-const ctx = yield * Context
+Actors own mutation, not all visibility. Commands are the normal write boundary for actor-owned data. Authorized services may read relational data across actors for reporting and operations without acquiring mutation authority.
 
-ctx.database
-ctx.blobs
-ctx.emit
-ctx.timers
-ctx.activities
-ctx.workflows
-ctx.realtime
-```
-
-The available authority changes by execution phase. One name does not mean every phase can perform every operation.
+See [relational data](03-relational-data.md), [durable execution](04-durable-execution.md), and [realtime](05-realtime.md).

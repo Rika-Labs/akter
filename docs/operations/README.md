@@ -1,10 +1,14 @@
 # Operations
 
-**Responsibility:** make the runtime deployable, observable, and recoverable.  
+**Responsibility:** index the operations documents and their procedures.  
 **Authority:** operational.  
 **Owner role:** operations.
+**Change policy:** a change requires operator review when a procedure or limit changes.
 
 - [Deployment](01-deployment.md)
 - [Migrations](02-migrations.md)
 - [Observability](03-observability.md)
 - [Backup and restore](04-backup-restore.md)
+- [Retention](retention.md)
+- [Runbooks](runbooks.md)
+- [Backend support matrix](support-matrix.md)

@@ -1,6 +1,11 @@
 # Durable Actors documentation
 
-This directory is the implementation-facing source of truth for Durable Actors. The [research archive](../research/README.md) contains evidence and exploration; it does not silently override these documents.
+**Responsibility:** index the documentation and its authority order.  
+**Authority:** documentation policy.  
+**Owner role:** documentation.  
+**Change policy:** keep the authority order accurate when directories change.
+
+This directory is the implementation-facing source of truth for Durable Actors. The settled v4 design has been incorporated into these specifications; the [research archive](../research/README.md) retains evidence and exploration.
 
 ## Authority order
 
@@ -14,6 +19,14 @@ This directory is the implementation-facing source of truth for Durable Actors. 
 8. `milestones/` — current implementation scope and sequencing.
 
 If documents conflict, stop and create an ADR before coding. Do not resolve a contract conflict by silently choosing the easier implementation.
+
+## Settled framework surface
+
+The framework is one `durable-actors` distribution with root, `/runtime`, `/client`, and `/testing` entries. `Actor.make` is the only actor constructor, `Actors.layer` constructs the runtime, `Actor.serve` exposes HTTP, WebSocket, SSE, and OpenAPI, and `ActorTest` exercises the real turn path.
+
+Actors run embedded, served, or hosted. One database serves a deployment; tenants are rows and placement is selected by shard group. See [Public APIs](api/README.md), [Repository structure](architecture/repository-structure.md), and the [Glossary](GLOSSARY.md).
+
+The gates in [v4 verification](../research/v4/DECISIONS.md#4-verification-gates-must-pass-before-the-decision-is-claimed) remain evidence requirements until their checks pass. In particular, Neki transaction and locking behavior, Railway advertise addresses, PGlite compatibility, multi-runner recovery, workflow isolation, connection parking, and singleton uniqueness must not be claimed from design alone.
 
 ## Document responsibility
 

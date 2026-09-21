@@ -1,38 +1,43 @@
 # 03 — Relational data
 
+**Responsibility:** define relational storage, ownership, and tenancy intent.  
+**Authority:** product intent.  
+**Owner role:** product direction.  
+**Change policy:** a change requires product sign-off and a matching contract update when a promise shifts.
+
 ## Vision
 
-Durable Actors should feel natural to teams that already use relational databases.
+Durable Actors combines actor authority with ordinary relational data. Postgres remains the system operators can inspect, back up, migrate, join, and report on; the framework supplies a trustworthy mutation boundary.
 
-Teams should be able to:
+Actors have two complementary storage forms:
 
-- define ordinary tables and relationships;
-- use familiar SQL and Drizzle semantics;
-- inspect data with database tools;
-- build reports and dashboards;
-- query across actors when authorized;
-- keep their existing relational system of record;
-- run migrations using normal operational practices.
+- keyed state for small, schema-typed values used directly in turns;
+- `OwnedTable` business tables for relational records, indexes, joins, and Drizzle queries.
 
-## The deliberate distinction
+State and rows share the command transaction. State migrations are declared as code-level upcasts; business-table migrations use normal SQL and Drizzle practices.
+
+## Ownership and observation
 
 ```text
 Actor authority: who may mutate a row
-SQL observation: who may read a row
-Database schema: how facts relate to one another
+SQL observation: who may read and relate rows
+Database schema: how business facts are represented
 ```
 
-The framework should not require a projection layer before state can be observed. Public-by-default actor state means queryable by authorized readers, not exposed to unauthorized tenants or anonymous users.
+Turn contexts receive scoped write capabilities. Query, stream, connection, run, and wake contexts receive read-only capabilities. `ctx.db` remains the deliberate escape hatch for relational reads and joins; it does not erase tenant or actor ownership rules.
 
-## The safety boundary
+## Tenancy
 
-The framework must make the safe path the easy path:
+There is one Postgres database per deployment, not one database per tenant. Every framework and business row carries `tenant_id`; composite indexes and optional row-level security reinforce isolation. `shardGroup` controls compute placement and can align with Neki data placement, but placement is not an authorization boundary.
 
-- inserts receive ownership from trusted context;
-- actor commands can mutate only owned rows;
-- foreign-row mutation produces a clear error;
-- unsupported bulk, join, cascade, and raw-SQL forms are rejected or explicitly privileged;
-- reads do not grant write authority;
-- administrative repair is separate from ordinary actor code.
+## Safety boundary
 
-Relational flexibility is a product strength only if the mutation boundary remains trustworthy.
+The safe path must be the easy path:
+
+- ownership columns come from trusted actor context;
+- ordinary actor writes are scoped to the owning tenant and actor;
+- reads never imply write authority;
+- unsupported bulk or cross-owner mutations require an explicit privileged path;
+- administrative repair remains separate from application handlers.
+
+The goal is relational flexibility without turning every handler into a concurrency protocol. See [the product model](02-product-model.md) and [deployment](07-deployment.md).

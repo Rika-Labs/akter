@@ -5,14 +5,22 @@
 **Owner role:** runtime architecture.  
 **Change policy:** update the failure matrix and receipt contract with every lifecycle change.
 
-A command is an authenticated request to one actor. A turn is its bounded execution attempt inside the actor authority and transaction boundary.
+Every command attempt MUST execute as one framework-owned transaction, in this order:
 
-```text
-admit → authenticate → deduplicate → fence → execute → commit → publish
-```
+1. lock and validate the generation fence;
+2. insert or resolve the receipt for the caller-minted command id;
+3. decode stored `actor_state` through the declared migration chain;
+4. run the handler;
+5. persist dirty state, owned rows, events, intents, effects, and the receipt result;
+6. commit once.
 
-Handlers may perform actor-scoped database work and record durable intents. They must not hold the turn open while waiting for a client, another actor, a timer, a blob provider, or an external API.
+These are the F1–F4 rules:
 
-The response can mean `committed`, `rejected`, `accepted`, `unknown`, or `expired`. Transport disconnect does not cancel an already accepted command.
+- **F1:** one command turn has exactly one outer transaction and no user-controlled commit boundary.
+- **F2:** a successful output or declared failure becomes observable only with its committed receipt.
+- **F3:** work outside the turn is read-only; durable consequences are scheduled as intents or effects.
+- **F4:** retryable framework failures become defects and redelivery of the same envelope; the activation restarts.
 
-Each command has a stable logical identity. Attempts may repeat; the business transition must follow the receipt contract.
+Deterministic defects—state exceeding `State.maxBytes`, state decode failure, or an internal command from a non-`System` caller—MUST roll back, return a `Die` to the caller, invoke `onDefect` with read-only `WakeContext`, and leave the actor resident. Declared failures MUST commit and replay from receipts. A transport timeout or disconnect MUST NOT cancel an admitted turn.
+
+Verification: gates **Crash points**, **Intent rollback**, **Turn boundary at runtime**, and **State migration chain** in [conformance](../verification/01-conformance.md).

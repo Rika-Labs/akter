@@ -1,5 +1,10 @@
 # ADR 0001: Repository structure
 
+**Responsibility:** define the monorepo layout and package ownership boundaries.  
+**Authority:** recorded decision.  
+**Owner role:** runtime architecture.  
+**Change policy:** supersede via a new ADR; do not edit accepted ADRs in place.
+
 **Status:** accepted (2026-09-21)  
 **Supersedes:** `docs/architecture/package-boundaries.md` (thirteen skeleton packages)
 

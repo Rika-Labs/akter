@@ -5,8 +5,10 @@
 **Owner role:** security/runtime.  
 **Change policy:** security review is required for auth, SQL, transfer, blob, and admin changes.
 
-The runtime distinguishes principal, tenant, project, actor, operator, and provider identity. Client-supplied addresses, tenant IDs, blob keys, and cursors are requests, not authority.
+`CurrentCaller` MUST be a `Context.Reference` defaulting to `Anonymous` and MUST be set at each trusted edge. Inside command turns and workflows, authorization and attribution MUST use `ctx.caller` and `ctx.principal`.
 
-Authorization is checked independently for commands, reads, subscriptions, signals, blobs, transfers, administration, and repair. Logs redact credentials, signed URLs, tokens, and sensitive payloads.
+For served HTTP, caller identity MUST be resolved per call. Concurrent requests carrying different bearer tokens MUST receive different principals. When an endpoint requires authentication, missing or invalid credentials MUST fail with `ActorError` reason `Unauthorized`; they MUST NOT run as `Anonymous`. `Unauthorized.reason.code` communicates `missing_credentials`, `invalid_credentials`, or `expired`.
 
-Durable Actors is trusted application code, not a hostile-code sandbox. Customer code running in the process must not be described as isolated from the process owner or other trusted handlers.
+One database MUST serve a deployment. Tenant isolation MUST use trusted `tenant_id` on every framework and business row, composite indexes, transaction scoping, and optional per-table RLS. Client-supplied tenant, actor id, cursor, or connection data is input, not authority. Compute placement is `shardGroup`; data placement is Neki shard placement.
+
+Credentials and sensitive payloads MUST be redacted from logs. Spans MUST be named `durable-actors.<Actor>/<Command>`. The framework is trusted application infrastructure, not a hostile-code sandbox. Verification: **Per-call caller over HTTP**, **Cluster header size**, and **Workflow tenant isolation** gates.
