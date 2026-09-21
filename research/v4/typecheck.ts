@@ -3,12 +3,14 @@
 import type { Duration, Effect, Exit, Layer, Option, Scope, Stream } from "effect"
 import { Cause, Effect as E, Schema } from "effect"
 import type { Arbitrary } from "effect/unstable/arbitrary"
-import type { ActorEvent, ActorUnavailable, CommandConflict, CurrentCaller, EventsOf, HandleOf, IntentOptions, NotCreated } from "./framework/Actor.ts"
+import { Context } from "effect"
+import type { ActorEvent, ActorUnavailable, CommandConflict, CurrentCaller, EffectContext, EffectExecutors, EventsOf, HandleOf, IntentOptions, NotCreated } from "./framework/Actor.ts"
 import { Actor, Actors, Cron, Database, Hibernate, Lifecycle } from "./framework/Actor.ts"
 import { Chat, InvalidMessage, Message, MessageAdded, NotAMember, RoomId, SendEmail } from "./example/Chat.ts"
 import { ChatReads } from "./example/Chat.queries.ts"
 import { ChatLive, RoomAccess } from "./example/Chat.server.ts"
 import { CountChanged, Counter, CounterId, GetCount, Increment, Overflow, Reset } from "./example/Counter.ts"
+import { AgentSession } from "./example/AgentSession.ts"
 import { CounterLive } from "./example/Counter.server.ts"
 import { NightlyLive } from "./example/Nightly.server.ts"
 import { Onboard } from "./example/Onboard.ts"
@@ -164,8 +166,38 @@ export const _overrideR = test.effects.override(Chat, { SendEmail: () => E.flatM
 export const _overrideRType: Eq<Effect.Services<typeof _overrideR>, Scope.Scope | RoomAccess> = true
 export const _overrideNoR = test.effects.override(Chat, { SendEmail: () => E.void })
 export const _overrideNoRType: Eq<Effect.Services<typeof _overrideNoR>, Scope.Scope> = true
-// fakes see typed `effect` and `ctx`, not `any`
-export const _overrideTyped = test.effects.override(Chat, { SendEmail: (effect, ctx) => E.log(effect.to.toUpperCase(), ctx.attempt.toFixed()) })
+// fakes see typed `effect` and `ctx`, not `any` (Eq is strict, so `any` fails here)
+export const _overrideTyped = test.effects.override(Chat, {
+  SendEmail: (effect, ctx) => {
+    const _effect: Eq<typeof effect, SendEmail> = true
+    const _ctx: Eq<typeof ctx, EffectContext<typeof Chat.id, typeof Chat.commands>> = true
+    return E.log(effect.to.toUpperCase(), ctx.attempt.toFixed())
+  }
+})
+// fakes written with Effect.fn / Effect.gen, a pretyped Partial, and two fakes needing different services
+class FakeModel extends Context.Service<FakeModel, { readonly reply: (prompt: string) => Effect.Effect<string> }>()("test/FakeModel") {}
+class FakeTools extends Context.Service<FakeTools, { readonly run: (name: string) => Effect.Effect<string> }>()("test/FakeTools") {}
+export const _overrideFn = test.effects.override(AgentSession, {
+  CallModel: E.fn(function*(effect, ctx) {
+    const model = yield* FakeModel
+    const text = yield* model.reply(effect.prompt)
+    yield* ctx.self.ModelReplied.send({ turnId: effect.turnId, text })
+  })
+})
+export const _overrideFnType: Eq<Effect.Services<typeof _overrideFn>, Scope.Scope | FakeModel> = true
+export const _overrideTwo = test.effects.override(AgentSession, {
+  CallModel: (effect) => E.flatMap(FakeModel, (m) => E.asVoid(m.reply(effect.prompt))),
+  RunTool: (effect) => E.gen(function*() {
+    const tools = yield* FakeTools
+    yield* tools.run(effect.name)
+  })
+})
+export const _overrideTwoType: Eq<Effect.Services<typeof _overrideTwo>, Scope.Scope | FakeModel | FakeTools> = true
+const pretyped: Partial<EffectExecutors<typeof Chat.id, typeof Chat.commands, typeof SendEmail, RoomAccess>> = {}
+export const _overridePretyped = test.effects.override(Chat, pretyped)
+export const _overridePretypedType: Eq<Effect.Services<typeof _overridePretyped>, Scope.Scope | RoomAccess> = true
+export const _overrideEmpty = test.effects.override(Chat, {})
+export const _overrideEmptyType: Eq<Effect.Services<typeof _overrideEmpty>, Scope.Scope> = true
 export const _badTesting = () => {
   // @ts-expect-error CounterId is not a RoomId
   test.inspect(Chat, CounterId.make("c1"))
@@ -177,6 +209,12 @@ export const _badTesting = () => {
   test.run(Counter, CounterId.make("c1"), { steps: [{ command: "SendMessage", input: { id: "m", body: "b" } }] })
   // @ts-expect-error CallModel is an AgentSession effect, not a Chat one
   test.effects.override(Chat, { CallModel: () => E.void })
+  // @ts-expect-error a fake must return an Effect
+  test.effects.override(Chat, { SendEmail: () => 42 })
+  // @ts-expect-error `effect` is a SendEmail: there is no `prompt`
+  test.effects.override(Chat, { SendEmail: (effect) => E.log(effect.prompt) })
+  // @ts-expect-error `input` is not on the EffectContext (it is on the effect)
+  test.effects.override(Chat, { SendEmail: (_effect, ctx) => E.log(ctx.input) })
   // @ts-expect-error the model's step sees typed steps: `input` on Reset is undefined
   const _m: Model<typeof Counter, number> = { initial: 0, step: (n, s) => s.command === "Reset" ? n + s.input : n, observe: () => E.succeed(0) }
 }

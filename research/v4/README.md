@@ -156,7 +156,7 @@ Layer.mergeAll(CounterLive, ChatLive, ChatReads, OnboardLive, NightlyLive, Agent
 | `ctx.waitFor(Actor, id, Event)` | `DurableDeferred` plus a framework intent the actor resolves when it emits the event |
 | `Actor.layer({ principal, topology })` | `Topology.single()` → `SingleRunner.layer`; `Topology.http({ listen, advertise })` → `HttpRunner.layerHttp` + `RunnerHealth.layerPing`; `Topology.k8s()` → `HttpRunner.layerHttp` + `RunnerHealth.layerK8s`. `Sharding` and `WorkflowEngine` are provided inside, so actor layers only require `Actors` and the app only provides `Database.layer(...)` |
 | `TurnHooks` | `Context.Reference` with an inert default; `turn()` calls `beforeHandler` / `beforeCommit` / `afterCommit`. Production never provides it. The test harness provides one that records every `TurnReport` and dies at the requested crash point |
-| `ActorTest.layer({ database, runners, effects })` | `Actor.layer` over `TestRunner.layer` (`Sharding` + `Runners.layerNoop` + `MessageStorage.layerMemory` + `RunnerStorage.layerMemory`) for one runner, or N `Sharding` instances over one in-memory `MessageStorage`, a harness `RunnerStorage` (per-address shard locks expiring on the `Clock`) and a `Runners.make` in-process bus; `Database.layer` on PGlite over `pglite-socket` (or a Postgres/Neki url); `TestClock` from `@effect/vitest`; a recording `TurnHooks`; executors wrapped so `"hold"` parks outbox rows until `test.effects.run` |
+| `ActorTest.layer({ database, runners, effects })` | `Actor.layer` over `Sharding.layer` + `Runners.layerNoop` + the production `SqlMessageStorage` on the test `SqlClient` + a harness `RunnerStorage` + `RunnerHealth.layerNoop` for one runner (not `TestRunner.layer`: its `MessageStorage.layerMemory` writes envelopes immediately, so a rolled-back turn would leave its intents deliverable). `runners: n` builds n `Sharding` instances, each with its own `MessageStorage.makeEncoded` wrapper over the shared SQL backend (reply listeners are per wrapper), the harness `RunnerStorage` (per-address shard locks expiring on the `Clock`) and a `Runners.make` in-process bus, plus a client-only `Sharding` (`runnerAddress: None`) for the test fiber's `Actors`. `Database.layer` on PGlite over `pglite-socket` (or a Postgres/Neki url); `TestClock` from `@effect/vitest`; a recording `TurnHooks`; executors wrapped so `"hold"` parks outbox rows until `test.effects.run` |
 
 ## Lifecycle policies
 
@@ -207,7 +207,8 @@ executors, caller). See [framework/Testing.ts](framework/Testing.ts) and the `ex
 | Edge | Production | Test |
 | --- | --- | --- |
 | database | `Database.layer({ url })` on Postgres / Neki | PGlite in-process over `pglite-socket` (same `PgClient`); `database: { url }` runs the same test on Postgres or Neki |
-| transport | `Topology.http` / `Topology.k8s` | `TestRunner.layer` (in-memory `MessageStorage` + `RunnerStorage`, `Runners.layerNoop`); `runners: n` builds n `Sharding`s on one in-memory `MessageStorage`, a harness `RunnerStorage` and an in-process `Runners.make` bus with `simulateRemoteSerialization: true` |
+| storage | `SqlMessageStorage` on the app `SqlClient` | the same `SqlMessageStorage` on the test `SqlClient`, so intents written in a turn roll back with it |
+| transport | `Topology.http` / `Topology.k8s` | `Sharding` + `Runners.layerNoop` + harness `RunnerStorage`; `runners: n` builds n `Sharding`s (own `makeEncoded` wrapper each) over the shared storage, the harness `RunnerStorage`, an in-process `Runners.make` bus with `simulateRemoteSerialization: true`, and a client-only `Sharding` for the caller |
 | time | `Clock` | `TestClock`; every durable delay (`DeliverAt` timers, `Hibernate.after`, `Effects.retry`, `Commands.timeout`, `DurableClock`, `shardLockExpiration`) reads it, and `test.clock.advance` steps by `entityMessagePollInterval` and settles between steps |
 | executors | run after COMMIT with `Effects.retry` | held: `ctx.perform` writes the outbox row and nothing runs until `test.effects.run` / `drain`; `fail` injects a cause for the next n attempts; `override` swaps in typed fakes |
 | caller | `CurrentCaller` from the Rpc middleware | one default per layer (`Anonymous` unless `caller` is set); `Actor.as` still wins per call |
@@ -218,7 +219,7 @@ What a test can do, all typed per actor:
 - `test.inspect(Counter, id)` → `ActorState`: `exists`, `generation`, `resident`, `timers`, `pendingIntents`, `outbox`, `deadLetters`, `receipts`, `events`, `rows(table)`
 - `test.turns.of(Counter, id)` / `next` / `test.record(effect)` → the committed turns, `exit` typed per command
 - `test.effects.pending / run / drain / fail / override`
-- `test.faults.crash / staleGeneration / holdLock (Postgres) / redeliver / chaos`
+- `test.faults.crash` (hook dies → EntityManager in-memory restart, same requestId rewritten after the `Defects.retry` delay, which the harness advances through) / `pause` (hook parks; with `cluster.kill` for runner death mid-turn) / `staleGeneration` / `holdLock` (Postgres) / `redeliver` / `chaos`
 - `test.cluster.runners / runnerOf / kill / start / isolate` (with `runners: n`)
 - `test.workflows.inspect / crashActivity`
 - `test.serve({ actors, auth })` → the Promise SDK and OpenAPI over an in-process `HttpServer.layerTestClient`
@@ -249,6 +250,14 @@ Nothing below is claimed until the evidence exists.
    shards. The harness provides its own `RunnerStorage` (per-address ownership, expiry on `Clock`,
    `shardLockExpiration` default 35s) and a `Runners.make` bus; both must be shown to drive N
    `Sharding` instances in one process.
-7. **Crash points are real crashes.** `TurnHooks.beforeCommit` dying must abort the transaction
-   (no partial write), and dying in `afterCommit` must leave the entity's reply undelivered so Cluster
-   redelivers, or the harness has to interrupt the activation fiber instead of failing the hook.
+7. **Crash points.** Verified in rc.116 source: `SqlClient.withTransaction` rolls back on any failed
+   Exit, so a `beforeCommit` defect persists nothing; a handler defect makes the `EntityManager`
+   rebuild its RpcServer and rewrite the active envelopes (same requestId) after the defect retry
+   delay (`min(exponential(500ms, 1.5), spaced(10s))`, always concatenated to the user policy), so an
+   `afterCommit` defect is "committed, reply lost" and the retried turn hits the receipt. Still to
+   show: the harness advancing the TestClock through that delay from inside the hook, and that a turn
+   parked by `pause` and interrupted by `cluster.kill` rolls back and is re-read from `cluster_messages`
+   by the survivor after `shardLockExpiration`.
+8. **Intent rollback.** With `SqlMessageStorage` on the test `SqlClient`, an intent written by a turn
+   that then fails `beforeCommit` must not be delivered. (With `MessageStorage.layerMemory` it would
+   be: `MemoryDriver.saveEnvelope` writes immediately.)

@@ -4,8 +4,12 @@
  * Tests never mock the actor. Every test runs the real `turn()`, the real Cluster entity and the real
  * tables; only the edges are swapped:
  *   database   →  PGlite in-process over pglite-socket (the production PgClient), or a Postgres / Neki url
- *   transport  →  TestRunner (in-memory MessageStorage + RunnerStorage, Runners.layerNoop), or N Shardings over one in-memory
- *                 MessageStorage, a harness RunnerStorage (per-address shard locks that expire on the Clock) and a Runners.make bus
+ *   storage    →  the production SqlMessageStorage on that same SqlClient (never MessageStorage.layerMemory: its
+ *                 saveEnvelope writes immediately, so an intent written before a crashed COMMIT would stay deliverable
+ *                 and the "intents in the turn transaction" property could not be tested)
+ *   transport  →  Sharding + Runners.layerNoop + a harness RunnerStorage for one runner, or N Shardings, each with its own
+ *                 MessageStorage.makeEncoded wrapper over the shared SQL backend (reply listeners are per wrapper), a harness
+ *                 RunnerStorage (per-address shard locks that expire on the Clock) and a Runners.make bus
  *   time       →  TestClock: DeliverAt timers, Hibernate.after, Effects.retry, Commands.timeout and DurableClock all read Clock
  *   executors  →  held by default; run, fail or override on demand
  *   caller     →  one default CurrentCaller for the whole test; Actor.as overrides per call
@@ -49,7 +53,9 @@ export type CommandTagsOf<A> = CommandsOf<A>["tag"]
 export type EffectsOf<A> = A extends { readonly effects: ReadonlyArray<infer Ef extends AnyTagged> } ? Ef : never
 export type PromiseClientOf<A> = A extends { readonly client: (...args: any) => infer P } ? P : never
 /** Requirements of a fakes object, read off each executor's returned Effect. */
-type ExecutorServices<X> = { [K in keyof X]: X[K] extends (...args: any) => infer Ret ? Effect.Services<Ret> : never }[keyof X]
+type ExecutorServices<X> = {
+  [K in keyof X]-?: NonNullable<X[K]> extends (...args: any) => infer Ret ? Effect.Services<Ret> : never
+}[keyof X]
 /** Object literals against a type parameter skip excess-property checks; this turns a stray key into a `never` mismatch. */
 type NoExtraKeys<X, Allowed extends PropertyKey> = { readonly [K in Exclude<keyof X, Allowed>]: never }
 
@@ -207,20 +213,42 @@ export interface EffectsHarness {
 }
 
 /**
- * Where a turn can die. `before-commit`: nothing persisted, Cluster restarts the activation per
- * `Defects.retry` and redelivers. `after-commit`: committed, reply lost; redelivery must replay the
- * receipt, which is the exactly-once property under test.
+ * Where a turn can die. `before-commit`: the transaction rolls back (`SqlClient.withTransaction` on a
+ * failed Exit), nothing persisted, the handler runs again. `after-commit`: committed, reply lost;
+ * the retried turn hits the receipt and replays it (`replayed: true`), which is the exactly-once
+ * property under test.
  */
 export type CrashPoint = "before-handler" | "before-commit" | "after-commit"
 export interface Lease {
   readonly release: Effect.Effect<void>
 }
+/** A turn parked inside `turn()`; `reached` resolves when the hook is entered, `release` lets it continue. */
+export interface Paused {
+  readonly reached: Effect.Effect<void, TimedOut>
+  readonly release: Effect.Effect<void>
+}
 export interface Faults {
+  /**
+   * The `TurnHooks` hook at `at` dies with a defect. That is the EntityManager's in-memory restart
+   * path (rc.116 `entityManager.ts`: "Defect in entity, restarting"): the RpcServer is rebuilt and
+   * the same envelope (same requestId) is written to it again after the `Defects.retry` delay, which
+   * the harness advances the TestClock through, so the calling test does not need to fork.
+   */
   readonly crash: <A extends AnyActor>(
     actor: A,
     id: IdOf<A>,
     options: { readonly at: CrashPoint; readonly command?: CommandTagsOf<A>; readonly times?: number }
   ) => Effect.Effect<void>
+  /**
+   * The hook at `at` blocks until `release`. Used with `cluster.kill` for runner death mid-turn: the
+   * killed runner's fiber is interrupted, its transaction rolls back, the shard moves after
+   * `shardLockExpiration`, and the survivor re-reads the envelope from storage (`trigger: "redelivery"`).
+   */
+  readonly pause: <A extends AnyActor>(
+    actor: A,
+    id: IdOf<A>,
+    options: { readonly at: CrashPoint; readonly command?: CommandTagsOf<A> }
+  ) => Effect.Effect<Paused, never, Scope.Scope>
   /** bumps `actor_generations` as a rebalance would: the resident activation's next turn dies on the fence */
   readonly staleGeneration: <A extends AnyActor>(actor: A, id: IdOf<A>) => Effect.Effect<void>
   /** holds `SELECT … FOR UPDATE` on the generation row from a second connection; PGlite has one connection, so real Postgres only */
@@ -240,6 +268,11 @@ export interface RunnerRef {
   readonly address: RunnerAddress.RunnerAddress
 }
 /**
+ * The test fiber's `Actors` is bound to a client-only Sharding (`ShardingConfig.runnerAddress: None`),
+ * so `kill` never takes down the caller: an in-flight call survives its host's death and receives the
+ * survivor's reply.
+ */
+/**
  * Present when `ActorTest.layer({ runners: n })` with n > 1: N `Sharding` instances over one in-memory `MessageStorage`,
  * a harness `RunnerStorage` and an in-process `Runners.make` bus. Not `RunnerStorage.layerMemory` (its `acquire` grants every
  * shard to any caller) and not `SqlRunnerStorage` (lock expiry reads the database's `now()`, not the TestClock).
@@ -248,7 +281,12 @@ export interface ClusterHarness {
   readonly runners: Effect.Effect<ReadonlyArray<RunnerRef>>
   /** `None` when the actor is not resident anywhere */
   readonly runnerOf: <A extends AnyActor>(actor: A, id: IdOf<A>) => Effect.Effect<Option.Option<RunnerRef>>
-  /** closes the runner's scope without deregistering: its shard locks expire after `shardLockExpiration` (advance the clock) and the others take over */
+  /**
+   * Runner death, not shutdown: closing a Sharding scope is a graceful exit that unregisters the runner
+   * and releases its locks (`Sharding.ts` finalizers), so `kill` first tells the harness RunnerStorage
+   * and bus to drop every call from this address, then closes the scope. Its shard locks expire after
+   * `shardLockExpiration` (advance the clock) and the others take over.
+   */
   readonly kill: (runner: RunnerRef) => Effect.Effect<void>
   readonly start: Effect.Effect<RunnerRef>
   /** partition for the rest of the scope: pings fail, sends time out */

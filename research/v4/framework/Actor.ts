@@ -804,7 +804,11 @@ export interface TurnReport {
   readonly commandId: string
   readonly caller: Caller
   readonly generation: number
-  /** why this turn ran: an outside call, a durable intent, a due timer, a per-actor cron tick, a dead-lettered effect, or Cluster redelivery */
+  /**
+   * why this turn ran: an outside call, a durable intent, a due timer, a per-actor cron tick, a dead-lettered effect, or
+   * redelivery — the same requestId seen again, either rewritten by the EntityManager after a defect restart (in memory,
+   * same runner) or re-read from storage after the shard moved. Cluster does not label this; `turn()` tracks requestIds.
+   */
   readonly trigger: "call" | "intent" | "timer" | "cron" | "effect-failed" | "redelivery"
   /** receipt hit: the handler did not run, the stored Exit was replayed */
   readonly replayed: boolean
