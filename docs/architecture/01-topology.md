@@ -17,6 +17,6 @@ There are three run modes:
 
 Activations are disposable. `Hibernate.after` permits sleep; `Connections.park` leaves sockets at the edge and wakes the actor on the next frame. A `run` fiber is forked in the activation `Scope` on wake and interrupted on sleep or park. Process memory and `vars` are never durable authority.
 
-Railway deployment is gated on a reachable per-replica `railnet0` advertise address. If that cannot be verified, use `Topology.k8s` or a service-per-runner layout rather than claiming multi-replica sharding.
+The intended topology API is `Topology.single()` for a single runner and `Topology.http({ listen, advertise })` for networked runners, with `Topology.fromConfig()` for configuration. `Topology.k8s` was removed from the agreed surface; it is not an available fallback. Railway deployment is gated on a reachable per-replica `railnet0` advertise address. A service-per-runner alternative needs its own reachability and failover evidence before multi-runner support is claimed.
 
 See [lifecycle](02-lifecycle.md), [dispatch](04-dispatch.md), and [deployment](../operations/01-deployment.md).

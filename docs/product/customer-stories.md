@@ -7,7 +7,7 @@
 
 ## Collaborative room
 
-A named room actor owns membership and message rows. Commands serialize joins and sends in one transaction, events resume from a cursor, and typed connections broadcast best-effort typing and presence hints. `Connections.park` lets idle rooms hibernate without dropping sockets.
+A named room actor owns membership and message rows. Commands serialize joins and sends in one transaction, events resume from a cursor, and typed connections broadcast best-effort typing and presence hints. `Connections.park` lets idle rooms hibernate without dropping sockets while their transport remains alive; transport-process loss still requires reconnection and durable-event replay.
 
 ## Per-tenant workspace
 

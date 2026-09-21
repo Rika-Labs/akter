@@ -12,3 +12,7 @@ Workflows MUST be actor members declared with `Actor.workflow` in `workflows: [.
 `WorkflowContext` MUST provide owner identity and caller attribution, `ctx.activity(name, { output, errors, run, retry })`, `sleep`, and owner-event `waitFor(Event, { where, timeout })`. Execution identity MUST include deployment, tenant, owner actor and id, workflow member, and key. Resume MUST restore tenant and `onBehalfOf` from the durable envelope.
 
 External effects MUST be recorded in the turn and executed after commit with stable identity, retries, and dead-letter visibility. Cancellation cannot undo a completed provider call. Verification: **Workflow tenant isolation**, **waitFor registration**, **Intent rollback**, and **Singleton uniqueness** gates.
+
+Executors use `(ctx, effect)` and receive no database capability. Results return through actor intents, including internal result commands. Exhausted retries produce a dead letter and invoke `X.onEffectFailed` in a new actor turn. A provider's ambiguous outcome MUST remain distinguishable from failure; unsafe retries require provider idempotency or reconciliation.
+
+Workflow activities persist schema-defined results through Effect's workflow engine, outside the originating actor turn. Their command identity derives from execution ID and activity name and remains stable across retries. Durable sleep and owner-event `waitFor` MUST survive restart; `waitFor` returns `Option.none` on timeout and closes the registration race.

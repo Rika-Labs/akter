@@ -5,12 +5,12 @@
 **Owner role:** operations/reliability.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 
-The backup unit is the deployment's Postgres database, plus any external blob bytes referenced by actor records. It includes every tenant, framework tables, actor-owned tables, receipts, messages, events, workflows, effects, dead letters, and the Neki outbox when applicable. Back up control-plane Postgres separately.
+The backup unit is the deployment's relational database. It includes every tenant, framework tables, actor-owned tables, receipts, messages, events, workflows, effects, dead letters, database-backed `actor_blobs` chunks, and the Neki outbox when applicable. Framework blobs are `bytea` data inside this boundary, not externally stored objects. If an application separately uses an external provider, it owns that provider's backup/reconciliation obligations. Back up control-plane Postgres separately.
 
-Restore procedure:
+Required restore procedure, to be proven per backend before support is claimed:
 
 1. stop ingress and drain runners; pause message, workflow, effect, cron, and relay execution;
-2. restore one mutually consistent database snapshot and compatible blob data;
+2. restore one mutually consistent database snapshot, including `actor_blobs`, and reconcile any application-owned external resources;
 3. deploy code that supports the restored framework, table, state, event, and workflow schemas;
 4. invalidate resident activations and re-establish generation ownership;
 5. reconcile external effects whose provider outcome may have committed beyond the snapshot;
@@ -19,4 +19,4 @@ Restore procedure:
 
 Do not delete receipts or outbox rows to make a restore start. Restoring an older snapshot can repeat an external call whose provider result survived; use provider idempotency keys and reconciliation evidence before retrying.
 
-Document encryption, RPO, RTO, snapshot timestamp, migration version, blob consistency, and the retained receipt/effect horizons. Tenant-only recovery is a logical export/import procedure within the deployment database and must preserve every related row; optional RLS is not a backup boundary.
+Document encryption, RPO, RTO, snapshot timestamp, migration version, blob consistency, and the retained receipt/effect horizons. Any future tenant-only recovery procedure must preserve every related row within the deployment database; no such export/import capability is currently implemented or verified. Optional RLS is not a backup boundary.

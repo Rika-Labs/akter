@@ -5,12 +5,13 @@
 **Owner role:** operations/database.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 
-There are two migration systems:
+The actor design has three migration responsibilities:
 
-- `packages/postgres` owns the hosted control-plane schema and migrations, executed by `bin/migrate.ts`.
-- Each actor deployment owns its framework tables and actor-owned tables. Run them with `durable migrate`; relational changes are generated and applied with drizzle-kit.
+- Framework SQL tables use Effect `Migrator`, with automatic boot migration or explicit manual migration selected through `Database` configuration.
+- Application-owned relational tables use drizzle-kit migrations.
+- Schema-decoded JSONB state in `actor_state` uses ordered `Actor.migration` upcasts. A turn applies the chain after acquiring the generation fence and before invoking the handler, then commits the current shape. Invalid chains fail at `Actor.make`; decode/upcast defects roll back the turn and invoke `onDefect`.
 
-Keyed actor state evolves through ordered `Actor.migration` upcasts. A turn decodes persisted `actor_state` through the chain after acquiring the generation fence and before invoking the handler. A missing or failing upcast is a deterministic defect: the turn rolls back and `onDefect` receives the cause.
+Separately, `packages/postgres` owns the hosted control-plane schema and `bin/migrate.ts`. The planned `durable migrate` command is not implemented. This document specifies required migration behavior, not a working CLI procedure.
 
 Use expand, deploy, backfill, validate, and contract phases when old and new runners overlap. Do not contract a column, receipt shape, event schema, workflow payload, or effect payload until all compatible readers and retained records have passed its horizon.
 

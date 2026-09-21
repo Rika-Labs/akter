@@ -22,7 +22,7 @@ Connections, workflows, hosted operation, managed deployment, and provider-speci
 
 ## Acceptance tests
 
-- A committed command increments its generation and persists one receipt.
+- A committed command validates the current generation fence and persists one receipt; a generation is an authority epoch, not a counter incremented by every command.
 - Repeating the same command ID and input replays the receipt without rerunning the handler.
 - Reusing a command ID with different input fails with `CommandConflict`.
 - A failure before commit persists no state, event, effect, intent, or receipt update and is redelivered.

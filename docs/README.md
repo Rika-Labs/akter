@@ -7,6 +7,8 @@
 
 This directory is the implementation-facing source of truth for Durable Actors. The settled v4 design has been incorporated into these specifications; the [research archive](../research/README.md) retains evidence and exploration.
 
+These specifications describe accepted design, not a shipped framework. The four framework entrypoints and runnable-example entrypoints are still scaffolds. [ADR 0002](decisions/0002-v4-contract-clarifications.md) resolves the remaining v4 contract inconsistencies; executable support is tracked separately in [conformance](verification/01-conformance.md).
+
 ## Authority order
 
 1. `vision/` — product intent and boundaries.

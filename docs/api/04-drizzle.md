@@ -7,7 +7,7 @@
 
 Actor-owned tables use Drizzle semantics and gain `tenant_id` and `actor_id` ownership columns. The framework does not invent a separate query language or re-export drivers, pools, dialect internals, migration CLIs, or unrelated runtime globals.
 
-Inside a command turn, `ctx.rows(table)` is scoped to the current tenant and actor and provides `one`, `all`, `insert`, and `upsert`; `ctx.db` is the Drizzle escape hatch for joins and advanced statements. Writes use the framework-owned turn transaction and therefore commit atomically with the generation fence, receipt, state, events, intents, timers, and effects.
+Inside a command turn, `ctx.rows(table)` is scoped to the current tenant and actor and provides `one`, `all`, `count`, `insert`, `update`, `upsert`, and `delete`; `ScopedRead` exposes only `one`, `all`, and `count`. `ctx.db` is the Drizzle escape hatch for joins and advanced statements. Writes use `drizzle-orm/effect-postgres` on the framework's `PgClient`/`SqlClient` transaction connection, not a second pool, and commit atomically with the generation fence, receipt, state, events, intents, timers, and effects.
 
 Queries and other off-turn phases receive `ScopedRead` and cannot mutate through the typed API. Runtime scoping and database constraints enforce ownership; TypeScript types alone are not authority.
 

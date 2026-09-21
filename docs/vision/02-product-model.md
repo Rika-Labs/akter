@@ -19,12 +19,12 @@ command → generation fence → receipt → handler → commit
 
 These steps run in one database transaction. The commit may include keyed state, OwnedTable rows, events, timers, actor intents, workflow intents, effect obligations, and the receipt. A retained receipt makes retrying the same command id replay the logical result instead of applying the handler twice. Declared application failures are recorded and replayed too.
 
-Outside a command turn, state is read-only. `ctx.state` is a `StateSnapshot`; its `changes` stream publishes committed snapshots. `vars` are typed activation-local values and deliberately disappear when the activation hibernates.
+Outside a command turn, direct state access is read-only. Activation read contexts expose `StateSnapshot` and its committed `changes` stream; queries return committed state values without an activation, `changes`, or `vars`. Workflow bodies and effect executors access actor state through actor operations rather than a direct state capability. `vars` are activation-local values and deliberately disappear when the activation hibernates.
 
 ## One primitive, several modes
 
 - A durable domain object declares the state and members it needs.
-- A transient coordination actor can declare only `vars`; its commands remain serialized and fenced, but it has no declared durable data.
+- A transient coordination actor can declare only `vars`; its commands remain serialized, fenced, and receipted, but it has no declared durable application data.
 - A cluster-wide service uses `singleton: true`.
 - A finite durable operation is an `Actor.workflow` member of its owning actor.
 

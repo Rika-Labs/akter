@@ -13,4 +13,4 @@ Monitor command latency, mailbox depth and age, receipt replay rate, generation-
 
 Bound actor-id and tenant cardinality in metrics; use traces and logs for individual identities. Alert on degraded recovery paths, not only failed requests: relay backlog, old dead letters, repeated deterministic defects, and a singleton without an owner are operational failures.
 
-Use `durable dead-letters` to inspect, retry, or discard according to the effect policy and the [runbooks](runbooks.md). Never infer success solely from an executor attempt; use the durable effect outcome.
+The planned `durable dead-letters` command will expose inspection and repair under the effect policy and [runbooks](runbooks.md); the command is not implemented. Never infer success solely from an executor attempt; use the durable effect outcome. These observability requirements also remain implementation targets, not existing telemetry guarantees.

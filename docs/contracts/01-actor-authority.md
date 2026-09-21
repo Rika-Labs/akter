@@ -9,7 +9,7 @@ An actor is addressed by `(tenant, actor, id)` within one deployment. Named acto
 
 Exactly one generation MAY commit for an actor at a time. Every command turn MUST lock the generation row with `SELECT ... FOR UPDATE`; on Neki it MUST also set `__neki.tx_mode='single'` on the transaction connection. A lease, process memory, TypeScript types, or routing ownership alone MUST NOT authorize a commit.
 
-Command mutation MUST occur only through `CommandContext`. `QueryContext`, `StreamContext`, `WakeContext`, workflow bodies, connection handlers outside a command turn, and `run` receive read-only state/table capabilities. They MAY schedule a command or workflow intent, but MUST NOT mutate actor-owned durable data directly.
+Command mutation MUST occur only through `CommandContext`. Query and activation read contexts expose read-only state/table capabilities, not command authority. Workflow bodies access actors through workflow handles rather than direct state/table capabilities. Only contexts that expose intent handles MAY schedule commands or workflow intents; queries do not acquire those capabilities merely by being read-only. See the [context capability matrix](../api/02-context.md).
 
 A request/reply handle called inside a turn, including a handle captured before the turn, MUST die with `Request/reply inside a turn`; the transaction MUST roll back. Cross-actor work from a turn MUST use durable intents.
 

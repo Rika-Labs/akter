@@ -12,7 +12,7 @@ Realtime behavior belongs with the actor that owns the state. Rooms, documents, 
 An actor may expose:
 
 - durable events ordered by a cursor;
-- streams that resume after a cursor;
+- live, non-persisted streams that restart rather than replay after disconnect;
 - typed `Actor.connection` contracts over WebSocket transport;
 - per-connection state that survives connection parking;
 - presence and best-effort broadcast;
@@ -24,6 +24,8 @@ A client establishes a snapshot and cursor, then follows events after that curso
 
 `Connections.park` is the default hibernation policy: sockets remain parked while the actor activation sleeps. An inbound frame or relevant broadcast wakes the activation and restores connection state. `Connections.keepAwake` is available when residency is intentional.
 
+Parking does not preserve sockets across transport-process death. Clients reconnect after transport loss, and durable event feeds resume with the exclusive `after` cursor. `Actor.stream` has no durable replay guarantee.
+
 ## Durable versus live
 
 | Durable                         | Live and best-effort                |
@@ -33,6 +35,6 @@ A client establishes a snapshot and cursor, then follows events after that curso
 | receipts                        | presence hints                      |
 | keyed state and OwnedTable rows | token chunks that are not persisted |
 
-`ctx.connections.broadcast` is not part of the turn transaction. Durable facts must be emitted as events or written as state; broadcasts are low-latency hints. Realtime must never require holding a database transaction or arbitrary fiber open.
+`ctx.connections.broadcast` is best-effort transport, not a durable transaction consequence. When requested by a command, frames are queued until after commit and discarded on rollback; a later transport failure can still lose them. Durable facts must be emitted as events or written as state. Realtime must never require holding a database transaction open for the lifetime of a stream or connection.
 
 See [durable execution](04-durable-execution.md) for commit semantics.

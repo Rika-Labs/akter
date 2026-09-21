@@ -9,12 +9,13 @@
 
 Durable Actors combines actor authority with ordinary relational data. Postgres remains the system operators can inspect, back up, migrate, join, and report on; the framework supplies a trustworthy mutation boundary.
 
-Actors have two complementary storage forms:
+Actors have complementary storage forms in the same deployment database:
 
-- keyed state for small, schema-typed values used directly in turns;
-- `OwnedTable` business tables for relational records, indexes, joins, and Drizzle queries.
+- keyed JSONB state for small, schema-typed values used directly in turns;
+- `OwnedTable` business tables for relational records, indexes, joins, and Drizzle queries;
+- `Actor.blob` declarations for actor-scoped `bytea` chunks in `actor_blobs`, accessed through `ctx.blob`.
 
-State and rows share the command transaction. State migrations are declared as code-level upcasts; business-table migrations use normal SQL and Drizzle practices.
+State, rows, and blob writes share the command transaction. Off-turn blob access is read-only; external object-storage APIs are not this blob surface. State migrations are code-level upcasts; business-table migrations use normal SQL and Drizzle practices.
 
 ## Ownership and observation
 

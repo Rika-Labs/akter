@@ -81,7 +81,7 @@ packages/durable-actors/src/
 - A leaf directory warns at 12 authored modules.
 - Every deviation is one entry in `tooling/structure/src/exemptions.ts` with a reason; an entry that matches nothing fails the check.
 
-Two lint layers enforce this: per-file oxlint rules in `tooling/oxlint` (`filename-kebab-case`, `no-parent-echo-in-filename`, `no-role-suffix-filename`, `no-generic-directory-segment`, `no-barrel-index`, `no-runtime-import-outside-runtime`) and the tree checker in `tooling/structure`. Neither exists yet; the rules above are the specification they implement.
+Two lint layers implement this specification: per-file oxlint rules in `tooling/oxlint` (`filename-kebab-case`, `no-parent-echo-in-filename`, `no-role-suffix-filename`, `no-generic-directory-segment`, `no-barrel-index`, `no-runtime-import-outside-runtime`) and the tree checker in `tooling/structure`. Both were added in `85adfb2`; their presence does not imply that the actor runtime is implemented. The rules above remain the contract for their coverage.
 
 ## Ways to run, mapped to the tree
 

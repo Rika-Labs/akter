@@ -7,7 +7,11 @@
 
 An actor has a durable identity and a disposable activation. `Actor.make` supports named ids, framework-minted ids, and `singleton: true`; durability follows declared members rather than a separate actor kind.
 
+Even an actor without state, tables, events, effects, or blobs has fenced, receipted commands. Acquiring a handle writes nothing; the first turn establishes durable rows. `Lifecycle.createdBy(Command)` can require an explicit creating command before other commands are accepted.
+
 Wake creates an activation `Scope`, initializes `vars`, resumes parked connections, and forks the optional `run` fiber. `Hibernate.after` ends the scope after idleness. Sleeping interrupts `run` and releases process-local resources without deleting receipts, state, events, timers, workflows, or business rows. `Connections.park` allows this while sockets remain open at the edge.
+
+`run` is scoped background work with an `Effect<void, never, R>` result. It does not keep the actor awake. Expected failures are handled explicitly; a blanket cause-swallowing handler must not disguise a failed loop as completed work. Parking restarts the loop on the next wake, and transport-process loss still requires client reconnection.
 
 Each command is a serialized, fenced turn. The runtime locks the generation, checks the receipt, decodes keyed state through the `Actor.migration` upcast chain, runs the handler, and commits state, table changes, events, intents, effects, and the receipt together. Queries read committed state and rows without an activation transaction.
 

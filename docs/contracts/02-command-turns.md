@@ -14,13 +14,17 @@ Every command attempt MUST execute as one framework-owned transaction, in this o
 5. persist dirty state, owned rows, events, intents, effects, and the receipt result;
 6. commit once.
 
-These are the F1–F4 rules:
+The foundation labels retain their meaning from the agreed design:
 
-- **F1:** one command turn has exactly one outer transaction and no user-controlled commit boundary.
-- **F2:** a successful output or declared failure becomes observable only with its committed receipt.
-- **F3:** work outside the turn is read-only; durable consequences are scheduled as intents or effects.
-- **F4:** retryable framework failures become defects and redelivery of the same envelope; the activation restarts.
+- **F1:** one relational database per deployment, not per actor or tenant.
+- **F2:** Effect Cluster provides one entity per actor type with serialized command handling (`concurrency: 1`).
+- **F3:** commands are persisted with `WithTransaction: false` and no Cluster `primaryKey`; the framework owns the transaction above, rather than nesting the turn inside a Cluster transaction.
+- **F4:** stale generations, lock timeouts, commit-unknown outcomes, and command execution timeouts follow the retryable-defect path; Cluster restarts the activation and redelivers the same envelope.
+
+A successful output or declared failure MUST become observable only with its committed receipt. Off-turn contexts MUST NOT directly mutate durable actor data. The gated Neki storage arrangement is foundation F5, described in [storage layout](../architecture/03-storage-layout.md).
 
 Deterministic defects—state exceeding `State.maxBytes`, state decode failure, or an internal command from a non-`System` caller—MUST roll back, return a `Die` to the caller, invoke `onDefect` with read-only `WakeContext`, and leave the actor resident. Declared failures MUST commit and replay from receipts. A transport timeout or disconnect MUST NOT cancel an admitted turn.
+
+Terminal declared-error receipt persistence must be specified and failure-tested before implementation is claimed: recording a typed failure must not accidentally turn it into retryable redelivery, and catching it must not silently choose whether preceding writes commit. A caller's `Delivery.timeout` stops waiting and is distinct from a command execution timeout inside the turn.
 
 Verification: gates **Crash points**, **Intent rollback**, **Turn boundary at runtime**, and **State migration chain** in [conformance](../verification/01-conformance.md).
