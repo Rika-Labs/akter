@@ -824,6 +824,9 @@ export interface TurnReport {
  * The one seam `turn()` exposes. Inert by default; `durable-actors/testing` provides an implementation
  * that records every turn and injects faults (a hook that dies at `beforeCommit` is a crash mid-turn;
  * one that dies at `afterCommit` is "committed, reply lost", which Cluster resolves by redelivery).
+ *
+ * Decision 88: not on the public `durable-actors` entry. Only `durable-actors/testing` re-exports
+ * `TurnHooks`, `TurnHooksShape` and `TurnReport`; production observability is spans, metrics and `actor_events`.
  */
 export interface TurnHooksShape {
   readonly beforeHandler: (turn: Pick<TurnReport, "address" | "tenantId" | "command" | "commandId" | "caller" | "generation" | "trigger">) => Effect.Effect<void>

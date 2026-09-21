@@ -343,7 +343,7 @@ export class ModelMismatch extends Schema.TaggedError<ModelMismatch>()("ModelMis
 export interface Options {
   /** default `"pglite"`; a url runs the same suite on Postgres or Neki */
   readonly database?: "pglite" | { readonly url: string; readonly neki?: boolean }
-  /** default 1 (TestRunner); more builds an in-process multi-runner cluster (harness `RunnerStorage`, `Runners.make` bus, `simulateRemoteSerialization: true`) */
+  /** default 1 (`Sharding` + `Runners.layerNoop` + harness `RunnerStorage`, never `TestRunner.layer`); more builds an in-process multi-runner cluster (harness `RunnerStorage`, `Runners.make` bus, `simulateRemoteSerialization: true`) */
   readonly runners?: number
   /** the app's principal schema, needed to round-trip `CurrentCaller` through envelope headers; default passes the value through unchecked */
   readonly principal?: Schema.Top & { readonly Type: Principal }
