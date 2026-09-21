@@ -697,6 +697,8 @@ Everything above defaults to **a**. Answer only where you disagree.
 | 129 | 1 s poll + sleep-then-poll + `NOTIFY` | poll interval only |
 | 130 | SSE events + OpenAPI + `durable-actors/react` | OpenAPI only |
 | 131 | `Actor.blob` | `bytea` table, no helper |
+| 132 | no `Actor.job`; add `Actor.singleton` | neither |
+| 133 | `Actor.ephemeral` kind | `Actor.make(…, { durable: false })` |
 
 ## 6. Closing the gaps against Rivet / Durable Objects (125–131)
 
@@ -827,3 +829,68 @@ Gap: DO/Rivet keep a CRDT document or an embedding matrix as a file in the objec
 lazily inside the turn (`ctx.blob(doc).get: Effect<Option<Uint8Array>>`, `.set`, `.append(update)` for
 update-log CRDTs, `.compact(merge)` from `onWake`); streamed over HTTP at `GET /actors/{name}/{id}/blobs/doc`;
 exempt from `State.maxBytes`. **Pick: a.** Alt b: `Actor.table` with `bytea` and no helper.
+
+## 7. Kinds, members, runtime: the taxonomy under `Actor.` (132–134)
+
+The question "should there be `Actor.job` / `Actor.connection` as actor types?" comes from `Actor.` holding three
+levels with nothing marking which is which: **kinds** (`make`, `workflow`, `cron`) that `toLayer` and that Cluster
+places; **members** (`command`, `query`, `stream`, `table`, and proposed `connection`, `blob`) that only mean
+something inside a kind; and **runtime** (`layer`, `serve`, `auth`, `as`, `tenant`, `commandId`, `toolkit`, `mcp`).
+Effect's own `HttpApiEndpoint → HttpApiGroup → HttpApi` is the same three-level ladder, in three modules. Decisions
+2/24/30 fixed the names under one namespace, so the fix is to make the levels visible, not to rename.
+
+**132. Four kinds, and `Actor.job` is not one of them.**
+
+| Kind | One per | Turn model | Compiles to | Use when |
+| --- | --- | --- | --- | --- |
+| `Actor.make` | id (tenant, id) | transaction per command, receipts, state/tables/events/effects | `Entity` (`Persisted: true`) | it has an identity and receives commands over time |
+| `Actor.workflow` | execution (idempotency key) | durable steps, one linear run | `Workflow` + `ClusterWorkflowEngine` | a process with a start and an end: onboarding, a payment, *a job* |
+| `Actor.cron` | cluster | one `execute` per tick | `ClusterCron.make` | recurring cluster-wide work |
+| `Actor.singleton` (new) | cluster | one long-lived `run` | `Singleton.make(name, run, { shardGroup })` | a leader/poller/reaper that must run exactly once cluster-wide |
+| `Actor.ephemeral` (new, 133) | id | in memory, no transaction, no receipts | `Entity` (`Persisted: false`, Cluster's default) | presence, cursors, game ticks, anything that may forget on restart |
+
+A "job" is a workflow with one activity (`W.start(input)` → run handle, retries from `Activity`), a per-actor delayed
+job is `ctx.self.X.after(d, input)`, and a recurring one is `Actor.cron`. A separate `Actor.job` would be a fourth
+spelling of the same thing. **Pick: a** (no `Actor.job`; add `Actor.singleton`). Alt b: also no `singleton`, express
+it as `Actor.cron` with a continuous `run`.
+
+```ts
+export const Reaper = Actor.singleton("Reaper", {
+  description: "Purges expired receipts and events cluster-wide.",
+  shardGroup: "default"
+})
+export const ReaperLive = Reaper.toLayer(Effect.forever(purgeOnce.pipe(Effect.delay("1 minute"))))   // R: Database
+```
+
+**133. `Actor.ephemeral`: the same contract kinds, none of the durability.**
+This is the kind that closes the latency weakness for workloads that do not need durability. Same `command / query /
+stream / connection` members, same handle shape, same `Actor.serve`; but no `state:`/`tables:`/`events:`/`effects:`,
+no `db` on the context, no receipts, so the handle's `E` is `ErrOf<C> | ActorUnavailable` (no `CommandConflict`, no
+`NotCreated`), `ctx.memory` is the only state, and `Hibernate.after` drops it. `Cron`, `Delivery.retry`, `Mailbox`,
+`Commands.timeout` policies apply; `Events.keep`, `Receipts.keep`, `Effects.retry`, `Lifecycle.createdBy` are
+rejected at the type level (`Policy<Kind>`).
+
+```ts
+export const Cursor = Actor.ephemeral("Cursor", {
+  description: "Live cursor positions for one document. Forgets everything when idle.",
+  id: DocId,
+  memory: { cursors: Schema.Record(UserId, Position) },        // typed in-memory state, initial from Schema defaults
+  commands: [Move],
+  connections: [Live],
+  lifecycle: [Hibernate.after("30 seconds"), Mailbox.capacity(1000)]
+})
+// Cursor.server.ts
+Move: (ctx, pos) => ctx.memory.update((m) => ({ cursors: { ...m.cursors, [ctx.principalOrDie.userId]: pos } }))
+                     .pipe(Effect.andThen(ctx.connections.broadcast(new Moved({ pos }))))
+```
+Commands still serialize through the mailbox (`concurrency: 1`), so an ephemeral actor is a single-writer in-memory
+object placed by Cluster: the Rivet/DO model, opt-in per actor, with the same contracts. Testing: `ActorTest` works
+unchanged (`inspect` returns `memory` instead of rows). **Pick: a.** Alt b: `Actor.make(name, { durable: false })`
+(rejected by me: a flag that changes `E`, `ctx` and allowed policies is a kind, and kinds deserve a constructor).
+
+**134. Make the levels visible without renaming.**
+JSDoc `@category kinds | members | policies | runtime | clients | testing` (123) drives the generated docs and the
+`llms.txt` sections; `Actor.make` and friends carry `_kind: "actor" | "ephemeral" | "workflow" | "cron" | "singleton"`
+and members `_kind: "command" | "query" | "stream" | "connection" | "table" | "blob"`; the skill's first section is the
+table in 132 ("which kind?"). Members never appear in `Actor.serve({ actors })` or `Actor.toolkit([...])` (type error).
+**Pick: a.**
