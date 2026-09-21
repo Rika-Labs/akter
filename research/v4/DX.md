@@ -691,3 +691,139 @@ Everything above defaults to **a**. Answer only where you disagree.
 | 116 | docs endpoints on by default | opt-in `docs: true` |
 | 119 | `WorkflowRun` handle | keep `start → string` |
 | 120 | `test.actor` + `layer({ as })` | flat API only |
+| 125 | keyed state in `actor_state`, sync reads | one JSONB blob (c: no state) |
+| 126 | `Actor.connection` sessions | streams + events only |
+| 127 | `run` loop on the activation | workflows only |
+| 129 | 1 s poll + sleep-then-poll + `NOTIFY` | poll interval only |
+| 130 | SSE events + OpenAPI + `durable-actors/react` | OpenAPI only |
+| 131 | `Actor.blob` | `bytea` table, no helper |
+
+## 6. Closing the gaps against Rivet / Durable Objects (125–131)
+
+Context: with keyed state (125) the remaining places we are behind are realtime connections, long-running
+loops, placement, timer precision, client reach and large blobs. The three structural weaknesses (commit
+latency per turn, one database as failure domain, isolation by predicate) are not addressed here; they
+follow from F1 and are the price of the design. rc.116 facts used: `entityMessagePollInterval` defaults to
+10 s; `Sharding.pollStorage` forces a storage read; the idle reaper only counts an entity idle when
+`activeRequests.size === 0`, and a forked stream is an active request until it ends; `ClusterSchema.ShardGroup`
+is `(entityId) => string` and `ShardingConfig.shardGroups` selects which groups a runner serves;
+`RpcServer.layerProtocolWebsocket`, `RpcClient.layerProtocolSocket`, `HttpServerRequest.upgradeChannel`.
+
+**125. Keyed state next to tables** (from the follow-up review; supersedes the "no state" half of 9a).
+`state: { key: Schema }` on `Actor.make`; rows in `actor_state(tenant_id, actor_id, actor, key, value jsonb)`,
+same shard key as every `actor_*` table; loaded after the generation fence inside the turn transaction (one
+`SELECT`), synchronous reads (`ctx.state.count: number`), `yield* ctx.state.set({ count })` writes only dirty
+keys at commit; read-only snapshot on query/stream/wake contexts; `State.maxBytes("64 KiB")` default policy
+(exceeding is a defect: "move `x` to a table"); decode failure on load is a defect naming the key. Rivet and DO
+both had to add a relational store next to their blob; we add a small keyed store next to our tables.
+
+```ts
+export const Counter = Actor.make("Counter", {
+  id: CounterId,
+  state: { count: Schema.Number, lastReset: Schema.optionalKey(Schema.DateTimeUtc) },
+  commands: [Increment, Reset], queries: [GetCount]
+})
+Increment: (ctx, n) => ctx.state.set({ count: ctx.state.count + n }).pipe(Effect.as(ctx.state.count + n))
+GetCount:  (ctx)    => Effect.succeed(ctx.state.count)          // query: committed snapshot, no set
+```
+Later optimization, not a decision: the activation may cache the last snapshot with the generation it read it
+under and skip the `SELECT` when the fence returns the same generation. **Pick: a** (keyed, sync reads).
+Alt b: one JSONB blob per actor. Alt c: keep 9a, no state.
+
+**126. Connections: typed bidirectional sessions on the activation.**
+Gap: DO WebSocket hibernation and Rivet `c.conn` / `broadcast` / `useActor`. Proposal: a fourth contract kind.
+
+```ts
+// Chat.ts
+export class Typing extends Schema.TaggedClass<Typing>()("Typing", { userId: UserId }) {}
+export const Live = Actor.connection("Live", {
+  description: "Live room session: messages and typing indicators.",
+  params: { since: Schema.optionalKey(Schema.Number) },
+  server: Schema.Union([Message, Typing]),      // actor → client frames
+  client: Typing,                               // client → actor frames (ephemeral signals; durable changes are commands)
+  state: { typingSince: Schema.optionalKey(Schema.DateTimeUtc) },   // per-connection, in memory on the activation
+  errors: [NotAMember]
+})
+export const Chat = Actor.make("Chat", { …, connections: [Live] })
+
+// Chat.server.ts — runs on the activation, forked past the mailbox like a stream
+Live: (ctx, params, inbound) =>
+  Stream.merge(
+    ctx.events(MessageAdded, { after: params.since ?? 0 }).pipe(Stream.map((e) => e.event.message)),
+    inbound.pipe(Stream.tap((t) => ctx.connections.broadcast(t, { except: ctx.conn.id })), Stream.drain)
+  ).pipe(Stream.ensuring(ctx.connections.broadcast(new Left({ userId: ctx.conn.userId }))))
+
+// inside a command: broadcast is queued and flushed after COMMIT, like emit but not persisted
+SendMessage: Effect.fn(function*(ctx, input) { …; yield* ctx.connections.broadcast(new Typing(…)) })
+// presence
+Members: (ctx) => ctx.connections.list.pipe(Effect.map((cs) => cs.map((c) => c.caller)))
+```
+Runtime: the client opens a WebSocket to any HTTP runner (`RpcServer.layerProtocolWebsocket`); the runner
+subscribes to the actor over the existing non-persisted forked stream rpc and forwards inbound frames as
+non-persisted `Live$frame` rpcs correlated by connection id (`Rpc.fork`, outside the mailbox). `ctx.connections`
+is an in-memory registry in the activation closure. An open connection keeps the actor awake (verified: forked
+requests stay in `activeRequests`); DO-style "hibernate with sockets attached" is not offered. Promise client:
+`const live = chat.get(id).Live({ since }, { signal }); for await (const f of live) …; live.send(new Typing(…))`.
+**Pick: a.** Alt b: no connections; streams + events only.
+
+**127. `run`: a long-lived activation loop that stays inside the transaction rule.**
+Gap: Rivet `run: async (c) => for await (const msg of c.queue.iter())`. Proposal: `X.of(handlers, { run })`.
+
+```ts
+run: (ctx) =>                       // started on wake, interrupted on sleep; no db, no rows: durable effects are intents
+  ctx.events(PromptQueued, { after: ctx.state.processedUpTo }).pipe(
+    Stream.mapEffect((e) =>
+      model.stream(e.event.prompt).pipe(
+        Stream.tap((token) => ctx.connections.broadcast(new Token({ turnId: e.event.turnId, token }))),
+        Stream.mkString,
+        Effect.flatMap((text) => ctx.self.ModelReplied.send({ turnId: e.event.turnId, text })),
+        Effect.raceFirst(ctx.events(Cancelled).pipe(Stream.filter((c) => c.event.turnId === e.event.turnId), Stream.runHead))
+      )),
+    Stream.runDrain
+  )
+```
+`ctx` here is the wake context plus `events` (live, cursor-able), `state` (committed snapshot, refreshed after
+each turn), `self` / `actors` intents, `connections`, `memory` (the closure). The loop never opens a transaction;
+`ModelReplied` is a normal turn that advances `processedUpTo`, so a crash replays from the cursor. A `run` fiber
+does not keep the actor awake; use `ctx.self.Tick.after(...)` if it must. **Pick: a.** Alt b: workflows only.
+
+**128. Placement: compute follows the tenant's shard group.**
+Gap: DO places objects near the first request; Rivet has regions. `Actor.layer({ shardGroup: (tenant) => … })`
+already exists; make it first-class:
+
+```ts
+Actor.layer({ …, shardGroup: (tenant) => Regions.of(tenant) })        // ClusterSchema.ShardGroup on every entity
+// runner in eu-west: ACTORS_SHARD_GROUPS=eu   (ShardingConfig.shardGroups)
+```
+Compute placement closes; data placement does not: every region still writes to the one database. On Neki,
+shard groups can map to physical shards per region only if PlanetScale supports it (gate, not a claim).
+**Pick: a.**
+
+**129. Timer precision: milliseconds for self-armed timers, `NOTIFY` for the rest.**
+Gap: `entityMessagePollInterval` is 10 s by default, so `ctx.self.Reset.after("5 seconds")` fires between 5
+and 15 s. Proposal: (1) `Actor.layer({ pollInterval: "1 second" })` default; (2) after COMMIT of an intent with
+`deliverAt`, the writing runner keeps an in-memory `Effect.sleep(until)` then `sharding.pollStorage`, so timers
+armed by the owning runner fire on time; (3) `turn()` runs `NOTIFY actor_wake, '<shardId>'` after COMMIT and every
+runner `LISTEN`s, calling `pollStorage` for shards it owns, so cross-runner intents arrive at commit + RTT rather
+than at the next poll. Postgres only; on Neki (2) stands and (3) is a gate. **Pick: a.**
+
+**130. Client reach: SSE for events, OpenAPI for languages, a React hook for browsers.**
+Gap: Rivet ships JS/Python/Rust/Swift clients and `useActor`. Proposal: `Actor.serve` exposes
+`GET /actors/{name}/{id}/events?after=<seq>` as Server-Sent Events (no client library needed in any language),
+`/openapi.json` (116) feeds `openapi-ts` / `openapi-generator` for typed Python/Swift/Rust clients, and a
+`durable-actors/react` subpath:
+
+```ts
+const room = useActor(Chat, roomId)                       // Promise client + events, suspense-free
+const recent = useQuery(room.Recent, { limit: 50 })       // refetch on MessageAdded
+const live = useConnection(room.Live, { since: 0 })       // frames + send
+await room.SendMessage({ body })
+```
+**Pick: a.**
+
+**131. Blobs: large per-actor binaries outside the state cap.**
+Gap: DO/Rivet keep a CRDT document or an embedding matrix as a file in the object's SQLite. Proposal:
+`Actor.blob("doc")` → `blobs: [doc]`; rows in `actor_blobs(tenant_id, actor_id, key, seq, data bytea)`; loaded
+lazily inside the turn (`ctx.blob(doc).get: Effect<Option<Uint8Array>>`, `.set`, `.append(update)` for
+update-log CRDTs, `.compact(merge)` from `onWake`); streamed over HTTP at `GET /actors/{name}/{id}/blobs/doc`;
+exempt from `State.maxBytes`. **Pick: a.** Alt b: `Actor.table` with `bytea` and no helper.
