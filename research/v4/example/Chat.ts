@@ -1,6 +1,5 @@
 // Contract file: safe to import from clients.
 import { Schedule, Schema } from "effect"
-import type { OwnedTable } from "../framework/Actor.ts"
 import { Actor, Delivery, Effects, Events, Hibernate } from "../framework/Actor.ts"
 
 export const RoomId = Schema.String.pipe(Schema.brand("RoomId"))
@@ -20,8 +19,8 @@ export class MessageAdded extends Schema.TaggedClass<MessageAdded>()("MessageAdd
 // declared effect: executed after commit by the executor in Chat.server.ts
 export class SendEmail extends Schema.TaggedClass<SendEmail>()("SendEmail", { to: Schema.String, body: Schema.String }) {}
 
-// placeholder for a drizzle table with (tenant_id, actor_id) columns
-export const messages = {} as OwnedTable
+// `Actor.table` adds tenant_id, actor_id and the composite index to the drizzle table
+export const messages = Actor.table("chat_messages", { id: "text", body: "text" })
 
 // struct input (object arg)
 export const SendMessage = Actor.command("SendMessage", {
@@ -44,7 +43,6 @@ export const Chat = Actor.make("Chat", {
   events: [MessageAdded],
   effects: [SendEmail],
   tables: [messages],
-  memory: () => ({ typing: new Set<string>() }),
   lifecycle: [
     Hibernate.after("5 minutes"),
     Events.keep("30 days"),
