@@ -31,9 +31,9 @@ testing surface is [framework/Testing.ts](framework/Testing.ts).
 | 6 | Ids | b — branded (`id: CounterId`); `get` accepts only the brand. | Wrong-actor ids fail at compile time. | `Schema.brand` | settled |
 | 7 | `get` | a — infallible, implicit create on first turn. | | | settled (see 52 for opt-in explicit create) |
 | 8 | Tenant | b — explicit `get(id, { tenant })` with ambient default; branded `TenantId`; `Actor.tenant(id)` pipeable. | | `Context.Reference` | settled |
-| 9 | State | a — declared tables only, no state blob. | Rows are queryable, migratable, shardable. | drizzle | settled |
+| 9 | State | a — declared tables only, no state blob. | Rows are queryable, migratable, shardable. | drizzle | superseded by 125 (keyed `state` added next to tables) |
 | 10 | Table access | b — `tables: [...]` declared on the actor; `ctx.rows(table)` pre-scoped to `(tenant_id, actor_id)`. | | drizzle query builder | settled |
-| 11 | Hooks | b — values in a `lifecycle` array. Interpreted: hooks carry code, so they live in the server file (`X.onCreate/onWake/onSleep/onEffectFailed`) and are passed with `X.of(handlers, { lifecycle })`; contract-side `lifecycle` holds serializable policies only. | Clients never bundle handler code. | | settled (interpreted) |
+| 11 | Hooks | b — values in a `lifecycle` array. Interpreted: hooks carry code, so they live in the server file (`X.onCreate/onWake/onSleep/onEffectFailed`) and are passed with `X.of(handlers, { lifecycle })`; contract-side `lifecycle` holds serializable policies only. | Clients never bundle handler code. | superseded by 109 |
 | 12 | `ctx.self` | b — intents only (`ctx.self.Reset.after("1 hour")`); no request/reply to self inside a turn. | A turn holds a transaction open. | intents | settled |
 | 13 | Other actors in a turn | b — intents only via `ctx.actors.get(Other, id).Cmd.send(...)`. | Same reason as 12. | intents | settled |
 | 14 | Memory | b — declared `memory` on the actor. **Superseded by 51.** | | | superseded |
@@ -42,13 +42,13 @@ testing surface is [framework/Testing.ts](framework/Testing.ts).
 | 17 | Fire-and-forget outside a turn | a — not allowed; outside handles have no `.send`. | Every outside call is request/reply with a receipt. | | settled |
 | 18 | Coding agents | Resolved by 40. | | | superseded |
 | 19 | Streams | `Actor.stream` — routed via the actor, forked past the mailbox. | Long streams never block commands. | `Rpc.make({ stream: true })`, `Rpc.fork` | settled |
-| 20 | Non-Effect client | `X.client({ baseUrl })` Promise client derived from `X.rpcs`. | | `RpcClient` | settled |
+| 20 | Non-Effect client | `X.client({ baseUrl })` Promise client derived from `X.rpcs`. | | `RpcClient` | superseded by 114 |
 | 21 | Timers | b — keyed: `.after(d, input, { key })`, `.at(when, …)`, `ctx.timers.cancel(key)`; same key replaces. | | `DeliverAt` (see 38) | settled |
 | 22 | Cron | a — `Cron.every(expr, ZeroInputCommand)` policy. | | see 39 | settled |
 | 23 | Side effects | a — `effects: [SendEmail]`, `ctx.perform(new SendEmail(...))`, executors in the server file, `Effects.retry(schedule)` policy. Executed after commit, at least once. | Outbox pattern with typed payloads. | `actor_outbox` | settled |
-| 24 | Workflows | `Actor.workflow(name, { input, output, errors, idempotencyKey })`, `W.toLayer((ctx, input) => …)`, `ctx.activity`, `ctx.sleep`, `ctx.actors`; `ctx.workflows.start(W, input)` intent inside turns. | | `Workflow.make`, `Activity.make`, `DurableClock` | settled |
+| 24 | Workflows | `Actor.workflow(name, { input, output, errors, idempotencyKey })`, `W.toLayer((ctx, input) => …)`, `ctx.activity`, `ctx.sleep`, `ctx.actors`; `ctx.workflows.start(W, input)` intent inside turns. | | `Workflow.make`, `Activity.make`, `DurableClock` | superseded by 119 |
 | 25 | Declarative subscriptions | a — none; actors subscribe by sending intents from handlers. | | | settled |
-| 26 | Delivery failure | a — `ActorUnavailable { reason, cause }` wrapping the Cluster error. | Nothing collapses to `unknown`. | `ClusterError` | settled |
+| 26 | Delivery failure | a — `ActorUnavailable { reason, cause }` wrapping the Cluster error. | Nothing collapses to `unknown`. | `ClusterError` | superseded by 105 |
 | 27 | Delivery retry | b — `Delivery.retry(schedule)` policy before `ActorUnavailable`. | | `Schedule` | settled |
 | 28 | Retryable conditions | a — pure defect path (see F4). | | | settled |
 | 29 | Test layer | a — `Actor.testLayer`. **Refined by 62.** | | | superseded |
@@ -65,7 +65,7 @@ testing surface is [framework/Testing.ts](framework/Testing.ts).
 | # | Decision | Choice | Why | Primitive | Status |
 | --- | --- | --- | --- | --- | --- |
 | 35 | Principal shape | b — app-defined via module augmentation: `declare module "durable-actors" { interface Principal { userId: UserId; … } }` plus a schema registered once in `Actor.layer({ principal })`. | Typed `ctx.caller` everywhere with no generics on contexts; a schema because the principal rides in the envelope headers and is persisted with the message. | `Rpc.middleware` (`requiredForClient: true`), envelope `headers` | settled |
-| 36 | Attribution | a + b — `ctx.caller` is `User(principal) \| System({ source }) \| Anonymous`, **and** every outside call must be attributed: handle methods carry `R = CurrentCaller` until `Actor.as(principal)` / `Actor.anonymous` / the HTTP auth middleware provides it. Inside turns, workflows, cron and executors the framework provides `System`. | Explicit attribution at the edge; timers and cron still have a well-typed caller. | `Context.Service` (no default) | settled (interpreted: "B plus A") |
+| 36 | Attribution | a + b — `ctx.caller` is `User(principal) \| System({ source }) \| Anonymous`, **and** every outside call must be attributed: handle methods carry `R = CurrentCaller` until `Actor.as(principal)` / `Actor.anonymous` / the HTTP auth middleware provides it. Inside turns, workflows, cron and executors the framework provides `System`. | Explicit attribution at the edge; timers and cron still have a well-typed caller. | `Context.Service` (no default) | superseded by 89–91 |
 | 37 | Tenant placement | Must work on Neki and plain Postgres. Entity id = `${tenant}/${id}`; all tenants in Cluster's `default` shard group for now; `Actor.layer({ shardGroup: (tenant) => … })` reserved for dedicated runner pools. | | `ClusterSchema.ShardGroup` | settled (interpreted) |
 
 ### Timers and cron
@@ -153,7 +153,7 @@ row is veto-able. Embodied in [framework/Testing.ts](framework/Testing.ts) and `
 | 78 | Model-based tests | `Scripts.arbitrary(actor, { steps, duplicateCommandIds, commands })` from the commands' input schemas; `Model<A, S>` (`initial`, `step`, `observe`) and `test.check(actor, id, model, script, { concurrency })` → `ModelMismatch`; runs under `it.effect.prop`. Effect's own `Arbitrary`, no fast-check. | Random scripts + `chaos` + concurrency against a sequential model is the strongest exactly-once check available. | `effect/unstable/arbitrary`, `it.effect.prop` | delegated |
 | 79 | SDK tests | `test.serve({ actors, auth })` → Promise client and `HttpClient` over `HttpServer.layerTestClient`; thrown errors are the contract's `Schema.TaggedError` instances. | The Rpc serialization and `Actor.auth` middleware run, no port. | `HttpServer.layerTestClient` | delegated |
 | 80 | Conformance | `conformance: ReadonlyArray<ConformanceCase>` (`requires: "any" \| "postgres"`) + `describeConformance(it)`; one file runs it on PGlite, `TEST_PG_URL` and `TEST_NEKI_URL` with `it.effect.skipIf`. | Decision 66's "Neki supported" is this suite passing. | `it.effect.skipIf` | delegated |
-| 81 | Default caller | `Anonymous` unless `ActorTest.layer({ caller })`; `Actor.as` per call. | Authorization failures stay visible in tests. | `CurrentCaller` | delegated |
+| 81 | Default caller | `Anonymous` unless `ActorTest.layer({ caller })`; `Actor.as` per call. | Authorization failures stay visible in tests. | `CurrentCaller` | superseded by 120 |
 | 82 | Storage in tests | The production `SqlMessageStorage` on the test `SqlClient` (PGlite or url), never `MessageStorage.layerMemory` / `TestRunner.layer`. | `MemoryDriver.saveEnvelope` writes immediately (verified), so a turn that rolls back would leave its intents deliverable and decision 46 (intents in the turn transaction) could not be tested. `SqlMessageStorage` takes `now` from the Effect `Clock`, so timers stay TestClock-driven. | `SqlMessageStorage.layer` | delegated |
 
 ### Testing surface, open questions closed (round 4, "you pick")
@@ -169,7 +169,146 @@ Owner delegated the six questions left open after the Oracle review. Each row is
 | 87 | Names | Keep `ActorTest`, `test.faults.pause`, `describeConformance`, `Scripts.arbitrary`, `TurnHooks`. | Each name matches the noun it acts on; renaming now buys nothing. | | settled (my pick) |
 | 88 | `TurnHooks` visibility | Sealed to `durable-actors/testing`: `TurnHooks` / `TurnReport` / `TurnHooksShape` are defined in the framework module but re-exported only by the testing subpath, never by the public `durable-actors` entry. Production observability is spans, metrics and `actor_events`. Re-open if an audit-log use case appears that the events table does not cover. | A public hook that can roll back a COMMIT by dying is a foot-gun outside tests; keeping it off the main surface preserves "one seam, test-only". | `Context.Reference` | settled (my pick) |
 
-## 3. Verification gates (must pass before the decision is claimed)
+## 3. Round 5 — DX/AX and closing the gaps (89–134)
+
+The owner picked option **a** for all 46 rows below. The full reasoning, alternatives and code live in
+[DX.md](DX.md) §2, §6 and §7, and the typechecked embodiment is [framework/Actor.ts](framework/Actor.ts).
+
+### Caller and tenant
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 89 | Where the caller binds | a — the caller is captured at `get` (both ambient `Actor.as` and explicit `get(id, { as })`); `get` requires `Actors \| CurrentCaller` and handle methods have `R = never`. | Attribution cannot be forgotten because a handle without a caller cannot exist. | `Context.Service` (`CurrentCaller`) | settled |
+| 90 | Tenant derivation | a — `Actor.layer({ tenant: (principal) => principal.orgId })` derives the tenant once; `get(id, { tenant })` and `Actor.tenant` stay as overrides. | One place decides tenancy instead of every call site. | `Context.Reference` | settled |
+| 91 | System callers | a — `System { source, ref?, onBehalfOf: Option<Principal> }` propagated into intents, timers, cron, workflow starts and executors, plus `ctx.principal: Option<Principal>`. | A timer armed by a user still knows whom it acts for. | `Context.Service` (`CurrentCaller`) | settled |
+| 92 | Auth on `serve` | a — `auth` is required on `Actor.serve`; `Actor.auth.none` is the explicit public opt-out, with `Actor.auth.bearer/header` helpers. | Forgetting auth must not serve every actor to anyone. | `RpcMiddleware.Service` | settled |
+| 93 | Service ids | a — service keys match export names: `"durable-actors/CurrentCaller"`. | Effect prints the key in error output, so it should name the export. | `Context.Service` | settled |
+| 94 | `id` on `Actor.make` | a — `id` is required (no `Schema.String` default); `id: Schema.String` stays allowed but must be written. | The silent default opted out of branded ids (decision 6). | `Schema.brand` | settled |
+
+### Contract
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 95 | Internal commands | a — `internal: [...]` on `Actor.make`; internal commands exist on `ctx.self`, `ctx.actors`, workflow handles and `EffectContext.self` but are absent from `Handle`, the Promise client, HTTP and `Actor.toolkit`, and a non-System caller is a defect. | A browser must not be able to forge an effect-executor result. | `Rpc.make` (type-level `Exclude`) | settled |
+| 96 | Descriptions | a — optional `description` on actors, commands, queries, streams and workflows; `Actor.toolkit` is a type error when an included actor or non-internal command has none. | Tools without descriptions are the one thing every tool-use guide forbids. | `OpenApi.Description`, `Tool.make` | settled |
+| 97 | Error schemas | a — `errors` must be yieldable tagged errors (`AnyError`); a declared error without `httpApiStatus` maps to 422. | `errors: [Schema.String]` compiles today and cannot be yielded. | `Schema.TaggedError` | settled |
+| 98 | Policy targets | a — `Ps extends ReadonlyArray<Policy<Cs[number]>>`, so `Cron.every` / `Lifecycle.createdBy` can only name this actor's commands, plus a runtime uniqueness check on tags. | Mismatches move from runtime to compile time. | `RpcGroup.make` | settled |
+| 99 | Event cursor option | a — `events(E, { after })` reading inclusive-exclusive as intended, and the stream has `R = never` (no `Scope`). | `from` read ambiguously and rc.116 streams own their scope. | `Stream.fromPubSub` | settled |
+| 100 | `ActorRef` | a — `ActorRef = { actor, tenant, id }` as a `Schema.Class` exposed as `handle.ref` / `ctx.ref`; Cluster's `EntityAddress` stays internal. | User code should never import `effect/unstable/cluster`. | `Schema.Class` | settled |
+| 101 | `Policy` namespace | a — add a `Policy = { Hibernate, Mailbox, Defects, Delivery, Effects, Commands, Receipts, Events, Cron, Lifecycle }` re-export and list it in `llms.txt`; individual exports kept. | An agent typing `Actor.` cannot otherwise find ten top-level policy modules. | — | settled |
+| 102 | Query layer name | a — `X.toQueryLayer(...)`, freeing the contract field name `queries` to mean the same thing on the definition as on `Actor.make`. | Every other builder is `toLayer`; consistency across the ladder. | `Layer` | settled |
+
+### Handler contexts
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 103 | Read-only contexts | a — `ScopedRead<T>` (select only) on `QueryContext`, `StreamContext` and `WakeContext`; `Scoped<T>` with writes only on `CommandContext`. | A write outside the fence should fail to compile, not run. | drizzle query builder | settled |
+| 104 | `ctx.rows` sugar | a — the pre-scoped builder gains `one / all / insert / upsert`; `ctx.db` stays the escape hatch for joins. | The four calls every handler makes stop being hand-written. | drizzle | settled |
+
+### Errors
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 105 | Framework error payloads | a — every framework error is a `Schema.TaggedError` with `httpApiStatus`, `ref`, `command`, literal-union `reason`, `retryAfter` where applicable, a `retryable` property and an `override get message()` saying what to do next. | Agents and humans get the next step instead of a bare tag. | `Schema.TaggedError` | settled |
+| 106 | Boundary errors | a — `InvalidInput` (400) and `TransportError` exist only on the HTTP boundary and the Promise client, never in the Effect handle's `E`. | The Effect handle's inputs are typed and its failures are already `ActorUnavailable`. | `Schema.TaggedError` | settled |
+| 107 | Request id | a — the HTTP layer echoes the commandId as `x-request-id`; `TransportError.requestId` and the errors' `commandId` are the same searchable string. | One id links client error, server log and receipt. | `HttpApi` | settled |
+
+### Server file
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 108 | Executor signature | a — effect executors take `(ctx, effect)`. | One argument order across every handler in the framework. | `Entity.toLayer` | settled |
+| 109 | Server-side key name | a — the server file's `lifecycle:` becomes `hooks:`; the contract keeps `lifecycle:` for serializable policies. | The same key meant two different things (data vs code). | `Entity.toLayer` | settled |
+| 110 | Request/reply in a turn | a — `InsideTurn<R>` turns a request/reply inside a handler into a literal-string type error naming `ctx.actors.get(Other, id).Command.send(...)`. | Decisions 12/13 gain a readable message instead of "not assignable". | — | settled |
+| 111 | `Actors` surface | a — `Actors` is `{ get, deadLetters }`; `sharding / database / engine` move to a non-public `ActorRuntime`. | Users never need Cluster's `Sharding`. | `Context.Service` | settled |
+| 112 | Spans and logs | a — `turn()`, executors and queries wrap handlers in `Effect.withSpan("durable-actors/turn", …)` and `Effect.annotateLogs`; `Actor.make({ spanAttributes })` passes through. | Handlers stop interpolating ids into log strings. | `Effect.withSpan` | settled |
+
+### Clients
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 113 | Who mints the commandId | a — the handle method mints a UUID inside `Effect.suspend` when it runs and the `Delivery.retry` loop reuses it; the Promise client does the same and sends `x-command-id`; `turn()` never generates. | Server-generated ids make a post-commit resend a new envelope, applying the command twice. | `Effect.suspend`, receipts | settled |
+| 114 | Promise client options | a — `X.client({ baseUrl, headers, timeoutInMs, fetch })` with a trailing `{ commandId, signal }` options bag per call and `AsyncIterable` events. | Azure-style options-last, abortable calls, consistent across the ladder. | `RpcClient` | settled |
+| 115 | Toolkits and MCP | a — `Actor.toolkit([...], { maxOutputBytes })` producing namespaced tools with `failureMode: "return"`, and `Actor.mcp({ actors, name, version })`; internal commands and streams excluded. | Agents get the actors as tools without forging internal commands or blowing the output budget. | `Toolkit.make`, `McpServer` | settled |
+| 116 | Served documentation | a — `Actor.serve` also serves `/llms.txt`, `/openapi.json` and `/actors/{name}.md`, on by default with `docs: false` to disable. | Documentation an agent can fetch is part of the runtime surface. | `HttpApi`, `OpenApi` | settled |
+| 117 | Deprecation | a — `deprecated: true` on a command, query or stream flows to `OpenApi.Deprecated`, the tool description prefix and an `llms.txt` section. | One flag drives every generated surface. | `OpenApi.Deprecated` | settled |
+| 118 | Configuration | a — `Database.layer({ url: Redacted, … })` / `Database.layerConfig()` and `Topology.fromConfig()` read Effect configuration. | `url: string` prints secrets in error output. | `Config.Redacted` | settled |
+| 119 | Workflow start | a — `W.start(input)` returns a `WorkflowRun<Out, Err>` handle (`id`, `result`, `poll`, `interrupt`) and `W.run(id)` rehydrates one. | Long-running operations return a poller, not a bare string. | `WorkflowEngine.poll / interrupt / resume` | settled |
+
+### Testing
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 120 | Bound test harness | a — `ActorTest.layer({ as })` takes a `Principal \| Caller`, and `test.actor(Chat, id)` returns a bound `{ handle, ref, inspect, turns, next, effects, rows, crash, pause }`; the flat API stays. | Tests stop repeating `(Chat, id)` and hand-spelling the caller union. | `ActorTest.layer` | settled |
+
+### Documentation for agents
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 121 | Agent docs shipped | a — `packages/durable-actors/llms.txt`, an AGENTS.md block with runnable `tsc` / `bun test` commands, and `skills/building-durable-actors/SKILL.md` (≤ 500 lines, third-person). | The agent-facing entry points are artifacts, not prose in a README. | — | settled |
+| 122 | Example snippets | a — every README snippet is one operation copied verbatim from a file under `examples/` that `bun test` runs against PGlite. | Copy-pasteable examples must be tested examples. | `it.layer` (PGlite) | settled |
+| 123 | JSDoc | a — `@since` / `@category` on every export, categories `constructors \| contexts \| policies \| errors \| clients \| testing`. | Generated docs and `llms.txt` sections come from one source. | — | settled |
+| 124 | Kept after review | a — no change to `(ctx, input)` order, `X.of(handlers, { hooks, effects })`, declared `errors`, the `Actor.commandId` pipe, `Turn`, `Hibernate.after`, the separate `commands / queries / streams` arrays, `test.faults.*` names and sealed `TurnHooks`. | Reviewed and deliberately unchanged. | — | settled |
+
+### Closing the gaps against Rivet / DO (125–131)
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 125 | Keyed state | a — `state: { key: Schema }` stored in `actor_state(tenant_id, actor_id, actor, key, value jsonb)`, loaded after the generation fence in the turn transaction, synchronous reads, `ctx.state.set` writes dirty keys at commit, read-only snapshots elsewhere, `State.maxBytes("64 KiB")`. | Supersedes the "no state blob" half of 9a: a small keyed store next to the tables, as Rivet and DO both ended up needing. | `Schema`, `SqlClient.withTransaction` | settled |
+| 126 | Connections | a — `Actor.connection(name, { params, server, client, state, errors })` as a fourth contract kind, with `ctx.connections.broadcast/list`, WebSocket transport and frames forked past the mailbox. | Closes the DO/Rivet realtime-session gap with the same typed contracts. | `RpcServer.layerProtocolWebsocket`, `Rpc.fork` | settled |
+| 127 | `run` loop | a — `X.of(handlers, { run })`: a long-lived activation loop started on wake and interrupted on sleep, with `events`, `state`, `self`/`actors` intents, `connections` and `memory`, but no transaction. | Rivet's `run` loop without breaking the one-transaction-per-turn rule. | `Entity.toLayer(Effect)`, `Stream` | settled |
+| 128 | Placement | a — `Actor.layer({ shardGroup: (tenant) => … })` is first-class, with runners selecting groups via `ACTORS_SHARD_GROUPS`. | Compute follows the tenant even though data placement stays single-database. | `ClusterSchema.ShardGroup`, `ShardingConfig.shardGroups` | settled |
+| 129 | Timer precision | a — `pollInterval: "1 second"` default, an in-memory sleep-then-`pollStorage` on the runner that wrote a `deliverAt` intent, and `NOTIFY actor_wake` after COMMIT for cross-runner intents (Postgres; a gate on Neki). | `ctx.self.Reset.after("5 seconds")` must not fire at 15 s. | `Sharding.pollStorage` | settled |
+| 130 | Client reach | a — SSE at `GET /actors/{name}/{id}/events?after=`, `/openapi.json` for generated clients in other languages, and a `durable-actors/react` subpath (`useActor`, `useQuery`, `useConnection`). | Every language reaches actors without a hand-written client. | `HttpApi`, `OpenApi` | settled |
+| 131 | Blobs | a — `Actor.blob("doc")` / `blobs: [doc]` over `actor_blobs(tenant_id, actor_id, key, seq, data bytea)`, lazy `get/set/append/compact`, streamed over HTTP, exempt from `State.maxBytes`. | Large per-actor binaries (CRDT logs, embeddings) do not belong in keyed state. | `Schema.Uint8Array`, `HttpApi` | settled |
+
+### Kinds, members, runtime (132–134)
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 132 | Kinds | a — no `Actor.job`; add `Actor.singleton(name, { description, shardGroup })` alongside `make`, `workflow` and `cron`. | A job is already a one-activity workflow; a cluster-wide leader/poller is the missing kind. | `Singleton.make` | settled |
+| 133 | Ephemeral actors | a — `Actor.ephemeral(name, { id, memory, commands, connections, lifecycle })`: same contract members, no state/tables/events/effects/receipts, `ctx.memory` only, durability policies rejected at the type level. | A kind that changes `E`, `ctx` and allowed policies deserves a constructor, not a `durable: false` flag. | `Entity` (`Persisted: false`) | settled |
+| 134 | Visible levels | a — `@category kinds \| members \| policies \| runtime \| clients \| testing` JSDoc, `_kind` tags on kinds and members, and a type error when a member is passed to `Actor.serve` / `Actor.toolkit`. | The three levels under `Actor.` become discoverable without renaming anything. | — | settled |
+
+**Embodiment status.** [framework/Actor.ts](framework/Actor.ts) and the examples embody 89–134 and typecheck.
+[framework/Testing.ts](framework/Testing.ts) does not yet implement decision 120 (`test.actor`, `Options.as`), and
+`example/*.test.ts` plus `example/typecheck.ts` still target the pre-89 API. `README.md` under `research/v4` is stale
+relative to this ledger.
+
+## 3.5. Round 6 — what is not an actor, not the framework, not one package (135–150)
+
+Owner asked for an Oracle pass on "what shouldn't be an actor, what shouldn't be in the framework, what to extract",
+reacting to a proposed `@rika/durable` split (actors / events `Topic` / workflows / runtime / testing). Full reasoning
+and code in [PACKAGES.md](PACKAGES.md). Rows are my picks adopting the Oracle's verdicts; `settled (my pick)` rows are
+already applied in [framework/Actor.ts](framework/Actor.ts), `proposed` rows await the owner's veto/ack.
+
+### Primitives
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 135 | Primitive taxonomy | Two primitives, `Actor` and `Workflow`; `cron` and `singleton` are runtime facilities under `Durable`. Additive aliases `Workflow.make`, `Durable.cron`, `Durable.singleton`, `Durable.as/tenant/commandId`; `Actor.workflow/cron/singleton` stay (decision 30 names are kept). New docs and the skill use the new spellings. | A workflow has identity and a mailbox (`ClusterWorkflowEngine` runs it on an Entity, `concurrency: 2`, verified) but no open-ended command API; cron/singleton are scheduling and leadership, not identity + serialized mutation. Renaming nothing avoids a migration campaign. | `Workflow.make`, `ClusterCron.make`, `Singleton.make` | settled (my pick) |
+| 136 | Off-turn contexts are read-only | `WakeContext` (`onWake`/`onSleep`) and `RunContext` see `BlobRead`, read-only rows and the committed `state` snapshot, and gain `self` so they can *schedule* work. Maintenance that writes (compaction, backfills) is an `internal` command the actor sends itself. Doc compacts via `Compact` every 100 updates and on cold start. | Wake has no transaction (F3); a writable `BlobHandle` there was a hole. | `IntentHandle` | settled (my pick) |
+| 137 | `Topic` / durable-events | Deferred. Cross-actor fan-out is a projection actor fed by explicit intents; a replaying consumer commits its checkpoint with the derived state in one turn. If built later: bounded v1 spec in PACKAGES.md §5 (fixed partitions, append-order offsets under a partition lock, at-least-once, fenced consumer per (group, partition), retention-gap errors, obligation in the source shard on Neki), sized XL. | On one Postgres a topic is a broker subsystem (offsets, groups, rebalance, retention, poison policy), not a wrapper; `effect/unstable/eventlog` is a local-first client journal, not a partitioned log (verified); no example needs it. "Committing a publish intent is not committing the append" must be named when it exists. | — | proposed |
+| 138 | Verbs inside a turn | Keep the distinct set: `ctx.emit`, `ctx.self.X.send/after/at` + `ctx.actors.get(A, id).X.send`, `ctx.workflows.start/cancel`, `ctx.perform`. `ctx.connections.broadcast` is documented best-effort (not transactional). No `ctx.publish` until 137 is built; no universal `dispatch`. | Each verb has a different recovery rule; one verb would lose types and readability. | — | settled (my pick) |
+
+### Packaging and boundaries
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 139 | Distribution | One npm distribution with lockstep subpaths (refines 61): `.` (browser-safe `Actor`, `Workflow`, `Durable`, policies, identity, boundary errors), `/identity`, `/actors`, `/actors/server`, `/workflows`, `/workflows/server`, `/runtime`, `/pg`, `/http`, `/ai`, `/client`, `/admin`, `/testing`, `/server`. Not five release trains. Absent from v1: `/events`, `/react`, `Topology.k8s`, S3 APIs. | Independent versions of shared services/schemas (`Caller`, workflow targets) create incompatible identities; the browser rule (never pull `effect/unstable/sql`) is the boundary that matters, not directory count. | package `exports` | proposed |
+| 140 | Type ownership | `/identity`: `TenantId`, `Tenant`, `DeploymentId`, `Principal` (the one augmentation target), `Caller`, `CurrentCaller`, `ActorRef`. `/actors`: `CommandId`, `CommandConflict`, `NotCreated`, `ActorUnavailable`, `Turn`, contexts, policies. `/workflows`: `ExecutionId`, `WorkflowRun`, `WorkflowInterrupted`. `/pg`: `Database`. `/runtime`: `Topology`, `RuntimeControl`. `/http`: `Auth`. root: `Unauthorized`, `InvalidInput`. `/client`: `TransportError`. `/testing` only: `TurnHooks`, `TurnReport`, activity fault hooks. | `Caller.System` references `ActorRef`, so the ref is identity; errors that mention receipts stay with actors. | — | proposed |
+| 141 | Runtime boundary | `DurableRuntime.layer({ deployment, principal, tenant?, topology, shardGroup?, shardGroups?, pollInterval? })` requiring exactly one `Database`; `Actor.layer` forwards to it. No `objectStorage`, `auth`, executor bag or migration callbacks in the options. `Actor.layer({ deployment })` added now as `DeploymentId` (default `"default"`). | Runtime owns placement, transport, identity configuration, lifecycle; actor/workflow backends own their semantics; auth belongs to the edge. | `Sharding`, `WorkflowEngine` | proposed (option `deployment` applied) |
+| 142 | Cut or move | Move: `serve`/`auth` → `/http`; `toolkit`/`mcp` → `/ai`; `Actors.deadLetters` → `/admin` (`ActorAdmin`); Promise client impl → `/client`. Delete from v1: `framework/React.ts`, `Topology.k8s`. Keep core: `blob` (writes in turns only), `connection` contract, `Lifecycle.createdBy`, `ctx.terminate` (specified: transition + declared-data cleanup, not receipt deletion, not compensation, not history erasure), `State.maxBytes`. Narrow the barrel: `ServeTypeId`, `Serve`, `Hook`, `InsideTurn`, `InActorTurn`, `RpcsOf`, `HandlersFor`, drizzle placeholders, `X.entity` off the root. | The differentiator is contracts → attribution → fenced turns → durable consequences → faithful tests; adapters make it reachable. | — | proposed |
+| 143 | Testing across primitives | One environment: `ActorTest` re-exported as `DurableTest`; `test.actor(A, id)` (120), `test.workflow(W).crashActivity(name, { at: "beforeBody" \| "afterBodyBeforeResult" \| "afterResult", times })`; a future topic harness says `pauseConsumption`, not `pause`. `Effect.die` inside an activity body is not process loss (the engine may record it as a result); pause + `cluster.kill` is the stronger test. | `TurnHooks` is actor-specific; workflows need their own seam at the body/result boundary. | `TurnHooks`, activity boundary hook | proposed |
+| 144 | Workflow identity | The persisted payload is the app input plus `__deployment`, `__tenant`, `__onBehalfOf`; the execution key is `JSON.stringify([deployment, tenant, appKey])`; a resumed run rebuilds tenant and caller from the envelope, never from ambient defaults. `waitFor` needs an actor-side registration acknowledgement so an event emitted before the registration lands is not lost (integration module owns the race and its test). | Effect derives the execution id from (name, key) only (verified); two tenants with the same app key must not share a run. | `Workflow.make({ idempotencyKey })` | settled (my pick; ack + isolation test pending) |
+| 145 | Caller for tools and MCP | The caller is a per-call dependency (`Tool.make({ dependencies: [Actors, CurrentCaller] })`, verified in rc.116); `Actor.toolkit(...).layer` requires only `Actors`. `Actor.mcp` takes `transport: { _tag: "http", path, auth: Auth<R> } \| { _tag: "stdio", as }` and returns `Layer<never, never, Actors \| R>`; the HTTP bridge (provide `CurrentCaller` per invocation from the request) is ours because `McpRequestContext` carries no headers. Caller-supplied MCP metadata is never a principal. The `Layer.succeed(CurrentCaller, anonymous)` workaround is removed from `server.ts`. | A layer-level caller is a per-request value frozen at boot: an authentication bug. | `Tool.make`, `McpServer.registerToolkit` | settled (my pick); gated (MCP bridge) |
+| 146 | Turn boundary at runtime | `InActorTurn` (`Context.Reference<boolean>`, internal) is set by `turn()` around the handler; every outside operation (`X.get`, handle methods, `Actors.get`, `W.start`) is wrapped in `outsideTurn`, which dies when inside. `InsideTurn<R>` stays as the readable type diagnostic. | The type check sees requirements only; a handle bound before the turn has `R = never` and could make request/reply calls inside a transaction. | `Context.Reference` | settled (my pick) |
+| 147 | Hosting boundary | Host deployments first, tenants inside a deployment. `DeploymentId` is stable and never a code version. Runtime exposes: a manifest of contracts + required migrations (reject incompatible runners at start), `RuntimeControl { ready, status, drain }`, configuration without ambient globals, edge-owned auth where a tenant override is routing not authorization, operator capability in `/admin`. A deployment artifact is `{ contracts: { actors, workflows }, registrations }`. Managed and bring-your-own runners share this contract. | `tenant_id`/`shardGroup` are placement, not a sandbox: handlers have `ctx.db`. Cluster shard groups (compute) and Neki shard groups (data) are different. | — | proposed |
+| 148 | Connection frames | Mixed-frame connections declare `Schema.TaggedClass` frames (`MessageFrame \| Typing`); a single-frame connection may stay a plain class. | Plain classes cannot be discriminated on `_tag`. | `Schema.TaggedClass` | settled (my pick) |
+| 149 | `E = never` on `run`/singleton | Keep the requirement; reject a blanket `catchCause` and any `X.onRun` helper. Expected failures are handled by name; a defect restarts the activation/singleton. | A swallowed failure turns a dead loop into a "completed" worker. | — | settled (my pick) |
+| 150 | Typed tools | `Actor.toolkit` must preserve each tool's parameter, success, error and requirement types (today the map is `Tool.Any`). | Erased tool types defeat the "agents get the contracts" story (115). | `Tool.Tool<Name, Config, Actors \| CurrentCaller>` | proposed (type work pending) |
+
+## 4. Verification gates (must pass before the decision is claimed)
 
 | Gate | Decisions | Check |
 | --- | --- | --- |
@@ -182,3 +321,7 @@ Owner delegated the six questions left open after the Oracle review. Each row is
 | In-process multi-runner | 77 | A harness `RunnerStorage` (per-address locks, `Clock` expiry) plus a `Runners.make` bus drive N `Sharding` instances in one process and `cluster.kill` + `clock.advance(> shardLockExpiration)` moves the shard. |
 | Crash points | 71, 76 | Source-verified: `withTransaction` rolls back on a failed Exit; `EntityManager` rewrites the same envelope after the defect retry delay. To show: the harness advancing the TestClock through that delay from inside the hook; `pause` + `cluster.kill` rolling back and recovering from `cluster_messages` on the survivor after `shardLockExpiration`. |
 | Intent rollback | 46, 82 | On `SqlMessageStorage`, an intent written by a turn that fails `beforeCommit` is never delivered. |
+| Workflow tenant isolation | 144 | Two tenants starting `Onboard` with the same app idempotency key get two executions; a run resumed on another runner reports the tenant and `onBehalfOf` from its envelope, not the runner's ambient `Tenant`. |
+| `waitFor` registration | 144 | An event emitted by the actor between `W.start` and the `waitFor` registration landing still resolves the deferred (registration is acknowledged before the workflow proceeds). |
+| MCP invocation caller | 145 | Over HTTP, two concurrent `/mcp` tool calls with different bearer tokens run as different principals; a call without credentials fails with `Unauthorized`, never as `Anonymous`. |
+| Turn boundary at runtime | 146 | A handle obtained outside and captured in a closure, then called inside a handler, dies with the "Request/reply inside a turn" message and the turn rolls back. |

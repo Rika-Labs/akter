@@ -1,12 +1,12 @@
 /**
  * Durable Actors — proposed public surface (typecheck-only sketch, Effect 4.0.0-rc.116).
- * Embodies DECISIONS.md 1–134. Everything compiles down to Effect primitives:
+ * Embodies DECISIONS.md 1–150. Everything compiles down to Effect primitives:
  *
- *   kinds     Actor.make        →  RpcGroup.make + Entity.fromRpcGroup, Persisted: true, one transaction per command ("turn")
- *             Actor.ephemeral   →  the same Entity, Persisted: false, no transaction, `memory` in the activation closure
- *             Actor.workflow    →  Workflow.make + Activity.make + DurableClock + DurableDeferred
- *             Actor.cron        →  ClusterCron.make (one run per schedule, cluster-wide)
- *             Actor.singleton   →  Singleton.make(name, run, { shardGroup })
+ *   primitives  Actor.make        →  RpcGroup.make + Entity.fromRpcGroup, Persisted: true, one transaction per command ("turn")
+ *               Actor.ephemeral   →  the same Entity, Persisted: false, no transaction, `memory` in the activation closure
+ *               Workflow.make     →  Workflow.make + Activity.make + DurableClock + DurableDeferred   (alias: Actor.workflow)
+ *   facilities  Durable.cron      →  ClusterCron.make (one run per schedule, cluster-wide)              (alias: Actor.cron)
+ *               Durable.singleton →  Singleton.make(name, run, { shardGroup })                          (alias: Actor.singleton)
  *   members   Actor.command / query / stream / connection   →  Rpc.make (stream: true for streams and connections)
  *             Actor.table / blob                             →  drizzle pgTable with (tenant_id, actor_id); actor_blobs
  *   runtime   Actor.layer / serve / auth / toolkit / mcp     →  Sharding + WorkflowEngine; HttpRouter + RpcServer; ai/Toolkit; McpServer
@@ -26,7 +26,7 @@ import type { ConfigError } from "effect/Config"
 import { Rpc, RpcGroup, RpcSchema } from "effect/unstable/rpc"
 import { ClusterSchema, Entity, EntityAddress, Sharding } from "effect/unstable/cluster"
 import { AlreadyProcessingMessage, EntityNotAssignedToRunner, MailboxFull, PersistenceError } from "effect/unstable/cluster/ClusterError"
-import { Workflow, WorkflowEngine } from "effect/unstable/workflow"
+import { Workflow as EffectWorkflow, WorkflowEngine } from "effect/unstable/workflow"
 import type { Tool, Toolkit } from "effect/unstable/ai"
 import type { Headers } from "effect/unstable/http/Headers"
 import type { SqlClient } from "effect/unstable/sql/SqlClient"
@@ -39,6 +39,10 @@ import type { SqlError } from "effect/unstable/sql/SqlError"
 /** @category identity */
 export const TenantId = Schema.String.pipe(Schema.brand("TenantId"))
 export type TenantId = typeof TenantId.Type
+/** One per deployment sharing a database (decision 147); set in `Actor.layer({ deployment })`. @category identity */
+export const DeploymentId = Schema.String.pipe(Schema.brand("DeploymentId"))
+export type DeploymentId = typeof DeploymentId.Type
+export const Deployment = Context.Reference<DeploymentId>("durable-actors/Deployment", { defaultValue: () => DeploymentId.make("default") })
 
 /**
  * Where an actor lives, in user terms. Serializable (rides in headers, events and errors), printable,
@@ -562,11 +566,15 @@ export type MemoryHandle<M extends Schema.Struct.Fields> = Readonly<StateValues<
   readonly update: (f: (current: StateValues<M>) => StateValues<M>) => Effect.Effect<void>
 }
 
-/** @category contexts */
+/**
+ * @category contexts
+ * Writable only inside a turn (decision 136): every write rides the turn transaction. `onWake`, `onSleep`
+ * and `run` see `BlobRead`; compaction is a command (usually `internal`) the actor sends itself.
+ */
 export interface BlobHandle {
   readonly get: Effect.Effect<Option.Option<Uint8Array>>
   readonly set: (data: Uint8Array) => Effect.Effect<void>
-  /** appends one update to the blob's log (update-log CRDTs); `compact` folds the log from `onWake` */
+  /** appends one update to the blob's log (update-log CRDTs); `compact` folds the log inside a later turn */
   readonly append: (update: Uint8Array) => Effect.Effect<void>
   readonly compact: (merge: (parts: ReadonlyArray<Uint8Array>) => Uint8Array) => Effect.Effect<void>
 }
@@ -580,6 +588,20 @@ export interface BlobRead {
  */
 export type InsideTurn<R> = [Extract<R, Actors | CurrentCaller>] extends [never] ? unknown
   : { readonly "Request/reply inside a turn is not allowed: use ctx.actors.get(Other, id).Command.send(...) or ctx.self.Command.send(...)": never }
+
+/**
+ * Runtime twin of `InsideTurn` (decision 146). The type check only sees requirements, and a handle bound before the
+ * turn has `R = never`, so `turn()` also sets this reference around the handler and every outside operation
+ * (`X.get`, handle methods, `Actors.get`, `W.start`) dies when it finds it `true`. Not a user customization point.
+ * @internal
+ */
+export const InActorTurn = Context.Reference<boolean>("durable-actors/InActorTurn", { defaultValue: () => false })
+/** @internal wraps every outside operation */
+export const outsideTurn = <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+  Effect.flatMap(InActorTurn, (inside) =>
+    inside
+      ? Effect.die(new Error("Request/reply inside a turn is not allowed: use ctx.actors.get(Other, id).Command.send(...) or ctx.self.Command.send(...)"))
+      : self)
 
 // ---------------------------------------------------------------------------------------------------
 // Handles (decisions 7, 17, 19, 20, 89, 95, 99, 100, 114, 119, 126)
@@ -851,12 +873,18 @@ export interface ConnectionContext<
   readonly self: IntentHandle<Cs>
 }
 
-/** OnWake / OnSleep: no transaction, no caller. @category contexts */
-export interface WakeContext<Id extends Schema.Top, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>> extends Identity<Id> {
+/**
+ * OnWake / OnSleep: no transaction, no caller, so nothing here writes (decision 136): rows, state and blobs
+ * are the committed snapshot. Maintenance that writes (compaction, backfills) is an `internal` command the
+ * hook schedules with `ctx.self`.
+ * @category contexts
+ */
+export interface WakeContext<Id extends Schema.Top, Cs extends ReadonlyArray<AnyCommand>, S extends Schema.Struct.Fields, Bs extends ReadonlyArray<AnyBlob>> extends Identity<Id> {
   readonly db: Drizzle
   readonly rows: <T extends AnyTable>(table: T) => ScopedRead<T>
   readonly state: Readonly<StateValues<S>>
-  readonly blob: <B extends Bs[number]>(blob: B) => BlobHandle
+  readonly blob: <B extends Bs[number]>(blob: B) => BlobRead
+  readonly self: IntentHandle<Cs>
 }
 /**
  * `run` (decision 127): a long-lived loop on the activation, started on wake, interrupted on sleep. No
@@ -871,9 +899,8 @@ export interface RunContext<
   Bs extends ReadonlyArray<AnyBlob>,
   Ev extends AnyTagged,
   Cn extends ReadonlyArray<AnyConnection>
-> extends WakeContext<Id, S, Bs> {
+> extends WakeContext<Id, Cs, S, Bs> {
   readonly events: EventsMethod<Ev>
-  readonly self: IntentHandle<Cs>
   readonly actors: ActorIntents
   readonly connections: Connections<Cn>
 }
@@ -1065,8 +1092,8 @@ export interface ActorDefinition<
   readonly ofQueries: <R>(handlers: QueryHandlersFor<Id, Qs, S, Bs, R>) => QueryHandlersFor<Id, Qs, S, Bs, R>
   /** first turn ever for this id; runs inside that turn's transaction before the command handler */
   readonly onCreate: <R>(run: (ctx: CommandContext<Id, Cs, Ev, Ef, S, Bs, Cn>) => Effect.Effect<void, never, R>) => Hook<R>
-  readonly onWake: <R>(run: (ctx: WakeContext<Id, S, Bs>) => Effect.Effect<void, never, R>) => Hook<R>
-  readonly onSleep: <R>(run: (ctx: WakeContext<Id, S, Bs>) => Effect.Effect<void, never, R>) => Hook<R>
+  readonly onWake: <R>(run: (ctx: WakeContext<Id, Cs, S, Bs>) => Effect.Effect<void, never, R>) => Hook<R>
+  readonly onSleep: <R>(run: (ctx: WakeContext<Id, Cs, S, Bs>) => Effect.Effect<void, never, R>) => Hook<R>
   /** runs inside a turn: the dead-lettered effect is delivered to the actor as a framework command after `Effects.retry` is exhausted */
   readonly onEffectFailed: <R>(
     run: (ctx: CommandContext<Id, Cs, Ev, Ef, S, Bs, Cn>, effect: Ef["Type"], cause: Cause.Cause<unknown>) => Effect.Effect<void, never, R>
@@ -1432,7 +1459,7 @@ export interface WorkflowDefinition<Name extends string, In extends Schema.Struc
   readonly toLayer: <R>(
     run: (ctx: WorkflowContext, input: Schema.Struct.Type<In>) => Effect.Effect<Out["Type"], Errors[number]["Type"], R>
   ) => Layer.Layer<never, never, Exclude<R, Scope.Scope> | Actors>
-  readonly workflow: Workflow.Workflow<Name, Schema.Struct<In>, Out, ErrorSchemaOf<Errors>>
+  readonly workflow: EffectWorkflow.Workflow<Name, Schema.Struct<In>, Out, ErrorSchemaOf<Errors>>
 }
 export type AnyWorkflow = WorkflowDefinition<string, any, any, any, any>
 export type WorkflowInput<W> = W extends WorkflowDefinition<any, infer In, any, any, any> ? Schema.Struct.Type<In> : never
@@ -1456,9 +1483,12 @@ export const workflow = <
 ): WorkflowDefinition<Name, In, Out, Errors, Desc> => {
   const output = (def.output ?? Schema.Void) as Out
   const errors = (def.errors ?? []) as Errors
-  const wf = Workflow.make(name, {
-    payload: def.input,
-    idempotencyKey: def.idempotencyKey,
+  // The persisted payload is the app input plus an envelope (decision 144): the tenant and the caller the run acts
+  // for. Effect derives the execution id from (name, key) only, so the key is namespaced by deployment and tenant;
+  // a resumed run rebuilds its context from this envelope, never from the runner's ambient defaults.
+  const wf = EffectWorkflow.make(name, {
+    payload: { ...def.input, __tenant: TenantId, __deployment: DeploymentId, __onBehalfOf: Schema.Option(Schema.Unknown) },
+    idempotencyKey: (p: any) => JSON.stringify([p.__deployment, p.__tenant, def.idempotencyKey(p)]),
     success: output,
     error: errors.length === 0 ? Schema.Never : Schema.Union(errors)
   }) as any
@@ -1594,6 +1624,11 @@ export const Topology = {
  * @category runtime
  */
 export declare const layer: (options: {
+  /**
+   * Stable identity of this deployment (decision 147). Namespaces workflow execution keys and singleton/cron names
+   * so two deployments sharing a database never collide; never a code version. Default `"default"`.
+   */
+  readonly deployment?: DeploymentId
   readonly principal: Schema.Top & { readonly Type: Principal }
   /** derive the tenant from the principal once (decision 90); `get(id, { tenant })` still overrides */
   readonly tenant?: (principal: Principal) => TenantId
@@ -1654,11 +1689,17 @@ type Undescribed<A> = A extends { readonly name: infer N extends string; readonl
 export type ToolkitReady<As extends ReadonlyArray<AnyActor>> = { readonly [K in keyof As]: [Undescribed<As[K]>] extends [never] ? As[K] : Undescribed<As[K]> }
 export type ToolNames<A> = A extends { readonly name: infer N extends string } ? `${N}_${(PublicCommandsOf<A> | QueriesOf<A>)["tag"]}` : never
 
-/** An Effect `Toolkit` for the given actors: `Chat_SendMessage`, `Chat_Recent`, …; `failureMode: "return"`; internal commands and streams excluded (decision 115). @category runtime */
+/**
+ * An Effect `Toolkit` for the given actors: `Chat_SendMessage`, `Chat_Recent`, …; `failureMode: "return"`; internal
+ * commands and streams excluded (decision 115). The caller is a per-call dependency, not a layer input (decision 145):
+ * each tool is `Tool.make(name, { dependencies: [Actors, CurrentCaller] })`, so `Actors | CurrentCaller` surfaces where
+ * the tool is *called* (the agent loop, which already has a request/turn caller), and `layer` builds with nothing.
+ * @category runtime
+ */
 export interface ActorToolkit<As extends ReadonlyArray<AnyActor>> {
   readonly toolkit: Toolkit.Toolkit<{ readonly [N in ToolNames<As[number]>]: Tool.Any }>
-  /** handlers: every tool call becomes `actor.get(id, { as: CurrentCaller })` + the command */
-  readonly layer: Layer.Layer<never, never, Actors | CurrentCaller>
+  /** handlers: every tool call becomes `actor.get(id)` under the caller of the calling fiber + the command */
+  readonly layer: Layer.Layer<never, never, Actors>
   readonly names: ReadonlyArray<ToolNames<As[number]>>
 }
 /** @category runtime */
@@ -1666,13 +1707,21 @@ export declare const toolkit: <const As extends ReadonlyArray<AnyActor>>(
   actors: As & ToolkitReady<As>,
   options?: { readonly maxOutputBytes?: number }
 ) => ActorToolkit<As>
-/** `McpServer.toolkit` over `Actor.toolkit`, served by `Actor.serve` at `path` or on stdio. @category runtime */
-export declare const mcp: <const As extends ReadonlyArray<AnyActor>>(options: {
+/**
+ * `McpServer.toolkit` over `Actor.toolkit`. The caller is established per invocation, never at layer level (decision
+ * 145): over HTTP the same `Auth` as `Actor.serve` runs on the `/mcp` request and the adapter provides `CurrentCaller`
+ * to the tool handler for that invocation (gated: `McpRequestContext` carries no headers, so the bridge is ours);
+ * on stdio there is no request, so the process names who it acts as. Caller-supplied MCP metadata is never a principal.
+ * @category runtime
+ */
+export declare const mcp: <const As extends ReadonlyArray<AnyActor>, R = never>(options: {
   readonly actors: As & ToolkitReady<As>
   readonly name: string
   readonly version: string
-  readonly transport?: "stdio" | { readonly path: string }
-}) => Layer.Layer<never, never, Actors | CurrentCaller>
+  readonly transport:
+    | { readonly _tag: "http"; readonly path: string; readonly auth: Auth<R> }
+    | { readonly _tag: "stdio"; readonly as: Principal | Caller }
+}) => Layer.Layer<never, never, Actors | Exclude<R, Scope.Scope>>
 
 // ---------------------------------------------------------------------------------------------------
 // The one seam for tests (decisions 71, 88): not on the public entry
@@ -1764,3 +1813,18 @@ export const Actor = {
   layer, serve, auth, toolkit, mcp,
   as, anonymous, tenant, commandId
 }
+
+/**
+ * The second primitive by its own name (decision 135): a workflow is a durable execution, not an actor,
+ * even though `ClusterWorkflowEngine` runs it on an Entity. `Actor.workflow` stays as the settled spelling;
+ * new docs and the skill use `Workflow.make`. Same definition object, same `toLayer`, same `ctx.workflows.start`.
+ * @category kinds
+ */
+export const Workflow = { make: workflow }
+
+/**
+ * Runtime facilities that are neither actors nor workflows (decision 135): cluster-wide schedules and
+ * leaders, plus the ambient binders. `Actor.cron` / `Actor.singleton` remain aliases.
+ * @category runtime
+ */
+export const Durable = { cron, singleton, as, anonymous, tenant, commandId }

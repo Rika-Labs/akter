@@ -33,6 +33,10 @@ export const Rename = Actor.command("Rename", {
   description: "Set the document title. Always succeeds; the previous title is replaced.",
   input: { title: Schema.String }
 })
+// internal: folds the update log into one blob. A write, so it is a turn (decision 136), never a wake hook.
+export const Compact = Actor.command("Compact", {
+  description: "Fold the appended updates into one blob. Sent by the actor to itself; not reachable from outside."
+})
 export const Snapshot = Actor.query("Snapshot", {
   description: "The committed title, revision and document bytes. Reads the caller's node and never wakes the actor.",
   output: Schema.Struct({
@@ -45,7 +49,8 @@ export const Snapshot = Actor.query("Snapshot", {
 export const Doc = Actor.make("Doc", {
   description: "A collaborative document. The bytes are one blob written as an append-only update log; the title and revision are keyed state.",
   id: DocId,
-  commands: [ApplyUpdate, Rename],
+  commands: [ApplyUpdate, Rename, Compact],
+  internal: [Compact],
   queries: [Snapshot],
   events: [Updated, Renamed],
   tables: [revisions],

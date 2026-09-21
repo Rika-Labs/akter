@@ -1,7 +1,7 @@
 // The whole process: actor layers, their services, the HTTP entrypoint, the cluster runtime and the database.
 import { Effect, Layer, Stream } from "effect"
-import { Actor, Caller, CurrentCaller, Database, TenantId, Topology } from "../framework/Actor.ts"
-import { McpLive } from "./agent.ts"
+import { Actor, Database, TenantId, Topology } from "../framework/Actor.ts"
+import { mcpLive } from "./agent.ts"
 import { AgentSession } from "./AgentSession.ts"
 import { AgentSessionLive, Model, Tools } from "./AgentSession.server.ts"
 import { Chat } from "./Chat.ts"
@@ -24,6 +24,7 @@ import { ReaperLive } from "./Reaper.server.ts"
 // the real one verifies a JWT and fails with `new Unauthorized({ reason: "invalid_credentials" })`
 const verify = (token: string) =>
   Effect.succeed({ userId: UserId.make(token), orgId: OrgId.make("acme"), roles: ["member"] as const })
+const auth = Actor.auth.bearer(verify)
 
 // membership is an application concern: `User` callers need the role, `System` callers (timers, cron, workflows) pass
 const RoomAccessLive = Layer.succeed(RoomAccess, {
@@ -52,12 +53,11 @@ export const AppLive = Layer.mergeAll(
   Layer.provideMerge(Actor.serve({
     actors: [Chat, Counter, AgentSession, Cursor, Doc],
     workflows: [Onboard],
-    auth: Actor.auth.bearer(verify),
+    auth,
     docs: true // /llms.txt, /openapi.json, /actors/Chat.md
   })),
-  Layer.provideMerge(McpLive),
-  // `Actor.mcp` and `Actor.toolkit` require a caller at layer level; the serve auth middleware overrides it per request
-  Layer.provide(Layer.succeed(CurrentCaller, Caller.anonymous)),
+  // same `auth` on the MCP endpoint: every tool invocation runs as the authenticated principal (decision 145)
+  Layer.provideMerge(mcpLive(auth)),
   Layer.provide(Actor.layer({
     principal: PrincipalSchema,
     tenant: (p) => TenantId.make(p.orgId), // one tenant per org, derived once
