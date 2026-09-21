@@ -4,8 +4,9 @@ import { CountChanged, Counter, Overflow } from "./Counter.ts"
 
 export const CounterLive = Counter.toLayer({
   Increment: Effect.fn(function*(ctx, amount) {
-    if (amount > 1_000) return yield* new Overflow({ max: 1_000 })
-    const next = amount // yield* ctx.db.update(counters)…returning() — joined to the turn tx
+    const next = ctx.state.count + amount // synchronous read of keyed state
+    if (next > 1_000) return yield* new Overflow({ max: 1_000 })
+    yield* ctx.state.set({ count: next }) // only the dirty key is written at commit
     yield* ctx.emit(new CountChanged({ count: next }))
     // durable timer, committed with this turn; the key makes it replaceable and cancellable
     yield* ctx.self.Reset.after("1 hour", { key: "idle" })
@@ -13,15 +14,18 @@ export const CounterLive = Counter.toLayer({
   }),
   Reset: Effect.fn(function*(ctx) {
     yield* ctx.timers.cancel("idle")
+    yield* ctx.state.set({ count: 0, lastReset: ctx.now })
     yield* ctx.emit(new CountChanged({ count: 0 }))
   })
 }, {
-  lifecycle: [
-    Counter.onCreate((ctx) => Effect.logInfo(`counter created: ${ctx.id}`)),
-    Counter.onSleep((ctx) => Effect.logInfo(`counter sleeping: ${ctx.id}`))
+  // actor/id/commandId are annotated by the framework (decision 112), so nothing interpolates ids here
+  hooks: [
+    Counter.onCreate(() => Effect.logInfo("counter created")),
+    Counter.onSleep(() => Effect.logInfo("counter sleeping"))
   ]
 })
 
-export const CounterReads = Counter.queries({
-  GetCount: () => Effect.succeed(0)
+// committed snapshot on the caller's node: no activation, no cluster hop
+export const CounterReads = Counter.toQueryLayer({
+  GetCount: (ctx) => Effect.succeed(ctx.state.count)
 })

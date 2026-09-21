@@ -3,10 +3,14 @@ import { Schema } from "effect"
 
 export const UserId = Schema.String.pipe(Schema.brand("UserId"))
 export type UserId = typeof UserId.Type
+export const OrgId = Schema.String.pipe(Schema.brand("OrgId"))
+export type OrgId = typeof OrgId.Type
 
+// module augmentation: every `ctx.principal` in the app is now this shape
 declare module "../framework/Actor.ts" {
   interface Principal {
     readonly userId: UserId
+    readonly orgId: OrgId
     readonly roles: ReadonlyArray<"member" | "admin">
   }
 }
@@ -14,5 +18,6 @@ declare module "../framework/Actor.ts" {
 /** The runtime half: `Actor.layer({ principal: PrincipalSchema })` decodes it from the envelope headers. */
 export const PrincipalSchema = Schema.Struct({
   userId: UserId,
+  orgId: OrgId,
   roles: Schema.Array(Schema.Literals(["member", "admin"]))
 })
