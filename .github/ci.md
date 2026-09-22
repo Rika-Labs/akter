@@ -50,9 +50,9 @@ Go-based TypeScript tools inherit `GOMAXPROCS=1`, and each Vitest process uses o
 isolated worker. This avoids multiplying a package-level worker pool by another
 CPU-sized pool. No isolation is disabled. PostgreSQL integration results are
 never cached; their task is selected by the affected graph and requires explicit
-disposable database configuration. Live Proof inference is also outside Turbo's
-deterministic cache and runs through the pre-push gate, never with a secret exposed
-to untrusted PR code.
+disposable database configuration. Semantic-rule review is advisory and runs
+in-thread through the global Jev plugin's `.amp/rules/` evaluation; it is not a
+Turbo task, not a CI job, and never receives secrets from untrusted PR code.
 
 Every Verify run uploads exact-SHA evidence and `.turbo/runs` summaries, including
 on failure. The evidence gate still requires a successful current-SHA run. Use
@@ -108,7 +108,7 @@ Dependabot remains configured for ordinary non-major dependency PRs. Catalog upd
 
 Frozen installation, the Effect compiler patch, and full workspace checks are required after changing these pins. Historical `research/` snapshots are not active dependency manifests and remain unchanged.
 
-Blacksmith runner startup and Vercel OIDC authentication have been exercised in GitHub Actions. Proof and its TypeSafe provider now install from npm without sibling checkouts. Pin action refs to reviewed immutable revisions before enabling in a sensitive repository; current version tags are conventional bootstrap refs.
+Blacksmith runner startup and Vercel OIDC authentication have been exercised in GitHub Actions. Pin action refs to reviewed immutable revisions before enabling in a sensitive repository; current version tags are conventional bootstrap refs.
 
 An `AMP_TOKEN` secret alone does not enable issue replies or pull request reviews.
 This repository does not define an Amp mention or review workflow. Those behaviors

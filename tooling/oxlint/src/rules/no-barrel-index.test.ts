@@ -19,7 +19,7 @@ tester.run("durable-actors/no-barrel-index", noBarrelIndexRule, {
     { code: "export {};", filename: "packages/accounts/src/index.ts" },
     { code: "export {};", filename: "tooling/databases/src/index.ts" },
     { code: "export {};", filename: "packages/durable-actors/src/runtime/turn/execute.ts" },
-    { code: "export {};", filename: ".amp/plugins/proof/index.ts" },
+    { code: "export {};", filename: ".amp/plugins/example-plugin/index.ts" },
     { code: "export {};", filename: "apps/console/src/scenes/index.ts" },
   ],
   invalid: [
