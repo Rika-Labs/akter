@@ -23,11 +23,15 @@ Violations: "concurrent" sends sequenced on one connection; asserting a lock
 timeout without a second connection holding the lock; running a contention
 case on PGlite (its sole connection makes `independentConnections: false`
 mandatory) and claiming the contention was exercised; interleaving steps on
-one client and calling it a race.
+one client and calling it a race; releasing the competing lock after a sleep
+and then asserting success as proof of timeout/redelivery without observing an
+attempt blocked (and its retry) while the lock remains held.
 
 Clean: the Postgres-only shared cases run against `TEST_DATABASE_URL` with a
 second connection; PGlite reports them through `registrar.skip` by name.
 
 Flag only a visible fake-contention construction. Sequential tests of
 non-concurrency behavior are fine; do not demand a second connection from
-single-writer cases.
+single-writer cases. A timeout test may use a database activity observation,
+an explicit retry signal, or another independent synchronization mechanism;
+do not require a specific timing or polling implementation.

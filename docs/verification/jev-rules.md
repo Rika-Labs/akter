@@ -7,7 +7,7 @@
 
 ## What this is
 
-`.amp/rules/` holds 42 Markdown rule files evaluated in-thread by the global
+`.amp/rules/` holds 45 Markdown rule files evaluated in-thread by the global
 Jev plugin, plus the reserved `_config.md` engine settings file. Each rule
 carries strict frontmatter — `enabled` (boolean), `paths`/`exclude` (lists of
 `*`, `?`, `**` globs; no brace expansion), `on` (`code-change` and/or
@@ -26,7 +26,7 @@ completeness, and never flag code they cannot see.
 
 After a file-modifying tool call completes, the plugin diffs before/after
 snapshots of the touched files. This project's `allRules: true` assesses all
-42 enabled code rules on every supported edit, including unrelated rules,
+45 enabled code rules on every supported edit, including unrelated rules,
 which must abstain. `batchSize: 1` sends one state/questions request per rule;
 `concurrency: 512` admits the whole catalog without local request waves.
 Alternatively, `batchSize: 512` combines shared-state questions and splits
@@ -114,7 +114,11 @@ them too, but their paths have no citable implementation until it lands;
 they must abstain rather than demand future features. Rules 25 and 29
 also cover `serve/` (likewise a placeholder) but additionally scope
 `runtime/`, so they are active on the `runtime/` portion now. The remaining
-rules match live code or test files today.
+rules match live code or test files today. Rule 43 guards the public actor
+capability and minted-only identity boundary. Rules 44–45 cover the API's
+handler/service/repository split and Effect-native Drizzle usage. The existing
+creation-marker (06) and contention-test (33) rules also cover the specific
+pre-policy creation and fake lock-timeout regressions found in the M0 review.
 
 ## Limitations
 
@@ -133,17 +137,18 @@ rules match live code or test files today.
 
 ## Local validation (2026-09-22)
 
-The production loader with the real privacy filter loads all 42 rules with
+The production loader with the real privacy filter loaded the original 42 rules with
 zero catalog diagnostics. Reference-file checks skip `10-security.md`,
 `01-conformance.md`, and `02-failure-matrix.md`: their credential-example
 prose triggers the conservative privacy filter. Four other references exceed
 the 4KiB excerpt cap (`02-command-turns.md`, `invariants.md`,
 `01-server-api.md`, and `02-context.md`). Dependent checks remain explicitly
 incomplete; no privacy bypass or contract rewrite was added to hide this.
-The complete 42-rule catalog has not been calibrated against live predictions.
+The original 42-rule catalog was not calibrated against live predictions; the
+three new rules have not been calibrated either.
 
 The global plugin's `evals/rules-benchmark.ts --fanout --live --catalog=<project>`
-measured this catalog against a synthetic one-line runtime edit, with the real
+measured the original 42-rule catalog against a synthetic one-line runtime edit, with the real
 privacy filter, default 8-line context, one reused client and an empty answer
 cache per trial (74 provider calls total). The 500-rule trial repeats the
 42-rule catalog; it is not 500 independently calibrated rules.
