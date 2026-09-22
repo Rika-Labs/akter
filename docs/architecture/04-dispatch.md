@@ -5,11 +5,11 @@
 **Owner role:** runtime/reliability.
 **Change policy:** a change that alters a contract guarantee requires an ADR.
 
-Effect Cluster sharding routes an envelope to the current activation, but durable storage is the authority. A command turn follows one order:
+Effect Cluster sharding routes an envelope to the current activation, but durable storage is the authority. External admission checks current authorization and command expiry; trusted recovery of already accepted work retains its durable authority. A command turn follows one order:
 
 1. begin the transaction and set tenant scope;
 2. `SELECT ... FOR UPDATE` the actor generation row;
-3. look up the command receipt and replay it when it matches;
+3. resolve the command receipt under the [receipt contract](../contracts/04-receipts.md), replaying a matching outcome only through the appropriate caller-access or trusted-recovery path;
 4. decode state through migrations and run the handler;
 5. stage state, actor-table changes, events, intents, effects, and the receipt;
 6. commit once, then notify delivery.
@@ -20,7 +20,7 @@ Commands use persisted Cluster messages, `WithTransaction: false`, no Cluster `p
 
 Nothing staged by a handler is visible when the turn fails before commit. In particular, an intent is never delivered after a failed turn. On Neki, a committed `actor_outbox` row is relayed after commit and deduplicated by intent receipt.
 
-Client-minted command ids remain stable across retries. Reusing an id with different input produces `ActorError` with reason `CommandConflict`; replaying the same input returns the stored receipt.
+Client-minted command ids remain stable across retries. An authorized retry within the external retry horizon with different input produces `ActorError` with reason `CommandConflict`; the same input returns the stored receipt. Receipt access checks run without the handler. A caller mismatch or expired external identity must not fall through to a new handler execution, even after cleanup. The concrete identity/expiry protocol remains to be specified; see [ADR 0004](../decisions/0004-receipt-access-revocation-and-expiry.md).
 
 Singleton registration guarantees one `run` owner and one cluster-wide cron tick across runners. Named and minted cron policies use per-actor durable timers.
 

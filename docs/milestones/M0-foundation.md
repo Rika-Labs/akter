@@ -23,9 +23,13 @@ Connections, workflows, hosted operation, managed deployment, and provider-speci
 ## Acceptance tests
 
 - A committed command validates the current generation fence and persists one receipt; a generation is an authority epoch, not a counter incremented by every command.
-- Repeating the same command ID and input replays the receipt without rerunning the handler.
-- Reusing a command ID with different input fails with `CommandConflict`.
-- A failure before commit persists no state, event, effect, intent, or receipt update and is redelivered.
+- An authorized retry within the external retry horizon with the same command ID and input replays the receipt without rerunning the handler.
+- An authorized retry within that horizon with different input fails with `CommandConflict`.
+- Credential rotation preserves receipt access for the same logical caller; another caller using the same ID receives no outcome and causes no second execution.
+- Revocation blocks new external admission and receipt reads without canceling accepted work or its trusted internal redelivery.
+- The command identity/expiry and error-mapping design is explicit; expired external IDs are rejected without execution, including after supported cleanup and restart. Effect-handle retries never silently replace expired IDs, and pending internal work retains deduplication evidence.
+- A retryable transaction failure before commit persists no state, event, effect, intent, or receipt update and is redelivered.
+- An unhandled declared failure rolls back business changes but commits its terminal error receipt in the same fenced transaction; a retry replays the error without running the handler.
 - A stale generation cannot commit.
 - The same conformance cases run on PGlite and Postgres; lock-contention cases run on Postgres.
 - `ActorTest` inspection reads committed state without waking the actor.

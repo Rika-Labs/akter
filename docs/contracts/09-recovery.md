@@ -5,7 +5,7 @@
 **Owner role:** reliability.  
 **Change policy:** every new durable record needs a crash-point analysis.
 
-Recovery MUST derive authority and consequences from durable rows, never process memory. Before-COMMIT failure MUST roll back the receipt, state, events, intents, and effects. An intent from such a turn MUST never be delivered. After-COMMIT reply loss MUST replay the receipt without re-running the handler.
+Recovery MUST derive authority and consequences from durable rows, never process memory. Before-COMMIT failure MUST roll back the receipt, state, events, intents, and effects. An intent from such a turn MUST never be delivered. After-COMMIT reply loss MUST resolve through the receipt without re-running the handler; external result delivery remains subject to the access and expiry rules in [receipts](04-receipts.md).
 
 Retryable defects MUST restart the activation and redeliver the same envelope. Deterministic defects MUST follow [command turn](02-command-turns.md) rules and leave the activation resident. Hibernation MUST discard activation-local `vars` while preserving committed state, parked connections, and connection state.
 

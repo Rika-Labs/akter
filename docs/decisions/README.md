@@ -11,3 +11,5 @@ Decisions do not override newer accepted requirements. When a decision is supers
 
 - [ADR 0001: Repository structure](0001-repository-structure.md) defines the one-package framework and role-folder layout.
 - [ADR 0002: Clarify the adopted v4 contracts](0002-v4-contract-clarifications.md) reconciles the final API, transaction, and capability decisions without claiming runtime implementation.
+- [ADR 0003: Failure rollback, automatic scoping, drain, and hosted trust](0003-failure-scoping-drain-and-hosted-trust.md) resolves the corresponding open decisions from ADR 0002 and requires context-scoped adapters, without claiming implementation or backend support.
+- [ADR 0004: Receipt access, revocation, and command expiry](0004-receipt-access-revocation-and-expiry.md) restricts receipt access, preserves accepted work after revocation, and requires enforceable rejection of expired external command identities.

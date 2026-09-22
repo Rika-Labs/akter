@@ -19,4 +19,6 @@ Required restore procedure, to be proven per backend before support is claimed:
 
 Do not delete receipts or outbox rows to make a restore start. Restoring an older snapshot can repeat an external call whose provider result survived; use provider idempotency keys and reconciliation evidence before retrying.
 
+Before reopening ingress, validate the command-expiry policy and its enforcement data against the restored snapshot and current clock. Restore must not make an expired external command identity admissible again. Preserve deduplication evidence for accepted internal work even when its external retry horizon has elapsed. This expiry check does not replace reconciliation for outcomes lost beyond the snapshot; see [retention](retention.md).
+
 Document encryption, RPO, RTO, snapshot timestamp, migration version, blob consistency, and the retained receipt/effect horizons. Any future tenant-only recovery procedure must preserve every related row within the deployment database; no such export/import capability is currently implemented or verified. Optional RLS is not a backup boundary.

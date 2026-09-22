@@ -7,7 +7,7 @@
 
 Each deployment owns one Postgres database. Every framework and actor-owned application table includes `tenant_id`; composite indexes include tenant scope, and deployments may enable row-level security as an additional isolation control. Actor identity and generation complete the ownership key where applicable.
 
-Core records include generation fences, command receipts, `actor_state` keyed values, actor-owned tables, events, timers, workflow executions, effects, dead letters, blobs, connections, and messages. Framework tables are protected from application mutation. Actor tables remain ordinary Drizzle tables scoped by `ctx.rows`; advanced statements use the same transaction through `ctx.db`.
+Core records include generation fences, command receipts, `actor_state` keyed values, actor-owned tables, events, timers, workflow executions, effects, dead letters, blobs, connections, and messages. Framework tables are protected from application mutation. Actor tables remain ordinary Drizzle tables automatically scoped by `ctx.rows`; initial `ctx.db` access permits authorized reads and joins, not advanced mutation. Every supported write adapter uses the same turn transaction and trusted ownership context.
 
 `actor_state` stores one JSONB value per declared key and decodes through the actor's ordered `Actor.migration` upcast chain. Only dirty keys are written. Relational values belong in actor tables; binary data uses `actor_blobs` with actor-scoped `bytea` chunks and turn-bound writes. Table schema changes use drizzle-kit rather than state migrations.
 

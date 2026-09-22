@@ -11,7 +11,7 @@ Handler context is passed explicitly as the first argument: `(ctx, input)`. Capa
 
 A command receives the only writable context. One framework-owned transaction performs, in order, the generation fence, receipt lookup, handler, events and durable intents, effects, receipt update, and commit. The context provides writable scoped rows and keyed state, blob writes, `ctx.emit`, `ctx.perform`, timers, and durable sends through `ctx.self` and `ctx.actors`.
 
-Declared failures are recorded in receipts and replayed unchanged. Retryable turn failures such as a stale generation or command execution timeout become defects and redelivery; caller-side delivery failures use narrowed `ActorError` reasons. A caller's `Timeout` stops waiting without cancelling or restarting the admitted turn. Application errors are never wrapped.
+Unhandled declared failures roll back business changes and staged notifications while their terminal receipts commit and replay unchanged. A handler that catches an error and succeeds commits normally; an intentionally persisted rejection belongs in its output schema. Retryable turn failures such as a stale generation or command execution timeout become defects and redelivery; caller-side delivery failures use narrowed `ActorError` reasons. A caller's `Timeout` stops waiting without cancelling or restarting the admitted turn. Application errors are never wrapped.
 
 ## Read-only and off-turn phases
 

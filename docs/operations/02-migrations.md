@@ -9,7 +9,7 @@ The actor design has three migration responsibilities:
 
 - Framework SQL tables use Effect `Migrator`, with automatic boot migration or explicit manual migration selected through `Database` configuration.
 - Application-owned relational tables use drizzle-kit migrations.
-- Schema-decoded JSONB state in `actor_state` uses ordered `Actor.migration` upcasts. A turn applies the chain after acquiring the generation fence and before invoking the handler, then commits the current shape. Invalid chains fail at `Actor.make`; decode/upcast defects roll back the turn and invoke `onDefect`.
+- Schema-decoded JSONB state in `actor_state` uses ordered `Actor.migration` upcasts. A turn applies the chain after acquiring the generation fence and before invoking the handler, then commits the current shape on handler success. An unhandled declared failure discards migration writes along with other business work while its failure receipt commits. Invalid chains fail at `Actor.make`; decode/upcast defects roll back the whole turn and invoke `onDefect`.
 
 Separately, `packages/postgres` owns the hosted control-plane schema and `bin/migrate.ts`. The planned `durable migrate` command is not implemented. This document specifies required migration behavior, not a working CLI procedure.
 

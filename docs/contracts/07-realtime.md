@@ -16,3 +16,5 @@ Realtime sessions MUST be declared with `Actor.connection`. Connection state MUS
 `ctx.connections.broadcast` is best-effort and non-transactional. Durable delivery MUST use events or command intents instead. Verification is the **Connection park** gate plus realtime invariants in [invariants](../verification/invariants.md).
 
 Parking preserves a socket across activation hibernation, not across the death of the process holding that socket. Transport loss requires reconnect and, for durable output, event replay. Authorization applies to replay and live delivery; slow consumers and retention gaps require explicit resync or disconnect behavior rather than silent loss.
+
+Connections and subscriptions MUST reauthorize or disconnect within a documented revocation bound. Parking, resumption, reconnect, and event replay MUST NOT extend stale access indefinitely. Losing session access does not cancel previously accepted durable work; that requires explicit cancellation under the [security contract](10-security.md).
