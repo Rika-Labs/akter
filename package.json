@@ -15,6 +15,7 @@
       "@effect/platform-bun": "4.0.0-rc.116",
       "@effect/platform-node": "4.0.0-rc.116",
       "@effect/sql-pg": "4.0.0-rc.116",
+      "@effect/sql-pglite": "4.0.0-rc.116",
       "@effect/vitest": "4.0.0-rc.116",
       "typescript": "7.0.2",
       "vitest": "5.0.1",

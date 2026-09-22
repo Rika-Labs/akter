@@ -11,11 +11,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/actor packages/durable-actors/src/identity",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/actor packages/durable-actors/src/identity packages/durable-actors/src/testing/pglite.test.ts",
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/testing/conformance"
   },
   "dependencies": {
     "@effect/sql-pg": "catalog:",
+    "@effect/sql-pglite": "catalog:",
+    "@electric-sql/pglite": "0.5.8",
     "effect": "catalog:"
   },
   "devDependencies": {

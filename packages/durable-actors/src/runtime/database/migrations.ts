@@ -42,5 +42,9 @@ export const migrate = Migrator.make({})({
         FOREIGN KEY (tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
     }),
+    "0002_creation": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`ALTER TABLE actor_generations ADD COLUMN created boolean NOT NULL DEFAULT false`
+    }),
   }),
 })

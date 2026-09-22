@@ -1,11 +1,19 @@
 import { PgClient, PgTypes } from "@effect/sql-pg"
-import { Crypto, Effect, Fiber, Layer, Result, Schema } from "effect"
-import { Sharding, SingleRunner } from "effect/unstable/cluster"
+import { PgliteClient } from "@effect/sql-pglite"
+import { Crypto, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
+import { ClusterError, Sharding, SingleRunner } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { ActorError, ActorUnavailable, Unauthorized } from "../errors/actor.ts"
-import { Actors, type Request } from "../handles/actors.ts"
+import {
+  ActorError,
+  ActorUnavailable,
+  Unauthorized,
+  Timeout,
+  MailboxFull,
+} from "../errors/actor.ts"
+import { Actors, type Registration, type Request } from "../handles/actors.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
+import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
 import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
@@ -30,6 +38,7 @@ export const layer = (options: Options) => {
       const crypto = yield* Crypto.Crypto
       const scope = yield* Effect.scope
       const sharding = yield* Sharding.Sharding
+      const registrations = new Map<string, Registration>()
 
       const services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
@@ -42,8 +51,17 @@ export const layer = (options: Options) => {
       })
 
       return Actors.of({
-        register: (registration) =>
-          registerActor(registration).pipe(Effect.provideContext(services)),
+        register: Effect.fnUntraced(function* (registration: Registration) {
+          if (registrations.has(registration.name))
+            return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
+          yield* registerActor(registration).pipe(Effect.provideContext(services))
+          registrations.set(registration.name, registration)
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              registrations.delete(registration.name)
+            }),
+          )
+        }),
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintCommandId: Effect.gen(function* () {
           const now = yield* databaseTime
@@ -54,36 +72,59 @@ export const layer = (options: Options) => {
         // Admission, receipt denial, expiry, and disconnected-waiter recovery are exercised in testing/conformance/postgres.test.ts.
         execute: Effect.fnUntraced(
           function* (request: Request) {
-            yield* authorize(request)
-            const hash = yield* payloadHash(request.payload)
-            const retained = yield* resolveReceipt(request, hash)
+            const registration = registrations.get(request.ref.actor)
 
-            if (retained !== undefined) {
+            if (registration === undefined)
+              return yield* ActorError.make({
+                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+              })
+
+            return yield* Effect.gen(function* () {
+              yield* authorize(request)
+              const hash = yield* payloadHash(request.payload)
+              const retained = yield* resolveReceipt(request, hash)
+
+              if (retained !== undefined) {
+                yield* authorize(request)
+
+                return retained
+              }
+
+              const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(
+                yield* Schema.encodeEffect(
+                  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+                )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie),
+              )
+
+              // Runtime scope owns the accepted call; interrupting its waiter must not send cancellation.
+              const delivery = yield* client.Execute(request).pipe(Effect.forkIn(scope))
+
+              const outcome = yield* Fiber.join(delivery).pipe(
+                Effect.catchIf(
+                  (cause) => !Schema.is(ActorError)(cause),
+                  (cause) =>
+                    Effect.fail(
+                      ActorError.make({
+                        reason: Schema.is(ClusterError.MailboxFull)(cause)
+                          ? MailboxFull.make({})
+                          : ActorUnavailable.make({ cause }),
+                      }),
+                    ),
+                ),
+              )
+
               yield* authorize(request)
 
-              return retained
-            }
-
-            const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(
-              yield* Schema.encodeEffect(
-                Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-              )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie),
+              return outcome
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: registration.policy.deliveryMs,
+                orElse: () =>
+                  Effect.fail(
+                    ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
+                  ),
+              }),
             )
-
-            // Runtime scope owns the accepted call; interrupting its waiter must not send cancellation.
-            const delivery = yield* client.Execute(request).pipe(Effect.forkIn(scope))
-
-            const outcome = yield* Fiber.join(delivery).pipe(
-              Effect.catchIf(
-                (cause) => !Schema.is(ActorError)(cause),
-                (cause) =>
-                  Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-              ),
-            )
-
-            yield* authorize(request)
-
-            return outcome
           },
           Effect.provideContext(services),
           Effect.catchIf(SqlError.isSqlError, (cause) =>
@@ -113,9 +154,19 @@ export const layer = (options: Options) => {
         )
       }
 
+      // SqlRunnerStorage reserves a SQL connection for the layer's lifetime,
+      // which starves PGlite's single connection; runner bookkeeping moves to
+      // memory while message storage, migrations, and receipts stay in SQL.
+      const runnerStorage: "memory" | "sql" = Option.isSome(
+        yield* Effect.serviceOption(PgliteClient.PgliteClient),
+      )
+        ? "memory"
+        : "sql"
+
       return runtime.pipe(
         Layer.provide(
           SingleRunner.layer({
+            runnerStorage,
             shardingConfig: {
               shardsPerGroup: 1,
               simulateRemoteSerialization: true,
@@ -145,4 +196,5 @@ export const Database = {
 
     return PgClient.layer({ ...options, types })
   },
+  pglite,
 }

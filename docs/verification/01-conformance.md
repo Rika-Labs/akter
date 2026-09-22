@@ -5,40 +5,80 @@
 **Owner role:** verification.
 **Change policy:** a change requires the conformance suite to be updated in the same change.
 
-`durable-actors/testing` MUST export `ActorTest`, `conformance`, and `describeConformance`. The same named cases MUST run against PGlite, real Postgres, and Neki. PGlite is valid for fast/unit coverage; lock contention and true concurrent connection behavior MUST run on real Postgres. A backend is supported only when its applicable cases pass.
+`durable-actors/testing` exports `ActorTest`, `conformance`, and `describeConformance`. The same named cases MUST run against PGlite, real Postgres, and Neki. PGlite is valid for fast/unit coverage; lock contention and true concurrent connection behavior MUST run on real Postgres. A backend is supported only when its applicable cases pass.
 
-## Foundation Postgres evidence
+## Foundation evidence
 
-The first slice implements `ActorTest` only; shared harness exports and other backends are pending. On Bun 1.4.2, Effect/@effect/sql-pg 4.0.0-rc.116, and disposable Postgres 18.6, these executable files cover the command/state/receipt subset:
+The shared harness now exists: `conformance` is the named case list and `describeConformance` registers it against a `ConformanceBackend` through an injected registrar, so no test framework is imported by the suite itself. Backends that cannot open a second SQL connection set `independentConnections: false` and report those cases through `registrar.skip` — by name, never silently. PGlite runs [`pglite.test.ts`](../../packages/durable-actors/src/testing/pglite.test.ts); Postgres runs [`postgres.test.ts`](../../packages/durable-actors/src/testing/conformance/postgres.test.ts) and the SIGKILL suite [`crash/main.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/main.test.ts).
 
-| Cases                                                                                                                       | Evidence                                                                                                                                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stable identity, duplicate races, command/input conflict, committed inspection, epoch reuse/stale epoch rejection           | [`postgres.test.ts`](../../packages/durable-actors/src/testing/conformance/postgres.test.ts)                                                                                                                                                                                                                        |
-| Caller capture, logical-subject continuity, receipt privacy, tenant isolation, admission/read revocation and trusted replay | Same suite; no authentication transport or operator/System claim                                                                                                                                                                                                                                                    |
-| Declared error class/payload replay, dirty-state rollback, failure before/after commit, changed business state              | Same suite; owned rows, intents, events, blobs, and effects do not exist yet                                                                                                                                                                                                                                        |
-| Before-handler/before-commit/after-commit fault replay, waiter interruption, request/reply and escaped-state guards         | Same suite; injected faults are not process death                                                                                                                                                                                                                                                                   |
-| Independent-connection generation lock timeout and successful redelivery                                                    | Same suite; real Postgres `FOR UPDATE`, not a mocked lock                                                                                                                                                                                                                                                           |
-| Exact external expiry boundary, malformed/future IDs, expired pending redelivery, receipt removal plus runtime restart      | Same suite; manual pruning only after completion, not cleanup/restore support                                                                                                                                                                                                                                       |
-| SIGKILL before and after commit                                                                                             | [`crash/main.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/main.test.ts) kills a child at a signaled barrier, inspects durable rows with a separate pool, starts another process without a new client command, and waits for persisted Cluster processing plus one receipt/state transition |
-| Driver restart regression                                                                                                   | `SELECT 128::regclass` and reopening the database exercise the scoped rc.116 codec workaround for [Effect #8309](https://github.com/Effect-TS/effect/pull/8309)                                                                                                                                                     |
+**Executed 2026-09-22:** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 52 tasks, including 39 framework tests (30 shared PGlite cases, three PGlite lifecycle/migration cases, six declaration/identity tests); five independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 38 Postgres framework tests (35 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. `bun run proof:check` reported no findings. The [PR](https://github.com/Rika-Labs/durable-actors/pull/7) records the exact pushed revision and CI evidence artifact; local results do not substitute for that artifact.
 
-The crash suite also creates a deliberate DDL collision after earlier foundation tables have been created, proves the migration rolls back without recording completion, and reruns it successfully. The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
+### Shared cases (PGlite and Postgres)
 
-Run `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter durable-actors test:integration` and `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/counter test:integration`. The role must create/drop temporary databases; tests never use application data. `bun run --filter durable-actors test` checks declaration and identity schemas. The existing CI `check:ci` task runs these and records the tested revision in `evidence/sha.txt`, logs in `evidence/check.log`, and the `evidence-<head-sha>` artifact. The PR links its actual current-revision run; this ledger is a map to tests, not a replacement for that artifact.
+- `resolves all identity modes without writes and receipts stateless commands`
+- `gates creation, rolls back failed creation, and replays its error receipt`
+- `keeps creation marker and receipt atomic across beforeCommit crash`
+- `keeps creation marker and receipt atomic across afterCommit crash`
+- `retains creation and singleton receipt identity across runtime restart`
+- `enforces UTF-8 state bytes and invokes read-only defect hooks after rollback`
+- `bounds failing defect hooks and preserves the original defect`
+- `hides internal commands and binds System principal and receipt access`
+- `redelivers the same command after execution timeout without a partial commit`
+- `redelivers the same command after retryable SQL defect without a partial commit`
+- `delivery timeout stops waiting while the admitted command commits once`
+- `commits state and receipt, replays an identical command effect, and keeps its generation`
+- `rolls back declared failures and replays their class and payload without executing again`
+- `deduplicates concurrent deliveries and rejects changed input or command`
+- `captures callers, preserves same-subject access, and never partitions deduplication by caller`
+- `recovers beforeHandler crashes with the same command and one committed transition`
+- `recovers beforeCommit crashes with the same command and one committed transition`
+- `recovers afterCommit crashes with the same command and one committed transition`
+- `does not cancel an accepted turn with its waiter`
+- `rejects a stale generation before rerunning the handler under new authority`
+- `rolls back captured request/reply misuse and rejects escaped state capabilities`
+- `refuses to reinterpret retained identities under a changed retry window`
+- `revokes external access without canceling persisted work or trusted redelivery`
+- `defines exact expiry boundaries and rejects invalid/future identities`
+- `canonicalizes object keys but preserves array order in payload hashes`
+- `recovers a declared failure beforeCommit without persisting dirty state`
+- `recovers a declared failure afterCommit without persisting dirty state`
+- `completes trusted redelivery after expiry but refuses the external outcome`
+- `rejects an expired identity after receipt pruning and runtime restart`
+- `isolates durable state between fresh layer builds`
 
-This is partial M0 evidence, not backend certification. Unimplemented gates below remain required, including PGlite, multi-runner ownership, singleton residency, state migrations, cleanup/restore, bounded execution/drain, and provider behavior.
+### Postgres-only cases (independent connections)
+
+These require a real second connection and are reported skipped on PGlite:
+
+- `keeps uncommitted state invisible to a second connection`
+- `rejects a state setter from another still-active actor turn`
+- `denies a competing caller while the original failure is still uncommitted`
+- `decodes regclass so the migrator can reopen the database` — exercises the scoped rc.116 codec workaround for [Effect #8309](https://github.com/Effect-TS/effect/pull/8309)
+- `retries a real generation lock timeout without entering the handler` — real Postgres `FOR UPDATE`, not a mocked lock
+
+### Backend-specific cases
+
+- PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.
+- PGlite, in `pglite.test.ts`: `rolls back partial foundation DDL and safely reruns the migration` — a deliberate `actor_state` collision proves rollback without a recorded migration, then rerun succeeds.
+- Postgres, in `crash/main.test.ts`: `rolls back partial foundation DDL and safely reruns the migration`, plus `recovers SIGKILL beforeCommit from persisted Cluster storage without a new call` and `recovers SIGKILL afterCommit from persisted Cluster storage without a new call` — a child process is killed at a signaled barrier, durable rows are inspected with a separate pool, and a fresh process completes the persisted message with one receipt/state transition.
+
+The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
+
+Run `bun run --filter durable-actors test` for declaration, identity, and the PGlite suite; run `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter durable-actors test:integration` and `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/counter test:integration` for Postgres and crash coverage. The role must create/drop temporary databases; tests never use application data. The existing CI `check:ci` task runs these and records the tested revision in `evidence/sha.txt`, logs in `evidence/check.log`, and the `evidence-<head-sha>` artifact. The PR links its actual current-revision run; this ledger is a map to tests, not a replacement for that artifact.
+
+This completes M0 evidence, not full backend certification. Unimplemented gates below remain required for their later milestones, including multi-runner ownership, singleton failover/run/cron, state migrations, cleanup/restore, bounded drain, and provider behavior.
 
 ## Faithful test boundary
 
-`ActorTest` MUST exercise the real turn, Cluster entity, SQL tables, serialization, receipts, and outbox. There is no handler-only fake-context runtime. Only the database, transport, clock, executor implementations, and caller are substituted. Use production `SqlMessageStorage` on the test transaction connection, not in-memory message storage whose writes could survive a rolled-back turn.
+`ActorTest` MUST exercise the real turn, Cluster entity, SQL tables, serialization, receipts, and outbox. There is no handler-only fake-context runtime. Only the database, transport, clock, executor implementations, and caller are substituted. Use production `SqlMessageStorage` on the test transaction connection, not in-memory message storage whose writes could survive a rolled-back turn. On PGlite, Cluster runner bookkeeping additionally moves to memory because `SqlRunnerStorage` would reserve the sole connection; message storage, migrations, and receipts stay in SQL and this substitution is only valid under `SingleRunner`.
 
-`ActorTest.layer({ as, database, runners, effects })` supplies the test environment. Each layer build owns a fresh tenant; tests use distinct actor IDs or explicitly reset that tenant. Executors are held by default and run, fail, or drain under test control. Bound actor inspection reads committed state without waking an activation; seeding can install old state for migration tests, and the System handle can drive internal commands.
+`ActorTest.layer({ database?, as?, authorize?, retryWindowMs? })` supplies the test environment; `runners`, `effects`, old-state seeding helpers, and executor controls remain target API. Each layer build owns a fresh tenant; tests use distinct actor IDs or explicitly reset that tenant. `database` defaults to a fresh in-memory PGlite instance, honors `dataDir` for disk persistence across builds, and accepts a `Redacted` Postgres URL. Bound actor inspection reads committed state without waking an activation. `test.actor(X, id?)` returns a `system` handle that drives every command — including internal ones — with a `System` caller inheriting the configured principal.
 
-Fault controls cover crash hooks, pause/release, redelivery, stale generations, and Postgres lock contention. `TurnHooks` and `TurnReport` are testing-only exports; production observability uses spans, metrics, and events. In-process multi-runner tests must simulate serialization and give each runner its own message-storage wrapper; they do not substitute for real multi-process Postgres fencing evidence. Effect `TestClock` controls eligible delays, while actual SQL lock behavior is tested on the real backend.
+Fault controls cover crash hooks, pause/release, redelivery, stale generations, and Postgres lock contention. `TurnHooks` is a testing-only export; `TurnReport` remains planned. In-process multi-runner tests must simulate serialization and give each runner its own message-storage wrapper; they do not substitute for real multi-process Postgres fencing evidence. Effect `TestClock` can control eligible delays; the current harness uses real timers and real SQL locks.
 
 ## Design verification gates
 
-The ledger records 17 gate rows below. The foundation evidence above exercises the crash-point and runtime-turn-boundary subset; it does not satisfy gates for members or backends that are not implemented. Other active gates remain **unverified**. The earlier Neki cross-shard alternative is retained for traceability but superseded by the mandatory relay decision in [ADR 0002](../decisions/0002-v4-contract-clarifications.md).
+The ledger records 17 gate rows below. The foundation evidence above exercises the crash-point, runtime-turn-boundary, and PGlite/PGlite-under-Bun subsets; it does not satisfy gates for members or backends that are not implemented. Other active gates remain **unverified**. The earlier Neki cross-shard alternative is retained for traceability but superseded by the mandatory relay decision in [ADR 0002](../decisions/0002-v4-contract-clarifications.md).
 
 | Gate                               | Required evidence                                                                                                                                                                               |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

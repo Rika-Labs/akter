@@ -20,19 +20,30 @@ export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("Ac
   cause: Schema.Defect(),
 }) {}
 
+export class Timeout extends Schema.TaggedError<Timeout>()("Timeout", {
+  commandId: Schema.String,
+}) {}
+
+export class NotCreated extends Schema.TaggedError<NotCreated>()("NotCreated", {}) {}
+
+export class MailboxFull extends Schema.TaggedError<MailboxFull>()("MailboxFull", {}) {}
+
 export const Reason = Schema.Union([
   CommandConflict,
   CommandExpired,
   InvalidCommandId,
   Unauthorized,
   ActorUnavailable,
+  Timeout,
+  NotCreated,
+  MailboxFull,
 ])
 
 export type Reason = typeof Reason.Type
 
 export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", { reason: Reason }) {
   get isRetryable(): boolean {
-    return Schema.is(ActorUnavailable)(this.reason)
+    return Schema.is(Schema.Union([ActorUnavailable, Timeout, MailboxFull]))(this.reason)
   }
 
   get retryAfter(): Option.Option<number> {
@@ -42,4 +53,10 @@ export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", {
   override get message(): string {
     return this.reason.message
   }
+}
+
+export namespace ActorError {
+  export type Of<Reasons extends Reason["_tag"]> = [Reasons] extends [never]
+    ? never
+    : ActorError & { readonly reason: Extract<Reason, { readonly _tag: Reasons }> }
 }

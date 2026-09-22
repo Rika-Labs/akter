@@ -1,10 +1,11 @@
-import { Effect } from "effect"
+import { Cause, Deferred, Effect, Exit, Schema } from "effect"
 import { ClusterSchema, Entity, Sharding } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
+import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { executeTurn } from "../turn/execute.ts"
-import { TurnHooks } from "../turn/hooks.ts"
+import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 
 // Redelivery/fencing evidence: testing/conformance/postgres.test.ts and crash/main.test.ts.
 export const commandEntity = (name: string) =>
@@ -19,7 +20,8 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
   const sharding = yield* Sharding.Sharding
   const services = yield* Effect.context<Effect.Services<ReturnType<typeof executeTurn>>>()
   const entity = commandEntity(registration.name)
-  yield* sharding.registerEntity(
+
+  const register = sharding.registerEntity(
     entity,
     Effect.sync(() => {
       let generation: string | undefined
@@ -31,11 +33,48 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
           if (command === undefined)
             return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
 
-          const committed = yield* executeTurn(payload, command, generation).pipe(
-            Effect.catchIf(
-              (error): error is import("../../handles/actors.ts").BusinessResult =>
-                "outcome" in error,
-              (error) => Effect.succeed({ outcome: error.outcome, generation }),
+          const committed = yield* executeTurn(
+            payload,
+            command,
+            generation,
+            registration.policy,
+          ).pipe(
+            Effect.catchDefect(
+              Effect.fnUntraced(function* (cause) {
+                if (
+                  Schema.is(RetryTurn)(cause) ||
+                  (SqlError.isSqlError(cause) && cause.isRetryable)
+                )
+                  return yield* Effect.die(cause)
+                const sql = yield* SqlClient.SqlClient
+
+                const state = sql<{
+                  key: string
+                  value: string
+                }>`SELECT key, value::text AS value FROM actor_state
+                WHERE tenant_id = ${payload.ref.tenant} AND actor_type = ${payload.ref.actor} AND actor_id = ${payload.ref.id}`.pipe(
+                  Effect.map((rows) => rows.map(({ key, value }) => [key, value] as const)),
+                  Effect.orDie,
+                )
+
+                const hook = yield* Effect.suspend(() =>
+                  registration.onDefect(payload.ref, cause, state),
+                ).pipe(
+                  Effect.interruptible,
+                  Effect.timeout(registration.policy.executionMs),
+                  Effect.exit,
+                )
+
+                const reported = Exit.isFailure(hook)
+                  ? new AggregateError(
+                      [cause, Cause.squash(hook.cause)],
+                      `onDefect failed: ${String(Cause.squash(hook.cause))}`,
+                      { cause },
+                    )
+                  : cause
+
+                return { outcome: Outcome.cases.Defect.make({ cause: reported }), generation }
+              }),
             ),
           )
 
@@ -48,6 +87,19 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
         }, Effect.provideContext(services)),
       })
     }),
-    { concurrency: 1, maxIdleTime: "1 minute" },
+    {
+      concurrency: 1,
+      maxIdleTime: registration.policy.idleMs,
+      mailboxCapacity: registration.policy.mailboxCapacity,
+    },
   )
+
+  if (registration.singleton) {
+    const ready = yield* Deferred.make<void>()
+    yield* sharding.registerSingleton(
+      registration.name,
+      register.pipe(Effect.andThen(Deferred.succeed(ready, undefined))),
+    )
+    yield* Deferred.await(ready)
+  } else yield* register
 })

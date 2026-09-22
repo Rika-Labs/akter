@@ -5,7 +5,7 @@
 **Owner role:** API/SDK.  
 **Change policy:** breaking changes require protocol/version review and migration guidance.
 
-This is the accepted API design, not a claim that every interface is implemented. The [server API's foundation subset](01-server-api.md#implemented-foundation-subset) and Postgres-backed `ActorTest` now run; the Promise client and broader member/transport APIs remain planned. See [ADR 0005](../decisions/0005-foundation-command-protocol.md) and the bounded [conformance evidence](../verification/01-conformance.md#foundation-postgres-evidence).
+This is the accepted API design, not a claim that every interface is implemented. The [server API's foundation subset](01-server-api.md#implemented-foundation-subset) and PGlite/Postgres-backed `ActorTest` now run; the Promise client and broader member/transport APIs remain planned. See [ADR 0005](../decisions/0005-foundation-command-protocol.md), [ADR 0006](../decisions/0006-foundation-completion.md), and the bounded [conformance evidence](../verification/01-conformance.md#foundation-evidence).
 
 - [Server API](01-server-api.md)
 - [Context capabilities](02-context.md)

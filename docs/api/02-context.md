@@ -13,6 +13,8 @@ A command receives the only writable context. One framework-owned transaction pe
 
 Unhandled declared failures roll back business changes and staged notifications while their terminal receipts commit and replay unchanged. A handler that catches an error and succeeds commits normally; an intentionally persisted rejection belongs in its output schema. Retryable turn failures such as a stale generation or command execution timeout become defects and redelivery; caller-side delivery failures use narrowed `ActorError` reasons. A caller's `Timeout` stops waiting without cancelling or restarting the admitted turn. Application errors are never wrapped.
 
+Implemented defect semantics: a deterministic defect — `State.maxBytes` overflow, state or output decode failure, or an internal command from a non-`System` caller — rolls back the turn, writes no receipt, returns `Die` to the caller, and invokes `toLayer`'s `hooks.onDefect` with a `WakeContext` carrying `ref` and a lazy read-only `state` effect. The hook runs even when that read would die on corrupt state; it is bounded by the execution deadline, and a hook failure reports an `AggregateError` preserving the original cause. The activation stays resident. Retryable causes — `RetryTurn`, retryable `SqlError`, and `Commands.timeout` expiry — restart the activation and redeliver the same envelope instead.
+
 ## Read-only and off-turn phases
 
 Capabilities are explicit rather than inherited from one universal context:
@@ -32,6 +34,6 @@ Activation `StateSnapshot.changes` publishes only committed values. `vars` are t
 
 Connections expose `ctx.conn.state` with a 16 KiB limit and `ctx.conn.resumed`. `Connections.park` permits activation hibernation while the transport keeps the socket open; it does not preserve a socket after its transport process dies.
 
-`CurrentCaller` defaults to `Anonymous`. `X.get`/`X.create` captures it when acquiring the handle, or uses an explicit `{ as }` override; methods do not re-read it on each call. Command context exposes the full `ctx.caller` and optional `ctx.principal`. Workflow bodies expose `principal` and use persisted System/on-behalf-of attribution through their actor handles, not a `ctx.caller` property.
+`CurrentCaller` defaults to `Anonymous`. `X.get`/`X.create` captures it when acquiring the handle, or uses an explicit `{ as }` override; methods do not re-read it on each call. `Actor.as(caller)` supplies `CurrentCaller` to an acquisition effect so handle capture needs no per-call option. Command context exposes the full `ctx.caller` and optional `ctx.principal`. Implemented callers are `User`, `Anonymous`, and `System({ source, ref?, onBehalfOf? })`; `ctx.principal` resolves to the `User` subject or `System.onBehalfOf` and is `None` for `Anonymous`. Receipts persist a caller key covering System source, ref, and delegation so internal origins retain receipt privacy. Attribution is trusted application input — not authentication — until transport and hosted verification land. Workflow bodies expose `principal` and use persisted System/on-behalf-of attribution through their actor handles, not a `ctx.caller` property.
 
 The `Turn` service allows deep helpers to access the current command context; it exists only inside that phase. Runtime guards still reject request/reply operations inside a turn even when a handle was captured outside it.

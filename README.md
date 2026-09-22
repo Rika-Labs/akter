@@ -4,11 +4,11 @@
 
 _An Effect-native actor framework with durable identity, transactional turns, and ordinary relational data. One database per deployment, not per actor._
 
-[![Status](https://img.shields.io/badge/status-design--stage-orange)](docs/milestones/README.md) [![Effect](https://img.shields.io/badge/Effect-4.0.0--rc.116-blue)](https://effect.website) [![Bun](https://img.shields.io/badge/Bun-1.4.2-black)](https://bun.sh)
+[![Status](https://img.shields.io/badge/status-M0--foundation-blue)](docs/milestones/M0-foundation.md) [![Effect](https://img.shields.io/badge/Effect-4.0.0--rc.116-blue)](https://effect.website) [![Bun](https://img.shields.io/badge/Bun-1.4.2-black)](https://bun.sh)
 
 </div>
 
-**Early implementation; M0 is not complete.** The embedded Postgres counter now runs with fenced transactions, receipts, rollback, and crash-recovery tests. The package is private and not production-ready. PGlite, broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-postgres-evidence).
+**M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The package remains private. Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
 
 Run the example against a **disposable Postgres database**; startup creates framework and Cluster tables:
 
@@ -52,7 +52,7 @@ const program = Effect.gen(function* () {
 })
 ```
 
-Omit `id` for a framework-minted ID and `Counter.create()`. Declare an ID schema for `Counter.get(id)`. Acquiring a handle writes nothing; the first command establishes durable state. Singleton identities remain planned.
+Omit `id` for a framework-minted ID and `Counter.create()`. Declare an ID schema for `Counter.get(id)`, or `singleton: true` for `Counter.get()`. Acquiring a handle writes nothing; the first command establishes durable state. Singleton failover, run loops, and cron remain later milestones.
 
 In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `durable-actors/runtime`; the preview intentionally stops before runtime wiring. See the [server API](docs/api/01-server-api.md) for the full design.
 

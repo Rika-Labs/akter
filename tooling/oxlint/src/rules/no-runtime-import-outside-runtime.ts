@@ -5,6 +5,7 @@ const RUNTIME_MODULES = new Set([
   "effect/unstable/sql",
   "effect/unstable/cluster",
   "@effect/sql-pg",
+  "@effect/sql-pglite",
 ])
 
 const FRAMEWORK = /(?:^|\/)packages\/durable-actors\//

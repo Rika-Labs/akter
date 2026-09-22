@@ -5,11 +5,13 @@
 **Owner role:** delivery/runtime lead.
 **Change policy:** a change requires delivery lead sign-off.
 
-## Current slice and remaining work
+## Completion and supported scope
 
-The first slice implements the embedded Postgres counter, schema-typed commands, caller capture and authorization, keyed state, generation fencing, receipts, declared-failure rollback, and real-Cluster `ActorTest` fault controls. [ADR 0005](../decisions/0005-foundation-command-protocol.md) specifies its protocol; [conformance](../verification/01-conformance.md#foundation-postgres-evidence) records the executed subset.
+The first slice implements the embedded Postgres counter, schema-typed commands, caller capture and authorization, keyed state, generation fencing, receipts, declared-failure rollback, and real-Cluster `ActorTest` fault controls. [ADR 0005](../decisions/0005-foundation-command-protocol.md) specifies its protocol.
 
-**M0 is not complete.** Next, port these named cases to PGlite and expose the shared conformance harness, then finish identity/policy coverage and bounded execution/defect handling. No singleton, multi-runner, provider, restore, or production-readiness claim follows from the first Postgres slice. The scope and exit criteria below remain unchanged.
+The second slice adds the remaining foundation surface: all three identity modes (minted `X.id`/`Actors.mint`, named, singleton via `Sharding.registerSingleton`), `internal` commands, lifecycle policies (`Commands.timeout`/`lockWait`, `Delivery.timeout`, `State.maxBytes`, `Hibernate.after`, `Mailbox.capacity`, `Lifecycle.createdBy`), bounded interruptible turns, deterministic defects with `onDefect`, `System` callers with `onBehalfOf` attribution, `Actor.as`, `Database.pglite`, `test.actor`, and the framework-neutral `conformance`/`describeConformance` harness running the same named cases on PGlite and Postgres. [ADR 0006](../decisions/0006-foundation-completion.md) records the choices and their rationale.
+
+**M0 is complete (2026-09-22).** The [conformance ledger](../verification/01-conformance.md#foundation-evidence) records 35 named cases: 30 run on both PGlite and Postgres, and five independent-connection cases run only on Postgres. Backend-specific tests prove database lifecycle, migration rollback, and real process-kill recovery. Repository checks and semantic proof pass; the PR records CI evidence for its exact pushed revision. This closes the foundation milestone, not production, multi-runner, or provider certification. M1 owned data and durable consequences are next. The scope and exit criteria below remain unchanged.
 
 ## Included
 

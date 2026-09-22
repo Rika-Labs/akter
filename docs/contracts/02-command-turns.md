@@ -33,4 +33,14 @@ An unhandled declared failure MUST discard state migration writes, dirty state, 
 
 A caller's `Delivery.timeout` stops waiting and is distinct from a command execution timeout inside the turn. Receipt persistence and business rollback still require failure tests before implementation is claimed.
 
+## Implemented turn semantics (second foundation slice)
+
+[ADR 0006](../decisions/0006-foundation-completion.md) binds the following to the current implementation; the contract text above is unchanged.
+
+- **Creation check.** When `Lifecycle.createdBy` is declared, the turn resolves the receipt first, then checks the `created` marker (migration `0002_creation`, default `false`) under the generation lock. A non-creating command on an uncreated actor fails `NotCreated` without writing a receipt; a failed creating turn keeps its error receipt and stays uncreated; the first success sets `created` in the same commit as state and receipt.
+- **Bounded execution.** `Commands.timeout` bounds the whole transaction interruptibly — interruption rolls back and dies `RetryTurn` — and sets transaction-local `statement_timeout`; `Commands.lockWait` sets transaction-local `lock_timeout`. `RetryTurn` and retryable `SqlError` causes restart the activation and redeliver the same envelope. An uncertain commit never resolves to a terminal success or failure.
+- **Deterministic defects.** No receipt is written. `onDefect` receives `WakeContext` with `ref` and a lazy read-only `state` effect — the hook is invoked even when that read would die on corrupt state. The hook is interruptible, bounded by the execution deadline, and its failure reports an `AggregateError` containing the original cause. The caller observes `Die`; the activation stays resident.
+- **Delivery timeout.** After command identity acquisition, `Delivery.timeout` bounds admission, receipt reads, and the caller's reply wait. A message already handed to the runtime continues, and its receipt remains resolvable by an authorized original caller within the retry horizon. Timing out before admission does not imply acceptance.
+- **Internal commands.** A non-`System` caller reaching an internal command is a deterministic defect, not an `ActorError`.
+
 Verification: gates **Crash points**, **Intent rollback**, **Turn boundary at runtime**, and **State migration chain** in [conformance](../verification/01-conformance.md).
