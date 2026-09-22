@@ -25,8 +25,13 @@ completeness, and never flag code they cannot see.
 ## How evaluation works
 
 After a file-modifying tool call completes, the plugin diffs before/after
-snapshots of the touched files, selects the enabled rules whose `paths` match
-the changed paths, and batches them (code batches are clamped to 10 rules).
+snapshots of the touched files. This project's `allRules: true` assesses all
+42 enabled code rules on every supported edit, including unrelated rules,
+which must abstain. `batchSize: 1` sends one state/questions request per rule;
+`concurrency: 512` admits the whole catalog without local request waves.
+Alternatively, `batchSize: 512` combines shared-state questions and splits
+requests exceeding the plugin's 120,000-byte heuristic before I/O. These are
+local bounds, not a provider question-count limit or a token guarantee.
 Each code rule is asked three questions per batch: a comply/violate/unknown
 verdict, a supporting-snippet citation, and an exact changed-line citation —
 a violation is emitted only when the cited line is a real changed line in a
@@ -43,7 +48,12 @@ uncalibrated.
 
 Evaluation is advisory only. Findings are emitted as advisories in the
 thread; they do not block tool calls, they are not a Turbo task, they are not
-run in CI, and they are not a pre-push gate. Proof no longer runs in this
+run in CI, and they are not a pre-push gate. One aggregate per assessed edit
+contains coverage counts and one representative finding per broken rule.
+`maxAdvisories: 512` allows every catalog rule to appear, even when several
+evidence windows implicate the same rule. Finished findings survive a sibling
+request timing out; failures and abstentions remain explicitly unchecked.
+Proof no longer runs in this
 repository — `proof.rules.ts`, its plugin, and `bun run proof:check` are
 removed, and the generic semantics worth keeping migrated into the `quality/`
 rules.
@@ -95,8 +105,9 @@ Proof rule set.
 Rules are `enabled: true` with narrow `paths`. Six rules target subsystem
 directories that are currently `.gitkeep` placeholders — `runtime/events`
 (19), `runtime/connections` (20), `runtime/database/neki` (21),
-`runtime/effects` (22), `runtime/workflows` (23, 24) — and are dormant until
-implementation lands; they do not demand future features. Rules 25 and 29
+`runtime/effects` (22), `runtime/workflows` (23, 24). All-rule mode evaluates
+them too, but their paths have no citable implementation until it lands;
+they must abstain rather than demand future features. Rules 25 and 29
 also cover `serve/` (likewise a placeholder) but additionally scope
 `runtime/`, so they are active on the `runtime/` portion now. The remaining
 rules match live code or test files today.
@@ -127,6 +138,33 @@ the 4KiB excerpt cap (`02-command-turns.md`, `invariants.md`,
 incomplete; no privacy bypass or contract rewrite was added to hide this.
 The complete 42-rule catalog has not been calibrated against live predictions.
 
+The global plugin's `evals/rules-benchmark.ts --fanout --live --catalog=<project>`
+measured this catalog against a synthetic one-line runtime edit, with the real
+privacy filter, default 8-line context, one reused client and an empty answer
+cache per trial (74 provider calls total). The 500-rule trial repeats the
+42-rule catalog; it is not 500 independently calibrated rules.
+
+| Rules | Request mode    | Concurrent requests | End-to-end | Returned assessments | Returned by 300ms |
+| ----- | --------------- | ------------------- | ---------- | -------------------- | ----------------- |
+| 42    | Batched         | 2                   | 1049ms     | 42/42                | 0/42              |
+| 42    | One per rule    | 42                  | 527ms      | 42/42                | 14/42             |
+| 500   | Batched         | 28                  | 1042ms     | 438/500              | 0/500             |
+| 42    | Batched, repeat | 2                   | 668ms      | 42/42                | 0/42              |
+
+These include snapshot/diff and freshness checks, not just network time.
+Returned assessments include `unknown`: 26 of 42 abstained in the single-rule
+trial; the existing unavailable/truncated references also keep coverage
+unchecked. Four requests in the 500-rule trial failed before the timeout,
+leaving 62 assessments unavailable; the experiment does not distinguish
+transport/provider failures from invalid normalized answers.
+
+The current choice of one request per rule follows this sample, not an
+optimality claim. **The under-300ms complete-result target is not met.** A
+300ms deadline would return incomplete coverage, not make the provider finish
+faster. Mock barrier tests verify 500 requests can start before any answers and
+produce one aggregate with all expected findings; they do not establish live
+provider capacity. No 500-request live burst was run.
+
 ## Evaluation plan
 
 1. Dry-run the catalog against the current tree; expected result is zero or
@@ -136,5 +174,5 @@ The complete 42-rule catalog has not been calibrated against live predictions.
    caller, a recovery test without a kill) and confirm the matching rule
    fires at its threshold.
 3. Tune `threshold`/`severity` per observed noise; record tuning changes here.
-4. When dormant-path subsystems land, verify their rules activate and re-run
+4. When placeholder-path subsystems land, verify their rules can cite the new code and re-run
    step 1.
