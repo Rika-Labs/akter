@@ -84,8 +84,14 @@
     "examples/counter": {
       "name": "@durable-actors/counter",
       "dependencies": {
+        "@effect/platform-bun": "catalog:",
         "durable-actors": "workspace:*",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
       },
     },
     "infra": {
@@ -141,7 +147,14 @@
     "packages/durable-actors": {
       "name": "durable-actors",
       "dependencies": {
+        "@effect/sql-pg": "catalog:",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
       },
     },
     "packages/email": {
@@ -212,6 +225,9 @@
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "vitest": "catalog:",
       },
     },
   },

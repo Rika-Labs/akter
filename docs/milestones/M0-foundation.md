@@ -5,6 +5,12 @@
 **Owner role:** delivery/runtime lead.
 **Change policy:** a change requires delivery lead sign-off.
 
+## Current slice and remaining work
+
+The first slice implements the embedded Postgres counter, schema-typed commands, caller capture and authorization, keyed state, generation fencing, receipts, declared-failure rollback, and real-Cluster `ActorTest` fault controls. [ADR 0005](../decisions/0005-foundation-command-protocol.md) specifies its protocol; [conformance](../verification/01-conformance.md#foundation-postgres-evidence) records the executed subset.
+
+**M0 is not complete.** Next, port these named cases to PGlite and expose the shared conformance harness, then finish identity/policy coverage and bounded execution/defect handling. No singleton, multi-runner, provider, restore, or production-readiness claim follows from the first Postgres slice. The scope and exit criteria below remain unchanged.
+
 ## Included
 
 - Bun/Turbo monorepo from `rika-labs/monorepo-project-template`;

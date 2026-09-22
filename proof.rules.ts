@@ -53,7 +53,7 @@ export default [
   Rule.noul({
     id: "errors-preserved",
     statement:
-      "Errors must keep their declared type and their cause. Swallowing a typed error into a bare Error, dropping the cause, catching broadly and returning a generic failure, or rethrowing without the original error are violations. Declared errors on a contract are never wrapped in ActorError or any other framework error — ActorError is reserved for the reasons the runtime itself produces (ActorUnavailable, MailboxFull, Timeout, CommandConflict, NotCreated, Unauthorized, InvalidInput, TransportError). Converting through Effect.catchTag/catchReasons into a typed error carrying the cause, or letting the declared error propagate, is clean. A deliberate fallback at the outermost HTTP boundary that renders the failure as a user-facing error response is also clean.",
+      "Errors must keep their declared type and their cause. Swallowing a typed error into a bare Error, dropping the cause, catching broadly and returning a generic failure, or rethrowing without the original error are violations. Declared errors on a contract are never wrapped in ActorError or any other framework error — ActorError is reserved for the reasons the runtime itself produces (ActorUnavailable, MailboxFull, Timeout, CommandConflict, CommandExpired, InvalidCommandId, NotCreated, Unauthorized, InvalidInput, TransportError). Converting through Effect.catchTag/catchReasons into a typed error carrying the cause, or letting the declared error propagate, is clean. A deliberate fallback at the outermost HTTP boundary that renders the failure as a user-facing error response is also clean.",
     severity: "request-changes",
     threshold: 0.85,
     examples: {

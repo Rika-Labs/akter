@@ -10,9 +10,18 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/actor packages/durable-actors/src/identity",
+    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/testing/conformance"
   },
   "dependencies": {
+    "@effect/sql-pg": "catalog:",
     "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.0",
+    "vitest": "catalog:"
   }
 }

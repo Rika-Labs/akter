@@ -1,0 +1,148 @@
+import { PgClient, PgTypes } from "@effect/sql-pg"
+import { Crypto, Effect, Fiber, Layer, Result, Schema } from "effect"
+import { Sharding, SingleRunner } from "effect/unstable/cluster"
+import { SqlClient, SqlError } from "effect/unstable/sql"
+import { ActorError, ActorUnavailable, Unauthorized } from "../errors/actor.ts"
+import { Actors, type Request } from "../handles/actors.ts"
+import type { ActorRef, Caller } from "../identity/caller.ts"
+import { migrate } from "./database/migrations.ts"
+import { commandEntity, registerActor } from "./entity/register.ts"
+import { checkIdentity, databaseTime } from "./turn/admission.ts"
+import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
+
+export interface Options {
+  readonly authorize: (request: {
+    readonly caller: Caller
+    readonly ref: ActorRef
+    readonly command: string
+  }) => Effect.Effect<boolean>
+  readonly retryWindowMs?: number
+}
+
+export const layer = (options: Options) => {
+  const retryWindowMs = Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
+  ).make(options.retryWindowMs ?? 86_400_000)
+
+  const runtime = Layer.effect(
+    Actors,
+    Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto
+      const scope = yield* Effect.scope
+      const sharding = yield* Sharding.Sharding
+
+      const services = yield* Effect.context<
+        SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
+      >()
+
+      const authorize = Effect.fnUntraced(function* (request: Request) {
+        if (!(yield* options.authorize(request)))
+          return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+        yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
+      })
+
+      return Actors.of({
+        register: (registration) =>
+          registerActor(registration).pipe(Effect.provideContext(services)),
+        mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+        mintCommandId: Effect.gen(function* () {
+          const now = yield* databaseTime
+          const uuid = yield* crypto.randomUUIDv4
+
+          return `v1.${now}.${now + retryWindowMs}.${uuid}`
+        }).pipe(Effect.provideContext(services), Effect.orDie),
+        // Admission, receipt denial, expiry, and disconnected-waiter recovery are exercised in testing/conformance/postgres.test.ts.
+        execute: Effect.fnUntraced(
+          function* (request: Request) {
+            yield* authorize(request)
+            const hash = yield* payloadHash(request.payload)
+            const retained = yield* resolveReceipt(request, hash)
+
+            if (retained !== undefined) {
+              yield* authorize(request)
+
+              return retained
+            }
+
+            const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(
+              yield* Schema.encodeEffect(
+                Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+              )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie),
+            )
+
+            // Runtime scope owns the accepted call; interrupting its waiter must not send cancellation.
+            const delivery = yield* client.Execute(request).pipe(Effect.forkIn(scope))
+
+            const outcome = yield* Fiber.join(delivery).pipe(
+              Effect.catchIf(
+                (cause) => !Schema.is(ActorError)(cause),
+                (cause) =>
+                  Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+              ),
+            )
+
+            yield* authorize(request)
+
+            return outcome
+          },
+          Effect.provideContext(services),
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        ),
+      })
+    }),
+  )
+
+  return Layer.unwrap(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* migrate
+      yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${retryWindowMs}) ON CONFLICT DO NOTHING`
+
+      const rows = yield* sql<{
+        protocol: number
+        retry_window_ms: string
+      }>`SELECT protocol, retry_window_ms::text AS retry_window_ms FROM actor_deployment`
+
+      if (rows[0]!.protocol !== 1 || Number(rows[0]!.retry_window_ms) !== retryWindowMs) {
+        return yield* Effect.die(
+          new Error(
+            "Actor command protocol/retry window differs from the deployment; migrate explicitly",
+          ),
+        )
+      }
+
+      return runtime.pipe(
+        Layer.provide(
+          SingleRunner.layer({
+            shardingConfig: {
+              shardsPerGroup: 1,
+              simulateRemoteSerialization: true,
+              entityMessagePollInterval: "100 millis",
+              entityReplyPollInterval: "100 millis",
+            },
+          }),
+        ),
+      )
+    }),
+  )
+}
+
+export const Database = {
+  postgres: (options: Omit<PgClient.PgPoolConfig, "types">) => {
+    const types = PgTypes.makeRegistry()
+    // rc.116 lacks regclass decoding, used by Sql Migrator on restart. Remove after Effect #8309.
+    types.register(2205, {
+      encode: (value: number) => PgTypes.encode(value, PgTypes.OID.oid),
+      decode: (bytes) =>
+        bytes.length === 4
+          ? Result.succeed(
+              new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0),
+            )
+          : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
+    })
+
+    return PgClient.layer({ ...options, types })
+  },
+}

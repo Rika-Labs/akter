@@ -3,11 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/counter/src"
   },
   "dependencies": {
+    "@effect/platform-bun": "catalog:",
     "durable-actors": "workspace:*",
     "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "pg": "8.23.0",
+    "vitest": "catalog:"
   }
 }

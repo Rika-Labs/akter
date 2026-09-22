@@ -5,7 +5,7 @@
 **Owner role:** platform/verification.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 
-Support means the shared `durable-actors/testing` conformance suite passes and the deployment-specific gates are demonstrated. The framework entrypoints are currently scaffolds, so no runtime/backend combination below is verified. “Target” describes intended coverage, not support established by a passing test.
+Support means the shared `durable-actors/testing` conformance suite passes and the deployment-specific gates are demonstrated. The embedded Postgres foundation now has [bounded command/state/receipt evidence](../verification/01-conformance.md#foundation-postgres-evidence), including process death and independent-connection locking. No complete runtime/backend combination below is certified. “Target” describes intended full coverage, not support established by the partial foundation suite. Run one runtime process per database; multi-runner operation is not claimed.
 
 | Capability                       | PGlite                               | Postgres                                   | Neki                             | Evidence required                                                              |
 | -------------------------------- | ------------------------------------ | ------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------ |

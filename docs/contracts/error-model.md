@@ -10,7 +10,8 @@ The framework MUST expose one tagged framework error:
 ```text
 ActorError {
   reason: ActorUnavailable | MailboxFull | Timeout | CommandConflict |
-          NotCreated | Unauthorized | InvalidInput | TransportError
+          CommandExpired | InvalidCommandId | NotCreated | Unauthorized |
+          InvalidInput | TransportError
   isRetryable
   retryAfter
 }
@@ -24,4 +25,6 @@ On pinned Effect `4.0.0-rc.116`, `catchReasons` without an `orElse` retains the 
 
 `Unauthorized.code` MUST carry the stable credential code, accessed as `error.reason.code` when wrapped in `ActorError`. HTTP, WebSocket, Promise client, and Effect client mappings MUST preserve the reason, retry metadata, available command id/request id, and declared-error identity.
 
-[ADR 0004](../decisions/0004-receipt-access-revocation-and-expiry.md) additionally requires receipt-access denial and terminal rejection of expired external command identities. Their concrete reason/code/status mappings are not yet specified by the reason set above or the credential codes in [security](10-security.md). Before implementation, resolve these mappings with explicit runtime-schema, narrowed error-channel, OpenAPI, client, and rolling-version review; do not silently add a reason, overload credential expiry, or map terminal expiry to a retryable timeout. Expiry must not cause automatic new-id retries and says nothing about whether earlier work committed.
+[ADR 0005](../decisions/0005-foundation-command-protocol.md) implements the first embedded subset: `ActorUnavailable`, `CommandConflict`, `CommandExpired`, `InvalidCommandId`, and `Unauthorized`. These are the only reasons in current typed command handles. `CommandExpired` and `InvalidCommandId` are terminal and carry the command ID; expiry must not cause automatic new-ID retries and says nothing about whether earlier work committed. `Unauthorized.code` additionally supports `access_denied` and `receipt_access_denied` for resource/receipt authorization, distinct from credential errors.
+
+The reserved transport mappings are 410 for `CommandExpired`, 400 for `InvalidCommandId`, and 403 for these two authorization codes. HTTP, OpenAPI, Promise clients, per-member `ActorError.Of` narrowing, and rolling-version compatibility are not implemented by this slice. They must use the same schemas when introduced; no shipped wire client is being changed.

@@ -7,6 +7,20 @@
 
 The Effect-native server API is one package, `durable-actors`. Its root entry exports `Actor`, policies, errors, identity, `Actors`, `Actor.serve`, and `Actor.auth`. Runtime construction is imported separately as `Actors.layer` from `durable-actors/runtime`.
 
+## Implemented foundation subset
+
+The first executable slice is embedded and single-runner on Postgres. The rest of this document remains the target API.
+
+- `Actor.command(tag, { input?, output?, errors? })` accepts service-free schemas. Omitted input/output is `void`; JSON codecs preserve it through persistence. Declared errors must be yieldable tagged errors.
+- `Actor.make(name, { id?, commands, state })` supplies `get(id, { as?, tenant? })`, minted `create({ as?, tenant? })` when `id` is omitted, and `toLayer(handlers)`. `get` captures caller and tenant. Handle acquisition does not write actor rows. Singleton identities, branded per-actor ID helpers, migrations, and lifecycle policies are not exposed yet.
+- `ctx` supplies `ref`, `caller`, `commandId`, and schema-decoded state with `state.set(patch)`. State changes become visible only after commit. Captured request/reply handles cannot run in turns; escaped state setters die. No owned SQL adapter, external side-effect capability, or turn deadline is provided yet. Handlers must remain short and must not call providers or perform independent database writes.
+- Constructing a command Effect creates one operation. Its first execution mints an ID using the database clock; rerunning that same Effect reuses it. A new method call creates a new operation. To retry across processes, save an ID from `(yield* Actors).mintCommandId` and apply `call.pipe(Actor.commandId(id))` before its first execution. This is not `Effect` memoization: every external retry rechecks access and expiry.
+- `/runtime` exports `Actors.layer({ authorize, retryWindowMs? })` and `Database.postgres({ url: Redacted.make(url), ... })`. Supply a platform `Crypto` layer, such as `BunCrypto.layer`. The required authorization callback receives the captured `caller`, `ref`, and `command` at admission and before returning an outcome. `User.make({ subject })` is application-trusted attribution, not authentication. Default `Anonymous` is one shared logical identity; default tenant is `"default"`.
+- The retry window defaults to 86,400,000 ms, accepts 1–2,592,000,000 ms, and is recorded in the database. A different setting fails startup. State, receipt, and Cluster migrations run at startup, so use a disposable database for the example. `Database.postgres` includes a scoped `regclass` codec for the pinned rc.116 driver restart bug; it does not modify global driver configuration.
+- `/testing` exports `ActorTest.layer({ database, as?, authorize?, retryWindowMs? })`, with a fresh tenant per build, committed `inspect(ref)`, `crashNext(point)`, `pauseNext(point)`, and `invalidate(ref)`. Fault points are `beforeHandler`, `beforeCommit`, and `afterCommit`. These use real Cluster SQL storage, not a fake handler context. `TurnHooks` is available only through the testing entry for process-level faults. PGlite and shared `conformance`/`describeConformance` exports remain pending.
+
+See the runnable [counter](../../examples/counter/src/main.ts), [protocol decision](../decisions/0005-foundation-command-protocol.md), and [test evidence](../verification/01-conformance.md#foundation-postgres-evidence). This subset is not a production-support claim.
+
 ## Definitions and identity
 
 `Actor.make(name, members)` is the only actor constructor. Members may include commands, internal commands, queries, streams, connections, workflows, events, effects, tables, blobs, state, activation-local `vars`, migrations, and lifecycle policies.
