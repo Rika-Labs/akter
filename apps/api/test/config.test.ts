@@ -17,6 +17,28 @@ describe("configuration", () => {
     expect(() => loadConfig({ ...local, PORT: "65536" })).toThrow()
     expect(() => loadConfig({ ...local, APP_ORIGIN: "http://localhost:3000/path" })).toThrow()
   })
+  it("redacts credential-bearing schema failures at the startup boundary", () => {
+    for (const { env, message } of [
+      {
+        env: { ...local, BETTER_AUTH_SECRET: "redaction-sentinel" },
+        message: "Invalid API environment; check required configuration and formats",
+      },
+      {
+        env: { ...local, DATABASE_URL: "invalid-redaction-sentinel" },
+        message: "APP_ORIGIN and DATABASE_URL must be valid URLs",
+      },
+    ]) {
+      try {
+        loadConfig(env)
+        expect.unreachable("Invalid configuration must stop startup")
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error)
+        expect(error).toHaveProperty("message", message)
+        expect(error).not.toHaveProperty("cause")
+        expect(Bun.inspect(error)).not.toContain("redaction-sentinel")
+      }
+    }
+  })
   it("fails closed for production email, partial Polar and partial Axiom configuration", () => {
     expect(() =>
       loadConfig({ ...local, NODE_ENV: "production", APP_ORIGIN: "https://example.com" }),

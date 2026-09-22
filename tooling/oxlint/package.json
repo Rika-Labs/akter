@@ -5,7 +5,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/oxlint/src/directives.test.ts && node ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/oxlint/src/rules"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/oxlint/src/directives.test.ts && npm exec --yes --package=node@26.7.0 --call 'node --version && node ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/oxlint/src/rules'"
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",
