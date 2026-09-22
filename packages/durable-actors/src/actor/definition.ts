@@ -193,7 +193,6 @@ export const Definition = {
         }),
       )
 
-      // SAFETY: each declared tag is installed exactly once with its own input/output/error codecs.
       return { ...methods, ref } as Handle<All, Creating, BoundedMailbox>
     })
 
@@ -215,7 +214,6 @@ export const Definition = {
           const commands = new Map<string, RegisteredCommand>()
 
           for (const member of members) {
-            // SAFETY: toLayer's mapped type requires the handler for this declared command and state.
             const handle = handlers[member.tag as All[number]["tag"]] as (
               ctx: CommandContext<StateOf<Fields>>,
               input: typeof member.input.Type,
@@ -280,7 +278,6 @@ export const Definition = {
                 const view = { set }
 
                 for (const key of Object.keys(fields)) {
-                  // SAFETY: keys come from the same fields used to decode current.
                   const field = key as keyof typeof current
                   Object.defineProperty(view, key, {
                     enumerable: true,
@@ -288,7 +285,6 @@ export const Definition = {
                   })
                 }
 
-                // SAFETY: the getters above expose every decoded state field and set is the sole mutation capability.
                 const state = Object.freeze(view) as CommandContext<StateOf<Fields>>["state"]
 
                 const run = Effect.gen(function* () {
@@ -373,7 +369,6 @@ export const Definition = {
                 Effect.orDie,
               )
 
-              // SAFETY: stateSchema was built from the exact Fields supplied to this declaration.
               const context = { ref, state } as WakeContext<StateOf<Fields>>
 
               return (options?.hooks?.onDefect?.(context, cause) ?? Effect.void).pipe(
@@ -403,7 +398,6 @@ export const Definition = {
       state: stateSchema,
       commands: definition.commands,
       toLayer,
-      // SAFETY: the implementation selects the same identity mode as these conditional signatures.
       get: get as Single extends true
         ? (options?: GetOptions) => Effect.Effect<PublicHandle, never, Actors>
         : (
@@ -412,13 +406,11 @@ export const Definition = {
               : Schema.brand<Schema.String, Name>["Type"],
             options?: GetOptions,
           ) => Effect.Effect<PublicHandle, never, Actors>,
-      // SAFETY: create checks the identity mode at runtime too; it never writes actor rows.
       create: create as Id extends undefined
         ? Single extends true
           ? never
           : (options?: GetOptions) => Effect.Effect<PublicHandle, never, Actors>
         : never,
-      // SAFETY: named schemas are preserved, and the default schema validates and brands UUIDv7.
       id: idSchema as Id extends Schema.Codec<string, string>
         ? Id
         : Schema.brand<Schema.String, Name>,

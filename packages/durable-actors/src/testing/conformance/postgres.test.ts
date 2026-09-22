@@ -57,8 +57,6 @@ const backend: ConformanceBackend = {
           ),
           Effect.map((client) => ({
             query: (statement: string, parameters?: ReadonlyArray<unknown>) =>
-              // SAFETY: pg accepts readonly parameter arrays; rows are
-              // untyped at this boundary by contract.
               Effect.promise(() =>
                 client.query(statement, parameters as Array<unknown> | undefined),
               ).pipe(Effect.map((result) => result.rows as ReadonlyArray<unknown>)),

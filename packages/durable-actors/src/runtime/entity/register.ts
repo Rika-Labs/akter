@@ -7,7 +7,6 @@ import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { executeTurn } from "../turn/execute.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 
-// Redelivery/fencing evidence: testing/conformance/postgres.test.ts and crash/main.test.ts.
 export const commandEntity = (name: string) =>
   Entity.make(name, [
     Rpc.make("Execute", { payload: Request, success: Outcome, error: ActorError }),

@@ -17,7 +17,6 @@ export const pglite = (config: PgliteClient.PgliteClientConfig = {}) => {
           // Interrupted SQL fibers can leave protocol exchanges running. Closing
           // PGlite during one deadlocks its single connection; drain after users stop.
           database.query = (...args) => {
-            // SAFETY: preserve query's signature; erase only its generic row type for bookkeeping.
             const promise = (query as (...a: typeof args) => Promise<never>)(...args)
             pending.add(promise)
 

@@ -69,7 +69,6 @@ export const layer = (options: Options) => {
 
           return `v1.${now}.${now + retryWindowMs}.${uuid}`
         }).pipe(Effect.provideContext(services), Effect.orDie),
-        // Admission, receipt denial, expiry, and disconnected-waiter recovery are exercised in testing/conformance/postgres.test.ts.
         execute: Effect.fnUntraced(
           function* (request: Request) {
             const registration = registrations.get(request.ref.actor)

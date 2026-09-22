@@ -95,6 +95,10 @@ Proof rule set.
   whether unrelated domains share a module, whether a typed error keeps its
   cause, whether a new API exists only for AI consumers, whether a test's
   assertions can actually fail.
+- Type assertions do not require `SAFETY:` prose. The mandatory-comment lint
+  rule is disabled; the comment rule rejects boilerplate assertion
+  justifications and test-location breadcrumbs while allowing non-obvious
+  constraints and public contract documentation.
 - Testing rules judge the honesty of test evidence (independent expectations,
   real volatile-state loss, real contention, truthful skips, barriers,
   durable assertions) rather than demanding coverage — a rule must never

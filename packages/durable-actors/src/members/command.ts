@@ -33,11 +33,8 @@ export const Command = {
     tag: Tag,
     options?: { readonly input?: Input; readonly output?: Output; readonly errors?: Errors },
   ): Command<Tag, Input, Output, Errors> => {
-    // SAFETY: omitted generic options use the corresponding default type parameters.
     const input = (options?.input ?? Schema.Void) as Input
-    // SAFETY: omitted generic options use the corresponding default type parameters.
     const output = (options?.output ?? Schema.Void) as Output
-    // SAFETY: omitted errors use the empty tuple default.
     const errors = (options?.errors ?? []) as Errors
 
     return { tag, input, output, errors }

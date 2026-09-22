@@ -1,7 +1,6 @@
 import { Effect } from "effect"
 import { Migrator, SqlClient } from "effect/unstable/sql"
 
-// DDL rollback and restart evidence: testing/conformance/crash/main.test.ts.
 export const migrate = Migrator.make({})({
   table: "actor_migrations",
   loader: Migrator.fromRecord({
