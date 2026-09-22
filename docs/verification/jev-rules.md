@@ -30,7 +30,9 @@ the changed paths, and batches them (code batches are clamped to 10 rules).
 Each code rule is asked three questions per batch: a comply/violate/unknown
 verdict, a supporting-snippet citation, and an exact changed-line citation —
 a violation is emitted only when the cited line is a real changed line in a
-snippet the rule's `paths` actually cover. `contextFiles` excerpts are
+snippet the rule's `paths` actually cover, or the complete edit is removal-only
+and the removal itself is cited. Truncation cannot turn a replacement into a
+removal-only edit. `contextFiles` excerpts are
 read-only supporting evidence and are never citable as the violation itself.
 A `threshold` of 0.9 is the catalog-wide starting point: conservative and
 uncalibrated.
@@ -53,7 +55,8 @@ not a green result. There is no all-file completeness: unchanged files are
 never evaluated.
 
 `jev_rules_status` reports the last check as `complete`, `unchecked`, or
-`stale`. Any unknown answer, skipped or oversized file, truncated snippet,
+`stale`. `complete` means scheduled assessments returned, not that the code
+passed; inspect the violation counts. Any unknown answer, skipped or oversized file, truncated snippet,
 unavailable evaluation, or diagnostic marks the check `unchecked` — unknown,
 skipped, and truncated evidence is reported, never counted as clean. A
 `stale` result means the files or catalog changed mid-evaluation and the
@@ -112,6 +115,17 @@ rules match live code or test files today.
 - Unit or mock tests of rule parsing prove format validity only; they do not
   prove Jev classification accuracy, which is calibrated by dry-runs and
   seeded violations, not asserted.
+
+## Local validation (2026-09-22)
+
+The production loader with the real privacy filter loads all 42 rules with
+zero catalog diagnostics. Reference-file checks skip `10-security.md`,
+`01-conformance.md`, and `02-failure-matrix.md`: their credential-example
+prose triggers the conservative privacy filter. Four other references exceed
+the 4KiB excerpt cap (`02-command-turns.md`, `invariants.md`,
+`01-server-api.md`, and `02-context.md`). Dependent checks remain explicitly
+incomplete; no privacy bypass or contract rewrite was added to hide this.
+The complete 42-rule catalog has not been calibrated against live predictions.
 
 ## Evaluation plan
 

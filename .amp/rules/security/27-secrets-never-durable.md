@@ -19,7 +19,7 @@ written to durable rows, event payloads, connection state, or unredacted
 logs/spans. Only verified caller attribution is persisted — never the external
 credential that produced it.
 
-Violations: storing a bearer token, assertion, or API key in a receipt,
+Violations: storing an access token, assertion, or API key in a receipt,
 envelope, connection-state, or business row; logging raw authorization headers
 or credential-bearing error causes; attaching secrets to span attributes;
 echoing credentials into `ActorError` messages.

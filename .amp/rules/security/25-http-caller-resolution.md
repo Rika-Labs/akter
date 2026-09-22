@@ -17,7 +17,7 @@ contextFiles:
 # Served endpoints resolve the caller per request
 
 Caller identity is resolved per request at the trusted edge: concurrent
-requests with different bearer tokens get different principals, and an
+requests with different access tokens get different principals, and an
 endpoint that requires authentication fails missing or invalid credentials
 with `ActorError(Unauthorized)` — it never runs as `Anonymous`. `Actor.serve`
 requires auth configuration; `Actor.auth.none` is the explicit public opt-out.
