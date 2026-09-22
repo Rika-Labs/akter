@@ -46,19 +46,30 @@ export interface Registration {
   readonly commands: ReadonlyMap<string, RegisteredCommand>
 }
 
-export class Actors extends Context.Service<
-  Actors,
+/** Runtime-only capabilities; package entry points export only Actors. */
+export class InternalActors extends Context.Service<
+  InternalActors,
   {
     readonly register: (actor: Registration) => Effect.Effect<void, never, Scope.Scope>
     readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
+  }
+>()("durable-actors/handles/actors/InternalActors") {}
+
+export class Actors extends Context.Service<
+  Actors,
+  {
     readonly mintCommandId: Effect.Effect<string>
     readonly mintActorId: Effect.Effect<string>
   }
 >()("durable-actors/handles/actors") {
-  static readonly mint = <Id extends string>(actor: { readonly id: Schema.Codec<Id, string> }) =>
+  static readonly mint = <
+    A extends { readonly id: Schema.Codec<string, string>; readonly create: unknown },
+  >(
+    actor: A & ([A["create"]] extends [never] ? never : unknown),
+  ): Effect.Effect<A["id"]["Type"], never, Actors> =>
     Effect.gen(function* () {
       const actors = yield* Actors
 
       return yield* Schema.decodeEffect(actor.id)(yield* actors.mintActorId).pipe(Effect.orDie)
-    })
+    }) as Effect.Effect<A["id"]["Type"], never, Actors>
 }

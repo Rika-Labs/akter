@@ -88,7 +88,11 @@ export const executeTurn = Effect.fnUntraced(function* (
 
     const result: BusinessResult = Result.isSuccess(business) ? business.success : business.failure
 
-    if (Outcome.guards.Success(result.outcome) && !rows[0]!.created)
+    if (
+      Outcome.guards.Success(result.outcome) &&
+      policy.createdBy === request.command &&
+      !rows[0]!.created
+    )
       yield* sql`UPDATE actor_generations SET created = true
         WHERE tenant_id = ${request.ref.tenant} AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
     const encoded = yield* Schema.encodeEffect(OutcomeJson)(result.outcome).pipe(Effect.orDie)

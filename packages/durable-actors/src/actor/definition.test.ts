@@ -1,7 +1,6 @@
 import { Effect, Schema } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
-import { Actor, ActorError, Commands, Lifecycle, Mailbox, State } from "../index.ts"
-import { SystemHandle } from "./definition.ts"
+import { Actor, ActorError, Actors, Commands, Lifecycle, Mailbox, State } from "../index.ts"
 
 describe("actor declarations", () => {
   it("narrows identity, internal methods and creation error reasons", () => {
@@ -28,9 +27,8 @@ describe("actor declarations", () => {
     >["reason"]["_tag"]
 
     expectTypeOf<keyof Public>().toEqualTypeOf<"ref" | "Create" | "Read">()
-    expectTypeOf<keyof Effect.Success<ReturnType<(typeof A)[typeof SystemHandle]>>>().toEqualTypeOf<
-      "ref" | "Create" | "Read" | "Internal"
-    >()
+    expectTypeOf<keyof Actors["Service"]>().toEqualTypeOf<"mintActorId" | "mintCommandId">()
+    expect(Object.getOwnPropertySymbols(A)).toEqual([])
     expectTypeOf<Extract<FrameworkReason<Public["Create"]>, "NotCreated">>().toEqualTypeOf<never>()
     expectTypeOf<
       Extract<FrameworkReason<Public["Read"]>, "NotCreated">
@@ -53,6 +51,13 @@ describe("actor declarations", () => {
     expectTypeOf<Parameters<typeof Named.get>[0]>().toEqualTypeOf<string>()
     expectTypeOf<typeof Named.create>().toEqualTypeOf<never>()
     expectTypeOf<typeof Singleton.create>().toEqualTypeOf<never>()
+    expectTypeOf<Effect.Success<ReturnType<typeof Actors.mint<typeof A>>>>().toEqualTypeOf<
+      typeof A.id.Type
+    >()
+    // @ts-expect-error named actor identities cannot be minted
+    const _namedMint = Actors.mint(Named)
+    // @ts-expect-error singleton identities cannot be minted
+    const _singletonMint = Actors.mint(Singleton)
     expectTypeOf<Parameters<typeof Singleton.get>>().toEqualTypeOf<
       [options?: import("./definition.ts").GetOptions]
     >()

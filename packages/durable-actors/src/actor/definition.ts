@@ -9,11 +9,19 @@ import type { ActorError } from "../errors/actor.ts"
 import {
   Actors,
   type BusinessResult,
+  InternalActors,
   Outcome,
   type RegisteredCommand,
   Request,
 } from "../handles/actors.ts"
-import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
+import {
+  ActorRef,
+  Caller,
+  CurrentCaller,
+  Tenant,
+  principal,
+  type System,
+} from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
 import type { AnyCommand, ValueSchema } from "../members/command.ts"
 import { type Policy, type CreatedBy, resolvePolicies } from "../policies/command.ts"
@@ -27,7 +35,28 @@ export interface GetOptions {
   readonly tenant?: string
 }
 
-export const SystemHandle = Symbol("durable-actors/SystemHandle")
+export declare const InternalHandleType: unique symbol
+
+export interface DefinitionWithInternal<H> {
+  readonly [InternalHandleType]?: H
+}
+
+export interface InternalDefinition<H extends { readonly ref: ActorRef }> {
+  readonly handle: (
+    id: string,
+    tenant: string,
+    caller: typeof System.Type,
+  ) => Effect.Effect<H, never, Actors | InternalActors>
+}
+
+interface InternalDefinitionOwner {
+  readonly get: unknown
+}
+
+export const internalDefinitions = new WeakMap<
+  InternalDefinitionOwner,
+  InternalDefinition<{ readonly ref: ActorRef }>
+>()
 
 type HandleReason =
   | "ActorUnavailable"
@@ -124,9 +153,10 @@ export const Definition = {
       id: string,
       options?: GetOptions,
       internal: boolean = false,
-    ): Effect.fn.Return<Handle<All, Creating, BoundedMailbox>, never, Actors> {
+    ): Effect.fn.Return<Handle<All, Creating, BoundedMailbox>, never, Actors | InternalActors> {
       yield* outsideTurn
       const actors = yield* Actors
+      const internalActors = yield* InternalActors
 
       const caller = yield* Schema.decodeEffect(Caller)(options?.as ?? (yield* CurrentCaller)).pipe(
         Effect.orDie,
@@ -173,7 +203,7 @@ export const Definition = {
                   Effect.orDie,
                 )
 
-                const outcome = yield* actors.execute(
+                const outcome = yield* internalActors.execute(
                   Request.make({ ref, caller, command: member.tag, commandId, payload }),
                 )
 
@@ -209,7 +239,7 @@ export const Definition = {
     ) =>
       Layer.effectDiscard(
         Effect.gen(function* () {
-          const actors = yield* Actors
+          const actors = yield* InternalActors
           const services = yield* Effect.context<R>()
           const commands = new Map<string, RegisteredCommand>()
 
@@ -393,7 +423,7 @@ export const Definition = {
       ? (options?: GetOptions) => getHandle("singleton", options)
       : (id: string, options?: GetOptions) => getHandle(id, options)
 
-    return {
+    const actor = {
       name,
       state: stateSchema,
       commands: definition.commands,
@@ -414,8 +444,12 @@ export const Definition = {
       id: idSchema as Id extends Schema.Codec<string, string>
         ? Id
         : Schema.brand<Schema.String, Name>,
-      [SystemHandle]: (id: string, caller: typeof System.Type, options?: GetOptions) =>
-        getHandle(id, { ...options, as: caller }, true),
     }
+
+    internalDefinitions.set(actor, {
+      handle: (id, tenant, caller) => getHandle(id, { tenant, as: caller }, true),
+    })
+
+    return actor as typeof actor & DefinitionWithInternal<Handle<All, Creating, BoundedMailbox>>
   },
 }

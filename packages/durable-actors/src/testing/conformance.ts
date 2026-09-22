@@ -729,21 +729,60 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             "SELECT generation FROM actor_generations WHERE tenant_id = $1 AND actor_type = $2 AND actor_id = $3 FOR UPDATE",
             [counter.ref.tenant, counter.ref.actor, counter.ref.id],
           )
-          const before = fixture.executions
-          const waiter = yield* counter.Increment(59).pipe(Effect.forkChild)
-          yield* Effect.sleep("2300 millis")
-          expect(fixture.executions).toBe(before)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 2 },
-            receipts: 1,
-          })
-          yield* lock.query("COMMIT")
-          expect(yield* Fiber.join(waiter)).toBe(61)
-          expect(fixture.executions - before).toBe(1)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 61 },
-            receipts: 2,
-          })
+
+          yield* Effect.gen(function* () {
+            const before = fixture.executions
+            const waiter = yield* counter.Increment(59).pipe(Effect.forkChild)
+
+            const waitingAttempt = lock.query("SELECT pg_stat_clear_snapshot()").pipe(
+              Effect.andThen(
+                lock.query(
+                  `SELECT pid, query_start::text AS query_start
+                  FROM pg_stat_activity
+                  WHERE datname = current_database()
+                    AND pid <> pg_backend_pid()
+                    AND wait_event_type = 'Lock'
+                    AND query LIKE '%actor_generations%FOR UPDATE%'`,
+                ),
+              ),
+              Effect.map(
+                (rows) =>
+                  rows[0] as { readonly pid: number; readonly query_start: string } | undefined,
+              ),
+            )
+
+            const first = yield* waitingAttempt.pipe(
+              Effect.repeat({
+                while: (attempt) => attempt === undefined,
+                schedule: Schedule.spaced("10 millis"),
+              }),
+              Effect.timeout("5 seconds"),
+            )
+
+            const retry = yield* waitingAttempt.pipe(
+              Effect.repeat({
+                while: (attempt) =>
+                  attempt === undefined ||
+                  (attempt.pid === first!.pid && attempt.query_start === first!.query_start),
+                schedule: Schedule.spaced("10 millis"),
+              }),
+              Effect.timeout("5 seconds"),
+            )
+
+            expect(retry).not.toEqual(first)
+            expect(fixture.executions).toBe(before)
+            expect(yield* test.inspect(counter.ref)).toMatchObject({
+              state: { count: 2 },
+              receipts: 1,
+            })
+            yield* lock.query("COMMIT")
+            expect(yield* Fiber.join(waiter)).toBe(61)
+            expect(fixture.executions - before).toBe(1)
+            expect(yield* test.inspect(counter.ref)).toMatchObject({
+              state: { count: 61 },
+              receipts: 2,
+            })
+          }).pipe(Effect.ensuring(lock.query("ROLLBACK")))
         }),
       ),
   },

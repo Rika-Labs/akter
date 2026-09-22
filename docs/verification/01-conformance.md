@@ -11,7 +11,7 @@
 
 The shared harness now exists: `conformance` is the named case list and `describeConformance` registers it against a `ConformanceBackend` through an injected registrar, so no test framework is imported by the suite itself. Backends that cannot open a second SQL connection set `independentConnections: false` and report those cases through `registrar.skip` — by name, never silently. PGlite runs [`pglite.test.ts`](../../packages/durable-actors/src/testing/pglite.test.ts); Postgres runs [`postgres.test.ts`](../../packages/durable-actors/src/testing/conformance/postgres.test.ts) and the SIGKILL suite [`crash/main.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/main.test.ts).
 
-**Executed 2026-09-22:** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 52 tasks, including 39 framework tests (30 shared PGlite cases, three PGlite lifecycle/migration cases, six declaration/identity tests); five independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 38 Postgres framework tests (35 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. The [PR](https://github.com/Rika-Labs/durable-actors/pull/7) records the exact pushed revision and CI evidence artifact; local results do not substitute for that artifact.
+**Executed 2026-09-22:** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 52 tasks, including 40 framework tests (30 shared PGlite cases, four PGlite lifecycle/migration/creation-policy cases, six declaration/identity tests); five independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 38 Postgres framework tests (35 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. The [PR](https://github.com/Rika-Labs/durable-actors/pull/7) records the exact pushed revision and CI evidence artifact; local results do not substitute for that artifact.
 
 ### Shared cases (PGlite and Postgres)
 
@@ -54,12 +54,13 @@ These require a real second connection and are reported skipped on PGlite:
 - `rejects a state setter from another still-active actor turn`
 - `denies a competing caller while the original failure is still uncommitted`
 - `decodes regclass so the migrator can reopen the database` — exercises the scoped rc.116 codec workaround for [Effect #8309](https://github.com/Effect-TS/effect/pull/8309)
-- `retries a real generation lock timeout without entering the handler` — real Postgres `FOR UPDATE`, not a mocked lock
+- `retries a real generation lock timeout without entering the handler` — real Postgres `FOR UPDATE`; observes two distinct blocked attempts while the competing transaction still holds the lock, then one committed transition
 
 ### Backend-specific cases
 
 - PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.
 - PGlite, in `pglite.test.ts`: `rolls back partial foundation DDL and safely reruns the migration` — a deliberate `actor_state` collision proves rollback without a recorded migration, then rerun succeeds.
+- PGlite, in `pglite.test.ts`: `does not treat a pre-policy successful command as creation after restart` — reuses a borrowed database across runtime builds and requires a successful creating command after adopting `Lifecycle.createdBy`.
 - Postgres, in `crash/main.test.ts`: `rolls back partial foundation DDL and safely reruns the migration`, plus `recovers SIGKILL beforeCommit from persisted Cluster storage without a new call` and `recovers SIGKILL afterCommit from persisted Cluster storage without a new call` — a child process is killed at a signaled barrier, durable rows are inspected with a separate pool, and a fresh process completes the persisted message with one receipt/state transition.
 
 The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.

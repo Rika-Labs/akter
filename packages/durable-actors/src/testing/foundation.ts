@@ -15,7 +15,7 @@ import {
   User,
 } from "../index.ts"
 import { Outcome, Request } from "../handles/actors.ts"
-import { ActorTest } from "./actor-test.ts"
+import { ActorTest, executeForTest } from "./actor-test.ts"
 import type { ConformanceCase } from "./conformance.ts"
 
 export interface FoundationFixture {
@@ -383,7 +383,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           const actors = yield* Actors
           const attempts = fixture.foundation.privateRuns
 
-          const denied = yield* actors.execute(
+          const denied = yield* executeForTest(
             Request.make({
               ref: actor.ref,
               caller: User.make({ subject: "alice" }),
@@ -401,17 +401,15 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             System.make({ source: "actor", onBehalfOf: { subject: "bob" } }),
           ])
             expect(
-              yield* actors
-                .execute(
-                  Request.make({
-                    ref: actor.ref,
-                    caller,
-                    command: "Internal",
-                    commandId: id,
-                    payload: "{}",
-                  }),
-                )
-                .pipe(Effect.flip),
+              yield* executeForTest(
+                Request.make({
+                  ref: actor.ref,
+                  caller,
+                  command: "Internal",
+                  commandId: id,
+                  payload: "{}",
+                }),
+              ).pipe(Effect.flip),
             ).toMatchObject({ reason: { code: "receipt_access_denied" } })
           expect(fixture.foundation.privateRuns).toBe(attempts)
           expect((yield* bound.inspect).receipts).toBe(2)

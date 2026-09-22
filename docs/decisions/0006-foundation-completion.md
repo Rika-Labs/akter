@@ -15,7 +15,7 @@ ADR 0005 delivered one command/identity/receipt path on Postgres with `User`/`An
 
 ### Identity and registration
 
-`Actor.make` accepts `internal`, `id`, `singleton`, and `lifecycle` alongside `commands` and `state`. The default minted schema brands UUIDv7 values with the actor name, and `Actors.mint(X)` decodes a fresh id. Named actors use the supplied schema through `get(id)`; singletons expose `get()` and register through `Sharding.registerSingleton`, so entity startup stays owned by sharding even on the single embedded runner. `create` exists only on minted actors — `never` in types and a runtime defect otherwise — because named and singleton identities have nothing to mint. Internal commands are reachable only through the internal handle path (`ActorTest.actor`), never on public handles or transports.
+`Actor.make` accepts `internal`, `id`, `singleton`, and `lifecycle` alongside `commands` and `state`. The default minted schema brands UUIDv7 values with the actor name, and `Actors.mint(X)` accepts only minted definitions and decodes a fresh id. Named actors use the supplied schema through `get(id)`; singletons expose `get()` and register through `Sharding.registerSingleton`, so entity startup stays owned by sharding even on the single embedded runner. `create` exists only on minted actors — `never` in types and a runtime defect otherwise — because named and singleton identities have nothing to mint. Internal commands are reachable only through the internal handle path (`ActorTest.actor`), never on public handles or transports. The public `Actors` service exposes minting, not raw registration or command execution; test-only raw execution remains package-internal.
 
 ### Lifecycle policies
 
@@ -25,7 +25,7 @@ The execution deadline is enforced twice: an interruptible timeout on the whole 
 
 ### Creation gating
 
-Migration `0002_creation` adds `actor_generations.created` defaulting `false`. The check runs after receipt lookup under the generation lock, so a replayed failed-creation receipt resolves normally while a non-creating command on an uncreated actor fails `NotCreated` without writing a receipt. A failed creating turn rolls back business work, retains its error receipt, and stays uncreated; the first success sets `created` atomically with state and receipt. Existing v1 deployments read unchanged, but rows created before a `createdBy` policy existed keep `created = false`, so adding the policy to an actor with live data requires an explicit application migration that backfills the marker.
+Migration `0002_creation` adds `actor_generations.created` defaulting `false`. The check runs after receipt lookup under the generation lock, so a replayed failed-creation receipt resolves normally while a non-creating command on an uncreated actor fails `NotCreated` without writing a receipt. A failed creating turn rolls back business work, retains its error receipt, and stays uncreated; only a successful creating command sets `created` atomically with state and receipt. Existing v1 deployments read unchanged, but rows created before a `createdBy` policy existed keep `created = false`, so adding the policy to an actor with live data requires an explicit application migration that backfills the marker.
 
 ### Deterministic defects and `onDefect`
 

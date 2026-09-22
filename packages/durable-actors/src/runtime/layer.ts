@@ -1,6 +1,6 @@
 import { PgClient, PgTypes } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Crypto, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
+import { Context, Crypto, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
 import { ClusterError, Sharding, SingleRunner } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import {
@@ -10,7 +10,7 @@ import {
   Timeout,
   MailboxFull,
 } from "../errors/actor.ts"
-import { Actors, type Registration, type Request } from "../handles/actors.ts"
+import { Actors, InternalActors, type Registration, type Request } from "../handles/actors.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
@@ -32,8 +32,7 @@ export const layer = (options: Options) => {
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
   ).make(options.retryWindowMs ?? 86_400_000)
 
-  const runtime = Layer.effect(
-    Actors,
+  const runtime = Layer.effectContext(
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto
       const scope = yield* Effect.scope
@@ -50,7 +49,17 @@ export const layer = (options: Options) => {
         yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
       })
 
-      return Actors.of({
+      const publicActors = Actors.of({
+        mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+        mintCommandId: Effect.gen(function* () {
+          const now = yield* databaseTime
+          const uuid = yield* crypto.randomUUIDv4
+
+          return `v1.${now}.${now + retryWindowMs}.${uuid}`
+        }).pipe(Effect.provideContext(services), Effect.orDie),
+      })
+
+      const internalActors = InternalActors.of({
         register: Effect.fnUntraced(function* (registration: Registration) {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
@@ -62,13 +71,6 @@ export const layer = (options: Options) => {
             }),
           )
         }),
-        mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
-        mintCommandId: Effect.gen(function* () {
-          const now = yield* databaseTime
-          const uuid = yield* crypto.randomUUIDv4
-
-          return `v1.${now}.${now + retryWindowMs}.${uuid}`
-        }).pipe(Effect.provideContext(services), Effect.orDie),
         execute: Effect.fnUntraced(
           function* (request: Request) {
             const registration = registrations.get(request.ref.actor)
@@ -131,6 +133,8 @@ export const layer = (options: Options) => {
           ),
         ),
       })
+
+      return Context.make(Actors, publicActors).pipe(Context.add(InternalActors, internalActors))
     }),
   )
 

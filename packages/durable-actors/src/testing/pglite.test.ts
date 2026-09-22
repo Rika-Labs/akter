@@ -1,11 +1,13 @@
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Cause, Effect, Exit, FileSystem, ManagedRuntime } from "effect"
+import { Cause, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { Actor, Lifecycle, NotCreated } from "../index.ts"
 import { migrate } from "../runtime/database/migrations.ts"
 import { Database } from "../runtime/index.ts"
+import { ActorTest } from "./actor-test.ts"
 import { describeConformance, type ConformanceBackend } from "./conformance.ts"
 
 const harness = ManagedRuntime.make(BunFileSystem.layer)
@@ -135,4 +137,102 @@ describe("PGlite migrations", () => {
       )
       .finally(() => runtime.dispose())
   })
+})
+
+describe("creation policy adoption", () => {
+  it("does not treat a pre-policy successful command as creation after restart", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const live = yield* Effect.acquireRelease(
+          Effect.promise(() => PGlite.create()),
+          (client) => Effect.promise(() => client.close()),
+        )
+
+        const Create = Actor.command("Create")
+        const Read = Actor.command("Read", { output: Schema.Finite })
+
+        const state = {
+          count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+        }
+
+        const Before = Actor.make("AdoptCreation", {
+          id: Schema.NonEmptyString,
+          commands: [Create, Read],
+          state,
+        })
+
+        const After = Actor.make("AdoptCreation", {
+          id: Schema.NonEmptyString,
+          commands: [Create, Read],
+          state,
+          lifecycle: [Lifecycle.createdBy(Create)],
+        })
+
+        const database = { liveClient: live }
+
+        const first = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            ManagedRuntime.make(
+              Before.toLayer({
+                Create: () => Effect.void,
+                Read: (ctx) => Effect.succeed(ctx.state.count),
+              }).pipe(
+                Layer.provideMerge(ActorTest.layer({ database })),
+                Layer.provideMerge(BunCrypto.layer),
+                Layer.orDie,
+              ),
+            ),
+          ),
+          (runtime) => Effect.promise(() => runtime.dispose()),
+        )
+
+        const tenant = yield* Effect.promise(() =>
+          first.runPromise(
+            Effect.gen(function* () {
+              const test = yield* ActorTest
+              const actor = yield* Before.get("existing")
+              const sql = yield* SqlClient.SqlClient
+              expect(yield* actor.Read()).toBe(0)
+              expect(
+                yield* sql`SELECT created FROM actor_generations
+                  WHERE tenant_id = ${actor.ref.tenant} AND actor_type = ${actor.ref.actor} AND actor_id = ${actor.ref.id}`,
+              ).toEqual([{ created: false }])
+
+              return test.tenant
+            }),
+          ),
+        )
+
+        yield* Effect.promise(() => first.dispose())
+
+        const second = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            ManagedRuntime.make(
+              After.toLayer({
+                Create: (ctx) => ctx.state.set({ count: 23 }),
+                Read: (ctx) => Effect.succeed(ctx.state.count),
+              }).pipe(
+                Layer.provideMerge(ActorTest.layer({ database })),
+                Layer.provideMerge(BunCrypto.layer),
+                Layer.orDie,
+              ),
+            ),
+          ),
+          (runtime) => Effect.promise(() => runtime.dispose()),
+        )
+
+        yield* Effect.promise(() =>
+          second.runPromise(
+            Effect.gen(function* () {
+              const actor = yield* After.get("existing", { tenant })
+              expect(yield* actor.Read().pipe(Effect.flip)).toMatchObject({
+                reason: NotCreated.make({}),
+              })
+              yield* actor.Create()
+              expect(yield* actor.Read()).toBe(23)
+            }),
+          ),
+        )
+      }).pipe(Effect.scoped),
+    ))
 })

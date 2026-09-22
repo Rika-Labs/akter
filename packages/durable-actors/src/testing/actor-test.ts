@@ -10,8 +10,13 @@ import {
   System,
   principal,
 } from "../identity/caller.ts"
-import { SystemHandle, type GetOptions } from "../actor/definition.ts"
-import type { Actors } from "../handles/actors.ts"
+import {
+  type DefinitionWithInternal,
+  type InternalDefinition,
+  internalDefinitions,
+} from "../actor/definition.ts"
+import type { ActorError } from "../errors/actor.ts"
+import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
 
@@ -21,29 +26,37 @@ export interface Inspection {
   readonly receipts: number
 }
 
-interface TestDefinition<H> {
-  readonly [SystemHandle]: (
-    id: string,
-    caller: typeof System.Type,
-    options?: GetOptions,
-  ) => Effect.Effect<H, never, Actors>
+interface TestDefinition {
+  readonly get: unknown
 }
+
+type InternalHandleOf<D> = D extends DefinitionWithInternal<infer H> ? H : never
+
+const testActors = new WeakMap<ActorTest["Service"], InternalActors["Service"]>()
+
+/** Package-internal escape hatch for deterministic runtime conformance cases. */
+export const executeForTest = (request: Request): Effect.Effect<Outcome, ActorError, ActorTest> =>
+  Effect.gen(function* () {
+    const test = yield* ActorTest
+    const actors = testActors.get(test)
+
+    if (actors === undefined) return yield* Effect.die(new Error("ActorTest runtime unavailable"))
+
+    return yield* actors.execute(request)
+  })
 
 export class ActorTest extends Context.Service<
   ActorTest,
   {
     readonly tenant: string
-    readonly actor: <H extends { readonly ref: ActorRef }>(
-      definition: {
-        readonly [SystemHandle]: (
-          id: string,
-          caller: typeof System.Type,
-          options?: GetOptions,
-        ) => Effect.Effect<H, never, Actors>
-      },
+    readonly actor: <D extends TestDefinition>(
+      definition: D,
       id?: string,
     ) => Effect.Effect<
-      { readonly system: H; readonly inspect: Effect.Effect<Inspection> },
+      {
+        readonly system: InternalHandleOf<D>
+        readonly inspect: Effect.Effect<Inspection>
+      },
       never,
       Actors
     >
@@ -89,11 +102,12 @@ export class ActorTest extends Context.Service<
           ActorTest,
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
+            const internalActors = yield* InternalActors
 
             const service: ActorTest["Service"] = ActorTest.of({
               tenant,
-              actor: Effect.fnUntraced(function* <H extends { readonly ref: ActorRef }>(
-                definition: TestDefinition<H>,
+              actor: Effect.fnUntraced(function* <D extends TestDefinition>(
+                definition: D,
                 id = "singleton",
               ) {
                 const as = options.as ?? Anonymous.make({})
@@ -105,10 +119,21 @@ export class ActorTest extends Context.Service<
                       onBehalfOf: Option.getOrUndefined(principal(as)),
                     })
 
-                const system = yield* definition[SystemHandle](id, caller, { tenant })
+                type H = InternalHandleOf<D> & { readonly ref: ActorRef }
+
+                const internal = internalDefinitions.get(definition) as
+                  | InternalDefinition<H>
+                  | undefined
+
+                if (internal === undefined)
+                  return yield* Effect.die(new Error("Unknown actor definition"))
+
+                const system = yield* internal
+                  .handle(id, tenant, caller)
+                  .pipe(Effect.provideService(InternalActors, internalActors))
 
                 return { system, inspect: service.inspect(system.ref) }
-              }),
+              }) as ActorTest["Service"]["actor"],
               crashNext: (point) =>
                 addFault(point, Effect.die(RetryTurn.make({ message: `Injected ${point} crash` }))),
               pauseNext: Effect.fnUntraced(function* (point: TurnPoint) {
@@ -167,16 +192,20 @@ export class ActorTest extends Context.Service<
               }, Effect.orDie),
             })
 
+            testActors.set(service, internalActors)
+
             return service
           }),
         )
 
+        const runtime = runtimeLayer({
+          authorize: options.authorize ?? (() => Effect.succeed(true)),
+          retryWindowMs: options.retryWindowMs,
+        })
+
         return Layer.mergeAll(
-          test,
-          runtimeLayer({
-            authorize: options.authorize ?? (() => Effect.succeed(true)),
-            retryWindowMs: options.retryWindowMs,
-          }),
+          runtime,
+          test.pipe(Layer.provide(runtime)),
           Layer.succeed(CurrentCaller, options.as ?? Anonymous.make({})),
           Layer.succeed(Tenant, tenant),
         ).pipe(
