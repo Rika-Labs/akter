@@ -11,9 +11,9 @@ Durable Actors combines actor authority with ordinary relational data. Postgres 
 
 Actors have complementary storage forms in the same deployment database:
 
-- keyed JSONB state for small, schema-typed values used directly in turns;
+- keyed state for small, schema-typed values used directly in turns, stored compressed and opaque to SQL;
 - `OwnedTable` business tables for relational records, indexes, joins, and Drizzle queries;
-- `Actor.blob` declarations for actor-scoped `bytea` chunks in `actor_blobs`, accessed through `ctx.blob`.
+- `Actor.blob` declarations for actor-scoped `bytea` chunks in `actor_blobs`, accessed through `turn.blob`.
 
 State, rows, and blob writes share the command transaction. Off-turn blob access is read-only; external object-storage APIs are not this blob surface. State migrations are code-level upcasts; business-table migrations use normal SQL and Drizzle practices.
 
@@ -25,7 +25,7 @@ SQL observation: who may read and relate rows
 Database schema: how business facts are represented
 ```
 
-Turn contexts receive scoped write capabilities. Query, stream, connection, run, and wake contexts receive read-only capabilities. `ctx.db` remains the deliberate escape hatch for relational reads and joins; it does not erase tenant or actor ownership rules.
+`X.Turn` receives scoped write capabilities. `X.Read` and `X.Connection` receive read-only capabilities. `group` provides read-only joins across the actor's placement group; wider reads use declared `Fleet.view` definitions. Neither erases tenant or actor ownership rules.
 
 ## Tenancy
 

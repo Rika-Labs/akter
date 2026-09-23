@@ -5,10 +5,12 @@
 **Owner role:** runtime/realtime.  
 **Change policy:** wire changes require protocol versioning and replay tests.
 
-Inside a command turn, `ctx.self.Command.send/after/at`, `ctx.actors.get(...).Command.send`, and `ctx.self.Workflow.start/cancel` MUST create durable intents in the turn transaction. They MUST be delivered only after commit and MAY be delivered more than once; receiver receipts provide idempotency.
+Outside a turn, a command call MUST be a direct request/reply: it runs in the owner's turn, and the committed receipt is its only durable admission record. Handles MUST retry retryable failures with the same command id. There is no persisted or fire-and-forget command call ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)).
+
+Inside a command turn, `X.intents(id)` methods, including `Intent.after`/`Intent.at` timers and workflow starts, MUST write `actor_outbox` rows on the sending actor's shard in the turn transaction. They MUST be delivered only after commit, as direct commands whose command id is the intent id, and MAY be delivered more than once; receiver receipts provide idempotency. `Intent.cancel(key)` MUST remove a pending keyed timer in the same transaction.
 
 Request/reply inside a turn is forbidden. Messaging does not create a distributed transaction and MUST NOT be presented as a synchronous remote call from the sender's transaction.
 
-`ctx.emit` MUST append an owner-scoped event only if the turn commits. Events MUST have a monotonically ordered cursor within their declared actor stream. Replay MUST either resume after a valid cursor or return an explicit cursor/retention failure; it MUST NOT silently skip committed events.
+`turn.emit` MUST append an owner-scoped event only if the turn commits. Events MUST have a monotonically ordered cursor within their declared actor stream. Replay MUST either resume after a valid cursor or return an explicit cursor/retention failure; it MUST NOT silently skip committed events.
 
-Workflow `waitFor(Event, { where, timeout })` MUST observe only the owner actor's events, and registration MUST close the start-to-wait race. See gates **Intent rollback**, **Neki intent relay**, and **waitFor registration** in [conformance](../verification/01-conformance.md).
+Workflow `waitFor(Event, { where, timeout })` MUST observe only the owner actor's events, and registration MUST close the start-to-wait race. See gates **Intent rollback**, **Outbox delivery**, and **waitFor registration** in [conformance](../verification/01-conformance.md).

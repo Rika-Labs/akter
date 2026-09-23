@@ -7,7 +7,7 @@
 
 ## Collaborative room
 
-A named room actor owns membership and message rows. Commands serialize joins and sends in one transaction, events resume from a cursor, and typed connections broadcast best-effort typing and presence hints. `Connections.park` lets idle rooms hibernate without dropping sockets while their transport remains alive; transport-process loss still requires reconnection and durable-event replay.
+A named room actor owns membership and message rows. Commands serialize joins and sends in one transaction, events resume from a cursor, and typed connections broadcast best-effort typing and presence hints. Parked connections let idle rooms hibernate without dropping sockets while their transport remains alive; transport-process loss still requires reconnection and durable-event replay.
 
 ## Per-tenant workspace
 
@@ -23,7 +23,7 @@ An order actor serializes state transitions and writes order rows with its recei
 
 ## Connected device
 
-A device actor owns desired state, readings, and command history. `Cron.every` schedules health checks, timers schedule follow-ups, and a typed connection handles live telemetry. Durable events preserve audit history when the device disconnects.
+A device actor owns desired state, readings, and command history. `policy.cron` schedules health checks, timers schedule follow-ups, and a typed connection handles live telemetry. Durable events preserve audit history when the device disconnects.
 
 ## Control plane
 

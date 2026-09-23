@@ -13,12 +13,12 @@ Durable execution is part of the actor model, not a second product. Commands, wo
 
 Every command turn performs the generation fence, receipt lookup, handler, and commit in one transaction. The receipt records success or a declared failure. Reusing the same command id and input replays that outcome; reusing it with different input fails with `CommandConflict`.
 
-This gives exactly-once effect for the actor's committed transition while its receipt is retained. A `Timeout` means the caller stopped waiting, not that the turn failed; retrying with the same command id discovers the receipt.
+Commands are direct: nothing is durable until the turn commits, and the caller's handle retries with the same command id. Work that must outlive its caller is an intent or a workflow. This gives exactly-once effect for the actor's committed transition while its receipt is retained. A `Timeout` means the caller stopped waiting, not that the turn failed; retrying with the same command id discovers the receipt.
 
 ## Durable consequences
 
 - **Workflows** are actor members for finite, durable operations. They support durable activities, sleep, interruption, and owner-scoped `waitFor` on events.
-- **Cron and timers** deliver commands later. `Cron.every` is a lifecycle policy, cluster-wide on a singleton and per-actor otherwise.
+- **Cron and timers** deliver commands later through the outbox. `policy.cron` is cluster-wide on a singleton and per-actor otherwise; `Intent.after`, `Intent.key`, and `Intent.cancel` manage timers from turns.
 - **Effects** represent external side effects committed as obligations, retried after commit, and moved to dead letters when policy is exhausted.
 - **Actor intents** deliver commands or workflow controls after the source turn commits.
 

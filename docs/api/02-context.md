@@ -5,35 +5,50 @@
 **Owner role:** API/runtime.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-Handler context is passed explicitly as the first argument: `(ctx, input)`. Capabilities depend on the execution phase; the runtime remains the final authority even when TypeScript prevents invalid use.
+Handlers take only their input. Each phase provides one typed context object as an Effect service on the actor definition, so a capability used in the wrong phase is a missing-service type error. The runtime remains the final authority even when TypeScript prevents invalid use. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
+
+```ts
+SendMessage: Effect.fn(function* ({ body }) {
+  const turn = yield* Chat.Turn
+  yield* access.requireMember(turn.caller, turn.ref)
+  yield* turn
+    .rows(messages)
+    .insert({ id: turn.commandId, author_id: turn.caller.id, body, sent_at: yield* DateTime.now })
+  yield* turn.emit(new MessageAdded({ id: turn.commandId, body }))
+  return turn.commandId
+})
+
+// A helper's requirement states where it may run.
+const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(function* () {
+  const turn = yield* Chat.Turn
+  if (turn.state.closed) return yield* new RoomClosed()
+})
+```
+
+## Phases
+
+| Service        | Phase                     | Provides                                                                                                                                                   |
+| -------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `X.Turn`       | command handler           | `id`, `ref`, `caller`, `principal`, `commandId`, `isNew`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `perform`, `broadcast`, `terminate` |
+| `X.Read`       | query and stream handlers | `id`, `ref`, `caller`, `principal`, committed `state`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`                                   |
+| `X.Connection` | connection handler        | `X.Read` capabilities plus connection `id`, `state` (16 KiB), `resumed`, and `broadcast`                                                                   |
+| `X.Workflow`   | workflow body             | owner `id` and `ref`, `principal`, `executionId`, `key`, and owner-event `waitFor(Event, { where, timeout })`                                              |
+| `X.Executor`   | effect executor           | `effectId`, `attempt`, `principal`, and owner `ref`; no database capability                                                                                |
+
+Only command handlers and workflow bodies may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker. Request/reply handles (`X.get`) are available outside turns: in applications, workflow bodies, and effect executors. Executors report results by calling internal commands as the System caller. Workflow activities and durable sleep use Effect's `Activity` and `DurableClock`.
 
 ## Command turns
 
-A command receives the only writable context. One framework-owned transaction performs, in order, the generation fence, receipt lookup, handler, events and durable intents, effects, receipt update, and commit. The context provides writable scoped rows and keyed state, blob writes, `ctx.emit`, `ctx.perform`, timers, and durable sends through `ctx.self` and `ctx.actors`.
+A command's context is the only writable one. One framework-owned transaction performs, in order, the generation fence, receipt resolution, state decode (or reuse of the activation's cached state), handler, staged writes and intents, receipt update, and commit ([command turns](../contracts/02-command-turns.md)). `DateTime.now` is pinned per turn.
 
-Unhandled declared failures roll back business changes and staged notifications while their terminal receipts commit and replay unchanged. A handler that catches an error and succeeds commits normally; an intentionally persisted rejection belongs in its output schema. Retryable turn failures such as a stale generation or command execution timeout become defects and redelivery; caller-side delivery failures use narrowed `ActorError` reasons. A caller's `Timeout` stops waiting without cancelling or restarting the admitted turn. Application errors are never wrapped.
+Unhandled declared failures roll back business changes and staged notifications while their terminal receipts commit and replay unchanged. A handler that catches an error and succeeds commits normally; an intentionally persisted rejection belongs in its output schema. Retryable turn failures, such as a stale generation or command execution timeout, become defects and restart the activation; the caller's handle retries with the same command id. A caller's `Timeout` stops waiting without cancelling the turn. Application errors are never wrapped.
 
-Implemented defect semantics: a deterministic defect — `State.maxBytes` overflow, state or output decode failure, or an internal command from a non-`System` caller — rolls back the turn, writes no receipt, returns `Die` to the caller, and invokes `toLayer`'s `hooks.onDefect` with a `WakeContext` carrying `ref` and a lazy read-only `state` effect. The hook runs even when that read would die on corrupt state; it is bounded by the execution deadline, and a hook failure reports an `AggregateError` preserving the original cause. The activation stays resident. Retryable causes — `RetryTurn`, retryable `SqlError`, and `Commands.timeout` expiry — restart the activation and redeliver the same envelope instead.
+## Activation-local values
 
-## Read-only and off-turn phases
+Values that live for one activation are ordinary Effect values in the layer's build closure, such as a `Ref`. They are not durable, not rolled back with a transaction, and gone after hibernation. Writable maintenance is an internal command, not a write from a read-only phase.
 
-Capabilities are explicit rather than inherited from one universal context:
+## Callers
 
-| Phase                  | Durable data access                                                    | Other capabilities                                                                                     |
-| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Command                | Transaction-bound state, scoped rows, and `ctx.blob` writes.           | `caller`, `principal`, `vars`, events, effects, timers, actor/workflow intents, post-commit broadcast. |
-| Query                  | Committed state values, `ScopedRead`, and `BlobRead`; no activation.   | `caller` and `principal`; no `vars`, `state.changes`, or intent handles.                               |
-| Stream                 | Read-only rows/blobs and committed `StateSnapshot`.                    | `caller`, `principal`, `vars`, events and connection operations; live stream, not a turn.              |
-| Connection             | Stream read capabilities, plus separate per-connection state.          | `conn.caller`, `conn.state`, `conn.resumed`, and `self` intents.                                       |
-| Wake/sleep/defect hook | Read-only activation state, rows, and blobs.                           | `vars` and `self` intents; no user caller property.                                                    |
-| `run`                  | Wake-context reads; no turn transaction.                               | `vars`, `self`/`actors` intents, events, connections; interrupted on sleep.                            |
-| Effect executor        | No database or direct actor-state capability.                          | `principal`, `commandId`, `attempt`, and `self` result intents.                                        |
-| Workflow body          | No direct actor-state/row capability; actor calls use their own turns. | `owner`, `actors`, `principal`, `executionId`, `key`, activities, durable sleep, owner-event waits.    |
+`CurrentCaller` defaults to `Anonymous`. The edge sets it per request, `ActorTest.layer` per test, and `Actor.as(caller)` around an Effect; `X.get` captures it when the handle is acquired. `turn.caller` is the full caller and `turn.principal` the optional principal. Workflow bodies expose `principal` and act through handles carrying persisted System/on-behalf-of attribution.
 
-Activation `StateSnapshot.changes` publishes only committed values. `vars` are typed activation-local values, are not rolled back with a transaction, and disappear on hibernation. Writable maintenance is an internal command, not a write from a read-only hook.
-
-Connections expose `ctx.conn.state` with a 16 KiB limit and `ctx.conn.resumed`. `Connections.park` permits activation hibernation while the transport keeps the socket open; it does not preserve a socket after its transport process dies.
-
-`CurrentCaller` defaults to `Anonymous`. `X.get`/`X.create` captures it when acquiring the handle, or uses an explicit `{ as }` override; methods do not re-read it on each call. `Actor.as(caller)` supplies `CurrentCaller` to an acquisition effect so handle capture needs no per-call option. Command context exposes the full `ctx.caller` and optional `ctx.principal`. Implemented callers are `User`, `Anonymous`, and `System({ source, ref?, onBehalfOf? })`; `ctx.principal` resolves to the `User` subject or `System.onBehalfOf` and is `None` for `Anonymous`. Receipts persist a caller key covering System source, ref, and delegation so internal origins retain receipt privacy. Attribution is trusted application input — not authentication — until transport and hosted verification land. Workflow bodies expose `principal` and use persisted System/on-behalf-of attribution through their actor handles, not a `ctx.caller` property.
-
-The `Turn` service allows deep helpers to access the current command context; it exists only inside that phase. Runtime guards still reject request/reply operations inside a turn even when a handle was captured outside it.
+A transaction-bound capability used after its turn ends, including from a forked fiber, dies. Runtime guards still reject request/reply operations inside a turn even when a handle was captured outside it.

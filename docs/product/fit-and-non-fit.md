@@ -21,7 +21,7 @@ Typical identities include users, workspaces, rooms, documents, devices, agents,
 ## Conditional fit
 
 - Read-heavy systems fit when writes have clear actor ownership and SQL serves cross-actor reads.
-- Transient coordination fits with per-activation `vars` when forgetting state after hibernation is acceptable.
+- Transient coordination fits with activation-local values when forgetting state after hibernation is acceptable.
 - Batch work fits when it belongs to an actor effect or workflow; independent bulk computation may need a separate compute system.
 - High throughput fits when it partitions across many actor identities rather than concentrating on one hot identity.
 

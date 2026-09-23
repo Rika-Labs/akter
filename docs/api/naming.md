@@ -5,21 +5,19 @@
 **Owner role:** API/SDK.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-Settled names:
+Settled names ([ADR 0010](../decisions/0010-one-way-effect-native-api.md)):
 
-- `Actor.make`, `Actor.command`, `Actor.query`, `Actor.stream`, `Actor.connection`, `Actor.workflow`
-- `X.get`, `X.create`, `Actors.mint`
-- `X.toLayer`, `X.toQueryLayer`
+- `Actor.make`, and its definition sections `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, `api`, `policy`
+- Members: `Actor.command`, `Actor.reducer`, `Actor.query`, `Actor.stream`, `Actor.connection`, `Actor.workflow`, `Actor.state`, `Actor.table`, `Actor.blob`, `Actor.Event`, `Actor.effect`, `Actor.singleton`
+- Handles: `X.get`, `X.create`, `X.intents`, and `Intent.after`, `Intent.at`, `Intent.key`, `Intent.cancel`
+- Layers: `X.toLayer`, `X.toQueryLayer`, `X.toEffectLayer`, `X.onDefect`
+- Context services: `X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`, and the runtime marker `Actor.InTurn`
+- Ambient scope: `Actor.as`, `Actor.tenant`, `Actor.commandId`
+- Fleet reads: `Fleet.view`, `Fleet.subscribe`
 - `Actors.layer` from `durable-actors/runtime`
 - `Actor.serve`, `Actor.auth`
-- `ActorTest`, `test.actor`, `test.create`
-- `ctx.rows`, `ctx.db`, `ctx.state`, `ctx.vars`
-- `ctx.emit`
-- `ctx.perform`
-- `ctx.self`, `ctx.actors`
-- `ctx.connections`
-- `ctx.caller`, `ctx.principal`
-- `Hibernate`, `Lifecycle`, `Connections`, `Mailbox`, `Delivery`, `Commands`, `Receipts`, `Defects`, `Effects`, `Events`, `State`, `Cron`, and their `Policy` aggregate
-- `Actor.table`, `Actor.blob`, `Actor.migration`, `ctx.blob`, and `Turn`
+- `ActorTest`, `test.actor`, `ActorTest.simulate`
 
-An actor is always made with `Actor.make`; specialized actor constructors and standalone workflow constructors do not exist. Cron is a policy on an actor command. Runtime construction is plural because it supplies the `Actors` service.
+A command's PascalCase tag is also its `api` key, handler key, and handle method. There is one name per concept and one way to do each task; a second spelling exists only when it changes outcomes materially.
+
+An actor is always made with `Actor.make`, and its definition is its only shape. Member constructors never make actors. Cron is a policy on an actor command. Runtime construction is plural because it supplies the `Actors` service.

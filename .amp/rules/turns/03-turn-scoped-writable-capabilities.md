@@ -15,14 +15,15 @@ contextFiles:
 
 # Writable capabilities are scoped to a live turn
 
-Durable mutation exists only on `CommandContext` inside a live command turn;
+Durable mutation exists only on the command context (`CommandContext` in M0,
+`X.Turn` in the target API) inside a live command turn;
 transaction-bound capabilities are invalid the moment that turn ends. Query,
 stream, connection, wake/sleep/defect, `run`, and workflow contexts expose
 read-only capabilities only.
 
 Violations: a state setter or scoped-row writer callable outside a turn;
-capturing `ctx.state`/`ctx.db`/blob writers into a callback, stream, or `vars`
-slot that outlives the turn; silently substituting an unscoped or pooled client
+capturing state setters, row or blob writers into a callback, stream, forked
+fiber, or activation-local value that outlives the turn; silently substituting an unscoped or pooled client
 when the transaction-bound capability is unavailable — unavailability must be
 an error, never a bypass.
 

@@ -15,22 +15,29 @@ The following is accepted design notation, not a runnable example of the current
 
 ```ts
 import { Effect, Schema } from "effect"
-import { Actor, Hibernate } from "durable-actors"
+import { Actor } from "durable-actors"
 
-const Reset = Actor.command("Reset", {
-  description: "Reset the counter.",
+export const Reset = Actor.command("Reset", { description: "Reset the counter." })
+
+export const Counter = Actor.make("Counter", {
+  state: Actor.state({ value: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  api: { Reset },
+  policy: { hibernateAfter: "1 minute" },
 })
 
-const Counter = Actor.make("Counter", {
-  commands: [Reset],
-  state: { value: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
-  lifecycle: [Hibernate.after("1 minute")],
-})
+export const CounterLive = Counter.toLayer(
+  Effect.succeed({
+    Reset: Effect.fn(function* () {
+      const turn = yield* Counter.Turn
+      yield* turn.state.set({ value: 0 })
+    }),
+  }),
+)
 ```
 
 There is one package, `durable-actors`, with four entries:
 
-- `durable-actors` for `Actor.make`, members, policies, identity, `ActorError`, `Actors`, `Actor.serve`, and auth;
+- `durable-actors` for `Actor.make`, members, `Intent`, `Fleet`, identity, `ActorError`, `Actor.serve`, and auth;
 - `durable-actors/runtime` for `Actors.layer`, topology, database, and migrations;
 - `durable-actors/client` for the browser-safe Promise client;
 - `durable-actors/testing` for `ActorTest`.
@@ -38,11 +45,12 @@ There is one package, `durable-actors`, with four entries:
 ## Defaults that guide correct code
 
 - `CurrentCaller` is ambient and defaults to anonymous; edges, scripts, and tests bind it once. Handle acquisition captures it, with `{ as }` as a per-handle override; methods do not re-read it on each call.
-- Omitting `id` creates a minted-id actor; declaring an id creates a named actor; `singleton: true` creates a singleton.
-- Handler contexts expose only capabilities valid in their phase.
+- There is one way to do each task: one constructor, one definition shape, one way to call, one context service per phase. A second way exists only when it changes outcomes materially.
+- Omitting `key` creates a minted-id actor; an id schema creates a named actor; `Actor.singleton` creates a singleton.
+- Handlers take only their input; `yield* X.Turn` (or `X.Read`, ...) supplies the phase's capabilities, so wrong-phase use is a type error.
 - Public methods have typed inputs, outputs, declared failures, and narrowed `ActorError` reasons.
 - Workflows live beside the actor handlers that own them.
-- `vars` means activation-local state; `StateSnapshot` means committed state on activation read contexts, while queries read plain committed values without `vars`.
+- Activation-local values are ordinary Effect values in the layer's build closure; committed state is read through `X.Read`.
 
 ## Testing
 

@@ -27,8 +27,8 @@ continue; permitting request/reply on any context that reaches it inside a turn
 because TypeScript would have blocked it anyway — the runtime remains the final
 authority.
 
-Clean: `ctx.self.X.send`/`ctx.actors.get(...).X.send` record transaction-bound
-intents; outside a turn, request/reply handles work normally.
+Clean: `X.intents(id)` methods record transaction-bound intents (the M0 code
+has no intents yet); outside a turn, request/reply handles work normally.
 
 Flag only a visible gap in the guard or a visible in-turn request/reply. Tests
 and fixtures that deliberately exercise the guard are expected, not defects.

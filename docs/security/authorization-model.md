@@ -5,7 +5,7 @@
 **Owner role:** security/API.
 **Change policy:** a change requires security review.
 
-`CurrentCaller` is the ambient `Context.Reference`, defaulting to `Anonymous` for embedded use. `Actor.serve` authentication sets it independently for every request; tests use `ActorTest.layer({ as })`, scripts use `Actor.as`, and `X.get(id, { as })` binds an explicit caller to one handle. Handles capture that caller when acquired. Command handlers expose `ctx.caller` and `ctx.principal`; workflow bodies expose `ctx.principal` and actor handles carrying persisted System/on-behalf-of attribution, not a `ctx.caller` property.
+`CurrentCaller` is the ambient `Context.Reference`, defaulting to `Anonymous` for embedded use. `Actor.serve` authentication sets it independently for every request; tests use `ActorTest.layer({ as })`, and `Actor.as(caller)` scopes an explicit caller around any Effect. Handles capture the caller when acquired. `X.Turn` exposes `caller` and `principal`; `X.Workflow` exposes `principal`, and workflow bodies act through handles carrying persisted System/on-behalf-of attribution.
 
 `Actor.serve` requires an explicit auth configuration, including `Actor.auth.none` for intentionally public actors. Bearer auth is a helper, not an implicit global default. Missing, invalid, or expired credentials produce `ActorError` with reason `Unauthorized`; the reason carries a stable `code`. A request without credentials must not fall back to `Anonymous` when authentication is required.
 

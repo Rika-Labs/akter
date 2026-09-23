@@ -7,7 +7,7 @@ when the answer needed interpretation (veto if wrong), `delegated` when the owne
 or `gated` when a verification must pass before the decision is claimed.
 
 The typechecked sketch that embodies this ledger is [framework/Actor.ts](framework/Actor.ts); the
-testing surface is [framework/Testing.ts](framework/Testing.ts). The latest round is §3.7 (173–180, repository structure); the
+testing surface is [framework/Testing.ts](framework/Testing.ts). The latest rounds are §3.8 (181–192, scale and performance) and §3.9 (193–212, one way to do everything); the
 comparison against Rivet's Effect SDK and Cloudflare Durable Objects is [COMPARISON.md](COMPARISON.md).
 
 ## 0. Foundations (carried from v3)
@@ -386,6 +386,52 @@ The monorepo layout, adopted from the Whorl restructure contract. Normative text
 | 179 | Test databases | `tooling/databases` owns disposable Postgres / Neki / PGlite; `tooling/structure` owns the tree checker and `src/exemptions.ts`. | Owner picked `tooling/databases` over Whorl's `tooling/testing` (would collide with `durable-actors/testing`). | — | settled |
 | 180 | Exemptions | `packages/ui` stays a separate StyleX compile unit until `apps/console/src/build.ts` runs the transform; template `test/` directories stay until each package is rewritten on the framework; `research/` is outside the structure rules. Each is one row in `tooling/structure/src/exemptions.ts`. | A broken console build is worse than one listed exemption. | — | settled (my pick) |
 
+## 3.8. Round 9 — scale and performance against Rivet and Durable Objects (181–192)
+
+Owner's questions in this round: how Postgres-backed actors reach Rivet's claimed billions of actors; rough performance estimates against Rivet and Durable Objects; persist the changes that close the gaps; then "even more crazy things" to beat Rivet outright. Research: Rivet's source shows UniversalDB (Postgres or RocksDB in OSS, FoundationDB enterprise) as a central store, with its Postgres backend documented to about 1,000 concurrent actors; Neki is Platform Preview with no atomic cross-shard writes or shared cross-shard snapshots; PlanetScale commits wait for a replica in a second availability zone. Recorded in [ADR 0005](../../docs/decisions/0005-turn-latency-batching-and-regional-placement.md), [ADR 0006](../../docs/decisions/0006-scale-rules-placement-and-query-tiers.md), and [ADR 0011](../../docs/decisions/0011-direct-commands-outbox-and-performance.md).
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 181 | Scale target | Hot paths touch one shard and cost what is active, not what is stored; a billion stored actors fit one shard, a trillion needs about 100 shards plus a cold tier. | Rivet's "billions" are idle rows in partitioned storage; the same property holds on sharded Postgres. | Neki shard index | settled |
+| 182 | Turn round trips | Two pipelined round trips per turn: admission (fence, receipt) and commit; decoded state cached per activation. | A turn of sequential statements pays one network hop per statement through the Neki router. | pipelined `SqlClient` | settled |
+| 183 | Turn batches | Waiting commands for one actor share a transaction (cap 32, no added wait, per-command failure isolation). Refined by 187. | Hot-actor throughput is about 1 / commit latency without batching. | `Queue.takeBetween` | settled |
+| 184 | Regions | Hosted tenants have a home region, each with its own database; F1 becomes one database per deployment region. | Remote users otherwise pay 50–150 ms per request. | tenant directory | settled |
+| 185 | Placement | Per-type placement key (tenant default, actor, or parent); framework `routing_key` = XXH3-64 of a versioned encoding on every row. | Tenant-only placement caps a large tenant at one shard. | Neki `range` index | settled |
+| 186 | Query tiers | Local (one actor), group (one placement key, one shard, one snapshot), fleet (explicit, eventually consistent). Refined by 190. | Scatter cost grows with shard count; Neki has no cross-shard snapshot. | — | settled |
+| 187 | Pipelined batches | Batch N+1 runs in memory while batch N commits; nothing from a batch is visible before its commit. | Throughput bound moves from commit latency to handler CPU. | `Entity.toLayerQueue` | settled |
+| 188 | Reducers | Pure `reduce` in the contract, optimistic in the browser, commutative merging with `combine`. Spelled in 196. | Zero perceived latency and a scalable hot counter. | `Result` | settled |
+| 189 | Read-your-writes reads | Every query carries the handle's last-seen commit version and is answered by the nearest caught-up replica or edge cache. | Remote reads at edge latency without a setting. | — | settled |
+| 190 | Fleet views | Fleet queries only as declared `Fleet.view`, maintained from the change feed; engine choice open. | Relational visibility at any scale. | CDC | settled; engine open |
+| 191 | Storage and operations | Zstd-dictionary-compressed `bytea` state; cold tier after 30 idle days; same-AZ runners; automatic prewarm; operator tenant moves. | Trillion-actor cost, and one cross-zone hop per turn. | — | settled |
+| 192 | Evidence | `ActorTest.simulate` deterministic simulation and published benchmarks; V8 isolates deferred. | Trust claims need reproducible evidence. | `TestClock` | settled |
+
+## 3.9. Round 10 — one way to do everything (193–212)
+
+Owner's answers in this round, in order: direct commands are the only command path ("no footguns"); only one way to do anything unless it materially changes outcomes; `Actor.make` is the only way to make an actor; keep PascalCase; reject both an array of members and the `turn.send(Counter, id, Increment, 1)` form as hard to read and not Effect-native; accept a sectioned definition object and handles whose method shape is the same inside and outside a turn. Recorded in [ADR 0010](../../docs/decisions/0010-one-way-effect-native-api.md) and [ADR 0011](../../docs/decisions/0011-direct-commands-outbox-and-performance.md). The type spike is `research/v5`, not yet written.
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 193 | One way | Exactly one way to do each task; a second way only when it materially changes outcomes. | Owner: "only provide ONE way to do anything … no footguns". | — | settled |
+| 194 | Constructor | `Actor.make(name, definition)` is the only way to make an actor and its only shape; no piping, no member-list array. Supersedes 3, 157, 171. | Owner: "only one way to MAKE an actor, and that is Actor.make"; the array was hard to read. | `Rpc.make`-style options | settled |
+| 195 | Definition sections | `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, `api`, `policy`; data only. `api` is a record whose keys equal member tags. | One registry; named sections read like `Rpc.make` and `Schema.Struct`. | mapped types | settled |
+| 196 | Members | `Actor.command`, `Actor.reducer`, `Actor.query`, `Actor.stream`, `Actor.connection`, `Actor.workflow`, `Actor.state`, `Actor.table`, `Actor.blob`, `Actor.Event`, `Actor.effect`; `internal: true` on the command. | Member constructors never make actors; no `internal` list to keep in sync. | `Rpc.make` | settled |
+| 197 | Identity | `key`: id schema (named), `Actor.singleton`, or omitted (minted). `X.create()` is the only minting path; `Actors.mint` and public `X.id` removed. Supersedes 157's `singleton: true`. | One field cannot conflict with itself. | `Sharding.registerSingleton` | settled |
+| 198 | Policies | `policy` data keys replace `Hibernate`, `Commands`, `Delivery`, `State`, `Mailbox`, `Lifecycle`, `Receipts`, `Events`, `Effects`, `Connections`, and `Cron.every`. | Serializable data in the contract; type-checked references to `api`. | — | settled |
+| 199 | Context | Handlers take only input; context is a typed service per phase: `X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`. Supersedes 124's `(ctx, input)`. | One path instead of `ctx` plus an untyped `Turn`; helper types state their phase. | `Context.Service` | settled |
+| 200 | Activation values | `vars` removed; a `Ref` in the layer build closure. Supersedes 51. | Plain Effect. | `Ref` | settled |
+| 201 | Layers | `toLayer`, `toQueryLayer`, `toEffectLayer`, Effect form only, no options; build body = wake, `Effect.addFinalizer` = sleep, `Effect.forkScoped` = `run`, `X.onDefect`, internal `EffectDeadLettered`. Supersedes 11, 109, 159. | Code lives in layers, not configuration. | `Layer`, `Scope` | settled |
+| 202 | Calls outside turns | `(yield* X.get(id)).Command(input)` request/reply; PascalCase method = tag = `api` key = handler key; no `.send`. | Effect Cluster's entity client shape. | `Entity.client` | settled |
+| 203 | Intents inside turns | `(yield* X.intents(id)).Command(input)` returns an intent; `Intent.after`, `Intent.at`, `Intent.key` pipe onto it; `Intent.cancel(key)`; self via `X.intents(turn.id)`. | Same call shape as outside; the turn decides durability, like Cluster's `discard`. | `Actor.InTurn` marker | settled |
+| 204 | Rejected spellings | camelCase methods and `turn.send(Counter, id, Increment, 1)` rejected. | A second spelling per command; not Effect-native. | — | settled |
+| 205 | Ambient scope | `Actor.as`, `Actor.tenant`, `Actor.commandId` around an Effect; `get` takes no options. Supersedes the `get` options of 8, 89, 154. | One way to set caller and tenant. | `Context.Reference` | settled |
+| 206 | Direct commands | Commands route as volatile Cluster messages; the receipt is the only durable admission record; callers retry with the same id. Supersedes F3's persisted messages. | Owner chose direct as the only path; removes three writes per command and the global `cluster_*` hot path. | `ClusterSchema.Persisted` false | settled |
+| 207 | One outbox | Every intent, timer, workflow start, and effect obligation is an `actor_outbox` row on the sender's shard, delivered as a direct command keyed by the intent id. Supersedes 46/156's `cluster_messages` handoff and F5's single-shard-group intent path. | One intent path on every backend and region. | — | settled |
+| 208 | Durability | One level: cross-AZ commit. No `local`/`memory` modes; ephemeral data travels as connection frames. | Faster modes that risk acknowledged writes are footguns. | — | settled |
+| 209 | Reads | One query path (189); `group` replaces `ctx.db` for placement-group joins; fleet reads only through `Fleet.view`. | One way per tier. | Drizzle | settled |
+| 210 | Reducer shape | `Actor.reducer(tag, { state, input, errors?, reduce, commutative? })`; commutative reducers return `void` and declare no errors. | Reducer vs command is the one kept distinction: only reducers run on clients or merge. | `Result` | settled |
+| 211 | Workflows | Workflow members in `api`; body uses `X.Workflow` plus Effect `Activity` and `DurableClock`; started by a call outside a turn or an intent inside. | One call shape for every member. | `Workflow`, `Activity` | settled |
+| 212 | Migration | M0 code (ADR 0007/0008 spelling, persisted Cluster messages) migrates to this API and delivery model in M1; the `research/v5` type spike gates it. | Docs describe target; code and evidence change together. | — | gated (type spike) |
+
 ## 4. Verification gates (must pass before the decision is claimed)
 
 | Gate | Decisions | Check |
@@ -403,7 +449,12 @@ The monorepo layout, adopted from the Whorl restructure contract. Normative text
 | `waitFor` registration | 144 | An event emitted by the actor between `W.start` and the `waitFor` registration landing still resolves the deferred (registration is acknowledged before the workflow proceeds). |
 | Per-call caller over HTTP | 154 (was 145, superseded by 153: no MCP) | Over `Actor.serve`, two concurrent commands with different bearer tokens run as different principals (`ctx.caller` differs, receipts attribute to each); a call without credentials fails with `Unauthorized`, never runs as `Anonymous`. |
 | Turn boundary at runtime | 146 | A handle obtained outside and captured in a closure, then called inside a handler, dies with the "Request/reply inside a turn" message and the turn rolls back. |
-| Neki intent relay | 46, 156 | On Neki a turn that writes tenant rows and an intent commits both in the tenant shard (`actor_outbox`); the relay moves the intent into `cluster_messages` after COMMIT exactly once (receipt keyed on the intent id) and a relay crash between COMMIT and the move is recovered by the next relay pass. |
+| Neki intent relay (superseded by 207: outbox delivery on every backend) | 46, 156 | On Neki a turn that writes tenant rows and an intent commits both in the tenant shard (`actor_outbox`); the relay moves the intent into `cluster_messages` after COMMIT exactly once (receipt keyed on the intent id) and a relay crash between COMMIT and the move is recovered by the next relay pass. |
 | State migration chain | 162 | A seeded V1 `actor_state` row is decoded through `migrations` on the next turn, the handler sees the V2 shape, and the committed row is V2; a chain whose `to`/`from` do not line up fails at `Actor.make`. |
 | Connection park | 163 | With `Connections.park`, an activation with open sockets hibernates after `Hibernate.after`, `conn.state` is restored on the next inbound frame (`ctx.conn.resumed === true`), and a broadcast from a turn wakes it. |
 | Singleton uniqueness | 157, 170 | With two runners, a `singleton: true` actor's `Cron.every` ticks once per schedule and its `run` loop is live on exactly one runner; killing that runner moves both within `shardLockExpiration`. |
+| Outbox delivery | 207 | Same-shard, cross-shard, and cross-region intents and keyed timers survive crashes before delivery, after receiver commit, and before row deletion with one receiver transition per intent id. |
+| Direct command recovery | 206 | Owner killed before commit: no receipt or consequence, and the caller's retry with the same id executes once; after commit: receipt replay. |
+| Pipelined visibility | 187 | Batch N+1's replies, broadcasts, and outbox rows stay hidden until its own commit; a failed batch N discards them. |
+| Reducer laws | 188, 210 | Commutative reducers satisfy the merge law under generated inputs; browser optimistic state converges to committed state. |
+| API type spike | 194–205 | `research/v5` rejects a mismatched `api` key, a bad cron target, wrong-phase context use, `X.intents` outside a turn, and `X.get` inside a turn; typecheck time recorded. |

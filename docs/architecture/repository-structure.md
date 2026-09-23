@@ -49,11 +49,11 @@ packages/durable-actors/src/
   policies/       activation (Hibernate, Lifecycle, Connections), delivery (Mailbox, Delivery, Commands, Receipts, Defects),
                   retention (Events, State), schedule (Cron), effects, the Policy bag
   actor/          Actor.make, ActorDefinition, MintedId / SingletonId, the Actor namespace
-  state/          keyed state, vars, blobs handles
+  state/          keyed state and blob handles
   tables/         OwnedTable, ScopedRead, table(), the Database tag (Drizzle types only)
   handles/        Handle, WorkflowHandle, Connection, ActorEvent, intents, ClientOptions, the Actors tag
   contexts/       command, query, stream, connection, wake, run, effect, workflow; InsideTurn guard
-  activation/     HandlersFor, hooks, effect executors, X.of, toLayer / toQueryLayer (still DB-free)
+  activation/     HandlersFor, context services, toLayer / toQueryLayer / toEffectLayer (still DB-free)
   serve/          HttpApi router, Auth, OpenAPI, ServeOptions, Actor.serve
   client/         "./client"   Promise client, transport, async iterators, error decoding
   runtime/        "./runtime"  Actors.layer, RuntimeControl
@@ -76,7 +76,7 @@ packages/durable-actors/src/
 - Package name is `@durable-actors/<directory basename>`; the framework alone is unscoped `durable-actors`. A name says what the package owns, never a layer.
 - Folders are kebab-case nouns with one responsibility. Forbidden: `core shared common utils helpers lib misc domain types internal`. Role-plural folders (`commands/ events/ queries/ workflows/ effects/ providers/`) are allowed inside a feature with two or more files.
 - Files are kebab-case and named for an operation (`create.ts`) or a role (`contract.ts layer.ts queries.ts handler.ts repository.ts schema.ts errors.ts state.ts config.ts client.ts`). Never `<parent>-<x>.ts`, never `<x>-service.ts`.
-- An actor definition is a role folder: `<actor>/contract.ts` (the `Actor.make` contract), `<actor>/layer.ts` (`X.toLayer`), `<actor>/queries.ts`, with `workflows/` and `effects/` beside them when they exist.
+- An actor definition is a role folder: `<actor>/contract.ts` (the `Actor.make` definition), `<actor>/layer.ts` (`X.toLayer`), `<actor>/queries.ts` (`X.toQueryLayer`), `<actor>/effects.ts` (`X.toEffectLayer`), with `workflows/` beside them when they exist.
 - `index.ts` exists only as a package or subpath entry and names real files; no `./*` wildcard exports.
 - Unit and integration tests are `x.test.ts` beside the corresponding `src/x.ts`, one test file per source file. Browser E2E specs alone live outside source under `apps/e2e/` as `*.e2e.ts`.
 - A leaf directory warns at 12 authored modules.

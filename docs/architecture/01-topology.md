@@ -13,9 +13,9 @@ There are three run modes:
 - **Served:** the same runtime is exposed with `Actor.serve`, providing HTTP, WebSocket, SSE, and `/openapi.json`.
 - **Hosted:** our runners provide the served runtime behind `apps/edge`; Neki is the hosted database detail.
 
-`Actor.make` is the only actor constructor. Named and minted actors are placed by sharding. `singleton: true` uses `Sharding.registerSingleton`, so `X.get()`, cluster-wide `Cron.every`, and `run` have one live owner across runners.
+`Actor.make` is the only actor constructor. Named and minted actors are placed by sharding. `key: Actor.singleton` uses `Sharding.registerSingleton`, so `X.get()`, cluster-wide cron, and the singleton's background loop have one live owner across runners. Each Cluster shard group runs in the availability zone of its Neki shard primary.
 
-Activations are disposable. `Hibernate.after` permits sleep; `Connections.park` leaves sockets at the edge and wakes the actor on the next frame. A `run` fiber is forked in the activation `Scope` on wake and interrupted on sleep or park. Process memory and `vars` are never durable authority.
+Activations are disposable. `policy.hibernateAfter` permits sleep; parked connections stay at the edge and wake the actor on the next frame, and opening a connection or authenticating a session wakes the actors it addresses. Fibers forked in the activation `Scope` are interrupted on sleep. Process memory is never durable authority.
 
 The intended topology API is `Topology.single()` for a single runner and `Topology.http({ listen, advertise })` for networked runners, with `Topology.fromConfig()` for configuration. `Topology.k8s` was removed from the agreed surface; it is not an available fallback. Railway deployment is gated on a reachable per-replica `railnet0` advertise address. A service-per-runner alternative needs its own reachability and failover evidence before multi-runner support is claimed.
 

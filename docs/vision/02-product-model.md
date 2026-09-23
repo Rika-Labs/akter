@@ -7,9 +7,9 @@
 
 ## Vision
 
-An actor is an identity plus serialized mutation under one transaction. `Actor.make` is the only actor constructor. Its contract may declare commands, queries, streams, connections, workflows, events, effects, tables, blobs, keyed state, per-activation `vars`, migrations, and lifecycle policies.
+An actor is an identity plus serialized mutation under one transaction. `Actor.make(name, definition)` is the only way to make an actor. Its definition declares `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, an `api` of commands, reducers, queries, streams, connections, and workflows, and `policy`. There is one way to do each task ([ADR 0010](../decisions/0010-one-way-effect-native-api.md)).
 
-Actors may use framework-minted ids, application-defined names, or `singleton: true`. `Cron.every` schedules a command on the same actor. `Hibernate.after` lets an idle activation sleep. `Connections.park` lets the activation hibernate while WebSocket-style connections remain parked and can wake it.
+Actors may use framework-minted ids, application-defined names, or `Actor.singleton`. `policy.cron` schedules a command on the same actor. `policy.hibernateAfter` lets an idle activation sleep, and parked WebSocket-style connections can wake it.
 
 ## The turn model
 
@@ -19,13 +19,13 @@ command → generation fence → receipt → handler → commit
 
 These steps run in one database transaction. The commit may include keyed state, OwnedTable rows, events, timers, actor intents, workflow intents, effect obligations, and the receipt. A retained receipt makes retrying the same command id replay the logical result instead of applying the handler twice. Declared application failures are recorded and replayed too.
 
-Outside a command turn, direct state access is read-only. Activation read contexts expose `StateSnapshot` and its committed `changes` stream; queries return committed state values without an activation, `changes`, or `vars`. Workflow bodies and effect executors access actor state through actor operations rather than a direct state capability. `vars` are activation-local values and deliberately disappear when the activation hibernates.
+Outside a command turn, state access is read-only through `X.Read`. Workflow bodies and effect executors act on actors through handles rather than a direct state capability. Activation-local values live in the layer's build closure and deliberately disappear when the activation hibernates.
 
 ## One primitive, several modes
 
 - A durable domain object declares the state and members it needs.
-- A transient coordination actor can declare only `vars`; its commands remain serialized, fenced, and receipted, but it has no declared durable application data.
-- A cluster-wide service uses `singleton: true`.
+- A transient coordination actor declares no state and keeps activation-local values in its layer; its commands remain serialized, fenced, and receipted.
+- A cluster-wide service uses `key: Actor.singleton`.
 - A finite durable operation is an `Actor.workflow` member of its owning actor.
 
 An activation is not the actor. Processes may stop, move, or restart while identity, committed data, receipts, events, and future obligations remain.

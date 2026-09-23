@@ -26,9 +26,9 @@ delivering an intent or starting an effect before the committing transaction
 finishes; treating at-least-once intent delivery as an exactly-once external
 effect guarantee — receiver receipts provide the deduplication.
 
-Clean: `ctx.perform`, `ctx.self.X.send/after/at`, and workflow start/cancel
-write durable rows in the transaction; executors and relays run post-commit
-with stable identities.
+Clean: `turn.perform`, `X.intents(id)` methods, and `Intent.after`/`Intent.at`
+timers write `actor_outbox` rows in the transaction; executors and the relay
+run post-commit with stable identities.
 
 Flag only a visible inline execution or in-memory obligation. Best-effort
 broadcast is explicitly non-durable and not covered here — do not flag it for

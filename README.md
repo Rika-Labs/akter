@@ -20,31 +20,39 @@ Each run commits one increment and retries the same command Effect. `committed` 
 
 ## The API
 
-Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables.
+Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables. There is one way to do each task. The shape below is the accepted target ([ADR 0010](docs/decisions/0010-one-way-effect-native-api.md)); the runnable M0 counter still uses the earlier [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset).
 
 ```ts
-import { Effect, Schema } from "effect"
+import { Effect, Result, Schema } from "effect"
 import { Actor } from "durable-actors"
 
-const Increment = Actor.command("Increment", {
-  input: Schema.Number,
-  output: Schema.Number,
+export const CounterState = Actor.state({
+  count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
-const Counter = Actor.make("Counter", {
-  commands: [Increment],
-  state: {
-    count: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
-  },
+// A reducer is a pure transition: it runs optimistically in the browser and authoritatively on the server.
+export const Increment = Actor.reducer("Increment", {
+  state: CounterState,
+  input: Schema.Int,
+  reduce: (state, amount) => Result.succeed({ count: state.count + amount }),
 })
 
-const CounterLive = Counter.toLayer({
-  Increment: Effect.fn(function* (ctx, amount) {
-    const count = ctx.state.count + amount
-    yield* ctx.state.set({ count })
-    return count
+export const Reset = Actor.command("Reset")
+
+export const Counter = Actor.make("Counter", {
+  state: CounterState,
+  api: { Increment, Reset },
+  policy: { hibernateAfter: "30 seconds" },
+})
+
+export const CounterLive = Counter.toLayer(
+  Effect.succeed({
+    Reset: Effect.fn(function* () {
+      const turn = yield* Counter.Turn
+      yield* turn.state.set({ count: 0 })
+    }),
   }),
-})
+)
 
 const program = Effect.gen(function* () {
   const counter = yield* Counter.create()
@@ -52,9 +60,9 @@ const program = Effect.gen(function* () {
 })
 ```
 
-Omit `id` for a framework-minted ID and `Counter.create()`. Declare an ID schema for `Counter.get(id)`, or `singleton: true` for `Counter.get()`. Acquiring a handle writes nothing; the first command establishes durable state. Singleton failover, run loops, and cron remain later milestones.
+Omit `key` for a framework-minted ID and `Counter.create()`. Use an ID schema for `Counter.get(id)`, or `key: Actor.singleton` for `Counter.get()`. Outside a turn every call is request/reply; inside a turn, `Counter.intents(id)` records durable intents that commit with the turn. Acquiring a handle writes nothing; the first command establishes durable state.
 
-In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `durable-actors/runtime`; the preview intentionally stops before runtime wiring. See the [server API](docs/api/01-server-api.md) for the full design.
+In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `durable-actors/runtime`. See the [server API](docs/api/01-server-api.md) for the full design.
 
 ## Why Effect for actors?
 
@@ -62,7 +70,7 @@ An actor framework has to coordinate state, ownership, retries, resources, and f
 
 - **Typed contracts:** schemas define inputs, outputs, events, and declared errors. Handles preserve the error channel instead of reducing every failure to an untyped exception.
 - **Dependency injection:** actor handlers compose through services and layers; database and transport wiring stay at the application boundary.
-- **Structured concurrency:** activations own their resources. A scoped `run` loop starts on wake and is interrupted on sleep, rather than becoming an orphaned background task.
+- **Structured concurrency:** activations own their resources. A fiber forked in an actor's layer starts on wake and is interrupted on sleep, rather than becoming an orphaned background task.
 - **Durable execution:** Cluster, SQL, Workflow, Clock, and Deferred primitives underpin placement, turns, activities, timers, and waits; the framework does not introduce a second runtime beside Effect.
 - **Faithful testing:** the intended `ActorTest` uses real turns, SQL storage, and serialization with controlled time and injected faults—not a fake context that bypasses the transaction.
 
@@ -70,19 +78,19 @@ These are design requirements. The [verification gates](docs/verification/01-con
 
 ## Core Concepts
 
-One constructor, `Actor.make`. The actor's members and policies define its behavior:
+One constructor, `Actor.make`, with one definition object. Its sections define the actor's behavior:
 
-- **Commands and queries:** commands serialize mutations in short transactions; queries read committed rows without waking the actor.
-- **State, tables, and blobs:** keyed JSONB state, actor-owned Drizzle tables, and database-backed binary chunks share the turn boundary. Activation-local `vars` are explicitly ephemeral.
+- **Commands, reducers, and queries:** commands run serialized in short transactions and are delivered directly; reducers are pure transitions that also run optimistically on the client; queries read committed rows from the nearest caught-up replica without waking the actor.
+- **State, tables, and blobs:** compressed keyed state, actor-owned Drizzle tables, and database-backed binary chunks share the turn boundary. Activation-local values in a layer are explicitly ephemeral.
 - **Events and connections:** durable events replay after a cursor; streams and broadcasts are live. Typed connections can park while the activation sleeps, but transport loss still requires reconnecting.
-- **Intents and effects:** commands record work for other actors or external providers. Delivery follows commit; external effects remain at least once unless a provider proves stronger guarantees.
-- **Workflows and schedules:** workflows are members of their owning actor. `Cron.every` schedules commands; `singleton: true` expresses cluster-wide ownership without another actor constructor.
+- **Intents and effects:** turns record work for other actors, timers, and external providers in one actor-shard outbox. Delivery follows commit; external effects remain at least once unless a provider proves stronger guarantees.
+- **Workflows and schedules:** workflows are members of their owning actor. `policy.cron` schedules commands; `key: Actor.singleton` expresses cluster-wide ownership without another actor constructor.
 
 The framework has no AI-specific toolkit or MCP surface. Coding agents are applications built from these same primitives; external tools can consume the planned OpenAPI surface.
 
 ## The model
 
-One relational database per deployment, with tenants inside it. Actors own mutation, not a private database or exclusive visibility over every row.
+One relational database per deployment region, with tenants inside it. Actors own mutation, not a private database or exclusive visibility over every row.
 
 ```text
 command → generation fence → receipt lookup → handler → commit
@@ -98,11 +106,13 @@ Handlers do not hold that transaction open while waiting for another actor, a so
 
 **…the process dies after commit but before replying?** The caller retries with the same command ID. The retained receipt returns the original result without running the handler again. Reusing the ID with different input is a conflict.
 
-**…the actor hibernates?** Committed state and future work remain in the database; `vars` and activation-scoped resources disappear. Parking can preserve a socket while its transport stays alive, not after the process holding that socket dies.
+**…the actor hibernates?** Committed state and future work remain in the database; activation-local values and resources disappear. Parking can preserve a socket while its transport stays alive, not after the process holding that socket dies.
 
 **…an external provider's response is lost?** A missing response is not proof of failure. The application needs provider idempotency or reconciliation before an unsafe retry; an actor receipt does not make an arbitrary external effect exactly once.
 
-**…the backend is Neki?** The agreed design uses a tenant-local outbox and a post-commit relay into Cluster storage instead of assuming cross-shard atomic writes. Neki locking, pinning, and relay recovery remain provider-specific verification gates.
+**…the process dies before commit?** Nothing was durable. The caller's handle retries with the same command ID and the command executes once. Work that must survive the caller is recorded as an intent or a workflow.
+
+**…the backend is Neki?** Every intent is written to an outbox on the sending actor's shard and delivered after commit, so no write needs a cross-shard transaction. Neki locking, pinning, and outbox recovery remain provider-specific verification gates.
 
 The command/receipt recovery subset has completed fault tests; hibernation, providers, and Neki remain design contracts.
 

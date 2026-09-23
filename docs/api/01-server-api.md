@@ -5,11 +5,11 @@
 **Owner role:** API/Effect.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-The Effect-native server API is one package, `durable-actors`. Its root entry exports `Actor`, policies, errors, identity, `Actors`, and `Actor.as`; `Actor.serve` and `Actor.auth` are target APIs and are not exported yet. Runtime construction is imported separately as `Actors.layer` from `durable-actors/runtime`.
+The Effect-native server API is one package, `durable-actors`. Its root entry exports `Actor`, `Intent`, `Fleet`, errors, and identity; `Actor.serve` and `Actor.auth` are target APIs and are not exported yet. Runtime construction is imported separately as `Actors.layer` from `durable-actors/runtime`.
 
 ## Implemented foundation subset
 
-The executable slice is embedded and single-runner on Postgres or PGlite. The rest of this document remains the target API.
+The executable slice is embedded and single-runner on Postgres or PGlite. It predates [ADR 0010](../decisions/0010-one-way-effect-native-api.md) and [ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md): its `Actor.make` options, `(ctx, input)` handlers, `Actors.mint`, `get` options, and persisted Cluster command messages are the current code, not the target. Migrating it is M1 work. The rest of this document is the target API.
 
 - `Actor.command(tag, { input?, output?, errors? })` accepts service-free schemas. Omitted input/output is `void`; JSON codecs preserve it through persistence. Declared errors must be yieldable tagged errors.
 - `Actor.make(name, { commands, internal?, state?, id?, singleton?, lifecycle? })` implements all three identity modes. Omitted `id` mints UUIDv7s through the branded `X.id` schema and `Actors.mint(X)`; `Actors.mint` rejects named and singleton definitions in types. A named `id` schema gives `get(id)`; `singleton: true` gives `get()` and registers through `Sharding.registerSingleton` on the single embedded runner. `create` exists only on minted actors — typed `never` otherwise and a runtime defect if invoked. `internal` commands never appear on public handles or definitions; `ActorTest.actor` obtains their handle through a package-internal registry. `lifecycle` accepts `Commands.timeout`/`lockWait`, `Delivery.timeout`, `State.maxBytes`, `Hibernate.after`, `Mailbox.capacity`, and `Lifecycle.createdBy`; defaults are 30 s, 2 s, 30 s, 65,536 bytes of the complete encoded state object, 60 s, unbounded, and none. Values are positive integers to 2^31 − 1; duplicate policies and `createdBy` commands from another actor are rejected at `Actor.make`. See [ADR 0008](../decisions/0008-foundation-completion.md) for policy rationale.
@@ -22,38 +22,119 @@ The executable slice is embedded and single-runner on Postgres or PGlite. The re
 
 See the runnable [counter](../../examples/counter/src/main.ts), the [protocol](../decisions/0007-foundation-command-protocol.md) and [foundation completion](../decisions/0008-foundation-completion.md) decisions, and the [conformance ledger](../verification/01-conformance.md#foundation-evidence). This subset is not a production-support claim; singleton registration does not imply multi-runner residency or migration.
 
-## Definitions and identity
+## Definitions
 
-`Actor.make(name, members)` is the only actor constructor. Members may include commands, internal commands, queries, streams, connections, workflows, events, effects, tables, blobs, state, activation-local `vars`, migrations, and lifecycle policies.
+`Actor.make(name, definition)` is the only way to make an actor, and the definition is its only shape: there is no piping or later configuration. Every section is data; code lives in layers. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
 
-Actor identity has three modes:
+```ts
+import { Effect, Result, Schema } from "effect"
+import { Actor } from "durable-actors"
 
-- omitted `id`: minted; use `X.create()`, the branded `X.id` schema, or `Actors.mint(X)`;
-- `id: Schema`: named; use `X.get(id)`;
-- `singleton: true`: cluster-wide singleton; use `X.get()`.
+export const CounterId = Schema.String.pipe(Schema.brand("CounterId"))
+export class Overflow extends Schema.TaggedError<Overflow>()("Overflow", { max: Schema.Int }) {}
+export class CountChanged extends Actor.Event<CountChanged>()("CountChanged", {
+  count: Schema.Int,
+}) {}
 
-Resolving or creating a handle writes nothing. The first turn creates durable rows.
+export const CounterState = Actor.state({
+  count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+})
 
-`Actor.command(tag, { input, output, errors })` uses the same PascalCase tag for the declaration, handler key, and handle method. A single input schema gives a positional argument, schema fields give an object argument, and omitted input gives a zero-argument command. Errors are explicitly declared yieldable tagged-error schemas, not inferred into a public contract from handler code. `internal` commands are excluded from public handles and transports.
+export const Increment = Actor.reducer("Increment", {
+  description: "Add `amount`. Fails with Overflow above 1000.",
+  state: CounterState,
+  input: Schema.Int,
+  errors: [Overflow],
+  reduce: (state, amount) =>
+    state.count + amount > 1_000
+      ? Result.fail(new Overflow({ max: 1_000 }))
+      : Result.succeed({ count: state.count + amount }),
+})
+export const Reset = Actor.command("Reset", { description: "Set to zero and announce it." })
+export const GetCount = Actor.query("GetCount", { output: Schema.Int })
 
-Server code implements commands and workflow bodies together with `X.toLayer`. Query handlers use `X.toQueryLayer`. A workflow is declared with `Actor.workflow(tag, ...)`, listed in `workflows`, and started outside a turn with `x.Ship.start(input, { key })`. Inside a turn it is started as a durable intent with `ctx.self.Ship.start(input)`.
+export const Counter = Actor.make("Counter", {
+  key: CounterId,
+  state: CounterState,
+  events: [CountChanged],
+  api: { Increment, Reset, GetCount },
+  policy: { hibernateAfter: "30 seconds", cron: { "0 * * * *": Reset } },
+})
+```
 
-Handlers take `(ctx, input)`; executors take `(ctx, effect)`. Server-only `X.toLayer` options hold `hooks`, `effects`, `run`, `shardGroup`, and `spanAttributes`; contract `lifecycle` holds serializable policies. The Effect form of `toLayer` can build activation-scoped resources and return `X.of(handlers, options)`. Actor files use `<actor>/contract.ts`, `layer.ts`, and `queries.ts`, with workflow/effect role folders as needed.
+| Section     | Content                                                                                                                                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | id schema (named, `X.get(id)`), `Actor.singleton` (`X.get()`), or omitted (minted, `X.create()`)                                                                                                              |
+| `placement` | `"tenant"` (default), `"actor"`, or a parent actor definition                                                                                                                                                 |
+| `state`     | one `Actor.state(fields, { migrations })`; missing keys decode from defaults                                                                                                                                  |
+| `tables`    | `Actor.table` Drizzle tables with framework ownership columns                                                                                                                                                 |
+| `blobs`     | `Actor.blob` database-backed `bytea` chunks                                                                                                                                                                   |
+| `events`    | `Actor.Event` classes                                                                                                                                                                                         |
+| `effects`   | `Actor.effect` classes, executed after commit                                                                                                                                                                 |
+| `api`       | commands, reducers, queries, streams, connections, and workflows; each key equals its member's tag                                                                                                            |
+| `policy`    | `hibernateAfter`, `commandTimeout`, `lockWait`, `deliveryTimeout`, `maxStateBytes`, `mailboxCapacity`, `createdBy`, `keepReceipts`, `keepEvents`, `effectRetry`, `connections`, `cron`, `cronSkipIfOlderThan` |
 
-`state` declares small schema-decoded JSONB values; `vars` declares non-durable activation values. Missing state and initial vars decode from an empty object, so keys need decoding defaults or optional schemas. `Actor.blob` in `blobs` declares database-backed `bytea` chunks; `ctx.blob` writes only in turns and exposes read-only access off-turn. `Actor.migration` upcasts keyed state; relational tables migrate separately.
+Members:
 
-An outside workflow start returns a `WorkflowRun` with `id`, `key`, `result`, `poll`, and `interrupt`; `x.Ship.run(key)` rehydrates it. `Lifecycle.createdBy(Command)` can require an explicit creating command before others run. Neither workflow execution nor handle acquisition retains an actor turn.
+- `Actor.command(tag, { input?, output?, errors?, internal? })` runs an effectful server handler. A single input schema gives a positional argument, struct fields an object argument, and omitted input a zero-argument call. `internal: true` removes it from public handles and transports.
+- `Actor.reducer(tag, { state, input, errors?, reduce, commutative? })` is a pure transition with no server handler. It runs optimistically in browser handles; with `commutative: { combine }` it may merge across runners, returns `void`, and declares no errors.
+- `Actor.query`, `Actor.stream`, `Actor.connection`, and `Actor.workflow` declare reads, live streams, typed sessions, and durable workflows.
 
-`Cron.every(expression, Command, { skipIfOlderThan })` is a lifecycle policy on a zero-input command of the same actor. On a singleton it runs once cluster-wide. A singleton may also provide a cluster-wide `run` loop.
+Type checks replace lists that must agree: an `api` key must equal its tag, `cron` and `createdBy` must name a command in `api`, and cron targets take no input. The tag, `api` key, handler key, and handle method are the same PascalCase name.
+
+## Layers
+
+```ts
+export const CounterLive = Counter.toLayer(
+  Effect.succeed({
+    Reset: Effect.fn(function* () {
+      const turn = yield* Counter.Turn
+      yield* turn.state.set({ count: 0 })
+      yield* turn.emit(new CountChanged({ count: 0 }))
+    }),
+  }),
+)
+
+export const CounterReads = Counter.toQueryLayer(
+  Effect.succeed({
+    GetCount: Effect.fn(function* () {
+      const read = yield* Counter.Read
+      return read.state.count
+    }),
+  }),
+)
+```
+
+- `X.toLayer(build)` implements commands, streams, connections, and workflows. Reducers have no entry. The build Effect runs once per activation: it replaces wake hooks; `Effect.addFinalizer` replaces sleep hooks; `Effect.forkScoped` replaces `run` on singletons; a `Ref` replaces `vars`; `X.onDefect(f)` registers the defect hook.
+- `X.toQueryLayer(build)` implements queries against committed data.
+- `X.toEffectLayer(build)` implements effect executors and may run on separate processes. A dead-lettered effect is delivered to the actor as the internal `EffectDeadLettered` command.
+
+Each takes the Effect form only; there is no options object. Handlers take only their input. Context is a typed service per phase (`X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`); see [context](02-context.md). Actor files use `<actor>/contract.ts`, `layer.ts`, `queries.ts`, and `effects.ts`, with a `workflows/` folder as needed.
+
+## Calling actors
+
+```ts
+const counter = yield * Counter.get(id)
+const state = yield * counter.Increment(5) // request/reply
+
+const later = yield * Counter.intents(id) // inside a turn only
+yield * later.Increment(1) // commits with the turn, delivered after
+yield * later.Reset().pipe(Intent.after("1 hour"), Intent.key("idle"))
+yield * Intent.cancel("idle")
+```
+
+Outside a turn, every call is request/reply and direct: the command runs in its owner's turn, and the committed receipt is its only durable admission record ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)). The handle retries retryable failures with the same command id. Work that must survive a caller crash is an intent written by a turn, or a workflow.
+
+Inside a turn, `X.intents(id)` returns the same method shape as durable intents. They are committed with the turn, delivered after commit, and deduplicated by the receiver's receipt. Self-intents use `X.intents(turn.id)`. Calling `X.get` inside a turn is a type error, and a captured handle dies at runtime. Workflows start as `later.Ship(input)` inside a turn and `counter.Ship(input)` outside; outside calls return a `WorkflowRun`.
+
+Caller and tenant are ambient: the edge sets them per request, `ActorTest.layer` per test, and `Actor.as(caller)` and `Actor.tenant(tenant)` around an Effect. `get` takes no options. `Actor.commandId(id)` supplies an explicit command id. Acquiring a handle writes nothing; the first turn creates durable rows.
 
 ## Composition
 
 Applications run actors in three forms:
 
-- **embedded:** provide `Actors.layer` and call actor handles as Effects;
+- **embedded:** provide the layers and `Actors.layer`, and call handles as Effects;
 - **served:** add `Actor.serve` for HTTP, WebSocket, SSE, and OpenAPI;
 - **hosted:** run the same layers on managed runners with Neki.
 
-`Actor.serve` requires authentication; `Actor.auth.none` is the explicit public opt-out. Authentication sets `CurrentCaller` at the edge. Inside turns, code reads `ctx.caller` and `ctx.principal`.
-
-The API uses runtime schemas at every transport and persistence boundary, preserves the client-minted command identity across retries, and rejects request/reply calls made from inside a command turn.
+`Actor.serve` requires authentication; `Actor.auth.none` is the explicit public opt-out. Authentication sets `CurrentCaller` at the edge. The API uses runtime schemas at every transport and persistence boundary and preserves the command identity across retries.
