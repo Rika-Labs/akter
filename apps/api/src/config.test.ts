@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { loadConfig } from "../src/config.ts"
+import { loadConfig } from "./config.ts"
 
 const local = {
   DATABASE_URL: "postgres://test:test@localhost/test",

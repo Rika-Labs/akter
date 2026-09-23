@@ -1,6 +1,6 @@
 import { expect, it } from "vitest"
 import { Effect, Schema } from "effect"
-import { Manifest, selectUpdate, updateCatalogs } from "../src/catalogs.ts"
+import { Manifest, selectUpdate, updateCatalogs } from "./catalogs.ts"
 
 it("selects numeric patch/minor upgrades but never major, downgrade or prerelease", () => {
   expect(

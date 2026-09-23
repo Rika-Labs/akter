@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { deployment, assertDestroy } from "../src/lifecycle.ts"
+import { deployment, assertDestroy } from "./lifecycle.ts"
 
 const now = Date.parse("2026-09-01T00:00:00Z")
 

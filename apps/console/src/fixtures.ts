@@ -1,4 +1,4 @@
-import type { Dashboard } from "../src/http.js"
+import type { Dashboard } from "./http.js"
 
 export const dashboard: Dashboard = {
   user: { name: "Alex Morgan", email: "alex@example.test" },

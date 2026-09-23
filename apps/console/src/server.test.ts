@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
 import { describe, expect, it, vi } from "vitest"
-import { createHandler } from "../src/server.js"
+import { createHandler } from "./server.js"
 import { dashboard } from "./fixtures.js"
 
 const origin = "https://app.example.test"

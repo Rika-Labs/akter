@@ -1,20 +1,7 @@
 import { expect, it } from "vitest"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, FileSystem, ManagedRuntime, Schema } from "effect"
-
-const Report = Schema.fromJsonString(
-  Schema.Struct({
-    tasks: Schema.Array(
-      Schema.Struct({
-        taskId: Schema.String,
-        hash: Schema.String,
-        command: Schema.String,
-        dependencies: Schema.Array(Schema.String),
-        resolvedTaskDefinition: Schema.Struct({ cache: Schema.Boolean }),
-      }),
-    ),
-  }),
-)
+import { TurboReport } from "./turbo.ts"
 
 it("Turbo selects changed tasks, propagates dependency changes, and keeps integration uncached", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
@@ -82,7 +69,7 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
         const tasks = ["lint", "typecheck", "test", "build", "test:integration"]
 
         const report = () =>
-          Schema.decodeEffect(Report)(
+          Schema.decodeEffect(TurboReport)(
             run([turbo, "run", ...tasks, "--dry=json", "--cache=local:rw"]),
           )
 
@@ -92,7 +79,7 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
           result.tasks.find((task) => task.taskId === id)?.hash
 
         const affected = () =>
-          Schema.decodeEffect(Report)(
+          Schema.decodeEffect(TurboReport)(
             run([
               "env",
               "-u",

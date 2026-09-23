@@ -4,7 +4,7 @@ import { Effect, Layer } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { BunHttpServer } from "@effect/platform-bun"
 import { Api } from "@durable-actors/contracts"
-import { HealthLive } from "../src/health.ts"
+import { HealthLive } from "./health.ts"
 
 it.effect("health contract round-trips through the generated HttpApi client", () =>
   Effect.scoped(

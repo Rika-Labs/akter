@@ -56,5 +56,20 @@
     "durable-actors/no-barrel-index": "error",
     "durable-actors/no-runtime-import-outside-runtime": "error"
   },
+  "overrides": [
+    {
+      "files": ["infra/alchemy.run.ts"],
+      "rules": {
+        "effecttsgo/any-unknown-in-error-context": "off"
+      }
+    },
+    {
+      "files": ["apps/e2e/*.ts"],
+      "rules": {
+        "effecttsgo/async-function": "off",
+        "effecttsgo/process-env": "off"
+      }
+    }
+  ],
   "ignorePatterns": ["**/dist/**", ".local/**", "tooling/oxlint/anti-slop/**", "**/templates/**"]
 }

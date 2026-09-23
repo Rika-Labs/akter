@@ -14,7 +14,7 @@
     "dev": "bun src/build.ts --watch",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/ui/test"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/ui/src"
   },
   "dependencies": {
     "@effect/platform-browser": "catalog:",

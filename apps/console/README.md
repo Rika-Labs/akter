@@ -72,7 +72,7 @@ invalid API payloads, absent API, auth cookies, proxy header authority,
 CSRF/Origin failures, theme/query preservation, signup verification, recovery
 failure and Polar redirect allowlisting. `bun run test` compiles UI first.
 
-For isolated visual review only, build UI then run `bun test/preview.ts` as a
+For isolated visual review only, build UI then run `bun src/preview.ts` as a
 managed service on port 3002. This read-only fixture uses production rendering
 with labeled test data. All mutations deliberately fail. `?empty=1` renders
 no-organization state. It is outside the production import graph. Screenshots

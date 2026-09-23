@@ -3,8 +3,8 @@ import { BunServices } from "@effect/platform-bun"
 import { Clock, Config, Crypto, Effect, FileSystem, ManagedRuntime, Path, Schema } from "effect"
 import { Pool } from "pg"
 import { migrate } from "@durable-actors/postgres/migrate"
-import { makeHandler } from "../../src/app.ts"
-import { loadConfig } from "../../src/config.ts"
+import { makeHandler } from "./app.ts"
+import { loadConfig } from "./config.ts"
 
 const runtime = ManagedRuntime.make(BunServices.layer)
 

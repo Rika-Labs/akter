@@ -1,5 +1,5 @@
 import { expect, it } from "vitest"
-import { branchPolicy, evidencePolicy } from "../src/policy.ts"
+import { branchPolicy, evidencePolicy } from "./policy.ts"
 
 it("requires main and issue-linked branches with narrow Dependabot exception", () => {
   expect(() =>

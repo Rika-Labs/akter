@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
-import { renderPage, type Page } from "../src/pages.js"
+import { renderPage, type Page } from "./pages.js"
 import { dashboard } from "./fixtures.js"
 
 describe("FoldKit static pages", () => {

@@ -2,6 +2,6 @@ import { defineConfig } from "vitest/config"
 
 export default defineConfig({
   test: {
-    include: ["test/**/*.test.ts", "../.github/test/**/*.test.ts"],
+    include: ["infra/src/**/*.test.ts", ".github/src/**/*.test.ts"],
   },
 })

@@ -4,11 +4,11 @@ import { PgliteClient } from "@effect/sql-pglite"
 import { Cause, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { Actor, Lifecycle, NotCreated } from "../index.ts"
-import { migrate } from "../runtime/database/migrations.ts"
-import { Database } from "../runtime/index.ts"
-import { ActorTest } from "./actor-test.ts"
-import { describeConformance, type ConformanceBackend } from "./conformance.ts"
+import { Actor, Lifecycle, NotCreated } from "../../index.ts"
+import { migrate } from "./migrations.ts"
+import { Database } from "../index.ts"
+import { ActorTest } from "../../testing/actor-test.ts"
+import { describeConformance, type ConformanceBackend } from "../../testing/conformance.ts"
 
 const harness = ManagedRuntime.make(BunFileSystem.layer)
 

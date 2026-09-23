@@ -2,7 +2,7 @@ import { BunCrypto } from "@effect/platform-bun"
 import { Config, Crypto, Effect, ManagedRuntime, Redacted } from "effect"
 import { Pool } from "pg"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { describeConformance, type ConformanceBackend } from "../conformance.ts"
+import { describeConformance, type ConformanceBackend } from "./conformance.ts"
 
 const harness = ManagedRuntime.make(BunCrypto.layer)
 

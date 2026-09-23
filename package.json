@@ -42,6 +42,7 @@
     "typecheck": "GOMAXPROCS=1 turbo run typecheck --concurrency=100%",
     "test": "turbo run test --concurrency=100%",
     "test:integration": "turbo run test:integration --concurrency=100%",
+    "test:e2e": "turbo run test:e2e --filter=@durable-actors/e2e",
     "lint:directives": "bun tooling/oxlint/src/directives.ts",
     "lint": "bun run lint:directives && bun run lint:structure && GOMAXPROCS=1 turbo run lint lint:root --concurrency=100%",
     "lint:structure": "bun tooling/structure/src/index.ts",
@@ -49,7 +50,7 @@
     "format": "oxfmt . '!research/**'",
     "format:check": "oxfmt --check . '!research/**'",
     "check": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100%",
-    "check:ci": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration --concurrency=100% --summarize"
+    "check:ci": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell && GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration test:e2e --concurrency=100% --summarize"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",

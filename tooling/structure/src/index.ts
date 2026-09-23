@@ -19,6 +19,10 @@ const INDEX_FILE = /(?:^|\/)index\.[cm]?[jt]sx?$/
 
 const TEST_DIR = /(?:^|\/)tests?\//
 
+const TEST_FILE = /\.test\.[cm]?[jt]sx?$/
+
+const E2E_FILE = /\.e2e\.[cm]?[jt]sx?$/
+
 const LEAF_MODULE_LIMIT = 12
 
 const APP_PACKAGE = /^@durable-actors\/(api|console|edge|cli)$/
@@ -229,18 +233,51 @@ const checkTests = (input: {
   readonly exemptions: ReadonlyArray<Exemption>
   readonly findings: Array<Finding>
 }) => {
+  const paths = new Set(input.files.map((file) => file.path))
+
   for (const file of input.files) {
     if (!SOURCE_FILE.test(file.path)) continue
 
-    if (!TEST_DIR.test(file.path)) continue
-
     if (exemptedWhole({ exemptions: input.exemptions, path: file.path })) continue
 
-    input.findings.push({
-      path: file.path,
-      rule: "tests-beside-sources",
-      message: "tests live as x.test.ts beside x.ts; move this file next to its source",
-    })
+    if (file.path.startsWith("apps/e2e/")) {
+      if (TEST_FILE.test(file.path))
+        input.findings.push({
+          path: file.path,
+          rule: "tests-beside-sources",
+          message: "only browser *.e2e.ts specs belong in apps/e2e",
+        })
+      continue
+    }
+
+    if (E2E_FILE.test(file.path)) {
+      input.findings.push({
+        path: file.path,
+        rule: "tests-beside-sources",
+        message: "browser E2E specs belong in apps/e2e",
+      })
+      continue
+    }
+
+    if (TEST_DIR.test(file.path) || (TEST_FILE.test(file.path) && !file.path.includes("/src/"))) {
+      input.findings.push({
+        path: file.path,
+        rule: "tests-beside-sources",
+        message: "only browser E2E lives outside src; colocate x.test.ts beside src/x.ts",
+      })
+      continue
+    }
+
+    if (!TEST_FILE.test(file.path)) continue
+
+    const source = file.path.replace(/\.test(?=\.[cm]?[jt]sx?$)/, "")
+
+    if (!paths.has(source))
+      input.findings.push({
+        path: file.path,
+        rule: "tests-beside-sources",
+        message: `test must match its source file at ${source}`,
+      })
   }
 }
 

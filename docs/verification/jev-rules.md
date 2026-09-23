@@ -7,7 +7,7 @@
 
 ## What this is
 
-`.amp/rules/` holds 45 Markdown rule files evaluated in-thread by the global
+`.amp/rules/` holds 46 Markdown rule files evaluated in-thread by the global
 Jev plugin, plus the reserved `_config.md` engine settings file. Each rule
 carries strict frontmatter — `enabled` (boolean), `paths`/`exclude` (lists of
 `*`, `?`, `**` globs; no brace expansion), `on` (`code-change` and/or
@@ -26,7 +26,7 @@ completeness, and never flag code they cannot see.
 
 After a file-modifying tool call completes, the plugin diffs before/after
 snapshots of the touched files. This project's `allRules: true` assesses all
-45 enabled code rules on every supported edit, including unrelated rules,
+46 enabled code rules on every supported edit, including unrelated rules,
 which must abstain. `batchSize: 1` sends one state/questions request per rule;
 `concurrency: 512` admits the whole catalog without local request waves.
 Alternatively, `batchSize: 512` combines shared-state questions and splits
@@ -116,7 +116,9 @@ also cover `serve/` (likewise a placeholder) but additionally scope
 `runtime/`, so they are active on the `runtime/` portion now. The remaining
 rules match live code or test files today. Rule 43 guards the public actor
 capability and minted-only identity boundary. Rules 44–45 cover the API's
-handler/service/repository split and Effect-native Drizzle usage. The existing
+handler/service/repository split and Effect-native Drizzle usage. Rule 46
+warns when unit or integration tests leave their matching source files; the
+structure linter enforces that placement in CI. The existing
 creation-marker (06) and contention-test (33) rules also cover the specific
 pre-policy creation and fake lock-timeout regressions found in the M0 review.
 
@@ -145,7 +147,7 @@ the 4KiB excerpt cap (`02-command-turns.md`, `invariants.md`,
 `01-server-api.md`, and `02-context.md`). Dependent checks remain explicitly
 incomplete; no privacy bypass or contract rewrite was added to hide this.
 The original 42-rule catalog was not calibrated against live predictions; the
-three new rules have not been calibrated either.
+four new rules have not been calibrated either.
 
 The global plugin's `evals/rules-benchmark.ts --fanout --live --catalog=<project>`
 measured the original 42-rule catalog against a synthetic one-line runtime edit, with the real

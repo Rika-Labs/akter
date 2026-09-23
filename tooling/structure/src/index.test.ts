@@ -134,19 +134,31 @@ describe("index.ts discipline", () => {
 })
 
 describe("tests beside sources", () => {
-  it("flags test/ directories; colocated x.test.ts files pass", () => {
+  it("requires the same basename and source directory even for integration tests", () => {
     const findings = analyze({
       files: [
         cleanManifest("packages/foo", "@durable-actors/foo"),
         file("packages/foo/src/index.ts"),
         file("packages/foo/src/users.ts"),
         file("packages/foo/src/users.test.ts"),
-        file("packages/foo/test/extra.test.ts"),
+        file("packages/foo/src/missing.test.ts"),
+        file("packages/foo/test/users.test.ts"),
+        file("packages/foo/test/fixture.ts"),
+        file("apps/e2e/console.e2e.ts"),
+        file("apps/e2e/console.test.ts"),
+        file("apps/console/src/console.e2e.ts"),
       ],
       exemptions: [],
     })
 
-    expect(paths(findings)).toEqual(["packages/foo/test/extra.test.ts"])
+    expect(paths(findings)).toEqual([
+      "packages/foo/src/missing.test.ts",
+      "packages/foo/test/users.test.ts",
+      "packages/foo/test/fixture.ts",
+      "apps/e2e/console.test.ts",
+      "apps/console/src/console.e2e.ts",
+    ])
+    expect(findings[0]?.message).toContain("packages/foo/src/missing.ts")
   })
 })
 
@@ -174,7 +186,6 @@ describe("leaf directory limit", () => {
 describe("exemptions", () => {
   const exemptions: ReadonlyArray<Exemption> = [
     { path: "packages/ui", rule: "no-ui-package", reason: "test" },
-    { path: "apps/api/test", rule: "tests-beside-sources", reason: "test" },
     { path: "research", rule: "structure-rules", reason: "test" },
     { path: "packages/gone", rule: "no-ui-package", reason: "test" },
   ]
@@ -184,7 +195,6 @@ describe("exemptions", () => {
       files: [
         cleanManifest("packages/ui", "@durable-actors/ui"),
         file("packages/ui/src/index.ts"),
-        file("apps/api/test/app.test.ts"),
         file("research/v4/framework/Actor.ts"),
         file("research/anything/index.ts"),
       ],
@@ -192,26 +202,17 @@ describe("exemptions", () => {
     })
 
     expect(paths(findings)).not.toContain("packages/ui")
-    expect(paths(findings)).not.toContain("apps/api/test/app.test.ts")
     expect(paths(findings)).not.toContain("research/anything/index.ts")
   })
 
   it("reports an exemption whose path no longer exists or no longer violates", () => {
     const findings = analyze({
-      files: [
-        cleanManifest("packages/ui", "@durable-actors/ui"),
-        file("packages/ui/src/index.ts"),
-        file("apps/api/src/app.test.ts"),
-      ],
+      files: [cleanManifest("packages/ui", "@durable-actors/ui"), file("packages/ui/src/index.ts")],
       exemptions,
     })
 
     const stale = findings.filter((finding) => finding.message.startsWith("stale exemption"))
 
-    expect(stale.map((finding) => finding.path).sort()).toEqual([
-      "apps/api/test",
-      "packages/gone",
-      "research",
-    ])
+    expect(stale.map((finding) => finding.path).sort()).toEqual(["packages/gone", "research"])
   })
 })

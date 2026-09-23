@@ -37,6 +37,15 @@ root TypeScript configuration, lint plugins, Vitest configuration, and the
 `.github` sources consumed by infra are included in their owning checks.
 The real-Turbo regression test exercises these invalidation boundaries.
 
+File-scoped type-aware lint exceptions are limited to platform boundaries:
+`effecttsgo/any-unknown-in-error-context` for `infra/alchemy.run.ts`, and
+`effecttsgo/async-function` plus `effecttsgo/process-env` for the imperative
+Playwright project in `apps/e2e`. Playwright's test functions return promises
+and its configuration reads `CI` directly. Alchemy's
+`Railway.Service` type reports an `any` requirements channel even
+when its providers are supplied by the stack. All other rules still run on
+these files; remove the infra exception when the upstream type no longer widens.
+
 Blacksmith automatically accelerates upstream `actions/cache@v6`. All three
 workflows cache Bun's package store, not mutable `node_modules`. Verify also
 restores TypeScript incremental metadata using a toolchain/configuration key and
@@ -65,8 +74,11 @@ accepts `--shard=1/4` through a filtered Turbo invocation, for example
 shard only when measured execution savings exceed repeated checkout/install cost;
 merge blob reports and require every shard before publishing aggregate evidence.
 Keep shard arguments in the Turbo invocation so each shard gets a distinct cache
-key. Historical balancing needs real timing data; no speculative scheduler or
-empty E2E framework is installed in this template.
+key. Historical balancing needs real timing data; no speculative scheduler is
+installed. The separate `apps/e2e` Playwright project runs in `check:ci`
+after Chromium headless-shell installation. It checks the console's read-only
+fixture in a real browser, not the live auth or billing providers. Run
+`bun run test:e2e` locally after installing Playwright Chromium.
 
 Sticky disks are not interchangeable with branch-isolated Actions caches: they
 share snapshots across repository workflows by default. Enable Blacksmith sticky

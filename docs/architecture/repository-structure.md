@@ -10,7 +10,8 @@
 ```text
 apps/                       deployables and the CLI bin; never imported by another package
   api/                      @durable-actors/api        control-plane HTTP; embeds the control-plane actors
-  console/                  @durable-actors/console    FoldKit SSR; e2e/ and scenes/ hold browser tests
+  console/                  @durable-actors/console    FoldKit SSR
+  e2e/                      @durable-actors/e2e        Playwright browser tests against read-only console fixtures
   edge/                     @durable-actors/edge       hosted ingress: deployment hosts → runners, API key → Principal, parked sockets, limits
   cli/                      @durable-actors/cli        `durable login | dev | deploy | migrate | dead-letters`
 packages/
@@ -77,7 +78,7 @@ packages/durable-actors/src/
 - Files are kebab-case and named for an operation (`create.ts`) or a role (`contract.ts layer.ts queries.ts handler.ts repository.ts schema.ts errors.ts state.ts config.ts client.ts`). Never `<parent>-<x>.ts`, never `<x>-service.ts`.
 - An actor definition is a role folder: `<actor>/contract.ts` (the `Actor.make` contract), `<actor>/layer.ts` (`X.toLayer`), `<actor>/queries.ts`, with `workflows/` and `effects/` beside them when they exist.
 - `index.ts` exists only as a package or subpath entry and names real files; no `./*` wildcard exports.
-- Tests are `x.test.ts` beside `x.ts`. Browser tests live in `apps/console/{e2e,scenes}/`.
+- Unit and integration tests are `x.test.ts` beside the corresponding `src/x.ts`, one test file per source file. Browser E2E specs alone live outside source under `apps/e2e/` as `*.e2e.ts`.
 - A leaf directory warns at 12 authored modules.
 - Every deviation is one entry in `tooling/structure/src/exemptions.ts` with a reason; an entry that matches nothing fails the check.
 

@@ -2,7 +2,7 @@ import { expect } from "vitest"
 import { it } from "@effect/vitest"
 import { Effect } from "effect"
 import { TestClock } from "effect/testing"
-import { verifyWebhook } from "../src/webhook.ts"
+import { verifyWebhook } from "./webhook.ts"
 
 const secret = Buffer.from("test-webhook-key").toString("base64")
 
