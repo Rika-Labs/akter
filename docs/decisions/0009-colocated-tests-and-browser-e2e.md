@@ -1,4 +1,4 @@
-# ADR 0007: Colocated tests and a separate browser project
+# ADR 0009: Colocated tests and a separate browser project
 
 **Status:** accepted (2026-09-22)
 **Supersedes:** ADR 0001's temporary `test/` exemptions and the browser location in the repository structure design

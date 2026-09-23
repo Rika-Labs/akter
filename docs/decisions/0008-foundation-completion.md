@@ -1,4 +1,4 @@
-# ADR 0006: Foundation identity, policies, defects, and PGlite
+# ADR 0008: Foundation identity, policies, defects, and PGlite
 
 **Status:** implementation decision (2026-09-22); evidence is tracked separately.
 
@@ -9,7 +9,7 @@
 
 ## Context
 
-ADR 0005 delivered one command/identity/receipt path on Postgres with `User`/`Anonymous` callers and no policies. M0 still required the remaining foundation surface — all three identity modes, bounded execution, creation gating, defect reporting, internal commands, and a fast embedded backend for tests — without widening into M1+ members.
+ADR 0007 delivered one command/identity/receipt path on Postgres with `User`/`Anonymous` callers and no policies. M0 still required the remaining foundation surface — all three identity modes, bounded execution, creation gating, defect reporting, internal commands, and a fast embedded backend for tests — without widening into M1+ members.
 
 ## Decision
 

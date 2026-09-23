@@ -1,4 +1,4 @@
-# ADR 0005: Foundation command protocol
+# ADR 0007: Foundation command protocol
 
 **Status:** implementation decision (2026-09-22); evidence is tracked separately.
 

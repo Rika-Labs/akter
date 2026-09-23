@@ -17,6 +17,6 @@ Permission revocation MUST block new external admissions and result access, but 
 
 Internal commands MUST be absent from public handles, the Promise client, and served endpoints. They are reachable through framework System-caller handles; a non-System attempt is a deterministic defect, not a public way to forge executor results. System calls preserve `source`, optional actor reference, and optional `onBehalfOf` principal.
 
-One database MUST serve a deployment. Tenant isolation MUST use trusted `tenant_id` on every framework and business row, composite indexes, transaction scoping, and optional per-table RLS. Client-supplied tenant, actor id, cursor, or connection data is input, not authority. Compute placement is `shardGroup`; data placement is Neki shard placement.
+One database MUST serve each deployment region; a tenant's rows live only in its home region's database. Tenant isolation MUST use trusted `tenant_id` on every framework and business row, composite indexes, transaction scoping, and optional per-table RLS. Client-supplied tenant, actor id, cursor, or connection data is input, not authority. Compute placement is `shardGroup`; data placement is Neki shard placement.
 
 Credentials and sensitive payloads MUST be redacted from logs. Spans MUST be named `durable-actors.<Actor>/<Command>`. The framework is trusted application infrastructure, not a hostile-code sandbox. Verification: **Per-call caller over HTTP**, **Cluster header size**, and **Workflow tenant isolation** gates.
