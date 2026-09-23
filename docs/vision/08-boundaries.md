@@ -40,4 +40,8 @@ This is a full actor framework, not a workflow-only system or a standalone backg
 
 There is no AI-specific framework layer. Contracts, receipts, cursor-based events, dead letters, workflow `waitFor`, and connections make agents straightforward to build; OpenAPI is the integration surface for external tool generation.
 
+This boundary does not prohibit an adapter package for durable agent orchestration. Such a package must compile to actors and keep model/sandbox execution behind effects. It must not imply that the core framework provides a first-party POSIX VM or hostile-code isolation.
+
+Generated durable applications are a gated future product direction, not a current guarantee. Generated code must be validated, versioned, and isolated from the host; TypeScript capabilities and row-level security alone are not a sandbox.
+
 When an application needs a stronger property, the framework should surface the tradeoff and require an explicit architecture rather than quietly weakening the guarantee.

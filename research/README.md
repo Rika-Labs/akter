@@ -8,6 +8,7 @@ Versioned research for an **open-source, self-hostable durable actor framework w
 | [v2](v2/README.md) | Feasibility assessment under the updated requirements | Preserved technical assessment, 2026-09-19; limits still apply unless superseded |
 | [v3](v3/README.md) | Consolidated product specification: 16 feature folders, diagrams, API sketches and validation gates | Current direction, 2026-09-20; not an implemented runtime |
 | [v4](v4/README.md) | Effect-native actor API: typechecked `Actor.make` / `X.get(id)` surface, contract–server split, lifecycle policies, mapping to Cluster/Rpc primitives | Supersedes the v3 `Actor.define` sketch only, 2026-09-21; runtime internals unchanged |
+| [v5](v5/README.md) | Post-foundation product directions: Postgres adoption, observation, client reach, durable agent runtime, and generated applications | Product direction and gates, 2026-09-23; no new runtime support claimed |
 
 ## Iteration policy
 
