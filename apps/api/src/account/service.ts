@@ -1,4 +1,5 @@
 import { Crypto, Effect } from "effect"
+import { APIError } from "better-auth/api"
 import { Auth } from "@durable-actors/accounts"
 import { Billing } from "@durable-actors/billing"
 import { Conflict, Forbidden, Unauthorized, Unavailable } from "@durable-actors/contracts"
@@ -15,7 +16,7 @@ export const authenticated = Effect.fn("Api.authenticated")(function* () {
 
   const result = yield* auth
     .getSession()
-    .pipe(Effect.mapError(() => Unauthorized.make({ message: "Session is invalid" })))
+    .pipe(Effect.mapError(() => Unavailable.make({ message: "Session lookup unavailable" })))
 
   if (result === null || !result.user.emailVerified)
     return yield* Unauthorized.make({ message: "Sign in with a verified email" })
@@ -91,8 +92,12 @@ export const createOrganization = Effect.fn("Api.organization")(function* (
 
   const result = yield* Effect.tryPromise({
     try: () => raw.api.createOrganization({ body: payload, headers, returnHeaders: true }),
-    catch: () =>
-      Conflict.make({ message: "Organization could not be created; slug may already exist" }),
+    catch: (error) =>
+      error instanceof APIError &&
+      error.statusCode === 400 &&
+      error.body?.code === "ORGANIZATION_ALREADY_EXISTS"
+        ? Conflict.make({ message: "Organization slug already exists" })
+        : Unavailable.make({ message: "Organization creation unavailable" }),
   })
 
   const org = result.response
@@ -104,7 +109,7 @@ export const createOrganization = Effect.fn("Api.organization")(function* (
         headers,
         returnHeaders: true,
       }),
-    catch: () => Conflict.make({ message: "Organization created; select it to continue" }),
+    catch: () => Unavailable.make({ message: "Organization created; select it to continue" }),
   })
 
   return {

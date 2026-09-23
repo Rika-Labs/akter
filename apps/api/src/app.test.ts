@@ -181,6 +181,9 @@ describe("real PostgreSQL API", () => {
         expect(created.status, yield* Effect.promise(() => created.clone().text())).toBe(200)
         orgId = (yield* Effect.promise(() => created.json())).id
         expect(created.headers.getSetCookie().length).toBeGreaterThan(0)
+        expect(
+          (yield* request("/api/organization", { name: "Another", slug: "alpha" })).status,
+        ).toBe(409)
         const session = yield* request("/api/session")
         expect(yield* Effect.promise(() => session.json())).toMatchObject({
           activeOrganizationId: orgId,

@@ -29,6 +29,7 @@
         "@durable-actors/postgres": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
+        "better-auth": "catalog:",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
       },
