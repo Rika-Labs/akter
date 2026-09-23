@@ -354,8 +354,8 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* test.inspect(actor.ref)).generation).toBe(before.generation)
           const sql = yield* SqlClient.SqlClient
           yield* sql`UPDATE actor_state SET value = ${compress("13")} WHERE tenant_id = ${actor.ref.tenant} AND actor_type = 'Small' AND actor_id = 'bytes'`
-          // A warm activation trusts its cached committed state (ADR 0005);
-          // advancing the generation forces the next turn to reload the row.
+          // A warm activation trusts its cached committed state; advancing the
+          // generation forces the next turn to reload the row.
           yield* test.invalidate(actor.ref)
           expect(Exit.isFailure(yield* actor.SetText("ok").pipe(Effect.exit))).toBe(true)
           expect(fixture.foundation.defects.length).toBe(defects + 2)

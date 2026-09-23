@@ -15,7 +15,7 @@ import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { checkReceipt, OutcomeJson, payloadHash, type StoredReceipt } from "./receipt.ts"
 
 /**
- * What one activation remembers between turns (ADR 0005). `generation` is the
+ * What one activation remembers between turns. `generation` is the
  * fenced authority epoch it acquired; `state` is the committed state it last
  * read or wrote. The generation fence proves no other writer committed since,
  * so a cached activation skips the state read. Only a commit replaces either.

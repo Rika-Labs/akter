@@ -6,7 +6,7 @@ const PLACEMENT_ENCODING = 1
 export type Placement = "tenant" | "actor"
 
 /**
- * The 64-bit shard key shared by every row an actor owns (ADR 0006). Tenant
+ * The 64-bit shard key shared by every row an actor owns. Tenant
  * placement colocates a tenant's actors; actor placement spreads them.
  */
 export const routingKey = ({
@@ -24,7 +24,10 @@ export const routingKey = ({
   return BigInt.asIntN(64, Bun.hash.xxHash3(value))
 }
 
-/** Stored state values are opaque zstd-compressed JSON (ADR 0011). */
+/**
+ * Stored state values are opaque zstd-compressed JSON: SQL never reads state,
+ * and anything worth querying belongs in an actor table.
+ */
 export const compress = (json: string): Uint8Array =>
   Bun.zstdCompressSync(new TextEncoder().encode(json))
 
