@@ -7,18 +7,18 @@
 
 Framework-private records include:
 
-| Record               | Purpose                                   | Authority             |
-| -------------------- | ----------------------------------------- | --------------------- |
-| Generation           | fenced current writer                     | turn admission        |
-| Receipt              | command id, input identity, stored exit   | retry safety          |
-| `actor_state`        | compressed keyed schema values            | small actor state     |
-| Actor table row      | relational actor-owned data               | application state     |
-| Event                | ordered committed publication             | replay and waits      |
-| Effect / dead letter | post-commit external consequence          | effect recovery       |
-| Workflow execution   | member run keyed by owner and key         | workflow recovery     |
-| Connection           | parked-session metadata                   | socket resumption     |
-| Blob                 | large actor-scoped bytes                  | application state     |
-| `actor_outbox`       | intents, timers, workflow starts, effects | delivery and recovery |
+| Record               | Purpose                                                           | Authority             |
+| -------------------- | ----------------------------------------------------------------- | --------------------- |
+| Generation           | fenced current writer                                             | turn admission        |
+| Receipt              | command id, input identity, stored exit                           | retry safety          |
+| `actor_state`        | compressed keyed schema values                                    | small actor state     |
+| Actor table row      | relational actor-owned data                                       | application state     |
+| Event                | ordered committed publication                                     | replay and waits      |
+| Effect / dead letter | post-commit external consequence                                  | effect recovery       |
+| Workflow step        | recorded activity, clock, and deferred exits on the owner's shard | workflow recovery     |
+| Connection           | parked-session metadata                                           | socket resumption     |
+| Blob                 | large actor-scoped bytes                                          | application state     |
+| `actor_outbox`       | intents, timers, workflow starts, effects                         | delivery and recovery |
 
 One Postgres database belongs to each deployment region. Commands are direct: the receipt is their only durable record, and there is no command message table. `tenant_id` appears on every framework and actor-owned table, with optional RLS. Actor state, tables, events, effects, blobs, and receipts share the actor ownership key and transaction boundary.
 

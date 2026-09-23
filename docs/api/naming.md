@@ -7,10 +7,10 @@
 
 Settled names ([ADR 0010](../decisions/0010-one-way-effect-native-api.md)):
 
-- `Actor.make`, and its definition sections `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, `api`, `policy`
-- Members: `Actor.command`, `Actor.reducer`, `Actor.query`, `Actor.stream`, `Actor.connection`, `Actor.workflow`, `Actor.state`, `Actor.table`, `Actor.blob`, `Actor.Event`, `Actor.effect`, `Actor.singleton`
+- `Actor.make`, and its definition sections `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, `api`, `internal`, `policy`
+- Members: `Actor.command`, `Actor.reducer`, `Actor.query`, `Actor.stream`, `Actor.connection`, `Actor.workflow`, `Actor.state`, `Actor.table`, `Actor.blob`, `Actor.Event`, `Actor.effect`, `Actor.singleton`, `Actor.DeadLetter`
 - Handles: `X.get`, `X.create`, `X.intents`, and `Intent.after`, `Intent.at`, `Intent.key`, `Intent.cancel`
-- Layers: `X.toLayer`, `X.toQueryLayer`, `X.toEffectLayer`, `X.onDefect`
+- Layers: `X.toLayer`, `X.toQueryLayer`, `X.toEffectLayer`
 - Context services: `X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`, and the runtime marker `Actor.InTurn`
 - Ambient scope: `Actor.as`, `Actor.tenant`, `Actor.commandId`
 - Fleet reads: `Fleet.view`, `Fleet.subscribe`

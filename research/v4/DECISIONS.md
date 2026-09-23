@@ -7,7 +7,7 @@ when the answer needed interpretation (veto if wrong), `delegated` when the owne
 or `gated` when a verification must pass before the decision is claimed.
 
 The typechecked sketch that embodies this ledger is [framework/Actor.ts](framework/Actor.ts); the
-testing surface is [framework/Testing.ts](framework/Testing.ts). The latest rounds are §3.8 (181–192, scale and performance) and §3.9 (193–212, one way to do everything); the
+testing surface is [framework/Testing.ts](framework/Testing.ts). The latest rounds are §3.8 (181–192, scale and performance), §3.9 (193–212, one way to do everything), and §3.10 (213–219, open decisions); the
 comparison against Rivet's Effect SDK and Cloudflare Durable Objects is [COMPARISON.md](COMPARISON.md).
 
 ## 0. Foundations (carried from v3)
@@ -432,6 +432,20 @@ Owner's answers in this round, in order: direct commands are the only command pa
 | 211 | Workflows | Workflow members in `api`; body uses `X.Workflow` plus Effect `Activity` and `DurableClock`; started by a call outside a turn or an intent inside. | One call shape for every member. | `Workflow`, `Activity` | settled |
 | 212 | Migration | M0 code (ADR 0007/0008 spelling, persisted Cluster messages) migrates to this API and delivery model in M1; the `research/v5` type spike gates it. | Docs describe target; code and evidence change together. | — | gated (type spike) |
 
+## 3.10. Round 11 — open decisions from rounds 9–10 (213–219)
+
+The owner reviewed three sketched options per question and picked 1B 2B 3B 4C 5A 6B 7A. Recorded in [ADR 0012](../../docs/decisions/0012-workflows-internals-effects-defects-merging-regions.md).
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 213 | Workflow storage | B — framework `WorkflowEngine` on the owner's shard: `actor_workflow_step` rows, clocks as outbox timers, resume as a direct command. Rejected: `ClusterWorkflowEngine` in its own shard group; engine-less step commands. | One storage model, no global hot path, workflows visible to fleet views; Effect's `Activity`/`DurableClock` unchanged. | `WorkflowEngine` | settled |
+| 214 | Internal commands | B — their own `internal` definition section; `internal: true` removed. Supersedes 196's field. | The public surface reads at a glance; visibility is a property of the actor. | — | settled |
+| 215 | Effect results | B — `policy.effects.<Effect>: { retry, onSuccess, onDeadLetter }`; executors return the `onSuccess` input; `Actor.DeadLetter(Effect)` input. Removes `EffectDeadLettered` and `policy.effectRetry`. | Executors cannot forget to report; one reporting path. | outbox | settled |
+| 216 | Defects | C — telemetry only: span and log, `durable defects list`; `onDefect` removed. Supersedes 161 and 201's `X.onDefect`. | One less concept; a defect reaction cannot loop on corrupt state. | `Effect.withSpan` | settled |
+| 217 | Group reads | A — `group` on `X.Turn`/`X.Read`, pinned to the placement group. Confirms 209. | Consistent joins without another service. | Drizzle | settled |
+| 218 | Merge window | B — never wait; merge only already-queued inputs, up to 1,024. Supersedes the 10 ms window of 188. | No added latency for a lone call; the queue fills under load. | `Queue.takeBetween` | settled |
+| 219 | Home region | A — operator-assigned (`durable tenants create --region`), default primary; never inferred from a request. Refines 184. | A first request from CI or a traveler cannot pin a tenant wrongly. | tenant directory | settled |
+
 ## 4. Verification gates (must pass before the decision is claimed)
 
 | Gate | Decisions | Check |
@@ -458,3 +472,5 @@ Owner's answers in this round, in order: direct commands are the only command pa
 | Pipelined visibility | 187 | Batch N+1's replies, broadcasts, and outbox rows stay hidden until its own commit; a failed batch N discards them. |
 | Reducer laws | 188, 210 | Commutative reducers satisfy the merge law under generated inputs; browser optimistic state converges to committed state. |
 | API type spike | 194–205 | `research/v5` rejects a mismatched `api` key, a bad cron target, wrong-phase context use, `X.intents` outside a turn, and `X.get` inside a turn; typecheck time recorded. |
+| Workflow engine parity | 213 | One workflow suite passes on the framework engine and `ClusterWorkflowEngine` with matching activity replay, clock resume, `waitFor` races, interruption, and polling; no workflow state leaves the owner's shard. |
+| Effect routes | 215 | `onSuccess` delivered once per effect id across executor and relay crashes; `onDeadLetter` once on exhaustion; mismatched route input fails to compile. |

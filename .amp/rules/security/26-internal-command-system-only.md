@@ -18,7 +18,7 @@ contextFiles:
 Internal commands are absent from public handles, the `durable-actors/client`
 Promise client, and served endpoints. They run only through framework System
 handles; a non-`System` caller reaching one is a deterministic defect — `Die`,
-rollback, `onDefect` — not an `ActorError` and not a forgeable result path.
+rollback, cause recorded — not an `ActorError` and not a forgeable result path.
 System attribution preserves `source`, optional `ref`, and `onBehalfOf`.
 
 Violations: exporting an internal command on a public or client-facing handle;

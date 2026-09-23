@@ -27,8 +27,8 @@ a lost acknowledgment as proof the provider call did not happen; marking an
 effect dead-lettered solely because the result notification was lost.
 
 Clean: unknown stays distinguishable from failure in the stored record;
-exhausted retries produce a dead letter plus `onEffectFailed` in a new actor
-turn.
+exhausted retries produce a dead letter plus the effect's declared
+`onDeadLetter` command in a new actor turn (ADR 0012).
 
 Flag only a visible collapse of ambiguity or an unguarded retry. A clear
 transport error before submission is a real failure — do not flag treating it

@@ -27,15 +27,15 @@ const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(funct
 
 ## Phases
 
-| Service        | Phase                     | Provides                                                                                                                                                   |
-| -------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `X.Turn`       | command handler           | `id`, `ref`, `caller`, `principal`, `commandId`, `isNew`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `perform`, `broadcast`, `terminate` |
-| `X.Read`       | query and stream handlers | `id`, `ref`, `caller`, `principal`, committed `state`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`                                   |
-| `X.Connection` | connection handler        | `X.Read` capabilities plus connection `id`, `state` (16 KiB), `resumed`, and `broadcast`                                                                   |
-| `X.Workflow`   | workflow body             | owner `id` and `ref`, `principal`, `executionId`, `key`, and owner-event `waitFor(Event, { where, timeout })`                                              |
-| `X.Executor`   | effect executor           | `effectId`, `attempt`, `principal`, and owner `ref`; no database capability                                                                                |
+| Service        | Phase                                | Provides                                                                                                                                                   |
+| -------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `X.Turn`       | command handler (public or internal) | `id`, `ref`, `caller`, `principal`, `commandId`, `isNew`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `perform`, `broadcast`, `terminate` |
+| `X.Read`       | query and stream handlers            | `id`, `ref`, `caller`, `principal`, committed `state`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`                                   |
+| `X.Connection` | connection handler                   | `X.Read` capabilities plus connection `id`, `state` (16 KiB), `resumed`, and `broadcast`                                                                   |
+| `X.Workflow`   | workflow body                        | owner `id` and `ref`, `principal`, `executionId`, `key`, and owner-event `waitFor(Event, { where, timeout })`                                              |
+| `X.Executor`   | effect executor                      | `effectId`, `attempt`, `principal`, and owner `ref`; no database capability                                                                                |
 
-Only command handlers and workflow bodies may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker. Request/reply handles (`X.get`) are available outside turns: in applications, workflow bodies, and effect executors. Executors report results by calling internal commands as the System caller. Workflow activities and durable sleep use Effect's `Activity` and `DurableClock`.
+Only command handlers and workflow bodies may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker. Request/reply handles (`X.get`) are available outside turns: in applications, workflow bodies, and effect executors. Executors report results by returning a value; the framework delivers it to the effect's `onSuccess` route ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)). Workflow activities and durable sleep use Effect's `Activity` and `DurableClock`.
 
 ## Command turns
 

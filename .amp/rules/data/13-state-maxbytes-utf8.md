@@ -18,8 +18,9 @@ contextFiles:
 
 `State.maxBytes` is enforced against the UTF-8 encoded byte length of the
 committed state value, inside the turn and before business state commits.
-Overflow is a deterministic defect: rollback, `Die` to the caller, `onDefect`
-hook, actor stays resident.
+Overflow is a deterministic defect: rollback, `Die` to the caller, cause
+recorded (M0 `onDefect` hook, or the turn span under ADR 0012), actor stays
+resident.
 
 Violations: measuring JavaScript string `.length` or UTF-16 code units instead
 of encoded bytes; checking the limit after the write commits; applying the

@@ -62,25 +62,26 @@ export const Counter = Actor.make("Counter", {
 })
 ```
 
-| Section     | Content                                                                                                                                                                                                       |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `key`       | id schema (named, `X.get(id)`), `Actor.singleton` (`X.get()`), or omitted (minted, `X.create()`)                                                                                                              |
-| `placement` | `"tenant"` (default), `"actor"`, or a parent actor definition                                                                                                                                                 |
-| `state`     | one `Actor.state(fields, { migrations })`; missing keys decode from defaults                                                                                                                                  |
-| `tables`    | `Actor.table` Drizzle tables with framework ownership columns                                                                                                                                                 |
-| `blobs`     | `Actor.blob` database-backed `bytea` chunks                                                                                                                                                                   |
-| `events`    | `Actor.Event` classes                                                                                                                                                                                         |
-| `effects`   | `Actor.effect` classes, executed after commit                                                                                                                                                                 |
-| `api`       | commands, reducers, queries, streams, connections, and workflows; each key equals its member's tag                                                                                                            |
-| `policy`    | `hibernateAfter`, `commandTimeout`, `lockWait`, `deliveryTimeout`, `maxStateBytes`, `mailboxCapacity`, `createdBy`, `keepReceipts`, `keepEvents`, `effectRetry`, `connections`, `cron`, `cronSkipIfOlderThan` |
+| Section     | Content                                                                                                                                                                                                                                                     |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | id schema (named, `X.get(id)`), `Actor.singleton` (`X.get()`), or omitted (minted, `X.create()`)                                                                                                                                                            |
+| `placement` | `"tenant"` (default), `"actor"`, or a parent actor definition                                                                                                                                                                                               |
+| `state`     | one `Actor.state(fields, { migrations })`; missing keys decode from defaults                                                                                                                                                                                |
+| `tables`    | `Actor.table` Drizzle tables with framework ownership columns                                                                                                                                                                                               |
+| `blobs`     | `Actor.blob` database-backed `bytea` chunks                                                                                                                                                                                                                 |
+| `events`    | `Actor.Event` classes                                                                                                                                                                                                                                       |
+| `effects`   | `Actor.effect` classes, executed after commit                                                                                                                                                                                                               |
+| `api`       | public commands, reducers, queries, streams, connections, and workflows; each key equals its member's tag                                                                                                                                                   |
+| `internal`  | commands callable only by System callers: outbox intents, effect routes, and cron                                                                                                                                                                           |
+| `policy`    | `hibernateAfter`, `commandTimeout`, `lockWait`, `deliveryTimeout`, `maxStateBytes`, `mailboxCapacity`, `createdBy`, `keepReceipts`, `keepEvents`, `effects` (per-effect `retry`, `onSuccess`, `onDeadLetter`), `connections`, `cron`, `cronSkipIfOlderThan` |
 
 Members:
 
-- `Actor.command(tag, { input?, output?, errors?, internal? })` runs an effectful server handler. A single input schema gives a positional argument, struct fields an object argument, and omitted input a zero-argument call. `internal: true` removes it from public handles and transports.
+- `Actor.command(tag, { input?, output?, errors? })` runs an effectful server handler. A single input schema gives a positional argument, struct fields an object argument, and omitted input a zero-argument call. Listing it under `internal` instead of `api` removes it from public handles and transports.
 - `Actor.reducer(tag, { state, input, errors?, reduce, commutative? })` is a pure transition with no server handler. It runs optimistically in browser handles; with `commutative: { combine }` it may merge across runners, returns `void`, and declares no errors.
 - `Actor.query`, `Actor.stream`, `Actor.connection`, and `Actor.workflow` declare reads, live streams, typed sessions, and durable workflows.
 
-Type checks replace lists that must agree: an `api` key must equal its tag, `cron` and `createdBy` must name a command in `api`, and cron targets take no input. The tag, `api` key, handler key, and handle method are the same PascalCase name.
+Type checks replace lists that must agree: an `api` or `internal` key must equal its tag; `cron`, `createdBy`, and effect routes must name a command in `api` or `internal`; cron targets take no input; and an effect's `onSuccess` command input must match its executor's return type. The tag, `api` key, handler key, and handle method are the same PascalCase name.
 
 ## Layers
 
@@ -105,11 +106,11 @@ export const CounterReads = Counter.toQueryLayer(
 )
 ```
 
-- `X.toLayer(build)` implements commands, streams, connections, and workflows. Reducers have no entry. The build Effect runs once per activation: it replaces wake hooks; `Effect.addFinalizer` replaces sleep hooks; `Effect.forkScoped` replaces `run` on singletons; a `Ref` replaces `vars`; `X.onDefect(f)` registers the defect hook.
+- `X.toLayer(build)` implements commands (public and internal), streams, connections, and workflows. Reducers have no entry. The build Effect runs once per activation: it replaces wake hooks; `Effect.addFinalizer` replaces sleep hooks; `Effect.forkScoped` replaces `run` on singletons; a `Ref` replaces `vars`. There is no defect hook: deterministic defects are recorded in the turn span ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)).
 - `X.toQueryLayer(build)` implements queries against committed data.
-- `X.toEffectLayer(build)` implements effect executors and may run on separate processes. A dead-lettered effect is delivered to the actor as the internal `EffectDeadLettered` command.
+- `X.toEffectLayer(build)` implements effect executors and may run on separate processes. An executor returns the value routed to its `onSuccess` command (or `void`); the framework delivers it through the outbox with the effect id as the command id, and delivers `onDeadLetter` with `Actor.DeadLetter(Effect)` input when retries are exhausted.
 
-Each takes the Effect form only; there is no options object. Handlers take only their input. Context is a typed service per phase (`X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`); see [context](02-context.md). Actor files use `<actor>/contract.ts`, `layer.ts`, `queries.ts`, and `effects.ts`, with a `workflows/` folder as needed.
+Each takes the Effect form only; there is no options object. Handlers take only their input. Context is a typed service per phase (`X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`); see [context](02-context.md). Actor files use `<actor>/contract.ts`, `layer.ts`, `queries.ts`, and `effects.ts`, with a `workflows/` folder as needed. Workflow bodies use Effect's `Activity` and `DurableClock` on the framework's own `WorkflowEngine`, which stores steps on the owner's shard ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)).
 
 ## Calling actors
 
