@@ -45,8 +45,8 @@ export const migrate = Migrator.make({})({
       const sql = yield* SqlClient.SqlClient
       yield* sql`ALTER TABLE actor_generations ADD COLUMN created boolean NOT NULL DEFAULT false`
     }),
-    // ADR 0006 and 0011: every framework row carries its routing key, leading
-    // the primary key so a shard index can place it; state is opaque bytea.
+    // Every framework row carries its routing key, leading the primary key so
+    // a shard index can place it; state is opaque bytea.
     "0003_routing_state": Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
 
