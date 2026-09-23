@@ -29,7 +29,9 @@ Turn contexts receive scoped write capabilities. Query, stream, connection, run,
 
 ## Tenancy
 
-There is one Postgres database per deployment, not one database per tenant. Every framework and business row carries `tenant_id`; composite indexes and optional row-level security reinforce isolation. `shardGroup` controls compute placement and can align with Neki data placement, but placement is not an authorization boundary.
+There is one Postgres database per deployment region, not one database per tenant. Every framework and business row carries `tenant_id`; composite indexes and optional row-level security reinforce isolation. `shardGroup` controls compute placement and can align with Neki data placement, but placement is not an authorization boundary.
+
+Queries come in three tiers. A local query reads one actor's rows. A group query reads actors that share a placement key (by default, one tenant) from one shard and one snapshot. A fleet query spans placement keys or regions; it is explicit, eventually consistent, and never runs inside a turn. The tiers keep a query's cost the same at 100,000 actors and at a trillion. See [ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md).
 
 ## Safety boundary
 

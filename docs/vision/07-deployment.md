@@ -19,7 +19,7 @@ The hosted product consists of edge ingress and runners. A managed runner is the
 
 ## Database and placement
 
-Each deployment uses one Postgres database. Tenants are rows identified by `tenant_id`, optionally reinforced with row-level security. `shardGroup` places compute and can select dedicated runner pools; Neki handles data placement. Neither mechanism replaces authorization.
+Each deployment uses one Postgres database per region; most deployments have one region. A hosted deployment may add regions so remote users avoid cross-ocean round trips: every tenant has a home region, and its actors and rows live there. Tenants are rows identified by `tenant_id`, optionally reinforced with row-level security. `shardGroup` places compute and can select dedicated runner pools; Neki handles data placement within a region. Neither mechanism replaces authorization. See [ADR 0005](../decisions/0005-turn-latency-batching-and-regional-placement.md).
 
 ## Operational ownership
 

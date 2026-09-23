@@ -10,9 +10,11 @@ Effect Cluster sharding routes an envelope to the current activation, but durabl
 1. begin the transaction and set tenant scope;
 2. `SELECT ... FOR UPDATE` the actor generation row;
 3. resolve the command receipt under the [receipt contract](../contracts/04-receipts.md), replaying a matching outcome only through the appropriate caller-access or trusted-recovery path;
-4. decode state through migrations and run the handler;
+4. decode state through migrations, or reuse the activation's decoded copy from the same generation, and run the handler;
 5. stage state, actor-table changes, events, intents, effects, and the receipt;
 6. commit once, then notify delivery.
+
+The framework pipelines steps 1–3 into one admission round trip and steps 5–6 into one commit round trip; handler-issued `ctx.rows` statements are the only other round trips. When more commands for the actor are already waiting, the activation runs them as a turn batch in delivery order: one admission round trip resolves every receipt, handlers run in sequence, and one commit round trip persists all outcomes. A lone command is never delayed to form a batch. A defect aborts the batch; its commands are redelivered one per transaction until the failing command is processed. See [ADR 0005](../decisions/0005-turn-latency-batching-and-regional-placement.md).
 
 A stale generation, lock timeout, commit-unknown result, or command execution timeout is a retryable defect: the activation restarts and Cluster redelivers. A caller's delivery timeout instead stops waiting and may return `ActorError` with reason `Timeout`; it does not cancel the admitted turn. An old writer may continue computing, but the generation fence prevents its commit. Deterministic defects roll back and follow the `onDefect` path described in [lifecycle](02-lifecycle.md).
 
@@ -24,4 +26,4 @@ Client-minted command ids remain stable across retries. An authorized retry with
 
 Singleton registration guarantees one `run` owner and one cluster-wide cron tick across runners. Named and minted cron policies use per-actor durable timers.
 
-Timer keys replace earlier scheduled intents; cancellation or replacement tombstones the previous message so a late delivery is ignored. Durable polling remains the correctness path. Local wakeups and Postgres `NOTIFY actor_wake` after commit may reduce latency, but missed notifications must not lose work and Neki must not depend on `LISTEN/NOTIFY` support.
+Timer keys replace earlier scheduled intents; cancellation or replacement tombstones the previous message so a late delivery is ignored. Durable polling remains the correctness path. Post-commit wakeups travel as local or runner-to-runner messages through Cluster routing; missed wakeups must not lose work. Postgres `LISTEN/NOTIFY` is not used on the turn or wake path, because committing a `NOTIFY` can serialize the whole database. Due timers, delayed intents, and wake markers are scanned by `(bucket, due_at)` over the `routing_key` buckets a runner owns, so scan cost follows due work rather than stored actors. See [ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md).

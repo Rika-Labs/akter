@@ -15,4 +15,4 @@ Drizzle is the first query-client target. Additional query-client and backend ad
 
 Queries and other off-turn phases receive `ScopedRead` and cannot mutate through the typed API. Runtime scoping and database constraints enforce ownership; TypeScript types alone are not authority.
 
-There is one database per deployment. Tenants are rows, isolated by `tenant_id`, composite indexes, and optional RLS. Placement is selected with `shardGroup`, not separate tenant databases. Table schema changes use normal SQL migrations; keyed actor state uses `Actor.migration` upcasts.
+There is one database per deployment region. Tenants are rows, isolated by `tenant_id`, composite indexes, and optional RLS. Placement is selected with `shardGroup`, not separate tenant databases. Table schema changes use normal SQL migrations; keyed actor state uses `Actor.migration` upcasts.

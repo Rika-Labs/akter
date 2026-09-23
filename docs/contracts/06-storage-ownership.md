@@ -5,7 +5,7 @@
 **Owner role:** database/runtime.  
 **Change policy:** Drizzle, Postgres, and each backend adapter must agree on the supported query matrix.
 
-`actor_state` MUST use keyed rows scoped by `(tenant_id, actor, actor_id, key)`. A command turn MUST decode stored values through the complete `migrations` chain before the handler and MUST write the current shape on successful handler commit. An unhandled declared failure MUST discard migration writes along with the other business changes. `State.maxBytes` MUST be enforced before business state commits.
+`actor_state` MUST use keyed rows scoped by `(tenant_id, actor, actor_id, key)`. A command turn MUST decode stored values through the complete `migrations` chain before the handler and MUST write the current shape on successful handler commit. A later turn in the same activation MAY reuse the decoded value while the generation fence holds; the cached value changes only after a successful commit. An unhandled declared failure MUST discard migration writes along with the other business changes. `State.maxBytes` MUST be enforced before business state commits.
 
 Each keyed value is schema-decoded JSONB. `vars` are activation-local memory, not transaction-bound state: changes to them are not durable or automatically rolled back. An actor that omits state, tables, events, effects, and blobs still executes fenced, receipted commands; it is not a separate ephemeral kind.
 
@@ -17,6 +17,6 @@ Initial application writes MUST use scoped row operations; `ctx.db` supports aut
 
 Adapters MUST publish their supported operation matrix and pass the shared ownership and transaction cases. Missing scope, an unsupported operation, or inability to join the turn transaction MUST NOT fall back to an unscoped client or separate transaction. Future advanced mutations require evidence before support expands. Optional RLS is additional protection, not a replacement for actor ownership or generation fencing. See [adapters](../architecture/05-adapters.md).
 
-One database serves a deployment. Every framework and business table MUST carry `tenant_id` with composite indexes; optional RLS MUST be applied per table. Tenant placement uses runtime `shardGroup` for compute and Neki shard placement for data, never a database per tenant.
+One database serves each deployment region. Every framework and business table MUST carry `tenant_id` with composite indexes; optional RLS MUST be applied per table. Every framework and actor-owned row MUST also carry the framework-computed `routing_key` of its actor's placement key. Tenant placement uses runtime `shardGroup` for compute and Neki shard placement on `routing_key` for data, never a database per tenant. See [ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md).
 
 The `Database` tag is the explicit escape hatch for authorized cross-actor reads. It MUST NOT grant command-turn authority. See [security](10-security.md) and storage cases in [conformance](../verification/01-conformance.md).

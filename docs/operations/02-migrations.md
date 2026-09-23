@@ -15,6 +15,6 @@ Separately, `packages/postgres` owns the hosted control-plane schema and `bin/mi
 
 Use expand, deploy, backfill, validate, and contract phases when old and new runners overlap. Do not contract a column, receipt shape, event schema, workflow payload, or effect payload until all compatible readers and retained records have passed its horizon.
 
-Hosted Neki migrations must preserve `tenant_id` shard placement and the `actor_outbox` relay. Never assume every actor is awake or that tenant rows and `cluster_messages` share a transaction.
+Hosted Neki migrations must preserve `routing_key` shard placement and the `actor_outbox` relay, and run in every region of a multi-region deployment. Never assume every actor is awake or that tenant rows and `cluster_messages` share a transaction.
 
 Before rollout, test the migration through `durable-actors/testing` against PGlite and Postgres; run the same conformance cases on Neki when hosted support is affected. Back up before destructive phases and record the rollback boundary.
