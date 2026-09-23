@@ -54,7 +54,8 @@
     "durable-actors/no-role-suffix-filename": "error",
     "durable-actors/no-generic-directory-segment": "error",
     "durable-actors/no-barrel-index": "error",
-    "durable-actors/no-runtime-import-outside-runtime": "error"
+    "durable-actors/no-runtime-import-outside-runtime": "error",
+    "durable-actors/no-decision-references": "error"
   },
   "overrides": [
     {

@@ -8,8 +8,8 @@ import { routingKey } from "../storage/codec.ts"
 import { executeTurn, emptyActivationCache } from "../turn/execute.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 
-// Commands are direct (ADR 0011): the Cluster message is volatile and the
-// receipt committed inside the turn is the only durable admission record.
+// Commands are direct: the Cluster message is volatile and the receipt
+// committed inside the turn is the only durable admission record.
 // A lost runner loses only uncommitted work, which the caller retries by id.
 export const commandEntity = (name: string) =>
   Entity.make(name, [
@@ -48,8 +48,9 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
                 )
                   return yield* Effect.die(cause)
 
-                // Deterministic defects run no user code (ADR 0012): the turn
-                // span and this log carry the cause for operators.
+                // Deterministic defects run no user code, because a defect hook
+                // can loop on corrupt state; the turn span and this log carry
+                // the cause for operators.
                 yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
 
                 return Outcome.cases.Defect.make({ cause })
