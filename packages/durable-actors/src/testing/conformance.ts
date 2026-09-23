@@ -107,6 +107,7 @@ export interface ConformanceBackend {
 export interface ConformanceFixture {
   readonly foundation: FoundationFixture
   executions: number
+  queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
   escaped: Effect.Effect<void>
   holdHandler: Effect.Effect<void>
@@ -144,11 +145,39 @@ const Hold = Actor.command("Hold")
 
 const Steal = Actor.command("Steal")
 
+class Forbidden extends Schema.TaggedError<Forbidden>()("Forbidden", { below: Schema.Finite }) {}
+
+const Count = Actor.query("Count", { output: Schema.Finite })
+
+const AtLeast = Actor.query("AtLeast", {
+  input: Schema.Finite,
+  output: Schema.Finite,
+  errors: [Forbidden],
+})
+
 const Counter = Actor.make("Counter", {
   key: Schema.String,
   state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
-  api: { Increment, Reject, Nested, Escape, Hold, Steal },
+  api: { Increment, Reject, Nested, Escape, Hold, Steal, Count, AtLeast },
 })
+
+const CounterReads = (fixture: ConformanceFixture) =>
+  Counter.toQueryLayer(
+    Effect.succeed({
+      Count: Effect.fnUntraced(function* () {
+        fixture.queries += 1
+
+        return (yield* Counter.Read).state.count
+      }),
+      AtLeast: Effect.fnUntraced(function* (minimum: number) {
+        const count = (yield* Counter.Read).state.count
+
+        if (count < minimum) return yield* Forbidden.make({ below: minimum })
+
+        return count
+      }),
+    }),
+  )
 
 const CounterLive = (fixture: ConformanceFixture) =>
   Counter.toLayer(
@@ -190,6 +219,7 @@ const CounterLive = (fixture: ConformanceFixture) =>
 const makeFixture = (): ConformanceFixture => ({
   foundation: foundationFixture(),
   executions: 0,
+  queries: 0,
   captured: Effect.succeed(0),
   escaped: Effect.void,
   holdHandler: Effect.void,
@@ -475,6 +505,73 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             statements.filter((text) => /SELECT key, value FROM actor_state/.test(text)).length,
           ).toBe(1)
         }),
+      ),
+  },
+  {
+    name: "queries read committed state without activating, fencing, or receipting the actor",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("query-cold")
+          expect(yield* counter.Count()).toBe(0)
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: undefined,
+            state: {},
+            receipts: 0,
+          })
+          expect(yield* counter.Increment(4)).toBe(4)
+          yield* test.invalidate(counter.ref)
+          const generation = (yield* test.inspect(counter.ref)).generation
+          expect(yield* counter.Count()).toBe(4)
+          expect(yield* counter.AtLeast(4)).toBe(4)
+          expect(yield* counter.AtLeast(5).pipe(Effect.flip)).toEqual(Forbidden.make({ below: 5 }))
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            generation,
+            state: { count: 4 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "queries never observe a running turn's uncommitted state",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("query-isolation")
+          expect(yield* counter.Increment(2)).toBe(2)
+          const pause = yield* test.pauseNext("beforeCommit")
+          const writer = yield* counter.Increment(40).pipe(Effect.forkChild)
+          yield* pause.reached
+          expect(yield* counter.Count()).toBe(2)
+          yield* pause.release
+          expect(yield* Fiber.join(writer)).toBe(42)
+          expect(yield* counter.Count()).toBe(42)
+        }),
+      ),
+  },
+  {
+    name: "applies the caller authorization to queries",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const counter = yield* Counter.get("query-denied")
+          const before = fixture.queries
+          fixture.allowed = false
+          expect(yield* counter.Count().pipe(Effect.flip)).toMatchObject({
+            reason: Unauthorized.make({ code: "access_denied" }),
+          })
+          expect(fixture.queries).toBe(before)
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              fixture.allowed = true
+            }),
+          ),
+        ),
       ),
   },
   {
@@ -999,7 +1096,12 @@ export const describeConformance = (options: {
 }): void => {
   const { name, backend, registrar } = options
   const fixture = makeFixture()
-  const live = Layer.mergeAll(CounterLive(fixture), foundationLayer(fixture.foundation))
+
+  const live = Layer.mergeAll(
+    CounterLive(fixture),
+    CounterReads(fixture),
+    foundationLayer(fixture.foundation),
+  )
 
   let store: ConformanceStore | undefined
 

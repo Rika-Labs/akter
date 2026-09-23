@@ -34,6 +34,20 @@ export interface RegisteredCommand {
   ) => Effect.Effect<BusinessResult, BusinessResult>
 }
 
+/** A query reads committed state; it never activates, fences, or receipts (ADR 0010). */
+export interface RegisteredQuery {
+  readonly run: (
+    request: Request,
+    state: ReadonlyArray<readonly [string, string]>,
+  ) => Effect.Effect<Outcome>
+}
+
+export interface QueryRegistration {
+  readonly name: string
+  readonly placement: "tenant" | "actor"
+  readonly queries: ReadonlyMap<string, RegisteredQuery>
+}
+
 export interface Registration {
   readonly name: string
   readonly singleton: boolean
@@ -48,6 +62,8 @@ export class InternalActors extends Context.Service<
   {
     readonly register: (actor: Registration) => Effect.Effect<void, never, Scope.Scope>
     readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
+    readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
+    readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>
   }
 >()("durable-actors/handles/actors/InternalActors") {}

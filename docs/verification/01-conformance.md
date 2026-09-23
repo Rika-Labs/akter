@@ -11,7 +11,7 @@
 
 The shared harness now exists: `conformance` is the named case list and `describeConformance` registers it against a `ConformanceBackend` through an injected registrar, so no test framework is imported by the suite itself. Backends that cannot open a second SQL connection set `independentConnections: false` and report those cases through `registrar.skip` — by name, never silently. PGlite runs [`pglite.test.ts`](../../packages/durable-actors/src/runtime/database/pglite.test.ts); Postgres runs [`conformance.test.ts`](../../packages/durable-actors/src/testing/conformance.test.ts) and the SIGKILL suite [`crash/main.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/main.test.ts).
 
-**Executed 2026-09-23 (M1.1 storage rebase):** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18. `bun run check` passed all 54 tasks, including 40 framework tests (30 shared PGlite cases, four PGlite lifecycle/migration/creation-policy cases, four declaration tests, two identity tests); five independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 38 Postgres framework tests (35 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. Commands are direct and state is compressed `bytea` keyed by `routing_key`. Local results do not substitute for the CI evidence artifact of the pushed revision.
+**Executed 2026-09-23 (M1.2 queries):** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18. `bun run check` passed all 54 tasks, including 43 framework tests (32 shared PGlite cases, four PGlite lifecycle/migration/creation-policy cases, five declaration tests, two identity tests); six independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 41 Postgres framework tests (38 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. Local results do not substitute for the CI evidence artifact of the pushed revision.
 
 ### Shared cases (PGlite and Postgres)
 
@@ -23,6 +23,8 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `enforces UTF-8 state bytes and records deterministic defects without user hooks`
 - `hides internal commands and binds System principal and receipt access`
 - `compresses state, keys rows by routing_key, and reads state once per activation`
+- `queries read committed state without activating, fencing, or receipting the actor`
+- `applies the caller authorization to queries`
 - `retries the same command after execution timeout without a partial commit`
 - `retries the same command after retryable SQL defect without a partial commit`
 - `delivery timeout stops waiting while the admitted command commits once`
@@ -51,6 +53,7 @@ The shared harness now exists: `conformance` is the named case list and `describ
 These require a real second connection and are reported skipped on PGlite:
 
 - `keeps uncommitted state invisible to a second connection`
+- `queries never observe a running turn's uncommitted state`
 - `rejects a state setter from another still-active actor turn`
 - `denies a competing caller admitted while the original failure is still uncommitted`
 - `decodes regclass so the migrator can reopen the database` — exercises the scoped rc.116 codec workaround for [Effect #8309](https://github.com/Effect-TS/effect/pull/8309)

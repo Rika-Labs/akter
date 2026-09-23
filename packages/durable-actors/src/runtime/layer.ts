@@ -30,13 +30,19 @@ import {
   Timeout,
   MailboxFull,
 } from "../errors/actor.ts"
-import { Actors, InternalActors, type Registration, type Request } from "../handles/actors.ts"
+import {
+  Actors,
+  InternalActors,
+  type QueryRegistration,
+  type Registration,
+  type Request,
+} from "../handles/actors.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
-import { routingKey } from "./storage/codec.ts"
+import { decompress, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
 
@@ -60,14 +66,19 @@ export const layer = (options: Options) => {
       const scope = yield* Effect.scope
       const sharding = yield* Sharding.Sharding
       const registrations = new Map<string, Registration>()
+      const queryRegistrations = new Map<string, QueryRegistration>()
 
       const services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
       >()
 
-      const authorize = Effect.fnUntraced(function* (request: Request) {
+      const allow = Effect.fnUntraced(function* (request: Request) {
         if (!(yield* options.authorize(request)))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+      })
+
+      const authorize = Effect.fnUntraced(function* (request: Request) {
+        yield* allow(request)
         yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
       })
 
@@ -93,6 +104,47 @@ export const layer = (options: Options) => {
             }),
           )
         }),
+        registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
+          if (queryRegistrations.has(registration.name))
+            return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
+          queryRegistrations.set(registration.name, registration)
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              queryRegistrations.delete(registration.name)
+            }),
+          )
+        }),
+        // Queries read committed rows on the caller's node: no activation, no
+        // generation fence, no receipt, and no command id (ADR 0010).
+        query: Effect.fnUntraced(
+          function* (request: Request) {
+            const registration = queryRegistrations.get(request.ref.actor)
+            const query = registration?.queries.get(request.command)
+
+            if (registration === undefined || query === undefined)
+              return yield* ActorError.make({
+                reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
+              })
+
+            yield* allow(request)
+            const sql = yield* SqlClient.SqlClient
+            const key = routingKey({ ref: request.ref, placement: registration.placement })
+
+            const rows = yield* sql<{ key: string; value: Uint8Array }>`
+              SELECT key, value FROM actor_state
+              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+
+            return yield* query.run(
+              request,
+              rows.map(({ key, value }) => [key, decompress(value)] as const),
+            )
+          },
+          Effect.provideContext(services),
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        ),
         execute: Effect.fnUntraced(
           function* (request: Request) {
             const registration = registrations.get(request.ref.actor)

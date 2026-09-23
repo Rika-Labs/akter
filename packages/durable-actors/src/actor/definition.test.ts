@@ -100,6 +100,58 @@ describe("actor declarations", () => {
     const _invalid = Actor.make("Bad", { api: { Read }, placement: "region" })
   })
 
+  it("splits commands and queries between toLayer and toQueryLayer", () => {
+    const Bump = Actor.command("Bump")
+    const Peek = Actor.query("Peek", { output: Schema.Finite })
+
+    const Box = Actor.make("Box", {
+      state: { n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+      api: { Bump, Peek },
+    })
+
+    type Public = Effect.Success<ReturnType<typeof Box.create>>
+
+    type Reason<F extends (...args: never[]) => Effect.Effect<unknown, unknown>> = Extract<
+      Effect.Error<ReturnType<F>>,
+      ActorError
+    >["reason"]["_tag"]
+
+    expectTypeOf<Reason<Public["Peek"]>>().toEqualTypeOf<"ActorUnavailable" | "Unauthorized">()
+
+    const commands = Box.toLayer(Effect.succeed({ Bump: () => Effect.void }))
+    expectTypeOf(commands).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+    expectTypeOf<
+      keyof Effect.Success<Parameters<typeof Box.toLayer<never, never>>[0]>
+    >().toEqualTypeOf<"Bump">()
+    expectTypeOf<
+      keyof Effect.Success<Parameters<typeof Box.toQueryLayer<never, never>>[0]>
+    >().toEqualTypeOf<"Peek">()
+
+    const reads = Box.toQueryLayer(
+      Effect.succeed({
+        Peek: Effect.fnUntraced(function* () {
+          return (yield* Box.Read).state.n
+        }),
+      }),
+    )
+
+    expectTypeOf(reads).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+
+    const writesInQuery = Box.toQueryLayer(
+      Effect.succeed({
+        Peek: Effect.fnUntraced(function* () {
+          yield* Box.Turn
+
+          return 1
+        }),
+      }),
+    )
+
+    expectTypeOf(writesInQuery).not.toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+    // @ts-expect-error internal members must be commands
+    expect(() => Actor.make("Hidden", { api: { Bump }, internal: { Peek } })).toThrow("commands")
+  })
+
   it("types handler requirements through the per-actor Turn service", () =>
     Effect.runPromise(
       Effect.gen(function* () {

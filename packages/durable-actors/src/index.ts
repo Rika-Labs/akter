@@ -2,11 +2,12 @@ import { Effect } from "effect"
 import { Definition } from "./actor/definition.ts"
 import { CurrentCommandId } from "./identity/command.ts"
 import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
-import { Command } from "./members/command.ts"
+import { Command, Query } from "./members/command.ts"
 
 export const Actor = {
   make: Definition.make,
   command: Command.make,
+  query: Query.make,
   singleton: Definition.singleton,
   as:
     (caller: Caller) =>
@@ -49,6 +50,6 @@ export {
   MailboxFull,
 } from "./errors/actor.ts"
 
-export type { CommandContext, Turn } from "./contexts/command.ts"
+export type { CommandContext, QueryContext, Turn } from "./contexts/command.ts"
 
 export type { Handle } from "./actor/definition.ts"
