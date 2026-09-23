@@ -13,7 +13,7 @@ export type MemberKind = "command" | "query"
 
 /**
  * An `api` or `internal` member. Commands run as fenced, receipted turns;
- * queries read committed state without an activation (ADR 0010).
+ * queries read committed state without an activation.
  */
 export interface Member<
   Kind extends MemberKind,

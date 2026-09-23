@@ -115,7 +115,7 @@ export const layer = (options: Options) => {
           )
         }),
         // Queries read committed rows on the caller's node: no activation, no
-        // generation fence, no receipt, and no command id (ADR 0010).
+        // generation fence, no receipt, and no command id.
         query: Effect.fnUntraced(
           function* (request: Request) {
             const registration = queryRegistrations.get(request.ref.actor)

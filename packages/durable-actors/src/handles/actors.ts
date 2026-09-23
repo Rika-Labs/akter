@@ -34,7 +34,7 @@ export interface RegisteredCommand {
   ) => Effect.Effect<BusinessResult, BusinessResult>
 }
 
-/** A query reads committed state; it never activates, fences, or receipts (ADR 0010). */
+/** A query reads committed state; it never activates, fences, or receipts. */
 export interface RegisteredQuery {
   readonly run: (
     request: Request,
