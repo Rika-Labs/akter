@@ -43,7 +43,7 @@
     "anti-slop/no-unsafe-dictionary-type": "error",
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-readable-spacing": "error",
-    "anti-slop/require-safety-comment-for-type-assertion": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "off",
     "anti-slop-effect/no-manual-effect-error-tag": "error",
     "anti-slop-effect/no-manual-tag-comparison": "error",
     "anti-slop-effect/no-manual-tagged-construction": "error",
@@ -56,5 +56,20 @@
     "durable-actors/no-barrel-index": "error",
     "durable-actors/no-runtime-import-outside-runtime": "error"
   },
+  "overrides": [
+    {
+      "files": ["infra/alchemy.run.ts"],
+      "rules": {
+        "effecttsgo/any-unknown-in-error-context": "off"
+      }
+    },
+    {
+      "files": ["apps/e2e/*.ts"],
+      "rules": {
+        "effecttsgo/async-function": "off",
+        "effecttsgo/process-env": "off"
+      }
+    }
+  ],
   "ignorePatterns": ["**/dist/**", ".local/**", "tooling/oxlint/anti-slop/**", "**/templates/**"]
 }

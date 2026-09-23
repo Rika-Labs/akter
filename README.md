@@ -4,11 +4,19 @@
 
 _An Effect-native actor framework with durable identity, transactional turns, and ordinary relational data. One database per deployment, not per actor._
 
-[![Status](https://img.shields.io/badge/status-design--stage-orange)](docs/milestones/README.md) [![Effect](https://img.shields.io/badge/Effect-4.0.0--rc.116-blue)](https://effect.website) [![Bun](https://img.shields.io/badge/Bun-1.4.2-black)](https://bun.sh)
+[![Status](https://img.shields.io/badge/status-M0--foundation-blue)](docs/milestones/M0-foundation.md) [![Effect](https://img.shields.io/badge/Effect-4.0.0--rc.116-blue)](https://effect.website) [![Bun](https://img.shields.io/badge/Bun-1.4.2-black)](https://bun.sh)
 
 </div>
 
-**Design-stage.** The API and runtime contracts are documented; the framework and runnable examples are still scaffolds. The code below previews the agreed API, not a working package installation. Backend support requires [executable conformance evidence](docs/verification/01-conformance.md).
+**M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The package remains private. Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
+
+Run the example against a **disposable Postgres database**; startup creates framework and Cluster tables:
+
+```sh
+DATABASE_URL=postgres://user:password@localhost:5432/counter bun run --filter @durable-actors/counter start
+```
+
+Each run commits one increment and retries the same command Effect. `committed` and `replayed` match; restarting the program increments the persisted counter once more. [Runtime wiring](examples/counter/src/main.ts) uses explicit application authorization, not an HTTP authentication endpoint.
 
 ## The API
 
@@ -16,7 +24,7 @@ Define an actor, implement its commands, and get a typed handle. Small values li
 
 ```ts
 import { Effect, Schema } from "effect"
-import { Actor, Hibernate } from "durable-actors"
+import { Actor } from "durable-actors"
 
 const Increment = Actor.command("Increment", {
   input: Schema.Number,
@@ -28,7 +36,6 @@ const Counter = Actor.make("Counter", {
   state: {
     count: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   },
-  lifecycle: [Hibernate.after("1 minute")],
 })
 
 const CounterLive = Counter.toLayer({
@@ -45,7 +52,7 @@ const program = Effect.gen(function* () {
 })
 ```
 
-Omit `id` for a framework-minted ID and `Counter.create()`. Declare an ID schema for `Counter.get(id)`, or use `singleton: true` for `Counter.get()` without an ID. Acquiring a handle writes nothing; the first command establishes durable state.
+Omit `id` for a framework-minted ID and `Counter.create()`. Declare an ID schema for `Counter.get(id)`, or `singleton: true` for `Counter.get()`. Acquiring a handle writes nothing; the first command establishes durable state. Singleton failover, run loops, and cron remain later milestones.
 
 In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `durable-actors/runtime`; the preview intentionally stops before runtime wiring. See the [server API](docs/api/01-server-api.md) for the full design.
 
@@ -97,7 +104,7 @@ Handlers do not hold that transaction open while waiting for another actor, a so
 
 **…the backend is Neki?** The agreed design uses a tenant-local outbox and a post-commit relay into Cluster storage instead of assuming cross-shard atomic writes. Neki locking, pinning, and relay recovery remain provider-specific verification gates.
 
-These answers describe the recovery contracts the runtime must satisfy, not completed fault tests.
+The command/receipt recovery subset has completed fault tests; hibernation, providers, and Neki remain design contracts.
 
 ## One package, four entries
 
@@ -108,7 +115,7 @@ These answers describe the recovery contracts the runtime must satisfy, not comp
 | `durable-actors/client`  | A browser-safe Promise client derived from the same contracts, not a second runtime.   |
 | `durable-actors/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                      |
 
-The same design supports **embedded** use inside an Effect application, **served** use through `Actor.serve`, and **hosted** operation behind managed ingress. Serving is optional; embedded callers do not need an HTTP hop. These operating modes are not yet implemented.
+The same design targets **embedded** use inside an Effect application, **served** use through `Actor.serve`, and **hosted** operation behind managed ingress. Only the embedded Postgres foundation subset is implemented. Serving is optional; embedded callers do not need an HTTP hop.
 
 ## Documentation
 

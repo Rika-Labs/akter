@@ -11,7 +11,7 @@
     "start": "bun dist/main.js",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/console/test"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/console/src"
   },
   "dependencies": {
     "@durable-actors/ui": "workspace:*",

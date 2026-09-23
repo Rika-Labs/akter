@@ -22,6 +22,10 @@ tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOu
       filename: "packages/durable-actors/src/testing/pglite/layer.ts",
     },
     {
+      code: 'import { PgliteClient } from "@effect/sql-pglite";',
+      filename: "packages/durable-actors/src/testing/pglite/layer.ts",
+    },
+    {
       code: 'export * from "effect/unstable/cluster";',
       filename: "packages/durable-actors/src/runtime/index.ts",
     },
@@ -54,6 +58,11 @@ tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOu
     },
     {
       code: 'import { PgClient } from "@effect/sql-pg";',
+      filename: "packages/durable-actors/src/client/transport.ts",
+      errors: [error],
+    },
+    {
+      code: 'import { PgliteClient } from "@effect/sql-pglite";',
       filename: "packages/durable-actors/src/client/transport.ts",
       errors: [error],
     },

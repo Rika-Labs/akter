@@ -13,7 +13,7 @@
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"],
-      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "!test/**"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "!**/*.test.ts"],
       "env": ["NODE_ENV"]
     },
     "typecheck": {
@@ -47,12 +47,7 @@
     },
     "@durable-actors/infra#transit": {
       "dependsOn": ["^transit"],
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "!**/*.md",
-        "$TURBO_ROOT$/.github/src/**",
-        "$TURBO_ROOT$/.github/test/**"
-      ]
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "$TURBO_ROOT$/.github/src/**"]
     },
     "@durable-actors/infra#lint": {
       "dependsOn": ["transit"],
@@ -70,14 +65,13 @@
       "cache": false,
       "passThroughEnv": ["TEST_DATABASE_URL"]
     },
+    "test:e2e": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "env": ["CI"]
+    },
     "//#lint:root": {
-      "inputs": [
-        "*.ts",
-        ".amp/plugins/**",
-        ".oxlintrc.json",
-        "tooling/oxlint/anti-slop/**",
-        "tooling/oxlint/src/**"
-      ],
+      "inputs": ["*.ts", ".oxlintrc.json", "tooling/oxlint/anti-slop/**", "tooling/oxlint/src/**"],
       "outputs": []
     },
     "dev": {

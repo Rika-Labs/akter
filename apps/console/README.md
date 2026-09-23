@@ -32,7 +32,10 @@ slug, role } | null, members: [{ id, name, email, role }], projects: [{ id,
 name, status }], billing: { plan, status, renewalDate? } }`. All scalar fields
   are strings. HTTP 401 redirects to sign-in; missing/malformed data renders an
   explicit unavailable state. No fixture values enter production.
+- `GET /api/session`: missing or unverified sessions return 401; session lookup
+  failures return 503 rather than treating valid credentials as invalid.
 - `POST /api/organization`: `{ name, slug }`, creates/activates the first org.
+  A duplicate slug returns 409; other creation or activation failures return 503. An activation failure can occur after the organization was created.
 - `POST /api/billing/checkout`: `{ plan: "pro" }`; `POST /api/billing/portal`:
   `{}`. Both return `{ url }`. Only HTTPS `polar.sh` and `sandbox.polar.sh`
   origins are accepted. Billing authorization remains the API's responsibility.
@@ -72,7 +75,7 @@ invalid API payloads, absent API, auth cookies, proxy header authority,
 CSRF/Origin failures, theme/query preservation, signup verification, recovery
 failure and Polar redirect allowlisting. `bun run test` compiles UI first.
 
-For isolated visual review only, build UI then run `bun test/preview.ts` as a
+For isolated visual review only, build UI then run `bun src/preview.ts` as a
 managed service on port 3002. This read-only fixture uses production rendering
 with labeled test data. All mutations deliberately fail. `?empty=1` renders
 no-organization state. It is outside the production import graph. Screenshots

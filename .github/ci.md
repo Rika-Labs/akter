@@ -37,6 +37,22 @@ root TypeScript configuration, lint plugins, Vitest configuration, and the
 `.github` sources consumed by infra are included in their owning checks.
 The real-Turbo regression test exercises these invalidation boundaries.
 
+The vendored `anti-slop/require-safety-comment-for-type-assertion` rule is
+disabled repository-wide. It requires a `SAFETY:` comment even for casts that
+only bridge TypeScript generics or construct a test fixture; enabling it here
+would require boilerplate rather than evidence of a checked invariant. Typed
+lint, typechecking, and the other anti-slop rules remain enabled. Revisit this
+decision if a narrower rule can distinguish unchecked boundary casts.
+
+File-scoped type-aware lint exceptions are limited to platform boundaries:
+`effecttsgo/any-unknown-in-error-context` for `infra/alchemy.run.ts`, and
+`effecttsgo/async-function` plus `effecttsgo/process-env` for the imperative
+Playwright project in `apps/e2e`. Playwright's test functions return promises
+and its configuration reads `CI` directly. Alchemy's
+`Railway.Service` type reports an `any` requirements channel even
+when its providers are supplied by the stack. All other rules still run on
+these files; remove the infra exception when the upstream type no longer widens.
+
 Blacksmith automatically accelerates upstream `actions/cache@v6`. All three
 workflows cache Bun's package store, not mutable `node_modules`. Verify also
 restores TypeScript incremental metadata using a toolchain/configuration key and
@@ -50,9 +66,9 @@ Go-based TypeScript tools inherit `GOMAXPROCS=1`, and each Vitest process uses o
 isolated worker. This avoids multiplying a package-level worker pool by another
 CPU-sized pool. No isolation is disabled. PostgreSQL integration results are
 never cached; their task is selected by the affected graph and requires explicit
-disposable database configuration. Live Proof inference is also outside Turbo's
-deterministic cache and runs through the pre-push gate, never with a secret exposed
-to untrusted PR code.
+disposable database configuration. Semantic-rule review is advisory and runs
+in-thread through the global Jev plugin's `.amp/rules/` evaluation; it is not a
+Turbo task or CI job. CI does not run Jev or supply its provider credentials.
 
 Every Verify run uploads exact-SHA evidence and `.turbo/runs` summaries, including
 on failure. The evidence gate still requires a successful current-SHA run. Use
@@ -65,8 +81,11 @@ accepts `--shard=1/4` through a filtered Turbo invocation, for example
 shard only when measured execution savings exceed repeated checkout/install cost;
 merge blob reports and require every shard before publishing aggregate evidence.
 Keep shard arguments in the Turbo invocation so each shard gets a distinct cache
-key. Historical balancing needs real timing data; no speculative scheduler or
-empty E2E framework is installed in this template.
+key. Historical balancing needs real timing data; no speculative scheduler is
+installed. The separate `apps/e2e` Playwright project runs in `check:ci`
+after Chromium headless-shell installation. It checks the console's read-only
+fixture in a real browser, not the live auth or billing providers. Run
+`bun run test:e2e` locally after installing Playwright Chromium.
 
 Sticky disks are not interchangeable with branch-isolated Actions caches: they
 share snapshots across repository workflows by default. Enable Blacksmith sticky
@@ -102,12 +121,13 @@ Dependabot remains configured for ordinary non-major dependency PRs. Catalog upd
 - Effect and its adapters stay on `4.0.0-rc.116`; the npm `latest` tag on Effect's older major is not an upgrade. Vitest 5 matches the adapter's peer range.
 - Drizzle ORM and Kit use the matching `rc5` snapshot `1.0.0-rc.5-5935859`; this is an intentional prerelease channel, not a stable-version claim.
 - Oxlint/plugins stay at `1.82.0` with `oxlint-tsgolint` `7.0.2001`. `@effect/tsgo` `0.45.0` rejects the newer Oxlint patch target; update this cohort together when supported.
+- Oxlint's `RuleTester` requires Node >=22 and rejects Bun. Its package test script uses `npm exec --package=node@26.7.0` and prints the selected version, so local and CI runs do not depend on the runner's default Node. This requires npm and registry access on a cold npm cache; it installs only into npm's cache, not the repository or global toolchain. Use `npm exec`, not `npx`, which Bun rewrites to `bun x` in package scripts. The vendored anti-slop rule files run through Node's test runner, not Vitest; their CLI fixture uses the repository's installed Oxlint binary rather than pnpm. Directive tests and application tests still run on Bun. No tests or evidence checks are skipped.
 - Babel uses 8.0.6 with the newest v8 TypeScript transform (8.0.0-rc.6). Babel supplies its own types; StyleX is loaded through Babel's plugin resolver. Node types use 26.6.2. The application runtime remains Bun 1.4.2.
 - CI and Compose use PostgreSQL 18.6. Orb setup installs PostgreSQL 18 from the official PGDG repository. Compose mounts the v18 image at `/var/lib/postgresql`, using a separate `postgres18` volume; orbs use `.local/postgres18`. Older volumes/directories are preserved, not migrated or deleted. Existing development data needs an explicit dump/restore or reviewed major-version upgrade before reuse.
 
 Frozen installation, the Effect compiler patch, and full workspace checks are required after changing these pins. Historical `research/` snapshots are not active dependency manifests and remain unchanged.
 
-Blacksmith runner startup and Vercel OIDC authentication have been exercised in GitHub Actions. Proof and its TypeSafe provider now install from npm without sibling checkouts. Pin action refs to reviewed immutable revisions before enabling in a sensitive repository; current version tags are conventional bootstrap refs.
+Blacksmith runner startup and Vercel OIDC authentication have been exercised in GitHub Actions. Pin action refs to reviewed immutable revisions before enabling in a sensitive repository; current version tags are conventional bootstrap refs.
 
 An `AMP_TOKEN` secret alone does not enable issue replies or pull request reviews.
 This repository does not define an Amp mention or review workflow. Those behaviors

@@ -5,7 +5,7 @@
 **Owner role:** API/SDK.  
 **Change policy:** breaking changes require protocol/version review and migration guidance.
 
-This is the accepted API design, not an implemented SDK reference. The framework entrypoints remain scaffolds; API notation below describes the interface to build, and runtime/provider support remains unverified. See [ADR 0002](../decisions/0002-v4-contract-clarifications.md) and [conformance](../verification/01-conformance.md).
+This is the accepted API design, not a claim that every interface is implemented. The [server API's foundation subset](01-server-api.md#implemented-foundation-subset) and PGlite/Postgres-backed `ActorTest` now run; the Promise client and broader member/transport APIs remain planned. See [ADR 0007](../decisions/0007-foundation-command-protocol.md), [ADR 0008](../decisions/0008-foundation-completion.md), and the bounded [conformance evidence](../verification/01-conformance.md#foundation-evidence).
 
 - [Server API](01-server-api.md)
 - [Context capabilities](02-context.md)

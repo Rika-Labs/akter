@@ -11,5 +11,6 @@ The v4 evidence surface is `ActorTest` from `durable-actors/testing`, with `desc
 - [Failure matrix](02-failure-matrix.md)
 - [Performance and capacity](03-performance.md)
 - [Named invariants](invariants.md)
+- [Jev rule catalog](jev-rules.md)
 
 A capability MUST NOT be called supported until its contract invariant, failure rows, relevant §4 gate, and backend cases pass or the documentation marks it unsupported.

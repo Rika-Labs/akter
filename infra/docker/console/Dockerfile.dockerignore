@@ -8,6 +8,5 @@
 **/coverage
 .local
 .turbo
-.proof
 test-results
 evidence

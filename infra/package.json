@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun --bun ../node_modules/vitest/vitest.mjs run --root .. infra/test .github/test",
+    "test": "bun --bun ../node_modules/vitest/vitest.mjs run --root .. --config infra/vitest.config.ts infra/src .github/src --exclude '.github/src/turbo.test.ts'",
+    "test:integration": "bun --bun ../node_modules/vitest/vitest.mjs run --root .. --config infra/vitest.config.ts .github/src/turbo.test.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "bun run --cwd .. oxlint --type-aware --deny-warnings --threads 1 infra .github",
     "plan": "bun src/cli.ts plan"
