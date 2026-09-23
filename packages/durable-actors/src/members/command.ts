@@ -23,6 +23,9 @@ export interface Command<
 
 export type AnyCommand = Command<string, ValueSchema, ValueSchema, ReadonlyArray<DeclaredError>>
 
+/** A record of commands keyed by tag, as used by the `api` and `internal` definition sections. */
+export type CommandRecord = Readonly<Record<string, AnyCommand>>
+
 export const Command = {
   make: <
     const Tag extends string,

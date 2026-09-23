@@ -1,16 +1,21 @@
 import { Effect } from "effect"
 import { Definition } from "./actor/definition.ts"
 import { CurrentCommandId } from "./identity/command.ts"
-import { CurrentCaller, type Caller } from "./identity/caller.ts"
+import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command } from "./members/command.ts"
 
 export const Actor = {
   make: Definition.make,
   command: Command.make,
+  singleton: Definition.singleton,
   as:
     (caller: Caller) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.provideService(effect, CurrentCaller, caller),
+  tenant:
+    (tenant: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.provideService(effect, Tenant, tenant),
   commandId:
     (id: string) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -30,15 +35,7 @@ export {
   Principal,
 } from "./identity/caller.ts"
 
-export {
-  Policy,
-  Commands,
-  Delivery,
-  State,
-  Hibernate,
-  Mailbox,
-  Lifecycle,
-} from "./policies/command.ts"
+export type { Policy } from "./policies/command.ts"
 
 export {
   ActorError,
@@ -52,6 +49,6 @@ export {
   MailboxFull,
 } from "./errors/actor.ts"
 
-export type { CommandContext, WakeContext } from "./contexts/command.ts"
+export type { CommandContext, Turn } from "./contexts/command.ts"
 
 export type { Handle } from "./actor/definition.ts"

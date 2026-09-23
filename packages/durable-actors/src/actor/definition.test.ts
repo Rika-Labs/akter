@@ -1,25 +1,26 @@
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
-import { Actor, ActorError, Actors, Commands, Lifecycle, Mailbox, State } from "../index.ts"
+import { Actor, ActorError, type Actors } from "../index.ts"
+import type { InternalActors } from "../handles/actors.ts"
 
 describe("actor declarations", () => {
-  it("narrows identity, internal methods and creation error reasons", () => {
+  it("derives handles from api, hides internal commands, and narrows creation reasons", () => {
     const Create = Actor.command("Create")
     const Read = Actor.command("Read")
     const Internal = Actor.command("Internal")
 
     const A = Actor.make("A", {
-      commands: [Create, Read],
-      internal: [Internal],
-      lifecycle: [Lifecycle.createdBy(Create)],
+      api: { Create, Read },
+      internal: { Internal },
+      policy: { createdBy: Create },
     })
 
-    const B = Actor.make("B", { commands: [Read] })
-    const Bounded = Actor.make("Bounded", { commands: [Read], lifecycle: [Mailbox.capacity(2)] })
-    const Named = Actor.make("Named", { id: Schema.NonEmptyString, commands: [Read] })
-    const Singleton = Actor.make("Singleton", { singleton: true, commands: [Read] })
+    const B = Actor.make("B", { api: { Read } })
+    const Bounded = Actor.make("Bounded", { api: { Read }, policy: { mailboxCapacity: 2 } })
+    const Named = Actor.make("Named", { key: Schema.NonEmptyString, api: { Read } })
+    const Singleton = Actor.make("Singleton", { key: Actor.singleton, api: { Read } })
 
-    type Public = Effect.Success<ReturnType<typeof A.get>>
+    type Public = Effect.Success<ReturnType<typeof A.create>>
 
     type FrameworkReason<F extends (...args: never[]) => Effect.Effect<unknown, unknown>> = Extract<
       Effect.Error<ReturnType<F>>,
@@ -27,69 +28,60 @@ describe("actor declarations", () => {
     >["reason"]["_tag"]
 
     expectTypeOf<keyof Public>().toEqualTypeOf<"ref" | "Create" | "Read">()
-    expectTypeOf<keyof Actors["Service"]>().toEqualTypeOf<"mintActorId" | "mintCommandId">()
-    expect(Object.getOwnPropertySymbols(A)).toEqual([])
+    expectTypeOf<keyof typeof A.api>().toEqualTypeOf<"Create" | "Read">()
+    expectTypeOf<keyof Actors["Service"]>().toEqualTypeOf<"mintCommandId">()
+    expect(Object.keys(A.api)).toEqual(["Create", "Read"])
     expectTypeOf<Extract<FrameworkReason<Public["Create"]>, "NotCreated">>().toEqualTypeOf<never>()
     expectTypeOf<
       Extract<FrameworkReason<Public["Read"]>, "NotCreated">
     >().toEqualTypeOf<"NotCreated">()
     expectTypeOf<
       Extract<
-        FrameworkReason<Effect.Success<ReturnType<typeof B.get>>["Read"]>,
+        FrameworkReason<Effect.Success<ReturnType<typeof B.create>>["Read"]>,
         "NotCreated" | "InvalidInput" | "TransportError" | "MailboxFull"
       >
     >().toEqualTypeOf<never>()
     expectTypeOf<
       Extract<
-        FrameworkReason<Effect.Success<ReturnType<typeof Bounded.get>>["Read"]>,
+        FrameworkReason<Effect.Success<ReturnType<typeof Bounded.create>>["Read"]>,
         "MailboxFull"
       >
     >().toEqualTypeOf<"MailboxFull">()
     expectTypeOf<ActorError.Of<never>>().toEqualTypeOf<never>()
-    expectTypeOf<typeof A.id.Type>().not.toEqualTypeOf<typeof B.id.Type>()
-    expectTypeOf<Parameters<typeof A.get>[0]>().toEqualTypeOf<typeof A.id.Type>()
     expectTypeOf<Parameters<typeof Named.get>[0]>().toEqualTypeOf<string>()
+    expectTypeOf<Parameters<typeof Singleton.get>>().toEqualTypeOf<[]>()
     expectTypeOf<typeof Named.create>().toEqualTypeOf<never>()
     expectTypeOf<typeof Singleton.create>().toEqualTypeOf<never>()
-    expectTypeOf<Effect.Success<ReturnType<typeof Actors.mint<typeof A>>>>().toEqualTypeOf<
-      typeof A.id.Type
-    >()
-    // @ts-expect-error named actor identities cannot be minted
-    const _namedMint = Actors.mint(Named)
-    // @ts-expect-error singleton identities cannot be minted
-    const _singletonMint = Actors.mint(Singleton)
-    expectTypeOf<Parameters<typeof Singleton.get>>().toEqualTypeOf<
-      [options?: import("./definition.ts").GetOptions]
-    >()
-    expect(() => A.id.make("not-a-uuid")).toThrow()
-    expect(() =>
-      Actor.make("Invalid", { commands: [Read], singleton: true, id: Schema.String }),
-    ).toThrow("Singleton")
+    // @ts-expect-error a minted actor's id is branded, so arbitrary strings are rejected
+    const _unbranded = A.get("not-a-minted-id")
   })
-  it("rejects invalid and duplicate policies and foreign creation commands", () => {
+
+  it("rejects mismatched keys, duplicates, reserved names, and foreign creation commands", () => {
     const Create = Actor.command("Create")
-    expect(() => Commands.timeout(0)).toThrow()
-    expect(() => State.maxBytes(1.5)).toThrow()
-    expect(() =>
-      Actor.make("Invalid", {
-        commands: [Create],
-        lifecycle: [State.maxBytes(12), State.maxBytes(13)],
-      }),
-    ).toThrow("Duplicate policy")
-    expect(() =>
-      Actor.make("Invalid", { commands: [], lifecycle: [Lifecycle.createdBy(Create)] }),
-    ).toThrow("belong")
-  })
-  it("rejects duplicate commands and state capability collisions", () => {
     const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
-    expect(() => Actor.make("Counter", { commands: [Increment, Increment], state: {} })).toThrow(
+    // @ts-expect-error an api key must equal its command's tag
+    expect(() => Actor.make("Mismatch", { api: { Other: Increment } })).toThrow(
+      "must equal its tag",
+    )
+    expect(() => Actor.make("Duplicate", { api: { Increment }, internal: { Increment } })).toThrow(
       "Duplicate",
     )
     expect(() =>
-      Actor.make("Counter", { commands: [Increment], state: { set: Schema.Finite } }),
+      Actor.make("Reserved", { api: { Increment }, state: { set: Schema.Finite } }),
     ).toThrow("reserved")
+    expect(() =>
+      Actor.make("Invalid", { api: { Increment }, policy: { maxStateBytes: 1.5 } }),
+    ).toThrow()
+    expect(() =>
+      Actor.make("Invalid", { api: { Increment }, policy: { commandTimeout: 0 } }),
+    ).toThrow()
+    expect(() =>
+      // @ts-expect-error createdBy must name a command of this actor
+      Actor.make("Foreign", { api: { Increment }, policy: { createdBy: Create } }),
+    ).toThrow("belong")
   })
-  it("preserves declaration types and decoding defaults", () =>
+
+  it("types handler requirements through the per-actor Turn service", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const Increment = Actor.command("Increment", {
@@ -98,12 +90,35 @@ describe("actor declarations", () => {
         })
 
         const Counter = Actor.make("Counter", {
-          commands: [Increment],
           state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(7))) },
+          api: { Increment },
         })
 
+        const Other = Actor.make("Other", { api: { Increment } })
+
         expect(yield* Schema.decodeEffect(Counter.state)({})).toEqual({ count: 7 })
-        Counter.toLayer({ Increment: (ctx, amount) => Effect.succeed(ctx.state.count + amount) })
+
+        const live = Counter.toLayer(
+          Effect.succeed({
+            Increment: Effect.fnUntraced(function* (amount: number) {
+              return (yield* Counter.Turn).state.count + amount
+            }),
+          }),
+        )
+
+        expectTypeOf(live).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+
+        const wrongPhase = Counter.toLayer(
+          Effect.succeed({
+            Increment: Effect.fnUntraced(function* (amount: number) {
+              yield* Other.Turn
+
+              return amount
+            }),
+          }),
+        )
+
+        expectTypeOf(wrongPhase).not.toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
       }),
     ))
 })

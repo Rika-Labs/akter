@@ -1,5 +1,5 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { User } from "durable-actors"
+import { Actor, User } from "durable-actors"
 import { Actors, Database } from "durable-actors/runtime"
 import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
 import { Counter } from "./counter/contract.ts"
@@ -26,10 +26,10 @@ const live = Layer.unwrap(
 ).pipe(Layer.provide(BunCrypto.layer))
 
 const program = Effect.gen(function* () {
-  const counter = yield* Counter.get("visits", {
-    tenant: "counter-demo",
-    as: User.make({ subject: "counter-demo" }),
-  })
+  const counter = yield* Counter.get("visits").pipe(
+    Actor.tenant("counter-demo"),
+    Actor.as(User.make({ subject: "counter-demo" })),
+  )
 
   const increment = counter.Increment(1)
   const committed = yield* increment

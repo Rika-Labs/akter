@@ -16,15 +16,15 @@ contextFiles:
 
 # Public actor capabilities do not expose internal execution
 
-The public `Actors` service mints identities only. Raw `register` and `execute`
-belong to package-internal runtime capabilities, and an actor definition must
-not expose its internal-command handle through a symbol, property, or public
-export. `Actors.mint` accepts minted definitions, not named or singleton ones.
+The public `Actors` service only mints command ids. Raw `register`, `execute`,
+and actor-id minting belong to package-internal runtime capabilities, and an
+actor definition must not expose its internal-command handle through a symbol,
+property, or public export. `X.create()` exists only on minted actors.
 
 Violations: adding raw execution or registration methods back to the exported
 `Actors` service; putting a System/internal handle on an actor definition even
 under an obscure symbol; exposing `InternalActors` at a package entry point;
-making `Actors.mint` type-accept named or singleton actors.
+making `X.create()` callable on named or singleton actors.
 
 Clean: runtime and tests use a package-internal capability; an internal handle
 is held in a private registry; ordinary server code uses public handles and

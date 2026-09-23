@@ -1,19 +1,19 @@
-import { Cause, Deferred, Effect, Exit, Schema } from "effect"
+import { Cause, Deferred, Effect, Schema } from "effect"
 import { ClusterSchema, Entity, Sharding } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { executeTurn } from "../turn/execute.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 
+// Commands are direct (ADR 0011): the Cluster message is volatile and the
+// receipt committed inside the turn is the only durable admission record.
+// A lost runner loses only uncommitted work, which the caller retries by id.
 export const commandEntity = (name: string) =>
   Entity.make(name, [
     Rpc.make("Execute", { payload: Request, success: Outcome, error: ActorError }),
-  ])
-    .annotateRpcs(ClusterSchema.Persisted, true)
-    .annotateRpcs(ClusterSchema.WithTransaction, false)
-    .annotateRpcs(ClusterSchema.Uninterruptible, true)
+  ]).annotateRpcs(ClusterSchema.Uninterruptible, true)
 
 export const registerActor = Effect.fnUntraced(function* (registration: Registration) {
   const sharding = yield* Sharding.Sharding
@@ -45,36 +45,28 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
                   (SqlError.isSqlError(cause) && cause.isRetryable)
                 )
                   return yield* Effect.die(cause)
-                const sql = yield* SqlClient.SqlClient
 
-                const state = sql<{
-                  key: string
-                  value: string
-                }>`SELECT key, value::text AS value FROM actor_state
-                WHERE tenant_id = ${payload.ref.tenant} AND actor_type = ${payload.ref.actor} AND actor_id = ${payload.ref.id}`.pipe(
-                  Effect.map((rows) => rows.map(({ key, value }) => [key, value] as const)),
-                  Effect.orDie,
-                )
+                // Deterministic defects run no user code (ADR 0012): the turn
+                // span and this log carry the cause for operators.
+                yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
 
-                const hook = yield* Effect.suspend(() =>
-                  registration.onDefect(payload.ref, cause, state),
-                ).pipe(
-                  Effect.interruptible,
-                  Effect.timeout(registration.policy.executionMs),
-                  Effect.exit,
-                )
-
-                const reported = Exit.isFailure(hook)
-                  ? new AggregateError(
-                      [cause, Cause.squash(hook.cause)],
-                      `onDefect failed: ${String(Cause.squash(hook.cause))}`,
-                      { cause },
-                    )
-                  : cause
-
-                return { outcome: Outcome.cases.Defect.make({ cause: reported }), generation }
+                return { outcome: Outcome.cases.Defect.make({ cause }), generation }
               }),
             ),
+            Effect.annotateLogs({
+              actor: payload.ref.actor,
+              id: payload.ref.id,
+              tenant: payload.ref.tenant,
+              command: payload.command,
+              commandId: payload.commandId,
+            }),
+            Effect.withSpan(`durable-actors.${payload.ref.actor}/${payload.command}`, {
+              attributes: {
+                "actor.tenant": payload.ref.tenant,
+                "actor.id": payload.ref.id,
+                "command.id": payload.commandId,
+              },
+            }),
           )
 
           generation = committed.generation

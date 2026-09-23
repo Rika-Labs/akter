@@ -1,23 +1,28 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Config, Console, Effect, Layer, Redacted, Schedule, Schema } from "effect"
+import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor } from "../../../index.ts"
 import { Actors, Database } from "../../../runtime/index.ts"
 import { TurnHooks } from "../../../runtime/turn/hooks.ts"
 
+const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
+
 const Counter = Actor.make("ProcessCounter", {
-  id: Schema.String,
-  commands: [Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })],
+  key: Schema.String,
   state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  api: { Increment },
 })
 
-const CounterLive = Counter.toLayer({
-  Increment: Effect.fnUntraced(function* (ctx, amount) {
-    yield* ctx.state.set({ count: ctx.state.count + amount })
+const CounterLive = Counter.toLayer(
+  Effect.succeed({
+    Increment: Effect.fnUntraced(function* (amount: number) {
+      const turn = yield* Counter.Turn
+      yield* turn.state.set({ count: turn.state.count + amount })
 
-    return ctx.state.count
+      return turn.state.count
+    }),
   }),
-})
+)
 
 const live = Layer.unwrap(
   Effect.gen(function* () {
@@ -38,33 +43,35 @@ const live = Layer.unwrap(
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
 
+// A crashed process leaves no pending message (ADR 0011): recovery is the
+// caller retrying its saved command id against a fresh process.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
+  const commandId = yield* Config.String("CRASH_COMMAND_ID")
+  const counter = yield* Counter.get("crashed")
+  const call = counter.Increment(47).pipe(Actor.commandId(commandId))
 
   if (mode !== "recover") {
-    const counter = yield* Counter.get("crashed")
-    yield* counter.Increment(47)
+    yield* call
 
     return yield* Effect.die(new Error("Crash point was not reached"))
   }
 
+  const value = yield* call
   const sql = yield* SqlClient.SqlClient
 
-  // Recovery must discover the persisted envelope without another external command.
-  const recovered = yield* sql<{
-    outcome: string
-  }>`SELECT outcome FROM actor_receipts WHERE EXISTS (SELECT 1 FROM cluster_messages WHERE processed = true)`.pipe(
-    Effect.repeat({ while: (rows) => rows.length === 0, schedule: Schedule.spaced("50 millis") }),
-  )
-
-  const state = yield* sql<{
-    value: string
-  }>`SELECT value::text AS value FROM actor_state WHERE key = 'count'`
+  const rows = yield* sql<{
+    receipts: number
+    state: string
+  }>`SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts,
+      (SELECT value::text FROM actor_state WHERE key = 'count') AS state`
 
   yield* Console.log(
     yield* Schema.encodeEffect(
-      Schema.fromJsonString(Schema.Struct({ receipts: Schema.Int, state: Schema.String })),
-    )({ receipts: recovered.length, state: state[0]!.value }),
+      Schema.fromJsonString(
+        Schema.Struct({ value: Schema.Finite, receipts: Schema.Int, state: Schema.String }),
+      ),
+    )({ value, receipts: rows[0]!.receipts, state: rows[0]!.state }),
   )
 }).pipe(Effect.timeout("10 seconds"))
 

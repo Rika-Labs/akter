@@ -15,8 +15,8 @@ contextFiles:
 
 # Writable capabilities are scoped to a live turn
 
-Durable mutation exists only on the command context (`CommandContext` in M0,
-`X.Turn` in the target API) inside a live command turn;
+Durable mutation exists only on the command context (`yield* X.Turn`) inside
+a live command turn;
 transaction-bound capabilities are invalid the moment that turn ends. Query,
 stream, connection, wake/sleep/defect, `run`, and workflow contexts expose
 read-only capabilities only.

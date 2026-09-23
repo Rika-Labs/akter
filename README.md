@@ -10,7 +10,7 @@ _An Effect-native actor framework with durable identity, transactional turns, an
 
 **M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The package remains private. Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
 
-Run the example against a **disposable Postgres database**; startup creates framework and Cluster tables:
+Run the example against a **disposable Postgres database**; startup creates the framework tables:
 
 ```sh
 DATABASE_URL=postgres://user:password@localhost:5432/counter bun run --filter @durable-actors/counter start
@@ -20,7 +20,7 @@ Each run commits one increment and retries the same command Effect. `committed` 
 
 ## The API
 
-Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables. There is one way to do each task. The shape below is the accepted target ([ADR 0010](docs/decisions/0010-one-way-effect-native-api.md)); the runnable M0 counter still uses the earlier [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset).
+Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables. There is one way to do each task. The shape below follows [ADR 0010](docs/decisions/0010-one-way-effect-native-api.md). The reducer is target design; the command, state, policy, and `X.Turn` parts run today (see the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and the runnable [counter](examples/counter/src/counter/contract.ts)).
 
 ```ts
 import { Effect, Result, Schema } from "effect"

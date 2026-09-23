@@ -1,22 +1,27 @@
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
 import {
-  Actor,
-  Actors,
-  Caller,
-  Commands,
-  Delivery,
-  Lifecycle,
-  NotCreated,
-  Principal,
-  State,
-  System,
-  Timeout,
-  User,
-} from "../index.ts"
-import { Outcome, Request } from "../handles/actors.ts"
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Logger,
+  Option,
+  References,
+  Schema,
+} from "effect"
+import { SqlClient, SqlError } from "effect/unstable/sql"
+import { Actor, Caller, NotCreated, Principal, System, Timeout, User } from "../index.ts"
+import { Actors, Outcome, Request } from "../handles/actors.ts"
 import { ActorTest, executeForTest } from "./actor-test.ts"
 import type { ConformanceCase } from "./conformance.ts"
+
+export interface RecordedDefect {
+  readonly actor: string
+  readonly id: string
+  readonly command: string
+  readonly cause: string
+}
 
 export interface FoundationFixture {
   creates: number
@@ -25,12 +30,7 @@ export interface FoundationFixture {
   slowFirst: Effect.Effect<void>
   deliveryRuns: number
   deliveryHold: Effect.Effect<void>
-  defectHook: Effect.Effect<void>
-  defects: Array<{
-    readonly keys: ReadonlyArray<string>
-    readonly state: Exit.Exit<{ readonly text: string }>
-    readonly cause: unknown
-  }>
+  defects: Array<RecordedDefect>
 }
 
 export const foundationFixture = (): FoundationFixture => ({
@@ -40,17 +40,37 @@ export const foundationFixture = (): FoundationFixture => ({
   slowFirst: Effect.never,
   deliveryRuns: 0,
   deliveryHold: Effect.void,
-  defectHook: Effect.void,
   defects: [],
 })
 
+/** Captures the runtime's deterministic-defect log records, which replace the removed defect hook. */
+export const defectRecorder = (fixture: FoundationFixture) =>
+  Logger.layer(
+    [
+      Logger.make((options) => {
+        const message = Array.isArray(options.message) ? options.message[0] : options.message
+
+        if (message !== "Deterministic actor defect") return
+        const annotations = options.fiber.getRef(References.CurrentLogAnnotations)
+
+        fixture.defects.push({
+          actor: String(annotations["actor"]),
+          id: String(annotations["id"]),
+          command: String(annotations["command"]),
+          cause: Cause.pretty(options.cause),
+        })
+      }),
+    ],
+    { mergeWithExisting: true },
+  )
+
 const Ping = Actor.command("Ping", { output: Schema.String })
 
-const Minted = Actor.make("Minted", { commands: [Ping] })
+const Minted = Actor.make("Minted", { api: { Ping } })
 
-const Named = Actor.make("Named", { id: Schema.NonEmptyString, commands: [Ping] })
+const Named = Actor.make("Named", { key: Schema.NonEmptyString, api: { Ping } })
 
-const Singleton = Actor.make("Singleton", { singleton: true, commands: [Ping] })
+const Singleton = Actor.make("Singleton", { key: Actor.singleton, api: { Ping } })
 
 class CreationRejected extends Schema.TaggedError<CreationRejected>()("CreationRejected", {}) {}
 
@@ -59,19 +79,19 @@ const Create = Actor.command("Create", { input: Schema.Boolean, errors: [Creatio
 const Read = Actor.command("Read", { output: Schema.Finite })
 
 const Created = Actor.make("Created", {
-  id: Schema.NonEmptyString,
-  commands: [Create, Read],
+  key: Schema.NonEmptyString,
   state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
-  lifecycle: [Lifecycle.createdBy(Create)],
+  api: { Create, Read },
+  policy: { createdBy: Create },
 })
 
 const SetText = Actor.command("SetText", { input: Schema.String, output: Schema.String })
 
 const Small = Actor.make("Small", {
-  id: Schema.NonEmptyString,
-  commands: [SetText],
+  key: Schema.NonEmptyString,
   state: { text: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))) },
-  lifecycle: [State.maxBytes(15), Commands.timeout("500 millis")],
+  api: { SetText },
+  policy: { maxStateBytes: 15, commandTimeout: "500 millis" },
 })
 
 const Attribution = Schema.Struct({ caller: Caller, principal: Schema.NullOr(Principal) })
@@ -81,89 +101,104 @@ const Who = Actor.command("Who", { output: Attribution })
 const Internal = Actor.command("Internal", { output: Attribution })
 
 const Private = Actor.make("Private", {
-  id: Schema.NonEmptyString,
-  commands: [Who],
-  internal: [Internal],
+  key: Schema.NonEmptyString,
+  api: { Who },
+  internal: { Internal },
 })
 
 const Bump = Actor.command("Bump", { output: Schema.Finite })
 
 const Slow = Actor.make("Slow", {
-  id: Schema.NonEmptyString,
-  commands: [Read, Bump],
+  key: Schema.NonEmptyString,
   state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
-  lifecycle: [Commands.timeout("500 millis")],
+  api: { Read, Bump },
+  policy: { commandTimeout: "500 millis" },
 })
 
 const DeliveryActor = Actor.make("DeliveryActor", {
-  id: Schema.NonEmptyString,
-  commands: [Bump],
+  key: Schema.NonEmptyString,
   state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
-  lifecycle: [Delivery.timeout("100 millis")],
+  api: { Bump },
+  policy: { deliveryTimeout: "100 millis" },
+})
+
+const attribution = (turn: {
+  readonly caller: Caller
+  readonly principal: Option.Option<Principal>
+}) => ({
+  caller: turn.caller,
+  principal: Option.getOrNull(turn.principal),
 })
 
 export const foundationLayer = (fixture: FoundationFixture) =>
   Layer.mergeAll(
-    Minted.toLayer({ Ping: () => Effect.succeed("minted") }),
-    Named.toLayer({ Ping: () => Effect.succeed("named") }),
-    Singleton.toLayer({ Ping: () => Effect.succeed("singleton") }),
-    Created.toLayer({
-      Create: Effect.fnUntraced(function* (ctx, accept) {
-        fixture.creates += 1
-        yield* ctx.state.set({ count: 23 })
+    Minted.toLayer(Effect.succeed({ Ping: () => Effect.succeed("minted") })),
+    Named.toLayer(Effect.succeed({ Ping: () => Effect.succeed("named") })),
+    Singleton.toLayer(Effect.succeed({ Ping: () => Effect.succeed("singleton") })),
+    Created.toLayer(
+      Effect.succeed({
+        Create: Effect.fnUntraced(function* (accept: boolean) {
+          const turn = yield* Created.Turn
+          fixture.creates += 1
+          yield* turn.state.set({ count: 23 })
 
-        if (!accept) return yield* CreationRejected.make({})
-      }),
-      Read: (ctx) => Effect.succeed(ctx.state.count),
-    }),
-    Small.toLayer(
-      {
-        SetText: Effect.fnUntraced(function* (ctx, text) {
-          yield* ctx.state.set({ text })
-
-          return ctx.state.text
+          if (!accept) return yield* CreationRejected.make({})
         }),
-      },
-      {
-        hooks: {
-          onDefect: Effect.fnUntraced(function* (ctx, cause) {
-            const state = yield* ctx.state.pipe(Effect.exit)
-            fixture.defects.push({ keys: Object.keys(ctx).sort(), state, cause })
-            yield* fixture.defectHook
-          }),
-        },
-      },
+        Read: Effect.fnUntraced(function* () {
+          return (yield* Created.Turn).state.count
+        }),
+      }),
     ),
-    Private.toLayer({
-      Who: (ctx) =>
-        Effect.succeed({ caller: ctx.caller, principal: Option.getOrNull(ctx.principal) }),
-      Internal: (ctx) =>
-        Effect.sync(() => {
+    Small.toLayer(
+      Effect.succeed({
+        SetText: Effect.fnUntraced(function* (text: string) {
+          const turn = yield* Small.Turn
+          yield* turn.state.set({ text })
+
+          return turn.state.text
+        }),
+      }),
+    ),
+    Private.toLayer(
+      Effect.succeed({
+        Who: Effect.fnUntraced(function* () {
+          return attribution(yield* Private.Turn)
+        }),
+        Internal: Effect.fnUntraced(function* () {
           fixture.privateRuns += 1
 
-          return { caller: ctx.caller, principal: Option.getOrNull(ctx.principal) }
+          return attribution(yield* Private.Turn)
         }),
-    }),
-    Slow.toLayer({
-      Read: (ctx) => Effect.succeed(ctx.state.count),
-      Bump: Effect.fnUntraced(function* (ctx) {
-        fixture.slowIds.push(ctx.commandId)
-        yield* ctx.state.set({ count: ctx.state.count + 1 })
-
-        if (fixture.slowIds.length === 1) yield* fixture.slowFirst
-
-        return ctx.state.count
       }),
-    }),
-    DeliveryActor.toLayer({
-      Bump: Effect.fnUntraced(function* (ctx) {
-        fixture.deliveryRuns += 1
-        yield* ctx.state.set({ count: ctx.state.count + 1 })
-        yield* fixture.deliveryHold
+    ),
+    Slow.toLayer(
+      Effect.succeed({
+        Read: Effect.fnUntraced(function* () {
+          return (yield* Slow.Turn).state.count
+        }),
+        Bump: Effect.fnUntraced(function* () {
+          const turn = yield* Slow.Turn
+          fixture.slowIds.push(turn.commandId)
+          yield* turn.state.set({ count: turn.state.count + 1 })
 
-        return ctx.state.count
+          if (fixture.slowIds.length === 1) yield* fixture.slowFirst
+
+          return turn.state.count
+        }),
       }),
-    }),
+    ),
+    DeliveryActor.toLayer(
+      Effect.succeed({
+        Bump: Effect.fnUntraced(function* () {
+          const turn = yield* DeliveryActor.Turn
+          fixture.deliveryRuns += 1
+          yield* turn.state.set({ count: turn.state.count + 1 })
+          yield* fixture.deliveryHold
+
+          return turn.state.count
+        }),
+      }),
+    ),
   )
 
 export const foundationConformance: ReadonlyArray<ConformanceCase> = [
@@ -173,9 +208,8 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
-          const mintedId = yield* Actors.mint(Minted)
-          expect(Schema.is(Minted.id)(mintedId)).toBe(true)
-          const minted = yield* Minted.get(mintedId)
+          const minted = yield* Minted.create()
+          expect(Schema.is(Schema.String.check(Schema.isUUID(7)))(minted.ref.id)).toBe(true)
           const other = yield* Minted.create()
           expect(minted.ref.id).not.toBe(other.ref.id)
           const named = yield* Named.get("chosen")
@@ -277,9 +311,11 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             environment.run(
               Effect.gen(function* () {
                 expect(
-                  yield* (yield* Created.get("restart-created", { tenant: saved.tenant })).Read(),
+                  yield* (yield* Created.get("restart-created").pipe(
+                    Actor.tenant(saved.tenant),
+                  )).Read(),
                 ).toBe(23)
-                const singleton = yield* Singleton.get({ tenant: saved.tenant })
+                const singleton = yield* Singleton.get().pipe(Actor.tenant(saved.tenant))
                 expect(singleton.ref).toEqual(saved.singleton)
                 const test = yield* ActorTest
                 const before = yield* test.inspect(singleton.ref)
@@ -292,7 +328,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "enforces UTF-8 state bytes and invokes read-only defect hooks after rollback",
+    name: "enforces UTF-8 state bytes and records deterministic defects without user hooks",
     run: ({ environment, expect, fixture }) =>
       environment.run(
         Effect.gen(function* () {
@@ -300,62 +336,31 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           const actor = yield* Small.get("bytes")
           expect(yield* actor.SetText("éé")).toBe("éé") // {"text":"éé"} is exactly 15 UTF-8 bytes.
           const before = yield* test.inspect(actor.ref)
+          const defects = fixture.foundation.defects.length
           const failure = yield* actor.SetText("ééa").pipe(Effect.exit)
-          expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).toContain("State.maxBytes")
+          expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).toContain(
+            "policy.maxStateBytes",
+          )
           expect(yield* test.inspect(actor.ref)).toEqual(before)
+          expect(fixture.foundation.defects.length).toBe(defects + 1)
           expect(fixture.foundation.defects.at(-1)).toMatchObject({
-            keys: ["ref", "state"],
-            state: Exit.succeed({ text: "éé" }),
+            actor: "Small",
+            id: "bytes",
+            command: "SetText",
           })
+          expect(fixture.foundation.defects.at(-1)!.cause).toContain("policy.maxStateBytes")
           expect(yield* actor.SetText("abc")).toBe("abc")
           expect((yield* test.inspect(actor.ref)).generation).toBe(before.generation)
           const sql = yield* SqlClient.SqlClient
           yield* sql`UPDATE actor_state SET value = '13'::jsonb WHERE tenant_id = ${actor.ref.tenant} AND actor_type = 'Small' AND actor_id = 'bytes'`
-          const defects = fixture.foundation.defects.length
           expect(Exit.isFailure(yield* actor.SetText("ok").pipe(Effect.exit))).toBe(true)
-          expect(fixture.foundation.defects.length).toBe(defects + 1)
-          expect(Exit.isFailure(fixture.foundation.defects.at(-1)!.state)).toBe(true)
+          expect(fixture.foundation.defects.length).toBe(defects + 2)
           expect(yield* test.inspect(actor.ref)).toMatchObject({
             state: { text: 13 },
             receipts: 2,
             generation: before.generation,
           })
         }),
-      ),
-  },
-  {
-    name: "bounds failing defect hooks and preserves the original defect",
-    run: ({ environment, expect, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const actor = yield* Small.get("bad-hook")
-          yield* actor.SetText("abc")
-
-          for (const hook of [Effect.die(new Error("hook exploded")), Effect.never]) {
-            fixture.foundation.defectHook = hook
-            const failure = yield* actor.SetText("oversize").pipe(Effect.exit)
-            expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).toContain(
-              "State.maxBytes",
-            )
-            expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).toContain(
-              "onDefect failed",
-            )
-          }
-
-          fixture.foundation.defectHook = Effect.void
-          expect(yield* actor.SetText("ok")).toBe("ok")
-          expect(yield* (yield* ActorTest).inspect(actor.ref)).toMatchObject({
-            generation: "1",
-            state: { text: "ok" },
-            receipts: 2,
-          })
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              fixture.foundation.defectHook = Effect.void
-            }),
-          ),
-        ),
       ),
   },
   {
@@ -366,6 +371,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const actor = yield* Private.get("private")
           expect(Object.keys(actor).sort()).toEqual(["Who", "ref"])
+          expect(Object.keys(Private.api)).toEqual(["Who"])
           expect(yield* actor.Who()).toEqual({
             caller: User.make({ subject: "alice" }),
             principal: { subject: "alice" },
@@ -394,6 +400,10 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(Outcome.guards.Defect(denied)).toBe(true)
+          expect(fixture.foundation.defects.at(-1)).toMatchObject({
+            actor: "Private",
+            command: "Internal",
+          })
 
           for (const caller of [
             System.make({ source: "workflow", onBehalfOf: { subject: "alice" } }),
@@ -417,7 +427,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   ...(["execution timeout", "retryable SQL defect"] as const).map((failure): ConformanceCase => ({
-    name: `redelivers the same command after ${failure} without a partial commit`,
+    name: `retries the same command after ${failure} without a partial commit`,
     run: ({ environment, expect, fixture }) =>
       environment.run(
         Effect.gen(function* () {

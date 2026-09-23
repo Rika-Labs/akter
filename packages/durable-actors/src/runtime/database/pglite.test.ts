@@ -4,7 +4,7 @@ import { PgliteClient } from "@effect/sql-pglite"
 import { Cause, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { Actor, Lifecycle, NotCreated } from "../../index.ts"
+import { Actor, NotCreated } from "../../index.ts"
 import { migrate } from "./migrations.ts"
 import { Database } from "../index.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
@@ -156,16 +156,16 @@ describe("creation policy adoption", () => {
         }
 
         const Before = Actor.make("AdoptCreation", {
-          id: Schema.NonEmptyString,
-          commands: [Create, Read],
+          key: Schema.NonEmptyString,
           state,
+          api: { Create, Read },
         })
 
         const After = Actor.make("AdoptCreation", {
-          id: Schema.NonEmptyString,
-          commands: [Create, Read],
+          key: Schema.NonEmptyString,
           state,
-          lifecycle: [Lifecycle.createdBy(Create)],
+          api: { Create, Read },
+          policy: { createdBy: Create },
         })
 
         const database = { liveClient: live }
@@ -173,10 +173,14 @@ describe("creation policy adoption", () => {
         const first = yield* Effect.acquireRelease(
           Effect.sync(() =>
             ManagedRuntime.make(
-              Before.toLayer({
-                Create: () => Effect.void,
-                Read: (ctx) => Effect.succeed(ctx.state.count),
-              }).pipe(
+              Before.toLayer(
+                Effect.succeed({
+                  Create: () => Effect.void,
+                  Read: Effect.fnUntraced(function* () {
+                    return (yield* Before.Turn).state.count
+                  }),
+                }),
+              ).pipe(
                 Layer.provideMerge(ActorTest.layer({ database })),
                 Layer.provideMerge(BunCrypto.layer),
                 Layer.orDie,
@@ -208,10 +212,16 @@ describe("creation policy adoption", () => {
         const second = yield* Effect.acquireRelease(
           Effect.sync(() =>
             ManagedRuntime.make(
-              After.toLayer({
-                Create: (ctx) => ctx.state.set({ count: 23 }),
-                Read: (ctx) => Effect.succeed(ctx.state.count),
-              }).pipe(
+              After.toLayer(
+                Effect.succeed({
+                  Create: Effect.fnUntraced(function* () {
+                    yield* (yield* After.Turn).state.set({ count: 23 })
+                  }),
+                  Read: Effect.fnUntraced(function* () {
+                    return (yield* After.Turn).state.count
+                  }),
+                }),
+              ).pipe(
                 Layer.provideMerge(ActorTest.layer({ database })),
                 Layer.provideMerge(BunCrypto.layer),
                 Layer.orDie,
@@ -224,7 +234,7 @@ describe("creation policy adoption", () => {
         yield* Effect.promise(() =>
           second.runPromise(
             Effect.gen(function* () {
-              const actor = yield* After.get("existing", { tenant })
+              const actor = yield* After.get("existing").pipe(Actor.tenant(tenant))
               expect(yield* actor.Read().pipe(Effect.flip)).toMatchObject({
                 reason: NotCreated.make({}),
               })

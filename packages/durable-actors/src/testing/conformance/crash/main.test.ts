@@ -66,7 +66,7 @@ describe("process death with Postgres", () => {
 
   for (const point of ["beforeCommit", "afterCommit"] as const) {
     it(
-      `recovers SIGKILL ${point} from persisted Cluster storage without a new call`,
+      `recovers SIGKILL ${point} by retrying the same command id in a new process`,
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
@@ -91,9 +91,24 @@ describe("process death with Postgres", () => {
 
             const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
+            // One identity, minted from the database clock and reused by the recovery process.
+            const now = Number(
+              (yield* Effect.promise(() =>
+                pool.query(
+                  "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now",
+                ),
+              )).rows[0].now,
+            )
+
+            const commandId = `v1.${now - 1_000}.${now - 1_000 + 86_400_000}.17b3670b-3f17-4a9b-aade-037e1dd1bba8`
+
             const command = (mode: string) =>
               ChildProcess.make("bun", [new URL("./main.ts", import.meta.url).pathname], {
-                env: { CRASH_DATABASE_URL: database.href, CRASH_POINT: mode },
+                env: {
+                  CRASH_DATABASE_URL: database.href,
+                  CRASH_POINT: mode,
+                  CRASH_COMMAND_ID: commandId,
+                },
                 extendEnv: true,
                 stderr: "inherit",
               })
@@ -119,13 +134,14 @@ describe("process death with Postgres", () => {
               { receipts: point === "afterCommit" ? 1 : 0, state: point === "afterCommit" ? 1 : 0 },
             ])
             expect(
-              (yield* Effect.promise(() => pool.query("SELECT processed FROM cluster_messages")))
-                .rows,
-            ).toEqual([{ processed: false }])
+              (yield* Effect.promise(() =>
+                pool.query("SELECT to_regclass('cluster_messages')::text AS messages"),
+              )).rows,
+            ).toEqual([{ messages: null }])
             const recovery = yield* spawner.spawn(command("recover"))
             const output = yield* recovery.stdout.pipe(Stream.decodeText(), Stream.mkString)
             expect(yield* recovery.exitCode, output).toBe(0)
-            expect(output.trim()).toBe('{"receipts":1,"state":"47"}')
+            expect(output.trim()).toBe('{"value":47,"receipts":1,"state":"47"}')
 
             const after = yield* Effect.promise(() =>
               pool.query("SELECT count(*)::int AS receipts FROM actor_receipts"),

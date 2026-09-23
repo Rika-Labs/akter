@@ -18,6 +18,7 @@ import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { payloadHash } from "../runtime/turn/receipt.ts"
 import { ActorTest } from "./actor-test.ts"
 import {
+  defectRecorder,
   foundationConformance,
   foundationFixture,
   foundationLayer,
@@ -143,40 +144,47 @@ const Hold = Actor.command("Hold")
 const Steal = Actor.command("Steal")
 
 const Counter = Actor.make("Counter", {
-  id: Schema.String,
-  commands: [Increment, Reject, Nested, Escape, Hold, Steal],
+  key: Schema.String,
   state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  api: { Increment, Reject, Nested, Escape, Hold, Steal },
 })
 
 const CounterLive = (fixture: ConformanceFixture) =>
-  Counter.toLayer({
-    Increment: Effect.fnUntraced(function* (ctx, amount) {
-      fixture.executions += 1
-      yield* ctx.state.set({ count: ctx.state.count + amount })
+  Counter.toLayer(
+    Effect.succeed({
+      Increment: Effect.fnUntraced(function* (amount: number) {
+        const turn = yield* Counter.Turn
+        fixture.executions += 1
+        yield* turn.state.set({ count: turn.state.count + amount })
 
-      return ctx.state.count
-    }),
-    Reject: Effect.fnUntraced(function* (ctx, amount) {
-      fixture.executions += 1
-      yield* ctx.state.set({ count: 999 })
+        return turn.state.count
+      }),
+      Reject: Effect.fnUntraced(function* (amount: number) {
+        const turn = yield* Counter.Turn
+        fixture.executions += 1
+        yield* turn.state.set({ count: 999 })
 
-      return yield* Rejected.make({ amount })
+        return yield* Rejected.make({ amount })
+      }),
+      Nested: Effect.fnUntraced(function* () {
+        const turn = yield* Counter.Turn
+        yield* turn.state.set({ count: 99 })
+        yield* fixture.captured.pipe(Effect.orDie)
+      }),
+      Escape: Effect.fnUntraced(function* () {
+        const turn = yield* Counter.Turn
+        fixture.escaped = turn.state.set({ count: 1000 })
+        yield* turn.state.set({ count: 3 })
+      }),
+      Hold: Effect.fnUntraced(function* () {
+        const turn = yield* Counter.Turn
+        fixture.escaped = turn.state.set({ count: 1000 })
+        yield* fixture.holdHandler
+        yield* turn.state.set({ count: 3 })
+      }),
+      Steal: () => Effect.suspend(() => fixture.escaped),
     }),
-    Nested: Effect.fnUntraced(function* (ctx) {
-      yield* ctx.state.set({ count: 99 })
-      yield* fixture.captured.pipe(Effect.orDie)
-    }),
-    Escape: Effect.fnUntraced(function* (ctx) {
-      fixture.escaped = ctx.state.set({ count: 1000 })
-      yield* ctx.state.set({ count: 3 })
-    }),
-    Hold: Effect.fnUntraced(function* (ctx) {
-      fixture.escaped = ctx.state.set({ count: 1000 })
-      yield* fixture.holdHandler
-      yield* ctx.state.set({ count: 3 })
-    }),
-    Steal: () => Effect.suspend(() => fixture.escaped),
-  })
+  )
 
 const makeFixture = (): ConformanceFixture => ({
   foundation: foundationFixture(),
@@ -280,7 +288,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const alice = yield* Counter.get("privacy")
-          const bob = yield* Counter.get("privacy", { as: User.make({ subject: "bob" }) })
+          const bob = yield* Counter.get("privacy").pipe(Actor.as(User.make({ subject: "bob" })))
           const id = yield* (yield* Actors).mintCommandId
           expect(
             yield* alice
@@ -290,16 +298,20 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
                 Effect.provideService(CurrentCaller, User.make({ subject: "bob" })),
               ),
           ).toBe(17)
-          const rotated = yield* Counter.get("privacy", { as: User.make({ subject: "alice" }) })
+
+          const rotated = yield* Counter.get("privacy").pipe(
+            Actor.as(User.make({ subject: "alice" })),
+          )
+
           expect(yield* rotated.Increment(17).pipe(Actor.commandId(id))).toBe(17)
           expect(yield* bob.Increment(17).pipe(Actor.commandId(id), Effect.flip)).toMatchObject({
             reason: Unauthorized.make({ code: "receipt_access_denied" }),
           })
 
-          const otherTenant = yield* Counter.get("privacy", {
-            tenant: "other",
-            as: User.make({ subject: "bob" }),
-          })
+          const otherTenant = yield* Counter.get("privacy").pipe(
+            Actor.tenant("other"),
+            Actor.as(User.make({ subject: "bob" })),
+          )
 
           expect(yield* otherTenant.Increment(29).pipe(Actor.commandId(id))).toBe(29)
           expect(yield* test.inspect(alice.ref)).toMatchObject({
@@ -498,45 +510,39 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "denies a competing caller while the original failure is still uncommitted",
+    name: "denies a competing caller admitted while the original failure is still uncommitted",
     requiresIndependentConnections: true,
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const alice = yield* Counter.get("caller-race")
-          const bob = yield* Counter.get("caller-race", { as: User.make({ subject: "bob" }) })
+
+          const bob = yield* Counter.get("caller-race").pipe(
+            Actor.as(User.make({ subject: "bob" })),
+          )
+
           const id = yield* (yield* Actors).mintCommandId
-          const pause = yield* test.pauseNext("beforeCommit")
+          const committing = yield* test.pauseNext("beforeCommit")
           const before = fixture.executions
 
           const original = yield* alice
             .Reject(71)
             .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
 
-          yield* pause.reached
+          yield* committing.reached
+          // Bob passes admission while Alice's receipt is still uncommitted,
+          // then is held before delivery until Alice's turn commits.
+          const delivering = yield* test.pauseNext("beforeDelivery")
 
           const competitor = yield* bob
             .Reject(71)
             .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
 
-          const sql = yield* SqlClient.SqlClient
-
-          const entity = yield* Schema.encodeEffect(
-            Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-          )([alice.ref.tenant, alice.ref.id])
-
-          yield* sql<{
-            count: number
-          }>`SELECT count(*)::int AS count FROM cluster_messages WHERE entity_id = ${entity} AND processed = false`.pipe(
-            Effect.repeat({
-              while: (rows) => rows[0]!.count !== 2,
-              schedule: Schedule.spaced("10 millis"),
-            }),
-            Effect.timeout("5 seconds"),
-            Effect.ensuring(pause.release),
-          )
+          yield* delivering.reached
+          yield* committing.release
           expect(yield* Fiber.join(original)).toEqual(Rejected.make({ amount: 71 }))
+          yield* delivering.release
           expect(yield* Fiber.join(competitor)).toMatchObject({
             reason: Unauthorized.make({ code: "receipt_access_denied" }),
           })
@@ -562,7 +568,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "revokes external access without canceling persisted work or trusted redelivery",
+    name: "revokes external access without cancelling an in-flight command or its retry",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
@@ -787,7 +793,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "completes trusted redelivery after expiry but refuses the external outcome",
+    name: "completes an in-flight command past expiry but refuses the external outcome",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -841,7 +847,10 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.promise(() =>
             environment.run(
               Effect.gen(function* () {
-                const counter = yield* Counter.get(saved.ref.id, { tenant: saved.ref.tenant })
+                const counter = yield* Counter.get(saved.ref.id).pipe(
+                  Actor.tenant(saved.ref.tenant),
+                )
+
                 expect(
                   yield* counter.Increment(43).pipe(Actor.commandId(saved.id), Effect.flip),
                 ).toMatchObject({ reason: CommandExpired.make({ commandId: saved.id }) })
@@ -884,7 +893,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.promise(() =>
             isolated.runPromise(
               Effect.gen(function* () {
-                const counter = yield* Counter.get("isolated", { tenant })
+                const counter = yield* Counter.get("isolated").pipe(Actor.tenant(tenant))
                 const test = yield* ActorTest
                 expect(yield* test.inspect(counter.ref)).toEqual({
                   generation: undefined,
@@ -903,7 +912,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.promise(() =>
             environment.run(
               Effect.gen(function* () {
-                const counter = yield* Counter.get("isolated", { tenant })
+                const counter = yield* Counter.get("isolated").pipe(Actor.tenant(tenant))
                 const test = yield* ActorTest
                 expect(yield* test.inspect(counter.ref)).toMatchObject({
                   state: { count: 4 },
@@ -965,6 +974,7 @@ export const describeConformance = (options: {
             }),
           ),
           Layer.provideMerge(backend.services),
+          Layer.provide(defectRecorder(fixture.foundation)),
           Layer.orDie,
         ),
       )

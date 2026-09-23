@@ -1,57 +1,27 @@
-import { Data, Duration, Match, Schema } from "effect"
+import { Duration, Schema } from "effect"
 import type { AnyCommand } from "../members/command.ts"
 
-const Milliseconds = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }))
+const Positive = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }))
 
-const milliseconds = (duration: Duration.Input) => Milliseconds.make(Duration.toMillis(duration))
+const milliseconds = (duration: Duration.Input) => Positive.make(Duration.toMillis(duration))
 
-const CommandTimeout = Schema.TaggedStruct("CommandTimeout", { milliseconds: Milliseconds })
-
-const LockWait = Schema.TaggedStruct("LockWait", { milliseconds: Milliseconds })
-
-const DeliveryTimeout = Schema.TaggedStruct("DeliveryTimeout", { milliseconds: Milliseconds })
-
-const StateMaxBytes = Schema.TaggedStruct("StateMaxBytes", { bytes: Milliseconds })
-
-const HibernateAfter = Schema.TaggedStruct("HibernateAfter", { milliseconds: Milliseconds })
-
-const MailboxCapacity = Schema.TaggedStruct("MailboxCapacity", { capacity: Milliseconds })
-
-export const Commands = {
-  timeout: (after: Duration.Input) => CommandTimeout.make({ milliseconds: milliseconds(after) }),
-  lockWait: (after: Duration.Input) => LockWait.make({ milliseconds: milliseconds(after) }),
+/** Serializable actor policies; each key has exactly one meaning and one default. */
+export interface Policy<Command extends AnyCommand = AnyCommand> {
+  /** Idle time before the activation sleeps. Default 60 seconds. */
+  readonly hibernateAfter?: Duration.Input
+  /** Deadline for the whole turn transaction. Default 30 seconds. */
+  readonly commandTimeout?: Duration.Input
+  /** Deadline for acquiring the generation lock. Default 2 seconds. */
+  readonly lockWait?: Duration.Input
+  /** How long a caller waits for a reply; the turn itself is not cancelled. Default 30 seconds. */
+  readonly deliveryTimeout?: Duration.Input
+  /** Maximum UTF-8 bytes of the encoded state object. Default 65,536. */
+  readonly maxStateBytes?: number
+  /** Maximum queued commands per activation. Default unbounded. */
+  readonly mailboxCapacity?: number
+  /** The only command that may create the actor; other commands fail `NotCreated` until it commits. */
+  readonly createdBy?: Command
 }
-
-export const Delivery = {
-  timeout: (after: Duration.Input) => DeliveryTimeout.make({ milliseconds: milliseconds(after) }),
-}
-
-export const State = { maxBytes: (bytes: number) => StateMaxBytes.make({ bytes }) }
-
-export const Hibernate = {
-  after: (after: Duration.Input) => HibernateAfter.make({ milliseconds: milliseconds(after) }),
-}
-
-export const Mailbox = { capacity: (capacity: number) => MailboxCapacity.make({ capacity }) }
-
-export class CreatedBy<C extends AnyCommand = AnyCommand> extends Data.TaggedClass("CreatedBy")<{
-  readonly command: C
-}> {}
-
-export const Lifecycle = {
-  createdBy: <C extends AnyCommand>(command: C): CreatedBy<C> => new CreatedBy({ command }),
-}
-
-export type Policy<C extends AnyCommand = AnyCommand> =
-  | typeof CommandTimeout.Type
-  | typeof LockWait.Type
-  | typeof DeliveryTimeout.Type
-  | typeof StateMaxBytes.Type
-  | typeof HibernateAfter.Type
-  | typeof MailboxCapacity.Type
-  | CreatedBy<C>
-
-export const Policy = { Commands, Delivery, State, Hibernate, Mailbox, Lifecycle }
 
 export interface TurnPolicy {
   readonly executionMs: number
@@ -63,37 +33,25 @@ export interface TurnPolicy {
   readonly createdBy: string | undefined
 }
 
-export const resolvePolicies = (policies: ReadonlyArray<Policy>): TurnPolicy => {
-  const seen = new Set<string>()
+export const resolvePolicy = (policy: {
+  readonly declared: Policy | undefined
+  readonly commands: ReadonlyArray<AnyCommand>
+}): TurnPolicy => {
+  const { declared, commands } = policy
 
-  const resolved: TurnPolicy = {
-    executionMs: 30_000,
-    lockWaitMs: 2_000,
-    deliveryMs: 30_000,
-    stateMaxBytes: 65_536,
-    idleMs: 60_000,
-    mailboxCapacity: "unbounded",
-    createdBy: undefined,
-  }
+  if (declared?.createdBy !== undefined && !commands.includes(declared.createdBy))
+    throw new Error("policy.createdBy must belong to this actor")
 
-  for (const policy of policies) {
-    if (seen.has(policy._tag)) throw new Error(`Duplicate policy: ${policy._tag}`)
-    seen.add(policy._tag)
-    Object.assign(
-      resolved,
-      Match.value(policy).pipe(
-        Match.tagsExhaustive({
-          CommandTimeout: ({ milliseconds }) => ({ executionMs: milliseconds }),
-          LockWait: ({ milliseconds }) => ({ lockWaitMs: milliseconds }),
-          DeliveryTimeout: ({ milliseconds }) => ({ deliveryMs: milliseconds }),
-          StateMaxBytes: ({ bytes }) => ({ stateMaxBytes: bytes }),
-          HibernateAfter: ({ milliseconds }) => ({ idleMs: milliseconds }),
-          MailboxCapacity: ({ capacity }) => ({ mailboxCapacity: capacity }),
-          CreatedBy: ({ command }) => ({ createdBy: command.tag }),
-        }),
-      ),
-    )
-  }
-
-  return Object.freeze(resolved)
+  return Object.freeze({
+    executionMs: milliseconds(declared?.commandTimeout ?? "30 seconds"),
+    lockWaitMs: milliseconds(declared?.lockWait ?? "2 seconds"),
+    deliveryMs: milliseconds(declared?.deliveryTimeout ?? "30 seconds"),
+    stateMaxBytes: Positive.make(declared?.maxStateBytes ?? 65_536),
+    idleMs: milliseconds(declared?.hibernateAfter ?? "60 seconds"),
+    mailboxCapacity:
+      declared?.mailboxCapacity === undefined
+        ? "unbounded"
+        : Positive.make(declared.mailboxCapacity),
+    createdBy: declared?.createdBy?.tag,
+  })
 }

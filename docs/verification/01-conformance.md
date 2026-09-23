@@ -11,7 +11,7 @@
 
 The shared harness now exists: `conformance` is the named case list and `describeConformance` registers it against a `ConformanceBackend` through an injected registrar, so no test framework is imported by the suite itself. Backends that cannot open a second SQL connection set `independentConnections: false` and report those cases through `registrar.skip` — by name, never silently. PGlite runs [`pglite.test.ts`](../../packages/durable-actors/src/runtime/database/pglite.test.ts); Postgres runs [`conformance.test.ts`](../../packages/durable-actors/src/testing/conformance.test.ts) and the SIGKILL suite [`crash/main.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/main.test.ts).
 
-**Executed 2026-09-22:** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 52 tasks, including 40 framework tests (30 shared PGlite cases, four PGlite lifecycle/migration/creation-policy cases, six declaration/identity tests); five independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 38 Postgres framework tests (35 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. The [PR](https://github.com/Rika-Labs/durable-actors/pull/7) records the exact pushed revision and CI evidence artifact; local results do not substitute for that artifact.
+**Executed 2026-09-23, after the [ADR 0013](../decisions/0013-m0-reconciliation.md) reconciliation:** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18. `bun run check` passed all 54 tasks, including 38 framework tests (29 shared PGlite cases, four PGlite lifecycle/migration/creation-policy cases, three declaration tests, two identity tests); five independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 37 Postgres framework tests (34 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. Commands are direct: every case runs with no Cluster message storage. The previous run (2026-09-22, [PR #7](https://github.com/Rika-Labs/durable-actors/pull/7)) covered the pre-reconciliation code. Local results do not substitute for the CI evidence artifact of the pushed revision.
 
 ### Shared cases (PGlite and Postgres)
 
@@ -20,11 +20,10 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `keeps creation marker and receipt atomic across beforeCommit crash`
 - `keeps creation marker and receipt atomic across afterCommit crash`
 - `retains creation and singleton receipt identity across runtime restart`
-- `enforces UTF-8 state bytes and invokes read-only defect hooks after rollback`
-- `bounds failing defect hooks and preserves the original defect`
+- `enforces UTF-8 state bytes and records deterministic defects without user hooks`
 - `hides internal commands and binds System principal and receipt access`
-- `redelivers the same command after execution timeout without a partial commit`
-- `redelivers the same command after retryable SQL defect without a partial commit`
+- `retries the same command after execution timeout without a partial commit`
+- `retries the same command after retryable SQL defect without a partial commit`
 - `delivery timeout stops waiting while the admitted command commits once`
 - `commits state and receipt, replays an identical command effect, and keeps its generation`
 - `rolls back declared failures and replays their class and payload without executing again`
@@ -37,12 +36,12 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `rejects a stale generation before rerunning the handler under new authority`
 - `rolls back captured request/reply misuse and rejects escaped state capabilities`
 - `refuses to reinterpret retained identities under a changed retry window`
-- `revokes external access without canceling persisted work or trusted redelivery`
+- `revokes external access without cancelling an in-flight command or its retry`
 - `defines exact expiry boundaries and rejects invalid/future identities`
 - `canonicalizes object keys but preserves array order in payload hashes`
 - `recovers a declared failure beforeCommit without persisting dirty state`
 - `recovers a declared failure afterCommit without persisting dirty state`
-- `completes trusted redelivery after expiry but refuses the external outcome`
+- `completes an in-flight command past expiry but refuses the external outcome`
 - `rejects an expired identity after receipt pruning and runtime restart`
 - `isolates durable state between fresh layer builds`
 
@@ -52,7 +51,7 @@ These require a real second connection and are reported skipped on PGlite:
 
 - `keeps uncommitted state invisible to a second connection`
 - `rejects a state setter from another still-active actor turn`
-- `denies a competing caller while the original failure is still uncommitted`
+- `denies a competing caller admitted while the original failure is still uncommitted`
 - `decodes regclass so the migrator can reopen the database` — exercises the scoped rc.116 codec workaround for [Effect #8309](https://github.com/Effect-TS/effect/pull/8309)
 - `retries a real generation lock timeout without entering the handler` — real Postgres `FOR UPDATE`; observes two distinct blocked attempts while the competing transaction still holds the lock, then one committed transition
 
@@ -61,7 +60,7 @@ These require a real second connection and are reported skipped on PGlite:
 - PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.
 - PGlite, in `pglite.test.ts`: `rolls back partial foundation DDL and safely reruns the migration` — a deliberate `actor_state` collision proves rollback without a recorded migration, then rerun succeeds.
 - PGlite, in `pglite.test.ts`: `does not treat a pre-policy successful command as creation after restart` — reuses a borrowed database across runtime builds and requires a successful creating command after adopting `Lifecycle.createdBy`.
-- Postgres, in `crash/main.test.ts`: `rolls back partial foundation DDL and safely reruns the migration`, plus `recovers SIGKILL beforeCommit from persisted Cluster storage without a new call` and `recovers SIGKILL afterCommit from persisted Cluster storage without a new call` — a child process is killed at a signaled barrier, durable rows are inspected with a separate pool, and a fresh process completes the persisted message with one receipt/state transition.
+- Postgres, in `crash/main.test.ts`: `rolls back partial foundation DDL and safely reruns the migration`, plus `recovers SIGKILL beforeCommit by retrying the same command id in a new process` and `recovers SIGKILL afterCommit by retrying the same command id in a new process` — a child process is killed at a signaled barrier, durable rows are inspected with a separate pool (no receipt before commit, one after, and no `cluster_messages` table), and a fresh process retries the saved command id to exactly one receipt/state transition.
 
 The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
 
@@ -75,11 +74,11 @@ This completes M0 evidence, not full backend certification. Unimplemented gates 
 
 `ActorTest.layer({ database?, as?, authorize?, retryWindowMs? })` supplies the test environment; `runners`, `effects`, old-state seeding helpers, and executor controls remain target API. Each layer build owns a fresh tenant; tests use distinct actor IDs or explicitly reset that tenant. `database` defaults to a fresh in-memory PGlite instance, honors `dataDir` for disk persistence across builds, and accepts a `Redacted` Postgres URL. Bound actor inspection reads committed state without waking an activation. `test.actor(X, id?)` returns a `system` handle that drives every command — including internal ones — with a `System` caller inheriting the configured principal.
 
-Fault controls cover crash hooks, pause/release, redelivery, stale generations, and Postgres lock contention. `TurnHooks` is a testing-only export; `TurnReport` remains planned. In-process multi-runner tests must simulate serialization and give each runner its own message-storage wrapper; they do not substitute for real multi-process Postgres fencing evidence. Effect `TestClock` can control eligible delays; the current harness uses real timers and real SQL locks.
+Fault controls cover crash hooks, pause/release at `beforeDelivery`, `beforeHandler`, `beforeCommit`, and `afterCommit`, caller retry, stale generations, and Postgres lock contention. `TurnHooks` is a testing-only export; `TurnReport` remains planned. In-process multi-runner tests must simulate serialization and give each runner its own message-storage wrapper; they do not substitute for real multi-process Postgres fencing evidence. Effect `TestClock` can control eligible delays; the current harness uses real timers and real SQL locks.
 
 ## Design verification gates
 
-The ledger records 17 gate rows below. The foundation evidence above exercises the crash-point, runtime-turn-boundary, and PGlite/PGlite-under-Bun subsets; it does not satisfy gates for members or backends that are not implemented. Other active gates remain **unverified**. The earlier Neki cross-shard alternative is retained for traceability. [ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md) replaces the Neki relay into `cluster_messages` with one actor-shard outbox on every backend and makes commands direct; the crash-point evidence recorded above describes the current persisted-message code, not that design.
+The ledger records 17 gate rows below. The foundation evidence above exercises the crash-point, runtime-turn-boundary, and PGlite/PGlite-under-Bun subsets; it does not satisfy gates for members or backends that are not implemented. After [ADR 0013](../decisions/0013-m0-reconciliation.md), the crash-point evidence covers direct commands with caller retry. Other active gates remain **unverified**. The earlier Neki cross-shard alternative is retained for traceability. [ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md) replaces the Neki relay into `cluster_messages` with one actor-shard outbox on every backend and makes commands direct.
 
 | Gate                               | Required evidence                                                                                                                                                                                   |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

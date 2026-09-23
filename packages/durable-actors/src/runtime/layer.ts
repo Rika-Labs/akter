@@ -1,7 +1,27 @@
 import { PgClient, PgTypes } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Context, Crypto, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
-import { ClusterError, Sharding, SingleRunner } from "effect/unstable/cluster"
+import {
+  Cause,
+  Context,
+  Crypto,
+  Effect,
+  Fiber,
+  Layer,
+  Option,
+  Result,
+  Schedule,
+  Schema,
+} from "effect"
+import {
+  ClusterError,
+  MessageStorage,
+  RunnerHealth,
+  Runners,
+  RunnerStorage,
+  Sharding,
+  ShardingConfig,
+  SqlRunnerStorage,
+} from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import {
   ActorError,
@@ -16,6 +36,7 @@ import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
+import { TurnHooks } from "./turn/hooks.ts"
 import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
 
 export interface Options {
@@ -50,7 +71,6 @@ export const layer = (options: Options) => {
       })
 
       const publicActors = Actors.of({
-        mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintCommandId: Effect.gen(function* () {
           const now = yield* databaseTime
           const uuid = yield* crypto.randomUUIDv4
@@ -60,6 +80,7 @@ export const layer = (options: Options) => {
       })
 
       const internalActors = InternalActors.of({
+        mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         register: Effect.fnUntraced(function* (registration: Registration) {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
@@ -97,21 +118,43 @@ export const layer = (options: Options) => {
                 )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie),
               )
 
-              // Runtime scope owns the accepted call; interrupting its waiter must not send cancellation.
-              const delivery = yield* client.Execute(request).pipe(Effect.forkIn(scope))
+              yield* (yield* TurnHooks).at("beforeDelivery", request)
 
-              const outcome = yield* Fiber.join(delivery).pipe(
-                Effect.catchIf(
-                  (cause) => !Schema.is(ActorError)(cause),
-                  (cause) =>
-                    Effect.fail(
-                      ActorError.make({
-                        reason: Schema.is(ClusterError.MailboxFull)(cause)
-                          ? MailboxFull.make({})
-                          : ActorUnavailable.make({ cause }),
-                      }),
-                    ),
-                ),
+              // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
+              const deliver = Effect.suspend(() =>
+                client.Execute(request).pipe(Effect.forkIn(scope)),
+              ).pipe(
+                Effect.flatMap(Fiber.join),
+                Effect.catchCause((cause) => {
+                  const failure = Cause.findErrorOption(cause)
+
+                  if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
+                    return Effect.fail(failure.value)
+
+                  if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value))
+                    return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
+
+                  // Direct commands are not persisted (ADR 0011). A restarted
+                  // activation or lost runner drops the uncommitted attempt, so
+                  // the handle retries with the same command id; the receipt
+                  // replays anything that did commit.
+                  return Effect.fail(
+                    ActorError.make({
+                      reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                    }),
+                  )
+                }),
+              )
+
+              const outcome = yield* deliver.pipe(
+                Effect.retry({
+                  while: (error) => Schema.is(ActorUnavailable)(error.reason),
+                  // Exponential backoff capped at 500 ms; the delivery timeout bounds the total.
+                  schedule: Schedule.min([
+                    Schedule.exponential("10 millis", 2),
+                    Schedule.spaced("500 millis"),
+                  ]),
+                }),
               )
 
               yield* authorize(request)
@@ -159,26 +202,30 @@ export const layer = (options: Options) => {
 
       // SqlRunnerStorage reserves a SQL connection for the layer's lifetime,
       // which starves PGlite's single connection; runner bookkeeping moves to
-      // memory while message storage, migrations, and receipts stay in SQL.
+      // memory while migrations and receipts stay in SQL.
       const runnerStorage: "memory" | "sql" = Option.isSome(
         yield* Effect.serviceOption(PgliteClient.PgliteClient),
       )
         ? "memory"
         : "sql"
 
-      return runtime.pipe(
+      // Commands are direct (ADR 0011), so Cluster keeps no message storage;
+      // durable intents will use the actor-shard outbox instead.
+      const sharding = Sharding.layer.pipe(
+        Layer.provideMerge(Runners.layerNoop),
+        Layer.provideMerge(MessageStorage.layerNoop),
+        Layer.provide([
+          runnerStorage === "memory"
+            ? RunnerStorage.layerMemory
+            : Layer.orDie(SqlRunnerStorage.layer),
+          RunnerHealth.layerNoop,
+        ]),
         Layer.provide(
-          SingleRunner.layer({
-            runnerStorage,
-            shardingConfig: {
-              shardsPerGroup: 1,
-              simulateRemoteSerialization: true,
-              entityMessagePollInterval: "100 millis",
-              entityReplyPollInterval: "100 millis",
-            },
-          }),
+          ShardingConfig.layer({ shardsPerGroup: 1, simulateRemoteSerialization: true }),
         ),
       )
+
+      return runtime.pipe(Layer.provide(sharding))
     }),
   )
 }

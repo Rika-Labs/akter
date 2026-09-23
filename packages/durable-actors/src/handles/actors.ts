@@ -38,11 +38,6 @@ export interface Registration {
   readonly name: string
   readonly singleton: boolean
   readonly policy: TurnPolicy
-  readonly onDefect: (
-    ref: ActorRef,
-    cause: unknown,
-    state: Effect.Effect<ReadonlyArray<readonly [string, string]>>,
-  ) => Effect.Effect<void>
   readonly commands: ReadonlyMap<string, RegisteredCommand>
 }
 
@@ -52,24 +47,14 @@ export class InternalActors extends Context.Service<
   {
     readonly register: (actor: Registration) => Effect.Effect<void, never, Scope.Scope>
     readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
+    readonly mintActorId: Effect.Effect<string>
   }
 >()("durable-actors/handles/actors/InternalActors") {}
 
 export class Actors extends Context.Service<
   Actors,
   {
+    /** Mints a command id for `Actor.commandId`, so a caller can retry one operation across processes. */
     readonly mintCommandId: Effect.Effect<string>
-    readonly mintActorId: Effect.Effect<string>
   }
->()("durable-actors/handles/actors") {
-  static readonly mint = <
-    A extends { readonly id: Schema.Codec<string, string>; readonly create: unknown },
-  >(
-    actor: A & ([A["create"]] extends [never] ? never : unknown),
-  ): Effect.Effect<A["id"]["Type"], never, Actors> =>
-    Effect.gen(function* () {
-      const actors = yield* Actors
-
-      return yield* Schema.decodeEffect(actor.id)(yield* actors.mintActorId).pipe(Effect.orDie)
-    }) as Effect.Effect<A["id"]["Type"], never, Actors>
-}
+>()("durable-actors/handles/actors") {}

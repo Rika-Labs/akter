@@ -14,13 +14,12 @@ contextFiles:
   - docs/contracts/02-command-turns.md
 ---
 
-# State.maxBytes measures UTF-8 bytes before commit
+# policy.maxStateBytes measures UTF-8 bytes before commit
 
-`State.maxBytes` is enforced against the UTF-8 encoded byte length of the
+`policy.maxStateBytes` is enforced against the UTF-8 encoded byte length of the
 committed state value, inside the turn and before business state commits.
 Overflow is a deterministic defect: rollback, `Die` to the caller, cause
-recorded (M0 `onDefect` hook, or the turn span under ADR 0012), actor stays
-resident.
+recorded in the turn span and log, actor stays resident.
 
 Violations: measuring JavaScript string `.length` or UTF-16 code units instead
 of encoded bytes; checking the limit after the write commits; applying the

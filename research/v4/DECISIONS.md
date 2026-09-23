@@ -7,7 +7,7 @@ when the answer needed interpretation (veto if wrong), `delegated` when the owne
 or `gated` when a verification must pass before the decision is claimed.
 
 The typechecked sketch that embodies this ledger is [framework/Actor.ts](framework/Actor.ts); the
-testing surface is [framework/Testing.ts](framework/Testing.ts). The latest rounds are §3.8 (181–192, scale and performance), §3.9 (193–212, one way to do everything), and §3.10 (213–219, open decisions); the
+testing surface is [framework/Testing.ts](framework/Testing.ts). The latest rounds are §3.8 (181–192, scale and performance), §3.9 (193–212, one way to do everything), and §3.10 (213–219, open decisions), and §3.11 (220, M0 reconciliation); the
 comparison against Rivet's Effect SDK and Cloudflare Durable Objects is [COMPARISON.md](COMPARISON.md).
 
 ## 0. Foundations (carried from v3)
@@ -445,6 +445,12 @@ The owner reviewed three sketched options per question and picked 1B 2B 3B 4C 5A
 | 217 | Group reads | A — `group` on `X.Turn`/`X.Read`, pinned to the placement group. Confirms 209. | Consistent joins without another service. | Drizzle | settled |
 | 218 | Merge window | B — never wait; merge only already-queued inputs, up to 1,024. Supersedes the 10 ms window of 188. | No added latency for a lone call; the queue fills under load. | `Queue.takeBetween` | settled |
 | 219 | Home region | A — operator-assigned (`durable tenants create --region`), default primary; never inferred from a request. Refines 184. | A first request from CI or a traveler cannot pin a tenant wrongly. | tenant directory | settled |
+
+## 3.11. Round 12 — reconcile the shipped M0 code (220)
+
+| # | Decision | Choice | Why | Primitive | Status |
+| --- | --- | --- | --- | --- | --- |
+| 220 | M0 reconciliation | The implemented foundation adopts 194–207 and 216 now rather than in M1: one-object `Actor.make`, per-actor `X.Turn`, `X.create()` only, `Actor.as`/`Actor.tenant`, no `onDefect`, direct commands with `MessageStorage.layerNoop`; SIGKILL recovery is caller retry with a saved id. Recorded in [ADR 0013](../../docs/decisions/0013-m0-reconciliation.md). Supersedes 212's "migrate in M1". | Owner: reconcile everything shipped with the new decisions. | `Entity`, `MessageStorage.layerNoop` | settled; evidence in the conformance ledger |
 
 ## 4. Verification gates (must pass before the decision is claimed)
 

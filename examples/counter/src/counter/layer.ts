@@ -1,10 +1,13 @@
 import { Effect } from "effect"
 import { Counter } from "./contract.ts"
 
-export const CounterLive = Counter.toLayer({
-  Increment: Effect.fnUntraced(function* (ctx, amount) {
-    yield* ctx.state.set({ count: ctx.state.count + amount })
+export const CounterLive = Counter.toLayer(
+  Effect.succeed({
+    Increment: Effect.fnUntraced(function* (amount: number) {
+      const turn = yield* Counter.Turn
+      yield* turn.state.set({ count: turn.state.count + amount })
 
-    return ctx.state.count
+      return turn.state.count
+    }),
   }),
-})
+)
