@@ -142,7 +142,12 @@ describe("process death with Postgres", () => {
             const recovery = yield* spawner.spawn(command("recover"))
             const output = yield* recovery.stdout.pipe(Stream.decodeText(), Stream.mkString)
             expect(yield* recovery.exitCode, output).toBe(0)
-            expect(output.trim()).toBe('{"value":47,"receipts":1,"state":"47"}')
+            expect(
+              output
+                .split("\n")
+                .filter((line) => line.startsWith("RESULT "))
+                .map((line) => line.slice("RESULT ".length)),
+            ).toEqual(['{"value":47,"receipts":1,"state":"47"}'])
 
             const after = yield* Effect.promise(() =>
               pool.query("SELECT count(*)::int AS receipts FROM actor_receipts"),

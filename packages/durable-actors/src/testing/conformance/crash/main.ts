@@ -67,13 +67,14 @@ const program = Effect.gen(function* () {
   }>`SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts,
       (SELECT value FROM actor_state WHERE key = 'count') AS state_bytes`
 
-  yield* Console.log(
-    yield* Schema.encodeEffect(
-      Schema.fromJsonString(
-        Schema.Struct({ value: Schema.Finite, receipts: Schema.Int, state: Schema.String }),
-      ),
-    )({ value, receipts: rows[0]!.receipts, state: decompress(rows[0]!.state_bytes) }),
-  )
+  const result = yield* Schema.encodeEffect(
+    Schema.fromJsonString(
+      Schema.Struct({ value: Schema.Finite, receipts: Schema.Int, state: Schema.String }),
+    ),
+  )({ value, receipts: rows[0]!.receipts, state: decompress(rows[0]!.state_bytes) })
+
+  // Tagged so the parent ignores runtime logs that share stdout.
+  yield* Console.log(`RESULT ${result}`)
 }).pipe(Effect.timeout("10 seconds"))
 
 Layer.effectDiscard(program).pipe(
