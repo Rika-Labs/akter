@@ -134,8 +134,8 @@ export const layer = (options: Options) => {
                   if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value))
                     return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
 
-                  // Direct commands are not persisted (ADR 0011). A restarted
-                  // activation or lost runner drops the uncommitted attempt, so
+                  // Direct commands are not persisted. A restarted activation
+                  // or lost runner drops the uncommitted attempt, so
                   // the handle retries with the same command id; the receipt
                   // replays anything that did commit.
                   return Effect.fail(
@@ -209,8 +209,8 @@ export const layer = (options: Options) => {
         ? "memory"
         : "sql"
 
-      // Commands are direct (ADR 0011), so Cluster keeps no message storage;
-      // durable intents will use the actor-shard outbox instead.
+      // Commands are direct, so Cluster keeps no message storage; durable
+      // intents will use the actor-shard outbox instead.
       const sharding = Sharding.layer.pipe(
         Layer.provideMerge(Runners.layerNoop),
         Layer.provideMerge(MessageStorage.layerNoop),
