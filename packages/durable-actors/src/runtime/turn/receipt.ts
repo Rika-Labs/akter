@@ -18,23 +18,19 @@ export const payloadHash = Effect.fnUntraced(function* (payload: string) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
 })
 
-export const resolveReceipt = Effect.fnUntraced(function* (request: Request, hash: string) {
-  const sql = yield* SqlClient.SqlClient
+export interface StoredReceipt {
+  readonly caller_key: string
+  readonly command: string
+  readonly payload_hash: string
+  readonly outcome: string
+}
 
-  const rows = yield* sql<{
-    caller_key: string
-    command: string
-    payload_hash: string
-    outcome: string
-  }>`
-    SELECT caller_key, command, payload_hash, outcome FROM actor_receipts
-    WHERE tenant_id = ${request.ref.tenant} AND actor_type = ${request.ref.actor}
-      AND actor_id = ${request.ref.id} AND command_id = ${request.commandId}`
-
-  const receipt = rows[0]
-
-  if (receipt === undefined) return undefined
-
+/** Access and conflict rules for a retained receipt, shared by admission and replay. */
+export const checkReceipt = Effect.fnUntraced(function* (
+  request: Request,
+  hash: string,
+  receipt: StoredReceipt,
+) {
   if (receipt.caller_key !== callerKey(request.caller)) {
     return yield* ActorError.make({ reason: Unauthorized.make({ code: "receipt_access_denied" }) })
   }
@@ -46,4 +42,25 @@ export const resolveReceipt = Effect.fnUntraced(function* (request: Request, has
   }
 
   return yield* Schema.decodeEffect(OutcomeJson)(receipt.outcome).pipe(Effect.orDie)
+})
+
+/** Reads a retained receipt outside a turn, before delivering to the actor. */
+export const resolveReceipt = Effect.fnUntraced(function* (
+  request: Request,
+  hash: string,
+  routingKey: bigint,
+) {
+  const sql = yield* SqlClient.SqlClient
+
+  const rows = yield* sql<StoredReceipt>`
+    SELECT caller_key, command, payload_hash, outcome FROM actor_receipts
+    WHERE routing_key = ${routingKey} AND tenant_id = ${request.ref.tenant}
+      AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
+      AND command_id = ${request.commandId}`
+
+  const receipt = rows[0]
+
+  if (receipt === undefined) return undefined
+
+  return yield* checkReceipt(request, hash, receipt)
 })

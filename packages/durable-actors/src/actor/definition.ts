@@ -109,6 +109,8 @@ interface Definition<
   Internal extends CommandRecord,
 > {
   readonly key?: Key
+  /** Which rows share a shard (ADR 0006): the tenant (default) or each actor on its own. */
+  readonly placement?: "tenant" | "actor"
   readonly state?: Fields
   readonly api: Api & TagsMatch<Api>
   readonly internal?: Internal & TagsMatch<Internal>
@@ -392,7 +394,13 @@ const make = <
         })
       }
 
-      yield* actors.register({ name, commands, singleton: isSingleton, policy })
+      yield* actors.register({
+        name,
+        commands,
+        singleton: isSingleton,
+        placement: definition.placement ?? "tenant",
+        policy,
+      })
     })
 
   /**

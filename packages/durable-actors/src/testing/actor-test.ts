@@ -18,6 +18,7 @@ import {
 import type { ActorError } from "../errors/actor.ts"
 import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
+import { decompress } from "../runtime/storage/codec.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
 
 export interface Inspection {
@@ -157,11 +158,13 @@ export class ActorTest extends Context.Service<
                 }>`SELECT generation::text AS generation FROM actor_generations
             WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-                const state = yield* sql<{
+                const state = (yield* sql<{
                   key: string
-                  value: string
-                }>`SELECT key, value::text AS value FROM actor_state
-            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+                  value: Uint8Array
+                }>`SELECT key, value FROM actor_state
+            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`).map(
+                  ({ key, value }) => ({ key, value: decompress(value) }),
+                )
 
                 const receipts = yield* sql<{
                   count: number

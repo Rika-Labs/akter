@@ -36,6 +36,7 @@ import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
+import { routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
 
@@ -104,7 +105,12 @@ export const layer = (options: Options) => {
             return yield* Effect.gen(function* () {
               yield* authorize(request)
               const hash = yield* payloadHash(request.payload)
-              const retained = yield* resolveReceipt(request, hash)
+
+              const retained = yield* resolveReceipt(
+                request,
+                hash,
+                routingKey({ ref: request.ref, placement: registration.placement }),
+              )
 
               if (retained !== undefined) {
                 yield* authorize(request)

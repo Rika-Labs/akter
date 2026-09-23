@@ -3,6 +3,7 @@ import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor } from "../../../index.ts"
 import { Actors, Database } from "../../../runtime/index.ts"
+import { decompress } from "../../../runtime/storage/codec.ts"
 import { TurnHooks } from "../../../runtime/turn/hooks.ts"
 
 const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
@@ -62,16 +63,16 @@ const program = Effect.gen(function* () {
 
   const rows = yield* sql<{
     receipts: number
-    state: string
+    state_bytes: Uint8Array
   }>`SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts,
-      (SELECT value::text FROM actor_state WHERE key = 'count') AS state`
+      (SELECT value FROM actor_state WHERE key = 'count') AS state_bytes`
 
   yield* Console.log(
     yield* Schema.encodeEffect(
       Schema.fromJsonString(
         Schema.Struct({ value: Schema.Finite, receipts: Schema.Int, state: Schema.String }),
       ),
-    )({ value, receipts: rows[0]!.receipts, state: rows[0]!.state }),
+    )({ value, receipts: rows[0]!.receipts, state: decompress(rows[0]!.state_bytes) }),
   )
 }).pipe(Effect.timeout("10 seconds"))
 

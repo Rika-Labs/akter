@@ -2,6 +2,7 @@ import { Effect, Layer, Schema } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, ActorError, type Actors } from "../index.ts"
 import type { InternalActors } from "../handles/actors.ts"
+import { routingKey } from "../runtime/storage/codec.ts"
 
 describe("actor declarations", () => {
   it("derives handles from api, hides internal commands, and narrows creation reasons", () => {
@@ -79,6 +80,24 @@ describe("actor declarations", () => {
       // @ts-expect-error createdBy must name a command of this actor
       Actor.make("Foreign", { api: { Increment }, policy: { createdBy: Create } }),
     ).toThrow("belong")
+  })
+
+  it("places by tenant by default and by actor on request", () => {
+    const Read = Actor.command("Read")
+    const ref = { tenant: "t", actor: "Session", id: "a" }
+    const other = { ...ref, id: "b" }
+    expect(Actor.make("Session", { api: { Read }, placement: "actor" })).toBeDefined()
+    expect(routingKey({ ref, placement: "tenant" })).toBe(
+      routingKey({ ref: other, placement: "tenant" }),
+    )
+    expect(routingKey({ ref, placement: "actor" })).not.toBe(
+      routingKey({ ref: other, placement: "actor" }),
+    )
+    expect(routingKey({ ref: { ...ref, tenant: "u" }, placement: "tenant" })).not.toBe(
+      routingKey({ ref, placement: "tenant" }),
+    )
+    // @ts-expect-error placement is "tenant" or "actor"
+    const _invalid = Actor.make("Bad", { api: { Read }, placement: "region" })
   })
 
   it("types handler requirements through the per-actor Turn service", () =>

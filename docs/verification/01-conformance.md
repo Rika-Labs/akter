@@ -11,7 +11,7 @@
 
 The shared harness now exists: `conformance` is the named case list and `describeConformance` registers it against a `ConformanceBackend` through an injected registrar, so no test framework is imported by the suite itself. Backends that cannot open a second SQL connection set `independentConnections: false` and report those cases through `registrar.skip` — by name, never silently. PGlite runs [`pglite.test.ts`](../../packages/durable-actors/src/runtime/database/pglite.test.ts); Postgres runs [`conformance.test.ts`](../../packages/durable-actors/src/testing/conformance.test.ts) and the SIGKILL suite [`crash/main.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/main.test.ts).
 
-**Executed 2026-09-23, after the [ADR 0013](../decisions/0013-m0-reconciliation.md) reconciliation:** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18. `bun run check` passed all 54 tasks, including 38 framework tests (29 shared PGlite cases, four PGlite lifecycle/migration/creation-policy cases, three declaration tests, two identity tests); five independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 37 Postgres framework tests (34 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. Commands are direct: every case runs with no Cluster message storage. The previous run (2026-09-22, [PR #7](https://github.com/Rika-Labs/durable-actors/pull/7)) covered the pre-reconciliation code. Local results do not substitute for the CI evidence artifact of the pushed revision.
+**Executed 2026-09-23 (M1.1 storage rebase):** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18. `bun run check` passed all 54 tasks, including 40 framework tests (30 shared PGlite cases, four PGlite lifecycle/migration/creation-policy cases, four declaration tests, two identity tests); five independent-connection cases were explicitly skipped on PGlite. `bun run test:integration` passed 38 Postgres framework tests (35 named conformance cases, migration rollback, and two real SIGKILL recoveries), plus the runnable counter example. Commands are direct and state is compressed `bytea` keyed by `routing_key`. Local results do not substitute for the CI evidence artifact of the pushed revision.
 
 ### Shared cases (PGlite and Postgres)
 
@@ -22,6 +22,7 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `retains creation and singleton receipt identity across runtime restart`
 - `enforces UTF-8 state bytes and records deterministic defects without user hooks`
 - `hides internal commands and binds System principal and receipt access`
+- `compresses state, keys rows by routing_key, and reads state once per activation`
 - `retries the same command after execution timeout without a partial commit`
 - `retries the same command after retryable SQL defect without a partial commit`
 - `delivery timeout stops waiting while the admitted command commits once`
