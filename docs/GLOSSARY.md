@@ -15,7 +15,7 @@
 - **Generation:** fenced authority epoch for an activation.
 - **Turn:** one bounded command execution and its transaction, which a turn batch shares.
 - **Turn batch:** consecutive turns for one actor, already waiting in its mailbox, committed in one transaction; each command keeps its own receipt and failure isolation.
-- **Placement key:** the value whose rows share a shard: the tenant by default, or the actor or a parent actor.
+- **Placement key:** the value whose rows share a shard: the tenant by default, or the actor (parent-actor placement is target).
 - **Routing key:** framework-computed 64-bit hash of a placement key, stored on every actor-owned row and used for shard placement.
 - **Home region:** the deployment region whose database holds a tenant's actors and rows; assigned only by an operator.
 - **Query tier:** local (one actor), group (one placement key, one shard), or fleet (declared `Fleet.view`, eventually consistent, outside turns).

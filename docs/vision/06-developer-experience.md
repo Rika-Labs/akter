@@ -58,6 +58,6 @@ The intended `ActorTest` exercises the real turn, storage, serialization, receip
 
 `examples/counter`, `examples/chat`, and `examples/coding-agent` are reserved for the runnable end-to-end corpus but currently contain scaffold entrypoints. Future published examples must be copied from tested implementations. The coding-agent example will demonstrate that an agent is an actor; external tool generators consume `/openapi.json` without adding an AI-specific framework API.
 
-The post-foundation client boundary may additionally derive MCP and non-Effect language clients from the same contract. This does not make the framework AI-specific: MCP is a transport, and an agent runtime belongs in an adapter package that compiles to ordinary actors.
+The post-foundation client boundary may additionally derive MCP and non-Effect language clients from the same contract. This does not make the framework AI-specific: MCP is a transport. A durable agent runtime is a separate product, Outlast, built on the published package and compiling to ordinary actors ([ADR 0017](../decisions/0017-m1-record-corrections.md)).
 
 The developer experience must also support brownfield adoption. Existing Postgres tables should be adoptable through explicit ownership mappings and an observe-then-enforce migration path; automatic scoping is only a guarantee after the enforcement gate passes.
