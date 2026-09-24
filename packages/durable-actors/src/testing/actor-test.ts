@@ -76,7 +76,6 @@ export class ActorTest extends Context.Service<
      */
     readonly seed: (
       ref: ActorRef,
-      placement: Placement,
       state: { readonly [key: string]: Schema.Json },
       version: number,
     ) => Effect.Effect<void>
@@ -218,8 +217,8 @@ export class ActorTest extends Context.Service<
                   receipts: receipts[0]!.count,
                 }
               }, Effect.orDie),
-              seed: Effect.fnUntraced(function* (ref, placement, state, version) {
-                const key = routingKey({ ref, placement })
+              seed: Effect.fnUntraced(function* (ref, state, version) {
+                const key = yield* storedRoutingKey(ref)
 
                 yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
             VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}) ON CONFLICT DO NOTHING`

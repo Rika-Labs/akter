@@ -471,7 +471,11 @@ const make = <
 
               if (dirty.size > 0 && version > 0) writes.push([VERSION_KEY, String(version)])
 
-              return { outcome: Outcome.cases.Success.make({ value }), state: writes }
+              return {
+                outcome: Outcome.cases.Success.make({ value }),
+                state: writes,
+                complete: loaded.upcast,
+              }
             }).pipe(
               Effect.catch(
                 Effect.fnUntraced(function* (error) {
@@ -482,6 +486,7 @@ const make = <
                   return yield* Effect.fail<BusinessResult>({
                     outcome: Outcome.cases.Failure.make({ value }),
                     state: [],
+                    complete: false,
                   })
                 }),
               ),

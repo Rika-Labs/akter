@@ -131,6 +131,16 @@ export const executeTurn = Effect.fnUntraced(function* (
         ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, key) DO UPDATE SET value = EXCLUDED.value`
     }
 
+    if (result.complete) {
+      const written = new Set(result.state.map(([key]) => key))
+
+      for (const key of committed.keys())
+        if (!written.has(key)) {
+          next.delete(key)
+          yield* sql`DELETE FROM actor_state WHERE ${actorRow} AND key = ${key}`
+        }
+    }
+
     const creates =
       Outcome.guards.Success(result.outcome) &&
       policy.createdBy === request.command &&

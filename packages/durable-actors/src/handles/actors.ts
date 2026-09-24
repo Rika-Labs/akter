@@ -24,6 +24,8 @@ export type Request = typeof Request.Type
 export interface BusinessResult {
   readonly outcome: Outcome
   readonly state: ReadonlyArray<readonly [string, string]>
+  /** `state` lists every stored key; the turn deletes any other stored key. */
+  readonly complete: boolean
 }
 
 export interface RegisteredCommand {
