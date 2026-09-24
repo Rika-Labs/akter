@@ -43,8 +43,8 @@ const live = Layer.unwrap(
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
 
-// A crashed process leaves no pending message (ADR 0011): recovery is the
-// caller retrying its saved command id against a fresh process.
+// Commands are direct, so a crashed process leaves no pending message:
+// recovery is the caller retrying its saved command id against a fresh process.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
   const commandId = yield* Config.String("CRASH_COMMAND_ID")

@@ -34,6 +34,7 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - Never treat process memory, TypeScript types, or a lease alone as authority.
 - Add a failure test for every durable transition.
 - Update the contract, ADR, API docs, and verification when behavior changes.
+- Code comments and JSDoc state the reason in place and never cite an ADR, decision, research pick, or ledger entry; decision records link to code, not the reverse. `durable-actors/no-decision-references` and `.amp/rules/quality/47-no-decision-references-in-code.md` enforce this.
 
 ## Verification
 
