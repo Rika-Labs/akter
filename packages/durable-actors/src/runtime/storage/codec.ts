@@ -1,7 +1,7 @@
 import type { ActorRef } from "../../identity/caller.ts"
 
 /** Increment only with a migration: every stored `routing_key` depends on this encoding. */
-const PLACEMENT_ENCODING = 1
+export const PLACEMENT_ENCODING = 1
 
 export type Placement = "tenant" | "actor"
 
