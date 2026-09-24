@@ -158,7 +158,7 @@ const AtLeast = Actor.query("AtLeast", {
 
 const Counter = Actor.make("Counter", {
   key: Schema.String,
-  state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Increment, Reject, Nested, Escape, Hold, Steal, Count, AtLeast },
 })
 

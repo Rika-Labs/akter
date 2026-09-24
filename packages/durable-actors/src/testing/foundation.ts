@@ -13,7 +13,9 @@ import {
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { Actor, Caller, NotCreated, Principal, System, Timeout, User } from "../index.ts"
 import { Actors, Outcome, Request } from "../handles/actors.ts"
-import { compress } from "../runtime/storage/codec.ts"
+import type { ActorRef } from "../identity/caller.ts"
+import { compress, decompress } from "../runtime/storage/codec.ts"
+import { VERSION_KEY } from "../state/migration.ts"
 import { ActorTest, executeForTest } from "./actor-test.ts"
 import type { ConformanceCase } from "./conformance.ts"
 
@@ -81,7 +83,7 @@ const Read = Actor.command("Read", { output: Schema.Finite })
 
 const Created = Actor.make("Created", {
   key: Schema.NonEmptyString,
-  state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Create, Read },
   policy: { createdBy: Create },
 })
@@ -90,7 +92,7 @@ const SetText = Actor.command("SetText", { input: Schema.String, output: Schema.
 
 const Small = Actor.make("Small", {
   key: Schema.NonEmptyString,
-  state: { text: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))) },
+  state: Actor.state({ text: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))) }),
   api: { SetText },
   policy: { maxStateBytes: 15, commandTimeout: "500 millis" },
 })
@@ -111,17 +113,66 @@ const Bump = Actor.command("Bump", { output: Schema.Finite })
 
 const Slow = Actor.make("Slow", {
   key: Schema.NonEmptyString,
-  state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Read, Bump },
   policy: { commandTimeout: "500 millis" },
 })
 
 const DeliveryActor = Actor.make("DeliveryActor", {
   key: Schema.NonEmptyString,
-  state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Bump },
   policy: { deliveryTimeout: "100 millis" },
 })
+
+// Profile state history: v0 stored a single `name`; v1 split it; v2 added tags.
+const ProfileV0 = { name: Schema.String }
+
+const ProfileV1 = { first: Schema.String, last: Schema.String }
+
+const ProfileV2 = {
+  first: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  last: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  tags: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+}
+
+class Rename extends Schema.TaggedError<Rename>()("Rename", {}) {}
+
+const Describe = Actor.command("Describe", {
+  input: Schema.Boolean,
+  output: Schema.String,
+  errors: [Rename],
+})
+
+const Show = Actor.query("Show", { output: Schema.String })
+
+const Profile = Actor.make("Profile", {
+  key: Schema.NonEmptyString,
+  state: Actor.state(ProfileV2, {
+    migrations: [
+      Actor.migration(ProfileV0, ProfileV1, ({ name }) => {
+        // Models an upcast bug so the suite can prove it rolls back as a defect.
+        if (name === "unreadable") throw new Error("Unreadable profile")
+        const [first = "", ...rest] = name.split(" ")
+
+        return { first, last: rest.join(" ") }
+      }),
+      Actor.migration(ProfileV1, ProfileV2, (v1) => ({ ...v1, tags: [] })),
+    ],
+  }),
+  api: { Describe, Show },
+})
+
+// `inspect` hides the version row, so migration cases read it directly.
+const storedVersion = Effect.fnUntraced(function* (ref: ActorRef) {
+  const sql = yield* SqlClient.SqlClient
+
+  const [row] = yield* sql<{ value: Uint8Array }>`SELECT value FROM actor_state
+    WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
+      AND key = ${VERSION_KEY}`
+
+  return row === undefined ? undefined : decompress(row.value)
+}, Effect.orDie)
 
 const attribution = (turn: {
   readonly caller: Caller
@@ -185,6 +236,28 @@ export const foundationLayer = (fixture: FoundationFixture) =>
           if (fixture.slowIds.length === 1) yield* fixture.slowFirst
 
           return turn.state.count
+        }),
+      }),
+    ),
+    Profile.toLayer(
+      Effect.succeed({
+        Describe: Effect.fnUntraced(function* (fail: boolean) {
+          const turn = yield* Profile.Turn
+
+          if (fail) return yield* Rename.make({})
+
+          yield* turn.state.set({ tags: [...turn.state.tags, "seen"] })
+
+          return `${turn.state.first}|${turn.state.last}|${turn.state.tags.join(",")}`
+        }),
+      }),
+    ),
+    Profile.toQueryLayer(
+      Effect.succeed({
+        Show: Effect.fnUntraced(function* () {
+          const { state } = yield* Profile.Read
+
+          return `${state.first}|${state.last}|${state.tags.join(",")}`
         }),
       }),
     ),
@@ -360,6 +433,78 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           expect(Exit.isFailure(yield* actor.SetText("ok").pipe(Effect.exit))).toBe(true)
           expect(fixture.foundation.defects.length).toBe(defects + 2)
           expect(yield* test.inspect(actor.ref)).toMatchObject({ state: { text: 13 }, receipts: 2 })
+        }),
+      ),
+  },
+  {
+    name: "upcasts seeded old state through the migration chain and commits the current shape",
+    run: ({ environment, expect }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const profile = yield* Profile.get("ada")
+          yield* test.seed(profile.ref, { name: "Ada King Lovelace" }, 0)
+          // A query upcasts to read but never writes.
+          expect(yield* profile.Show()).toBe("Ada|King Lovelace|")
+          expect((yield* test.inspect(profile.ref)).state).toEqual({ name: "Ada King Lovelace" })
+          expect(yield* profile.Describe(true).pipe(Effect.flip)).toEqual(Rename.make({}))
+          // A declared failure discards the migration writes along with the business change.
+          expect((yield* test.inspect(profile.ref)).state).toEqual({ name: "Ada King Lovelace" })
+          expect(yield* storedVersion(profile.ref)).toBe(undefined)
+          // The same warm activation upcasts again from the unchanged rows.
+          expect(yield* profile.Describe(false)).toBe("Ada|King Lovelace|seen")
+          // A successful upcast rewrites the current shape and drops obsolete keys.
+          expect((yield* test.inspect(profile.ref)).state).toEqual({
+            first: "Ada",
+            last: "King Lovelace",
+            tags: ["seen"],
+          })
+          expect(yield* storedVersion(profile.ref)).toBe("2")
+          const mid = yield* Profile.get("grace")
+          yield* test.seed(mid.ref, { first: "Grace", last: "Hopper" }, 1)
+          expect(yield* mid.Describe(false)).toBe("Grace|Hopper|seen")
+          expect((yield* test.inspect(mid.ref)).state).toEqual({
+            first: "Grace",
+            last: "Hopper",
+            tags: ["seen"],
+          })
+          expect(yield* storedVersion(mid.ref)).toBe("2")
+          // An actor with no stored rows starts at the current shape. No upcast
+          // runs, so the turn writes only the key it set, not every key.
+          const fresh = yield* Profile.get("new")
+          expect(yield* fresh.Describe(false)).toBe("||seen")
+          expect((yield* test.inspect(fresh.ref)).state).toEqual({ tags: ["seen"] })
+          expect(yield* storedVersion(fresh.ref)).toBe("2")
+        }),
+      ),
+  },
+  {
+    name: "rolls back unknown stored versions and failing upcasts as deterministic defects",
+    run: ({ environment, expect }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const future = yield* Profile.get("future")
+          yield* test.seed(future.ref, { first: "Ada" }, 3)
+          const futureExit = yield* future.Describe(false).pipe(Effect.exit)
+          expect(Exit.isFailure(futureExit) && Cause.pretty(futureExit.cause)).toContain(
+            "Stored state version 3 is unknown",
+          )
+          expect(yield* test.inspect(future.ref)).toMatchObject({
+            state: { first: "Ada" },
+            receipts: 0,
+          })
+          const broken = yield* Profile.get("broken")
+          yield* test.seed(broken.ref, { name: "unreadable" }, 0)
+          const brokenExit = yield* broken.Describe(false).pipe(Effect.exit)
+          expect(Exit.isFailure(brokenExit) && Cause.pretty(brokenExit.cause)).toContain(
+            "Unreadable profile",
+          )
+          expect(yield* test.inspect(broken.ref)).toMatchObject({
+            state: { name: "unreadable" },
+            receipts: 0,
+          })
+          expect(yield* storedVersion(broken.ref)).toBe(undefined)
         }),
       ),
   },

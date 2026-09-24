@@ -10,7 +10,7 @@ const Increment = Actor.command("Increment", { input: Schema.Finite, output: Sch
 
 const Counter = Actor.make("ProcessCounter", {
   key: Schema.String,
-  state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Increment },
 })
 

@@ -32,8 +32,26 @@ import type {
   ValueSchema,
 } from "../members/command.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
+import {
+  type ActorState,
+  ActorStates,
+  type StateMigration,
+  VERSION_KEY,
+} from "../state/migration.ts"
 
 type StateFields = Readonly<Record<string, ValueSchema>>
+
+const StoredVersion = Schema.fromJsonString(
+  Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+)
+
+const upcastStep = (step: StateMigration, stored: Schema.Json) =>
+  Schema.decodeEffect(Schema.toCodecJson(Schema.Struct(step.from)))(stored).pipe(
+    Effect.flatMap((previous) =>
+      Schema.encodeUnknownEffect(Schema.toCodecJson(Schema.Struct(step.to)))(step.upcast(previous)),
+    ),
+    Effect.orDie,
+  )
 
 type StateOf<Fields extends StateFields> = Schema.Struct<Fields>["Type"]
 
@@ -152,7 +170,7 @@ interface Definition<
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
   readonly placement?: "tenant" | "actor"
-  readonly state?: Fields
+  readonly state?: ActorState<Fields>
   readonly api: Api & TagsMatch<Api>
   readonly internal?: Internal & TagsMatch<Internal>
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>>
@@ -190,11 +208,45 @@ const make = <
   const members = all.filter((member): member is AnyCommand => member.kind === "command")
   const queries = all.filter((member) => member.kind === "query")
   const internalMembers = new Set<AnyMember>(Object.values(internal))
-  const fields: StateFields = definition.state ?? {}
+  const fields: StateFields = definition.state?.fields ?? {}
   const policy = resolvePolicy({ declared: definition.policy, commands: members })
   const isSingleton = Schema.is(SingletonKeySchema)(definition.key)
 
   if ("set" in fields) throw new Error("State key 'set' is reserved")
+  const migrations = definition.state?.migrations ?? []
+  ActorStates.validateChain(fields, migrations)
+  const version = migrations.length
+
+  // Decodes stored rows written at any earlier version into the current shape.
+  const decodeStored = Effect.fnUntraced(function* (
+    rows: ReadonlyArray<readonly [string, string]>,
+  ) {
+    const stored: Record<string, Schema.Json> = {}
+    // An actor with no rows has nothing to upcast: it starts at the current shape.
+    let storedVersion = rows.length === 0 ? version : 0
+
+    for (const [key, value] of rows)
+      if (key === VERSION_KEY)
+        storedVersion = yield* Schema.decodeEffect(StoredVersion)(value).pipe(Effect.orDie)
+      else
+        stored[key] = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(value).pipe(
+          Effect.orDie,
+        )
+
+    if (storedVersion > version)
+      return yield* Effect.die(new Error(`Stored state version ${storedVersion} is unknown`))
+
+    let current: Schema.Json = stored
+
+    for (const step of migrations.slice(storedVersion)) current = yield* upcastStep(step, current)
+
+    return {
+      state: yield* Schema.decodeEffect(Schema.toCodecJson(stateSchema))(current).pipe(
+        Effect.orDie,
+      ),
+      upcast: storedVersion < version && rows.length > 0,
+    }
+  })
 
   const stateSchema = Schema.Struct(fields)
   const stateCodec = Schema.fromJsonString(Schema.toCodecJson(stateSchema))
@@ -350,23 +402,11 @@ const make = <
             const turn = Symbol()
             const dirty = new Set<string>()
 
-            const stored = Object.fromEntries(
-              yield* Effect.forEach(
-                rows,
-                Effect.fnUntraced(function* ([key, value]) {
-                  return [
-                    key,
-                    yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(value).pipe(
-                      Effect.orDie,
-                    ),
-                  ]
-                }),
-              ),
-            )
+            const loaded = yield* decodeStored(rows)
+            let current = loaded.state
 
-            let current = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(stateSchema))(
-              stored,
-            ).pipe(Effect.orDie)
+            // An upcast turn rewrites every key at the current version.
+            if (loaded.upcast) for (const key of Object.keys(fields)) dirty.add(key)
 
             const set = Effect.fnUntraced(function* (patch: Partial<State>) {
               if (!open || (yield* InsideTurn) !== turn)
@@ -429,7 +469,13 @@ const make = <
                   ).pipe(Effect.orDie),
                 ])
 
-              return { outcome: Outcome.cases.Success.make({ value }), state: writes }
+              if (dirty.size > 0 && version > 0) writes.push([VERSION_KEY, String(version)])
+
+              return {
+                outcome: Outcome.cases.Success.make({ value }),
+                state: writes,
+                complete: loaded.upcast,
+              }
             }).pipe(
               Effect.catch(
                 Effect.fnUntraced(function* (error) {
@@ -440,6 +486,7 @@ const make = <
                   return yield* Effect.fail<BusinessResult>({
                     outcome: Outcome.cases.Failure.make({ value }),
                     state: [],
+                    complete: false,
                   })
                 }),
               ),
@@ -512,23 +559,7 @@ const make = <
 
         registered.set(member.tag, {
           run: Effect.fnUntraced(function* (request, rows) {
-            const stored = Object.fromEntries(
-              yield* Effect.forEach(
-                rows,
-                Effect.fnUntraced(function* ([key, value]) {
-                  return [
-                    key,
-                    yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(value).pipe(
-                      Effect.orDie,
-                    ),
-                  ]
-                }),
-              ),
-            )
-
-            const state = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(stateSchema))(
-              stored,
-            ).pipe(Effect.orDie)
+            const { state } = yield* decodeStored(rows)
 
             const context: QueryContext<State> = {
               id: request.ref.id,
