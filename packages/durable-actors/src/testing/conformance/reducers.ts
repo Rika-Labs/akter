@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Result, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, Result, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, CommandConflict } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
@@ -62,6 +62,25 @@ const Corrupt = Actor.reducer("Corrupt", {
   },
 })
 
+const BasketState = Actor.state({
+  items: Schema.mutable(Schema.Array(Schema.String)).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+})
+
+const Put = Actor.reducer("Put", {
+  state: BasketState,
+  input: Schema.String,
+  reduce: (state, item) => {
+    // Models a reducer that mutates its state argument instead of copying it.
+    state.items.push(item)
+
+    return Result.succeed(state)
+  },
+})
+
+const Basket = Actor.make("Basket", { key: Schema.String, state: BasketState, api: { Put } })
+
 const Tally = Actor.make("Tally", {
   key: Schema.String,
   state: TallyState,
@@ -69,7 +88,10 @@ const Tally = Actor.make("Tally", {
 })
 
 /** Registers the reducer actor: a reducer-only actor still registers through `toLayer`, with no handlers. */
-export const reducerLayer = Tally.toLayer(Effect.succeed({}))
+export const reducerLayer = Layer.mergeAll(
+  Tally.toLayer(Effect.succeed({})),
+  Basket.toLayer(Effect.succeed({})),
+)
 
 // `inspect` hides the version row, so the migration case reads it directly.
 const storedVersion = Effect.fnUntraced(function* (ref: ActorRef) {
@@ -254,6 +276,24 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(tally.ref)).toMatchObject({
             state: { count: 1 },
             receipts: 1,
+          })
+          // The actor keeps serving turns after the defects.
+          expect(yield* tally.Add(1)).toEqual({ count: 2, label: "" })
+        }),
+      ),
+  },
+  {
+    name: "reducer that mutates its state argument still commits the change",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const basket = yield* Basket.get("reducer-mutation")
+          expect(yield* basket.Put("a")).toEqual({ items: ["a"] })
+          expect(yield* basket.Put("b")).toEqual({ items: ["a", "b"] })
+          expect(yield* test.inspect(basket.ref)).toMatchObject({
+            state: { items: ["a", "b"] },
+            receipts: 2,
           })
         }),
       ),

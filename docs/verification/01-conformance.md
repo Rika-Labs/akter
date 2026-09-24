@@ -54,7 +54,7 @@ The shared harness now exists: `conformance` is the named case list and `describ
 
 ### Reducer cases (M1.8)
 
-Registered from [`conformance/reducers.ts`](../../packages/durable-actors/src/testing/conformance/reducers.ts) into the shared list, so each runs on PGlite and Postgres; the crash cases run on Postgres through `conformance.test.ts`.
+Registered from [`conformance/reducers.ts`](../../packages/durable-actors/src/testing/conformance/reducers.ts) into the shared list, so each runs on PGlite and on Postgres through `conformance.test.ts`. Crash cases use the in-process `ActorTest.crashNext` fault points, like the foundation's; the process-death suite in `conformance/crash/` still covers commands only.
 
 - `reducer commits changed state and one receipt, and replays without reducing again`
 - `reducer rejects changed input or another member under the same command id`
@@ -63,10 +63,11 @@ Registered from [`conformance/reducers.ts`](../../packages/durable-actors/src/te
 - `recovers failing reducer turns crashed beforeCommit and afterCommit with one terminal receipt each`
 - `commutative reducer runs as one receipted turn per call and replies void`
 - `a throwing reduce or an invalid returned state is a defect with no receipt`
+- `reducer that mutates its state argument still commits the change`
 
 [`members/reducer.test.ts`](../../packages/durable-actors/src/members/reducer.test.ts) adds five declaration tests: the handle shape, no `toLayer` entry for a reducer, the reducer-state rule, the `commutative` rules, and the merge-law property `reduce(reduce(s, a), b) = reduce(s, combine(a, b))` over 1,000 generated inputs for a sample commutative reducer.
 
-**Executed 2026-09-25 (M1.8, branch `feat/16-server-reducers` on `main` at `76ac433`):** same toolchain as above. `bun run --filter durable-actors test` passed 61 tests with 6 skipped (the 49 above plus seven reducer cases on PGlite and five reducer declaration tests). `test:integration` passed 52 Postgres tests (the 45 above plus seven reducer cases).
+**Executed 2026-09-25 (M1.8, branch `feat/16-server-reducers` on `main` at `76ac433`):** same toolchain as above. `bun run --filter durable-actors test` passed 62 tests with 6 skipped (the 49 above plus eight reducer cases on PGlite and five reducer declaration tests). `test:integration` passed 53 Postgres tests (the 45 above plus eight reducer cases).
 
 ### Postgres-only cases (independent connections)
 

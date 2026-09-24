@@ -280,6 +280,10 @@ const make = <
   const stateSchema = Schema.Struct(fields)
   const stateCodec = Schema.fromJsonString(Schema.toCodecJson(stateSchema))
 
+  const fieldEquivalences = Object.fromEntries(
+    Object.entries(fields).map(([key, field]) => [key, Schema.toEquivalence(field)]),
+  )
+
   const key: Key = definition.key
 
   const idSchema: KeySchema = Schema.isSchema(key)
@@ -563,7 +567,12 @@ const make = <
 
             const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(Effect.orDie)
 
-            const reduced = reducer.reduce(loaded.state, input.value)
+            // `reduce` gets its own copy, so mutating it in place cannot hide a change.
+            const given = yield* Schema.decodeEffect(stateCodec)(
+              yield* Schema.encodeEffect(stateCodec)(loaded.state).pipe(Effect.orDie),
+            ).pipe(Effect.orDie)
+
+            const reduced = reducer.reduce(given, input.value)
 
             if (Result.isFailure(reduced))
               return yield* declaredFailure(errorSchema, reduced.failure)
@@ -576,9 +585,7 @@ const make = <
             // Only changed keys are written, unless an upcast rewrites every key.
             const dirty = new Set(
               Object.keys(fields).filter(
-                (key) =>
-                  loaded.upcast ||
-                  !Schema.toEquivalence(fields[key]!)(loaded.state[key], next[key]),
+                (key) => loaded.upcast || !fieldEquivalences[key]!(loaded.state[key], next[key]),
               ),
             )
 
