@@ -30,7 +30,7 @@ const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(funct
 | Service        | Phase                                | Provides                                                                                                                                                   |
 | -------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `X.Turn`       | command handler (public or internal) | `id`, `ref`, `caller`, `principal`, `commandId`, `isNew`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `perform`, `broadcast`, `terminate` |
-| `X.Read`       | query and stream handlers            | `id`, `ref`, `caller`, `principal`, committed `state`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`                                   |
+| `X.Read`       | query and stream handlers            | `id`, `ref`, `caller`, `principal`, committed `state` and its event `cursor`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`            |
 | `X.Connection` | connection handler                   | `X.Read` capabilities plus connection `id`, `state` (16 KiB), `resumed`, and `broadcast`                                                                   |
 | `X.Workflow`   | workflow body                        | owner `id` and `ref`, `principal`, `executionId`, `key`, and owner-event `waitFor(Event, { where, timeout })`                                              |
 | `X.Executor`   | effect executor                      | `effectId`, `attempt`, `principal`, and owner `ref`; no database capability                                                                                |
@@ -54,7 +54,7 @@ interface EventEntry<E> {
   readonly cursor: string // pass as `after` to resume after this event
   readonly event: E
   readonly commandId: string // the command whose turn emitted it
-  readonly timestamp: DateTime.Utc // the database time of that turn's transaction
+  readonly timestamp: DateTime.Utc // database clock when the event was appended at commit
 }
 ```
 
@@ -63,7 +63,11 @@ interface EventEntry<E> {
 - `UnknownCursor { cursor }`: the cursor is malformed or ahead of every event this actor has committed.
 - `RetentionGap { cursor }`: some event after the cursor has been pruned, whatever its class. The reader has to resynchronize from state.
 
-A query that replays declares these in its `errors`, or handles them itself. Replay reads the stream head, the oldest retained event, and the matching events in one statement, so it sees a single snapshot. Replay is not limited to a page size yet.
+A query that replays declares these in its `errors`, or handles them itself.
+
+`read.cursor` is the last event committed when the query read `state`, and every `read.events` call in that query stops at it. Two replays of different classes in one query therefore line up, and a reader that takes `state` with `read.cursor` and then follows events after that cursor misses and repeats nothing. That is how a reader resynchronizes after `RetentionGap`.
+
+Replay is not limited to a page size yet, and emits have no size budget of their own; both are follow-ups next to `keepEvents`. A stored event that no longer decodes under its current class makes the query a defect, so change an event's schema only in ways that still decode its stored events.
 
 ## Activation-local values
 

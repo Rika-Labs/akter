@@ -11,7 +11,7 @@
 
 The shared harness now exists: `conformance` is the named case list and `describeConformance` registers it against a `ConformanceBackend` through an injected registrar, so no test framework is imported by the suite itself. Backends that cannot open a second SQL connection set `independentConnections: false` and report those cases through `registrar.skip` — by name, never silently. PGlite runs [`pglite.test.ts`](../../packages/durable-actors/src/runtime/database/pglite.test.ts); Postgres runs [`conformance.test.ts`](../../packages/durable-actors/src/testing/conformance.test.ts) and the SIGKILL suite [`crash/main.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/main.test.ts).
 
-**Executed 2026-09-24 (M1.5 events, branch `feat/13-events` on `main` at `76ac433`):** Bun 1.3.14, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 54 tasks. `bun run --filter durable-actors test` passed 57 tests: 43 shared PGlite cases, five PGlite backend-specific cases (three lifecycle/migration, one creation-policy adoption, one placement adoption), seven declaration tests, and two identity tests; eight independent-connection cases were explicitly skipped. `bun run --filter durable-actors test:integration` passed 54 Postgres tests: 51 named conformance cases, migration rollback, and two real SIGKILL recoveries. The runnable counter example's Postgres test passed. Local results do not substitute for the CI evidence artifact of the pushed revision.
+**Executed 2026-09-24 (M1.5 events, branch `feat/13-events` on `main` at `76ac433`):** Bun 1.3.14, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 54 tasks. `bun run --filter durable-actors test` passed 58 tests: 44 shared PGlite cases, five PGlite backend-specific cases (three lifecycle/migration, one creation-policy adoption, one placement adoption), seven declaration tests, and two identity tests; eight independent-connection cases were explicitly skipped. `bun run --filter durable-actors test:integration` passed 55 Postgres tests: 52 named conformance cases, migration rollback, and two real SIGKILL recoveries. The runnable counter example's Postgres test passed. Local results do not substitute for the CI evidence artifact of the pushed revision.
 
 ### Shared cases (PGlite and Postgres)
 
@@ -56,10 +56,11 @@ Event cases live in [`conformance/events.ts`](../../packages/durable-actors/src/
 
 - `appends events only on commit and replays one class in order after an exclusive cursor`
 - `discards events on declared failure and defect but commits them after a caught error`
-- `appends one event per command across a beforeHandler crash`
-- `appends one event per command across a beforeCommit crash`
-- `appends one event per command across a afterCommit crash`
+- `appends one event per command and none for a declared failure across beforeHandler crashes`
+- `appends one event per command and none for a declared failure across beforeCommit crashes`
+- `appends one event per command and none for a declared failure across afterCommit crashes`
 - `rejects escaped and undeclared emits without committing events`
+- `bounds every replay in a query to the snapshot its state was read at`
 - `rejects unknown cursors and reports pruned history as an explicit retention gap` — prunes rows by hand, as retention will, since `keepEvents` arrives later
 
 ### Postgres-only cases (independent connections)
@@ -71,9 +72,9 @@ These require a real second connection and are reported skipped on PGlite:
 - `rejects a state setter from another still-active actor turn`
 - `denies a competing caller admitted while the original failure is still uncommitted`
 - `decodes regclass so the migrator can reopen the database` — exercises the scoped rc.116 codec workaround for [Effect #8309](https://github.com/Effect-TS/effect/pull/8309)
-- `retries a real generation lock timeout without entering the handler`
+- `retries a real generation lock timeout without entering the handler` — real Postgres `FOR UPDATE`; observes two distinct blocked attempts while the competing transaction still holds the lock, then one committed transition
 - `hides a running turn's uncommitted events from replay`
-- `orders events gap-free when a rival activation races the owner for one actor` — a rival transaction on a second connection blocks on the owner's generation lock, takes authority, and appends through the runtime's append path; the owner must fail its fence and reacquire, and the 25 events keep sequences 1 to 25 — real Postgres `FOR UPDATE`; observes two distinct blocked attempts while the competing transaction still holds the lock, then one committed transition
+- `orders events gap-free when a rival activation races the owner for one actor` — a rival transaction on a second connection blocks on the owner's generation lock, takes authority, and appends through the runtime's append path; the owner must fail its fence and reacquire, and the 25 events keep sequences 1 to 25. The rival is a simulated activation: it has no handler or receipt, so this proves append ordering under real lock contention, not two runners
 
 ### Backend-specific cases
 

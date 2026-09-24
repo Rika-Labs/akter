@@ -1,4 +1,4 @@
-import { DateTime, Effect, Exit, Fiber, Schema } from "effect"
+import { DateTime, Deferred, Effect, Exit, Fiber, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, RetentionGap, System, UnknownCursor } from "../../index.ts"
 import { Request } from "../../handles/actors.ts"
@@ -9,9 +9,13 @@ import type { ConformanceCase } from "../conformance.ts"
 
 export interface EventsFixture {
   escaped: Effect.Effect<void>
+  duringQuery: Effect.Effect<void>
 }
 
-export const eventsFixture = (): EventsFixture => ({ escaped: Effect.void })
+export const eventsFixture = (): EventsFixture => ({
+  escaped: Effect.void,
+  duringQuery: Effect.void,
+})
 
 class Posted extends Actor.Event<Posted>()("Posted", { body: Schema.String }) {}
 
@@ -54,6 +58,15 @@ const History = Actor.query("History", {
   errors: [UnknownCursor, RetentionGap],
 })
 
+const Snapshot = Actor.query("Snapshot", {
+  output: Schema.Struct({
+    cursor: Schema.String,
+    first: Schema.Array(Schema.String),
+    second: Schema.Array(Schema.String),
+  }),
+  errors: [UnknownCursor, RetentionGap],
+})
+
 const Feed = Actor.make("Feed", {
   key: Schema.String,
   events: [Posted, Archived],
@@ -67,6 +80,7 @@ const Feed = Actor.make("Feed", {
     UseLeak,
     EmitUndeclared,
     History,
+    Snapshot,
   },
 })
 
@@ -109,17 +123,30 @@ export const eventsLayer = (fixture: EventsFixture) =>
     }),
   )
 
-export const eventsQueryLayer = Feed.toQueryLayer(
-  Effect.succeed({
-    History: Effect.fnUntraced(function* ({ after, archived }) {
-      const read = yield* Feed.Read
+export const eventsQueryLayer = (fixture: EventsFixture) =>
+  Feed.toQueryLayer(
+    Effect.succeed({
+      Snapshot: Effect.fnUntraced(function* () {
+        const read = yield* Feed.Read
+        const first = yield* read.events(Posted)
+        yield* fixture.duringQuery
+        const second = yield* read.events(Posted)
 
-      return archived === true
-        ? yield* read.events(Archived, { after })
-        : yield* read.events(Posted, { after })
+        return {
+          cursor: read.cursor,
+          first: first.map(({ event }) => event.body),
+          second: second.map(({ event }) => event.body),
+        }
+      }),
+      History: Effect.fnUntraced(function* ({ after, archived }) {
+        const read = yield* Feed.Read
+
+        return archived === true
+          ? yield* read.events(Archived, { after })
+          : yield* read.events(Posted, { after })
+      }),
     }),
-  }),
-)
+  )
 
 const PostedJson = Schema.fromJsonString(Schema.toCodecJson(Posted))
 
@@ -210,7 +237,7 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   ...(["beforeHandler", "beforeCommit", "afterCommit"] as const).map((point): ConformanceCase => ({
-    name: `appends one event per command across a ${point} crash`,
+    name: `appends one event per command and none for a declared failure across ${point} crashes`,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -225,6 +252,9 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
           expect(cursors(history)).toEqual(["1", "2", "3"])
           expect(history[1]!.commandId).toBe(commandId)
           expect(yield* test.inspect(feed.ref)).toMatchObject({ receipts: 3, events: 3 })
+          yield* test.crashNext(point)
+          expect(yield* feed.PostThenFail("failed").pipe(Effect.flip)).toEqual(Closed.make({}))
+          expect(yield* test.inspect(feed.ref)).toMatchObject({ receipts: 4, events: 3 })
         }),
       ),
   })),
@@ -289,6 +319,34 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
           // Pruning never lets a cursor be reissued.
           yield* feed.Post("e")
           expect(cursors(yield* feed.History({ after: "4" }))).toEqual(["5"])
+        }),
+      ),
+  },
+  {
+    name: "bounds every replay in a query to the snapshot its state was read at",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const feed = yield* Feed.get("snapshot")
+          yield* feed.Post("a")
+          yield* feed.Post("b")
+          const reached = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          fixture.events.duringQuery = Deferred.succeed(reached, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          )
+          const reader = yield* feed.Snapshot().pipe(Effect.forkChild)
+          yield* Deferred.await(reached)
+          fixture.events.duringQuery = Effect.void
+          yield* feed.Post("c")
+          yield* Deferred.succeed(release, undefined)
+          expect(yield* Fiber.join(reader)).toEqual({
+            cursor: "2",
+            first: ["a", "b"],
+            second: ["a", "b"],
+          })
+          expect(bodies(yield* feed.History({ after: "2" }))).toEqual(["c"])
+          expect((yield* feed.Snapshot()).cursor).toBe("3")
         }),
       ),
   },

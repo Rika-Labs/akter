@@ -43,7 +43,7 @@ export interface StoredEvent {
   readonly timestampMs: number
 }
 
-/** Reads one actor's committed events of one tag after an exclusive cursor. */
+/** Reads one actor's committed events of one tag after an exclusive cursor, up to the query's snapshot. */
 export type EventReader = (
   tag: string,
   after: string | undefined,
@@ -62,6 +62,7 @@ export interface RegisteredQuery {
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
+    cursor: string,
     events: EventReader,
   ) => Effect.Effect<Outcome>
 }

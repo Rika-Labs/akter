@@ -600,7 +600,7 @@ const make = <
         const errorCodec = Schema.fromJsonString(Schema.toCodecJson(errorSchema))
 
         registered.set(member.tag, {
-          run: Effect.fnUntraced(function* (request, rows, readEvents) {
+          run: Effect.fnUntraced(function* (request, rows, cursor, readEvents) {
             const { state } = yield* decodeStored(rows)
 
             const replay = Effect.fnUntraced(function* <E extends Event>(
@@ -635,6 +635,7 @@ const make = <
               caller: request.caller,
               principal: principal(request.caller),
               state: Object.freeze(state) as Readonly<State>,
+              cursor,
               events: replay,
             }
 

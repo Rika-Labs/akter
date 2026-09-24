@@ -51,9 +51,15 @@ export interface QueryContext<State, Event extends EventClass = never> {
   /** The last committed state; never uncommitted writes of a running turn. */
   readonly state: Readonly<State>
   /**
-   * Committed events of one declared class after the exclusive `after` cursor,
-   * in stream order; omitted, from the start. A cursor this actor never issued
-   * fails with `UnknownCursor`, and pruned history after it with `RetentionGap`.
+   * The last event committed when `state` was read: resume `events` after it
+   * to follow on from this state without missing or repeating an event.
+   */
+  readonly cursor: string
+  /**
+   * Committed events of one declared class after the exclusive `after` cursor
+   * and up to `cursor`, in stream order; omitted, from the start. A cursor this
+   * actor never issued fails with `UnknownCursor`, and pruned history after it
+   * with `RetentionGap`.
    */
   readonly events: <E extends Event>(
     event: E,

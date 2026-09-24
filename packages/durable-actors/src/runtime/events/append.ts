@@ -21,7 +21,7 @@ export const appendEvents = Effect.fnUntraced(function* (
   const [reserved] = yield* sql<{ last: string; now: string }>`
     UPDATE actor_generations SET event_sequence = event_sequence + ${events.length}
     WHERE routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}
-    RETURNING event_sequence::text AS last, floor(extract(epoch FROM now()) * 1000)::text AS now`
+    RETURNING event_sequence::text AS last, floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
 
   const first = BigInt(reserved!.last) - BigInt(events.length) + 1n
 

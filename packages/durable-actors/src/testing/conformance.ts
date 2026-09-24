@@ -1178,7 +1178,7 @@ export const describeConformance = (options: {
     CounterReads(fixture),
     foundationLayer(fixture.foundation),
     eventsLayer(fixture.events),
-    eventsQueryLayer,
+    eventsQueryLayer(fixture.events),
   )
 
   let store: ConformanceStore | undefined

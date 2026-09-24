@@ -11,7 +11,6 @@ const CURSOR = /^(0|[1-9][0-9]{0,18})$/
 const MAX_SEQUENCE = 2n ** 63n - 1n
 
 interface ReplayRow {
-  readonly head: string | null
   readonly oldest: string | null
   readonly sequence: string | null
   readonly command_id: string | null
@@ -20,17 +19,19 @@ interface ReplayRow {
 }
 
 /**
- * Replays committed events of one tag after an exclusive cursor. The stream
- * head, the oldest retained event, and the matching rows come from one
- * statement, so one snapshot proves no retained event after the cursor was
- * skipped; pruning only removes a prefix, so an oldest event past the cursor's
- * successor means history is missing.
+ * Replays committed events of one tag after an exclusive cursor, up to `head`,
+ * the last sequence committed when the query read state. Every event up to
+ * `head` had committed by then, so a later read sees each of them unless it
+ * was pruned; the oldest retained event and the matching rows come from one
+ * statement, and because pruning only removes a prefix, an oldest event past
+ * the cursor's successor means history is missing.
  */
 export const replayEvents = Effect.fnUntraced(function* (
   ref: ActorRef,
   routingKey: bigint,
   tag: string,
   after: string | undefined,
+  head: bigint,
 ) {
   const cursor = after ?? "0"
 
@@ -45,15 +46,13 @@ export const replayEvents = Effect.fnUntraced(function* (
       AND ${sql(alias)}.actor_type = ${ref.actor} AND ${sql(alias)}.actor_id = ${ref.id}`
 
   const rows = yield* sql<ReplayRow>`
-    SELECT g.event_sequence::text AS head,
-      (SELECT min(o.sequence)::text FROM actor_events o WHERE ${owner("o")}) AS oldest,
+    SELECT (SELECT min(o.sequence)::text FROM actor_events o WHERE ${owner("o")}) AS oldest,
       e.sequence::text AS sequence, e.command_id, e.value, e.emitted_at_ms::text AS emitted_at_ms
     FROM (VALUES (1)) AS one (x)
-    LEFT JOIN actor_generations g ON ${owner("g")}
-    LEFT JOIN actor_events e ON ${owner("e")} AND e.sequence > ${position} AND e.event = ${tag}
+    LEFT JOIN actor_events e ON ${owner("e")} AND e.sequence > ${position}
+      AND e.sequence <= ${head} AND e.event = ${tag}
     ORDER BY e.sequence`
 
-  const head = BigInt(rows[0]?.head ?? "0")
   const oldest = rows[0]?.oldest
 
   if (position > head) return yield* UnknownCursor.make({ cursor })
