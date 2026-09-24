@@ -24,3 +24,11 @@ Durable Actors is an Effect-native actor framework for applications that need id
 - Do not hide operational maturity: Durable Actors must earn confidence through conformance tests, observability, and production evidence.
 
 See [fit and non-fit](fit-and-non-fit.md) and the [vision](../vision/README.md).
+
+## Product direction after the foundation
+
+The framework should compete on the boundary that Rivet Actors and Durable Objects do not own: durable relational authority, inspectable history, safe adoption into an existing Postgres system, and derived clients that preserve command identity. The next differentiators are therefore M6 adoption and observation features, not a competing VM or a claim of lower cold-start latency.
+
+Rivet's agentOS remains a useful reference point and possible compute provider, but this project will not copy its kernel, filesystem, or sandbox implementation. A future agent runtime will make Postgres-backed actor state authoritative and treat sandbox execution as replaceable compute. A future generated-app product will generate validated Durable Actor contracts rather than arbitrary HTTP servers by default.
+
+These are product directions, not current support claims. Each remains gated by the ADR and verification requirements listed in the roadmap.
