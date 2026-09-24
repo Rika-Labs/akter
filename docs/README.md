@@ -7,7 +7,7 @@
 
 This directory is the implementation-facing source of truth for Durable Actors. The settled v4 design has been incorporated into these specifications; the [research archive](../research/README.md) retains evidence and exploration.
 
-These specifications describe accepted design, not a shipped framework. The four framework entrypoints and runnable-example entrypoints are still scaffolds. [ADR 0002](decisions/0002-v4-contract-clarifications.md) reconciles the v4 contracts; [ADR 0003](decisions/0003-failure-scoping-drain-and-hosted-trust.md) resolves declared-failure rollback, automatic adapter scoping, bounded drain, and hosted trust. [ADR 0004](decisions/0004-receipt-access-revocation-and-expiry.md) settles receipt access, revocation, and command expiry. Executable support is tracked separately in [conformance](verification/01-conformance.md).
+These specifications describe accepted design; only part of it has shipped. The root, `/runtime`, and `/testing` entrypoints implement M0 and M1.1–M1.3 (see [M1](milestones/M1.md)); `/client` and every example except `examples/counter` are still scaffolds. [ADR 0002](decisions/0002-v4-contract-clarifications.md) reconciles the v4 contracts; [ADR 0003](decisions/0003-failure-scoping-drain-and-hosted-trust.md) resolves declared-failure rollback, automatic adapter scoping, bounded drain, and hosted trust. [ADR 0004](decisions/0004-receipt-access-revocation-and-expiry.md) settles receipt access, revocation, and command expiry. Executable support is tracked separately in [conformance](verification/01-conformance.md).
 
 ## Authority order
 

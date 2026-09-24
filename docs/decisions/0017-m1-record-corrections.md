@@ -1,6 +1,6 @@
 # ADR 0017: M1 record corrections: shipped status, Outlast, state codec, and placement
 
-**Status:** accepted (2026-09-24). Supersedes [ADR 0015](0015-durable-agent-runtime-boundary.md), ADR 0011's dictionary requirement, and ADR 0013's "Not implemented" list as a status record.
+**Status:** accepted (2026-09-24). Supersedes [ADR 0015](0015-durable-agent-runtime-boundary.md), ADR 0011's dictionary requirement, ADR 0013's "Not implemented" list as a status record, and the parent-actor placement option in ADR 0006 and ADR 0010's definition table as accepted API.
 
 **Responsibility:** correct decision records that M1 planning found stale or unresolved.
 
@@ -28,11 +28,18 @@ Planning M1 ([milestone](../milestones/M1.md)) found four records that no longer
 
 [ADR 0011](0011-direct-commands-outbox-and-performance.md) and contract 06 required zstd with a per-actor-type dictionary. The shipped codec compresses each value as one plain zstd frame with no dictionary. Dictionaries need training data, versioned distribution, and a dictionary id per row, which is not justified before measurements show a size problem.
 
-[Contract 06](../contracts/06-storage-ownership.md) now requires plain zstd with a codec version. Codec version 1 is one zstd frame without a dictionary. Current rows need no version marker and no rewrite: `actor_state.value` has been `bytea` only since `0003_routing_state`, every row since then was written by codec 1, and a codec 1 frame header records that no dictionary was used. The first change that adds a second codec must add a per-row codec version in its own migration, with existing rows defaulting to 1, and must keep decoding version 1.
+[Contract 06](../contracts/06-storage-ownership.md) now requires plain zstd with a codec version. Codec version 1 is one zstd frame without a dictionary. Current rows need no version marker and no rewrite: `actor_state.value` has been `bytea` only since `0003_routing_state`, and every row since then was written without a dictionary, so each decodes with plain zstd decompression. The first change that adds a second codec must add a per-row codec version in its own migration, with existing rows defaulting to 1, and must keep decoding version 1.
 
 ### `placement: "tenant" | "actor"` is the accepted API
 
 [ADR 0006](0006-scale-rules-placement-and-query-tiers.md) left the placement-key API to compatibility review. `Actor.make(name, { placement })` accepts `"tenant"` (the default) or `"actor"`, as shipped in M1.1; the placement and its encoding version are recorded per actor type, and changing either is refused at startup. Placing an actor with a parent actor stays target API and needs its own design before it ships.
+
+## Evidence
+
+- `packages/durable-actors/src/runtime/storage/codec.ts` compresses with `Bun.zstdCompressSync` and no dictionary.
+- `packages/durable-actors/src/runtime/database/migrations.ts`: `0003_routing_state` creates `actor_state.value bytea` and `actor_placements (actor_type, placement, encoding)` with `placement IN ('tenant', 'actor')`.
+- `refuses to start an actor type under a different placement than its stored rows` in `packages/durable-actors/src/runtime/database/pglite.test.ts`.
+- M1.1–M1.3 shipped in PRs #18, #19, and #25; their cases are listed in the [conformance ledger](../verification/01-conformance.md).
 
 ## Alternatives
 
