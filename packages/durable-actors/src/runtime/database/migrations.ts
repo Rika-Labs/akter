@@ -77,7 +77,8 @@ export const migrate = Migrator.make({})({
         actor_id text NOT NULL,
         key text NOT NULL,
         value bytea NOT NULL,
-        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, key)
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, key),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       ) WITH (fillfactor = 80)`
       yield* sql`CREATE TABLE actor_receipts (
         routing_key bigint NOT NULL,
@@ -90,7 +91,15 @@ export const migrate = Migrator.make({})({
         caller_key text NOT NULL,
         outcome text NOT NULL,
         expires_at_ms bigint NOT NULL,
-        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, command_id)
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, command_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+      // Placement and its encoding decide every row's routing key, so a
+      // change would fork each existing actor into a second identity.
+      yield* sql`CREATE TABLE actor_placements (
+        actor_type text PRIMARY KEY,
+        placement text NOT NULL CHECK (placement IN ('tenant', 'actor')),
+        encoding integer NOT NULL
       )`
     }),
   }),

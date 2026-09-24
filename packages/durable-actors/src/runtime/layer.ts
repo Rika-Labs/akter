@@ -42,7 +42,7 @@ import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
-import { decompress, routingKey } from "./storage/codec.ts"
+import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
 
@@ -82,6 +82,30 @@ export const layer = (options: Options) => {
         yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
       })
 
+      // The first registration records an actor type's placement; a later one
+      // that differs would read and write under different routing keys.
+      const checkPlacement = Effect.fnUntraced(function* (
+        registration: Pick<Registration, "name" | "placement">,
+      ) {
+        const sql = yield* SqlClient.SqlClient
+        yield* sql`INSERT INTO actor_placements (actor_type, placement, encoding)
+          VALUES (${registration.name}, ${registration.placement}, ${PLACEMENT_ENCODING})
+          ON CONFLICT DO NOTHING`
+
+        const [recorded] = yield* sql<{ placement: string; encoding: number }>`
+          SELECT placement, encoding FROM actor_placements WHERE actor_type = ${registration.name}`
+
+        if (
+          recorded?.placement !== registration.placement ||
+          recorded.encoding !== PLACEMENT_ENCODING
+        )
+          return yield* Effect.die(
+            new Error(
+              `Actor ${registration.name} placement differs from the deployment; migrate explicitly`,
+            ),
+          )
+      })
+
       const publicActors = Actors.of({
         mintCommandId: Effect.gen(function* () {
           const now = yield* databaseTime
@@ -96,6 +120,7 @@ export const layer = (options: Options) => {
         register: Effect.fnUntraced(function* (registration: Registration) {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
+          yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
           yield* registerActor(registration).pipe(Effect.provideContext(services))
           registrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
@@ -107,6 +132,7 @@ export const layer = (options: Options) => {
         registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
           if (queryRegistrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
+          yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
           queryRegistrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
@@ -135,10 +161,16 @@ export const layer = (options: Options) => {
               WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
                 AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
 
-            return yield* query.run(
+            const outcome = yield* query.run(
               request,
               rows.map(({ key, value }) => [key, decompress(value)] as const),
             )
+
+            // Access can be revoked while the handler runs; like a command's
+            // outcome, a query result is released only to a caller still allowed.
+            yield* allow(request)
+
+            return outcome
           },
           Effect.provideContext(services),
           Effect.catchIf(SqlError.isSqlError, (cause) =>

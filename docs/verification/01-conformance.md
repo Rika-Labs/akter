@@ -26,6 +26,8 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `queries read committed state without activating, fencing, or receipting the actor`
 - `applies the caller authorization to queries`
 - `upcasts seeded old state through the migration chain and commits the current shape`
+- `withholds a query result from a caller revoked while the handler ran`
+- `rejects request/reply calls from a query handler without writing`
 - `retries the same command after execution timeout without a partial commit`
 - `retries the same command after retryable SQL defect without a partial commit`
 - `delivery timeout stops waiting while the admitted command commits once`
