@@ -1,4 +1,4 @@
-import { Effect, Layer, Schema } from "effect"
+import { type Context, Effect, Layer, Schema } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, ActorError, type Actors } from "../index.ts"
 import type { InternalActors } from "../handles/actors.ts"
@@ -148,6 +148,22 @@ describe("actor declarations", () => {
     )
 
     expectTypeOf(writesInQuery).not.toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+
+    const Other = Actor.make("Other", { api: { Peek } })
+
+    const readsOther = Box.toQueryLayer(
+      Effect.succeed({
+        Peek: Effect.fnUntraced(function* () {
+          yield* Other.Read
+
+          return 1
+        }),
+      }),
+    )
+
+    expectTypeOf(readsOther).toEqualTypeOf<
+      Layer.Layer<never, never, Context.Service.Identifier<typeof Other.Read> | InternalActors>
+    >()
     // @ts-expect-error internal members must be commands
     expect(() => Actor.make("Hidden", { api: { Bump }, internal: { Peek } })).toThrow("commands")
   })

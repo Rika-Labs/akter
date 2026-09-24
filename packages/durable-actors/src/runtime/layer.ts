@@ -84,7 +84,9 @@ export const layer = (options: Options) => {
 
       // The first registration records an actor type's placement; a later one
       // that differs would read and write under different routing keys.
-      const checkPlacement = Effect.fnUntraced(function* (registration: Registration) {
+      const checkPlacement = Effect.fnUntraced(function* (
+        registration: Pick<Registration, "name" | "placement">,
+      ) {
         const sql = yield* SqlClient.SqlClient
         yield* sql`INSERT INTO actor_placements (actor_type, placement, encoding)
           VALUES (${registration.name}, ${registration.placement}, ${PLACEMENT_ENCODING})
@@ -130,6 +132,7 @@ export const layer = (options: Options) => {
         registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
           if (queryRegistrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
+          yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
           queryRegistrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
@@ -158,10 +161,16 @@ export const layer = (options: Options) => {
               WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
                 AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
 
-            return yield* query.run(
+            const outcome = yield* query.run(
               request,
               rows.map(({ key, value }) => [key, decompress(value)] as const),
             )
+
+            // Access can be revoked while the handler runs; like a command's
+            // outcome, a query result is released only to a caller still allowed.
+            yield* allow(request)
+
+            return outcome
           },
           Effect.provideContext(services),
           Effect.catchIf(SqlError.isSqlError, (cause) =>

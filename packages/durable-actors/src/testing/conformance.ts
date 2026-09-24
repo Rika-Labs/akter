@@ -111,6 +111,7 @@ export interface ConformanceFixture {
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
   escaped: Effect.Effect<void>
   holdHandler: Effect.Effect<void>
+  duringQuery: Effect.Effect<unknown, import("../errors/actor.ts").ActorError>
   allowed: boolean
 }
 
@@ -166,6 +167,7 @@ const CounterReads = (fixture: ConformanceFixture) =>
     Effect.succeed({
       Count: Effect.fnUntraced(function* () {
         fixture.queries += 1
+        yield* fixture.duringQuery.pipe(Effect.orDie)
 
         return (yield* Counter.Read).state.count
       }),
@@ -223,6 +225,7 @@ const makeFixture = (): ConformanceFixture => ({
   captured: Effect.succeed(0),
   escaped: Effect.void,
   holdHandler: Effect.void,
+  duringQuery: Effect.void,
   allowed: true,
 })
 
@@ -569,6 +572,59 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
           Effect.ensuring(
             Effect.sync(() => {
               fixture.allowed = true
+            }),
+          ),
+        ),
+      ),
+  },
+  {
+    name: "withholds a query result from a caller revoked while the handler ran",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const counter = yield* Counter.get("query-revoked")
+          expect(yield* counter.Increment(6)).toBe(6)
+
+          fixture.duringQuery = Effect.sync(() => {
+            fixture.allowed = false
+          })
+
+          const before = fixture.queries
+          expect(yield* counter.Count().pipe(Effect.flip)).toMatchObject({
+            reason: Unauthorized.make({ code: "access_denied" }),
+          })
+          expect(fixture.queries).toBe(before + 1)
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              fixture.allowed = true
+              fixture.duringQuery = Effect.void
+            }),
+          ),
+        ),
+      ),
+  },
+  {
+    name: "rejects request/reply calls from a query handler without writing",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("query-guard")
+          fixture.duringQuery = counter.Increment(100)
+          const exit = yield* counter.Count().pipe(Effect.exit)
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+            "Request/reply inside a turn",
+          )
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: undefined,
+            state: {},
+            receipts: 0,
+          })
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              fixture.duringQuery = Effect.void
             }),
           ),
         ),

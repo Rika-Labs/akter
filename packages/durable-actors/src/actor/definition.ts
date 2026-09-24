@@ -563,6 +563,9 @@ const make = <
               Effect.catchDefect((cause) => Effect.succeed(Outcome.cases.Defect.make({ cause }))),
               Effect.provideService(Read, context),
               Effect.provideContext(services),
+              // A query is read-only: marking it as a turn makes any command or
+              // query call from its handler a defect instead of a write.
+              Effect.provideService(InsideTurn, Symbol()),
             )
           }),
         })
