@@ -268,7 +268,14 @@ export class ActorTest extends Context.Service<
             VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${name}, ${compress(value)})`
               }, Effect.orDie),
               advance: Effect.fnUntraced(function* (duration: Duration.Input) {
-                clockOffset += Duration.toMillis(duration)
+                const millis = Duration.toMillis(duration)
+
+                if (!Number.isFinite(millis) || millis < 0)
+                  return yield* Effect.die(
+                    new Error("advance needs a finite, non-negative duration"),
+                  )
+
+                clockOffset += millis
                 yield* internalActors.drainOutbox
               }),
               now: outboxTime.pipe(

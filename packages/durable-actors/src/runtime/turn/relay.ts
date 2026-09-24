@@ -72,9 +72,31 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const settle = Effect.fnUntraced(function* (row: DueIntent, now: number) {
     const routingKey = BigInt(row.routing_key)
 
+    const retryLater = (reason: string, cause: unknown) =>
+      Effect.gen(function* () {
+        // Retries have no limit yet; this warning and `attempts` are the operator signal.
+        yield* Effect.logWarning("Outbox delivery failed; retrying with backoff", cause).pipe(
+          Effect.annotateLogs({
+            actor: row.target_type,
+            id: row.target_id,
+            tenant: row.tenant_id,
+            command: row.command,
+            commandId: row.intent_id,
+            reason,
+          }),
+        )
+        yield* sql`UPDATE actor_outbox SET attempts = attempts + 1,
+            due_at_ms = ${now} + (1000 * power(2, least(attempts, 8)))::bigint
+          WHERE routing_key = ${routingKey} AND intent_id = ${row.intent_id}`
+      })
+
+    const caller = yield* Schema.decodeEffect(CallerJson)(row.caller).pipe(Effect.result)
+
+    if (Result.isFailure(caller)) return yield* retryLater("UnreadableCaller", caller.failure)
+
     const request = Request.make({
       ref: ActorRef.make({ tenant: row.tenant_id, actor: row.target_type, id: row.target_id }),
-      caller: yield* Schema.decodeEffect(CallerJson)(row.caller).pipe(Effect.orDie),
+      caller: caller.success,
       command: row.command,
       commandId: row.intent_id,
       payload: row.payload,
@@ -82,26 +104,15 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
     const delivered = yield* deliver(request).pipe(Effect.result)
 
+    if (Result.isFailure(delivered))
+      return yield* retryLater(delivered.failure.reason._tag, delivered.failure)
+
     // A declared failure is a committed receipt too; only a missing receipt retries.
-    if (Result.isSuccess(delivered) && !Outcome.guards.Defect(delivered.success)) {
-      yield* (yield* TurnHooks).at("beforeOutboxDelete", request)
-      yield* sql`DELETE FROM actor_outbox WHERE routing_key = ${routingKey} AND intent_id = ${row.intent_id}`
+    if (Outcome.guards.Defect(delivered.success))
+      return yield* retryLater("Defect", delivered.success.cause)
 
-      return
-    }
-
-    yield* Effect.logWarning("Outbox delivery failed; retrying with backoff").pipe(
-      Effect.annotateLogs({
-        actor: row.target_type,
-        id: row.target_id,
-        tenant: row.tenant_id,
-        command: row.command,
-        commandId: row.intent_id,
-      }),
-    )
-    yield* sql`UPDATE actor_outbox SET attempts = attempts + 1,
-        due_at_ms = ${now} + (1000 * power(2, least(attempts, 8)))::bigint
-      WHERE routing_key = ${routingKey} AND intent_id = ${row.intent_id}`
+    yield* (yield* TurnHooks).at("beforeOutboxDelete", request)
+    yield* sql`DELETE FROM actor_outbox WHERE routing_key = ${routingKey} AND intent_id = ${row.intent_id}`
   })
 
   const pass = lock

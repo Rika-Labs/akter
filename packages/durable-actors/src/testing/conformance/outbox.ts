@@ -385,7 +385,7 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "pushes back the idle timer and archives once across a crash after the receiver commits",
+    name: "pushes back the idle timer and archives once across crashes after the receiver commits",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -397,7 +397,9 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance("23 hours")
           expect(yield* test.inspect(room.ref)).toMatchObject({ receipts: 2, outbox: 1 })
           expect((yield* test.inspect(room.ref)).state).toEqual({})
+          // The timer's receiver turn crashes after committing, then the relay dies before deleting its row.
           yield* test.crashNext("afterCommit")
+          yield* test.crashNext("beforeOutboxDelete")
           yield* test.advance("1 hour")
           expect(yield* test.inspect(room.ref)).toMatchObject({
             state: { closed: true },
@@ -419,13 +421,15 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const before = fixture.outbox.receives
           yield* sender.Schedule({ to: "relay-crash-inbox", body: "once", afterMs: 60_000 })
 
+          // The first delivery crashes before deleting the row; the redelivery pauses there.
+          yield* test.crashNext("beforeOutboxDelete")
           const pause = yield* test.pauseNext("beforeOutboxDelete")
           const draining = yield* test.advance("1 minute").pipe(Effect.forkChild)
           yield* pause.reached
-          // The receiver has committed; the sender's row is still pending.
+          // The receiver committed once; the crashed pass left the sender's row pending.
+          expect(fixture.outbox.receives - before).toBe(1)
           expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
-          yield* test.crashNext("beforeOutboxDelete")
           yield* pause.release
           yield* Fiber.join(draining)
 
@@ -433,14 +437,49 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           expect(fixture.outbox.receives - before).toBe(1)
           expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
-
-          yield* sender.Schedule({ to: "relay-crash-inbox", body: "crashed", afterMs: 60_000 })
-          yield* test.crashNext("beforeOutboxDelete")
+        }),
+      ),
+  },
+  {
+    name: "rolls back a relay-delivered turn that crashes before commit and delivers it once",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sender = yield* Outboxer.get("receiver-crash")
+          const inbox = yield* Inbox.get("receiver-crash-inbox")
+          const before = fixture.outbox.receives
+          yield* sender.Schedule({ to: "receiver-crash-inbox", body: "once", afterMs: 60_000 })
+          yield* test.crashNext("beforeCommit")
           yield* test.advance("1 minute")
-          expect(yield* receivedBodies("relay-crash-inbox")).toEqual(["once", "crashed"])
+          // The crashed attempt ran the handler and rolled back; the retry committed once.
           expect(fixture.outbox.receives - before).toBe(2)
-          expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(2)
+          expect(yield* receivedBodies("receiver-crash-inbox")).toEqual(["once"])
+          expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
+        }),
+      ),
+  },
+  {
+    name: "delivers a keyed timer once when it is cancelled after the relay picked it up",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sender = yield* Outboxer.get("in-flight")
+          const to = "in-flight-inbox"
+          yield* sender.Schedule({ to, body: "firing", afterMs: 60_000, key: "k" })
+          const pause = yield* test.pauseNext("beforeDelivery")
+          const draining = yield* test.advance("1 minute").pipe(Effect.forkChild)
+          yield* pause.reached
+          // The timer is firing, so it is no longer pending: the cancel finds nothing.
+          yield* sender.Cancel("k")
+          expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
+          yield* pause.release
+          yield* Fiber.join(draining)
+          expect(yield* receivedBodies(to)).toEqual(["firing"])
+          yield* test.advance("1 hour")
+          expect(yield* receivedBodies(to)).toEqual(["firing"])
         }),
       ),
   },
