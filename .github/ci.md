@@ -114,7 +114,7 @@ bun .github/src/update-catalogs.ts package.json --write  # local manifest + Bun 
 
 The adapter uses standard `npm view` registry metadata, updates default/named Bun catalogs, and excludes majors/downgrades/prereleases. Effect, Alchemy/BetterAuth, FoldKit, TS/native and Oxlint are a coupled cohort: changes are held for explicit compatibility work. Prerelease pins never silently promote, even to stable. Test updates with `bun run check`, build, and provider typecheck before review. No publishing or automatic merge is included.
 
-Dependabot remains configured for ordinary non-major dependency PRs. Catalog updates are local commands; there is no GitHub Amp plugin or webhook/scheduled dispatch to orbs.
+Dependabot is turned off for this repository; dependency updates, catalog or not, are local commands; there is no GitHub Amp plugin or webhook/scheduled dispatch to orbs.
 
 ### Compatibility pins (2026-09-20 audit)
 
