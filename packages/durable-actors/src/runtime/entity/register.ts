@@ -4,7 +4,8 @@ import { Rpc } from "effect/unstable/rpc"
 import { SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
-import { executeTurn } from "../turn/execute.ts"
+import { routingKey } from "../storage/codec.ts"
+import { executeTurn, emptyActivationCache } from "../turn/execute.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
@@ -23,7 +24,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
   const register = sharding.registerEntity(
     entity,
     Effect.sync(() => {
-      let generation: string | undefined
+      const cache = emptyActivationCache()
 
       return entity.of({
         Execute: Effect.fnUntraced(function* ({ payload }) {
@@ -32,10 +33,11 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
           if (command === undefined)
             return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
 
-          const committed = yield* executeTurn(
+          const outcome = yield* executeTurn(
             payload,
             command,
-            generation,
+            cache,
+            routingKey({ ref: payload.ref, placement: registration.placement }),
             registration.policy,
           ).pipe(
             Effect.catchDefect(
@@ -51,7 +53,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
                 // the cause for operators.
                 yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
 
-                return { outcome: Outcome.cases.Defect.make({ cause }), generation }
+                return Outcome.cases.Defect.make({ cause })
               }),
             ),
             Effect.annotateLogs({
@@ -70,12 +72,11 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
             }),
           )
 
-          generation = committed.generation
           const hooks = yield* TurnHooks
 
-          if (!Outcome.guards.Defect(committed.outcome)) yield* hooks.at("afterCommit", payload)
+          if (!Outcome.guards.Defect(outcome)) yield* hooks.at("afterCommit", payload)
 
-          return committed.outcome
+          return outcome
         }, Effect.provideContext(services)),
       })
     }),

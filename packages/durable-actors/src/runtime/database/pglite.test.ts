@@ -128,6 +128,7 @@ describe("PGlite migrations", () => {
           expect(yield* sql`SELECT migration_id FROM actor_migrations`).toEqual([
             { migration_id: 1 },
             { migration_id: 2 },
+            { migration_id: 3 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },
@@ -243,6 +244,77 @@ describe("creation policy adoption", () => {
             }),
           ),
         )
+      }).pipe(Effect.scoped),
+    ))
+})
+
+describe("placement adoption", () => {
+  it("refuses to start an actor type under a different placement than its stored rows", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const live = yield* Effect.acquireRelease(
+          Effect.promise(() => PGlite.create()),
+          (client) => Effect.promise(() => client.close()),
+        )
+
+        const Bump = Actor.command("Bump", { output: Schema.Finite })
+
+        const deploy = (placement: "tenant" | "actor") => {
+          const Placed = Actor.make("Placed", {
+            key: Schema.NonEmptyString,
+            placement,
+            state: {
+              count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+            },
+            api: { Bump },
+          })
+
+          const runtime = ManagedRuntime.make(
+            Placed.toLayer(
+              Effect.succeed({
+                Bump: Effect.fnUntraced(function* () {
+                  const turn = yield* Placed.Turn
+                  yield* turn.state.set({ count: turn.state.count + 1 })
+
+                  return turn.state.count
+                }),
+              }),
+            ).pipe(
+              Layer.provideMerge(ActorTest.layer({ database: { liveClient: live } })),
+              Layer.provideMerge(BunCrypto.layer),
+            ),
+          )
+
+          return { Placed, runtime }
+        }
+
+        const first = deploy("tenant")
+
+        expect(
+          yield* Effect.promise(() =>
+            first.runtime.runPromise(
+              Effect.gen(function* () {
+                return yield* (yield* first.Placed.get("one")).Bump()
+              }),
+            ),
+          ),
+        ).toBe(1)
+
+        yield* Effect.promise(() => first.runtime.dispose())
+        const moved = deploy("actor")
+        const exit = yield* Effect.promise(() => moved.runtime.runPromiseExit(Effect.void))
+        yield* Effect.promise(() => moved.runtime.dispose())
+        expect(Exit.isFailure(exit)).toBe(true)
+
+        if (Exit.isFailure(exit))
+          expect(Cause.pretty(exit.cause)).toContain(
+            "Actor Placed placement differs from the deployment",
+          )
+
+        const again = deploy("tenant")
+        const started = yield* Effect.promise(() => again.runtime.runPromiseExit(Effect.void))
+        yield* Effect.promise(() => again.runtime.dispose())
+        expect(Exit.isSuccess(started)).toBe(true)
       }).pipe(Effect.scoped),
     ))
 })

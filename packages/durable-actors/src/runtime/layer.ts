@@ -36,6 +36,7 @@ import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
+import { PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
 
@@ -70,6 +71,28 @@ export const layer = (options: Options) => {
         yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
       })
 
+      // The first registration records an actor type's placement; a later one
+      // that differs would read and write under different routing keys.
+      const checkPlacement = Effect.fnUntraced(function* (registration: Registration) {
+        const sql = yield* SqlClient.SqlClient
+        yield* sql`INSERT INTO actor_placements (actor_type, placement, encoding)
+          VALUES (${registration.name}, ${registration.placement}, ${PLACEMENT_ENCODING})
+          ON CONFLICT DO NOTHING`
+
+        const [recorded] = yield* sql<{ placement: string; encoding: number }>`
+          SELECT placement, encoding FROM actor_placements WHERE actor_type = ${registration.name}`
+
+        if (
+          recorded?.placement !== registration.placement ||
+          recorded.encoding !== PLACEMENT_ENCODING
+        )
+          return yield* Effect.die(
+            new Error(
+              `Actor ${registration.name} placement differs from the deployment; migrate explicitly`,
+            ),
+          )
+      })
+
       const publicActors = Actors.of({
         mintCommandId: Effect.gen(function* () {
           const now = yield* databaseTime
@@ -84,6 +107,7 @@ export const layer = (options: Options) => {
         register: Effect.fnUntraced(function* (registration: Registration) {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
+          yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
           yield* registerActor(registration).pipe(Effect.provideContext(services))
           registrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
@@ -104,7 +128,12 @@ export const layer = (options: Options) => {
             return yield* Effect.gen(function* () {
               yield* authorize(request)
               const hash = yield* payloadHash(request.payload)
-              const retained = yield* resolveReceipt(request, hash)
+
+              const retained = yield* resolveReceipt(
+                request,
+                hash,
+                routingKey({ ref: request.ref, placement: registration.placement }),
+              )
 
               if (retained !== undefined) {
                 yield* authorize(request)

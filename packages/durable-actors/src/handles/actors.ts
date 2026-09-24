@@ -37,6 +37,7 @@ export interface RegisteredCommand {
 export interface Registration {
   readonly name: string
   readonly singleton: boolean
+  readonly placement: "tenant" | "actor"
   readonly policy: TurnPolicy
   readonly commands: ReadonlyMap<string, RegisteredCommand>
 }

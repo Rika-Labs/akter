@@ -11,10 +11,11 @@ import {
   Schema,
   Scope,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient, Statement } from "effect/unstable/sql"
 import { Actor, Actors, CurrentCaller, User } from "../index.ts"
 import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
+import { routingKey } from "../runtime/storage/codec.ts"
 import { payloadHash } from "../runtime/turn/receipt.ts"
 import { ActorTest } from "./actor-test.ts"
 import {
@@ -420,6 +421,59 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             state: { count: 31 },
             receipts: 1,
           })
+        }),
+      ),
+  },
+  {
+    name: "compresses state, keys rows by routing_key, and reads state once per activation",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("warm")
+          const sql = yield* SqlClient.SqlClient
+          expect(yield* counter.Increment(1)).toBe(1)
+
+          // zstd frames start with the magic number 28 b5 2f fd.
+          const stored = yield* sql<{ routing_key: string; magic: string }>`
+            SELECT routing_key::text AS routing_key, encode(substring(value FROM 1 FOR 4), 'hex') AS magic
+            FROM actor_state WHERE tenant_id = ${counter.ref.tenant} AND actor_id = 'warm'`
+
+          expect(stored).toEqual([
+            {
+              routing_key: String(routingKey({ ref: counter.ref, placement: "tenant" })),
+              magic: "28b52ffd",
+            },
+          ])
+
+          const statements: Array<string> = []
+
+          const recorded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            effect.pipe(
+              Effect.provideService(Statement.CurrentTransformer, (statement) =>
+                Effect.sync(() => {
+                  statements.push(statement.compile()[0])
+
+                  return statement
+                }),
+              ),
+            )
+
+          for (const amount of [2, 3, 4]) yield* recorded(counter.Increment(amount))
+
+          expect(statements.some((text) => /INSERT INTO actor_receipts/.test(text))).toBe(true)
+
+          const stateReads = statements.filter((text) =>
+            /SELECT key, value FROM actor_state/.test(text),
+          )
+
+          expect(stateReads).toEqual([])
+          yield* test.invalidate(counter.ref)
+          statements.length = 0
+          expect(yield* recorded(counter.Increment(5))).toBe(15)
+          expect(
+            statements.filter((text) => /SELECT key, value FROM actor_state/.test(text)).length,
+          ).toBe(1)
         }),
       ),
   },

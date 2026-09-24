@@ -18,6 +18,7 @@ import {
 import type { ActorError } from "../errors/actor.ts"
 import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
+import { decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
 
 export interface Inspection {
@@ -102,6 +103,19 @@ export class ActorTest extends Context.Service<
           ActorTest,
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
+
+            // Helpers address rows by the routing key production uses, so a row
+            // written under the wrong key is invisible here too.
+            const storedRoutingKey = Effect.fnUntraced(function* (ref: ActorRef) {
+              const [recorded] = yield* sql<{ placement: Placement }>`
+                SELECT placement FROM actor_placements WHERE actor_type = ${ref.actor}`
+
+              if (recorded === undefined)
+                return yield* Effect.die(new Error(`Actor ${ref.actor} is not registered`))
+
+              return routingKey({ ref, placement: recorded.placement })
+            })
+
             const internalActors = yield* InternalActors
 
             const service: ActorTest["Service"] = ActorTest.of({
@@ -152,21 +166,25 @@ export class ActorTest extends Context.Service<
                 }
               }),
               inspect: Effect.fnUntraced(function* (ref: ActorRef) {
+                const routing = yield* storedRoutingKey(ref)
+
                 const generations = yield* sql<{
                   generation: string
                 }>`SELECT generation::text AS generation FROM actor_generations
-            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-                const state = yield* sql<{
+                const state = (yield* sql<{
                   key: string
-                  value: string
-                }>`SELECT key, value::text AS value FROM actor_state
-            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+                  value: Uint8Array
+                }>`SELECT key, value FROM actor_state
+            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`).map(
+                  ({ key, value }) => ({ key, value: decompress(value) }),
+                )
 
                 const receipts = yield* sql<{
                   count: number
                 }>`SELECT count(*)::integer AS count FROM actor_receipts
-            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
                 return {
                   generation: generations[0]?.generation,
@@ -187,8 +205,9 @@ export class ActorTest extends Context.Service<
                 }
               }, Effect.orDie),
               invalidate: Effect.fnUntraced(function* (ref: ActorRef) {
+                const routing = yield* storedRoutingKey(ref)
                 yield* sql`UPDATE actor_generations SET generation = generation + 1
-            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
               }, Effect.orDie),
             })
 
