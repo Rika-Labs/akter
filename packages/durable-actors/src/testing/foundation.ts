@@ -81,7 +81,7 @@ const Read = Actor.command("Read", { output: Schema.Finite })
 
 const Created = Actor.make("Created", {
   key: Schema.NonEmptyString,
-  state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Create, Read },
   policy: { createdBy: Create },
 })
@@ -90,7 +90,7 @@ const SetText = Actor.command("SetText", { input: Schema.String, output: Schema.
 
 const Small = Actor.make("Small", {
   key: Schema.NonEmptyString,
-  state: { text: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))) },
+  state: Actor.state({ text: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))) }),
   api: { SetText },
   policy: { maxStateBytes: 15, commandTimeout: "500 millis" },
 })
@@ -111,16 +111,50 @@ const Bump = Actor.command("Bump", { output: Schema.Finite })
 
 const Slow = Actor.make("Slow", {
   key: Schema.NonEmptyString,
-  state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Read, Bump },
   policy: { commandTimeout: "500 millis" },
 })
 
 const DeliveryActor = Actor.make("DeliveryActor", {
   key: Schema.NonEmptyString,
-  state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Bump },
   policy: { deliveryTimeout: "100 millis" },
+})
+
+// Profile state history: v0 stored a single `name`; v1 split it; v2 added tags.
+const ProfileV0 = { name: Schema.String }
+
+const ProfileV1 = { first: Schema.String, last: Schema.String }
+
+const ProfileV2 = {
+  first: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  last: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  tags: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+}
+
+class Rename extends Schema.TaggedError<Rename>()("Rename", {}) {}
+
+const Describe = Actor.command("Describe", {
+  input: Schema.Boolean,
+  output: Schema.String,
+  errors: [Rename],
+})
+
+const Profile = Actor.make("Profile", {
+  key: Schema.NonEmptyString,
+  state: Actor.state(ProfileV2, {
+    migrations: [
+      Actor.migration(ProfileV0, ProfileV1, ({ name }) => {
+        const [first = "", ...rest] = name.split(" ")
+
+        return { first, last: rest.join(" ") }
+      }),
+      Actor.migration(ProfileV1, ProfileV2, (v1) => ({ ...v1, tags: [] })),
+    ],
+  }),
+  api: { Describe },
 })
 
 const attribution = (turn: {
@@ -185,6 +219,19 @@ export const foundationLayer = (fixture: FoundationFixture) =>
           if (fixture.slowIds.length === 1) yield* fixture.slowFirst
 
           return turn.state.count
+        }),
+      }),
+    ),
+    Profile.toLayer(
+      Effect.succeed({
+        Describe: Effect.fnUntraced(function* (fail: boolean) {
+          const turn = yield* Profile.Turn
+
+          if (fail) return yield* Rename.make({})
+
+          yield* turn.state.set({ tags: [...turn.state.tags, "seen"] })
+
+          return `${turn.state.first}|${turn.state.last}|${turn.state.tags.join(",")}`
         }),
       }),
     ),
@@ -360,6 +407,35 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           expect(Exit.isFailure(yield* actor.SetText("ok").pipe(Effect.exit))).toBe(true)
           expect(fixture.foundation.defects.length).toBe(defects + 2)
           expect(yield* test.inspect(actor.ref)).toMatchObject({ state: { text: 13 }, receipts: 2 })
+        }),
+      ),
+  },
+  {
+    name: "upcasts seeded old state through the migration chain and commits the current shape",
+    run: ({ environment, expect }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const profile = yield* Profile.get("ada")
+          yield* test.seed(profile.ref, "tenant", { name: "Ada King Lovelace" }, 0)
+          expect(yield* profile.Describe(true).pipe(Effect.flip)).toEqual(Rename.make({}))
+          // A declared failure discards the migration writes along with the business change.
+          expect(yield* test.inspect(profile.ref)).toMatchObject({
+            state: { name: "Ada King Lovelace" },
+          })
+          yield* test.invalidate(profile.ref)
+          expect(yield* profile.Describe(false)).toBe("Ada|King Lovelace|seen")
+          expect(yield* test.inspect(profile.ref)).toMatchObject({
+            state: { first: "Ada", last: "King Lovelace", tags: ["seen"] },
+          })
+          const mid = yield* Profile.get("grace")
+          yield* test.seed(mid.ref, "tenant", { first: "Grace", last: "Hopper" }, 1)
+          expect(yield* mid.Describe(false)).toBe("Grace|Hopper|seen")
+          // An actor with no stored rows starts at the current shape. No upcast
+          // runs, so the turn writes only the key it set, not every key.
+          const fresh = yield* Profile.get("new")
+          expect(yield* fresh.Describe(false)).toBe("||seen")
+          expect((yield* test.inspect(fresh.ref)).state).toEqual({ tags: ["seen"] })
         }),
       ),
   },

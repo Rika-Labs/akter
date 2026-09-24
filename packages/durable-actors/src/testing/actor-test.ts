@@ -18,7 +18,8 @@ import {
 import type { ActorError } from "../errors/actor.ts"
 import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
-import { decompress } from "../runtime/storage/codec.ts"
+import { compress, decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
+import { VERSION_KEY } from "../state/migration.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
 
 export interface Inspection {
@@ -68,6 +69,17 @@ export class ActorTest extends Context.Service<
       readonly release: Effect.Effect<void>
     }>
     readonly invalidate: (ref: ActorRef) => Effect.Effect<void>
+    /**
+     * Writes raw stored state, as an older deployment would have, so tests can
+     * exercise state migrations. `version` is the number of migrations the
+     * stored shape has already passed through.
+     */
+    readonly seed: (
+      ref: ActorRef,
+      placement: Placement,
+      state: { readonly [key: string]: Schema.Json },
+      version: number,
+    ) => Effect.Effect<void>
   }
 >()("durable-actors/testing/actor-test/ActorTest") {
   static readonly layer = (options: {
@@ -162,9 +174,11 @@ export class ActorTest extends Context.Service<
                   key: string
                   value: Uint8Array
                 }>`SELECT key, value FROM actor_state
-            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`).map(
-                  ({ key, value }) => ({ key, value: decompress(value) }),
-                )
+            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
+              AND key <> ${VERSION_KEY}`).map(({ key, value }) => ({
+                  key,
+                  value: decompress(value),
+                }))
 
                 const receipts = yield* sql<{
                   count: number
@@ -188,6 +202,22 @@ export class ActorTest extends Context.Service<
                   ),
                   receipts: receipts[0]!.count,
                 }
+              }, Effect.orDie),
+              seed: Effect.fnUntraced(function* (ref, placement, state, version) {
+                const key = routingKey({ ref, placement })
+
+                yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}) ON CONFLICT DO NOTHING`
+
+                const rows: Array<readonly [string, string]> = Object.entries(state).map(
+                  ([name, value]) => [name, JSON.stringify(value)] as const,
+                )
+
+                if (version > 0) rows.push([VERSION_KEY, String(version)])
+
+                for (const [name, value] of rows)
+                  yield* sql`INSERT INTO actor_state (routing_key, tenant_id, actor_type, actor_id, key, value)
+            VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${name}, ${compress(value)})`
               }, Effect.orDie),
               invalidate: Effect.fnUntraced(function* (ref: ActorRef) {
                 yield* sql`UPDATE actor_generations SET generation = generation + 1

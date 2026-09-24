@@ -152,9 +152,9 @@ describe("creation policy adoption", () => {
         const Create = Actor.command("Create")
         const Read = Actor.command("Read", { output: Schema.Finite })
 
-        const state = {
+        const state = Actor.state({
           count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
-        }
+        })
 
         const Before = Actor.make("AdoptCreation", {
           key: Schema.NonEmptyString,

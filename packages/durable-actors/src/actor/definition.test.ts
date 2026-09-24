@@ -68,7 +68,7 @@ describe("actor declarations", () => {
       "Duplicate",
     )
     expect(() =>
-      Actor.make("Reserved", { api: { Increment }, state: { set: Schema.Finite } }),
+      Actor.make("Reserved", { api: { Increment }, state: Actor.state({ set: Schema.Finite }) }),
     ).toThrow("reserved")
     expect(() =>
       Actor.make("Invalid", { api: { Increment }, policy: { maxStateBytes: 1.5 } }),
@@ -105,7 +105,7 @@ describe("actor declarations", () => {
     const Peek = Actor.query("Peek", { output: Schema.Finite })
 
     const Box = Actor.make("Box", {
-      state: { n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) },
+      state: Actor.state({ n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
       api: { Bump, Peek },
     })
 
@@ -152,6 +152,36 @@ describe("actor declarations", () => {
     expect(() => Actor.make("Hidden", { api: { Bump }, internal: { Peek } })).toThrow("commands")
   })
 
+  it("rejects invalid state migration chains", () => {
+    const Noop = Actor.command("Noop")
+    const V0 = { a: Schema.String }
+    const V1 = { b: Schema.String }
+    const V2 = { c: Schema.String }
+
+    expect(() =>
+      Actor.make("Gap", {
+        state: Actor.state(V2, {
+          migrations: [
+            Actor.migration(V0, V1, ({ a }) => ({ b: a })),
+            Actor.migration(V0, V2, ({ a }) => ({ c: a })),
+          ],
+        }),
+        api: { Noop },
+      }),
+    ).toThrow("previous migration")
+    expect(() =>
+      Actor.make("Stale", {
+        state: Actor.state(V2, { migrations: [Actor.migration(V0, V1, ({ a }) => ({ b: a }))] }),
+        api: { Noop },
+      }),
+    ).toThrow("declared state")
+    expect(() =>
+      Actor.make("Reserved", { state: Actor.state({ $version: Schema.Finite }), api: { Noop } }),
+    ).toThrow("reserved")
+    // @ts-expect-error an upcast must produce the next shape
+    Actor.migration(V0, V1, ({ a }) => ({ c: a }))
+  })
+
   it("types handler requirements through the per-actor Turn service", () =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -161,7 +191,9 @@ describe("actor declarations", () => {
         })
 
         const Counter = Actor.make("Counter", {
-          state: { count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(7))) },
+          state: Actor.state({
+            count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(7))),
+          }),
           api: { Increment },
         })
 
