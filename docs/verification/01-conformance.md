@@ -132,3 +132,12 @@ Evidence MUST record the revision, test name and command, backend/runtime versio
 - **Effect routes:** executor success delivers `onSuccess` exactly once per effect id across executor and relay crashes; exhaustion delivers `onDeadLetter` once; a route whose command input does not match the executor's return type fails to compile.
 - **Internal section:** `internal` commands are absent from handles, HTTP, OpenAPI, and the Promise client; a non-System caller is a deterministic defect whose span carries the cause and which runs no user code.
 - **Merging:** a lone commutative call adds no delay; a merged turn never exceeds 1,024 inputs.
+- **Adoption:** legacy-table observe and enforce modes detect direct writes, stamp or validate ownership, and cannot be bypassed by a second pool or raw SQL path.
+- **Query observation:** only the documented query algebra produces invalidations; actor-local invalidation is complete, group/fleet scope is explicit, and unsupported SQL is rejected rather than silently treated as live.
+- **Offline replay:** a persisted client retries with the original command ID, replays a receipt after a lost reply, and surfaces an expired identity without minting a replacement.
+- **Workflow compatibility:** deployment checks detect removed or renamed steps needed by active executions; version markers preserve old execution paths and are tested across restart.
+- **Inspection and export:** inspection respects caller/operator authority, redacts credentials, and produces a seed that can reproduce supported actor state without claiming historical rewind.
+- **Generated protocols:** OpenAPI, MCP, and language clients agree on schemas, public member names, errors, and command identity; internal members are absent.
+- **Scale-to-zero:** a cold runner recovers committed work, does not lose due work, reports wake/state-load latency, and does not claim parked-connection continuity without a gateway.
+- **Agent runtime:** model and sandbox effects reconcile unknown outcomes, budgets serialize under races, approvals resume after restart, and sandbox loss leaves committed actor facts intact.
+- **Generated applications:** builds are reproducible, tenant-scoped, rollbackable, and adversarially tested; generated code is not called isolated until a reviewed sandbox proves that property.

@@ -13,6 +13,8 @@ The actor design has three migration responsibilities:
 
 Separately, `packages/postgres` owns the hosted control-plane schema and `bin/migrate.ts`. The planned `durable migrate` command is not implemented. This document specifies required migration behavior, not a working CLI procedure.
 
+Future brownfield adoption adds an observe-then-enforce phase for actor-owned legacy tables. Observe mode records direct writes and missing ownership context without changing outcomes. Enforce mode rejects writes that do not carry the trusted actor turn scope. The framework must not claim adoption is complete until direct writers have been removed or explicitly routed through an approved privileged path.
+
 Use expand, deploy, backfill, validate, and contract phases when old and new runners overlap. Do not contract a column, receipt shape, event schema, workflow payload, or effect payload until all compatible readers and retained records have passed its horizon.
 
 Hosted Neki migrations must preserve `routing_key` shard placement and the `actor_outbox` relay, and run in every region of a multi-region deployment. Never assume every actor is awake or that rows on different shards share a transaction.
