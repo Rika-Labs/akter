@@ -47,4 +47,6 @@ Unless a row exercises denial or expiry, external receipt replay assumes the ori
 | Optimistic reducer rejected by the server | The browser handle removes the pending input and shows committed state. |
 Run applicable rows on PGlite, Postgres, Neki, the in-process multi-runner harness, and the served HTTP harness. Real Postgres is mandatory for lock-contention rows.
 
+Reducer evidence (M1.8): **Declared failure after attempted writes**, **During handler / before COMMIT**, **After COMMIT / before reply**, and **Deterministic defect** are exercised for server reducer turns by the [reducer cases](01-conformance.md#reducer-cases-m18), on PGlite and Postgres. **Commutative merge turn fails** waits for M2 merging and **Optimistic reducer rejected by the server** for the M3 client.
+
 These are required tests, not recorded passing results. Each implementation must attach evidence and an operator signal/remediation path for the failures it claims to recover from.
