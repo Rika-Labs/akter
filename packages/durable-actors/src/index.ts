@@ -6,6 +6,7 @@ import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
 import { Reducer } from "./members/reducer.ts"
 import { ActorStates } from "./state/migration.ts"
+import { table } from "./tables/owned.ts"
 
 export const Actor = {
   make: Definition.make,
@@ -13,6 +14,7 @@ export const Actor = {
   query: Query.make,
   reducer: Reducer.make,
   state: ActorStates.make,
+  table,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
   /** Provided by the runtime only inside command turns; `X.intents` requires it. */
@@ -65,3 +67,18 @@ export type { CommandContext, QueryContext, Turn } from "./contexts/command.ts"
 export type { Handle, Intents } from "./actor/definition.ts"
 
 export type { Commutative, Reducer } from "./members/reducer.ts"
+
+export type {
+  Filter,
+  Filtered,
+  Group,
+  GroupDatabase,
+  Insert,
+  ListOptions,
+  Order,
+  OwnedTable,
+  ReadOptions,
+  Row,
+  ScopedRead,
+  ScopedRows,
+} from "./tables/owned.ts"

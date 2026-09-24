@@ -5,14 +5,102 @@
 **Owner role:** database/API.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-Actor-owned tables use Drizzle semantics and gain `tenant_id` and `actor_id` ownership columns. The framework does not invent a separate query language or re-export drivers, pools, dialect internals, migration CLIs, or unrelated runtime globals.
+Actor-owned tables use Drizzle semantics and gain `routing_key`, `tenant_id`, and `actor_id` ownership columns. The framework does not invent a separate query language or re-export drivers, pools, dialect internals, migration CLIs, or unrelated runtime globals.
 
-Inside a command turn, `turn.rows(table)` is scoped to the current tenant and actor and provides `one`, `all`, `count`, `insert`, `update`, `upsert`, and `delete`; `ScopedRead` exposes only `one`, `all`, and `count`. Application writes use these scoped operations. `group` is a read-only Drizzle client scoped to the actor's placement group for joins across the actors that share its shard ([ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md)); fleet-wide reads use declared `Fleet.view` definitions ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)). Writes use `drizzle-orm/effect-postgres` on the framework's `PgClient`/`SqlClient` transaction connection, not a second pool. Successful business changes commit with the receipt; an unhandled declared failure rolls them back while retaining the terminal failure receipt.
+## Declaring an owned table
 
-Application code supplies business fields and filters, not `tenant_id` or `actor_id`. The framework inserts ownership columns and constrains reads, updates, deletes, and upsert conflict targets from trusted context. Ownership overrides are rejected. These guarantees apply to every supported adapter, not only Drizzle; selecting another supported integration must not require adding manual ownership predicates to handlers.
+```ts
+import { Actor } from "durable-actors"
+import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 
-Drizzle is the first query-client target. Additional query-client and backend adapters need the same automatic scoping, phase restrictions, turn-connection binding, and conformance evidence. Unsupported operations are rejected rather than delegated to an unscoped client. No additional adapter names or registration API are specified yet; see [adapter requirements](../architecture/05-adapters.md).
+export const messages = Actor.table(
+  pgTable(
+    "chat_messages",
+    {
+      id: text("id").primaryKey(),
+      author: text("author").notNull(),
+      body: text("body").notNull(),
+      sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+    },
+    (table) => [index("chat_messages_sent").on(table.sentAt)],
+  ),
+)
 
-Queries and other off-turn phases (`X.Read`, `X.Connection`) receive `ScopedRead` and cannot mutate through the typed API. Runtime scoping and database constraints enforce ownership; TypeScript types alone are not authority.
+export const Room = Actor.make("Room", { key: RoomId, tables: [messages], api: { Post, Recent } })
+```
+
+`Actor.table(pgTable(...))` takes an ordinary Drizzle table and returns it as an `OwnedTable`. It adds `routing_key bigint`, `tenant_id text`, and `actor_id text` columns and prefixes the table's primary key (column-level or `primaryKey()`), every `unique()`/`.unique()` constraint, and every `index()`/`uniqueIndex()` with `(routing_key, tenant_id, actor_id)`. Keys and uniqueness are therefore per actor, and every scoped scan leads with `routing_key`. drizzle-kit generates the table, columns, and prefixed keys from the returned value; application tables are created by drizzle-kit migrations, not by the framework.
+
+`Actor.table` rejects a table that has no primary key, declares a column whose key or SQL name is `routing_key`, `tenant_id`, or `actor_id`, declares a foreign key (inline `.references()` or `foreignKey()`), is an alias, or is already owned. An owned table is listed in exactly one actor type's `tables`; `Actor.make` rejects a table another actor type already lists, and the runtime records the owner in `actor_tables` so a later deployment cannot move a table to a second actor type. At startup each registered table must exist with the primary key `(routing_key, tenant_id, actor_id, <business key>)`; otherwise the layer fails instead of running unscoped.
+
+## Scoped rows
+
+Inside a command turn, `turn.rows(table)` is scoped to the current tenant and actor and bound to the turn transaction. `turn.rows` accepts only tables in the actor's `tables`, in types and at runtime. `read.rows(table)` in queries is `ScopedRead`: it exposes only `one`, `all`, and `count` and has no mutation methods at runtime either.
+
+```ts
+const turn = yield * Room.Turn
+yield * turn.rows(messages).insert({ id, author, body, sentAt })
+yield * turn.rows(messages).update({ body }).where({ id })
+yield * turn.rows(messages).delete().where({ id })
+yield * turn.rows(messages).upsert({ id, author, body, sentAt })
+
+const read = yield * Room.Read
+const recent = yield * read.rows(messages).all({ orderBy: { sentAt: "desc" }, limit: 20 })
+const one = yield * read.rows(messages).one({ where: { id } }) // Option<Row>
+const total = yield * read.rows(messages).count({ where: { author } })
+```
+
+Filters are Drizzle's object filters (`TableFilter`) over business columns: equality by value, the column operators (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `notIn`, `like`, `ilike`, `notLike`, `notIlike`, `isNull`, `isNotNull`, `arrayContains`, `arrayContained`, `arrayOverlaps`), and `AND`, `OR`, and `NOT`. `orderBy` is `{ column: "asc" | "desc" }`. Rows are returned with business columns only. `update(values)` and `delete()` run only once given `.where(filter)`; `.where({})` affects every row of the actor. `upsert` inserts, or on a conflict of the scoped primary key updates the supplied non-key columns. Insert and update values are plain JavaScript values.
+
+A write error that is not retryable, such as a duplicate key, is a deterministic defect: the turn rolls back without a receipt. Check first with `one`, or use `upsert`.
+
+| Operation                                    | `turn.rows` | `read.rows` | Scope applied                                                        |
+| -------------------------------------------- | ----------- | ----------- | -------------------------------------------------------------------- |
+| `one({ where?, orderBy? })`                  | yes         | yes         | `routing_key`, `tenant_id`, `actor_id` ANDed with the filter         |
+| `all({ where?, orderBy?, limit?, offset? })` | yes         | yes         | same                                                                 |
+| `count({ where? })`                          | yes         | yes         | same                                                                 |
+| `insert(row \| rows)`                        | yes         | no          | ownership columns supplied from the turn                             |
+| `update(values).where(filter)`               | yes         | no          | scoped `WHERE`; ownership columns cannot be set                      |
+| `delete().where(filter)`                     | yes         | no          | scoped `WHERE`                                                       |
+| `upsert(row \| rows)`                        | yes         | no          | conflict target is the scoped primary key, so it only meets own rows |
+| `group((db) => select)`                      | yes         | yes         | `routing_key`, `tenant_id` on the base table and every join's `ON`   |
+
+Rejected, as a defect that rolls back the turn and never runs unscoped or in a second transaction:
+
+- ownership columns in insert values, update values, upsert values, filters, or `orderBy`;
+- unknown columns, `RAW` filters, and SQL values (`sql`, columns, subqueries, placeholders) in values or filters;
+- `rows(table)` for a table the actor type does not list;
+- use of a `rows` or `group` capability after its turn or query ended, or from another turn, including from a forked fiber;
+- mutation methods on `read.rows`, and anything other than select on `group`.
+
+Raw SQL, Drizzle's relational query API (`db.query`), `returning`, `onConflict` options, `insert ... select`, update/delete joins, foreign keys, cascades, and CTEs are not supported on owned tables yet; supporting one needs evidence in the conformance suite first.
+
+## Placement group reads
+
+`group` is a read-only Drizzle select scoped to the actor's placement group: every actor of the tenant under `placement: "tenant"`, or the actor itself under `placement: "actor"` ([ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md)). It is available on `X.Turn` (reading through the turn transaction) and `X.Read`, and one select is one snapshot.
+
+```ts
+const read = yield * Library.Read
+const rows =
+  yield *
+  read.group((db) =>
+    db
+      .select({ note: notes.id, label: labels.label })
+      .from(notes)
+      .leftJoin(labels, eq(labels.noteId, notes.id))
+      .where(inArray(notes.id, ids))
+      .orderBy(notes.id),
+  )
+```
+
+The builder gets only `select` and `selectDistinct`. The base table and every joined table must be owned tables (aliases of them are allowed); the framework adds `routing_key = <group> AND tenant_id = <tenant>` to the base table's `WHERE` and to each join's `ON`. Only inner and left joins are supported. Expressions in the selection, `where`, `having`, `orderBy`, `groupBy`, and `ON` may use columns, values, and Drizzle's comparison, boolean, pattern, null, and aggregate operators; raw SQL text, table references, subqueries, set operators, `WITH`, locking clauses, lateral joins, and placeholders are rejected. Fleet-wide reads use declared `Fleet.view` definitions ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)).
+
+## Transactions and backends
+
+Writes use `drizzle-orm/effect-postgres` (or `drizzle-orm/effect-pglite`) on the framework's own `PgClient`/`PgliteClient`, joining the turn's transaction connection; there is no second pool. Successful business changes commit with the receipt; an unhandled declared failure rolls them back while retaining the terminal failure receipt. A turn that cannot find its transaction connection refuses to write.
+
+Application code supplies business fields and filters, not ownership columns; the framework inserts ownership columns and constrains reads, updates, deletes, and upsert conflict targets from trusted context. These guarantees apply to every supported adapter, not only Drizzle; selecting another integration must not require manual ownership predicates in handlers. Drizzle on Postgres and PGlite is the first and only supported combination; additional query-client and backend adapters need the same automatic scoping, phase restrictions, turn-connection binding, and conformance evidence. See [adapter requirements](../architecture/05-adapters.md).
+
+TypeScript types alone are not authority: runtime scoping, phase checks, and the ownership-prefixed keys enforce it.
 
 There is one database per deployment region. Tenants are rows, isolated by `tenant_id`, composite indexes, and optional RLS. Placement is selected with `shardGroup`, not separate tenant databases. Table schema changes use normal SQL migrations; keyed actor state uses `Actor.migration` upcasts.

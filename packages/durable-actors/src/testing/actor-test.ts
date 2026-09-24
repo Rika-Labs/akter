@@ -40,6 +40,8 @@ export interface Inspection {
   readonly receipts: number
   /** Pending `actor_outbox` rows this actor sent. */
   readonly outbox: number
+  /** The actor's row count per owned table; present when its type owns tables. */
+  readonly rows?: Readonly<Record<string, number>>
 }
 
 interface TestDefinition {
@@ -232,7 +234,18 @@ export class ActorTest extends Context.Service<
                 }>`SELECT count(*)::integer AS count FROM actor_outbox
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-                return {
+                const tables = yield* sql<{ table_schema: string; table_name: string }>`
+                  SELECT table_schema, table_name FROM actor_tables WHERE actor_type = ${ref.actor}
+                  ORDER BY table_name`
+
+                const rows: Record<string, number> = {}
+
+                for (const { table_schema, table_name } of tables)
+                  rows[table_name] = (yield* sql<{ count: number }>`
+                    SELECT count(*)::integer AS count FROM ${sql(table_schema)}.${sql(table_name)}
+                    WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_id = ${ref.id}`)[0]!.count
+
+                const inspection: Inspection = {
                   generation: generations[0]?.generation,
                   state: Object.fromEntries(
                     yield* Effect.forEach(
@@ -250,6 +263,8 @@ export class ActorTest extends Context.Service<
                   receipts: receipts[0]!.count,
                   outbox: outbox[0]!.count,
                 }
+
+                return tables.length > 0 ? { ...inspection, rows } : inspection
               }, Effect.orDie),
               seed: Effect.fnUntraced(function* (ref, state, version) {
                 const key = yield* storedRoutingKey(ref)
