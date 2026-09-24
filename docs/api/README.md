@@ -14,6 +14,7 @@ This is the accepted API design, not a claim that every interface is implemented
 - [Generated contracts](generated-contracts.md)
 - [Naming](naming.md)
 - [Versioning](versioning.md)
+- [Post-foundation API sketches](post-foundation-sketches.md) — illustrative proposals, not implemented interfaces
 
 The framework is one `durable-actors` distribution with four entries: `.`, `/runtime`, `/client`, and `/testing`. The root owns declarations and served composition; runtime construction is `Actors.layer` from `/runtime`; browsers use `/client`; tests use `ActorTest` from `/testing`.
 
