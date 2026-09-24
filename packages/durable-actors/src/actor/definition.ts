@@ -1,5 +1,10 @@
 import { Context, Effect, Layer, Schema, Scope, Semaphore } from "effect"
-import { type CommandContext, InsideTurn, outsideTurn } from "../contexts/command.ts"
+import {
+  type CommandContext,
+  InsideTurn,
+  outsideTurn,
+  type QueryContext,
+} from "../contexts/command.ts"
 import type { ActorError } from "../errors/actor.ts"
 import {
   Actors,
@@ -7,6 +12,7 @@ import {
   InternalActors,
   Outcome,
   type RegisteredCommand,
+  type RegisteredQuery,
   Request,
 } from "../handles/actors.ts"
 import {
@@ -18,7 +24,13 @@ import {
   type System,
 } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
-import type { AnyCommand, CommandRecord, ValueSchema } from "../members/command.ts"
+import type {
+  AnyCommand,
+  AnyMember,
+  CommandRecord,
+  MemberRecord,
+  ValueSchema,
+} from "../members/command.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 
 type StateFields = Readonly<Record<string, ValueSchema>>
@@ -67,45 +79,74 @@ type HandleReason =
   | "Unauthorized"
   | "Timeout"
 
-type Values<Record extends CommandRecord> = Record[keyof Record]
+type Values<Record extends MemberRecord> = Record[keyof Record]
+
+type CommandsOf<Members extends MemberRecord> = Extract<
+  Values<Members>,
+  { readonly kind: "command" }
+>
+
+type CommandKeys<Members extends MemberRecord> = {
+  [K in keyof Members]: Members[K]["kind"] extends "command" ? K : never
+}[keyof Members]
+
+type QueryKeys<Members extends MemberRecord> = {
+  [K in keyof Members]: Members[K]["kind"] extends "query" ? K : never
+}[keyof Members]
+
+/** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
+type QueryReason = "ActorUnavailable" | "Unauthorized"
+
+type Reasons<
+  M extends AnyMember,
+  Creating extends string,
+  BoundedMailbox extends boolean,
+> = M["kind"] extends "query"
+  ? QueryReason
+  :
+      | HandleReason
+      | (BoundedMailbox extends true ? "MailboxFull" : never)
+      | ([Creating] extends [never] ? never : M["tag"] extends Creating ? never : "NotCreated")
 
 export type Handle<
-  Commands extends CommandRecord,
+  Members extends MemberRecord,
   Creating extends string = never,
   BoundedMailbox extends boolean = false,
 > = {
-  readonly [K in keyof Commands]: (
-    ...args: Commands[K]["input"]["Type"] extends void ? [] : [input: Commands[K]["input"]["Type"]]
+  readonly [K in keyof Members]: (
+    ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
   ) => Effect.Effect<
-    Commands[K]["output"]["Type"],
-    | Commands[K]["errors"][number]["Type"]
-    | ActorError.Of<
-        | HandleReason
-        | (BoundedMailbox extends true ? "MailboxFull" : never)
-        | ([Creating] extends [never]
-            ? never
-            : Commands[K]["tag"] extends Creating
-              ? never
-              : "NotCreated")
-      >
+    Members[K]["output"]["Type"],
+    | Members[K]["errors"][number]["Type"]
+    | ActorError.Of<Reasons<Members[K], Creating, BoundedMailbox>>
   >
 } & { readonly ref: ActorRef }
 
-export type Handlers<Commands extends CommandRecord, R> = {
-  readonly [K in keyof Commands]: (
-    input: Commands[K]["input"]["Type"],
-  ) => Effect.Effect<Commands[K]["output"]["Type"], Commands[K]["errors"][number]["Type"], R>
+type HandlerMap<Members extends MemberRecord, Keys extends keyof Members, R> = {
+  readonly [K in Keys]: (
+    input: Members[K]["input"]["Type"],
+  ) => Effect.Effect<Members[K]["output"]["Type"], Members[K]["errors"][number]["Type"], R>
 }
 
-/** `api` and `internal` keys must equal their command's tag. */
-type TagsMatch<Commands extends CommandRecord> = {
-  readonly [K in keyof Commands]: Commands[K] & { readonly tag: K }
+/** One handler per command in `api` and `internal`. */
+export type Handlers<Members extends MemberRecord, R> = HandlerMap<Members, CommandKeys<Members>, R>
+
+/** One handler per query in `api`. */
+export type QueryHandlers<Members extends MemberRecord, R> = HandlerMap<
+  Members,
+  QueryKeys<Members>,
+  R
+>
+
+/** `api` and `internal` keys must equal their member's tag. */
+type TagsMatch<Members extends MemberRecord> = {
+  readonly [K in keyof Members]: Members[K] & { readonly tag: K }
 }
 
 interface Definition<
   Key,
   Fields extends StateFields,
-  Api extends CommandRecord,
+  Api extends MemberRecord,
   Internal extends CommandRecord,
 > {
   readonly key?: Key
@@ -114,23 +155,23 @@ interface Definition<
   readonly state?: Fields
   readonly api: Api & TagsMatch<Api>
   readonly internal?: Internal & TagsMatch<Internal>
-  readonly policy?: Policy<Values<Api> | Values<Internal>>
+  readonly policy?: Policy<CommandsOf<Api> | Values<Internal>>
 }
 
 const make = <
   const Name extends string,
-  const Api extends CommandRecord,
+  const Api extends MemberRecord,
   const Fields extends StateFields = {},
   const Internal extends CommandRecord = {},
   const K extends Key = undefined,
-  const P extends Policy<Values<Api> | Values<Internal>> = {},
+  const P extends Policy<CommandsOf<Api> | Values<Internal>> = {},
 >(
   name: Name,
   definition: Definition<K, Fields, Api, Internal> & { readonly key?: K; readonly policy?: P },
 ) => {
   Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/)).make(name)
-  const api: CommandRecord = definition.api
-  const internal: CommandRecord = definition.internal ?? {}
+  const api: MemberRecord = definition.api
+  const internal: MemberRecord = definition.internal ?? {}
   const tags = new Set<string>()
 
   for (const [key, member] of [...Object.entries(api), ...Object.entries(internal)]) {
@@ -141,8 +182,14 @@ const make = <
     tags.add(member.tag)
   }
 
-  const members = [...Object.values(api), ...Object.values(internal)]
-  const internalMembers = new Set(Object.values(internal))
+  for (const member of Object.values(internal))
+    if (member.kind !== "command")
+      throw new Error(`Internal members must be commands: ${member.tag}`)
+
+  const all = [...Object.values(api), ...Object.values(internal)]
+  const members = all.filter((member): member is AnyCommand => member.kind === "command")
+  const queries = all.filter((member) => member.kind === "query")
+  const internalMembers = new Set<AnyMember>(Object.values(internal))
   const fields: StateFields = definition.state ?? {}
   const policy = resolvePolicy({ declared: definition.policy, commands: members })
   const isSingleton = Schema.is(SingletonKeySchema)(definition.key)
@@ -172,6 +219,8 @@ const make = <
     `durable-actors/Turn/${name}`,
   ) {}
 
+  class Read extends Context.Service<Read, QueryContext<State>>()(`durable-actors/Read/${name}`) {}
+
   const getHandle = Effect.fnUntraced(function* (
     id: string,
     includeInternal: boolean,
@@ -193,7 +242,7 @@ const make = <
     })
 
     const methods = Object.fromEntries(
-      (includeInternal ? members : Object.values(api)).map((member) => {
+      (includeInternal ? all : Object.values(api)).map((member) => {
         const inputCodec = Schema.fromJsonString(
           Schema.toCodecJson(Schema.Struct({ value: member.input })),
         )
@@ -221,15 +270,26 @@ const make = <
 
             return Effect.gen(function* () {
               yield* outsideTurn
-              const commandId = yield* identify
 
               const payload = yield* Schema.encodeEffect(inputCodec)({ value: input }).pipe(
                 Effect.orDie,
               )
 
-              const outcome = yield* internalActors.execute(
-                Request.make({ ref, caller, command: member.tag, commandId, payload }),
-              )
+              // Queries are reads: no command id, receipt, or retry identity.
+              const outcome =
+                member.kind === "query"
+                  ? yield* internalActors.query(
+                      Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
+                    )
+                  : yield* internalActors.execute(
+                      Request.make({
+                        ref,
+                        caller,
+                        command: member.tag,
+                        commandId: yield* identify,
+                        payload,
+                      }),
+                    )
 
               if (Outcome.guards.Defect(outcome)) return yield* Effect.die(outcome.cause)
 
@@ -256,7 +316,9 @@ const make = <
       const commands = new Map<string, RegisteredCommand>()
 
       for (const member of members) {
-        const handle = (handlers as Record<string, Handlers<All, R>[keyof All]>)[member.tag] as (
+        const handle = (
+          handlers as Record<string, (input: never) => Effect.Effect<unknown, unknown, R>>
+        )[member.tag] as (
           input: typeof member.input.Type,
         ) => Effect.Effect<
           typeof member.output.Type,
@@ -418,6 +480,119 @@ const make = <
       }),
     ) as Layer.Layer<never, never, Exclude<R, Turn> | Exclude<RB, Scope.Scope> | InternalActors>
 
+  const registerQueries = <R>(handlers: QueryHandlers<Api, R>, services: Context.Context<R>) =>
+    Effect.gen(function* () {
+      const actors = yield* InternalActors
+      const registered = new Map<string, RegisteredQuery>()
+
+      for (const member of queries) {
+        const handle = (
+          handlers as Record<string, (input: never) => Effect.Effect<unknown, unknown, R>>
+        )[member.tag] as (
+          input: typeof member.input.Type,
+        ) => Effect.Effect<
+          typeof member.output.Type,
+          (typeof member.errors)[number]["Type"],
+          R | Read
+        >
+
+        if (handle === undefined)
+          return yield* Effect.die(new Error(`Missing query handler ${member.tag}`))
+
+        const inputCodec = Schema.fromJsonString(
+          Schema.toCodecJson(Schema.Struct({ value: member.input })),
+        )
+
+        const outputCodec = Schema.fromJsonString(
+          Schema.toCodecJson(Schema.Struct({ value: member.output })),
+        )
+
+        const errorSchema = Schema.Union(member.errors)
+        const errorCodec = Schema.fromJsonString(Schema.toCodecJson(errorSchema))
+
+        registered.set(member.tag, {
+          run: Effect.fnUntraced(function* (request, rows) {
+            const stored = Object.fromEntries(
+              yield* Effect.forEach(
+                rows,
+                Effect.fnUntraced(function* ([key, value]) {
+                  return [
+                    key,
+                    yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(value).pipe(
+                      Effect.orDie,
+                    ),
+                  ]
+                }),
+              ),
+            )
+
+            const state = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(stateSchema))(
+              stored,
+            ).pipe(Effect.orDie)
+
+            const context: QueryContext<State> = {
+              id: request.ref.id,
+              ref: request.ref,
+              caller: request.caller,
+              principal: principal(request.caller),
+              state: Object.freeze(state) as Readonly<State>,
+            }
+
+            return yield* Effect.gen(function* () {
+              const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(
+                Effect.orDie,
+              )
+
+              const output = yield* handle(input.value)
+
+              const value = yield* Schema.encodeEffect(outputCodec)({ value: output }).pipe(
+                Effect.orDie,
+              )
+
+              return Outcome.cases.Success.make({ value })
+            }).pipe(
+              Effect.catch(
+                Effect.fnUntraced(function* (error) {
+                  if (!Schema.is(errorSchema)(error)) return yield* Effect.die(error)
+
+                  const value = yield* Schema.encodeEffect(errorCodec)(error).pipe(Effect.orDie)
+
+                  return Outcome.cases.Failure.make({ value })
+                }),
+              ),
+              Effect.catchDefect((cause) => Effect.succeed(Outcome.cases.Defect.make({ cause }))),
+              Effect.provideService(Read, context),
+              Effect.provideContext(services),
+              // A query is read-only: marking it as a turn makes any command or
+              // query call from its handler a defect instead of a write.
+              Effect.provideService(InsideTurn, Symbol()),
+            )
+          }),
+        })
+      }
+
+      yield* actors.registerQueries({
+        name,
+        placement: definition.placement ?? "tenant",
+        queries: registered,
+      })
+    })
+
+  /**
+   * Implements every query in `api`. Queries run on the caller's node against
+   * committed rows and read their context with `yield* X.Read`.
+   */
+  const toQueryLayer = <R, RB>(
+    build: Effect.Effect<QueryHandlers<Api, R>, never, RB>,
+  ): Layer.Layer<never, never, Exclude<R, Read> | Exclude<RB, Scope.Scope> | InternalActors> =>
+    Layer.effectDiscard(
+      Effect.gen(function* () {
+        const handlers = yield* build
+        const services = yield* Effect.context<Exclude<R, Read>>()
+        yield* registerQueries(handlers, services as Context.Context<R>)
+      }),
+    ) as Layer.Layer<never, never, Exclude<R, Read> | Exclude<RB, Scope.Scope> | InternalActors>
+
   const create = Effect.fnUntraced(function* () {
     yield* outsideTurn
 
@@ -439,7 +614,9 @@ const make = <
     state: stateSchema,
     api: definition.api as Api,
     Turn,
+    Read,
     toLayer,
+    toQueryLayer,
     get: get as K extends SingletonKey
       ? () => Effect.Effect<PublicHandle, never, Actors>
       : (id: Id) => Effect.Effect<PublicHandle, never, Actors>,

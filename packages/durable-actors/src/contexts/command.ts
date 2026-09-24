@@ -28,3 +28,13 @@ export interface CommandContext<State> {
     readonly set: (patch: Partial<State>) => Effect.Effect<void>
   }
 }
+
+/** The read-only context of one query, obtained with `yield* X.Read`. */
+export interface QueryContext<State> {
+  readonly id: string
+  readonly ref: ActorRef
+  readonly caller: Caller
+  readonly principal: Option.Option<Principal>
+  /** The last committed state; never uncommitted writes of a running turn. */
+  readonly state: Readonly<State>
+}
