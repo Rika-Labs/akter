@@ -43,6 +43,28 @@ A command's context is the only writable one. One framework-owned transaction pe
 
 Unhandled declared failures roll back business changes and staged notifications while their terminal receipts commit and replay unchanged. A handler that catches an error and succeeds commits normally; an intentionally persisted rejection belongs in its output schema. Retryable turn failures, such as a stale generation or command execution timeout, become defects and restart the activation; the caller's handle retries with the same command id. A caller's `Timeout` stops waiting without cancelling the turn. Application errors are never wrapped.
 
+## Events
+
+`turn.emit(event)` takes an instance of a class declared in the actor's `events`; any other class fails to compile, and an undeclared or invalid value is a defect at runtime. The event is encoded when emitted and appended in the turn's own transaction, so a declared failure, a defect, or a crash before COMMIT leaves no event. Each committed event gets the next number in its actor's sequence, reserved on the locked generation row, so the sequence has no gaps or reuse even after pruning.
+
+`read.events(Event, { after })` returns the committed events of one declared class after the exclusive cursor, oldest first, as `EventEntry` values:
+
+```ts
+interface EventEntry<E> {
+  readonly cursor: string // pass as `after` to resume after this event
+  readonly event: E
+  readonly commandId: string // the command whose turn emitted it
+  readonly timestamp: DateTime.Utc // the database time of that turn's transaction
+}
+```
+
+`after` defaults to the start of the stream. A cursor is the event's decimal sequence number, but callers should treat it as opaque. Replay fails with a typed error instead of skipping anything:
+
+- `UnknownCursor { cursor }`: the cursor is malformed or ahead of every event this actor has committed.
+- `RetentionGap { cursor }`: some event after the cursor has been pruned, whatever its class. The reader has to resynchronize from state.
+
+A query that replays declares these in its `errors`, or handles them itself. Replay reads the stream head, the oldest retained event, and the matching events in one statement, so it sees a single snapshot. Replay is not limited to a page size yet.
+
 ## Activation-local values
 
 Values that live for one activation are ordinary Effect values in the layer's build closure, such as a `Ref`. They are not durable, not rolled back with a transaction, and gone after hibernation. Writable maintenance is an internal command, not a write from a read-only phase.

@@ -33,6 +33,7 @@ import {
 import {
   Actors,
   InternalActors,
+  Outcome,
   type QueryRegistration,
   type Registration,
   type Request,
@@ -41,6 +42,7 @@ import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
+import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
@@ -164,7 +166,16 @@ export const layer = (options: Options) => {
             const outcome = yield* query.run(
               request,
               rows.map(({ key, value }) => [key, decompress(value)] as const),
+              (tag, after) =>
+                replayEvents(request.ref, key, tag, after).pipe(
+                  Effect.catchIf(SqlError.isSqlError, Effect.die),
+                  Effect.provideContext(services),
+                ),
             )
+
+            // A failed replay read is unavailability, not a deterministic query defect.
+            if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
+              return yield* outcome.cause
 
             // Access can be revoked while the handler runs; like a command's
             // outcome, a query result is released only to a caller still allowed.

@@ -26,6 +26,7 @@ export interface Inspection {
   readonly generation: string | undefined
   readonly state: Schema.JsonObject["Type"]
   readonly receipts: number
+  readonly events: number
 }
 
 interface TestDefinition {
@@ -199,6 +200,11 @@ export class ActorTest extends Context.Service<
                 }>`SELECT count(*)::integer AS count FROM actor_receipts
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
+                const events = yield* sql<{
+                  count: number
+                }>`SELECT count(*)::integer AS count FROM actor_events
+            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+
                 return {
                   generation: generations[0]?.generation,
                   state: Object.fromEntries(
@@ -215,6 +221,7 @@ export class ActorTest extends Context.Service<
                     ),
                   ),
                   receipts: receipts[0]!.count,
+                  events: events[0]!.count,
                 }
               }, Effect.orDie),
               seed: Effect.fnUntraced(function* (ref, state, version) {

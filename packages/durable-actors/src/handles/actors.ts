@@ -1,5 +1,6 @@
 import { Context, Effect, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
+import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 
@@ -26,7 +27,27 @@ export interface BusinessResult {
   readonly state: ReadonlyArray<readonly [string, string]>
   /** `state` lists every stored key; the turn deletes any other stored key. */
   readonly complete: boolean
+  /** Encoded events in emit order, appended with the commit. */
+  readonly events: ReadonlyArray<EmittedEvent>
 }
+
+export interface EmittedEvent {
+  readonly tag: string
+  readonly value: string
+}
+
+export interface StoredEvent {
+  readonly cursor: string
+  readonly commandId: string
+  readonly value: string
+  readonly timestampMs: number
+}
+
+/** Reads one actor's committed events of one tag after an exclusive cursor. */
+export type EventReader = (
+  tag: string,
+  after: string | undefined,
+) => Effect.Effect<ReadonlyArray<StoredEvent>, UnknownCursor | RetentionGap>
 
 export interface RegisteredCommand {
   readonly internal: boolean
@@ -41,6 +62,7 @@ export interface RegisteredQuery {
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
+    events: EventReader,
   ) => Effect.Effect<Outcome>
 }
 

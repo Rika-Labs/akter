@@ -3,12 +3,14 @@ import { Definition } from "./actor/definition.ts"
 import { CurrentCommandId } from "./identity/command.ts"
 import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
+import { Event } from "./members/event.ts"
 import { ActorStates } from "./state/migration.ts"
 
 export const Actor = {
   make: Definition.make,
   command: Command.make,
   query: Query.make,
+  Event: Event.make,
   state: ActorStates.make,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
@@ -53,6 +55,8 @@ export {
   MailboxFull,
 } from "./errors/actor.ts"
 
-export type { CommandContext, QueryContext, Turn } from "./contexts/command.ts"
+export { RetentionGap, UnknownCursor } from "./errors/events.ts"
+
+export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/command.ts"
 
 export type { Handle } from "./actor/definition.ts"
