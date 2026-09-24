@@ -47,4 +47,4 @@ Unless a row exercises denial or expiry, external receipt replay assumes the ori
 | Optimistic reducer rejected by the server | The browser handle removes the pending input and shows committed state. |
 Run applicable rows on PGlite, Postgres, Neki, the in-process multi-runner harness, and the served HTTP harness. Real Postgres is mandatory for lock-contention rows.
 
-These are required tests, not recorded passing results. Each implementation must attach evidence and an operator signal/remediation path for the failures it claims to recover from.
+These are required tests, not recorded passing results. The rows "Intent turn rolls back", "Relay crash after sender COMMIT", and "Relay crash after receiver commit / before outbox row deletion" have single-runner, same-shard evidence from M1.6, listed in the [conformance ledger](01-conformance.md#outbox-intents-and-timers-m16), including real SIGKILL cases on Postgres. Each implementation must attach evidence and an operator signal/remediation path for the failures it claims to recover from.
