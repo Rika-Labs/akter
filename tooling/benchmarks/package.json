@@ -1,0 +1,21 @@
+{
+  "name": "@durable-actors/benchmarks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "bun src/main.ts",
+    "compare": "bun src/compare.ts",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/benchmarks/src"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@electric-sql/pglite": "0.5.8",
+    "durable-actors": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
+  }
+}
