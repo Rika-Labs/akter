@@ -75,18 +75,18 @@ export const Counter = Actor.make("Counter", {
 })
 ```
 
-| Section     | Content                                                                                                                                                                                                                                                     |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `key`       | id schema (named, `X.get(id)`), `Actor.singleton` (`X.get()`), or omitted (minted, `X.create()`)                                                                                                                                                            |
-| `placement` | `"tenant"` (default) or `"actor"`; a parent actor definition is target                                                                                                                                                                                      |
-| `state`     | one `Actor.state(fields, { migrations })`; missing keys decode from defaults                                                                                                                                                                                |
-| `tables`    | `Actor.table` Drizzle tables with framework ownership columns                                                                                                                                                                                               |
-| `blobs`     | `Actor.blob` database-backed `bytea` chunks                                                                                                                                                                                                                 |
-| `events`    | `Actor.Event` classes                                                                                                                                                                                                                                       |
-| `effects`   | `Actor.effect` classes, executed after commit                                                                                                                                                                                                               |
-| `api`       | public commands, reducers, queries, streams, connections, and workflows; each key equals its member's tag                                                                                                                                                   |
-| `internal`  | commands callable only by System callers: outbox intents, effect routes, and cron                                                                                                                                                                           |
-| `policy`    | `hibernateAfter`, `commandTimeout`, `lockWait`, `deliveryTimeout`, `maxStateBytes`, `mailboxCapacity`, `createdBy`, `keepReceipts`, `keepEvents`, `effects` (per-effect `retry`, `onSuccess`, `onDeadLetter`), `connections`, `cron`, `cronSkipIfOlderThan` |
+| Section     | Content                                                                                                                                                                                                                                                                                 |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | id schema (named, `X.get(id)`), `Actor.singleton` (`X.get()`), or omitted (minted, `X.create()`)                                                                                                                                                                                        |
+| `placement` | `"tenant"` (default) or `"actor"`; a parent actor definition is target                                                                                                                                                                                                                  |
+| `state`     | one `Actor.state(fields, { migrations })`; missing keys decode from defaults                                                                                                                                                                                                            |
+| `tables`    | `Actor.table` Drizzle tables with framework ownership columns                                                                                                                                                                                                                           |
+| `blobs`     | `Actor.blob` database-backed `bytea` chunks                                                                                                                                                                                                                                             |
+| `events`    | `Actor.Event` classes                                                                                                                                                                                                                                                                   |
+| `effects`   | `Actor.effect` classes, executed after commit                                                                                                                                                                                                                                           |
+| `api`       | public commands, reducers, queries, streams, connections, and workflows; each key equals its member's tag                                                                                                                                                                               |
+| `internal`  | commands callable only by System callers: outbox intents, effect routes, and cron                                                                                                                                                                                                       |
+| `policy`    | `hibernateAfter`, `commandTimeout`, `lockWait`, `deliveryTimeout`, `maxStateBytes`, `mailboxCapacity`, `createdBy`, `keepReceipts`, `keepEvents`, `effects` (per-effect `retry`, `onSuccess`, `onDeadLetter`), `connections`, `cron`, `cronSkipIfOlderThan`, `keepWorkflows` (proposed) |
 
 Members:
 
@@ -142,6 +142,28 @@ yield * Intent.cancel("idle")
 Outside a turn, every call is request/reply and direct: the command runs in its owner's turn, and the committed receipt is its only durable admission record ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)). The handle retries retryable failures with the same command id. Work that must survive a caller crash is an intent written by a turn, or a workflow.
 
 Inside a turn, `X.intents(id)` returns the same method shape as durable intents. They are committed with the turn, delivered after commit, and deduplicated by the receiver's receipt. Self-intents use `X.intents(turn.id)`. Calling `X.get` inside a turn is a type error, and a captured handle dies at runtime. Workflows start as `later.Ship(input)` inside a turn and `counter.Ship(input)` outside; outside calls return a `WorkflowRun`.
+
+Proposed in [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) (pending acceptance):
+
+```ts
+export const Ship = Actor.workflow("Ship", {
+  payload: { orderId: OrderId, address: Address },
+  success: Label,
+  error: ShippingFailed,
+  key: ({ orderId }) => orderId, // optional; defaults to the start's command id
+  steps: ["label", "cool-off", "Paid", "fraud-v2"], // every activity, clock, and wait name
+  versions: { "fraud-check": { current: 2, min: 1 } },
+})
+
+const executionId = yield * later.Ship(input) // in a turn: the execution id
+const run = yield * order.Ship(input) // outside: WorkflowRun<Label, ShippingFailed>
+yield * run.poll // Option<Workflow.Result>
+yield * run.result // waits for completion
+yield * run.interrupt // idempotent, receipted
+const same = yield * Order.run(Ship, executionId) // reattach from a stored id
+```
+
+A workflow intent returns the execution id (`Effect<string, never, Actor.InTurn>`), unlike other intents, which return `void`. `policy.keepWorkflows` (default `"7 days"`) keeps finished results for `poll`.
 
 Caller and tenant are ambient: the edge sets them per request, `ActorTest.layer` per test, and `Actor.as(caller)` and `Actor.tenant(tenant)` around an Effect. `get` takes no options. `Actor.commandId(id)` supplies an explicit command id. Acquiring a handle writes nothing; the first turn creates durable rows.
 
