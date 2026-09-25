@@ -74,7 +74,7 @@ WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
 RETURNING o.*, (SELECT count(*) FROM candidates) AS candidate_count
 ```
 
-- **Index use.** The candidate scan is M1's per-bucket probe, on the index `actor_outbox_due_kind (bucket, kind, due_at_ms)` that `0010_relay` creates in place of `(bucket, due_at_ms)`, so intent scans never read effect rows and effect scans never read intents. Scan cost still follows due rows of the scanned kind, not stored actors. Only up to `$limit` rows are locked, and each is updated once. The `$candidates` oversample (default `2 × $limit`) keeps a runner that loses a race for the earliest rows from ending its claim empty. The relay claims again as soon as a slot frees while `candidate_count` came back equal to `$candidates`; otherwise it waits for a wake or the poll.
+- **Index use.** The candidate scan is M1's per-bucket probe, on the index `actor_outbox_due_kind (bucket, kind, due_at_ms)` that `0011_relay` creates in place of `(bucket, due_at_ms)`, so intent scans never read effect rows and effect scans never read intents. Scan cost still follows due rows of the scanned kind, not stored actors. Only up to `$limit` rows are locked, and each is updated once. The `$candidates` oversample (default `2 × $limit`) keeps a runner that loses a race for the earliest rows from ending its claim empty. The relay claims again as soon as a slot frees while `candidate_count` came back equal to `$candidates`; otherwise it waits for a wake or the poll.
 - **Settling.** A delivered intent is deleted after the receiver's receipt commits, as in M1. A failed delivery (receiver defect, `ActorUnavailable`, timeout) sets `due_at_ms = now + backoff(attempts)`. A crash, or a settle that dies, leaves the claim in place until the lease ends. Every settling write names the row and the lease it holds (`due_at_ms = $claimedUntil` for intents, `attempts = $n` for effects), so a runner whose lease has already passed to another runner changes nothing.
 - **`attempts` counts claims.** It is written before the delivery starts, the same rule effects already follow. A receiver defect still leaves `attempts = 1` after the first delivery, as the M1.6 case `keeps an intent whose receiver defects and retries it with backoff` expects. **Behaviour change (API docs, operators):** `attempts` now also counts claims whose lease expired and rows released at shutdown, so the operator signal the API docs name, and M4.3's `attempts ≥ 8` gauge, count claims rather than failed deliveries.
 - **Claim lease.** The default is the largest `commandTimeout + lockWait` among the actor types registered on the runner, plus 5 seconds (37 s with default policies). That bounds the receiver's turn transaction; `deliveryTimeout` does not, because it only stops the caller waiting and the admitted turn may commit later. Runners that register different actor types may compute different leases. Neither case is unsafe: a lease that ends mid-delivery costs one duplicate delivery, which the receipt deduplicates, and the late runner's settle then changes nothing.
@@ -82,10 +82,10 @@ RETURNING o.*, (SELECT count(*) FROM candidates) AS candidate_count
 - **Order.** Intents have no delivery order today, and they still have none.
 - **Neki.** One claim statement covers every bucket on Postgres and PGlite. On Neki the relay sends one claim per bucket range that maps to one shard, so each statement stays single-shard under `__neki.fanout = 'single'` ([ADR 0006](0006-scale-rules-placement-and-query-tiers.md)). M5.1 verifies this. M1's scan has the same requirement.
 
-**Migration `0010_relay` is used**, for one column and one index:
+**Migration `0011_relay` is used**, for one column and one index:
 
 ```sql
-ALTER TABLE actor_outbox ADD COLUMN scheduled_at_ms bigint;  -- null on rows written before 0010
+ALTER TABLE actor_outbox ADD COLUMN scheduled_at_ms bigint;  -- null on rows written before 0011
 CREATE INDEX actor_outbox_due_kind ON actor_outbox (bucket, kind, due_at_ms);
 DROP INDEX actor_outbox_due;
 ```
@@ -245,7 +245,7 @@ Rules this gives:
 
 - **Stopping.** Per-actor cron runs for as long as the actor's type declares it; an application can't stop one actor's schedule, and the framework has no actor deletion yet. An actor that should go quiet checks its state in the tick handler and returns. Cron rows therefore grow with the number of actors of a cron type ever activated, one row per entry, and cost scans only when due. This is an accepted cost; revisit when actor deletion or archival exists, which must delete the actor's `$cron:` rows in its transaction.
 
-**Migration `0012_cron` is not used.** Cron needs only the reserved key, the existing unique index, and `0010_relay`'s `scheduled_at_ms`.
+**Cron needs no migration** (the reservation `0012_cron` is dropped). Cron needs only the reserved key, the existing unique index, and `0011_relay`'s `scheduled_at_ms`.
 
 **Behaviour change (contract 09, dispatch docs).** Cron is no longer a responsibility a runner holds and hands over. The tick is an outbox row that any surviving runner's relay claims. Its delivery is a command to the singleton, so it runs once the singleton is resident again, through ordinary singleton failover. Residency and the `Effect.forkScoped` loop still move to exactly one survivor.
 
@@ -341,7 +341,7 @@ In this change:
 
 ## Required evidence
 
-### M2.4 (multi-runner relay, `conformance/relay.ts`, migration `0010_relay`)
+### M2.4 (multi-runner relay, `conformance/relay.ts`, migration `0011_relay`)
 
 Cases on the M2.1 harness against real Postgres, with at least two runners unless stated:
 
