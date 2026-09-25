@@ -1,7 +1,7 @@
 import { Effect } from "effect"
-import { load } from "../measure.ts"
-import { Archive } from "../probe/archive.ts"
-import { type CaseResult, measure, type Scenario } from "../scenario.ts"
+import { load } from "../../measure.ts"
+import { Archive } from "../../probe/archive.ts"
+import { type CaseResult, measure, type Scenario } from "../../scenario.ts"
 
 const KIB = 1024
 
