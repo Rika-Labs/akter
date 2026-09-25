@@ -1,3 +1,4 @@
+import type { Duplex } from "node:stream"
 import type { PgliteClient } from "@effect/sql-pglite"
 import {
   Context,
@@ -28,7 +29,8 @@ import {
 } from "../actor/definition.ts"
 import type { ActorError } from "../errors/actor.ts"
 import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
-import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
+import { Database, makeLayer, type Options, type RunnerWiring } from "../runtime/layer.ts"
+import { type ClusterOptions, clusterLayer } from "./cluster.ts"
 import { compress, decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
 import { VERSION_KEY } from "../state/migration.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
@@ -112,23 +114,47 @@ export class ActorTest extends Context.Service<
     ) => Effect.Effect<void>
   }
 >()("durable-actors/testing/actor-test/ActorTest") {
-  static readonly layer = (options: {
-    /**
-     * Postgres connection string or a PGlite client config. Omitted, a fresh
-     * in-memory PGlite database is created per layer build; `dataDir` retains
-     * a database across builds. PGlite is single-process and supplies no
-     * independent-connection behavior.
-     */
-    readonly database?: Redacted.Redacted<string> | PgliteClient.PgliteClientConfig
-    readonly as?: Caller
-    readonly authorize?: Options["authorize"]
-    readonly retryWindowMs?: number
-    readonly maxResidentActors?: number
-  }) =>
+  static readonly layer = (options: TestOptions) => testLayer(options)
+
+  /**
+   * Runs `runners` runtimes in this process against one Postgres database,
+   * each a distinct Cluster runner with its own address, connection pool, and
+   * expiring shard locks. Provides `ActorCluster`; see its controls.
+   */
+  static readonly cluster = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>) =>
+    clusterLayer(options)
+}
+
+export interface TestOptions {
+  /**
+   * Postgres connection string or a PGlite client config. Omitted, a fresh
+   * in-memory PGlite database is created per layer build; `dataDir` retains
+   * a database across builds. PGlite is single-process and supplies no
+   * independent-connection behavior.
+   */
+  readonly database?: Redacted.Redacted<string> | PgliteClient.PgliteClientConfig
+  readonly as?: Caller
+  readonly authorize?: Options["authorize"]
+  readonly retryWindowMs?: number
+  readonly maxResidentActors?: number
+}
+
+/**
+ * A cluster runner shares its cluster's tenant, joins it through `wiring`,
+ * and opens its database connections through `connect`, so killing it can
+ * cut them.
+ */
+export interface ClusterMember {
+  readonly tenant: string
+  readonly wiring: RunnerWiring
+  readonly connect: () => Duplex
+}
+
+export const testLayer = (options: TestOptions, member?: ClusterMember) =>
     Layer.unwrap(
       Effect.gen(function* () {
         const crypto = yield* Crypto.Crypto
-        const tenant = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+        const tenant = member?.tenant ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie))
         const faults = new Map<TurnPoint, Array<Effect.Effect<void>>>()
 
         let clockOffset = 0
@@ -343,11 +369,14 @@ export class ActorTest extends Context.Service<
           }),
         )
 
-        const runtime = runtimeLayer({
-          authorize: options.authorize ?? (() => Effect.succeed(true)),
-          retryWindowMs: options.retryWindowMs,
-          maxResidentActors: options.maxResidentActors,
-        })
+        const runtime = makeLayer(
+          {
+            authorize: options.authorize ?? (() => Effect.succeed(true)),
+            retryWindowMs: options.retryWindowMs,
+            maxResidentActors: options.maxResidentActors,
+          },
+          member?.wiring,
+        )
 
         return Layer.mergeAll(
           runtime,
@@ -358,10 +387,13 @@ export class ActorTest extends Context.Service<
           Layer.provide(hooks),
           Layer.provideMerge(
             options.database !== undefined && Redacted.isRedacted(options.database)
-              ? Database.postgres({ url: options.database, maxConnections: 10 })
+              ? Database.postgres({
+                  url: options.database,
+                  maxConnections: 10,
+                  stream: member?.connect,
+                })
               : Database.pglite(options.database),
           ),
         )
       }),
     )
-}

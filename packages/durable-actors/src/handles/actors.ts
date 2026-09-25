@@ -152,6 +152,8 @@ export class InternalActors extends Context.Service<
      * Writable access requires the turn transaction and never opens its own.
      */
     readonly tables: (scope: TableScope, write: boolean) => Effect.Effect<TableAccess>
+    /** The Cluster shard that places `ref`'s activation, as stored in runner shard locks. */
+    readonly shardId: (ref: ActorRef) => Effect.Effect<string>
   }
 >()("durable-actors/handles/actors/InternalActors") {}
 
