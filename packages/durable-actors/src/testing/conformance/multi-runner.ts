@@ -1,11 +1,11 @@
 import { Effect, Fiber, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, User } from "../../index.ts"
+import { Actor, Actors, User } from "../../index.ts"
 import { InternalActors } from "../../handles/actors.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import type { ConformanceCase, ConformanceEnvironment, ConformanceExpect } from "../conformance.ts"
 
 class Tallied extends Actor.Event<Tallied>()("Tallied", { amount: Schema.Finite }) {}
 
@@ -129,6 +129,84 @@ const lockOf = (runner: number, ref: ActorRef) =>
     )
   })
 
+/**
+ * Kills an actor's owner while a command from another runner is paused at
+ * `point` on it, then checks that no survivor took the shard before the dead
+ * runner's lock expired and that the caller's in-flight command, under its
+ * original id, committed exactly once.
+ */
+const killDuringTurn = (expect: ConformanceExpect, point: "beforeCommit" | "afterCommit") =>
+  Effect.gen(function* () {
+    const cluster = yield* ActorCluster
+    const id = `killed-${point}`
+    const ref = yield* refOf(id)
+    const owner = (yield* cluster.owner(ref))!
+    const caller = (owner + 1) % 3
+    expect(yield* add(caller, id, 1)).toBe(1)
+
+    const commandId = yield* cluster.on(caller)(
+      Effect.gen(function* () {
+        return yield* (yield* Actors).mintCommandId
+      }),
+    )
+
+    const pause = yield* cluster.on(owner)(ActorTest.use((test) => test.pauseNext(point)))
+
+    const retried = yield* cluster
+      .on(caller)(
+        Tally.get(id).pipe(
+          Effect.flatMap((tally) => tally.Add(2).pipe(Actor.commandId(commandId))),
+        ),
+      )
+      .pipe(Effect.forkChild)
+
+    yield* pause.reached
+    const killed = (yield* lockOf(caller, ref)).now
+    yield* cluster.kill(owner)
+    // Read after the kill, the row holds the dead runner's last refresh.
+    const held = yield* lockOf(caller, ref)
+    yield* pause.release
+
+    // Runner loss before COMMIT leaves no consequence; after COMMIT, the turn stands.
+    expect(yield* inspect(caller, ref)).toMatchObject(
+      point === "beforeCommit"
+        ? { state: { count: 1 }, receipts: 1, events: 1 }
+        : { state: { count: 3 }, receipts: 2, events: 2 },
+    )
+
+    // Polled well inside the refresh interval, the first row under a new
+    // address still carries the survivor's acquisition time.
+    const taken = yield* lockOf(caller, ref).pipe(
+      Effect.repeat({
+        schedule: Schedule.spaced("10 millis"),
+        until: (lock) => lock.address !== held.address,
+      }),
+      Effect.timeoutOrElse({
+        duration: "30 seconds",
+        orElse: () => Effect.die(new Error("No survivor took the dead runner's shard")),
+      }),
+    )
+
+    const next = (yield* cluster.owner(ref))!
+    expect(next === owner).toBe(false)
+    // No survivor takes the shard while the dead runner's lock is live.
+    expect(taken.acquired - held.acquired >= EXPIRATION_SECONDS * 1000).toBe(true)
+
+    expect(yield* Fiber.join(retried)).toBe(3)
+    const resumed = (yield* lockOf(next, ref)).now
+    expect(resumed >= taken.acquired && taken.acquired >= killed).toBe(true)
+
+    expect(yield* inspect(next, ref)).toMatchObject({
+      state: { count: 3 },
+      receipts: 2,
+      events: 2,
+    })
+    const log = yield* cluster.on(next)(Tally.get(id).pipe(Effect.flatMap((tally) => tally.Log())))
+    expect(log.map((entry) => entry.commandId).filter((entry) => entry === commandId).length).toBe(
+      1,
+    )
+  })
+
 export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "places each actor on exactly one of three runners, reachable through every runner",
@@ -144,7 +222,12 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           const owners = new Set<number>()
 
           for (const id of ids) {
-            for (let runner = 0; runner < 3; runner++) yield* add(runner, id, 1)
+            yield* add(0, id, 1)
+            const activated = (yield* inspect(0, yield* refOf(id))).generation
+
+            for (let runner = 1; runner < 3; runner++) yield* add(runner, id, 1)
+            // One activation served all three calls, so the others crossed to it.
+            expect((yield* inspect(0, yield* refOf(id))).generation).toBe(activated)
 
             const owner = yield* cluster.owner(yield* refOf(id))
             expect(owner === undefined).toBe(false)
@@ -167,63 +250,14 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
-      withCluster(
-        environment,
-        3,
-        Effect.gen(function* () {
-          const cluster = yield* ActorCluster
-          const ref = yield* refOf("paused")
-          const owner = (yield* cluster.owner(ref))!
-          const caller = (owner + 1) % 3
-          expect(yield* add(caller, "paused", 1)).toBe(1)
-
-          const pause = yield* cluster.on(owner)(
-            ActorTest.use((test) => test.pauseNext("beforeCommit")),
-          )
-
-          const retried = yield* add(caller, "paused", 2).pipe(Effect.forkChild)
-          yield* pause.reached
-
-          const held = yield* lockOf(caller, ref)
-          const killed = (yield* lockOf(caller, ref)).now
-          yield* cluster.kill(owner)
-          yield* pause.release
-
-          // Runner loss before COMMIT leaves no receipt, state, or event.
-          expect(yield* inspect(caller, ref)).toMatchObject({
-            state: { count: 1 },
-            receipts: 1,
-            events: 1,
-          })
-
-          // Polled well inside the refresh interval, the first row under a new
-          // address still carries the survivor's acquisition time.
-          const taken = yield* lockOf(caller, ref).pipe(
-            Effect.repeat({
-              schedule: Schedule.spaced("10 millis"),
-              until: (lock) => lock.address !== held.address,
-            }),
-          )
-
-          const next = (yield* cluster.owner(ref))!
-          expect(next === owner).toBe(false)
-          // No survivor takes the shard while the dead runner's lock is live.
-          expect(taken.acquired - held.acquired >= EXPIRATION_SECONDS * 1000).toBe(true)
-
-          expect(yield* Fiber.join(retried)).toBe(3)
-          const resumed = (yield* lockOf(next, ref)).now
-          expect(resumed >= taken.acquired && taken.acquired >= killed).toBe(true)
-
-          expect(yield* inspect(next, ref)).toMatchObject({
-            state: { count: 3 },
-            receipts: 2,
-            events: 2,
-          })
-          expect(
-            yield* cluster.on(next)(ActorTest.use((test) => test.receiptsFor(ref, "Add"))),
-          ).toBe(2)
-        }),
-      ),
+      withCluster(environment, 3, killDuringTurn(expect, "beforeCommit")),
+  },
+  {
+    name: "replays a killed runner's committed turn on the next owner instead of running it again",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withCluster(environment, 3, killDuringTurn(expect, "afterCommit")),
   },
   {
     name: "fails a stale activation's fence once another runner commits for the actor, then reloads",

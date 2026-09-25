@@ -89,10 +89,10 @@ export const multiRunner: Scenario = {
             while (
               (yield* cluster.owner((yield* cluster.on(1)(Probe.get(`a-${victim}`))).ref)) !== 0
             )
-              victim += 1
+              if (++victim === ACTORS) return yield* Effect.die(new Error("Runner 0 owns no actor"))
             const ref = (yield* cluster.on(1)(Probe.get(`a-${victim}`))).ref
 
-            // Callers use the survivors only; a caller on the killed runner dies with it.
+            // Callers use the survivors only: calls through the killed runner would just fail.
             const survivors = (index: number) =>
               add(1 + (index % 2), Math.floor(index / 2) % ACTORS)
 

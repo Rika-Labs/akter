@@ -56,7 +56,9 @@ export class ActorCluster extends Context.Service<
     readonly runners: number
     /**
      * Runs `effect` on `runner`: its handles dispatch through that runner, and
-     * its `ActorTest` fault points and inspection belong to that runner.
+     * its `ActorTest` fault points and inspection belong to that runner. An
+     * effect already running when its runner is killed is not interrupted; its
+     * calls fail or time out, so call through a surviving runner.
      */
     readonly on: (
       runner: number,
@@ -78,7 +80,10 @@ export class ActorCluster extends Context.Service<
     readonly pauseHeartbeat: (
       runner: number,
     ) => Effect.Effect<{ readonly resume: Effect.Effect<void> }>
-    /** The runner holding an unexpired lock on the shard that places `ref`. */
+    /**
+     * The runner holding an unexpired lock on the shard that places `ref`.
+     * While a runner's heartbeat is paused, it may still serve the actor too.
+     */
     readonly owner: (ref: ActorRef) => Effect.Effect<number | undefined>
     /** Waits until every running runner holds exactly the shards assigned to it. */
     readonly ready: Effect.Effect<void>
@@ -228,6 +233,9 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         SqlClient.SqlClient,
       )
 
+      // Runner rows carry the cluster's tenant, so rows another cluster left
+      // in the same database are never mistaken for this cluster's.
+      const host = `runner-${tenant}`
       let incarnation = 0
       const runners: Array<Runner> = []
       const addresses = new Map<string, number>()
@@ -308,7 +316,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
 
       const start = Effect.fnUntraced(function* (runner: Runner) {
         incarnation += 1
-        runner.address = RunnerAddress.RunnerAddress.make({ host: "runner", port: incarnation })
+        runner.address = RunnerAddress.RunnerAddress.make({ host, port: incarnation })
         runner.heartbeat = "running"
         runner.runners = undefined
         runner.sockets = new Set()
@@ -384,7 +392,8 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
 
       const locks = sql<{ shard_id: string; address: string }>`
         SELECT shard_id, address FROM cluster_locks
-        WHERE acquired_at >= NOW() - ${`${expirationSeconds} seconds`}::interval`.pipe(Effect.orDie)
+        WHERE acquired_at >= NOW() - ${`${expirationSeconds} seconds`}::interval
+          AND address LIKE ${`${host}:%`}`.pipe(Effect.orDie)
 
       const ready = Effect.gen(function* () {
         const serving = runners.filter((runner) => runner.heartbeat === "running")
@@ -410,6 +419,11 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
       yield* Effect.addFinalizer(() =>
         Effect.forEach(runners, stop, { discard: true }).pipe(
           Effect.andThen(Fiber.awaitAll(stopping)),
+          // Well past the entity termination timeout a killed runner winds down in.
+          Effect.timeoutOrElse({
+            duration: "15 seconds",
+            orElse: () => Effect.die(new Error("Killed cluster runners did not wind down")),
+          }),
         ),
       )
 
@@ -443,11 +457,14 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
             Effect.flatMap((runner) =>
               runner.heartbeat === "running"
                 ? Effect.sync(() => {
+                    const paused = runner.address
                     runner.heartbeat = "paused"
 
+                    // A handle outlives a restart; it resumes only the pause it made.
                     return {
                       resume: Effect.sync(() => {
-                        if (runner.heartbeat === "paused") runner.heartbeat = "running"
+                        if (runner.heartbeat === "paused" && runner.address === paused)
+                          runner.heartbeat = "running"
                       }),
                     }
                   })
