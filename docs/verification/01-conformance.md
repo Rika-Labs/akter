@@ -11,6 +11,8 @@
 
 The shared harness now exists: `conformance` is the named case list and `describeConformance` registers it against a `ConformanceBackend` through an injected registrar, so no test framework is imported by the suite itself. Backends that cannot open a second SQL connection set `independentConnections: false` and report those cases through `registrar.skip` — by name, never silently. PGlite runs [`pglite.test.ts`](../../packages/durable-actors/src/runtime/database/pglite.test.ts); Postgres runs [`conformance.test.ts`](../../packages/durable-actors/src/testing/conformance.test.ts) and the SIGKILL suite [`crash/main.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/main.test.ts).
 
+**Executed 2026-09-24 (M1.3 state migrations, `main` at `76ac433`):** Bun 1.3.14, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run --filter durable-actors test` passed 49 tests: 36 shared PGlite cases, five PGlite backend-specific cases (three lifecycle/migration, one creation-policy adoption, one placement adoption), six declaration tests, and two identity tests; six independent-connection cases were explicitly skipped. `bun run --filter durable-actors test:integration` passed 45 Postgres tests: 42 named conformance cases, migration rollback, and two real SIGKILL recoveries. The runnable counter example's Postgres test passed. Local results do not substitute for the CI evidence artifact of the pushed revision.
+
 **Executed 2026-09-24 (M1.5 events, branch `feat/13-events` on `main` at `76ac433`):** Bun 1.3.14, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 54 tasks. `bun run --filter durable-actors test` passed 58 tests: 44 shared PGlite cases, five PGlite backend-specific cases (three lifecycle/migration, one creation-policy adoption, one placement adoption), seven declaration tests, and two identity tests; eight independent-connection cases were explicitly skipped. `bun run --filter durable-actors test:integration` passed 55 Postgres tests: 52 named conformance cases, migration rollback, and two real SIGKILL recoveries. The runnable counter example's Postgres test passed. Local results do not substitute for the CI evidence artifact of the pushed revision.
 
 ### Shared cases (PGlite and Postgres)
@@ -63,6 +65,23 @@ Event cases live in [`conformance/events.ts`](../../packages/durable-actors/src/
 - `bounds every replay in a query to the snapshot its state was read at`
 - `rejects unknown cursors and reports pruned history as an explicit retention gap` — prunes rows by hand, as retention will, since `keepEvents` arrives later
 
+### Reducer cases (M1.8)
+
+Registered from [`conformance/reducers.ts`](../../packages/durable-actors/src/testing/conformance/reducers.ts) into the shared list, so each runs on PGlite and on Postgres through `conformance.test.ts`. Crash cases use the in-process `ActorTest.crashNext` fault points, like the foundation's; the process-death suite in `conformance/crash/` still covers commands only.
+
+- `reducer commits changed state and one receipt, and replays without reducing again`
+- `reducer rejects changed input or another member under the same command id`
+- `failing reduce rolls back state and upcast writes and replays its declared error after conditions change`
+- `recovers reducer turns crashed beforeCommit and afterCommit with one transition each`
+- `recovers failing reducer turns crashed beforeCommit and afterCommit with one terminal receipt each`
+- `commutative reducer runs as one receipted turn per call and replies void`
+- `a throwing reduce or an invalid returned state is a defect with no receipt`
+- `reducer that mutates its state argument still commits the change`
+
+[`members/reducer.test.ts`](../../packages/durable-actors/src/members/reducer.test.ts) adds five declaration tests: the handle shape, no `toLayer` entry for a reducer, the reducer-state rule, the `commutative` rules, and the merge-law property `reduce(reduce(s, a), b) = reduce(s, combine(a, b))` over 1,000 generated inputs for a sample commutative reducer.
+
+**Executed 2026-09-25 (M1.8, branch `feat/16-server-reducers` on `main` at `76ac433`):** same toolchain as above. `bun run --filter durable-actors test` passed 62 tests with 6 skipped (the 49 above plus eight reducer cases on PGlite and five reducer declaration tests). `test:integration` passed 53 Postgres tests (the 45 above plus eight reducer cases).
+
 ### Postgres-only cases (independent connections)
 
 These require a real second connection and are reported skipped on PGlite:
@@ -76,18 +95,74 @@ These require a real second connection and are reported skipped on PGlite:
 - `hides a running turn's uncommitted events from replay`
 - `orders events gap-free when a rival activation races the owner for one actor` — a rival transaction on a second connection blocks on the owner's generation lock, takes authority, and appends through the runtime's append path; the owner must fail its fence and reacquire, and the 25 events keep sequences 1 to 25. The rival is a simulated activation: it has no handler or receipt, so this proves append ordering under real lock contention, not two runners
 
+### M1.4 owned tables
+
+The cases live in [`conformance/tables.ts`](../../packages/durable-actors/src/testing/conformance/tables.ts) and cover the **Automatic adapter scoping** requirement below for Drizzle on PGlite and Postgres, plus invariants A3, A4, S2, and T1 for owned rows. Shared (PGlite and Postgres):
+
+- `scopes owned rows by tenant and actor for every supported operation` — two tenants with equal actor ids and two actors in one tenant with equal business keys run interleaved `insert`, `upsert`, `update().where`, `delete().where`, `one`, `all` (order, limit, offset), and `count` without ownership fields (S2).
+- `keeps unique constraints per actor and rejects a duplicate key as a defect without a receipt`
+- `cannot write another actor's rows, even with an explicit actor_id` — ownership in values, filters, update sets, and upserts, `RAW` filters, SQL values, plain objects Drizzle would render as SQL (in filters and values), unknown columns, and undeclared tables each fail the turn; the attacker's earlier insert in the same turn is rolled back and no receipt is written (A4).
+- `rolls back every owned-row write with a declared failure and keeps its receipt` — insert, update, upsert, and delete in one turn, then a declared failure.
+- `retries a crash before commit to exactly one owned row` (T1)
+- `gives queries read-only rows and rejects escaped row capabilities` — escaped `rows` and `group` capabilities (A3)
+- `joins owned tables across the placement group and never beyond it` — inner and left joins across two actor types stay inside the tenant's group; a balanced `true or true` stays inside the group; seven smuggling attempts (a SQL-rendering `Date` in a row filter and in group, a non-enumerable `getSQL` in group `where` and selection, and getters that change a text chunk, a parameter, or an expression's chunks after validation) return no row outside the group; raw SQL, unbalanced parentheses, SQL-valued parameters, SQL look-alike objects, subqueries, right joins, locks, ownership columns, unowned tables, and `Actor.table` wrappers no actor type lists (such as one over `actor_receipts`) are rejected.
+
+Postgres only (independent connections):
+
+- `keeps uncommitted owned rows invisible to a second connection`
+- `commits equal business keys of two actors concurrently without blocking`
+- `rejects an owned-row capability used from another still-active turn`
+- `retries an owned-row write that times out on a real lock` — a table lock held on a second connection makes the row insert hit `lock_timeout`; the turn retries as a retryable SQL defect and commits one row.
+
+Declarations and startup, in [`owned.test.ts`](../../packages/durable-actors/src/tables/owned.test.ts) and `pglite.test.ts`: `generates ownership-prefixed keys, uniques, and indexes through drizzle-kit` (drizzle-kit's DDL equals the fixture DDL), `prefixes a composite primary key and keeps business types free of ownership`, `keeps NULLS NOT DISTINCT on a column unique and rejects non-btree indexes`, `rejects tables that cannot be owned`, `gives one actor type a table and types rows by the declared tables`, and `refuses to start without a correctly keyed table or under a second owner`. Postgres SIGKILL, in [`crash/rows.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/rows.test.ts): `leaves no owned row after SIGKILL beforeCommit and retries to exactly one` and `leaves one owned row after SIGKILL afterCommit and retries to exactly one`, inspected through a separate pool.
+
+**Executed 2026-09-24 (M1.4):** `bun run --filter durable-actors test` passed 62 tests with 10 independent-connection cases skipped on PGlite; `test:integration` on disposable Postgres 18 passed 58 tests (the shared and Postgres-only conformance cases, migration rollback, and four SIGKILL recoveries).
+
 ### Backend-specific cases
 
 - PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.
 - PGlite, in `pglite.test.ts`: `rolls back partial foundation DDL and safely reruns the migration` — a deliberate `actor_state` collision proves rollback without a recorded migration, then rerun succeeds.
 - PGlite, in `pglite.test.ts`: `does not treat a pre-policy successful command as creation after restart` — reuses a borrowed database across runtime builds and requires a successful creating command after adopting `Lifecycle.createdBy`.
+- PGlite, in `pglite.test.ts`: `refuses to start an actor type under a different placement than its stored rows` — the placement and encoding recorded in `actor_placements` fail a later build that changes them, instead of forking actors under a second `routing_key`.
 - Postgres, in `crash/main.test.ts`: `rolls back partial foundation DDL and safely reruns the migration`, plus `recovers SIGKILL beforeCommit by retrying the same command id in a new process` and `recovers SIGKILL afterCommit by retrying the same command id in a new process` — a child process is killed at a signaled barrier, durable rows are inspected with a separate pool (no receipt or event before commit, one of each after, and no `cluster_messages` table), and a fresh process retries the saved command id to exactly one receipt/state transition.
+
+### Outbox, intents, and timers (M1.6)
+
+The cases live in [`conformance/outbox.ts`](../../packages/durable-actors/src/testing/conformance/outbox.ts) and are registered with `describeConformance`, so the shared ones run under the same names on PGlite and Postgres.
+
+**Executed 2026-09-24 (M1.6 outbox, branch `feat/14-outbox` on `main` at `76ac433`):** Bun 1.3.14, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 54 tasks. `bun run --filter durable-actors test` passed 61 tests: 47 shared PGlite cases (eleven of them outbox cases), five PGlite backend-specific cases, seven declaration tests, and two identity tests; seven independent-connection cases were explicitly skipped. `bun run --filter durable-actors test:integration` passed 60 Postgres tests: 54 named conformance cases (twelve of them outbox cases), migration rollback, and five real SIGKILL recoveries. The runnable counter example's Postgres test passed. Local results do not substitute for the CI evidence artifact of the pushed revision.
+
+Shared (PGlite and Postgres):
+
+- `delivers a committed intent as a System command whose command id is the intent id` — the receiver records a `CommandId`-shaped id and `System({ source: "actor", ref: <sender>, onBehalfOf })`; one receipt, and the sender's row is deleted.
+- `never delivers intents from a declared failure or a rolled-back turn` — **Intent rollback** gate and invariant M1: a declared failure, a deterministic defect after staging, and a `beforeCommit` crash (the outbox `INSERT` is inside the rolled-back transaction) deliver nothing; the retried command delivers exactly once.
+- `delays timers until due, past the retry window and after caller revocation` — `Intent.after` and `Intent.at` stay pending until `test.advance` reaches them; delivery succeeds with `authorize` denying and one hour past the 60-second retry window, because delivery is trusted internal recovery.
+- `replaces a pending keyed timer and cancels it in the same transaction` — a second `Intent.key` replaces the first row; `Intent.cancel` deletes it on commit, and a declared failure keeps it.
+- `pushes back the idle timer and archives once across crashes after the receiver commits` — the plan's chat-room timer: each post replaces the keyed 24-hour timer; the timer's receiver turn crashes at `afterCommit` and the relay then dies at `beforeOutboxDelete`, and `receiptsFor` still reports one `IdleCheck` and one `Archive`.
+- `redelivers after a relay crash before outbox row deletion with one receiver transition` — the first delivery crashes at `beforeOutboxDelete` and the redelivery pauses there, which shows one receiver receipt, one handler run, and the row still pending after the crashed pass; redelivery replays the receipt and deletes the row. A second intent repeats the crash without the pause.
+- `rolls back a relay-delivered turn that crashes before commit and delivers it once` — invariant M3 for relay delivery: a `beforeCommit` crash in the receiver's turn rolls back its handler run, and the retried delivery commits one receipt and one state change.
+- `delivers a keyed timer once when it is cancelled after the relay picked it up` — pins the contract's firing-versus-pending rule: a cancel committed while the relay is paused at `beforeDelivery` finds no row, and the firing timer arrives exactly once.
+- `keeps an intent whose receiver defects and retries it with backoff` — a receiver defect leaves the row with `attempts = 1` and a later `due_at_ms`; the next due pass delivers it.
+- `rejects escaped intent capabilities without writing an outbox row` — an intent Effect captured in one turn and run in another, or run under a hand-built `Actor.InTurn`, dies with `Intent capability escaped its turn`.
+- `scans due work by bucket without reading sleeping actors' future timers` — **Due-work scans** check: `EXPLAIN (ANALYZE, BUFFERS)` of the relay's own scan uses only `actor_outbox_due`, returns no rows, and reads at most one extra block per bucket probe at 50,000 sleeping actors with future timers than at 5,000 (the recorded run read 512 buffers, two per probe, at both sizes).
+
+Postgres only (independent connections):
+
+- `keeps a staged intent invisible and undelivered until its turn commits` — while the sender is paused at `beforeCommit`, a relay pass on another connection sees no row and delivers nothing; after commit the intent is delivered.
+
+Postgres SIGKILL, in [`crash/relay.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/relay.test.ts): `recovers a SIGKILL beforeDelivery from actor_outbox with one receiver transition`, `recovers a SIGKILL beforeCommit from actor_outbox with one receiver transition` (the receiver's turn, so the rows also show M3), and `recovers a SIGKILL beforeOutboxDelete from actor_outbox with one receiver transition`. A child process commits the sender's turn and is killed when its relay's delivery reaches the barrier; a separate pool sees one sender receipt, one pending row, and zero receiver receipts (one for `beforeOutboxDelete`); a fresh process's relay delivers the original intent id, leaving one receiver receipt, the receiver's state applied once, and an empty outbox.
+
+The relay loop has its own PGlite tests in [`relay.test.ts`](../../packages/durable-actors/src/runtime/turn/relay.test.ts), with the poll interval on `TestClock` so only the backlog path can start a second pass: `runs the next pass at once after a full pass that settled every row` (300 due rows drain in back-to-back passes) and `waits for the poll instead of spinning when rows die before they settle` (with `beforeOutboxDelete` dying, one pass delivers 256 rows and the loop waits). Before the fix, the second case froze PGlite's event loop.
+
+The declaration test `offers intents only inside command turns and keeps request/reply out of them` is the **API shape** check for this slice: `X.intents` and `Intent.cancel` carry an `Actor.InTurn` requirement that only `X.toLayer` removes, so outside a command turn (or in `X.toQueryLayer`) they cannot run; a command handler that acquires a handle with `X.get` makes `X.toLayer` fail to compile with `Request/reply inside a turn: use X.intents(id)`.
+
+These cases cover the same-shard path on a single runner. Cross-shard and cross-region delivery, relay claims across multiple runners, and the simulation checks remain unverified until the M2 multi-runner harness and hosted placement exist.
 
 The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
 
 Run `bun run --filter durable-actors test` for declaration, identity, and the PGlite suite; run `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter durable-actors test:integration` and `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/counter test:integration` for Postgres and crash coverage. The role must create/drop temporary databases; tests never use application data. The existing CI `check:ci` task runs these and records the tested revision in `evidence/sha.txt`, logs in `evidence/check.log`, and the `evidence-<head-sha>` artifact. The PR links its actual current-revision run; this ledger is a map to tests, not a replacement for that artifact.
 
-This completes M0 evidence plus M1.5 events (invariant E1 on one runner; the multi-runner feed case waits for M2), not full backend certification. Unimplemented gates below remain required for their later milestones, including multi-runner ownership, singleton failover/run/cron, state migrations, cleanup/restore, bounded drain, and provider behavior.
+This completes M0 evidence plus M1.1–M1.3 (placement and `routing_key`, queries, and state migrations), M1.4 owned tables, M1.5 events (invariant E1 on one runner; the multi-runner feed case waits for M2), M1.6 outbox, intents, and timers on one runner, and M1.8 server reducers, not full backend certification. Unimplemented gates below remain required for their later milestones, including the remaining [M1](../milestones/M1.md) members, multi-runner ownership, singleton failover/run/cron, cleanup/restore, bounded drain, and provider behavior.
 
 ## Faithful test boundary
 
@@ -95,11 +170,11 @@ This completes M0 evidence plus M1.5 events (invariant E1 on one runner; the mul
 
 `ActorTest.layer({ database?, as?, authorize?, retryWindowMs? })` supplies the test environment; `runners`, `effects`, old-state seeding helpers, and executor controls remain target API. Each layer build owns a fresh tenant; tests use distinct actor IDs or explicitly reset that tenant. `database` defaults to a fresh in-memory PGlite instance, honors `dataDir` for disk persistence across builds, and accepts a `Redacted` Postgres URL. Bound actor inspection reads committed state without waking an activation. `test.actor(X, id?)` returns a `system` handle that drives every command — including internal ones — with a `System` caller inheriting the configured principal.
 
-Fault controls cover crash hooks, pause/release at `beforeDelivery`, `beforeHandler`, `beforeCommit`, and `afterCommit`, caller retry, stale generations, and Postgres lock contention. `TurnHooks` is a testing-only export; `TurnReport` remains planned. In-process multi-runner tests must simulate serialization and give each runner its own message-storage wrapper; they do not substitute for real multi-process Postgres fencing evidence. Effect `TestClock` can control eligible delays; the current harness uses real timers and real SQL locks.
+Fault controls cover crash hooks, pause/release at `beforeDelivery`, `beforeHandler`, `beforeCommit`, `afterCommit`, and the relay's `beforeOutboxDelete`, caller retry, stale generations, and Postgres lock contention. `TurnHooks` is a testing-only export; `TurnReport` remains planned. In-process multi-runner tests must simulate serialization and give each runner its own message-storage wrapper; they do not substitute for real multi-process Postgres fencing evidence. Effect `TestClock` can control eligible delays; the current harness uses real timers and real SQL locks. Outbox due times use the database clock plus an offset that only `test.advance(duration)` moves; `advance` then runs relay passes until nothing is due, and `test.now` reads that clock for `Intent.at`.
 
 ## Design verification gates
 
-The ledger records 17 gate rows below. The foundation evidence above exercises the crash-point, runtime-turn-boundary, and PGlite/PGlite-under-Bun subsets; it does not satisfy gates for members or backends that are not implemented. After [ADR 0013](../decisions/0013-m0-reconciliation.md), the crash-point evidence covers direct commands with caller retry. Other active gates remain **unverified**. The earlier Neki cross-shard alternative is retained for traceability. [ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md) replaces the Neki relay into `cluster_messages` with one actor-shard outbox on every backend and makes commands direct.
+The ledger records 17 gate rows below. The foundation evidence above exercises the crash-point, runtime-turn-boundary, and PGlite/PGlite-under-Bun subsets, and the M1.3 cases (`upcasts seeded old state through the migration chain and commits the current shape`, `rolls back unknown stored versions and failing upcasts as deterministic defects`, and the declaration test `rejects invalid state migration chains`) cover the **State migration chain** gate on PGlite and Postgres; it does not satisfy gates for members or backends that are not implemented. After [ADR 0013](../decisions/0013-m0-reconciliation.md), the crash-point evidence covers direct commands with caller retry. Other active gates remain **unverified**. The earlier Neki cross-shard alternative is retained for traceability. [ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md) replaces the Neki relay into `cluster_messages` with one actor-shard outbox on every backend and makes commands direct.
 
 | Gate                               | Required evidence                                                                                                                                                                                   |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -144,7 +219,7 @@ Evidence MUST record the revision, test name and command, backend/runtime versio
 - **Direct commands:** kill the owner before commit and assert no receipt or consequence; the handle's retry with the same id executes once against the new owner. Kill it after commit and assert receipt replay. Assert that no command message row is written and that a caller giving up and retrying the same id observes one outcome.
 - **Pipelined batches:** hold batch N's commit and assert batch N+1's replies, broadcasts, and outbox rows stay hidden. Fail batch N's commit and assert batch N+1's staged work is discarded and all uncommitted callers retry successfully.
 - **Outbox delivery:** deliver same-shard, cross-shard, and cross-region intents and keyed timers; crash before delivery, after receiver commit, and before row deletion; replace and cancel keyed timers. Each intent id produces one receiver transition.
-- **Reducers:** property-test `reduce(reduce(s, a), b) = reduce(s, combine(a, b))` for every commutative reducer; merged turns commit one receipt per original command id. A browser handle's optimistic state converges to committed state after success and failure receipts.
+- **Reducers:** property-test `reduce(reduce(s, a), b) = reduce(s, combine(a, b))` for every commutative reducer; merged turns commit one receipt per original command id. A browser handle's optimistic state converges to committed state after success and failure receipts. M1.8 covers server reducer turns and the merge-law property for a sample reducer (see [reducer cases](#reducer-cases-m18)); merged turns need the M2 multi-runner harness and browser convergence (C3) the M3 client, so the check stays unverified.
 - **Read-your-writes:** a query carrying a handle's last-seen commit version never returns older state from a replica or edge cache.
 - **API shape:** [`definition.test.ts`](../../packages/durable-actors/src/actor/definition.test.ts) rejects `turn.emit` outside `X.Turn`, `emit` on `X.Read`, and undeclared event classes in `emit` and `read.events`. The `research/v5` type spike rejects a mismatched `api` key, an unknown or non-zero-input cron target, `turn.emit` outside `X.Turn`, `X.intents` outside a turn, and `X.get` inside a turn.
 - **Simulation:** `ActorTest.simulate` with crash-before-commit, crash-after-commit, dropped replies, primary failover, relay crash, and clock skew keeps receipts and outbox delivery exactly once, and a failing seed reproduces.
@@ -159,5 +234,4 @@ Evidence MUST record the revision, test name and command, backend/runtime versio
 - **Inspection and export:** inspection respects caller/operator authority, redacts credentials, and produces a seed that can reproduce supported actor state without claiming historical rewind.
 - **Generated protocols:** OpenAPI, MCP, and language clients agree on schemas, public member names, errors, and command identity; internal members are absent.
 - **Scale-to-zero:** a cold runner recovers committed work, does not lose due work, reports wake/state-load latency, and does not claim parked-connection continuity without a gateway.
-- **Agent runtime:** model and sandbox effects reconcile unknown outcomes, budgets serialize under races, approvals resume after restart, and sandbox loss leaves committed actor facts intact.
 - **Generated applications:** builds are reproducible, tenant-scoped, rollbackable, and adversarially tested; generated code is not called isolated until a reviewed sandbox proves that property.

@@ -43,3 +43,24 @@ export const EventProbe = Actor.make("EventProbe", {
   events: [Ticked],
   api: { Emit, Replay },
 })
+
+export const Deliver = Actor.command("Deliver", { input: Schema.String })
+
+/** Receives relay-delivered intents; only System callers reach `Deliver`. */
+export const Sink = Actor.make("Sink", {
+  key: Schema.NonEmptyString,
+  api: {},
+  internal: { Deliver },
+})
+
+export const Send = Actor.command("Send", { input: Schema.String })
+
+export const SendAt = Actor.command("SendAt", {
+  input: Schema.Struct({ ids: Schema.Array(Schema.String), atMs: Schema.Int }),
+})
+
+/** Stages intents to `Sink` actors, one per id, keyed by the id's sink. */
+export const Sender = Actor.make("Sender", {
+  key: Schema.NonEmptyString,
+  api: { Send, SendAt },
+})

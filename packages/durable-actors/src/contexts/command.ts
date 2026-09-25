@@ -2,6 +2,7 @@ import { Context, type DateTime, Effect, Option } from "effect"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import type { ActorRef, Caller, Principal } from "../identity/caller.ts"
 import type { EventClass } from "../members/event.ts"
+import type { Group, AnyOwnedTable, ScopedRead, ScopedRows } from "../tables/owned.ts"
 
 export const InsideTurn = Context.Reference<symbol | undefined>("durable-actors/InsideTurn", {
   defaultValue: () => undefined,
@@ -20,7 +21,11 @@ export interface Turn<Name extends string> {
 }
 
 /** The writable context of one command turn, obtained with `yield* X.Turn`. */
-export interface CommandContext<State, Event extends EventClass = never> {
+export interface CommandContext<
+  State,
+  Event extends EventClass = never,
+  Tables extends AnyOwnedTable = AnyOwnedTable,
+> {
   readonly id: string
   readonly ref: ActorRef
   readonly caller: Caller
@@ -31,6 +36,10 @@ export interface CommandContext<State, Event extends EventClass = never> {
   }
   /** Appends a declared event that is stored, and replayable, only if this turn commits. */
   readonly emit: (event: Event["Type"]) => Effect.Effect<void>
+  /** This actor's rows of a declared table, bound to the turn transaction. */
+  readonly rows: <T extends Tables>(table: T) => ScopedRows<T>
+  /** Read-only joins across the actor's placement group, inside the turn transaction. */
+  readonly group: Group
 }
 
 /** One committed event and where it sits in its actor's stream. */
@@ -43,7 +52,11 @@ export interface EventEntry<E> {
 }
 
 /** The read-only context of one query, obtained with `yield* X.Read`. */
-export interface QueryContext<State, Event extends EventClass = never> {
+export interface QueryContext<
+  State,
+  Event extends EventClass = never,
+  Tables extends AnyOwnedTable = AnyOwnedTable,
+> {
   readonly id: string
   readonly ref: ActorRef
   readonly caller: Caller
@@ -65,4 +78,8 @@ export interface QueryContext<State, Event extends EventClass = never> {
     event: E,
     options?: { readonly after?: string | undefined },
   ) => Effect.Effect<ReadonlyArray<EventEntry<E["Type"]>>, UnknownCursor | RetentionGap>
+  /** This actor's committed rows of a declared table. */
+  readonly rows: <T extends Tables>(table: T) => ScopedRead<T>
+  /** Read-only joins across the actor's placement group. */
+  readonly group: Group
 }

@@ -1,4 +1,4 @@
-import { Context, DateTime, Effect, Layer, Schema, Scope, Semaphore } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Result, Schema, Scope, Semaphore } from "effect"
 import {
   type CommandContext,
   type EventEntry,
@@ -17,6 +17,7 @@ import {
   type EmittedEvent,
   Request,
 } from "../handles/actors.ts"
+import { currentStaging, emptyOutbox, InTurn, openOutbox, stage } from "../handles/intents.ts"
 import {
   ActorRef,
   Caller,
@@ -31,10 +32,13 @@ import type {
   AnyCommand,
   AnyMember,
   CommandRecord,
+  DeclaredError,
   MemberRecord,
   ValueSchema,
 } from "../members/command.ts"
+import type { AnyReducer } from "../members/reducer.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
+import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
 import {
   type ActorState,
   ActorStates,
@@ -115,6 +119,10 @@ type QueryKeys<Members extends MemberRecord> = {
   [K in keyof Members]: Members[K]["kind"] extends "query" ? K : never
 }[keyof Members]
 
+type ReducerKeys<Members extends MemberRecord> = {
+  [K in keyof Members]: Members[K]["kind"] extends "reducer" ? K : never
+}[keyof Members]
+
 /** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
 type QueryReason = "ActorUnavailable" | "Unauthorized"
 
@@ -128,6 +136,16 @@ type Reasons<
       | HandleReason
       | (BoundedMailbox extends true ? "MailboxFull" : never)
       | ([Creating] extends [never] ? never : M["tag"] extends Creating ? never : "NotCreated")
+
+/**
+ * Durable intents to one actor, staged in the current command turn and
+ * delivered after it commits. Every command, public or internal, is reachable.
+ */
+export type Intents<Members extends MemberRecord> = {
+  readonly [K in CommandKeys<Members>]: (
+    ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
+  ) => Effect.Effect<void, never, InTurn>
+} & { readonly ref: ActorRef }
 
 export type Handle<
   Members extends MemberRecord,
@@ -149,8 +167,22 @@ type HandlerMap<Members extends MemberRecord, Keys extends keyof Members, R> = {
   ) => Effect.Effect<Members[K]["output"]["Type"], Members[K]["errors"][number]["Type"], R>
 }
 
-/** One handler per command in `api` and `internal`. */
-export type Handlers<Members extends MemberRecord, R> = HandlerMap<Members, CommandKeys<Members>, R>
+/**
+ * Makes a command layer whose handlers need `Actors` unassignable: a handle
+ * acquired inside a turn could only make a request/reply call, which dies.
+ */
+type NoRequestReply<R> = [Extract<R, Actors>] extends [never]
+  ? unknown
+  : { readonly "Request/reply inside a turn: use X.intents(id)": never }
+
+/** One handler per command in `api` and `internal`; a reducer has no handler. */
+export type Handlers<Members extends MemberRecord, R> = HandlerMap<
+  Members,
+  CommandKeys<Members>,
+  R
+> & {
+  readonly [K in ReducerKeys<Members>]?: never
+}
 
 /** One handler per query in `api`. */
 export type QueryHandlers<Members extends MemberRecord, R> = HandlerMap<
@@ -164,12 +196,25 @@ type TagsMatch<Members extends MemberRecord> = {
   readonly [K in keyof Members]: Members[K] & { readonly tag: K }
 }
 
+/** A reducer transforms the actor's own state, so its declared state must be exactly that state. */
+type ReducerStates<Members extends MemberRecord, Fields extends StateFields> = {
+  readonly [K in keyof Members]: Members[K] extends {
+    readonly kind: "reducer"
+    readonly state: ActorState<infer ReducerFields>
+  }
+    ? [ReducerFields, Fields] extends [Fields, ReducerFields]
+      ? Members[K]
+      : { readonly state: "A reducer's state must be its actor's state" }
+    : Members[K]
+}
+
 interface Definition<
   Key,
   Fields extends StateFields,
   Api extends MemberRecord,
   Internal extends CommandRecord,
   Events extends ReadonlyArray<EventClass>,
+  Tables extends ReadonlyArray<AnyOwnedTable>,
 > {
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
@@ -177,7 +222,9 @@ interface Definition<
   readonly state?: ActorState<Fields>
   /** Event classes this actor may emit in a turn and replay in a query. */
   readonly events?: Events
-  readonly api: Api & TagsMatch<Api>
+  /** `Actor.table` tables whose rows this actor type owns. */
+  readonly tables?: Tables
+  readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>>
 }
@@ -190,9 +237,10 @@ const make = <
   const K extends Key = undefined,
   const P extends Policy<CommandsOf<Api> | Values<Internal>> = {},
   const Events extends ReadonlyArray<EventClass> = readonly [],
+  const T extends ReadonlyArray<AnyOwnedTable> = [],
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal, Events> & {
+  definition: Definition<K, Fields, Api, Internal, Events, T> & {
     readonly key?: K
     readonly policy?: P
   },
@@ -217,12 +265,34 @@ const make = <
   const all = [...Object.values(api), ...Object.values(internal)]
   const members = all.filter((member): member is AnyCommand => member.kind === "command")
   const queries = all.filter((member) => member.kind === "query")
+  const reducers = all.filter((member): member is AnyReducer => member.kind === "reducer")
   const internalMembers = new Set<AnyMember>(Object.values(internal))
   const fields: StateFields = definition.state?.fields ?? {}
   const policy = resolvePolicy({ declared: definition.policy, commands: members })
   const isSingleton = Schema.is(SingletonKeySchema)(definition.key)
 
   if ("set" in fields) throw new Error("State key 'set' is reserved")
+
+  for (const reducer of reducers)
+    if (reducer.state !== definition.state)
+      throw new Error(`Reducer ${reducer.tag} must declare its actor's state`)
+
+  const tables: ReadonlyArray<AnyOwnedTable> = definition.tables ?? []
+  const placement = definition.placement ?? "tenant"
+
+  // One actor type owns a table, so equal actor ids of two types never share rows.
+  for (const table of tables) {
+    const info = ownership(table)
+
+    if (info === undefined) throw new Error("tables takes Actor.table values")
+
+    if (tables.indexOf(table) !== tables.lastIndexOf(table))
+      throw new Error(`Table ${info.name} is listed twice`)
+
+    if (info.owner !== undefined && info.owner !== name)
+      throw new Error(`Table ${info.name} is already owned by actor ${info.owner}`)
+    info.owner = name
+  }
 
   const events = new Map<string, EventClass>()
 
@@ -270,6 +340,10 @@ const make = <
   const stateSchema = Schema.Struct(fields)
   const stateCodec = Schema.fromJsonString(Schema.toCodecJson(stateSchema))
 
+  const fieldEquivalences = Object.fromEntries(
+    Object.entries(fields).map(([key, field]) => [key, Schema.toEquivalence(field)]),
+  )
+
   const key: Key = definition.key
 
   const idSchema: KeySchema = Schema.isSchema(key)
@@ -288,11 +362,13 @@ const make = <
 
   type Event = Events[number]
 
-  class Turn extends Context.Service<Turn, CommandContext<State, Event>>()(
+  type Owned = T[number]
+
+  class Turn extends Context.Service<Turn, CommandContext<State, Event, Owned>>()(
     `durable-actors/Turn/${name}`,
   ) {}
 
-  class Read extends Context.Service<Read, QueryContext<State, Event>>()(
+  class Read extends Context.Service<Read, QueryContext<State, Event, Owned>>()(
     `durable-actors/Read/${name}`,
   ) {}
 
@@ -385,6 +461,55 @@ const make = <
     return { ...methods, ref } as Handle<All, Creating, BoundedMailbox>
   })
 
+  // Encodes a turn's final state within the size limit and lists the rows to write for `dirty` keys.
+  const stateWrites = Effect.fnUntraced(function* (
+    current: typeof stateSchema.Type,
+    dirty: ReadonlySet<string>,
+  ) {
+    const json = yield* Schema.encodeEffect(stateCodec)(current).pipe(Effect.orDie)
+
+    if (new TextEncoder().encode(json).byteLength > policy.stateMaxBytes)
+      return yield* Effect.die(new Error("State exceeds policy.maxStateBytes"))
+
+    const encoded = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))(json).pipe(
+      Effect.orDie,
+    )
+
+    const writes: Array<readonly [string, string]> = []
+
+    for (const key of dirty)
+      writes.push([
+        key,
+        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(encoded[key] ?? null).pipe(
+          Effect.orDie,
+        ),
+      ])
+
+    if (dirty.size > 0 && version > 0) writes.push([VERSION_KEY, String(version)])
+
+    return writes
+  })
+
+  // A declared failure commits only its receipt: no state rows.
+  const declaredFailure = Effect.fnUntraced(function* (
+    errorSchema: ValueSchema,
+    error: DeclaredError["Type"],
+  ) {
+    if (!Schema.is(errorSchema)(error)) return yield* Effect.die(error)
+
+    const value = yield* Schema.encodeEffect(
+      Schema.fromJsonString(Schema.toCodecJson(errorSchema)),
+    )(error).pipe(Effect.orDie)
+
+    return yield* Effect.fail<BusinessResult>({
+      outcome: Outcome.cases.Failure.make({ value }),
+      state: [],
+      complete: false,
+      events: [],
+      outbox: emptyOutbox,
+    })
+  })
+
   const register = <R>(handlers: Handlers<All, R>, services: Context.Context<R>) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
@@ -413,7 +538,6 @@ const make = <
         )
 
         const errorSchema = Schema.Union(member.errors)
-        const errorCodec = Schema.fromJsonString(Schema.toCodecJson(errorSchema))
 
         commands.set(member.tag, {
           internal: internalMembers.has(member),
@@ -464,12 +588,25 @@ const make = <
 
             const view = { set }
 
+            const access = yield* actors.tables(
+              {
+                ref: request.ref,
+                placement,
+                tables,
+                guard: Effect.gen(function* () {
+                  if (!open || (yield* InsideTurn) !== turn)
+                    return yield* Effect.die(new Error("Table capability escaped its turn"))
+                }),
+              },
+              true,
+            )
+
             for (const key of Object.keys(fields)) {
               const field = key as keyof typeof current
               Object.defineProperty(view, key, { enumerable: true, get: () => current[field] })
             }
 
-            const context: CommandContext<State, Event> = {
+            const context: CommandContext<State, Event, Owned> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -477,7 +614,14 @@ const make = <
               commandId: request.commandId,
               state: Object.freeze(view) as CommandContext<State>["state"],
               emit,
+              rows: access.rows as CommandContext<State, Event, Owned>["rows"],
+              group: access.group,
             }
+
+            const outbox = openOutbox({
+              sender: request.ref,
+              onBehalfOf: Option.getOrUndefined(context.principal),
+            })
 
             return yield* Effect.gen(function* () {
               const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(
@@ -490,57 +634,82 @@ const make = <
                 Effect.orDie,
               )
 
-              const json = yield* Schema.encodeEffect(stateCodec)(current).pipe(Effect.orDie)
-
-              if (new TextEncoder().encode(json).byteLength > policy.stateMaxBytes)
-                return yield* Effect.die(new Error("State exceeds policy.maxStateBytes"))
-
-              const encoded = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))(
-                json,
-              ).pipe(Effect.orDie)
-
-              const writes: Array<readonly [string, string]> = []
-
-              for (const key of dirty)
-                writes.push([
-                  key,
-                  yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(
-                    encoded[key] ?? null,
-                  ).pipe(Effect.orDie),
-                ])
-
-              if (dirty.size > 0 && version > 0) writes.push([VERSION_KEY, String(version)])
-
               return {
                 outcome: Outcome.cases.Success.make({ value }),
-                state: writes,
+                state: yield* stateWrites(current, dirty),
                 complete: loaded.upcast,
                 events: emitted,
+
+                outbox: outbox.close(),
               }
             }).pipe(
-              Effect.catch(
-                Effect.fnUntraced(function* (error) {
-                  if (!Schema.is(errorSchema)(error)) return yield* Effect.die(error)
-
-                  const value = yield* Schema.encodeEffect(errorCodec)(error).pipe(Effect.orDie)
-
-                  return yield* Effect.fail<BusinessResult>({
-                    outcome: Outcome.cases.Failure.make({ value }),
-                    state: [],
-                    complete: false,
-                    events: [],
-                  })
-                }),
-              ),
+              Effect.catch((error) => declaredFailure(errorSchema, error)),
               Effect.ensuring(
                 Effect.sync(() => {
                   open = false
+                  outbox.close()
                 }),
               ),
               Effect.provideService(Turn, context),
+              Effect.provideService(InTurn, outbox.marker),
               Effect.provideContext(services),
               Effect.provideService(InsideTurn, turn),
             )
+          }),
+        })
+      }
+
+      for (const reducer of reducers) {
+        const inputCodec = Schema.fromJsonString(
+          Schema.toCodecJson(Schema.Struct({ value: reducer.input })),
+        )
+
+        const outputCodec = Schema.fromJsonString(
+          Schema.toCodecJson(Schema.Struct({ value: reducer.output })),
+        )
+
+        const errorSchema = Schema.Union(reducer.errors)
+
+        commands.set(reducer.tag, {
+          internal: false,
+          run: Effect.fnUntraced(function* (request, rows) {
+            const loaded = yield* decodeStored(rows)
+
+            const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(Effect.orDie)
+
+            // `reduce` gets its own copy, so mutating it in place cannot hide a change.
+            const given = yield* Schema.decodeEffect(stateCodec)(
+              yield* Schema.encodeEffect(stateCodec)(loaded.state).pipe(Effect.orDie),
+            ).pipe(Effect.orDie)
+
+            const reduced = reducer.reduce(given, input.value)
+
+            if (Result.isFailure(reduced))
+              return yield* declaredFailure(errorSchema, reduced.failure)
+
+            // Round-tripping validates the returned state against the actor's schema.
+            const next = yield* Schema.decodeEffect(stateCodec)(
+              yield* Schema.encodeEffect(stateCodec)(reduced.success).pipe(Effect.orDie),
+            ).pipe(Effect.orDie)
+
+            // Only changed keys are written, unless an upcast rewrites every key.
+            const dirty = new Set(
+              Object.keys(fields).filter(
+                (key) => loaded.upcast || !fieldEquivalences[key]!(loaded.state[key], next[key]),
+              ),
+            )
+
+            const value = yield* Schema.encodeEffect(outputCodec)({
+              value: reducer.commutative === undefined ? next : undefined,
+            }).pipe(Effect.orDie)
+
+            return {
+              outcome: Outcome.cases.Success.make({ value }),
+              state: yield* stateWrites(next, dirty),
+              complete: loaded.upcast,
+              events: [],
+              outbox: emptyOutbox,
+            }
           }),
         })
       }
@@ -549,8 +718,9 @@ const make = <
         name,
         commands,
         singleton: isSingleton,
-        placement: definition.placement ?? "tenant",
+        placement,
         policy,
+        tables,
       })
     })
 
@@ -558,16 +728,25 @@ const make = <
    * Implements every `api` and `internal` command. The build Effect runs once
    * when the layer is built; handlers read their turn with `yield* X.Turn`.
    */
-  const toLayer = <R, RB>(
-    build: Effect.Effect<Handlers<All, R>, never, RB>,
-  ): Layer.Layer<never, never, Exclude<R, Turn> | Exclude<RB, Scope.Scope> | InternalActors> =>
+  // Defaults keep R `never` when there is no handler to infer it from, as for an actor of reducers only.
+  const toLayer = <R = never, RB = never>(
+    build: Effect.Effect<Handlers<All, R>, never, RB> & NoRequestReply<R>,
+  ): Layer.Layer<
+    never,
+    never,
+    Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+  > =>
     Layer.effectDiscard(
       Effect.gen(function* () {
         const handlers = yield* build
-        const services = yield* Effect.context<Exclude<R, Turn>>()
+        const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
         yield* register(handlers, services as Context.Context<R>)
       }),
-    ) as Layer.Layer<never, never, Exclude<R, Turn> | Exclude<RB, Scope.Scope> | InternalActors>
+    ) as Layer.Layer<
+      never,
+      never,
+      Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+    >
 
   const registerQueries = <R>(handlers: QueryHandlers<Api, R>, services: Context.Context<R>) =>
     Effect.gen(function* () {
@@ -602,6 +781,8 @@ const make = <
         registered.set(member.tag, {
           run: Effect.fnUntraced(function* (request, rows, cursor, readEvents) {
             const { state } = yield* decodeStored(rows)
+            let open = true
+            const query = Symbol()
 
             const replay = Effect.fnUntraced(function* <E extends Event>(
               event: E,
@@ -629,7 +810,20 @@ const make = <
               )
             })
 
-            const context: QueryContext<State, Event> = {
+            const access = yield* actors.tables(
+              {
+                ref: request.ref,
+                placement,
+                tables,
+                guard: Effect.gen(function* () {
+                  if (!open || (yield* InsideTurn) !== query)
+                    return yield* Effect.die(new Error("Table capability escaped its query"))
+                }),
+              },
+              false,
+            )
+
+            const context: QueryContext<State, Event, Owned> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -637,6 +831,8 @@ const make = <
               state: Object.freeze(state) as Readonly<State>,
               cursor,
               events: replay,
+              rows: access.rows as QueryContext<State, Event, Owned>["rows"],
+              group: access.group,
             }
 
             return yield* Effect.gen(function* () {
@@ -662,11 +858,16 @@ const make = <
                 }),
               ),
               Effect.catchDefect((cause) => Effect.succeed(Outcome.cases.Defect.make({ cause }))),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  open = false
+                }),
+              ),
               Effect.provideService(Read, context),
               Effect.provideContext(services),
               // A query is read-only: marking it as a turn makes any command or
               // query call from its handler a defect instead of a write.
-              Effect.provideService(InsideTurn, Symbol()),
+              Effect.provideService(InsideTurn, query),
             )
           }),
         })
@@ -674,7 +875,8 @@ const make = <
 
       yield* actors.registerQueries({
         name,
-        placement: definition.placement ?? "tenant",
+        placement,
+        tables,
         queries: registered,
       })
     })
@@ -704,6 +906,41 @@ const make = <
     return yield* getHandle(yield* internalActors.mintActorId, false)
   })
 
+  const getIntents = Effect.fnUntraced(function* (
+    id: string,
+  ): Effect.fn.Return<Intents<All>, never, InTurn> {
+    const { marker, staging } = yield* currentStaging()
+
+    const target = ActorRef.make({
+      actor: name,
+      // Intents stay within the sending turn's tenant.
+      tenant: staging.sender.tenant,
+      id: isSingleton ? "singleton" : yield* Schema.decodeEffect(idSchema)(id).pipe(Effect.orDie),
+    })
+
+    const methods = Object.fromEntries(
+      members.map((member) => {
+        const inputCodec = Schema.fromJsonString(
+          Schema.toCodecJson(Schema.Struct({ value: member.input })),
+        )
+
+        return [
+          member.tag,
+          (input: typeof member.input.Type) =>
+            Effect.gen(function* () {
+              const payload = yield* Schema.encodeEffect(inputCodec)({ value: input }).pipe(
+                Effect.orDie,
+              )
+
+              yield* stage(marker, { target, command: member.tag, payload })
+            }),
+        ]
+      }),
+    )
+
+    return { ...methods, ref: target } as Intents<All>
+  })
+
   const get = isSingleton
     ? () => getHandle("singleton", false)
     : (id: string) => getHandle(id, false)
@@ -724,6 +961,14 @@ const make = <
     create: create as K extends undefined
       ? () => Effect.Effect<PublicHandle, never, Actors>
       : never,
+    /**
+     * Durable intents to this actor; only command turns provide `InTurn`. The
+     * id is a plain string so `X.intents(turn.id)` works for every key kind;
+     * an id that fails the key schema is a deterministic defect.
+     */
+    intents: (isSingleton ? () => getIntents("singleton") : getIntents) as K extends SingletonKey
+      ? () => Effect.Effect<Intents<All>, never, InTurn>
+      : (id: string) => Effect.Effect<Intents<All>, never, InTurn>,
   }
 
   internalDefinitions.set(actor, {

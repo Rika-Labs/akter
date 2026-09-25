@@ -15,6 +15,18 @@ Query-client integrations and database backends have different obligations. A qu
 
 Drizzle/Postgres is the first target, not an exclusive long-term integration. Other adapters require an operation matrix and the same conformance cases before support is claimed. Mutations use scoped operations, with `group` reserved for read-only joins within the placement group; advanced mutations require additional evidence. Do not build a universal query language, promise arbitrary ORM/database support, or treat TypeScript wrappers and optional RLS as sufficient authority. Missing scope or an unsupported operation fails closed. See [ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md).
 
+The published operation matrix for Drizzle is in [Drizzle integration](../api/04-drizzle.md). Its support by backend:
+
+| Operation on owned tables                                             | Drizzle + Postgres | Drizzle + PGlite | Neki       |
+| --------------------------------------------------------------------- | ------------------ | ---------------- | ---------- |
+| scoped `one`, `all`, `count` in turns and queries                     | supported          | supported        | unverified |
+| scoped `insert`, `update().where`, `delete().where`                   | supported          | supported        | unverified |
+| scoped `upsert` on the ownership-prefixed primary key                 | supported          | supported        | unverified |
+| `group` select with inner/left joins                                  | supported          | supported        | unverified |
+| raw SQL, `db.query`, `returning`, joins in writes, CTEs, foreign keys | rejected           | rejected         | rejected   |
+
+"Supported" means the [automatic adapter scoping](../verification/01-conformance.md) cases pass on that backend; contention and independent-connection cases run on Postgres only.
+
 Topology adapters provide single-runner operation or HTTP-connected runners using verified advertise addresses. Kubernetes topology was removed from the current public surface. Railway requires proof that replicas can reach each other's `railnet0` address. Transport adapters back Effect RPC, HTTP, WebSocket, SSE, and OpenAPI without changing actor semantics.
 
 External calls are declared effects executed after commit under their retry and dead-letter policies. Framework blobs are database-backed chunks, not an external object-storage adapter. Runtime clocks use Effect `Clock` so tests can control time. Application provider integrations may narrow capabilities, but must report unsupported guarantees rather than silently weakening them.

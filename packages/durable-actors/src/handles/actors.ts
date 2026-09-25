@@ -3,6 +3,8 @@ import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
 import type { TurnPolicy } from "../policies/command.ts"
+import type { StagedOutbox } from "./intents.ts"
+import type { AnyOwnedTable, TableAccess, TableScope } from "../tables/owned.ts"
 
 export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
@@ -29,6 +31,8 @@ export interface BusinessResult {
   readonly complete: boolean
   /** Encoded events in emit order, appended with the commit. */
   readonly events: ReadonlyArray<EmittedEvent>
+  /** Intents to commit with the turn; a declared failure stages none. */
+  readonly outbox: StagedOutbox
 }
 
 export interface EmittedEvent {
@@ -70,6 +74,7 @@ export interface RegisteredQuery {
 export interface QueryRegistration {
   readonly name: string
   readonly placement: "tenant" | "actor"
+  readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly queries: ReadonlyMap<string, RegisteredQuery>
 }
 
@@ -78,6 +83,7 @@ export interface Registration {
   readonly singleton: boolean
   readonly placement: "tenant" | "actor"
   readonly policy: TurnPolicy
+  readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly commands: ReadonlyMap<string, RegisteredCommand>
 }
 
@@ -87,9 +93,21 @@ export class InternalActors extends Context.Service<
   {
     readonly register: (actor: Registration) => Effect.Effect<void, never, Scope.Scope>
     readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /**
+     * Delivers a committed intent. The obligation was admitted by its sending
+     * turn, so external access and command-id expiry are not checked again.
+     */
+    readonly deliver: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /** Runs relay passes until no due intent remains; used by `ActorTest.advance`. */
+    readonly drainOutbox: Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>
+    /**
+     * Binds owned-table capabilities to the calling fiber's turn or query.
+     * Writable access requires the turn transaction and never opens its own.
+     */
+    readonly tables: (scope: TableScope, write: boolean) => Effect.Effect<TableAccess>
   }
 >()("durable-actors/handles/actors/InternalActors") {}
 
