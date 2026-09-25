@@ -1,22 +1,30 @@
 import { Actor } from "durable-actors"
-import { integer, pgTable, text } from "drizzle-orm/pg-core"
+import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 
 /** An owned table: the framework adds and scopes routing_key, tenant_id, and actor_id. */
 export const entries = Actor.table(
-  pgTable("bench_entries", {
-    id: text("id").primaryKey(),
-    amount: integer("amount").notNull(),
-    memo: text("memo").notNull(),
-  }),
+  pgTable(
+    "bench_entries",
+    {
+      id: text("id").primaryKey(),
+      amount: integer("amount").notNull(),
+      memo: text("memo").notNull(),
+    },
+    (table) => [index("bench_entries_amount").on(table.amount)],
+  ),
 )
 
 // What drizzle-kit generates for `entries`; the runtime checks its primary key at startup.
-const ENTRIES_DDL = `CREATE TABLE IF NOT EXISTS bench_entries (
+const ENTRIES_DDL = [
+  `CREATE TABLE IF NOT EXISTS bench_entries (
   routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL,
   id text NOT NULL, amount integer NOT NULL, memo text NOT NULL,
-  PRIMARY KEY (routing_key, tenant_id, actor_id, id))`
+  PRIMARY KEY (routing_key, tenant_id, actor_id, id))`,
+  `CREATE INDEX IF NOT EXISTS bench_entries_amount
+  ON bench_entries (routing_key, tenant_id, actor_id, amount)`,
+]
 
 const Entry = Schema.Struct({ id: Schema.String, amount: Schema.Int, memo: Schema.String })
 
@@ -79,7 +87,9 @@ const LedgerReads = Ledger.toQueryLayer(
 /** Creates the table as a drizzle-kit migration would, then registers the actor. */
 export const LedgerLive = Layer.unwrap(
   Effect.gen(function* () {
-    yield* (yield* SqlClient.SqlClient).unsafe(ENTRIES_DDL)
+    const sql = yield* SqlClient.SqlClient
+
+    for (const statement of ENTRIES_DDL) yield* sql.unsafe(statement)
 
     return Layer.mergeAll(LedgerCommands, LedgerReads)
   }).pipe(Effect.orDie),

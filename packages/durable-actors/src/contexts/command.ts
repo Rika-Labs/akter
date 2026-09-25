@@ -1,7 +1,9 @@
 import { Context, type DateTime, Effect, Option } from "effect"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import type { ActorRef, Caller, Principal } from "../identity/caller.ts"
+import type { AnyBlob } from "../members/blob.ts"
 import type { EventClass } from "../members/event.ts"
+import type { BlobRead, BlobWrite } from "../state/blob.ts"
 import type { Group, AnyOwnedTable, ScopedRead, ScopedRows } from "../tables/owned.ts"
 
 export const InsideTurn = Context.Reference<symbol | undefined>("durable-actors/InsideTurn", {
@@ -25,6 +27,7 @@ export interface CommandContext<
   State,
   Event extends EventClass = never,
   Tables extends AnyOwnedTable = AnyOwnedTable,
+  Blobs extends AnyBlob = AnyBlob,
 > {
   readonly id: string
   readonly ref: ActorRef
@@ -40,6 +43,8 @@ export interface CommandContext<
   readonly rows: <T extends Tables>(table: T) => ScopedRows<T>
   /** Read-only joins across the actor's placement group, inside the turn transaction. */
   readonly group: Group
+  /** This actor's entries of a declared blob, bound to the turn transaction. */
+  readonly blob: (blob: Blobs) => BlobWrite
 }
 
 /** One committed event and where it sits in its actor's stream. */
@@ -56,6 +61,7 @@ export interface QueryContext<
   State,
   Event extends EventClass = never,
   Tables extends AnyOwnedTable = AnyOwnedTable,
+  Blobs extends AnyBlob = AnyBlob,
 > {
   readonly id: string
   readonly ref: ActorRef
@@ -82,4 +88,6 @@ export interface QueryContext<
   readonly rows: <T extends Tables>(table: T) => ScopedRead<T>
   /** Read-only joins across the actor's placement group. */
   readonly group: Group
+  /** This actor's committed entries of a declared blob. */
+  readonly blob: (blob: Blobs) => BlobRead
 }
