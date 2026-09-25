@@ -12,6 +12,7 @@ bun run bench                                   # every scenario, Postgres 18 th
 bun run bench --backend postgres                # or pglite
 bun run bench --scenario hot-actor,state-size   # a subset
 bun run bench --profile quick                   # small counts, about two minutes; for trying changes, not baselines
+bun run bench --profile ci                      # the statement gate's scenarios on Postgres at quick counts
 bun run bench --label my-change --note "why this run exists"
 ```
 
@@ -75,6 +76,22 @@ The script pairs cases by scenario and case name. It flags a regression in any o
 It lists cases that were added or removed. It refuses to compare runs from different backends, profiles, or result schemas, and warns when the machines differ.
 
 The `main` and `main-repeat` files show the run-to-run noise on one cloud VM. Most cases stay within 10%, but the short `state-size` cases moved by up to 63% at p50, so rerun a flagged latency case before you trust it. A change in statements per operation is real.
+
+## Statement gate
+
+The `Statements` workflow fails a pull request to `main` whose statements per operation differ from `baselines/statements.json`. Statements per operation are the one metric that stays the same across machines, so the gate runs on an ordinary CI runner; latency and throughput stay report-only.
+
+The job runs `bun run bench --profile ci`: `hot-actor`, `cold-activation`, `query-latency`, `receipt-replay`, `events`, `outbox`, `owned-rows`, and `effect-round-trip` on Postgres at the `quick` counts, in about 75 seconds. It then compares every case with the baseline and fails when a case moves by more than 0.25 statements per operation in either direction, or when a case is added or removed. Repeat runs of one commit differ by up to 0.13, because relay passes and Cluster retries fall inside a measured window a varying number of times; one extra statement in every fourth operation still fails.
+
+A fall fails too: a lower count left out of the baseline would let a later change add the statement back unnoticed. When a change to the count is intended, update the baseline in the same pull request and say why in its description:
+
+```sh
+bun run bench --profile ci --out /tmp/statements
+bun run bench:compare --statements benchmarks/baselines/statements.json /tmp/statements/<file>-ci.json          # the per-case diff
+bun run bench:compare --statements benchmarks/baselines/statements.json /tmp/statements/<file>-ci.json --update # rewrite the baseline
+```
+
+Commit the run first so the baseline's `sha` names the code it measured. The workflow uploads its result file as the `statements-<sha>` artifact, which `--update` accepts too.
 
 ## Results
 
