@@ -232,7 +232,7 @@ Each has a recommended default that this ADR adopts. Dallen can change any of th
    Actors.layer({ authorize, relay: { claimLease: "10 seconds" } }) // opt in to faster crash recovery
    ```
 
-2. **Executor pool size.** Recommended: `executors.concurrency: 64` per runner. Executors have no database capability, so the pool doesn't compete for Postgres connections. Only its claim and settle statements do, and they run on the relay's connections.
+2. **Executor pool size.** Recommended: `executors.concurrency: 64` per runner. Executors have no database capability, so a running attempt holds no Postgres connection. Only claims, renewals, and settles use one, briefly, from the runner's shared pool (50 by default, [ADR 0019](0019-runner-capacity-and-pool-size.md)). 64 attempts renewing a 60 s lease add about 3 statements a second.
 3. **Effects with no executor on a runner.** Recommended: that runner doesn't claim them. The rows wait for a runner that has the executor, and the 5 s retry goes away. Alternative: keep M1's claim-and-release every 5 s, which costs a claim per row per runner that lacks the executor.
 4. **Which tenant runs singleton cron.** Recommended: the deployment's default tenant, bootstrapped at startup, which matches contract 08's "once per deployment". Alternative: every tenant's singleton instance runs its own cron from its first activation. That needs a tenant registry to start cron in tenants whose singleton was never called.
 
@@ -255,6 +255,14 @@ Each has a recommended default that this ADR adopts. Dallen can change any of th
 5. **Cron added to an actor type that already has actors.** Recommended: existing actors get the new tick on their next activation. An actor that never wakes again never ticks. Alternative: a startup backfill across every actor of the type, which is a scan proportional to stored actors that ADR 0006 forbids on the hot path. If needed it belongs to M4 operations tooling.
 6. **`cronSkipIfOlderThan` default and scope.** Recommended: 1 day, one value per actor type. A per-expression option (`cron: { "0 8 * * *": { command: Send, skipIfOlderThan: "1 hour" } }`) can be added later without breaking the actor-level form.
 7. **Bucket affinity.** Recommended: none now. Every runner scans all 256 buckets each poll, which is 256 index probes per runner per second at about 0.3 ms per scan in the measured run. Revisit when runner count or scan time makes idle scanning visible, for example beyond 32 runners or when the scan exceeds 5% of a relay connection. The fallback is soft affinity: each runner scans a preferred bucket subset every pass and all buckets every fourth pass. Claims stay `SKIP LOCKED`, so affinity never becomes ownership.
+
+8. **Runner-to-runner wakes.** The M2 plan listed "wake-up messages after commit" as runner-to-runner messages. Recommended: don't send them ([section 6](#6-wake-ups-after-commit-stay-local-polling-is-the-correctness-path)), because the committing runner can claim the rows itself. Alternative: after a commit, send a volatile Cluster message to a peer runner chosen by bucket, so a busy runner's due rows are picked up by an idle one.
+
+   ```ts
+   // Sketch, not built: a volatile Cluster entity per bucket, told after each commit that wrote a due row.
+   const wake = yield * RelayWake.client
+   yield * wake(String(bucketOf(routingKey))).Wake(undefined, { discard: true })
+   ```
 
 ## Alternatives
 
