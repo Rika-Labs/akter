@@ -41,6 +41,23 @@ Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor
 
 `turn.rows(table)` and `read.rows(table)` accept only the actor type's declared `tables` and scope every operation to the current tenant and actor; `group` reads across the placement group. Neither takes ownership fields or predicates. The operations, filters, and rejected uses are in [Drizzle integration](04-drizzle.md).
 
+## Blobs
+
+`turn.blob(B)` and `read.blob(B)` accept only the actor type's declared `blobs` and address entries of the current tenant, actor type, and actor by name alone. `turn.blob` returns `BlobWrite` (`get`, `set`, `append`, `compact`), bound to the turn transaction, so a turn reads its own writes and a declared failure discards them. `read.blob` returns `BlobRead`, which has only `get`; the object carries no write methods, whatever a cast claims. `get` returns `Option.none()` for an entry that was never written and `Option.some` of an empty array for one set to no bytes.
+
+```ts
+const Attachments = Actor.blob("attachments")
+
+// in a command handler
+const files = (yield * Room.Turn).blob(Attachments)
+yield * files.set(id, bytes)
+yield * files.append("log", line) // a new chunk; earlier chunks are not rewritten
+yield * files.compact("log") // one chunk, same bytes
+
+// in a query handler
+const file = yield * (yield * Room.Read).blob(Attachments).get(id)
+```
+
 ## Command turns
 
 A command's context is the only writable one. One framework-owned transaction performs, in order, the generation fence, receipt resolution, state decode (or reuse of the activation's cached state), handler, staged writes and intents, receipt update, and commit ([command turns](../contracts/02-command-turns.md)). `DateTime.now` is pinned per turn.
@@ -81,4 +98,4 @@ Values that live for one activation are ordinary Effect values in the layer's bu
 
 `CurrentCaller` defaults to `Anonymous`. The edge sets it per request, `ActorTest.layer` per test, and `Actor.as(caller)` around an Effect; `X.get` captures it when the handle is acquired. `turn.caller` is the full caller and `turn.principal` the optional principal. Workflow bodies expose `principal` and act through handles carrying persisted System/on-behalf-of attribution.
 
-A transaction-bound capability used after its turn ends, including from a forked fiber, dies. Runtime guards still reject request/reply operations inside a turn even when a handle was captured outside it.
+A transaction-bound capability used after its turn ends dies. Owned rows, `group`, and blobs also die on any fiber other than the one running the turn or query, because its single connection takes no concurrent statements: `Effect.timeout`, `Effect.race`, `Effect.all` with concurrency, and explicit forks around them are defects, while sequential composition is not. A use from another fiber also fails the turn at its end, so a `race`, `exit`, or `catchDefect` that swallows the defect cannot commit the turn without the write. `state.set` and intents only stage values and are not bound to the fiber. Runtime guards still reject request/reply operations inside a turn even when a handle was captured outside it.

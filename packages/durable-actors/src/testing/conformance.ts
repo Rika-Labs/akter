@@ -21,6 +21,12 @@ import { admissionConformance, admissionLayer, payloadHash } from "./conformance
 import { capacityConformance } from "./conformance/capacity.ts"
 import { reducerConformance, reducerLayer } from "./conformance/reducers.ts"
 import {
+  blobsConformance,
+  blobsFixture,
+  blobsLayer,
+  type BlobsFixture,
+} from "./conformance/blobs.ts"
+import {
   tablesConformance,
   tablesFixture,
   tablesLayer,
@@ -41,6 +47,7 @@ import {
   type FoundationFixture,
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
+import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import {
   outboxConformance,
   outboxFixture,
@@ -138,6 +145,7 @@ export interface ConformanceFixture {
   readonly outbox: OutboxFixture
   readonly tables: TablesFixture
   readonly effects: EffectsFixture
+  readonly blobs: BlobsFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -256,6 +264,7 @@ const makeFixture = (): ConformanceFixture => ({
   outbox: outboxFixture(),
   tables: tablesFixture(),
   effects: effectsFixture(),
+  blobs: blobsFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -282,6 +291,8 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...outboxConformance,
   ...tablesConformance,
   ...effectsConformance,
+  ...multiRunnerConformance,
+  ...blobsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1238,6 +1249,7 @@ export const describeConformance = (options: {
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
+    blobsLayer(fixture.blobs),
   )
 
   let store: ConformanceStore | undefined

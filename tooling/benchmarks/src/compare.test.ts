@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { comparability, compare, type Result } from "./compare.ts"
+import {
+  comparability,
+  compare,
+  compareStatements,
+  type Result,
+  STATEMENT_TOLERANCE,
+  toBaseline,
+} from "./compare.ts"
 
 const result = (
   cases: ReadonlyArray<{
@@ -98,5 +105,86 @@ describe("comparability", () => {
     ])
     expect(comparability({ before: postgres, after: elsewhere })).toMatchObject({ refuse: [] })
     expect(comparability({ before: postgres, after: elsewhere }).warn).toHaveLength(1)
+  })
+})
+
+describe("compareStatements", () => {
+  const ci = (statements: Readonly<Record<string, number>>): Result => ({
+    ...result(
+      Object.entries(statements).map(([name, count]) => ({
+        name,
+        throughput: 1,
+        p99: 1,
+        statements: count,
+      })),
+    ),
+    profile: "ci",
+  })
+
+  const baseline = toBaseline(ci({ sequential: 7.01, "concurrent-8": 7.02 }))
+
+  it("passes counts within the tolerance", () => {
+    const { cases, added, removed } = compareStatements({
+      baseline,
+      result: ci({ sequential: 7.01 + STATEMENT_TOLERANCE, "concurrent-8": 6.9 }),
+    })
+
+    expect(cases.some((entry) => entry.changed)).toBe(false)
+    expect([...added, ...removed]).toEqual([])
+  })
+
+  it("fails one extra statement in every fourth operation", () => {
+    const { cases } = compareStatements({
+      baseline,
+      result: ci({ sequential: 7.26, "concurrent-8": 7.02 }),
+    })
+
+    expect(cases.find((entry) => entry.key === "hot-actor/sequential")).toMatchObject({
+      changed: true,
+    })
+  })
+
+  it("fails an extra statement and a stale baseline alike", () => {
+    const { cases } = compareStatements({
+      baseline,
+      result: ci({ sequential: 8.01, "concurrent-8": 6.02 }),
+    })
+
+    expect(cases.filter((entry) => entry.changed).map((entry) => entry.key)).toEqual([
+      "hot-actor/sequential",
+      "hot-actor/concurrent-8",
+    ])
+  })
+
+  it("reports cases the baseline lacks or the run dropped", () => {
+    const { added, removed } = compareStatements({
+      baseline,
+      result: ci({ sequential: 7.01, "concurrent-64": 7.01 }),
+    })
+
+    expect(added).toEqual(["hot-actor/concurrent-64"])
+    expect(removed).toEqual(["hot-actor/concurrent-8"])
+  })
+
+  it("builds a baseline only from a ci run on postgres", () => {
+    expect(baseline).toEqual({
+      profile: "ci",
+      backend: "postgres",
+      sha: "abc1234",
+      statementsPerOperation: { "hot-actor/sequential": 7.01, "hot-actor/concurrent-8": 7.02 },
+    })
+    expect(() => toBaseline({ ...ci({}), profile: "quick" })).toThrow()
+
+    const uncounted = ci({ sequential: 7 })
+    const [scenario] = uncounted.scenarios
+
+    expect(() =>
+      toBaseline({
+        ...uncounted,
+        scenarios: [
+          { ...scenario!, cases: [{ ...scenario!.cases[0]!, statementsPerOperation: null }] },
+        ],
+      }),
+    ).toThrow("has no statement count")
   })
 })

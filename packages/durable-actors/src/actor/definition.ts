@@ -4,6 +4,7 @@ import {
   DateTime,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Option,
   Result,
@@ -42,6 +43,7 @@ import {
   type System,
 } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
+import { type AnyBlob, isBlob } from "../members/blob.ts"
 import type { EventClass } from "../members/event.ts"
 import type {
   AnyCommand,
@@ -247,6 +249,7 @@ interface Definition<
   Events extends ReadonlyArray<EventClass>,
   Tables extends ReadonlyArray<AnyOwnedTable>,
   Effects extends ReadonlyArray<AnyEffect>,
+  Blobs extends ReadonlyArray<AnyBlob>,
 > {
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
@@ -256,6 +259,8 @@ interface Definition<
   readonly events?: Events
   /** `Actor.table` tables whose rows this actor type owns. */
   readonly tables?: Tables
+  /** `Actor.blob` binary storage this actor type's turns write and its queries read. */
+  readonly blobs?: Blobs
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
   /** `Actor.effect` classes this actor's turns may `perform`. */
@@ -273,9 +278,10 @@ const make = <
   const T extends ReadonlyArray<AnyOwnedTable> = [],
   const Effects extends ReadonlyArray<AnyEffect> = readonly [],
   const P extends Policy<CommandsOf<Api> | Values<Internal>, Effects[number]> = {},
+  const B extends ReadonlyArray<AnyBlob> = [],
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal, Events, T, Effects> & {
+  definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B> & {
     readonly key?: K
     readonly policy?: P
   },
@@ -359,6 +365,16 @@ const make = <
   }
 
   const eventCodec = (event: EventClass) => Schema.fromJsonString(Schema.toCodecJson(event))
+  const blobs: ReadonlyArray<AnyBlob> = definition.blobs ?? []
+  const blobNames = new Set<string>()
+
+  for (const blob of blobs) {
+    if (!isBlob(blob)) throw new Error("blobs takes Actor.blob values")
+
+    if (blobNames.has(blob.name)) throw new Error(`Blob ${blob.name} is listed twice`)
+    blobNames.add(blob.name)
+  }
+
   const migrations = definition.state?.migrations ?? []
   ActorStates.validateChain(fields, migrations)
   const version = migrations.length
@@ -421,16 +437,18 @@ const make = <
 
   type Owned = T[number]
 
+  type Blobs = B[number]
+
   class Turn extends Context.Service<
     Turn,
-    CommandContext<State, Event, Owned> & PerformContext<Effects[number]>
+    CommandContext<State, Event, Owned, Blobs> & PerformContext<Effects[number]>
   >()(`durable-actors/Turn/${name}`) {}
 
   class Executor extends Context.Service<Executor, ExecutorContext>()(
     `durable-actors/Executor/${name}`,
   ) {}
 
-  class Read extends Context.Service<Read, QueryContext<State, Event, Owned>>()(
+  class Read extends Context.Service<Read, QueryContext<State, Event, Owned, Blobs>>()(
     `durable-actors/Read/${name}`,
   ) {}
 
@@ -650,16 +668,31 @@ const make = <
 
             const view = { set }
 
+            // A forked fiber inherits InsideTurn, so the turn's own fiber is checked too.
+            const owner = Fiber.getCurrent()
+            // Set on a use from another fiber of this turn, so a swallowed defect still fails the turn.
+            let misused: string | undefined
+
+            const escaped = (capability: string) =>
+              Effect.gen(function* () {
+                if (!open || (yield* InsideTurn) !== turn)
+                  return yield* Effect.die(new Error(`${capability} capability escaped its turn`))
+
+                // The turn's one connection takes no concurrent statements.
+                if (Fiber.getCurrent() !== owner) {
+                  misused = `${capability} capability used from a fiber other than its turn's; timeout, race, and concurrent combinators run on other fibers`
+
+                  return yield* Effect.die(new Error(misused))
+                }
+              })
+
             const access = yield* actors.tables(
-              {
-                ref: request.ref,
-                placement,
-                tables,
-                guard: Effect.gen(function* () {
-                  if (!open || (yield* InsideTurn) !== turn)
-                    return yield* Effect.die(new Error("Table capability escaped its turn"))
-                }),
-              },
+              { ref: request.ref, placement, tables, guard: escaped("Table") },
+              true,
+            )
+
+            const blob = yield* actors.blobs(
+              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
               true,
             )
 
@@ -690,7 +723,8 @@ const make = <
               })
             })
 
-            const context: CommandContext<State, Event, Owned> & PerformContext<Effects[number]> = {
+            const context: CommandContext<State, Event, Owned, Blobs> &
+              PerformContext<Effects[number]> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -700,6 +734,7 @@ const make = <
               emit,
               rows: access.rows as CommandContext<State, Event, Owned>["rows"],
               group: access.group,
+              blob: blob as CommandContext<State, Event, Owned, Blobs>["blob"],
               perform,
             }
 
@@ -709,6 +744,8 @@ const make = <
               )
 
               const output = yield* handle(input.value)
+
+              if (misused !== undefined) return yield* Effect.die(new Error(misused))
 
               const value = yield* Schema.encodeEffect(outputCodec)({ value: output }).pipe(
                 Effect.orDie,
@@ -801,6 +838,7 @@ const make = <
         placement,
         policy,
         tables,
+        blobs,
       })
     })
 
@@ -890,20 +928,34 @@ const make = <
               )
             })
 
+            // A forked fiber inherits InsideTurn, so the query's own fiber is checked too.
+            const owner = Fiber.getCurrent()
+
+            const escaped = (capability: string) =>
+              Effect.gen(function* () {
+                if (!open || (yield* InsideTurn) !== query)
+                  return yield* Effect.die(new Error(`${capability} capability escaped its query`))
+
+                // The query's one connection takes no concurrent statements.
+                if (Fiber.getCurrent() !== owner)
+                  return yield* Effect.die(
+                    new Error(
+                      `${capability} capability used from a fiber other than its query's; timeout, race, and concurrent combinators run on other fibers`,
+                    ),
+                  )
+              })
+
             const access = yield* actors.tables(
-              {
-                ref: request.ref,
-                placement,
-                tables,
-                guard: Effect.gen(function* () {
-                  if (!open || (yield* InsideTurn) !== query)
-                    return yield* Effect.die(new Error("Table capability escaped its query"))
-                }),
-              },
+              { ref: request.ref, placement, tables, guard: escaped("Table") },
               false,
             )
 
-            const context: QueryContext<State, Event, Owned> = {
+            const blob = yield* actors.blobs(
+              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
+              false,
+            )
+
+            const context: QueryContext<State, Event, Owned, Blobs> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -913,6 +965,7 @@ const make = <
               events: replay,
               rows: access.rows as QueryContext<State, Event, Owned>["rows"],
               group: access.group,
+              blob,
             }
 
             return yield* Effect.gen(function* () {
@@ -957,6 +1010,7 @@ const make = <
         name,
         placement,
         tables,
+        blobs,
         queries: registered,
       })
     })
