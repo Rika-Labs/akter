@@ -78,7 +78,7 @@ The `main` and `main-repeat` files show the run-to-run noise on one cloud VM. Mo
 
 ## Results
 
-Every file below comes from the same machine: a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, running Linux 6.1. The client, the actor runtime, and Postgres share its CPUs.
+Every file below comes from a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, running Linux 6.1, where the client, the actor runtime, and Postgres share its CPUs. Rows that say "different VM" ran on another machine of that shape; compare latency and throughput only between files from the same machine.
 
 | File                                            | Code                                                                                                                                                                                                      | Backend       |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
