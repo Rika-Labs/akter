@@ -4,12 +4,14 @@ import { InTurn } from "./handles/intents.ts"
 import { CurrentCommandId } from "./identity/command.ts"
 import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
+import { Reducer } from "./members/reducer.ts"
 import { ActorStates } from "./state/migration.ts"
 
 export const Actor = {
   make: Definition.make,
   command: Command.make,
   query: Query.make,
+  reducer: Reducer.make,
   state: ActorStates.make,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
@@ -61,3 +63,5 @@ export {
 export type { CommandContext, QueryContext, Turn } from "./contexts/command.ts"
 
 export type { Handle, Intents } from "./actor/definition.ts"
+
+export type { Commutative, Reducer } from "./members/reducer.ts"

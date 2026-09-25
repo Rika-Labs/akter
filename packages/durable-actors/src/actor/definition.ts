@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Schema, Scope, Semaphore } from "effect"
+import { Context, Effect, Layer, Option, Result, Schema, Scope, Semaphore } from "effect"
 import {
   type CommandContext,
   InsideTurn,
@@ -29,9 +29,11 @@ import type {
   AnyCommand,
   AnyMember,
   CommandRecord,
+  DeclaredError,
   MemberRecord,
   ValueSchema,
 } from "../members/command.ts"
+import type { AnyReducer } from "../members/reducer.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 import {
   type ActorState,
@@ -113,6 +115,10 @@ type QueryKeys<Members extends MemberRecord> = {
   [K in keyof Members]: Members[K]["kind"] extends "query" ? K : never
 }[keyof Members]
 
+type ReducerKeys<Members extends MemberRecord> = {
+  [K in keyof Members]: Members[K]["kind"] extends "reducer" ? K : never
+}[keyof Members]
+
 /** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
 type QueryReason = "ActorUnavailable" | "Unauthorized"
 
@@ -165,8 +171,14 @@ type NoRequestReply<R> = [Extract<R, Actors>] extends [never]
   ? unknown
   : { readonly "Request/reply inside a turn: use X.intents(id)": never }
 
-/** One handler per command in `api` and `internal`. */
-export type Handlers<Members extends MemberRecord, R> = HandlerMap<Members, CommandKeys<Members>, R>
+/** One handler per command in `api` and `internal`; a reducer has no handler. */
+export type Handlers<Members extends MemberRecord, R> = HandlerMap<
+  Members,
+  CommandKeys<Members>,
+  R
+> & {
+  readonly [K in ReducerKeys<Members>]?: never
+}
 
 /** One handler per query in `api`. */
 export type QueryHandlers<Members extends MemberRecord, R> = HandlerMap<
@@ -180,6 +192,18 @@ type TagsMatch<Members extends MemberRecord> = {
   readonly [K in keyof Members]: Members[K] & { readonly tag: K }
 }
 
+/** A reducer transforms the actor's own state, so its declared state must be exactly that state. */
+type ReducerStates<Members extends MemberRecord, Fields extends StateFields> = {
+  readonly [K in keyof Members]: Members[K] extends {
+    readonly kind: "reducer"
+    readonly state: ActorState<infer ReducerFields>
+  }
+    ? [ReducerFields, Fields] extends [Fields, ReducerFields]
+      ? Members[K]
+      : { readonly state: "A reducer's state must be its actor's state" }
+    : Members[K]
+}
+
 interface Definition<
   Key,
   Fields extends StateFields,
@@ -190,7 +214,7 @@ interface Definition<
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
   readonly placement?: "tenant" | "actor"
   readonly state?: ActorState<Fields>
-  readonly api: Api & TagsMatch<Api>
+  readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>>
 }
@@ -226,12 +250,17 @@ const make = <
   const all = [...Object.values(api), ...Object.values(internal)]
   const members = all.filter((member): member is AnyCommand => member.kind === "command")
   const queries = all.filter((member) => member.kind === "query")
+  const reducers = all.filter((member): member is AnyReducer => member.kind === "reducer")
   const internalMembers = new Set<AnyMember>(Object.values(internal))
   const fields: StateFields = definition.state?.fields ?? {}
   const policy = resolvePolicy({ declared: definition.policy, commands: members })
   const isSingleton = Schema.is(SingletonKeySchema)(definition.key)
 
   if ("set" in fields) throw new Error("State key 'set' is reserved")
+
+  for (const reducer of reducers)
+    if (reducer.state !== definition.state)
+      throw new Error(`Reducer ${reducer.tag} must declare its actor's state`)
   const migrations = definition.state?.migrations ?? []
   ActorStates.validateChain(fields, migrations)
   const version = migrations.length
@@ -269,6 +298,10 @@ const make = <
 
   const stateSchema = Schema.Struct(fields)
   const stateCodec = Schema.fromJsonString(Schema.toCodecJson(stateSchema))
+
+  const fieldEquivalences = Object.fromEntries(
+    Object.entries(fields).map(([key, field]) => [key, Schema.toEquivalence(field)]),
+  )
 
   const key: Key = definition.key
 
@@ -381,6 +414,54 @@ const make = <
     return { ...methods, ref } as Handle<All, Creating, BoundedMailbox>
   })
 
+  // Encodes a turn's final state within the size limit and lists the rows to write for `dirty` keys.
+  const stateWrites = Effect.fnUntraced(function* (
+    current: typeof stateSchema.Type,
+    dirty: ReadonlySet<string>,
+  ) {
+    const json = yield* Schema.encodeEffect(stateCodec)(current).pipe(Effect.orDie)
+
+    if (new TextEncoder().encode(json).byteLength > policy.stateMaxBytes)
+      return yield* Effect.die(new Error("State exceeds policy.maxStateBytes"))
+
+    const encoded = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))(json).pipe(
+      Effect.orDie,
+    )
+
+    const writes: Array<readonly [string, string]> = []
+
+    for (const key of dirty)
+      writes.push([
+        key,
+        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(encoded[key] ?? null).pipe(
+          Effect.orDie,
+        ),
+      ])
+
+    if (dirty.size > 0 && version > 0) writes.push([VERSION_KEY, String(version)])
+
+    return writes
+  })
+
+  // A declared failure commits only its receipt: no state rows.
+  const declaredFailure = Effect.fnUntraced(function* (
+    errorSchema: ValueSchema,
+    error: DeclaredError["Type"],
+  ) {
+    if (!Schema.is(errorSchema)(error)) return yield* Effect.die(error)
+
+    const value = yield* Schema.encodeEffect(
+      Schema.fromJsonString(Schema.toCodecJson(errorSchema)),
+    )(error).pipe(Effect.orDie)
+
+    return yield* Effect.fail<BusinessResult>({
+      outcome: Outcome.cases.Failure.make({ value }),
+      state: [],
+      complete: false,
+      outbox: emptyOutbox,
+    })
+  })
+
   const register = <R>(handlers: Handlers<All, R>, services: Context.Context<R>) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
@@ -409,7 +490,6 @@ const make = <
         )
 
         const errorSchema = Schema.Union(member.errors)
-        const errorCodec = Schema.fromJsonString(Schema.toCodecJson(errorSchema))
 
         commands.set(member.tag, {
           internal: internalMembers.has(member),
@@ -474,48 +554,14 @@ const make = <
                 Effect.orDie,
               )
 
-              const json = yield* Schema.encodeEffect(stateCodec)(current).pipe(Effect.orDie)
-
-              if (new TextEncoder().encode(json).byteLength > policy.stateMaxBytes)
-                return yield* Effect.die(new Error("State exceeds policy.maxStateBytes"))
-
-              const encoded = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))(
-                json,
-              ).pipe(Effect.orDie)
-
-              const writes: Array<readonly [string, string]> = []
-
-              for (const key of dirty)
-                writes.push([
-                  key,
-                  yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(
-                    encoded[key] ?? null,
-                  ).pipe(Effect.orDie),
-                ])
-
-              if (dirty.size > 0 && version > 0) writes.push([VERSION_KEY, String(version)])
-
               return {
                 outcome: Outcome.cases.Success.make({ value }),
-                state: writes,
+                state: yield* stateWrites(current, dirty),
                 complete: loaded.upcast,
                 outbox: outbox.close(),
               }
             }).pipe(
-              Effect.catch(
-                Effect.fnUntraced(function* (error) {
-                  if (!Schema.is(errorSchema)(error)) return yield* Effect.die(error)
-
-                  const value = yield* Schema.encodeEffect(errorCodec)(error).pipe(Effect.orDie)
-
-                  return yield* Effect.fail<BusinessResult>({
-                    outcome: Outcome.cases.Failure.make({ value }),
-                    state: [],
-                    complete: false,
-                    outbox: emptyOutbox,
-                  })
-                }),
-              ),
+              Effect.catch((error) => declaredFailure(errorSchema, error)),
               Effect.ensuring(
                 Effect.sync(() => {
                   open = false
@@ -527,6 +573,60 @@ const make = <
               Effect.provideContext(services),
               Effect.provideService(InsideTurn, turn),
             )
+          }),
+        })
+      }
+
+      for (const reducer of reducers) {
+        const inputCodec = Schema.fromJsonString(
+          Schema.toCodecJson(Schema.Struct({ value: reducer.input })),
+        )
+
+        const outputCodec = Schema.fromJsonString(
+          Schema.toCodecJson(Schema.Struct({ value: reducer.output })),
+        )
+
+        const errorSchema = Schema.Union(reducer.errors)
+
+        commands.set(reducer.tag, {
+          internal: false,
+          run: Effect.fnUntraced(function* (request, rows) {
+            const loaded = yield* decodeStored(rows)
+
+            const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(Effect.orDie)
+
+            // `reduce` gets its own copy, so mutating it in place cannot hide a change.
+            const given = yield* Schema.decodeEffect(stateCodec)(
+              yield* Schema.encodeEffect(stateCodec)(loaded.state).pipe(Effect.orDie),
+            ).pipe(Effect.orDie)
+
+            const reduced = reducer.reduce(given, input.value)
+
+            if (Result.isFailure(reduced))
+              return yield* declaredFailure(errorSchema, reduced.failure)
+
+            // Round-tripping validates the returned state against the actor's schema.
+            const next = yield* Schema.decodeEffect(stateCodec)(
+              yield* Schema.encodeEffect(stateCodec)(reduced.success).pipe(Effect.orDie),
+            ).pipe(Effect.orDie)
+
+            // Only changed keys are written, unless an upcast rewrites every key.
+            const dirty = new Set(
+              Object.keys(fields).filter(
+                (key) => loaded.upcast || !fieldEquivalences[key]!(loaded.state[key], next[key]),
+              ),
+            )
+
+            const value = yield* Schema.encodeEffect(outputCodec)({
+              value: reducer.commutative === undefined ? next : undefined,
+            }).pipe(Effect.orDie)
+
+            return {
+              outcome: Outcome.cases.Success.make({ value }),
+              state: yield* stateWrites(next, dirty),
+              complete: loaded.upcast,
+              outbox: emptyOutbox,
+            }
           }),
         })
       }
@@ -544,7 +644,8 @@ const make = <
    * Implements every `api` and `internal` command. The build Effect runs once
    * when the layer is built; handlers read their turn with `yield* X.Turn`.
    */
-  const toLayer = <R, RB>(
+  // Defaults keep R `never` when there is no handler to infer it from, as for an actor of reducers only.
+  const toLayer = <R = never, RB = never>(
     build: Effect.Effect<Handlers<All, R>, never, RB> & NoRequestReply<R>,
   ): Layer.Layer<
     never,

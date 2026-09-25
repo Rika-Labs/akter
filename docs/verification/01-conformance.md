@@ -52,6 +52,23 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `rejects an expired identity after receipt pruning and runtime restart`
 - `isolates durable state between fresh layer builds`
 
+### Reducer cases (M1.8)
+
+Registered from [`conformance/reducers.ts`](../../packages/durable-actors/src/testing/conformance/reducers.ts) into the shared list, so each runs on PGlite and on Postgres through `conformance.test.ts`. Crash cases use the in-process `ActorTest.crashNext` fault points, like the foundation's; the process-death suite in `conformance/crash/` still covers commands only.
+
+- `reducer commits changed state and one receipt, and replays without reducing again`
+- `reducer rejects changed input or another member under the same command id`
+- `failing reduce rolls back state and upcast writes and replays its declared error after conditions change`
+- `recovers reducer turns crashed beforeCommit and afterCommit with one transition each`
+- `recovers failing reducer turns crashed beforeCommit and afterCommit with one terminal receipt each`
+- `commutative reducer runs as one receipted turn per call and replies void`
+- `a throwing reduce or an invalid returned state is a defect with no receipt`
+- `reducer that mutates its state argument still commits the change`
+
+[`members/reducer.test.ts`](../../packages/durable-actors/src/members/reducer.test.ts) adds five declaration tests: the handle shape, no `toLayer` entry for a reducer, the reducer-state rule, the `commutative` rules, and the merge-law property `reduce(reduce(s, a), b) = reduce(s, combine(a, b))` over 1,000 generated inputs for a sample commutative reducer.
+
+**Executed 2026-09-25 (M1.8, branch `feat/16-server-reducers` on `main` at `76ac433`):** same toolchain as above. `bun run --filter durable-actors test` passed 62 tests with 6 skipped (the 49 above plus eight reducer cases on PGlite and five reducer declaration tests). `test:integration` passed 53 Postgres tests (the 45 above plus eight reducer cases).
+
 ### Postgres-only cases (independent connections)
 
 These require a real second connection and are reported skipped on PGlite:
@@ -164,7 +181,7 @@ Evidence MUST record the revision, test name and command, backend/runtime versio
 - **Direct commands:** kill the owner before commit and assert no receipt or consequence; the handle's retry with the same id executes once against the new owner. Kill it after commit and assert receipt replay. Assert that no command message row is written and that a caller giving up and retrying the same id observes one outcome.
 - **Pipelined batches:** hold batch N's commit and assert batch N+1's replies, broadcasts, and outbox rows stay hidden. Fail batch N's commit and assert batch N+1's staged work is discarded and all uncommitted callers retry successfully.
 - **Outbox delivery:** deliver same-shard, cross-shard, and cross-region intents and keyed timers; crash before delivery, after receiver commit, and before row deletion; replace and cancel keyed timers. Each intent id produces one receiver transition.
-- **Reducers:** property-test `reduce(reduce(s, a), b) = reduce(s, combine(a, b))` for every commutative reducer; merged turns commit one receipt per original command id. A browser handle's optimistic state converges to committed state after success and failure receipts.
+- **Reducers:** property-test `reduce(reduce(s, a), b) = reduce(s, combine(a, b))` for every commutative reducer; merged turns commit one receipt per original command id. A browser handle's optimistic state converges to committed state after success and failure receipts. M1.8 covers server reducer turns and the merge-law property for a sample reducer (see [reducer cases](#reducer-cases-m18)); merged turns need the M2 multi-runner harness and browser convergence (C3) the M3 client, so the check stays unverified.
 - **Read-your-writes:** a query carrying a handle's last-seen commit version never returns older state from a replica or edge cache.
 - **API shape:** the `research/v5` type spike rejects a mismatched `api` key, an unknown or non-zero-input cron target, `turn.emit` outside `X.Turn`, `X.intents` outside a turn, and `X.get` inside a turn.
 - **Simulation:** `ActorTest.simulate` with crash-before-commit, crash-after-commit, dropped replies, primary failover, relay crash, and clock skew keeps receipts and outbox delivery exactly once, and a failing seed reproduces.
