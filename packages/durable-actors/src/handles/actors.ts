@@ -2,6 +2,7 @@ import { Context, Effect, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
 import type { TurnPolicy } from "../policies/command.ts"
+import type { StagedOutbox } from "./intents.ts"
 
 export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
@@ -26,6 +27,8 @@ export interface BusinessResult {
   readonly state: ReadonlyArray<readonly [string, string]>
   /** `state` lists every stored key; the turn deletes any other stored key. */
   readonly complete: boolean
+  /** Intents to commit with the turn; a declared failure stages none. */
+  readonly outbox: StagedOutbox
 }
 
 export interface RegisteredCommand {
@@ -64,6 +67,13 @@ export class InternalActors extends Context.Service<
   {
     readonly register: (actor: Registration) => Effect.Effect<void, never, Scope.Scope>
     readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /**
+     * Delivers a committed intent. The obligation was admitted by its sending
+     * turn, so external access and command-id expiry are not checked again.
+     */
+    readonly deliver: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /** Runs relay passes until no due intent remains; used by `ActorTest.advance`. */
+    readonly drainOutbox: Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>

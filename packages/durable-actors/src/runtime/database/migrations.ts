@@ -102,5 +102,33 @@ export const migrate = Migrator.make({})({
         encoding integer NOT NULL
       )`
     }),
+    // Every intent and timer lives on its sender's shard. `bucket` is the top
+    // eight bits of `routing_key`, so the relay probes `(bucket, due_at_ms)` and
+    // never reads actors with nothing due.
+    "0004_outbox": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`CREATE TABLE actor_outbox (
+        routing_key bigint NOT NULL,
+        intent_id text NOT NULL,
+        bucket integer NOT NULL CHECK (bucket = routing_key >> 56),
+        due_at_ms bigint NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        timer_key text,
+        target_type text NOT NULL,
+        target_id text NOT NULL,
+        command text NOT NULL,
+        payload text NOT NULL,
+        caller text NOT NULL,
+        attempts integer NOT NULL DEFAULT 0,
+        PRIMARY KEY (routing_key, intent_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+      yield* sql`CREATE INDEX actor_outbox_due ON actor_outbox (bucket, due_at_ms)`
+      yield* sql`CREATE UNIQUE INDEX actor_outbox_timer
+        ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, timer_key)
+        WHERE timer_key IS NOT NULL`
+    }),
   }),
 })
