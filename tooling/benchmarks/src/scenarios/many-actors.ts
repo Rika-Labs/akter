@@ -10,7 +10,7 @@ const add = (actor: number) =>
   Probe.get(`actor-${actor}`).pipe(Effect.flatMap((probe) => probe.Add(1)))
 
 /** A uniform pick that is deterministic per operation index. */
-const pick = (index: number, actors: number) =>
+export const pick = (actors: number) => (index: number) =>
   Number((BigInt(index) * 2_654_435_761n) % BigInt(actors))
 
 /** Resident and heap memory after a full collection, in MiB. */
@@ -105,7 +105,7 @@ export const manyActors: Scenario = {
                   instruments,
                   workers: WORKERS,
                   durationMs,
-                  operation: (index) => add(pick(index, actors)),
+                  operation: (index) => add(pick(actors)(index)),
                 })
 
                 const cold = (yield* activations) - activated
@@ -150,7 +150,7 @@ export const manyActors: Scenario = {
                 instruments,
                 workers: WORKERS,
                 durationMs,
-                operation: (index) => add(pick(index, actors)),
+                operation: (index) => add(pick(actors)(index)),
               })
             }),
           ),
