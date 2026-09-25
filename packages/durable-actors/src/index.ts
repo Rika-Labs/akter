@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { Definition } from "./actor/definition.ts"
+import { InTurn } from "./handles/intents.ts"
 import { CurrentCommandId } from "./identity/command.ts"
 import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
@@ -12,6 +13,8 @@ export const Actor = {
   state: ActorStates.make,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
+  /** Provided by the runtime only inside command turns; `X.intents` requires it. */
+  InTurn,
   as:
     (caller: Caller) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -27,6 +30,8 @@ export const Actor = {
 }
 
 export { Actors } from "./handles/actors.ts"
+
+export { Intent } from "./handles/intents.ts"
 
 export {
   ActorRef,
@@ -55,4 +60,4 @@ export {
 
 export type { CommandContext, QueryContext, Turn } from "./contexts/command.ts"
 
-export type { Handle } from "./actor/definition.ts"
+export type { Handle, Intents } from "./actor/definition.ts"

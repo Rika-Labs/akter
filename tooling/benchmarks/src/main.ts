@@ -16,6 +16,7 @@ import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { manyActors } from "./scenarios/many-actors.ts"
+import { outbox } from "./scenarios/outbox.ts"
 import { queryLatency } from "./scenarios/query-latency.ts"
 import { receiptReplay } from "./scenarios/receipt-replay.ts"
 import { stateSize } from "./scenarios/state-size.ts"
@@ -28,6 +29,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   receiptReplay,
   stateSize,
   manyActors,
+  outbox,
 ]
 
 const RESULT_SCHEMA = 2

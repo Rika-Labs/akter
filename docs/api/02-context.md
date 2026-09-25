@@ -35,7 +35,7 @@ const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(funct
 | `X.Workflow`   | workflow body                        | owner `id` and `ref`, `principal`, `executionId`, `key`, and owner-event `waitFor(Event, { where, timeout })`                                              |
 | `X.Executor`   | effect executor                      | `effectId`, `attempt`, `principal`, and owner `ref`; no database capability                                                                                |
 
-Only command handlers and workflow bodies may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker. Request/reply handles (`X.get`) are available outside turns: in applications, workflow bodies, and effect executors. Executors report results by returning a value; the framework delivers it to the effect's `onSuccess` route ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)). Workflow activities and durable sleep use Effect's `Activity` and `DurableClock`.
+Only command handlers and workflow bodies may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker, which command turns provide and `X.toLayer` removes from handler requirements (workflow bodies are target API). A command handler that acquires a handle with `X.get` does not compile. Request/reply handles (`X.get`) are available outside turns: in applications, workflow bodies, and effect executors. Executors report results by returning a value; the framework delivers it to the effect's `onSuccess` route ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)). Workflow activities and durable sleep use Effect's `Activity` and `DurableClock`.
 
 ## Command turns
 

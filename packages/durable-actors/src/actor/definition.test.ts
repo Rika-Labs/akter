@@ -1,6 +1,6 @@
 import { type Context, Effect, Layer, Schema } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
-import { Actor, ActorError, type Actors } from "../index.ts"
+import { Actor, ActorError, type Actors, Intent } from "../index.ts"
 import type { InternalActors } from "../handles/actors.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 
@@ -240,4 +240,72 @@ describe("actor declarations", () => {
         expectTypeOf(wrongPhase).not.toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
       }),
     ))
+
+  it("offers intents only inside command turns and keeps request/reply out of them", () => {
+    const Ping = Actor.command("Ping", { input: Schema.String })
+    const Wake = Actor.command("Wake")
+    const Peek = Actor.query("Peek", { output: Schema.Finite })
+
+    const Target = Actor.make("Target", {
+      key: Schema.String,
+      api: { Ping, Peek },
+      internal: { Wake },
+    })
+
+    const Lone = Actor.make("Lone", { key: Actor.singleton, api: { Ping } })
+
+    type TargetIntents = Effect.Success<ReturnType<typeof Target.intents>>
+
+    expectTypeOf<keyof TargetIntents>().toEqualTypeOf<"ref" | "Ping" | "Wake">()
+    expectTypeOf<Parameters<typeof Lone.intents>>().toEqualTypeOf<[]>()
+    expectTypeOf<Effect.Services<ReturnType<typeof Target.intents>>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof Actor.InTurn>
+    >()
+
+    const sends = Target.toLayer(
+      Effect.succeed({
+        Ping: Effect.fnUntraced(function* () {
+          const later = yield* Target.intents("other")
+          yield* later.Wake().pipe(Intent.after("1 hour"), Intent.key("wake"))
+          yield* later.Ping("hi")
+          yield* Intent.cancel("wake")
+        }),
+        Wake: () => Effect.void,
+      }),
+    )
+
+    expectTypeOf(sends).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+
+    const intentsInQuery = Target.toQueryLayer(
+      Effect.succeed({
+        Peek: Effect.fnUntraced(function* () {
+          yield* Target.intents("other")
+
+          return 1
+        }),
+      }),
+    )
+
+    expectTypeOf(intentsInQuery).toEqualTypeOf<
+      Layer.Layer<never, never, Context.Service.Identifier<typeof Actor.InTurn> | InternalActors>
+    >()
+
+    // Outside a turn nothing provides InTurn, so neither Effect can run.
+    expectTypeOf(Target.intents("other")).not.toExtend<Effect.Effect<unknown>>()
+    expectTypeOf(Intent.cancel("wake")).not.toExtend<Effect.Effect<unknown>>()
+
+    const _requestReply = Target.toLayer(
+      // @ts-expect-error a handle acquired inside a turn could only make a request/reply call
+      Effect.succeed({
+        Ping: Effect.fnUntraced(function* () {
+          const target = yield* Target.get("other")
+          yield* target.Ping("hi").pipe(Effect.orDie)
+        }),
+        Wake: () => Effect.void,
+      }),
+    )
+
+    expect(() => Intent.after(-1)).toThrow("non-negative")
+    expect(() => Intent.key("")).toThrow("1-200")
+  })
 })

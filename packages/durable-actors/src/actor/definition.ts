@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema, Scope, Semaphore } from "effect"
+import { Context, Effect, Layer, Option, Schema, Scope, Semaphore } from "effect"
 import {
   type CommandContext,
   InsideTurn,
@@ -15,6 +15,7 @@ import {
   type RegisteredQuery,
   Request,
 } from "../handles/actors.ts"
+import { currentStaging, emptyOutbox, InTurn, openOutbox, stage } from "../handles/intents.ts"
 import {
   ActorRef,
   Caller,
@@ -126,6 +127,16 @@ type Reasons<
       | (BoundedMailbox extends true ? "MailboxFull" : never)
       | ([Creating] extends [never] ? never : M["tag"] extends Creating ? never : "NotCreated")
 
+/**
+ * Durable intents to one actor, staged in the current command turn and
+ * delivered after it commits. Every command, public or internal, is reachable.
+ */
+export type Intents<Members extends MemberRecord> = {
+  readonly [K in CommandKeys<Members>]: (
+    ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
+  ) => Effect.Effect<void, never, InTurn>
+} & { readonly ref: ActorRef }
+
 export type Handle<
   Members extends MemberRecord,
   Creating extends string = never,
@@ -145,6 +156,14 @@ type HandlerMap<Members extends MemberRecord, Keys extends keyof Members, R> = {
     input: Members[K]["input"]["Type"],
   ) => Effect.Effect<Members[K]["output"]["Type"], Members[K]["errors"][number]["Type"], R>
 }
+
+/**
+ * Makes a command layer whose handlers need `Actors` unassignable: a handle
+ * acquired inside a turn could only make a request/reply call, which dies.
+ */
+type NoRequestReply<R> = [Extract<R, Actors>] extends [never]
+  ? unknown
+  : { readonly "Request/reply inside a turn: use X.intents(id)": never }
 
 /** One handler per command in `api` and `internal`. */
 export type Handlers<Members extends MemberRecord, R> = HandlerMap<Members, CommandKeys<Members>, R>
@@ -439,6 +458,11 @@ const make = <
               state: Object.freeze(view) as CommandContext<State>["state"],
             }
 
+            const outbox = openOutbox({
+              sender: request.ref,
+              onBehalfOf: Option.getOrUndefined(context.principal),
+            })
+
             return yield* Effect.gen(function* () {
               const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(
                 Effect.orDie,
@@ -475,6 +499,7 @@ const make = <
                 outcome: Outcome.cases.Success.make({ value }),
                 state: writes,
                 complete: loaded.upcast,
+                outbox: outbox.close(),
               }
             }).pipe(
               Effect.catch(
@@ -487,15 +512,18 @@ const make = <
                     outcome: Outcome.cases.Failure.make({ value }),
                     state: [],
                     complete: false,
+                    outbox: emptyOutbox,
                   })
                 }),
               ),
               Effect.ensuring(
                 Effect.sync(() => {
                   open = false
+                  outbox.close()
                 }),
               ),
               Effect.provideService(Turn, context),
+              Effect.provideService(InTurn, outbox.marker),
               Effect.provideContext(services),
               Effect.provideService(InsideTurn, turn),
             )
@@ -517,15 +545,23 @@ const make = <
    * when the layer is built; handlers read their turn with `yield* X.Turn`.
    */
   const toLayer = <R, RB>(
-    build: Effect.Effect<Handlers<All, R>, never, RB>,
-  ): Layer.Layer<never, never, Exclude<R, Turn> | Exclude<RB, Scope.Scope> | InternalActors> =>
+    build: Effect.Effect<Handlers<All, R>, never, RB> & NoRequestReply<R>,
+  ): Layer.Layer<
+    never,
+    never,
+    Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+  > =>
     Layer.effectDiscard(
       Effect.gen(function* () {
         const handlers = yield* build
-        const services = yield* Effect.context<Exclude<R, Turn>>()
+        const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
         yield* register(handlers, services as Context.Context<R>)
       }),
-    ) as Layer.Layer<never, never, Exclude<R, Turn> | Exclude<RB, Scope.Scope> | InternalActors>
+    ) as Layer.Layer<
+      never,
+      never,
+      Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+    >
 
   const registerQueries = <R>(handlers: QueryHandlers<Api, R>, services: Context.Context<R>) =>
     Effect.gen(function* () {
@@ -634,6 +670,41 @@ const make = <
     return yield* getHandle(yield* internalActors.mintActorId, false)
   })
 
+  const getIntents = Effect.fnUntraced(function* (
+    id: string,
+  ): Effect.fn.Return<Intents<All>, never, InTurn> {
+    const { marker, staging } = yield* currentStaging()
+
+    const target = ActorRef.make({
+      actor: name,
+      // Intents stay within the sending turn's tenant.
+      tenant: staging.sender.tenant,
+      id: isSingleton ? "singleton" : yield* Schema.decodeEffect(idSchema)(id).pipe(Effect.orDie),
+    })
+
+    const methods = Object.fromEntries(
+      members.map((member) => {
+        const inputCodec = Schema.fromJsonString(
+          Schema.toCodecJson(Schema.Struct({ value: member.input })),
+        )
+
+        return [
+          member.tag,
+          (input: typeof member.input.Type) =>
+            Effect.gen(function* () {
+              const payload = yield* Schema.encodeEffect(inputCodec)({ value: input }).pipe(
+                Effect.orDie,
+              )
+
+              yield* stage(marker, { target, command: member.tag, payload })
+            }),
+        ]
+      }),
+    )
+
+    return { ...methods, ref: target } as Intents<All>
+  })
+
   const get = isSingleton
     ? () => getHandle("singleton", false)
     : (id: string) => getHandle(id, false)
@@ -654,6 +725,14 @@ const make = <
     create: create as K extends undefined
       ? () => Effect.Effect<PublicHandle, never, Actors>
       : never,
+    /**
+     * Durable intents to this actor; only command turns provide `InTurn`. The
+     * id is a plain string so `X.intents(turn.id)` works for every key kind;
+     * an id that fails the key schema is a deterministic defect.
+     */
+    intents: (isSingleton ? () => getIntents("singleton") : getIntents) as K extends SingletonKey
+      ? () => Effect.Effect<Intents<All>, never, InTurn>
+      : (id: string) => Effect.Effect<Intents<All>, never, InTurn>,
   }
 
   internalDefinitions.set(actor, {
