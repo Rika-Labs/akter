@@ -50,6 +50,7 @@ Planning M1 ([milestone](../milestones/M1.md)) found four records that no longer
 ## Consequences
 
 - The vision, positioning, API sketches, and milestone index no longer promise an agent runtime package in this repository.
+- `examples/coding-agent` stays as a showcase example built from ordinary actor features. The framework is not shaped around agents: a feature Outlast or an agent needs is accepted only on its general merits, through its own ADR.
 - A future dictionary or other codec is a data migration with a stored per-row version, not a silent codec change.
 
 ## Revisit when
