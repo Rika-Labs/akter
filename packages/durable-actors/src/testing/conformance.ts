@@ -38,7 +38,6 @@ export interface ConformanceMatchers {
   readonly toContain: <T>(expected: T) => void
   readonly toMatchObject: <T extends object | ReadonlyArray<unknown>>(expected: T) => void
   readonly toBeInstanceOf: <T>(expected: T) => void
-  readonly toBeLessThan: (expected: number) => void
 }
 
 export type ConformanceExpect = <T>(actual: T) => ConformanceMatchers

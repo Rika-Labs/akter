@@ -1,5 +1,4 @@
-import { heapStats } from "bun:jsc"
-import { Crypto, Effect, Layer, ManagedRuntime, Schema } from "effect"
+import { Crypto, Effect, Layer, ManagedRuntime, Schedule, Schema } from "effect"
 import { Actor, User } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
@@ -29,13 +28,44 @@ const ACTORS = 1000
 /**
  * Live JavaScript heap after a full collection. ArrayBuffer memory is left
  * out: an in-process database keeps its pages there, and they grow with
- * stored rows rather than with anything the runtime retains.
+ * stored rows rather than with anything the runtime retains. `bun:jsc` is
+ * loaded only when the case runs, so importing the testing entry needs no Bun.
  */
-const retained = Effect.sync(() => {
+const retained = Effect.gen(function* () {
+  const { heapStats } = yield* Effect.promise(() => import("bun:jsc"))
   Bun.gc(true)
   const stats = heapStats()
 
   return { bytes: stats.heapSize - stats.extraMemorySize, objects: stats.objectCount }
+})
+
+type Retained = Effect.Success<typeof retained>
+
+/**
+ * Samples the heap once a second until two samples agree to within one object
+ * per actor, or 60 seconds pass. Cluster's reaper sweeps every 5 seconds and
+ * releases a whole sweep's activations at once, so a settled heap means the
+ * sweeps have run.
+ */
+const settled = Effect.gen(function* () {
+  let previous = yield* retained
+
+  return yield* Effect.gen(function* () {
+    const next = yield* retained
+    const done = Math.abs(previous.objects - next.objects) < ACTORS
+    previous = next
+
+    return done ? next : yield* Effect.fail("unsettled" as const)
+  }).pipe(
+    Effect.delay("1 second"),
+    Effect.retry({ schedule: Schedule.recurs(60) }),
+    Effect.orElseSucceed(() => previous),
+  )
+})
+
+const perActor = (before: Retained, after: Retained) => ({
+  objects: (after.objects - before.objects) / ACTORS,
+  bytes: (after.bytes - before.bytes) / ACTORS,
 })
 
 export const heapConformance: ReadonlyArray<ConformanceCase> = [
@@ -72,31 +102,38 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
               { concurrency: 32, discard: true },
             )
 
-          // Cluster's reaper sweeps at most every 5 seconds, so two sweeps
-          // pass before any activation is still resident.
-          const hibernate = Effect.sleep("11 seconds")
+          // Nothing is released before the reaper's first sweep, 5 seconds in.
+          const hibernate = Effect.andThen(Effect.sleep("6 seconds"), settled)
 
-          const { before, after, generation } = yield* Effect.promise(() =>
+          const { growth, generations } = yield* Effect.promise(() =>
             runtime.runPromise(
               Effect.gen(function* () {
                 yield* touchAll("warm")
-                yield* hibernate
-                const before = yield* retained
+                const before = yield* hibernate
                 yield* touchAll("actor")
-                yield* hibernate
-                const after = yield* retained
-                const sample = yield* Sleeper.get("actor-0")
-                yield* sample.Touch()
+                const growth = perActor(before, yield* hibernate)
                 const test = yield* ActorTest
 
-                return { before, after, generation: (yield* test.inspect(sample.ref)).generation }
+                const generations = yield* Effect.forEach([0, 250, 500, 750, 999], (index) =>
+                  Effect.gen(function* () {
+                    const sample = yield* Sleeper.get(`actor-${index}`)
+                    yield* sample.Touch()
+
+                    return (yield* test.inspect(sample.ref)).generation
+                  }),
+                )
+
+                return { growth, generations }
               }),
             ),
           )
 
-          expect(generation).toBe("2")
-          expect((after.objects - before.objects) / ACTORS).toBeLessThan(10)
-          expect((after.bytes - before.bytes) / ACTORS).toBeLessThan(1024)
+          expect(generations).toEqual(["2", "2", "2", "2", "2"])
+          // Under 10 objects and 1 KiB per touched actor; a retained Cluster
+          // client per command was about 95 objects and 11 KiB.
+          expect({ ...growth, bounded: growth.objects < 10 && growth.bytes < 1024 }).toMatchObject({
+            bounded: true,
+          })
         }),
       ),
   },
