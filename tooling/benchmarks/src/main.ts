@@ -14,6 +14,7 @@ import { type Backend, type BackendName, pglite, postgres } from "./backend.ts"
 import { machine, runtimeVersions, source } from "./environment.ts"
 import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
+import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { ownedRows } from "./scenarios/owned-rows.ts"
@@ -34,6 +35,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   manyActors,
   outbox,
   ownedRows,
+  effectRoundTrip,
 ]
 
 const RESULT_SCHEMA = 2
