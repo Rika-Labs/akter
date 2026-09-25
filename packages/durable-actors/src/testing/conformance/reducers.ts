@@ -121,6 +121,7 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 1,
             outbox: 0,
             events: 0,
+            effects: 0,
           })
           const add = tally.Add(7)
           const before = reductions.count
@@ -134,6 +135,7 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 2,
             outbox: 0,
             events: 0,
+            effects: 0,
           })
           expect(yield* storedVersion(tally.ref)).toBe("1")
         }),
@@ -179,6 +181,7 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 1,
             outbox: 0,
             events: 0,
+            effects: 0,
           })
           expect(yield* storedVersion(tally.ref)).toBe(undefined)
           expect(yield* tally.Add(-998)).toEqual({ count: 0, label: "migrated" })
@@ -191,6 +194,7 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 2,
             outbox: 0,
             events: 0,
+            effects: 0,
           })
           expect(yield* storedVersion(tally.ref)).toBe("1")
         }),
