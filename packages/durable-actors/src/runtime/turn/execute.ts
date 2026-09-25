@@ -72,6 +72,8 @@ export const executeTurn = Effect.fnUntraced(function* (
         set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)) AS timeouts
       ON CONFLICT DO NOTHING`
 
+    yield* sql`SELECT 1 AS planted_extra_statement`
+
     const admission = (yield* sql<Admission>`
       SELECT g.generation::text AS generation, g.created,
         ${request.payload}::jsonb::text AS canonical,
