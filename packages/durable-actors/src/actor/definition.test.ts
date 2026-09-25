@@ -48,6 +48,9 @@ describe("actor declarations", () => {
         "MailboxFull"
       >
     >().toEqualTypeOf<"MailboxFull">()
+    expectTypeOf<
+      Extract<FrameworkReason<Public["Read"]>, "RunnerAtCapacity">
+    >().toEqualTypeOf<"RunnerAtCapacity">()
     expectTypeOf<ActorError.Of<never>>().toEqualTypeOf<never>()
     expectTypeOf<Parameters<typeof Named.get>[0]>().toEqualTypeOf<string>()
     expectTypeOf<Parameters<typeof Singleton.get>>().toEqualTypeOf<[]>()

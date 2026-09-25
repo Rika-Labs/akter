@@ -20,10 +20,24 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
   const sharding = yield* Sharding.Sharding
   const services = yield* Effect.context<Effect.Services<ReturnType<typeof executeTurn>>>()
   const entity = commandEntity(registration.name)
+  // Cluster reports a full mailbox and a full runner with the same error; only
+  // an activation that is already resident can have a full mailbox. A handler
+  // rebuilt after a defect can overlap its predecessor, hence the count.
+  const resident = new Map<string, number>()
 
   const register = sharding.registerEntity(
     entity,
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      const { entityId } = yield* Entity.CurrentAddress
+      resident.set(entityId, (resident.get(entityId) ?? 0) + 1)
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          const count = resident.get(entityId)! - 1
+
+          if (count === 0) resident.delete(entityId)
+          else resident.set(entityId, count)
+        }),
+      )
       const cache = emptyActivationCache()
 
       return entity.of({
@@ -95,4 +109,6 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
     )
     yield* Deferred.await(ready)
   } else yield* register
+
+  return (entityId: string) => resident.has(entityId)
 })

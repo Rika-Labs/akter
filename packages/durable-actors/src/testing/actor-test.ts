@@ -92,6 +92,7 @@ export class ActorTest extends Context.Service<
     readonly as?: Caller
     readonly authorize?: Options["authorize"]
     readonly retryWindowMs?: number
+    readonly maxResidentActors?: number
   }) =>
     Layer.unwrap(
       Effect.gen(function* () {
@@ -249,6 +250,7 @@ export class ActorTest extends Context.Service<
         const runtime = runtimeLayer({
           authorize: options.authorize ?? (() => Effect.succeed(true)),
           retryWindowMs: options.retryWindowMs,
+          maxResidentActors: options.maxResidentActors,
         })
 
         return Layer.mergeAll(

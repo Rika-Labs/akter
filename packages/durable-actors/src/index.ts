@@ -51,6 +51,7 @@ export {
   Timeout,
   NotCreated,
   MailboxFull,
+  RunnerAtCapacity,
 } from "./errors/actor.ts"
 
 export type { CommandContext, QueryContext, Turn } from "./contexts/command.ts"

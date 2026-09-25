@@ -29,6 +29,7 @@ import {
   Unauthorized,
   Timeout,
   MailboxFull,
+  RunnerAtCapacity,
 } from "../errors/actor.ts"
 import {
   Actors,
@@ -53,6 +54,14 @@ export interface Options {
     readonly command: string
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
+  /**
+   * Activations this runner keeps in memory at once. A command that needs a
+   * new activation past the limit fails `RunnerAtCapacity` and is retried
+   * until an idle actor hibernates or the delivery timeout passes. Default
+   * 10,000, which bounds runner memory; raise it with the memory you give the
+   * process.
+   */
+  readonly maxResidentActors?: number
 }
 
 export const layer = (options: Options) => {
@@ -60,12 +69,17 @@ export const layer = (options: Options) => {
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
   ).make(options.retryWindowMs ?? 86_400_000)
 
+  const maxResidentActors = Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }),
+  ).make(options.maxResidentActors ?? 10_000)
+
   const runtime = Layer.effectContext(
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto
       const scope = yield* Effect.scope
       const sharding = yield* Sharding.Sharding
       const registrations = new Map<string, Registration>()
+      const residency = new Map<string, (entityId: string) => boolean>()
       const queryRegistrations = new Map<string, QueryRegistration>()
 
       const services = yield* Effect.context<
@@ -121,11 +135,17 @@ export const layer = (options: Options) => {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-          yield* registerActor(registration).pipe(Effect.provideContext(services))
+
+          const isResident = yield* registerActor(registration).pipe(
+            Effect.provideContext(services),
+          )
+
           registrations.set(registration.name, registration)
+          residency.set(registration.name, isResident)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               registrations.delete(registration.name)
+              residency.delete(registration.name)
             }),
           )
         }),
@@ -186,6 +206,8 @@ export const layer = (options: Options) => {
                 reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
               })
 
+            let rejected: ActorError | undefined
+
             return yield* Effect.gen(function* () {
               yield* authorize(request)
               const hash = yield* payloadHash(request.payload)
@@ -202,18 +224,22 @@ export const layer = (options: Options) => {
                 return retained
               }
 
+              const entityId = yield* Schema.encodeEffect(
+                Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+              )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie)
+
               const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(
-                yield* Schema.encodeEffect(
-                  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-                )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie),
+                entityId,
               )
 
               yield* (yield* TurnHooks).at("beforeDelivery", request)
 
               // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
-              const deliver = Effect.suspend(() =>
-                client.Execute(request).pipe(Effect.forkIn(scope)),
-              ).pipe(
+              const deliver = Effect.suspend(() => {
+                rejected = undefined
+
+                return client.Execute(request).pipe(Effect.forkIn(scope))
+              }).pipe(
                 Effect.flatMap(Fiber.join),
                 Effect.catchCause((cause) => {
                   const failure = Cause.findErrorOption(cause)
@@ -221,8 +247,22 @@ export const layer = (options: Options) => {
                   if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
                     return Effect.fail(failure.value)
 
-                  if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value))
-                    return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
+                  // An unbounded mailbox cannot fill, so the runner is out of
+                  // activation slots; a bounded one is full only while resident.
+                  if (
+                    Option.isSome(failure) &&
+                    Schema.is(ClusterError.MailboxFull)(failure.value)
+                  ) {
+                    if (
+                      registration.policy.mailboxCapacity !== "unbounded" &&
+                      residency.get(request.ref.actor)?.(entityId) === true
+                    )
+                      return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
+
+                    rejected = ActorError.make({ reason: RunnerAtCapacity.make({}) })
+
+                    return Effect.fail(rejected)
+                  }
 
                   // Direct commands are not persisted. A restarted activation
                   // or lost runner drops the uncommitted attempt, so
@@ -238,7 +278,9 @@ export const layer = (options: Options) => {
 
               const outcome = yield* deliver.pipe(
                 Effect.retry({
-                  while: (error) => Schema.is(ActorUnavailable)(error.reason),
+                  while: (error) =>
+                    Schema.is(ActorUnavailable)(error.reason) ||
+                    Schema.is(RunnerAtCapacity)(error.reason),
                   // Exponential backoff capped at 500 ms; the delivery timeout bounds the total.
                   schedule: Schedule.min([
                     Schedule.exponential("10 millis", 2),
@@ -253,9 +295,12 @@ export const layer = (options: Options) => {
             }).pipe(
               Effect.timeoutOrElse({
                 duration: registration.policy.deliveryMs,
+                // Waiting out a capacity rejection, no attempt is in flight, so
+                // the more precise answer is that the runner never admitted it.
                 orElse: () =>
                   Effect.fail(
-                    ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
+                    rejected ??
+                      ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
                   ),
               }),
             )
@@ -311,7 +356,11 @@ export const layer = (options: Options) => {
           RunnerHealth.layerNoop,
         ]),
         Layer.provide(
-          ShardingConfig.layer({ shardsPerGroup: 1, simulateRemoteSerialization: true }),
+          ShardingConfig.layer({
+            shardsPerGroup: 1,
+            simulateRemoteSerialization: true,
+            maxResidentEntities: maxResidentActors,
+          }),
         ),
       )
 
@@ -321,6 +370,12 @@ export const layer = (options: Options) => {
 }
 
 export const Database = {
+  /**
+   * `maxConnections` defaults to 50. A command holds one connection for its
+   * whole turn, so a pool smaller than the commands in flight queues callers
+   * behind it; the pool opens connections only as load needs them. Keep the
+   * sum across runners below the server's `max_connections`.
+   */
   postgres: (options: Omit<PgClient.PgPoolConfig, "types">) => {
     const types = PgTypes.makeRegistry()
     // rc.116 lacks regclass decoding, used by Sql Migrator on restart. Remove after Effect #8309.
@@ -334,7 +389,7 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    return PgClient.layer({ ...options, types })
+    return PgClient.layer({ ...options, maxConnections: options.maxConnections ?? 50, types })
   },
   pglite,
 }
