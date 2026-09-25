@@ -2,14 +2,13 @@ import { Cause, Effect, Queue, Result, Schema, Semaphore } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request } from "../../handles/actors.ts"
-import { ActorRef } from "../../identity/caller.ts"
 import { TurnHooks } from "./hooks.ts"
 import { BUCKETS, CallerJson, outboxTime } from "./outbox.ts"
 
 /** Durable polling is the correctness path; a post-commit wake only shortens it. */
 const POLL_INTERVAL = "1 second"
 
-const PASS_LIMIT = 256
+export const PASS_LIMIT = 256
 
 /** A drain that keeps finding due work after this many passes is a delivery loop. */
 const DRAIN_PASSES = 100
@@ -90,17 +89,23 @@ export const outboxRelay = Effect.fnUntraced(function* (
           WHERE routing_key = ${routingKey} AND intent_id = ${row.intent_id}`
       })
 
-    const caller = yield* Schema.decodeEffect(CallerJson)(row.caller).pipe(Effect.result)
+    // A row that cannot form a request backs off like a failed delivery instead of dying on every pass.
+    const decoded = yield* Schema.decodeEffect(CallerJson)(row.caller).pipe(
+      Effect.flatMap((caller) =>
+        Schema.decodeEffect(Request)({
+          ref: { tenant: row.tenant_id, actor: row.target_type, id: row.target_id },
+          caller,
+          command: row.command,
+          commandId: row.intent_id,
+          payload: row.payload,
+        }),
+      ),
+      Effect.result,
+    )
 
-    if (Result.isFailure(caller)) return yield* retryLater("UnreadableCaller", caller.failure)
+    if (Result.isFailure(decoded)) return yield* retryLater("UnreadableRow", decoded.failure)
 
-    const request = Request.make({
-      ref: ActorRef.make({ tenant: row.tenant_id, actor: row.target_type, id: row.target_id }),
-      caller: caller.success,
-      command: row.command,
-      commandId: row.intent_id,
-      payload: row.payload,
-    })
+    const request = decoded.success
 
     const delivered = yield* deliver(request).pipe(Effect.result)
 
@@ -121,13 +126,18 @@ export const outboxRelay = Effect.fnUntraced(function* (
         const now = yield* outboxTime
         const due = yield* scanDue({ sql, now, limit: PASS_LIMIT })
 
-        yield* Effect.forEach(
+        const settled = yield* Effect.forEach(
           due,
-          (row) => settle(row, now).pipe(logFailure("Outbox relay crashed delivering an intent")),
-          { concurrency: 16, discard: true },
+          (row) =>
+            settle(row, now).pipe(
+              Effect.as(true),
+              logFailure("Outbox relay crashed delivering an intent"),
+            ),
+          { concurrency: 16 },
         )
 
-        return due.length
+        // A row whose settle died is still due; only deleted or rescheduled rows are progress.
+        return { due: due.length, settled: settled.filter((done) => done === true).length }
       }),
     )
     .pipe(Effect.provideContext(services))
@@ -136,14 +146,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
     let backlog = false
 
     while (true) {
-      // A full pass means more rows are already due; waiting would cap the relay at one pass per poll.
+      // A full pass that settled every row means more are already due, so waiting would cap the
+      // relay at one pass per poll. Rows that died unsettled are rescanned at once, so any such
+      // row sends the loop back to waiting instead of spinning on it.
       if (!backlog) yield* Queue.take(signals).pipe(Effect.timeoutOption(POLL_INTERVAL))
-      backlog = (yield* pass.pipe(logFailure("Outbox relay pass failed"))) === PASS_LIMIT
+      const result = yield* pass.pipe(logFailure("Outbox relay pass failed"))
+      backlog = result !== undefined && result.settled === PASS_LIMIT
     }
   })
 
   const drain = Effect.gen(function* () {
-    for (let passes = 0; passes < DRAIN_PASSES; passes++) if ((yield* pass) === 0) return
+    for (let passes = 0; passes < DRAIN_PASSES; passes++) if ((yield* pass).due === 0) return
 
     return yield* Effect.die(new Error("Outbox did not settle; intents keep producing due work"))
   }).pipe(Effect.orDie)
