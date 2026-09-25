@@ -13,6 +13,7 @@ import {
 import { type Backend, type BackendName, pglite, postgres } from "./backend.ts"
 import { machine, runtimeVersions, source } from "./environment.ts"
 import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
+import { blobs } from "./scenarios/blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { ownedRows } from "./scenarios/owned-rows.ts"
@@ -32,6 +33,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   manyActors,
   outbox,
   ownedRows,
+  blobs,
 ]
 
 const RESULT_SCHEMA = 2

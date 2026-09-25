@@ -1,6 +1,7 @@
 import { DateTime, Deferred, Effect, Layer } from "effect"
 import { Intent } from "durable-actors"
 import { Probe, Sender, Sink, SleepyProbe } from "./contract.ts"
+import { ArchiveLive } from "./archive.ts"
 import { LedgerLive } from "./ledger.ts"
 import { ProbeReads, SleepyProbeReads } from "./queries.ts"
 
@@ -89,4 +90,5 @@ export const ProbeLive = Layer.mergeAll(
   SinkCommands,
   SenderCommands,
   LedgerLive,
+  ArchiveLive,
 )
