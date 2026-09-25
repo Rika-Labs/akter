@@ -73,6 +73,8 @@ export interface EffectFailure {
   readonly cause: string
   /** True when the provider may have applied the call anyway. */
   readonly ambiguous: boolean
+  /** Retrying cannot help, so the effect is dead-lettered now. */
+  readonly final?: boolean
 }
 
 export interface RegisteredEffect {

@@ -1,8 +1,15 @@
+import { PgClient } from "@effect/sql-pg"
+import { PgliteClient } from "@effect/sql-pglite"
 import { Context, Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 
-/** Makes an effect layer whose executors need a SQL client unassignable. */
-export type NoDatabase<R> = [Extract<R, SqlClient.SqlClient>] extends [never]
+/**
+ * Makes an effect layer unassignable when its executors or its build need a
+ * SQL client, since a client captured at build time would reach executors.
+ */
+export type NoDatabase<R> = [
+  Extract<R, SqlClient.SqlClient | PgClient.PgClient | PgliteClient.PgliteClient>,
+] extends [never]
   ? unknown
   : { readonly "Executors have no database capability": never }
 
@@ -13,4 +20,8 @@ export type NoDatabase<R> = [Extract<R, SqlClient.SqlClient>] extends [never]
 export const withoutDatabase =
   (services: Context.Context<never>) =>
   <A, E>(attempt: Effect.Effect<A, E>): Effect.Effect<A, E> =>
-    attempt.pipe(Effect.updateContext(() => Context.omit(SqlClient.SqlClient)(services)))
+    attempt.pipe(
+      Effect.updateContext(() =>
+        Context.omit(SqlClient.SqlClient, PgClient.PgClient, PgliteClient.PgliteClient)(services),
+      ),
+    )

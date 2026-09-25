@@ -218,7 +218,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     // Claiming records the attempt before the provider can see it, so a crash
     // during the call is counted and reported as an unknown outcome.
     const claimed = yield* sql`UPDATE actor_outbox SET attempts = ${attempt},
-        due_at_ms = ${now + EXECUTION_LEASE_MS}, ambiguous = true,
+        due_at_ms = ${(yield* outboxTime) + EXECUTION_LEASE_MS}, ambiguous = true,
         last_error = ${`Attempt ${attempt} ended without reporting an outcome`}
       WHERE ${attemptRow(row.attempts)} RETURNING 1`
 
@@ -252,17 +252,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
       return yield* settleTo(outcome.success, attempt)
     }
 
-    const { cause, ambiguous } = outcome.failure
+    const { cause, ambiguous, final } = outcome.failure
+    const last = final === true || attempt >= registered.attempts
 
-    if (attempt >= registered.attempts) return yield* exhaust(attempt, cause, ambiguous)
+    // The outcome is recorded first, so a failed dead-letter transaction is
+    // retried with this attempt's cause rather than the claim's.
+    yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
+        due_at_ms = ${(yield* outboxTime) + backoffMs(attempt - 1)}
+      WHERE ${attemptRow(attempt)}`
+
+    if (last) return yield* exhaust(attempt, cause, ambiguous)
 
     yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
       Effect.annotateLogs({ attempt, ambiguous }),
       annotate,
     )
-    yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
-        due_at_ms = ${(yield* outboxTime) + backoffMs(attempt - 1)}
-      WHERE ${attemptRow(attempt)}`
   })
 
   const pass = lock

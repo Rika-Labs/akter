@@ -982,7 +982,6 @@ const make = <
     return (value: typeof command.input.Type) =>
       Schema.encodeEffect(codec)({ value }).pipe(
         Effect.map((payload): EffectRoute => ({ command: command.tag, payload })),
-        Effect.orDie,
       )
   }
 
@@ -1042,12 +1041,24 @@ const make = <
 
             if (onSuccess === undefined) return undefined
 
-            return yield* onSuccess(exit.value)
+            // The provider already applied the call, so a result the route
+            // cannot accept is dead-lettered instead of executed again.
+            return yield* onSuccess(exit.value).pipe(
+              Effect.mapError((error) => ({
+                cause: `The onSuccess route cannot accept the result: ${String(error)}`,
+                ambiguous: true,
+                final: true,
+              })),
+            )
           }) as RegisteredEffect["execute"],
+          // A payload that no longer decodes is still dead-lettered for
+          // operators; only its route, which needs the decoded effect, is skipped.
           deadLetter: Effect.fnUntraced(function* (payload, letter) {
-            if (onDeadLetter === undefined) return undefined
+            const effect = yield* decode(payload).pipe(Effect.option)
 
-            return yield* onDeadLetter({ ...letter, effect: yield* decode(payload) })
+            if (onDeadLetter === undefined || Option.isNone(effect)) return undefined
+
+            return yield* onDeadLetter({ ...letter, effect: effect.value })
           }, Effect.orDie),
         })
       }
@@ -1065,7 +1076,7 @@ const make = <
    * no database capability; the return value is routed to `onSuccess`.
    */
   const toEffectLayer = <R, RB>(
-    build: Effect.Effect<Executors<Effects[number], R>, never, RB> & NoDatabase<R>,
+    build: Effect.Effect<Executors<Effects[number], R>, never, RB> & NoDatabase<R | RB>,
   ): Layer.Layer<never, never, Exclude<R, Executor> | Exclude<RB, Scope.Scope> | InternalActors> =>
     Layer.effectDiscard(
       Effect.gen(function* () {

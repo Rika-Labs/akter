@@ -1,3 +1,5 @@
+import { PgClient } from "@effect/sql-pg"
+import { PgliteClient } from "@effect/sql-pglite"
 import { Cause, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Caller, System } from "../../index.ts"
@@ -38,6 +40,12 @@ class Moderate extends Actor.effect<Moderate>()("Moderate", {
   success: Verdict,
 }) {}
 
+// Its success type is wider than its route's input, which accepts only integers.
+class Measure extends Actor.effect<Measure>()("Measure", {
+  input: { value: Schema.Finite },
+  success: Schema.Finite,
+}) {}
+
 // No routes: its outcome and any dead letter are for operators only.
 class Notify extends Actor.effect<Notify>()("Notify", { input: { body: Schema.String } }) {}
 
@@ -67,6 +75,10 @@ const Ping = Actor.command("Ping", { input: Schema.String })
 
 const Escape = Actor.command("Escape")
 
+const Gauge = Actor.command("Gauge", { input: Schema.Finite })
+
+const Measured = Actor.command("Measured", { input: Schema.Int })
+
 const Steal = Actor.command("Steal")
 
 const Moderated = Actor.command("Moderated", { input: Verdict })
@@ -79,13 +91,14 @@ const Author = Actor.make("Author", {
     routed: Schema.Array(Routed).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     dead: Schema.Array(Dead).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  effects: [Moderate, Notify],
-  api: { Post, PostThenRefuse, PostThenDie, Ping, Escape, Steal },
-  internal: { Moderated, ModerationFailed },
+  effects: [Moderate, Notify, Measure],
+  api: { Post, PostThenRefuse, PostThenDie, Ping, Escape, Steal, Gauge },
+  internal: { Moderated, ModerationFailed, Measured },
   policy: {
     effects: {
       Moderate: { retry: { times: 1 }, onSuccess: Moderated, onDeadLetter: ModerationFailed },
       Notify: { retry: { times: 0 } },
+      Measure: { retry: { times: 2 }, onSuccess: Measured },
     },
   },
 })
@@ -123,6 +136,10 @@ export const effectsLayer = (fixture: EffectsFixture) =>
           fixture.escaped = turn.perform(Notify.make({ body: "escaped" }))
         }),
         Steal: () => Effect.suspend(() => fixture.escaped),
+        Gauge: Effect.fnUntraced(function* (value: number) {
+          yield* (yield* Author.Turn).perform(Measure.make({ value }))
+        }),
+        Measured: () => Effect.void,
         Moderated: Effect.fnUntraced(function* (verdict) {
           const turn = yield* Author.Turn
           yield* turn.state.set({
@@ -155,7 +172,10 @@ export const effectsLayer = (fixture: EffectsFixture) =>
         Moderate: Effect.fnUntraced(function* ({ id, body }) {
           const exec = yield* Author.Executor
           fixture.attempts.push(exec)
-          fixture.sawDatabase ||= Option.isSome(yield* Effect.serviceOption(SqlClient.SqlClient))
+          fixture.sawDatabase ||=
+            Option.isSome(yield* Effect.serviceOption(SqlClient.SqlClient)) ||
+            Option.isSome(yield* Effect.serviceOption(PgClient.PgClient)) ||
+            Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
           const step = fixture.plan.shift() ?? "ok"
 
           if (step === "fail") return yield* ProviderDown.make({})
@@ -164,6 +184,13 @@ export const effectsLayer = (fixture: EffectsFixture) =>
           if (step === "die") return yield* Effect.die(new Error("Provider reply lost"))
 
           return { id, flagged: body.includes("spam") }
+        }),
+        Measure: Effect.fnUntraced(function* ({ value }) {
+          const exec = yield* Author.Executor
+          fixture.attempts.push(exec)
+          fixture.calls.set(exec.effectId, (fixture.calls.get(exec.effectId) ?? 0) + 1)
+
+          return value
         }),
         Notify: Effect.fnUntraced(function* () {
           const exec = yield* Author.Executor
@@ -380,7 +407,6 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           fixture.effects.plan = ["fail", "fail"]
           yield* author.Post("doomed")
           yield* test.advance(0)
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 1 })
           yield* test.advance("1 second")
           const [first] = attemptsOf(fixture.effects, "exhausted")
           const { routed, dead } = yield* authorState("exhausted")
@@ -415,9 +441,10 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           const author = yield* Author.get("ambiguous")
           // Attempt 1 fails cleanly; attempt 2 reaches the provider and dies before recording.
           fixture.effects.plan = ["fail"]
+          // Only a successful attempt reaches afterExecute, so this crash hits attempt 2.
+          yield* test.crashNext("afterExecute")
           yield* author.Post("unknown")
           yield* test.advance(0)
-          yield* test.crashNext("afterExecute")
           yield* test.advance("1 second")
           expect((yield* authorState("ambiguous")).dead).toEqual([])
           yield* test.advance("1 minute")
@@ -435,6 +462,27 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* deadLetters("ambiguous")).toEqual([
             { effect: "Moderate", attempts: 2, ambiguous: true },
             { effect: "Notify", attempts: 1, ambiguous: true },
+          ])
+          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+        }),
+      ),
+  },
+  {
+    name: "dead-letters a result its route cannot accept without calling the provider again",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const author = yield* Author.get("unroutable")
+          yield* author.Gauge(1.5)
+          yield* test.advance("1 hour")
+          const attempts = attemptsOf(fixture.effects, "unroutable")
+
+          expect(attempts.length).toBe(1)
+          expect(fixture.effects.calls.get(attempts[0]!.effectId)).toBe(1)
+          expect(yield* test.receiptsFor(author.ref, "Measured")).toBe(0)
+          expect(yield* deadLetters("unroutable")).toEqual([
+            { effect: "Measure", attempts: 1, ambiguous: true },
           ])
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
         }),

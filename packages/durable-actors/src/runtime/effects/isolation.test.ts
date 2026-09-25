@@ -15,5 +15,14 @@ it("rejects an executor that requires the SQL client", () => {
     }),
   )
 
-  expect(layer).toBeDefined()
+  const captured = Owner.toEffectLayer(
+    // @ts-expect-error a SQL client captured while building would reach executors
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+
+      return { Lookup: () => sql`SELECT 1`.pipe(Effect.orDie, Effect.asVoid) }
+    }),
+  )
+
+  expect([layer, captured]).toHaveLength(2)
 })
