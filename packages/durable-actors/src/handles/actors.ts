@@ -2,6 +2,7 @@ import { Context, Effect, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { StagedOutbox } from "./intents.ts"
 import type { AnyOwnedTable, TableAccess, TableScope } from "../tables/owned.ts"
@@ -31,7 +32,7 @@ export interface BusinessResult {
   readonly complete: boolean
   /** Encoded events in emit order, appended with the commit. */
   readonly events: ReadonlyArray<EmittedEvent>
-  /** Intents to commit with the turn; a declared failure stages none. */
+  /** Intents and effects to commit with the turn; a declared failure stages none. */
   readonly outbox: StagedOutbox
 }
 
@@ -59,6 +60,48 @@ export interface RegisteredCommand {
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
   ) => Effect.Effect<BusinessResult, BusinessResult>
+}
+
+/** A command an effect's outcome is delivered to, with its encoded input. */
+export interface EffectRoute {
+  readonly command: string
+  readonly payload: string
+}
+
+/** How one executor attempt ended without a result. */
+export interface EffectFailure {
+  readonly cause: string
+  /** True when the provider may have applied the call anyway. */
+  readonly ambiguous: boolean
+  /** Retrying cannot help, so the effect is dead-lettered now. */
+  readonly final?: boolean
+}
+
+export interface RegisteredEffect {
+  /** Total attempts before the effect is dead-lettered. */
+  readonly attempts: number
+  /** Runs one attempt; succeeds with the `onSuccess` route, if declared. */
+  readonly execute: (
+    payload: string,
+    context: ExecutorContext,
+  ) => Effect.Effect<EffectRoute | undefined, EffectFailure>
+  /** The `onDeadLetter` route for an exhausted effect, if declared. */
+  readonly deadLetter: (
+    payload: string,
+    letter: {
+      readonly effectId: string
+      readonly attempts: number
+      readonly cause: string
+      readonly ambiguous: boolean
+    },
+  ) => Effect.Effect<EffectRoute | undefined>
+}
+
+export interface EffectRegistration {
+  readonly name: string
+  /** The effect layer's build context; executor attempts run in it. */
+  readonly services: Context.Context<never>
+  readonly effects: ReadonlyMap<string, RegisteredEffect>
 }
 
 /** A query reads committed state; it never activates, fences, or receipts. */
@@ -101,6 +144,7 @@ export class InternalActors extends Context.Service<
     /** Runs relay passes until no due intent remains; used by `ActorTest.advance`. */
     readonly drainOutbox: Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
+    readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>
     /**

@@ -32,6 +32,7 @@ import {
 } from "../errors/actor.ts"
 import {
   Actors,
+  type EffectRegistration,
   InternalActors,
   Outcome,
   type QueryRegistration,
@@ -40,6 +41,7 @@ import {
 } from "../handles/actors.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
+import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { replayEvents } from "./events/replay.ts"
@@ -73,6 +75,7 @@ export const layer = (options: Options) => {
       const sharding = yield* Sharding.Sharding
       const registrations = new Map<string, Registration>()
       const queryRegistrations = new Map<string, QueryRegistration>()
+      const effectRegistrations = new Map<string, EffectRegistration>()
 
       const services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
@@ -219,7 +222,22 @@ export const layer = (options: Options) => {
         ),
       )
 
-      const relay = yield* outboxRelay((request) => dispatch(request, false))
+      const relay = yield* outboxRelay(
+        (request) => dispatch(request, false),
+        (actor, effect) => {
+          const registration = effectRegistrations.get(actor)
+          const registered = registration?.effects.get(effect)
+
+          if (registration === undefined || registered === undefined) return undefined
+
+          return {
+            ...registered,
+            execute: (payload, context) =>
+              registered.execute(payload, context).pipe(withoutDatabase(registration.services)),
+          }
+        },
+      )
+
       yield* relay.run.pipe(Effect.forkIn(scope))
       const outbox = { retryWindowMs, wake: relay.wake }
 
@@ -262,6 +280,17 @@ export const layer = (options: Options) => {
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               queryRegistrations.delete(registration.name)
+            }),
+          )
+        }),
+        // Executors need no placement: they never touch the actor's rows.
+        registerEffects: Effect.fnUntraced(function* (registration: EffectRegistration) {
+          if (effectRegistrations.has(registration.name))
+            return yield* Effect.die(new Error(`Duplicate effect layer: ${registration.name}`))
+          effectRegistrations.set(registration.name, registration)
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              effectRegistrations.delete(registration.name)
             }),
           )
         }),

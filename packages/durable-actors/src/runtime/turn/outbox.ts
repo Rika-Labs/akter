@@ -40,8 +40,9 @@ export const OutboxRuntime = Context.Reference<{
 export const CallerJson = Schema.fromJsonString(Caller)
 
 /**
- * Writes one turn's intents inside its transaction: deletes committed rows
- * whose keys the turn replaced or cancelled, then inserts the staged rows.
+ * Writes one turn's intents and effects inside its transaction: deletes
+ * committed rows whose keys the turn replaced or cancelled, then inserts the
+ * staged rows.
  * Returns whether any inserted row is already due, so the caller can wake the
  * relay after commit.
  */
@@ -57,13 +58,22 @@ export const writeOutbox = Effect.fnUntraced(function* (
     yield* sql`DELETE FROM actor_outbox WHERE routing_key = ${routingKey} AND tenant_id = ${tenant}
       AND actor_type = ${actor} AND actor_id = ${id} AND timer_key IN ${sql.in(outbox.replaced)}`
 
-  if (outbox.intents.length === 0) return false
+  if (outbox.intents.length === 0 && outbox.effects.length === 0) return false
 
   const crypto = yield* Crypto.Crypto
   const { retryWindowMs } = yield* OutboxRuntime
   const now = yield* outboxTime
-  let dueNow = false
+  let dueNow = outbox.effects.length > 0
   const rows = []
+
+  // The row id is the receiver's command id: an intent's, or an effect's
+  // route's. Its expiry keeps that receipt at least one retry window past the
+  // due time.
+  const rowId = (dueAt: number) =>
+    crypto.randomUUIDv4.pipe(
+      Effect.orDie,
+      Effect.map((uuid) => `v1.${now}.${Math.max(dueAt, now) + retryWindowMs}.${uuid}`),
+    )
 
   for (const intent of outbox.intents) {
     const dueAt =
@@ -75,13 +85,11 @@ export const writeOutbox = Effect.fnUntraced(function* (
           })
 
     dueNow ||= dueAt <= now
-    const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
 
     rows.push({
       routing_key: routingKey,
-      // The intent id is the receiver's command id. Its expiry keeps the
-      // receiver's receipt at least one retry window past the due time.
-      intent_id: `v1.${now}.${Math.max(dueAt, now) + retryWindowMs}.${uuid}`,
+      intent_id: yield* rowId(dueAt),
+      kind: "intent",
       bucket: bucketOf(routingKey),
       due_at_ms: dueAt,
       tenant_id: tenant,
@@ -95,6 +103,26 @@ export const writeOutbox = Effect.fnUntraced(function* (
       caller: yield* Schema.encodeEffect(CallerJson)(intent.caller).pipe(Effect.orDie),
     })
   }
+
+  // An effect row names its effect in `command` and targets its own actor,
+  // where its routes deliver; the relay runs its executor when it is due.
+  for (const effect of outbox.effects)
+    rows.push({
+      routing_key: routingKey,
+      intent_id: yield* rowId(now),
+      kind: "effect",
+      bucket: bucketOf(routingKey),
+      due_at_ms: now,
+      tenant_id: tenant,
+      actor_type: actor,
+      actor_id: id,
+      timer_key: null,
+      target_type: actor,
+      target_id: id,
+      command: effect.effect,
+      payload: effect.payload,
+      caller: yield* Schema.encodeEffect(CallerJson)(effect.caller).pipe(Effect.orDie),
+    })
 
   yield* sql`INSERT INTO actor_outbox ${sql.insert(rows)}`
 

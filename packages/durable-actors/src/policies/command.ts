@@ -1,12 +1,16 @@
 import { Duration, Schema } from "effect"
 import type { AnyCommand } from "../members/command.ts"
+import type { AnyEffect, EffectPolicies } from "../members/effect.ts"
 
 const Positive = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }))
 
 const milliseconds = (duration: Duration.Input) => Positive.make(Duration.toMillis(duration))
 
 /** Serializable actor policies; each key has exactly one meaning and one default. */
-export interface Policy<Command extends AnyCommand = AnyCommand> {
+export interface Policy<
+  Command extends AnyCommand = AnyCommand,
+  Effects extends AnyEffect = never,
+> {
   /** Idle time before the activation sleeps. Default 60 seconds. */
   readonly hibernateAfter?: Duration.Input
   /** Deadline for the whole turn transaction. Default 30 seconds. */
@@ -21,6 +25,8 @@ export interface Policy<Command extends AnyCommand = AnyCommand> {
   readonly mailboxCapacity?: number
   /** The only command that may create the actor; other commands fail `NotCreated` until it commits. */
   readonly createdBy?: Command
+  /** Per declared effect, keyed by tag: `retry`, `onSuccess`, and `onDeadLetter`. */
+  readonly effects?: EffectPolicies<Effects, Command>
 }
 
 export interface TurnPolicy {
