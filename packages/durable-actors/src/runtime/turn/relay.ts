@@ -133,9 +133,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
     .pipe(Effect.provideContext(services))
 
   const run = Effect.gen(function* () {
+    let backlog = false
+
     while (true) {
-      yield* Queue.take(signals).pipe(Effect.timeoutOption(POLL_INTERVAL))
-      yield* pass.pipe(logFailure("Outbox relay pass failed"))
+      // A full pass means more rows are already due; waiting would cap the relay at one pass per poll.
+      if (!backlog) yield* Queue.take(signals).pipe(Effect.timeoutOption(POLL_INTERVAL))
+      backlog = (yield* pass.pipe(logFailure("Outbox relay pass failed"))) === PASS_LIMIT
     }
   })
 
