@@ -18,11 +18,14 @@ import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { ownedRows } from "./scenarios/owned-rows.ts"
-import { manyActors } from "./scenarios/many-actors.ts"
+import { multiRunner } from "./scenarios/multi-runner.ts"
 import { outbox } from "./scenarios/outbox.ts"
 import { queryLatency } from "./scenarios/query-latency.ts"
 import { receiptReplay } from "./scenarios/receipt-replay.ts"
-import { retainedHeap } from "./scenarios/retained-heap.ts"
+import { reducers } from "./scenarios/reducers.ts"
+import { capacity } from "./scenarios/scale/capacity.ts"
+import { manyActors } from "./scenarios/scale/many-actors.ts"
+import { retainedHeap } from "./scenarios/scale/retained-heap.ts"
 import { stateSize } from "./scenarios/state-size.ts"
 
 /** Every scenario, in run order. A new slice adds its scenario here. */
@@ -38,6 +41,9 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   outbox,
   ownedRows,
   effectRoundTrip,
+  multiRunner,
+  reducers,
+  capacity,
 ]
 
 const RESULT_SCHEMA = 2

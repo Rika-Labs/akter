@@ -82,10 +82,16 @@ describe("owned rows across process death with Postgres", () => {
             expect(
               (yield* Effect.promise(() =>
                 pool.query(
-                  "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM crash_entries) AS rows",
+                  "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM crash_entries) AS rows, (SELECT json_agg(command_id) FROM actor_receipts) AS ids",
                 ),
               )).rows,
-            ).toEqual([{ receipts: committed, rows: refused ? 0 : committed }])
+            ).toEqual([
+              {
+                receipts: committed,
+                rows: refused ? 0 : committed,
+                ids: committed === 1 ? [commandId] : null,
+              },
+            ])
 
             const recovery = yield* spawner.spawn(command("recover"))
             const output = yield* recovery.stdout.pipe(Stream.decodeText(), Stream.mkString)
