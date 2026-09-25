@@ -23,16 +23,17 @@ const memory = Effect.sync(() => {
 
 const round = (value: number) => Math.round(value * 10) / 10
 
-/** Total activations of Probe actors so far: each new activation advances a generation. */
-const activations = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
+/** Total activations of an actor type so far: each new activation advances a generation. */
+export const activations = (actorType: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
 
-  const [row] = yield* sql<{ total: string }>`
-    SELECT coalesce(sum(generation), 0)::text AS total
-    FROM actor_generations WHERE actor_type = 'Probe'`.pipe(Effect.orDie)
+    const [row] = yield* sql<{ total: string }>`
+      SELECT coalesce(sum(generation), 0)::text AS total
+      FROM actor_generations WHERE actor_type = ${actorType}`.pipe(Effect.orDie)
 
-  return Number(row!.total)
-})
+    return Number(row!.total)
+  })
 
 /** The runtime's default `maxResidentActors`. */
 const MAX_RESIDENT_ACTORS = 10_000
@@ -91,7 +92,7 @@ export const manyActors: Scenario = {
                 })
 
                 const after = yield* memory
-                const activated = yield* activations
+                const activated = yield* activations("Probe")
 
                 const steady = yield* measure({
                   name: `steady-${actors}`,
@@ -108,7 +109,7 @@ export const manyActors: Scenario = {
                   operation: (index) => add(pick(actors)(index)),
                 })
 
-                const cold = (yield* activations) - activated
+                const cold = (yield* activations("Probe")) - activated
 
                 const cases: Array<CaseResult> = [
                   {

@@ -1,9 +1,8 @@
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
 import { shuffled } from "../../measure.ts"
 import { SleepyProbe } from "../../probe/contract.ts"
 import { type CaseResult, DEFAULT_POOL, measure, type Scenario } from "../../scenario.ts"
-import { pick } from "./many-actors.ts"
+import { activations, pick } from "./many-actors.ts"
 
 const WORKERS = 64
 
@@ -14,17 +13,6 @@ const HIBERNATE_AFTER_MS = 250
 
 const add = (actor: number) =>
   SleepyProbe.get(`actor-${actor}`).pipe(Effect.flatMap((probe) => probe.Add(1)))
-
-/** Total SleepyProbe activations so far: each new activation advances a generation. */
-const activations = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
-
-  const [row] = yield* sql<{ total: string }>`
-    SELECT coalesce(sum(generation), 0)::text AS total
-    FROM actor_generations WHERE actor_type = 'SleepyProbe'`.pipe(Effect.orDie)
-
-  return Number(row!.total)
-})
 
 /**
  * `many-actors` with the actor count held at, then past, the runner's
@@ -70,7 +58,7 @@ export const capacity: Scenario = {
                 operation: (index) => add(order[index]!),
               })
 
-              const activated = yield* activations
+              const activated = yield* activations("SleepyProbe")
 
               const steady = yield* measure({
                 name: `steady-${label}`,
@@ -81,7 +69,7 @@ export const capacity: Scenario = {
                 operation: (index) => add(pick(actors)(index)),
               })
 
-              const cold = (yield* activations) - activated
+              const cold = (yield* activations("SleepyProbe")) - activated
 
               const cases: Array<CaseResult> = [
                 first,
