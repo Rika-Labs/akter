@@ -434,6 +434,7 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           expect(defect(yield* fixture.blobs.escaped.pipe(Effect.exit))).toContain(
             "Blob capability escaped its query",
           )
+
           for (const forked of [drawer.WriteForked(), drawer.WriteTimed()])
             expect(defect(yield* forked.pipe(Effect.exit))).toContain(
               "Blob capability used from a fiber other than its turn's",
