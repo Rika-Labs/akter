@@ -141,5 +141,25 @@ export const migrate = Migrator.make({})({
         PRIMARY KEY (table_schema, table_name)
       )`
     }),
+    // Events share the actor's routing key and commit with its turn. The
+    // sequence counter lives on the fenced generation row, so a pruned stream
+    // never reissues a cursor.
+    "0006_events": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`ALTER TABLE actor_generations ADD COLUMN event_sequence bigint NOT NULL DEFAULT 0`
+      yield* sql`CREATE TABLE actor_events (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        sequence bigint NOT NULL CHECK (sequence > 0),
+        event text NOT NULL,
+        command_id text NOT NULL,
+        value bytea NOT NULL,
+        emitted_at_ms bigint NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, sequence),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    }),
   }),
 })

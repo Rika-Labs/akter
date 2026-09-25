@@ -10,6 +10,7 @@ import {
 import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
+import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, writeOutbox } from "./outbox.ts"
@@ -44,7 +45,7 @@ interface Admission {
 /**
  * One command turn inside one framework transaction: an admission statement
  * (generation fence plus receipt lookup), the handler in memory, and a commit
- * statement writing dirty state, the creation marker, and the receipt.
+ * statement writing dirty state, events, the creation marker, and the receipt.
  */
 export const executeTurn = Effect.fnUntraced(function* (
   request: Request,
@@ -141,6 +142,8 @@ export const executeTurn = Effect.fnUntraced(function* (
           yield* sql`DELETE FROM actor_state WHERE ${actorRow} AND key = ${key}`
         }
     }
+
+    yield* appendEvents(request, routingKey, result.events)
 
     const creates =
       Outcome.guards.Success(result.outcome) &&

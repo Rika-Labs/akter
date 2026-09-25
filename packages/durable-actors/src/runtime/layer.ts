@@ -33,6 +33,7 @@ import {
 import {
   Actors,
   InternalActors,
+  Outcome,
   type QueryRegistration,
   type Registration,
   type Request,
@@ -41,6 +42,7 @@ import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
+import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
@@ -279,15 +281,36 @@ export const layer = (options: Options) => {
             const sql = yield* SqlClient.SqlClient
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-            const rows = yield* sql<{ key: string; value: Uint8Array }>`
-              SELECT key, value FROM actor_state
-              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+            // The event head is read with state in one statement, and every replay
+            // in this query stops at it, so state and events describe one moment.
+            const rows = yield* sql<{
+              head: string | null
+              key: string | null
+              value: Uint8Array | null
+            }>`
+              SELECT g.event_sequence::text AS head, s.key, s.value
+              FROM (VALUES (1)) AS one (x)
+              LEFT JOIN actor_generations g ON g.routing_key = ${key} AND g.tenant_id = ${request.ref.tenant}
+                AND g.actor_type = ${request.ref.actor} AND g.actor_id = ${request.ref.id}
+              LEFT JOIN actor_state s ON s.routing_key = g.routing_key AND s.tenant_id = g.tenant_id
+                AND s.actor_type = g.actor_type AND s.actor_id = g.actor_id`
 
-            const outcome = yield* query.run(
-              request,
-              rows.map(({ key, value }) => [key, decompress(value)] as const),
+            const head = rows[0]?.head ?? "0"
+            const state: Array<readonly [string, string]> = []
+
+            for (const row of rows)
+              if (row.key !== null) state.push([row.key, decompress(row.value!)])
+
+            const outcome = yield* query.run(request, state, head, (tag, after) =>
+              replayEvents(request.ref, key, tag, after, BigInt(head)).pipe(
+                Effect.catchIf(SqlError.isSqlError, Effect.die),
+                Effect.provideContext(services),
+              ),
             )
+
+            // A failed replay read is unavailability, not a deterministic query defect.
+            if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
+              return yield* outcome.cause
 
             // Access can be revoked while the handler runs; like a command's
             // outcome, a query result is released only to a caller still allowed.

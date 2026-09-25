@@ -1,4 +1,4 @@
-import { Actor } from "durable-actors"
+import { Actor, RetentionGap, UnknownCursor } from "durable-actors"
 import { Effect, Schema } from "effect"
 
 export const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
@@ -25,6 +25,23 @@ export const SleepyProbe = Actor.make("SleepyProbe", {
   state,
   api: { Add, Fill, Peek },
   policy: { hibernateAfter: "250 millis" },
+})
+
+export class Ticked extends Actor.Event<Ticked>()("Ticked", { n: Schema.Int }) {}
+
+export const Emit = Actor.command("Emit", { input: Schema.Int, output: Schema.Int })
+
+export const Replay = Actor.query("Replay", {
+  input: Schema.optional(Schema.String),
+  output: Schema.Struct({ events: Schema.Int, last: Schema.String }),
+  errors: [UnknownCursor, RetentionGap],
+})
+
+/** Emits a given number of events per turn and replays them from a cursor. */
+export const EventProbe = Actor.make("EventProbe", {
+  key: Schema.NonEmptyString,
+  events: [Ticked],
+  api: { Emit, Replay },
 })
 
 export const Deliver = Actor.command("Deliver", { input: Schema.String })

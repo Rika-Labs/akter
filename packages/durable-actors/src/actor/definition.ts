@@ -1,6 +1,7 @@
-import { Context, Effect, Layer, Option, Result, Schema, Scope, Semaphore } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Result, Schema, Scope, Semaphore } from "effect"
 import {
   type CommandContext,
+  type EventEntry,
   InsideTurn,
   outsideTurn,
   type QueryContext,
@@ -13,6 +14,7 @@ import {
   Outcome,
   type RegisteredCommand,
   type RegisteredQuery,
+  type EmittedEvent,
   Request,
 } from "../handles/actors.ts"
 import { currentStaging, emptyOutbox, InTurn, openOutbox, stage } from "../handles/intents.ts"
@@ -25,6 +27,7 @@ import {
   type System,
 } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
+import type { EventClass } from "../members/event.ts"
 import type {
   AnyCommand,
   AnyMember,
@@ -210,12 +213,15 @@ interface Definition<
   Fields extends StateFields,
   Api extends MemberRecord,
   Internal extends CommandRecord,
+  Events extends ReadonlyArray<EventClass>,
   Tables extends ReadonlyArray<AnyOwnedTable>,
 > {
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
   readonly placement?: "tenant" | "actor"
   readonly state?: ActorState<Fields>
+  /** Event classes this actor may emit in a turn and replay in a query. */
+  readonly events?: Events
   /** `Actor.table` tables whose rows this actor type owns. */
   readonly tables?: Tables
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
@@ -230,10 +236,14 @@ const make = <
   const Internal extends CommandRecord = {},
   const K extends Key = undefined,
   const P extends Policy<CommandsOf<Api> | Values<Internal>> = {},
+  const Events extends ReadonlyArray<EventClass> = readonly [],
   const T extends ReadonlyArray<AnyOwnedTable> = [],
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal, T> & { readonly key?: K; readonly policy?: P },
+  definition: Definition<K, Fields, Api, Internal, Events, T> & {
+    readonly key?: K
+    readonly policy?: P
+  },
 ) => {
   Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/)).make(name)
   const api: MemberRecord = definition.api
@@ -284,6 +294,14 @@ const make = <
     info.owner = name
   }
 
+  const events = new Map<string, EventClass>()
+
+  for (const event of definition.events ?? []) {
+    if (events.has(event.identifier)) throw new Error(`Duplicate event: ${event.identifier}`)
+    events.set(event.identifier, event)
+  }
+
+  const eventCodec = (event: EventClass) => Schema.fromJsonString(Schema.toCodecJson(event))
   const migrations = definition.state?.migrations ?? []
   ActorStates.validateChain(fields, migrations)
   const version = migrations.length
@@ -342,13 +360,15 @@ const make = <
 
   type State = StateOf<Fields>
 
+  type Event = Events[number]
+
   type Owned = T[number]
 
-  class Turn extends Context.Service<Turn, CommandContext<State, Owned>>()(
+  class Turn extends Context.Service<Turn, CommandContext<State, Event, Owned>>()(
     `durable-actors/Turn/${name}`,
   ) {}
 
-  class Read extends Context.Service<Read, QueryContext<State, Owned>>()(
+  class Read extends Context.Service<Read, QueryContext<State, Event, Owned>>()(
     `durable-actors/Read/${name}`,
   ) {}
 
@@ -485,6 +505,7 @@ const make = <
       outcome: Outcome.cases.Failure.make({ value }),
       state: [],
       complete: false,
+      events: [],
       outbox: emptyOutbox,
     })
   })
@@ -527,6 +548,7 @@ const make = <
             let open = true
             const turn = Symbol()
             const dirty = new Set<string>()
+            const emitted: Array<EmittedEvent> = []
 
             const loaded = yield* decodeStored(rows)
             let current = loaded.state
@@ -549,6 +571,21 @@ const make = <
               ).pipe(Effect.orDie)
             })
 
+            const emit = Effect.fnUntraced(function* (event: Event["Type"]) {
+              if (!open || (yield* InsideTurn) !== turn)
+                return yield* Effect.die(new Error("Event capability escaped its turn"))
+
+              const declared = events.get(event._tag)
+
+              if (declared === undefined || !Schema.is(declared)(event))
+                return yield* Effect.die(new Error(`Undeclared event: ${event._tag}`))
+
+              emitted.push({
+                tag: declared.identifier,
+                value: yield* Schema.encodeEffect(eventCodec(declared))(event).pipe(Effect.orDie),
+              })
+            })
+
             const view = { set }
 
             const access = yield* actors.tables(
@@ -569,14 +606,15 @@ const make = <
               Object.defineProperty(view, key, { enumerable: true, get: () => current[field] })
             }
 
-            const context: CommandContext<State, Owned> = {
+            const context: CommandContext<State, Event, Owned> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
               principal: principal(request.caller),
               commandId: request.commandId,
               state: Object.freeze(view) as CommandContext<State>["state"],
-              rows: access.rows as CommandContext<State, Owned>["rows"],
+              emit,
+              rows: access.rows as CommandContext<State, Event, Owned>["rows"],
               group: access.group,
             }
 
@@ -600,6 +638,8 @@ const make = <
                 outcome: Outcome.cases.Success.make({ value }),
                 state: yield* stateWrites(current, dirty),
                 complete: loaded.upcast,
+                events: emitted,
+
                 outbox: outbox.close(),
               }
             }).pipe(
@@ -667,6 +707,7 @@ const make = <
               outcome: Outcome.cases.Success.make({ value }),
               state: yield* stateWrites(next, dirty),
               complete: loaded.upcast,
+              events: [],
               outbox: emptyOutbox,
             }
           }),
@@ -738,10 +779,36 @@ const make = <
         const errorCodec = Schema.fromJsonString(Schema.toCodecJson(errorSchema))
 
         registered.set(member.tag, {
-          run: Effect.fnUntraced(function* (request, rows) {
+          run: Effect.fnUntraced(function* (request, rows, cursor, readEvents) {
             const { state } = yield* decodeStored(rows)
             let open = true
             const query = Symbol()
+
+            const replay = Effect.fnUntraced(function* <E extends Event>(
+              event: E,
+              options?: { readonly after?: string | undefined },
+            ) {
+              if (events.get(event.identifier) !== event)
+                return yield* Effect.die(new Error(`Undeclared event: ${event.identifier}`))
+
+              const codec = eventCodec(event)
+
+              return yield* Effect.forEach(
+                yield* readEvents(event.identifier, options?.after),
+                Effect.fnUntraced(function* (stored) {
+                  const entry: EventEntry<E["Type"]> = {
+                    cursor: stored.cursor,
+                    event: (yield* Schema.decodeEffect(codec)(stored.value).pipe(
+                      Effect.orDie,
+                    )) as E["Type"],
+                    commandId: stored.commandId,
+                    timestamp: DateTime.makeUnsafe(stored.timestampMs),
+                  }
+
+                  return entry
+                }),
+              )
+            })
 
             const access = yield* actors.tables(
               {
@@ -756,13 +823,15 @@ const make = <
               false,
             )
 
-            const context: QueryContext<State, Owned> = {
+            const context: QueryContext<State, Event, Owned> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
               principal: principal(request.caller),
               state: Object.freeze(state) as Readonly<State>,
-              rows: access.rows as QueryContext<State, Owned>["rows"],
+              cursor,
+              events: replay,
+              rows: access.rows as QueryContext<State, Event, Owned>["rows"],
               group: access.group,
             }
 

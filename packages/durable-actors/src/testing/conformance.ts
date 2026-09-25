@@ -26,6 +26,13 @@ import {
   type TablesFixture,
 } from "./conformance/tables.ts"
 import {
+  eventsConformance,
+  eventsFixture,
+  eventsLayer,
+  eventsQueryLayer,
+  type EventsFixture,
+} from "./conformance/events.ts"
+import {
   defectRecorder,
   foundationConformance,
   foundationFixture,
@@ -119,6 +126,7 @@ export interface ConformanceBackend {
 /** Mutable per-suite fixture shared by the fixture handlers and the cases. */
 export interface ConformanceFixture {
   readonly foundation: FoundationFixture
+  readonly events: EventsFixture
   readonly outbox: OutboxFixture
   readonly tables: TablesFixture
   executions: number
@@ -235,6 +243,7 @@ const CounterLive = (fixture: ConformanceFixture) =>
 
 const makeFixture = (): ConformanceFixture => ({
   foundation: foundationFixture(),
+  events: eventsFixture(),
   outbox: outboxFixture(),
   tables: tablesFixture(),
   executions: 0,
@@ -255,6 +264,7 @@ const makeFixture = (): ConformanceFixture => ({
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
+  ...eventsConformance,
   ...reducerConformance,
   ...outboxConformance,
   ...tablesConformance,
@@ -269,6 +279,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
           })
           const increment = counter.Increment(7)
@@ -279,6 +290,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: "1",
             state: { count: 10 },
             receipts: 2,
+            events: 0,
             outbox: 0,
           })
         }),
@@ -303,6 +315,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: "1",
             state: { count: 5 },
             receipts: 2,
+            events: 0,
             outbox: 0,
           })
         }),
@@ -469,6 +482,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
           })
           yield* Fiber.interrupt(waiter)
@@ -546,6 +560,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
           })
           expect(yield* counter.Increment(4)).toBe(4)
@@ -645,6 +660,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
           })
         }).pipe(
@@ -672,6 +688,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: "3",
             state: { count: 13 },
             receipts: 2,
+            events: 0,
             outbox: 0,
           })
         }),
@@ -693,6 +710,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
           })
           yield* counter.Escape()
@@ -740,6 +758,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
           })
         }),
@@ -1135,6 +1154,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
                   generation: undefined,
                   state: {},
                   receipts: 0,
+                  events: 0,
                   outbox: 0,
                 })
                 expect(yield* counter.Increment(6)).toBe(6)
@@ -1187,6 +1207,8 @@ export const describeConformance = (options: {
     CounterLive(fixture),
     CounterReads(fixture),
     foundationLayer(fixture.foundation),
+    eventsLayer(fixture.events),
+    eventsQueryLayer(fixture.events),
     reducerLayer,
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),

@@ -14,6 +14,7 @@ import { type Backend, type BackendName, pglite, postgres } from "./backend.ts"
 import { machine, runtimeVersions, source } from "./environment.ts"
 import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
+import { events } from "./scenarios/events.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { ownedRows } from "./scenarios/owned-rows.ts"
 import { manyActors } from "./scenarios/many-actors.ts"
@@ -29,6 +30,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   queryLatency,
   receiptReplay,
   stateSize,
+  events,
   manyActors,
   outbox,
   ownedRows,
