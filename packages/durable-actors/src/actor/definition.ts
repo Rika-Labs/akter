@@ -25,6 +25,7 @@ import {
   type System,
 } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
+import { type AnyBlob, isBlob } from "../members/blob.ts"
 import type {
   AnyCommand,
   AnyMember,
@@ -211,6 +212,7 @@ interface Definition<
   Api extends MemberRecord,
   Internal extends CommandRecord,
   Tables extends ReadonlyArray<AnyOwnedTable>,
+  Blobs extends ReadonlyArray<AnyBlob>,
 > {
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
@@ -218,6 +220,8 @@ interface Definition<
   readonly state?: ActorState<Fields>
   /** `Actor.table` tables whose rows this actor type owns. */
   readonly tables?: Tables
+  /** `Actor.blob` binary storage this actor type's turns write and its queries read. */
+  readonly blobs?: Blobs
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>>
@@ -231,9 +235,13 @@ const make = <
   const K extends Key = undefined,
   const P extends Policy<CommandsOf<Api> | Values<Internal>> = {},
   const T extends ReadonlyArray<AnyOwnedTable> = [],
+  const B extends ReadonlyArray<AnyBlob> = [],
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal, T> & { readonly key?: K; readonly policy?: P },
+  definition: Definition<K, Fields, Api, Internal, T, B> & {
+    readonly key?: K
+    readonly policy?: P
+  },
 ) => {
   Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/)).make(name)
   const api: MemberRecord = definition.api
@@ -282,6 +290,16 @@ const make = <
     if (info.owner !== undefined && info.owner !== name)
       throw new Error(`Table ${info.name} is already owned by actor ${info.owner}`)
     info.owner = name
+  }
+
+  const blobs: ReadonlyArray<AnyBlob> = definition.blobs ?? []
+  const blobNames = new Set<string>()
+
+  for (const blob of blobs) {
+    if (!isBlob(blob)) throw new Error("blobs takes Actor.blob values")
+
+    if (blobNames.has(blob.name)) throw new Error(`Blob ${blob.name} is listed twice`)
+    blobNames.add(blob.name)
   }
 
   const migrations = definition.state?.migrations ?? []
@@ -344,11 +362,13 @@ const make = <
 
   type Owned = T[number]
 
-  class Turn extends Context.Service<Turn, CommandContext<State, Owned>>()(
+  type Blobs = B[number]
+
+  class Turn extends Context.Service<Turn, CommandContext<State, Owned, Blobs>>()(
     `durable-actors/Turn/${name}`,
   ) {}
 
-  class Read extends Context.Service<Read, QueryContext<State, Owned>>()(
+  class Read extends Context.Service<Read, QueryContext<State, Owned, Blobs>>()(
     `durable-actors/Read/${name}`,
   ) {}
 
@@ -551,16 +571,19 @@ const make = <
 
             const view = { set }
 
+            const escaped = (capability: string) =>
+              Effect.gen(function* () {
+                if (!open || (yield* InsideTurn) !== turn)
+                  return yield* Effect.die(new Error(`${capability} capability escaped its turn`))
+              })
+
             const access = yield* actors.tables(
-              {
-                ref: request.ref,
-                placement,
-                tables,
-                guard: Effect.gen(function* () {
-                  if (!open || (yield* InsideTurn) !== turn)
-                    return yield* Effect.die(new Error("Table capability escaped its turn"))
-                }),
-              },
+              { ref: request.ref, placement, tables, guard: escaped("Table") },
+              true,
+            )
+
+            const blob = yield* actors.blobs(
+              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
               true,
             )
 
@@ -569,7 +592,7 @@ const make = <
               Object.defineProperty(view, key, { enumerable: true, get: () => current[field] })
             }
 
-            const context: CommandContext<State, Owned> = {
+            const context: CommandContext<State, Owned, Blobs> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -578,6 +601,7 @@ const make = <
               state: Object.freeze(view) as CommandContext<State>["state"],
               rows: access.rows as CommandContext<State, Owned>["rows"],
               group: access.group,
+              blob: blob as CommandContext<State, Owned, Blobs>["blob"],
             }
 
             const outbox = openOutbox({
@@ -680,6 +704,7 @@ const make = <
         placement,
         policy,
         tables,
+        blobs,
       })
     })
 
@@ -743,20 +768,23 @@ const make = <
             let open = true
             const query = Symbol()
 
+            const escaped = (capability: string) =>
+              Effect.gen(function* () {
+                if (!open || (yield* InsideTurn) !== query)
+                  return yield* Effect.die(new Error(`${capability} capability escaped its query`))
+              })
+
             const access = yield* actors.tables(
-              {
-                ref: request.ref,
-                placement,
-                tables,
-                guard: Effect.gen(function* () {
-                  if (!open || (yield* InsideTurn) !== query)
-                    return yield* Effect.die(new Error("Table capability escaped its query"))
-                }),
-              },
+              { ref: request.ref, placement, tables, guard: escaped("Table") },
               false,
             )
 
-            const context: QueryContext<State, Owned> = {
+            const blob = yield* actors.blobs(
+              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
+              false,
+            )
+
+            const context: QueryContext<State, Owned, Blobs> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -764,6 +792,7 @@ const make = <
               state: Object.freeze(state) as Readonly<State>,
               rows: access.rows as QueryContext<State, Owned>["rows"],
               group: access.group,
+              blob,
             }
 
             return yield* Effect.gen(function* () {
@@ -808,6 +837,7 @@ const make = <
         name,
         placement,
         tables,
+        blobs,
         queries: registered,
       })
     })

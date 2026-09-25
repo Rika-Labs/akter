@@ -141,5 +141,22 @@ export const migrate = Migrator.make({})({
         PRIMARY KEY (table_schema, table_name)
       )`
     }),
+    // Blob entries are chunked bytea beside the actor's other rows: `append`
+    // adds a chunk without rewriting earlier ones, and `compact` folds them into chunk 0.
+    "0007_blobs": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`CREATE TABLE actor_blobs (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        blob text NOT NULL,
+        name text NOT NULL,
+        chunk integer NOT NULL CHECK (chunk >= 0),
+        bytes bytea NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, blob, name, chunk),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    }),
   }),
 })

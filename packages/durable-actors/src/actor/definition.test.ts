@@ -2,6 +2,7 @@ import { type Context, Effect, Layer, Schema } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, ActorError, type Actors, Intent } from "../index.ts"
 import type { InternalActors } from "../handles/actors.ts"
+import type { BlobRead, BlobWrite } from "../state/blob.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 
 describe("actor declarations", () => {
@@ -307,5 +308,38 @@ describe("actor declarations", () => {
 
     expect(() => Intent.after(-1)).toThrow("non-negative")
     expect(() => Intent.key("")).toThrow("1-200")
+  })
+
+  it("declares blobs, keeps queries read-only, and rejects undeclared or duplicate blobs", () => {
+    const Files = Actor.blob("files")
+    const Other = Actor.blob("other")
+    const Put = Actor.command("Put")
+    const Peek = Actor.query("Peek")
+    const Box = Actor.make("BlobBox", { key: Schema.String, blobs: [Files], api: { Put, Peek } })
+
+    type TurnOf = (typeof Box.Turn)["Service"]
+
+    type ReadOf = (typeof Box.Read)["Service"]
+
+    expectTypeOf<ReturnType<TurnOf["blob"]>>().toEqualTypeOf<BlobWrite>()
+    expectTypeOf<ReturnType<ReadOf["blob"]>>().toEqualTypeOf<BlobRead>()
+    expectTypeOf<keyof BlobRead>().toEqualTypeOf<"get">()
+    expectTypeOf<Parameters<TurnOf["blob"]>[0]>().toEqualTypeOf<typeof Files>()
+
+    const _misuse = (read: ReadOf, turn: TurnOf) => [
+      // @ts-expect-error a query's blobs are read-only
+      read.blob(Files).set("a", new Uint8Array()),
+      // @ts-expect-error only declared blobs are reachable
+      turn.blob(Other),
+    ]
+
+    expect(() => Actor.blob("has space")).toThrow("Blob name")
+    expect(() =>
+      Actor.make("Twice", { blobs: [Files, Actor.blob("files")], api: { Put } }),
+    ).toThrow("listed twice")
+    expect(() =>
+      // @ts-expect-error blobs takes Actor.blob values
+      Actor.make("Fake", { blobs: [{ name: "files" }], api: { Put } }),
+    ).toThrow("Actor.blob")
   })
 })

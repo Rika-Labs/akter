@@ -3,6 +3,8 @@ import type { ActorError } from "../errors/actor.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { StagedOutbox } from "./intents.ts"
+import type { AnyBlob } from "../members/blob.ts"
+import type { BlobAccess, BlobScope } from "../state/blob.ts"
 import type { AnyOwnedTable, TableAccess, TableScope } from "../tables/owned.ts"
 
 export const Outcome = Schema.TaggedUnion({
@@ -52,6 +54,7 @@ export interface QueryRegistration {
   readonly name: string
   readonly placement: "tenant" | "actor"
   readonly tables: ReadonlyArray<AnyOwnedTable>
+  readonly blobs: ReadonlyArray<AnyBlob>
   readonly queries: ReadonlyMap<string, RegisteredQuery>
 }
 
@@ -61,6 +64,7 @@ export interface Registration {
   readonly placement: "tenant" | "actor"
   readonly policy: TurnPolicy
   readonly tables: ReadonlyArray<AnyOwnedTable>
+  readonly blobs: ReadonlyArray<AnyBlob>
   readonly commands: ReadonlyMap<string, RegisteredCommand>
 }
 
@@ -85,6 +89,10 @@ export class InternalActors extends Context.Service<
      * Writable access requires the turn transaction and never opens its own.
      */
     readonly tables: (scope: TableScope, write: boolean) => Effect.Effect<TableAccess>
+    /** Binds blob capabilities the same way; writable access requires the turn transaction. */
+    readonly blobs: (scope: BlobScope, write: boolean) => Effect.Effect<BlobAccess>
+    /** The blob names a registered actor type declares, for test inspection. */
+    readonly declaredBlobs: (actor: string) => ReadonlyArray<string>
   }
 >()("durable-actors/handles/actors/InternalActors") {}
 

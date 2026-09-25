@@ -1,5 +1,7 @@
 import { Context, Effect, Option } from "effect"
 import type { ActorRef, Caller, Principal } from "../identity/caller.ts"
+import type { AnyBlob } from "../members/blob.ts"
+import type { BlobRead, BlobWrite } from "../state/blob.ts"
 import type { Group, AnyOwnedTable, ScopedRead, ScopedRows } from "../tables/owned.ts"
 
 export const InsideTurn = Context.Reference<symbol | undefined>("durable-actors/InsideTurn", {
@@ -19,7 +21,11 @@ export interface Turn<Name extends string> {
 }
 
 /** The writable context of one command turn, obtained with `yield* X.Turn`. */
-export interface CommandContext<State, Tables extends AnyOwnedTable = AnyOwnedTable> {
+export interface CommandContext<
+  State,
+  Tables extends AnyOwnedTable = AnyOwnedTable,
+  Blobs extends AnyBlob = AnyBlob,
+> {
   readonly id: string
   readonly ref: ActorRef
   readonly caller: Caller
@@ -32,10 +38,16 @@ export interface CommandContext<State, Tables extends AnyOwnedTable = AnyOwnedTa
   readonly rows: <T extends Tables>(table: T) => ScopedRows<T>
   /** Read-only joins across the actor's placement group, inside the turn transaction. */
   readonly group: Group
+  /** This actor's entries of a declared blob, bound to the turn transaction. */
+  readonly blob: (blob: Blobs) => BlobWrite
 }
 
 /** The read-only context of one query, obtained with `yield* X.Read`. */
-export interface QueryContext<State, Tables extends AnyOwnedTable = AnyOwnedTable> {
+export interface QueryContext<
+  State,
+  Tables extends AnyOwnedTable = AnyOwnedTable,
+  Blobs extends AnyBlob = AnyBlob,
+> {
   readonly id: string
   readonly ref: ActorRef
   readonly caller: Caller
@@ -46,4 +58,6 @@ export interface QueryContext<State, Tables extends AnyOwnedTable = AnyOwnedTabl
   readonly rows: <T extends Tables>(table: T) => ScopedRead<T>
   /** Read-only joins across the actor's placement group. */
   readonly group: Group
+  /** This actor's committed entries of a declared blob. */
+  readonly blob: (blob: Blobs) => BlobRead
 }
