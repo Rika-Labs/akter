@@ -79,7 +79,7 @@ The `main` and `main-repeat` files show the run-to-run noise on one cloud VM. Mo
 
 ## Results
 
-Every file below comes from the same machine: a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, running Linux 6.1. The client, the actor runtime, and Postgres share its CPUs.
+Every file below comes from a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, running Linux 6.1, where the client, the actor runtime, and Postgres share its CPUs. Rows that say "different VM" ran on another machine of that shape; compare latency and throughput only between files from the same machine.
 
 | File                                            | Code                                                                                                                                                                                                      | Backend       |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
@@ -100,6 +100,8 @@ Every file below comes from the same machine: a 4-vCPU AMD EPYC cloud VM with 15
 | `2026-09-25-f083e80-before-40-pglite.json`      | same                                                                                                                                                                                                      | PGlite 0.5.8  |
 | `2026-09-25-6418ab9-after-40-postgres.json`     | #40: one admission statement before delivery and timeouts folded into the generation insert, same VM as its baseline                                                                                      | Postgres 18.6 |
 | `2026-09-25-6418ab9-after-40-pglite.json`       | same                                                                                                                                                                                                      | PGlite 0.5.8  |
+| `2026-09-25-96eb5e1-main-postgres.json`         | `main` at `96eb5e1`, after M1.4–M1.8 (#35, #33, #34, #36, #32), #41, #39/#42, and #40 landed; the post-M1 baseline, on a different VM from the rows above                                                 | Postgres 18.6 |
+| `2026-09-25-96eb5e1-main-pglite.json`           | same                                                                                                                                                                                                      | PGlite 0.5.8  |
 | `2026-09-25-cc6c43e-blobs-postgres.json`        | #61 blobs branch `feat/30-blobs` at `cc6c43e` (M1.blob on #35), `hot-actor`, `state-size`, and `blobs` scenarios                                                                                          | Postgres 18.6 |
 | `2026-09-25-cc6c43e-blobs-pglite.json`          | same                                                                                                                                                                                                      | PGlite 0.5.8  |
 | `2026-09-25-cc6c43e-blobs-repeat-postgres.json` | repeat of the same SHA and scenarios, as a noise reference                                                                                                                                                | Postgres 18.6 |
