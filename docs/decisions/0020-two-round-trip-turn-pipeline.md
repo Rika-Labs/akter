@@ -4,7 +4,7 @@
 
 **Responsibility:** decide how the runtime issues a command turn in two database round trips, as [ADR 0005](0005-turn-latency-batching-and-regional-placement.md) requires, and what the implementation must prove.
 
-**Authority:** design.
+**Authority:** historical decision record.
 
 **Owner role:** runtime architecture.
 
@@ -12,11 +12,11 @@
 
 ## Context
 
-ADR 0005 decided that a turn costs two database round trips. The first, admission, carries `BEGIN`, tenant scope, the generation fence, and receipt resolution. The second, commit, carries the writes, the receipt, and `COMMIT`. It left the mechanism open. Today a warm turn takes 14 sequential round trips, and #43 cuts that to 10 ([performance](../verification/03-performance.md)). Over a real network, or through a Neki router with a cross-zone commit, round trips are the cost that matters most.
+ADR 0005 decided that a turn costs two database round trips. The first, admission, carries `BEGIN`, tenant scope, the generation fence, and receipt resolution. The second, commit, carries the writes, the receipt, and `COMMIT`. It left the mechanism open. Today a warm turn takes 14 sequential round trips ([performance](../verification/03-performance.md)). The open PR #43 measured a cut to 10. Over a real network, or through a Neki router with a cross-zone commit, round trips are the cost that matters most.
 
 The issue that opened this work (#54) assumed the runtime drives node `pg` 8.23, which it said had no pipeline mode. Both halves of that turned out wrong:
 
-- **The runtime driver is not node `pg`.** `Database.postgres` builds `PgClient.layer` from `@effect/sql-pg` 4.0.0-rc.116, which has its own wire-protocol client. Node `pg` is only a dev dependency, used by tests and examples.
+- **The runtime driver is not node `pg`.** `Database.postgres` builds `PgClient.layer` from `@effect/sql-pg` 4.0.0-rc.116, which has its own wire-protocol client. In the framework package, node `pg` is only a dev dependency, used by tests. `packages/postgres` and `examples/counter` use it at runtime, but they don't run turns.
 - **Node `pg` 8.23 does pipeline.** It has `new Client({ pipeline: true })`.
 - **`@effect/sql-pg` pipelines too, with a limit.** It pipelines only on a _multiplexed_ connection that isn't pinned. A transaction, meaning `SqlClient.withTransaction` or `pool.reserve`, pins its connection. Every statement on a pinned connection waits for the previous one to finish.
 
@@ -77,34 +77,37 @@ PGlite runs in-process and has no wire, so pipelining doesn't apply to it. Each 
 
 ### The turn is two pipelined groups on a turn-owned multiplexed connection
 
-A turn runs as an ordinary interactive transaction on one connection that is leased to that turn alone. Its statements are sent in two pipelined groups. Each statement is its own extended-protocol cycle, with its own `Sync`, so bind parameters, prepared statements, and binary `bytea` all work unchanged. The runtime submits statements in order without waiting for replies, then waits for the last reply of the group.
+A turn runs as an ordinary interactive transaction on one connection that is leased to that turn alone. Its statements are sent in two pipelined groups. Each statement is its own extended-protocol cycle, with its own `Sync`, so bind parameters, prepared statements, and binary `bytea` all work unchanged. The runtime queues a group's statements in order without waiting for replies. It then waits for every reply in order and fails the turn on the first error. Postgres answers `COMMIT` in an aborted transaction with the command tag `ROLLBACK` and no error, so the runtime also checks that the `COMMIT` tag is `COMMIT`. Any other tag is a failed commit: the activation cache is discarded and the turn dies `RetryTurn`.
+
+Queuing a group is uninterruptible, so either every statement of the group is queued or none is. The driver skips a queued statement whose waiter was interrupted before the flush and still sends the ones after it. An interruptible submission could therefore drop a state upsert and still send the receipt and `COMMIT`. Interruption is allowed only while the runtime waits for replies.
 
 1. **Admission group (round trip 1):**
    - `BEGIN`;
    - `set_config` for `lock_timeout`, `statement_timeout`, tenant scope, and on Neki `__neki.tx_mode='single'`;
-   - the fenced read of the generation row, joined to the receipt for this command id (`SELECT … FOR UPDATE OF g`).
+   - on a cold activation only, the generation insert-if-missing (`INSERT … ON CONFLICT DO NOTHING`);
+   - the fenced read of the generation row, joined to the receipt for this command id (`SELECT … FOR UPDATE OF g`);
+   - on a cold activation only, the generation bump (`UPDATE … RETURNING`) and the state read.
 
-   A cold activation adds the statements it needs, and none of them depends on another's result:
-   - the generation insert-if-missing;
-   - the generation bump (`UPDATE … RETURNING`);
-   - the state read.
+   None of these statements takes a parameter derived from another's reply. The insert-if-missing must come before the fenced read, as it does today. Otherwise, for a brand-new actor, the fenced read would lock no row, and receipt resolution would happen without the lock.
 
    An actor whose handler can issue statements adds `SAVEPOINT` for declared-failure isolation (open question 3).
 
-2. **The handler runs in memory** once the admission replies arrive. The fence check, receipt access and conflict checks, the creation check, and state decoding all happen before the handler runs. Handler-issued `turn.rows` statements run on the same connection, and each one the handler awaits costs a round trip.
+2. **The handler runs in memory** once the admission replies arrive. The fence check, receipt access and conflict checks, the creation check, and state decoding all happen before the handler runs. Handler-issued `turn.rows` statements run on the same connection, and each one the handler awaits costs a round trip. They reach it through a `SqlClient` that the runtime builds around the leased connection. Its acquirer returns the unpinned connection, as `PgClient.makeClient` does, so statements pipeline. The runtime also provides that client's transaction service, so the owned-rows binding accepts it as the turn transaction. `BEGIN` and `SAVEPOINT` are sent as plain statements, never through `withTransaction`, because `withTransaction` pins.
 3. **Commit group (round trip 2):**
    - `ROLLBACK TO SAVEPOINT` on a declared failure, or `RELEASE SAVEPOINT` otherwise, when a savepoint was taken;
    - dirty state upserts and deletes, event appends, outbox rows, and the creation marker;
    - the receipt insert;
    - `COMMIT`.
 
-   A replayed receipt, a stale generation, or a `NotCreated` rejection sends `ROLLBACK` as round trip 2 instead. No writes go with it.
+   Any exit other than a successful `COMMIT` sends `ROLLBACK` as round trip 2, with no writes, or closes the connection. That includes a replayed receipt, a stale generation, `NotCreated`, a conflict or access denial, a deterministic defect, a handler defect, and a failed `turn.rows` statement. A connection goes back to the lease only when its transaction is idle. Otherwise the next turn's `BEGIN` would only raise a warning, and two turns would share one transaction.
 
 **Statement count.** A warm turn with one dirty key and no handler statements takes 2 round trips and 6 statements: `BEGIN`, config, fence, state upsert, receipt, `COMMIT`. #43's warm path takes 10 round trips. A new activation or wake also takes 2 round trips: it adds 3 statements to group 1.
 
-**Why the order still holds.** The server executes a pipelined group in the order it was sent, all inside one transaction. The fenced `FOR UPDATE` read therefore takes the generation lock before the bump or the state read runs. The receipt is resolved under that lock, and no consequence is written or exposed until the commit group. This is the order that [contract 02](../contracts/02-command-turns.md) already requires. The contract's wording change below only makes it explicit that "order" means execution order on the server, not waiting for each reply on the client.
+**Behaviour change (internal):** today every turn wraps its handler in a savepoint (a nested `withTransaction`). Under this design only actors whose handlers can issue statements take one (open question 3).
 
-**How the lease works.** `@effect/sql-pg` rc.116 pipelines only on a multiplexed connection that isn't pinned, and a pinned transaction serializes its statements. So the runtime keeps its own pool of multiplexed connections (`PgConnection.make({ multiplex: true })`) for turns. It leases each connection exclusively to one turn, in the same way that `pool.reserve` does today. Queries, the relay, migrations, and Cluster storage keep using the ordinary `SqlClient`. The runtime also asks Effect upstream to let a reserved connection pipeline. When that ships, the turn pool collapses back into `PgClient`'s pool.
+**Why the order still holds.** The server executes a pipelined group in the order it was sent, all inside one transaction. The insert-if-missing guarantees that the row exists, so the fenced `FOR UPDATE` read always takes the generation lock before the bump or the state read runs. The receipt is resolved under that lock, and no consequence is written or exposed until the commit group. This is the order that [contract 02](../contracts/02-command-turns.md) already requires. The contract's wording change below only makes it explicit that "order" means execution order on the server, not waiting for each reply on the client.
+
+**How the lease works.** `@effect/sql-pg` rc.116 pipelines only on a multiplexed connection that isn't pinned, and a pinned transaction serializes its statements. So the runtime keeps a second pool for turns: `PgPool.make({ multiplex: true, multiplexConcurrency: 1 })`. With a concurrency of 1, `pool.get` hands each connection to one turn at a time, the connection stays unpinned so it pipelines, and `pool.invalidate` discards it after an interrupt. The pool also brings lazy opening, TTL, and replacement of dead connections. Queries, the relay, migrations, and Cluster storage keep using the ordinary `SqlClient`. The runtime also asks Effect upstream to let a reserved connection pipeline. When that ships, the turn pool collapses back into `PgClient`'s pool.
 
 ```ts
 // Runtime-internal sketch for P4. Names are illustrative.
@@ -112,34 +115,50 @@ const pipeline = (conn: PgConnection.PgConnection, statements: ReadonlyArray<Sta
   Effect.gen(function* () {
     const sent = []
     // Forking in order puts each cycle on the wire in submission order.
-    for (const s of statements) sent.push(yield* Effect.forkChild(conn.query(s.sql, s.params)))
-    return yield* Effect.forEach(sent, Fiber.join)
+    // Queue the whole group or none of it; only the waits below are interruptible.
+    const sent = yield* Effect.uninterruptible(
+      Effect.forEach(statements, (s) => Effect.forkChild(conn.query(s.sql, s.params))),
+    )
+    return yield* Effect.forEach(sent, Fiber.join) // every reply, in order; first error fails
   })
 
 const runTurn = Effect.fn(function* (request: Request, cache: ActivationCache) {
   const conn = yield* TurnConnections.lease // exclusive and multiplexed; closed, not returned, on interrupt
-  const [, , admission, ...cold] = yield* pipeline(conn, [
+  const cold = cache.generation === undefined
+  const replies = yield* pipeline(conn, [
     begin,
     configure(policy, request.ref.tenant),
+    ...(cold ? [ensureGeneration(request)] : []),
     fenceAndReceipt(request),
-    ...(cache.generation === undefined
-      ? [ensureGeneration(request), bumpGeneration(request), readState(request)]
-      : []),
+    ...(cold ? [bumpGeneration(request), readState(request)] : []),
   ])
-  const decided = yield* admit(admission, cold, cache) // stale fence, replay, conflict, NotCreated
+  const decided = yield* admit(replies, cold, cache) // stale fence, replay, conflict, NotCreated
   if (decided._tag !== "Run") return yield* finish(conn, [rollback], decided)
   const result = yield* runHandler(request, decided.state, conn) // turn.rows statements use `conn`
+  // finish checks the COMMIT tag; any failure sends ROLLBACK or invalidates the connection
   return yield* finish(conn, [...writes(result), receipt(request, result), commit], result)
 })
 ```
 
-### Interruption closes the connection
+### Interruption closes and cancels the connection
 
-`commandTimeout` interrupts the turn. On a pinned connection that sends a `CancelRequest`. On an unpinned multiplexed connection, interrupting only abandons the pending replies, and the transaction stays open. So an interrupted turn _closes_ its leased connection instead of returning it to the pool. Closing the session rolls the transaction back, and the lease opens a new connection for the next turn. The transaction-local `statement_timeout` set in group 1 still bounds server work. **Behaviour change (internal):** a timed-out turn now costs a reconnect instead of a cancel request. Contract 02's "interruption rolls back and dies `RetryTurn`" still holds.
+`commandTimeout` interrupts the turn. On a pinned connection, interrupting sends a `CancelRequest`. On an unpinned multiplexed connection, interrupting only abandons the pending replies, and the transaction stays open. So an interrupted turn does two things:
+
+- it sends a `CancelRequest` for the leased connection's backend, which is safe because the lease is exclusive;
+- it invalidates the connection instead of returning it to the pool.
+
+Closing the connection alone isn't enough. A backend that is busy running a statement doesn't notice a closed socket until that statement ends, because `client_connection_check_interval` is off by default. Until then it keeps holding the generation lock, for up to another `statement_timeout`.
+
+The outcome depends on how far the turn got:
+
+- **`COMMIT` not yet sent:** closing the session rolls the transaction back, and the statements that hadn't run never run.
+- **`COMMIT` already on the wire:** the server still executes it, so the outcome is commit-unknown, as contract 02's F4 already describes. The caller's retry with the same command id resolves through the receipt, and the handler runs once.
+
+**Behaviour change (internal):** a timed-out turn now costs a cancel request and a reconnect, instead of a cancel request alone.
 
 ### PGlite runs the same groups one statement at a time
 
-PGlite has one in-process session and no wire. The runtime sends the same statements, in the same order and grouping, one engine call at a time. The round-trip check therefore runs on Postgres only. On PGlite the same case asserts the grouping instead: a turn issues the admission statements, then handler statements, then the commit statements, and waits for no reply in the middle of a group. PGlite's per-turn cost stays about 2 ms, which bounds local development only (see [ADR 0018](0018-benchmark-harness-and-results.md)).
+PGlite has one in-process session and no wire. The runtime sends the same statements, in the same order and grouping, one engine call at a time. The round-trip check therefore runs on Postgres only. On PGlite the same case records the statement sequence instead, and checks two things: the sequence matches the admission, handler, and commit groups, and no statement takes a parameter derived from a reply in its own group. PGlite keeps using `withTransaction`, because it has one session and nothing to pipeline. PGlite's per-turn cost stays about 2 ms, which bounds local development only (see [ADR 0018](0018-benchmark-harness-and-results.md)).
 
 ### Turn batches (P5)
 
@@ -151,7 +170,13 @@ A batch keeps the same two groups:
 
 A command whose handler issues statements is wrapped in `SAVEPOINT` and `RELEASE SAVEPOINT` (or `ROLLBACK TO SAVEPOINT`). Those statements are pipelined with the command's first statement and its successor, so they add no round trips. The batch cap of 32 still bounds savepoints.
 
-For pipelined batches, batch N+1's admission group is sent in the same flight as batch N's commit group. It comes after N's `COMMIT` and starts a new transaction. At steady state that is one flight per batch. Batch N+1's handlers run only after its own fence and receipt replies arrive, so no handler runs before its fence. That narrows ADR 0005's allowance that batch N+1 may run in memory while batch N commits: the allowance still stands in contract 02, but this design doesn't use it. If N's `COMMIT` fails, the runtime rolls back N+1's transaction and restarts the activation, as the existing row "Pipelined batch N fails to commit" requires.
+For pipelined batches, batch N+1's admission group is sent in the same flight as batch N's commit group. It comes after N's `COMMIT` and starts a new transaction on the same session. At steady state that is one flight per batch. Batch N+1's handlers run only after its own fence and receipt replies arrive, so no handler runs before its fence.
+
+From the client's side, two turn transactions are then in flight at once. ADR 0005's "at most one turn transaction per actor in flight" still holds on the server, because one session executes them strictly one after the other. The lease must span consecutive batches of one activation, not one turn.
+
+If N's `COMMIT` fails, the runtime rolls back N+1's transaction and restarts the activation, as the existing row "Pipelined batch N fails to commit" requires. P5 may defer same-flight admission if it turns out to complicate the lease.
+
+**Behaviour change (narrows contract 02 and ADR 0005):** batch N+1 no longer runs in memory against batch N's staged state while N commits. Its admission statements may be sent then, but its handlers wait for its own fence and receipts. That allowance was the one remaining place where a handler ran before its fence, which is the speculation Dallen rejected.
 
 ### Pre-delivery reads stay (#43's pending cuts)
 
@@ -169,16 +194,18 @@ Neki's router must forward pipelined extended-protocol cycles in order, on the p
 
 These defaults stand unless review objects.
 
-1. **Where turn connections come from.** Recommended: a runtime-owned pool of multiplexed connections, sized by the existing `maxConnections`. The ordinary `SqlClient` keeps a small fixed pool (10) for queries, the relay, migrations, and Cluster storage. Nothing changes in the public API:
+1. **Where turn connections come from.** Recommended: a second `PgPool` with `multiplex: true` and `multiplexConcurrency: 1`, sized by the existing `maxConnections`. The ordinary `SqlClient` pool serves queries, pre-delivery reads, the relay, migrations, and Cluster runner storage (which holds one connection for the layer's lifetime). It gets a new `Database.postgres` option, `offTurnConnections`, which defaults to 10. **Behaviour change:** a runner can now hold up to `maxConnections + offTurnConnections` connections (60 by default) instead of `maxConnections`. P4 amends ADR 0019's sizing and the `Database.postgres` documentation:
 
    ```ts
-   Actors.layer({ database: Database.postgres({ url, maxConnections: 50 }) })
-   // runner: up to 50 multiplexed turn connections + 10 for off-turn work
+   Actors.layer({
+     database: Database.postgres({ url, maxConnections: 50, offTurnConnections: 10 }),
+   })
+   // runner: up to 50 turn connections + 10 for off-turn work
    ```
 
    The alternative is to wait for upstream pipelining on reserved connections. That leaves P4 blocked on an Effect release.
 
-2. **How statements are kept in order.** Recommended: fork each query in submission order on the leased connection, as the sketch above does. A conformance case asserts the order. If upstream later adds a batch API such as `conn.pipeline([...])`, the runtime switches to it.
+2. **How statements are kept in order.** Recommended: fork each query in submission order, uninterruptibly, on the leased connection, as the sketch above does. A conformance case asserts the order. If upstream later adds a batch API such as `conn.pipeline([...])`, the runtime switches to it.
 3. **When to take a savepoint.** Recommended: only for actors whose handlers can issue statements, meaning they declare `tables` or write blobs. State, events, and outbox rows are staged in memory, and a declared failure discards them without SQL. Any other actor never sends `SAVEPOINT`:
 
    ```ts
@@ -210,11 +237,13 @@ These defaults stand unless review objects.
 
 ## Contract changes
 
-These are clarifications. None of them changes a guarantee.
+- **[Contract 02](../contracts/02-command-turns.md), clarification:** "order" means execution order within the transaction. A runtime may pipeline statements whose order the server preserves. A runtime that pipelines must cancel and close an interrupted turn's connection, and must treat a `COMMIT` already sent as commit-unknown.
+- **[Contract 02](../contracts/02-command-turns.md), narrowed:** the next batch may send its admission statements while the previous batch commits. Its handlers must not run until its own fence and receipts are validated. This replaces "the next batch MAY execute in memory while the previous batch commits", from ADR 0005.
+- **[Contract 03](../contracts/03-transactions.md), clarification:** an adapter that pipelines must prove two things. The server runs pipelined statements in submission order inside the transaction. And a failed statement aborts everything pipelined after it, so `COMMIT` rolls back.
+- **Unchanged:** contracts 01, 04, 09, and 10, and invariant R2. The handler still runs only after the fence and the receipt.
+- **For P5 to revisit:** the ledger check **Pipelined batches** and invariant B1 still hold as written, but with the narrowed allowance, batch N+1 has no staged work to hide until N's commit reply arrives.
 
-- **[Contract 02](../contracts/02-command-turns.md):** the order is execution order within the transaction, and the runtime may pipeline statements whose order the server preserves. An interrupted turn must close its connection unless the driver can cancel it.
-- **[Contract 03](../contracts/03-transactions.md):** an adapter that pipelines must prove two things. The server runs pipelined statements in submission order inside the transaction. And a failed statement aborts everything pipelined after it, so `COMMIT` rolls back.
-- **Contracts 01, 04, 09, and 10, and invariant R2:** unchanged. The handler still runs only after the fence and the receipt.
+The contract text cites this ADR while it is still proposed. The clarifications apply only to a runtime that pipelines, which none does yet. The narrowed batch allowance constrains P5, which doesn't exist yet. If review rejects this ADR, the contract edits are reverted along with it.
 
 ## Verification the implementation (P4) must add
 
@@ -225,20 +254,26 @@ These are clarifications. None of them changes a guarantee.
 - `each awaited turn.rows statement adds one round trip` (Postgres);
 - `turn statements keep their groups` (PGlite and Postgres);
 - `stale fence sends no writes and rolls back` (Postgres, with another runner bumping the generation);
-- `failure inside the admission group aborts the pipelined commit` (Postgres);
-- `interrupt with a pipeline in flight closes the connection and rolls back` (Postgres);
+- `first command for a brand-new actor raced by two runners runs the handler once` (Postgres);
+- `a failed statement in the commit group makes COMMIT roll back and the turn fails with the cache discarded` (Postgres);
+- `interrupt before COMMIT is sent cancels, closes the connection, and rolls back` (Postgres);
+- `interrupt after COMMIT is on the wire resolves through the receipt and runs the handler once` (Postgres);
+- `interrupt while a group is being queued sends all of it or none of it` (Postgres);
+- `after a defect the next turn on the same connection starts a fresh transaction` (Postgres);
+- `turn.rows statements run on the turn connection inside the transaction` (PGlite and Postgres);
+- `declared failure without a savepoint discards staged state, events, and outbox rows` (PGlite and Postgres);
 - `replayed receipt sends rollback only` (PGlite and Postgres).
 
 **New failure-matrix rows**, in [failure matrix](../verification/02-failure-matrix.md):
 
-- "Statement fails inside a pipelined group";
+- "Statement fails inside a pipelined commit group";
 - "Turn interrupted with a pipeline in flight".
 
 **Unchanged:** every existing crash case must stay green. The T2 statement baseline is updated in the same PR. `hot-actor` and `cold-activation` report round trips.
 
 ## Consequences
 
-- **Runner connections.** A runner holds two kinds: the turn pool, sized by `Database.postgres({ maxConnections })` (default 50, from [ADR 0019](0019-runner-capacity-and-pool-size.md)), and a small fixed pool for everything else. P4 documents the total in [deployment](../operations/01-deployment.md). The two pools merge once the upstream change lands.
+- **Runner connections.** A runner holds two pools: the turn pool, sized by `maxConnections` (default 50, from [ADR 0019](0019-runner-capacity-and-pool-size.md)), and the off-turn pool, sized by `offTurnConnections` (default 10). P4 documents the total in [deployment](../operations/01-deployment.md). The two pools merge once the upstream change lands.
 - **Handler statements.** A turn's latency still grows by one round trip for each handler statement it awaits. The two-round-trip figure is for turns that issue none.
 - **Transaction time.** Postgres holds each transaction for about one round trip plus handler time, instead of one round trip per statement. The generation row lock is held for about the same span.
 
