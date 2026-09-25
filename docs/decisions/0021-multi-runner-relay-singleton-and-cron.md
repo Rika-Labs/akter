@@ -44,9 +44,9 @@ The scan cost barely changes between 10,000 and 100,000 sleeping timers, which i
 
 ### 1. Claims: every runner claims due rows with `FOR UPDATE SKIP LOCKED` and a lease
 
-There is no bucket ownership. Every runner's relay scans all 256 buckets. It claims a batch of due rows in one autocommit statement, and the claim moves each row's `due_at_ms` to the end of a lease. A claimed row is no longer due, so other runners' scans skip it after the claim commits, and `SKIP LOCKED` skips it while the claim is in progress. No transaction stays open while the relay delivers, and no row lock outlives the claim statement.
+There is no bucket ownership. Every runner's relay scans all 256 buckets. It claims due rows in autocommit statements, only as many as it can start at once (its free intent-delivery slots or executor permits), and the claim moves each row's `due_at_ms` to the end of a lease. A claimed row therefore starts delivery immediately and never waits in a local queue while its lease runs down. A claimed row is no longer due, so other runners' scans skip it after the claim commits, and `SKIP LOCKED` skips it while the claim is in progress. No transaction stays open while the relay delivers, and no row lock outlives the claim statement.
 
-Intent claim (the effect claim in [section 2](#2-executors-run-outside-the-relay-pass-on-a-per-runner-pool) has the same shape):
+Intent claim (`$limit` is the free delivery slots, at most `relay.passLimit`):
 
 ```sql
 WITH candidates AS (           -- the M1 scan: one (bucket, due_at_ms) probe per bucket, no locks
@@ -54,7 +54,7 @@ WITH candidates AS (           -- the M1 scan: one (bucket, due_at_ms) probe per
   FROM generate_series(-128, 127) AS b(bucket)
   CROSS JOIN LATERAL (
     SELECT routing_key, intent_id, due_at_ms FROM actor_outbox
-    WHERE bucket = b.bucket AND due_at_ms <= $now AND kind = 'intent'
+    WHERE bucket = b.bucket AND kind = 'intent' AND due_at_ms <= $now
     ORDER BY due_at_ms LIMIT $candidates
   ) o
   ORDER BY o.due_at_ms LIMIT $candidates
@@ -62,7 +62,7 @@ WITH candidates AS (           -- the M1 scan: one (bucket, due_at_ms) probe per
 claimed AS (                   -- lock only rows this pass will take; another runner's rows are skipped
   SELECT o.routing_key, o.intent_id FROM actor_outbox o
   JOIN candidates USING (routing_key, intent_id)
-  WHERE o.due_at_ms <= $now    -- rechecked after the lock, so a row another runner just claimed drops out
+  WHERE o.kind = 'intent' AND o.due_at_ms <= $now  -- rechecked on the newest row version after the lock
   ORDER BY o.due_at_ms LIMIT $limit
   FOR UPDATE OF o SKIP LOCKED
 )
@@ -71,42 +71,83 @@ SET attempts = o.attempts + 1,
     due_at_ms = $now + greatest($claimLease, least(1000 * power(2, least(o.attempts, 20)), $maxBackoff))::bigint
 FROM claimed c
 WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
-RETURNING o.*
+RETURNING o.*, (SELECT count(*) FROM candidates) AS candidate_count
 ```
 
-- **Index use.** The candidate scan is M1's `scanDue` probe on `actor_outbox_due (bucket, due_at_ms)`, so scan cost still follows due rows, not stored actors. Only up to `$limit` rows are locked, and each is updated once. The `$candidates` oversample (default `2 × $limit`) keeps a runner that loses a race for the earliest rows from ending its pass empty. A pass counts as a backlog pass, and runs the next pass immediately, when the candidate scan came back full, not when every row settled.
+- **Index use.** The candidate scan is M1's per-bucket probe, on the index `actor_outbox_due_kind (bucket, kind, due_at_ms)` that `0010_relay` creates in place of `(bucket, due_at_ms)`, so intent scans never read effect rows and effect scans never read intents. Scan cost still follows due rows of the scanned kind, not stored actors. Only up to `$limit` rows are locked, and each is updated once. The `$candidates` oversample (default `2 × $limit`) keeps a runner that loses a race for the earliest rows from ending its claim empty. The relay claims again as soon as a slot frees while `candidate_count` came back equal to `$candidates`; otherwise it waits for a wake or the poll.
 - **Settling.** A delivered intent is deleted after the receiver's receipt commits, as in M1. A failed delivery (receiver defect, `ActorUnavailable`, timeout) sets `due_at_ms = now + backoff(attempts)`. A crash, or a settle that dies, leaves the claim in place until the lease ends. Every settling write names the row and the lease it holds (`due_at_ms = $claimedUntil` for intents, `attempts = $n` for effects), so a runner whose lease has already passed to another runner changes nothing.
-- **`attempts` counts claims.** It is written before the delivery starts, the same rule effects already follow. A receiver defect still leaves `attempts = 1` after the first delivery, as the M1.6 case `keeps an intent whose receiver defects and retries it with backoff` expects.
-- **Claim lease.** The default is the largest `deliveryTimeout` among the registered actor types plus 5 seconds (35 s with default policies). A delivery can't outlast its receiver's `deliveryTimeout`, so a live runner never has its lease taken over mid-delivery. A shorter configured lease is safe: it only costs duplicate deliveries, which receipts deduplicate.
+- **`attempts` counts claims.** It is written before the delivery starts, the same rule effects already follow. A receiver defect still leaves `attempts = 1` after the first delivery, as the M1.6 case `keeps an intent whose receiver defects and retries it with backoff` expects. **Behaviour change (API docs, operators):** `attempts` now also counts claims whose lease expired and rows released at shutdown, so the operator signal the API docs name, and M4.3's `attempts ≥ 8` gauge, count claims rather than failed deliveries.
+- **Claim lease.** The default is the largest `commandTimeout + lockWait` among the actor types registered on the runner, plus 5 seconds (37 s with default policies). That bounds the receiver's turn transaction; `deliveryTimeout` does not, because it only stops the caller waiting and the admitted turn may commit later. Runners that register different actor types may compute different leases. Neither case is unsafe: a lease that ends mid-delivery costs one duplicate delivery, which the receipt deduplicates, and the late runner's settle then changes nothing.
+- **Pipelining cost.** Claiming per free slot instead of per 256-row pass adds about one claim statement per 16 delivered rows under a backlog (+0.06 statements per row against `drain-20000`'s 8.02), and none for a lone intent, which M1 also scanned for.
 - **Order.** Intents have no delivery order today, and they still have none.
 - **Neki.** One claim statement covers every bucket on Postgres and PGlite. On Neki the relay sends one claim per bucket range that maps to one shard, so each statement stays single-shard under `__neki.fanout = 'single'` ([ADR 0006](0006-scale-rules-placement-and-query-tiers.md)). M5.1 verifies this. M1's scan has the same requirement.
 
-**Migration `0010_relay` is used**, for one column, not for claims:
+**Migration `0010_relay` is used**, for one column and one index:
 
 ```sql
 ALTER TABLE actor_outbox ADD COLUMN scheduled_at_ms bigint;  -- null on rows written before 0010
+CREATE INDEX actor_outbox_due_kind ON actor_outbox (bucket, kind, due_at_ms);
+DROP INDEX actor_outbox_due;
 ```
 
-Claims and backoff overwrite `due_at_ms`. `scheduled_at_ms` keeps the time the row first became due: an intent's due time, a timer's `Intent.after`/`Intent.at` time, or a cron tick's scheduled time. Relay lag (`now − coalesce(scheduled_at_ms, due_at_ms)`, required by [performance](../verification/03-performance.md)) and the cron skip window ([section 5](#5-cron-keyed-self-timers-rewritten-by-the-relay)) read it. It isn't indexed, and claims don't write it. The claim itself needs no schema change, because it uses existing columns and the existing index.
+Claims and backoff overwrite `due_at_ms`. `scheduled_at_ms` keeps the time the row first became due: an intent's due time, a timer's `Intent.after`/`Intent.at` time, or a cron tick's scheduled time. Relay lag (`now − coalesce(scheduled_at_ms, due_at_ms)`, required by [performance](../verification/03-performance.md)) and the cron skip window ([section 5](#5-cron-keyed-self-timers-rewritten-by-the-relay)) read it. It isn't indexed, and claims don't write it. The index puts `kind` after `bucket` so effect rows that wait for an executor or for pool permits never sit in the intent scan's range, and the reverse.
 
 **Behaviour change (ADR 0006, ADR 0011, contract 03, dispatch and storage-layout docs).** A runner no longer scans "only the buckets it owns". Every runner's relay may deliver any due row.
 
-**Behaviour change (contract 09, failure matrix, `ActorTest`).** A relay that dies after claiming a row now delays that row's redelivery until the claim lease ends. In M1 the next pass redelivered it. `ActorTest.advance(claimLease)` makes the row due again, and `drain` no longer redelivers a row whose settle died in the same test until the clock moves past its lease.
+**Behaviour change (contract 09, failure matrix, `ActorTest`).** A relay that dies after claiming a row now delays that row's redelivery until the claim lease ends. In M1 the next pass redelivered it. `ActorTest.advance(claimLease)` makes the row due again, and `drain` no longer redelivers a row whose settle died in the same test until the clock moves past its lease. `drain` (and so `advance`) waits for in-flight intent deliveries and executor attempts before it checks for due rows, and returns when nothing is due and nothing is in flight. It still dies with `Outbox did not settle` after 100 rounds that each found due work; failing rows back off out of the due range, so they end a drain rather than loop it.
 
 ### 2. Executors run outside the relay pass, on a per-runner pool
 
 Each runner has one effect executor pool with a concurrency limit (`executors.concurrency`, default 64). The relay pass claims effect rows only up to the pool's free permits and hands each claimed row to the pool. The pass doesn't wait for executors. Intent delivery keeps its own `relay.deliveryConcurrency` (default 16, M1's value), so a slow executor can't delay intents or timers.
 
-An effect claim is the M1.7 attempt claim, taken in a batch with `SKIP LOCKED`. It sets `attempts = attempts + 1`, `ambiguous = true`, `last_error = 'Attempt n ended without reporting an outcome'`, and `due_at_ms = now + executors.lease`. A runner claims only effect rows whose `(actor_type, command)` it has an executor for (a filter on the claim). A row with no executor on a runner stays due until a runner that has one claims it.
+An effect claim is the M1.7 attempt claim, taken in a batch with `SKIP LOCKED` and limited to free pool permits. The runner passes the effects it has executors for, with each one's attempt limit (`retry.times + 1`), so the claim filters on them and reads the limit per row:
+
+```sql
+WITH mine(actor_type, command, max_attempts) AS (VALUES ($1, $2, $3), ...),   -- this runner's executors
+candidates AS (
+  SELECT o.routing_key, o.intent_id
+  FROM generate_series(-128, 127) AS b(bucket)
+  CROSS JOIN LATERAL (
+    SELECT routing_key, intent_id, due_at_ms, actor_type, command FROM actor_outbox
+    WHERE bucket = b.bucket AND kind = 'effect' AND due_at_ms <= $now
+    ORDER BY due_at_ms LIMIT $candidates
+  ) o
+  JOIN mine USING (actor_type, command)
+  ORDER BY o.due_at_ms LIMIT $candidates
+),
+claimed AS (
+  SELECT o.routing_key, o.intent_id, m.max_attempts FROM actor_outbox o
+  JOIN candidates USING (routing_key, intent_id)
+  JOIN mine m USING (actor_type, command)
+  WHERE o.kind = 'effect' AND o.due_at_ms <= $now   -- a row a stale success just turned into an intent drops out
+  ORDER BY o.due_at_ms LIMIT $permits
+  FOR UPDATE OF o SKIP LOCKED
+)
+UPDATE actor_outbox o SET
+  due_at_ms  = $now + $lease,
+  -- An exhausted row is only fenced: the relay dead-letters it with the outcome already recorded.
+  attempts   = CASE WHEN o.attempts < c.max_attempts THEN o.attempts + 1 ELSE o.attempts END,
+  ambiguous  = CASE WHEN o.attempts < c.max_attempts THEN true ELSE o.ambiguous END,
+  last_error = CASE WHEN o.attempts < c.max_attempts
+                    THEN 'Attempt ' || (o.attempts + 1) || ' ended without reporting an outcome'
+                    ELSE o.last_error END
+FROM claimed c
+WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
+RETURNING o.*, o.attempts >= c.max_attempts AS exhausted
+```
+
+A row that was already exhausted when claimed (its last attempt crashed, or its dead-letter transaction failed after the last attempt's typed failure) keeps its `attempts`, `ambiguous`, and `last_error`, exactly as M1.7's `row.attempts >= registered.attempts` branch does, so its dead letter reports the recorded attempt count and classification. A row with no executor on a runner is never claimed there and stays due, in the effect range of the index only, until a runner that has one claims it.
 
 Leases and expiry:
 
-- **Renewal.** While an attempt runs, the pool renews its lease every `lease / 3` with `UPDATE actor_outbox SET due_at_ms = $now + $lease WHERE routing_key = $rk AND intent_id = $id AND kind = 'effect' AND attempts = $n`. A long provider call keeps its claim for as long as the runner stays healthy.
-- **Lost lease.** If a renewal matches no row, the attempt has lost its claim. The pool interrupts the executor fiber and logs `Effect attempt lost its lease`. If renewals keep failing (for example because the database is unreachable) until the lease's deadline passes on the runner's clock, the pool interrupts the attempt at that deadline. Stopping on its own clock, not waiting for the database to confirm, keeps the old runner's attempt from outliving its claim by more than the clock skew between runner and database.
+- **Renewal.** While an attempt runs, the pool renews its lease every `lease / 3` with `UPDATE actor_outbox SET due_at_ms = $now + $lease WHERE routing_key = $rk AND intent_id = $id AND kind = 'effect' AND attempts = $n`. A long provider call keeps its claim for as long as the runner stays healthy. When the executor returns, the pool stops the renewal fiber and awaits it before any settling write, so a late renewal can't overwrite a failure's backoff with a fresh lease.
+- **Lost lease.** If a renewal matches no row, the attempt has lost its claim. The pool interrupts the executor fiber and logs `Effect attempt lost its lease`. If renewals keep failing (for example because the database is unreachable) until the lease's deadline passes, the pool interrupts the attempt at that deadline. The deadline is a monotonic duration of `lease` measured from when the last successful claim or renewal statement was sent, not a wall-clock comparison with `due_at_ms`, so runner–database clock skew doesn't matter: the database's lease can only end later than the runner's.
 - **Takeover.** Once the lease has passed, any runner with the executor claims attempt `n + 1`. The row still says `ambiguous = true` from attempt `n`'s claim. If `n` used the last attempt, the takeover dead-letters it with `ambiguous: true`, as M1.7 does for a crashed attempt.
-- **Stale results.** A result or failure from attempt `n` that arrives after the takeover names `attempts = n` and matches no row, so nothing is routed or recorded. The provider may still have applied that call, so executors keep using `effectId` as the provider's idempotency key.
+- **Stale results.** A success settles with a guard on `kind = 'effect'` alone, not on the attempt: the first success of any attempt wins and turns the row into its route, and at most one result is routed because the row stops being an effect. A stale success therefore still counts when it beats the takeover's outcome. A success that arrives after the row was dead-lettered matches no row; the pool then sets `ambiguous = true` on the effect's `actor_dead_letters` row and logs `Effect succeeded after it was dead-lettered`, because the provider applied the call after the dead letter had been routed. A failure or unknown outcome from attempt `n` keeps the `attempts = n` guard, so a stale failure never overwrites a newer attempt's record. Executors keep using `effectId` as the provider's idempotency key.
 
-P1 holds. The dead letter is `ambiguous: false` only when the last attempt ended in a typed failure, and at most one result is routed per effect id, because routing is a compare-and-set on the attempt that produced it.
+P1 holds. The dead letter is `ambiguous: false` only when the last attempt ended in a typed failure and no success arrived, and at most one result is routed per effect id, because routing is a compare-and-set on the row still being an effect.
+
+**Behaviour change (contract 08, API docs).** A dead letter's stored `ambiguous` flag can turn from `false` to `true` after `onDeadLetter` was routed, when a lease-expired attempt's success arrives late. The routed `Actor.DeadLetter` input is not changed.
 
 **Behaviour change (contract 08, API docs).** Two attempts of one effect can now overlap. That happens only after a lease expires while the first attempt is still calling the provider: its runner lost the database, or its local deadline passed before a takeover's claim committed. In M1, with one relay and a 60 s lease over a 30 s timeout, attempts effectively ran one after another. Contract 08 now says so, and it requires executors to be idempotent under `effectId`, which the API docs already recommend.
 
@@ -143,7 +184,7 @@ const runtime = Actors.layer({
     poll: "1 second", // default; durable polling interval, with ±10% jitter per runner
     passLimit: 256, // default; intent rows claimed per pass
     deliveryConcurrency: 16, // default; intents delivered at once per runner
-    claimLease: "35 seconds", // default: largest deliveryTimeout + 5 s
+    claimLease: "37 seconds", // default: largest commandTimeout + lockWait + 5 s
     maxBackoff: "256 seconds", // default; cap for intent redelivery backoff
   },
   executors: {
@@ -155,7 +196,7 @@ const runtime = Actors.layer({
 
 - `timeout` is a `Duration.Input` from 1 ms to 2^31 − 1 ms. `retry.backoff.base` and `retry.backoff.max` are durations in the same range, with `max ≥ base`. Attempt `n` fails into a wait of `min(base × 2^(n − 1), max)`. `Actor.make` rejects a value out of range, and the types reject unknown keys, as they already do for `retry.times`.
 - `executors.lease` doesn't have to exceed any `timeout`, because renewal keeps a long attempt's claim. A lease under 3 seconds is rejected at startup, so renewals are at least a second apart.
-- The per-effect settings are read when a row is claimed, so a deployment that changes them also affects rows that are already pending. Mixed-version rolling deploys aren't supported ([API](../api/01-server-api.md)), so two settings are never live at once.
+- The per-effect settings are read when a row is claimed, by the claiming runner, so a deployment that changes them also affects rows that are already pending. During a rolling deploy ([versioning](../api/versioning.md)) old and new runners may each apply their own settings to different attempts of one effect. That is safe: every setting only changes timing, never whether an attempt is recorded or which result routes.
 - The 5-second no-executor retry has no setting, because [section 2](#2-executors-run-outside-the-relay-pass-on-a-per-runner-pool) removes it.
 
 ### 4. Relay defect policy: dead rows back off with a cap
@@ -168,16 +209,16 @@ Intents still have no retry limit and no dead letter. A committed intent is acce
 
 ### 5. Cron: keyed self-timers rewritten by the relay
 
-Cron is an outbox timer, not a runner responsibility. For each `policy.cron` entry an actor has at most one pending tick row: the actor's own outbox row with `timer_key = '$cron:' || expression`, targeting its cron command, due at the next scheduled time. The existing unique index on `(routing_key, tenant_id, actor_type, actor_id, timer_key)` enforces one pending tick per entry. A tick is delivered as a direct command with the caller `System({ source: "cron", ref: <actor> })`, like any timer, so it activates the actor wherever it lives. No runner has to be resident for cron to run.
+Cron is an outbox timer, not a runner responsibility. Expressions are parsed with Effect's `Cron.parse` (five fields, or six with seconds); `Actor.make` rejects one that doesn't parse, and two entries whose parsed schedules are equal. The key is the expression's canonical form (fields joined by single spaces), so whitespace variants are one entry. For each `policy.cron` entry an actor has at most one pending tick row: the actor's own outbox row with `timer_key = '$cron:' || canonical expression`, targeting its cron command, due at the next scheduled time. The existing unique index on `(routing_key, tenant_id, actor_type, actor_id, timer_key)` enforces one pending tick per entry. A tick is delivered as a direct command with the caller `System({ source: "cron", ref: <actor> })`, with no `onBehalfOf`, like any timer, so it activates the actor wherever it lives. No runner has to be resident for cron to run.
 
 **Writing the first tick.**
 
 - _Named and minted actors._ The first turn a generation commits also writes any missing tick rows, with `INSERT … ON CONFLICT DO NOTHING` in its commit statement, so it adds no round trip. A declared failure commits too, so it writes them as well. A turn that commits nothing, such as a `NotCreated` rejection under `createdBy`, writes none. This covers the creating turn, and it lets a cron entry added by a later deploy reach existing actors on their next activation.
-- _Singletons._ At startup each runner writes the missing tick rows for every singleton type with `policy.cron`, in the deployment's default tenant (`"default"`). It first creates the singleton's generation row if the row doesn't exist, without marking the actor created. The insert is idempotent, so runners that race at startup still leave one row per entry. Singleton instances in other tenants get no cron (see [open question 4](#open-questions-and-recommended-defaults)).
+- _Singletons._ At startup each runner writes the missing tick rows for every singleton type with `policy.cron`, in the deployment's default tenant (`"default"`; `ActorTest.layer` uses its own fresh tenant here, so tests observe singleton ticks through `test.actor`). It first creates the singleton's generation row if the row doesn't exist, without marking the actor created. The insert is idempotent, so runners that race at startup still leave one row per entry. Singleton instances in other tenants get no cron (see [open question 4](#open-questions-and-recommended-defaults)).
 
-**Delivering and rewriting a tick.** The relay claims a tick like any intent. Then:
+**Delivering and rewriting a tick.** A runner claims `$cron:` rows only for actor types registered on it (a filter on the intent claim, like the executor filter on effects), so a runner that doesn't host the type, or whose layers haven't registered yet, never touches them. Then:
 
-1. If the actor type's current `policy.cron` no longer has this expression, the relay deletes the row. That is how a deploy removes or changes a cron entry: a changed expression is a removal plus an addition.
+1. If the actor type's `policy.cron` on this runner has no entry for this expression, the relay doesn't deliver the tick. It deletes the row only if the tick is also older than `cronSkipIfOlderThan`; otherwise it releases it with backoff. During a rolling deploy an old runner therefore leaves a new entry's tick for a new runner, and a removed entry's row is gone within one skip window after the deploy. A changed expression is a removal plus an addition, and a changed target command is picked up at the next rewrite, which always uses the claiming runner's current entry.
 2. If `now − scheduled_at_ms > cronSkipIfOlderThan`, the relay skips the handler and logs `Cron tick skipped`.
 3. Otherwise it delivers the tick command, and the tick's receipt commits.
 4. In both cases, one statement rewrites the row in place to the next tick: a new intent id, `scheduled_at_ms` and `due_at_ms` set to the first scheduled time after `now`, and `attempts = 0`. The rewrite names the claim it holds, as every settling write does.
@@ -194,13 +235,15 @@ export const Digest = Actor.make("Digest", {
 Rules this gives:
 
 - **One logical tick.** A tick's command id is its row's intent id, so a redelivery after a crash replays the receipt. The row is rewritten only after the receipt commits. A crash between the commit and the rewrite redelivers the same id, which replays, and then rewrites once. Two runners can't both hold the claim.
-- **A claimed tick fires once**, consistent with contract 05's timer-cancel rule. A deploy that removes the entry doesn't stop a delivery that has already started; the row is deleted when that delivery settles. Handlers that must ignore a superseded tick check state.
+- **A claimed tick fires once**, consistent with contract 05's timer-cancel rule. A deploy that removes the entry doesn't stop a delivery that has already started; the row is deleted later under rule 1. Handlers that must ignore a superseded tick check state.
 - **Catch-up after downtime.** When the deployment comes back, each pending tick is at most one row. If it is inside the skip window it fires once, otherwise it is skipped. Either way the next tick is the first scheduled time after now, so missed ticks are never replayed one by one.
 - **Failures.** A declared failure commits a receipt, so the tick is done and the row is rewritten. A deterministic defect or unavailable receiver leaves the row with backoff, and each later claim rechecks the skip window. A tick that keeps failing until it falls out of the window is then skipped.
 - **Overlap.** Ticks of one entry never overlap, because the next row exists only after the previous tick's receipt commits. A handler slower than its interval skips the ticks it overran.
 - **Clock and zone.** Scheduled times come from the database clock, like every outbox time, and expressions are evaluated in UTC.
 - **`cronSkipIfOlderThan`** is one actor-level duration, as ADR 0010 and the M2 plan declare it. The default is 1 day, which matches `ClusterCron`'s `skipIfOlderThan`.
 - **Reserved keys.** `Intent.key` values that start with `$cron:` are reserved. Staging or cancelling one dies with `Intent key "$cron:…" is reserved for cron`.
+
+- **Stopping.** Per-actor cron runs for as long as the actor's type declares it; an application can't stop one actor's schedule, and the framework has no actor deletion yet. An actor that should go quiet checks its state in the tick handler and returns. Cron rows therefore grow with the number of actors of a cron type ever activated, one row per entry, and cost scans only when due. This is an accepted cost; revisit when actor deletion or archival exists, which must delete the actor's `$cron:` rows in its transaction.
 
 **Migration `0012_cron` is not used.** Cron needs only the reserved key, the existing unique index, and `0010_relay`'s `scheduled_at_ms`.
 
@@ -226,7 +269,7 @@ Singleton residency and the background loop use Cluster's `registerSingleton`, a
 
 Each has a recommended default that this ADR adopts. Dallen can change any of them before acceptance.
 
-1. **Claim lease for intents.** Recommended: derived as the largest `deliveryTimeout` + 5 s, and overridable with `relay.claimLease`. The alternative, a fixed 10 s, recovers faster after a relay crash, but a slow receiver would get duplicate deliveries.
+1. **Claim lease for intents.** Recommended: derived as the largest `commandTimeout + lockWait` + 5 s, and overridable with `relay.claimLease`. The alternative, a fixed 10 s, recovers faster after a relay crash, but a slow receiver would get duplicate deliveries.
 
    ```ts
    Actors.layer({ authorize, relay: { claimLease: "10 seconds" } }) // opt in to faster crash recovery
@@ -260,8 +303,10 @@ Each has a recommended default that this ADR adopts. Dallen can change any of th
 
    ```ts
    // Sketch, not built: a volatile Cluster entity per bucket, told after each commit that wrote a due row.
-   const wake = yield * RelayWake.client
-   yield * wake(String(bucketOf(routingKey))).Wake(undefined, { discard: true })
+   Effect.gen(function* () {
+     const wake = yield* RelayWake.client
+     yield* wake(String(bucketOf(routingKey))).Wake(undefined, { discard: true })
+   })
    ```
 
 ## Alternatives
@@ -276,7 +321,7 @@ Each has a recommended default that this ADR adopts. Dallen can change any of th
 
 ## Consequences
 
-- One claim statement replaces M1's scan, so statements per delivered intent should stay at M1's level. Each delivered row now gets one extra heap and index version, from the claim's update to `due_at_ms`, before its delete. The outbox benchmark must show it.
+- Claim statements replace M1's scan, one per batch of free slots, so statements per delivered intent should stay within 0.5 of M1's level. Each delivered row now gets one extra heap and index version, from the claim's update to `due_at_ms`, before its delete. The outbox benchmark must show it.
 - Crash recovery for a claimed row takes up to one claim lease instead of one pass. Runner-kill recovery already waits `shardLockExpiration` for the dead runner's actors, so the lease is of the same order.
 - Effects scale with `executors.concurrency × runners`, not 16 per pass per process.
 - An executor must tolerate overlapping attempts under one `effectId` after a lease expiry. The API docs already require provider idempotency on `effectId`.
@@ -311,10 +356,18 @@ Cases on the M2.1 harness against real Postgres, with at least two runners unles
 - `dead-letters as ambiguous when the last attempt's lease expires` — `retry: { times: 0 }` and the runner is killed mid-call. The dead letter has `ambiguous: true`, and `onDeadLetter` commits once.
 - `claims effects only on runners that have their executor` — runner A has no effect layer. A never claims the row, and B runs it once.
 - `uses per-effect timeout and backoff from policy.effects` — a 100 ms timeout and a `{ base: "10 millis", max: "40 millis" }` backoff show up in the attempt timings and in `due_at_ms`.
-- Existing M1.6 and M1.7 cases keep their names and assertions. Where a case relied on immediate redelivery after a crash, it advances the outbox clock by the claim lease first.
+- `claims no more intents than free delivery slots` — receivers that take 20 s and a 300-row backlog on one runner: no claimed row waits locally, and no row's lease expires before its delivery starts.
+- `dead-letters an already exhausted row with its recorded outcome` — the dead-letter transaction fails after the last attempt's typed failure; the next claim fences without counting, and the dead letter has `attempts = retry.times + 1` and `ambiguous: false`.
+- `routes a lease-expired attempt's success when it beats the takeover` and `marks the dead letter ambiguous when a stale success arrives after it` — attempt 1 loses its lease and later succeeds; attempt 2 is the last and fails typed.
+- `interrupts an attempt at its local deadline when renewals cannot reach the database` — renewals fail; the executor is interrupted after `lease`, before another runner's claim.
+- `keeps a failure's backoff when a renewal races the settle` — a renewal is paused until after the failure write; `due_at_ms` keeps the backoff.
+- `releases claimed but unstarted rows on graceful shutdown`.
+- **Due-work scans** check for the new claims: `EXPLAIN (ANALYZE, BUFFERS)` of the intent claim with 10,000 due effect rows that no runner has an executor for reads no effect rows, and the M1.6 sleeping-timer case keeps its bound.
+- Fault points `afterClaim` (a relay or pool paused or crashed after its claim commits) and `beforeRenew` (a renewal blocked or failed) are added to `TurnHooks` and the `crashNext`/`pauseNext` list.
+- Existing M1.6 and M1.7 cases keep their names and receiver-side assertions. Where a case relied on immediate redelivery after a crash, it advances the outbox clock by the claim lease first; `delivers a keyed timer once when it is cancelled after the relay picked it up` now finds the claimed row and deletes it, and the firing timer still arrives once.
 - Shared PGlite and Postgres cases for the single-runner parts: lease backoff, `scheduled_at_ms` preserved across claims, and configuration validation.
 
-Failure-matrix rows (added in this change): **Relay dies after claiming, before delivery**, **Relay settle dies on the same row repeatedly**, **Two runners claim the same due rows**, **Executor lease expires mid-call**, **Stale attempt reports after takeover**, and **Runner without an executor sees a due effect**. The existing rows **Relay crash after sender COMMIT**, **Relay crash after receiver commit / before outbox row deletion**, and **Provider success / result acknowledgment lost** are also run with a runner kill between the steps.
+Failure-matrix rows (added in this change): **Relay dies after claiming, before delivery**, **Relay settle dies on the same row repeatedly**, **Two runners claim the same due rows**, **Executor lease expires mid-call**, **Stale attempt reports after takeover**, **Runner without an executor sees a due effect**, **Executor renewals fail on a partitioned runner**, and **Claimed intents outlive their lease in a slow pass**. The existing rows **Relay crash after sender COMMIT**, **Relay crash after receiver commit / before outbox row deletion**, and **Provider success / result acknowledgment lost** are also run with a runner kill between the steps.
 
 Benchmarks: `outbox` and `effect-round-trip` with `--runners 1,2,4`. On one runner, statements per delivered intent stay within 0.5 of the M1 run (22.13). `drain-20000` scales with runners. `effect-round-trip/concurrent-64` exceeds 225 ops/s on one runner, because it is no longer capped at 16 per pass. A new case, `effect-round-trip/slow-executor-beside-intents`, shows intent delivery p99 unchanged while executors block.
 
@@ -328,10 +381,13 @@ Benchmarks: `outbox` and `effect-round-trip` with `--runners 1,2,4`. On one runn
 - `fires a claimed tick once after its entry is removed` — the contract 05 rule, for cron.
 - `keeps ticks of one entry from overlapping` — a handler slower than its interval.
 - `rejects a $cron: intent key` — staging and cancelling one both die.
+- `never deletes ticks on a runner without the actor type` — runner A doesn't register the cron type; its relay never claims the tick, and B delivers it.
+- `keeps a new entry's tick while an old runner lacks the entry` — a rolling deploy; the old runner releases the tick, and it's deleted only once older than the skip window.
+- `rejects an unparsable cron expression and equal schedules at Actor.make`.
 - **Singleton runner dies** with cron: kill the singleton's runner. The tick is delivered once after residency moves, and lock expiry and resumed service are recorded separately.
 - The **API shape** check: a cron target with input, or a cron key naming an unknown command, fails to compile.
 
-Failure-matrix rows (added in this change): **Cron tick crashes after its receipt, before the rewrite**, **Deployment down longer than `cronSkipIfOlderThan`**, and **Runners race to bootstrap singleton cron**. The existing row **Singleton runner dies** is amended.
+Failure-matrix rows (added in this change): **Cron tick crashes after its receipt, before the rewrite**, **Deployment down longer than `cronSkipIfOlderThan`**, and **Runners race to bootstrap singleton cron**, and **Runner without the actor type claims a cron tick**. The existing row **Singleton runner dies** is amended.
 
 Benchmark: `cron`. Tick lateness (`deliver time − scheduled_at_ms`) at p50, p99, and max, with 10^5 actors declaring a per-minute cron over 1, 2, and 4 runners, plus relay scan time beside those rows.
 
