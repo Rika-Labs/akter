@@ -76,14 +76,18 @@ The `main` and `main-repeat` files show the run-to-run noise on one cloud VM. Mo
 
 Every file below comes from the same machine: a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, running Linux 6.1. The client, the actor runtime, and Postgres share its CPUs.
 
-| File                                           | Code                                                                                                                                                           | Backend       |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `2026-09-25-6022f56-main-postgres.json`        | `main` at `76ac433` (M0 and M1.1–1.3) plus the harness; runtime code identical to `main`                                                                       | Postgres 18.6 |
-| `2026-09-25-6022f56-main-pglite.json`          | same                                                                                                                                                           | PGlite 0.5.8  |
-| `2026-09-25-6022f56-main-repeat-postgres.json` | the same code run again, to measure run-to-run noise                                                                                                           | Postgres 18.6 |
-| `2026-09-25-a169bc7-m1-merge-postgres.json`    | local, unpushed merge of `main` `76ac433` with #34 outbox `925ae03`, #36 effects `c1ec6df`, #33 events `dd6d8f3`, and #32 reducers `ad2675b`, plus the harness | Postgres 18.6 |
-| `2026-09-25-a169bc7-m1-merge-pglite.json`      | same                                                                                                                                                           | PGlite 0.5.8  |
-| `2026-09-25-7806184-outbox-postgres.json`      | #34 outbox branch `feat/14-outbox` at `7806184` (M1.6 on `main` `76ac433`, merged with this harness), `outbox` scenario only                                   | Postgres 18.6 |
-| `2026-09-25-7806184-outbox-pglite.json`        | same                                                                                                                                                           | PGlite 0.5.8  |
+| File                                            | Code                                                                                                                                                           | Backend       |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `2026-09-25-6022f56-main-postgres.json`         | `main` at `76ac433` (M0 and M1.1–1.3) plus the harness; runtime code identical to `main`                                                                       | Postgres 18.6 |
+| `2026-09-25-6022f56-main-pglite.json`           | same                                                                                                                                                           | PGlite 0.5.8  |
+| `2026-09-25-6022f56-main-repeat-postgres.json`  | the same code run again, to measure run-to-run noise                                                                                                           | Postgres 18.6 |
+| `2026-09-25-a169bc7-m1-merge-postgres.json`     | local, unpushed merge of `main` `76ac433` with #34 outbox `925ae03`, #36 effects `c1ec6df`, #33 events `dd6d8f3`, and #32 reducers `ad2675b`, plus the harness | Postgres 18.6 |
+| `2026-09-25-a169bc7-m1-merge-pglite.json`       | same                                                                                                                                                           | PGlite 0.5.8  |
+| `2026-09-25-7806184-outbox-postgres.json`       | #34 outbox branch `feat/14-outbox` at `7806184` (M1.6 on `main` `76ac433`, merged with this harness), `outbox` scenario only                                   | Postgres 18.6 |
+| `2026-09-25-7806184-outbox-pglite.json`         | same                                                                                                                                                           | PGlite 0.5.8  |
+| `2026-09-25-cc6c43e-blobs-postgres.json`        | #61 blobs branch `feat/30-blobs` at `cc6c43e` (M1.blob on #35), `hot-actor`, `state-size`, and `blobs` scenarios                                               | Postgres 18.6 |
+| `2026-09-25-cc6c43e-blobs-pglite.json`          | same                                                                                                                                                           | PGlite 0.5.8  |
+| `2026-09-25-cc6c43e-blobs-repeat-postgres.json` | repeat of the same SHA and scenarios, as a noise reference                                                                                                     | Postgres 18.6 |
+| `2026-09-25-cc6c43e-blobs-repeat-pglite.json`   | same                                                                                                                                                           | PGlite 0.5.8  |
 
 The merge resolved conflicts locally for the benchmark only; the files' `git.merges` list the parents. The merged pull requests add no scenario of their own yet, so the merge result measures whether they slow the existing paths, not the new mechanisms.

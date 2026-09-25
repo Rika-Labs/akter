@@ -120,6 +120,23 @@ One difference exceeds the noise and repeated in both merge runs: rewriting a 16
 
 None of the four slices has its own scenario yet. Outbox relay latency, timers due at scale, event append and replay, and effect round trips are untested.
 
+### Actor blobs (M1.blob)
+
+Two full runs of `hot-actor`, `state-size`, and `blobs` on `feat/30-blobs` at `cc6c43e`, one machine, Postgres 18.6. Each p50 pair is run / repeat, in ms:
+
+| Entry  | `set`     | `append`  | `read` (1 chunk / 16 chunks) | `compact` 16 chunks |
+| ------ | --------- | --------- | ---------------------------- | ------------------- |
+| 4 KiB  | 4.7 / 6.1 | 2.9 / 3.0 | 0.46 / 0.42 · 0.47 / 0.42    | 3.1 / 3.1           |
+| 64 KiB | 3.6 / 7.9 | 4.5 / 5.0 | 0.62 / 1.5 · 0.66 / 0.80     | 3.5 / 3.7           |
+| 1 MiB  | 26 / 24   | 23 / 20   | 8.3 / 8.3 · 9.6 / 7.6        | 25 / 23             |
+
+- **Statements:** a blob `set`, `append`, or `compact` turn issues 11 statements, the same as a warm state-only turn: the blob statement replaces the state write. A query read issues 2. These counts are the regression gate.
+- **Chunking is nearly free to read:** a 16-chunk entry reads as fast as a one-chunk entry at every size, because `string_agg` joins the chunks in the database.
+- **Append does not rewrite earlier bytes:** at 4 KiB an append turn (2.9 ms) costs the same as a warm state turn (3.0 ms), where `set` pays for rewriting chunk 0.
+- **1 MiB entries** take about 25 ms to write and 8 ms to read on Postgres, and about 90 ms and 53 ms on PGlite. Most of it is moving the bytes, since statement counts barely change.
+
+**The DURA-17 16–32 KiB lead does not show up as a blob-specific cost.** Blob `set` p50 at 16 and 32 KiB was 4.1 and 7.2 ms in the first run, and 3.1 and 3.4 ms in the repeat. An earlier run on `f6fe7f8` gave 3.4 and 3.5 ms. In the same runs, the state-size rewrite at 32 KiB was 10.9 and 5.6 ms. So both mechanisms show the same run-to-run jump at 32 KiB. It is noise on this VM or a shared effect that isn't blob-specific, and statement counts stay flat. The one-caller `set` p50 at 4 and 64 KiB also varies by up to 2x between runs. Treat single-run latency here as noise and gate on statements.
+
 ### Bottlenecks
 
 1. **The runtime process, not the database.** A warm turn takes 3.1 ms end to end, but Postgres spends 0.13 ms executing its statements, per `pg_stat_statements`, not counting `COMMIT` and its WAL flush.
