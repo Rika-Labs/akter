@@ -1,0 +1,238 @@
+{
+  "schema": 2,
+  "label": "multi-runner",
+  "note": "M2.1 harness: 1/2/4 in-process runners and a runner kill under load",
+  "profile": "full",
+  "startedAt": "2026-09-25T21:20:17.141Z",
+  "finishedAt": "2026-09-25T21:21:33.753Z",
+  "git": {
+    "sha": "7db46d98b167108a9db5f5ad5330d42fe99259b4",
+    "shortSha": "7db46d9",
+    "branch": "feat/49-multi-runner-harness",
+    "mainBase": "96eb5e1d3950229cbe9414e16390cb7f971dd46f",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.3.14",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "AMD EPYC",
+    "logicalCpus": 4,
+    "memoryGiB": 15.6,
+    "os": "Linux 6.1.158+",
+    "hostname": "cox.local",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "multi-runner",
+      "description": "In-process runners on one Postgres (ActorTest.cluster): turns per second with 1, 2, and 4 runners, and a runner kill under load with lock expiry, takeover, and resumed service timed separately. The runners share one process and its CPU, so this measures routing and ownership cost, not scale-out.",
+      "cases": [
+        {
+          "name": "runners-1",
+          "parameters": {
+            "runners": 1,
+            "actors": 256,
+            "workers": 64
+          },
+          "operations": 8615,
+          "elapsedMs": 15073,
+          "throughput": 571.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 8615,
+            "mean": 111.699,
+            "min": 7.853,
+            "p50": 82.365,
+            "p90": 240.756,
+            "p95": 315.572,
+            "p99": 466.879,
+            "max": 848.029
+          },
+          "statementsPerOperation": 7,
+          "statements": null,
+          "activity": {
+            "samples": 524,
+            "connections": {
+              "idle:Client/ClientRead": 5.59,
+              "idle in transaction:Client/ClientRead": 4.69,
+              "active": 0.07,
+              "idle": 0.06,
+              "idle in transaction": 0.06,
+              "active:IO/WalSync": 0.05,
+              "active:Client/ClientRead": 0.05,
+              "active:LWLock/WALWrite": 0.02,
+              "active:IO/WalWrite": 0.01,
+              "idle in transaction:IO/WalWrite": 0,
+              "idle in transaction:IO/WalSync": 0,
+              "active:IO/WalInitWrite": 0,
+              "active:IO/WalInitSync": 0
+            }
+          },
+          "cpu": {
+            "client": 151.8,
+            "server": 39.5
+          },
+          "extra": null
+        },
+        {
+          "name": "runners-2",
+          "parameters": {
+            "runners": 2,
+            "actors": 256,
+            "workers": 64
+          },
+          "operations": 7598,
+          "elapsedMs": 15068,
+          "throughput": 504.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 7598,
+            "mean": 126.652,
+            "min": 25.269,
+            "p50": 99.133,
+            "p90": 251.001,
+            "p95": 310.647,
+            "p99": 438.233,
+            "max": 889.259
+          },
+          "statementsPerOperation": 7.01,
+          "statements": null,
+          "activity": {
+            "samples": 481,
+            "connections": {
+              "idle:Client/ClientRead": 10.99,
+              "idle in transaction:Client/ClientRead": 9.06,
+              "idle": 0.18,
+              "active:Client/ClientRead": 0.1,
+              "active": 0.09,
+              "active:IO/WalSync": 0.02,
+              "idle in transaction": 0.02,
+              "idle in transaction:IO/WalSync": 0,
+              "idle in transaction:IO/WalWrite": 0
+            }
+          },
+          "cpu": {
+            "client": 145.7,
+            "server": 38.1
+          },
+          "extra": null
+        },
+        {
+          "name": "runners-4",
+          "parameters": {
+            "runners": 4,
+            "actors": 256,
+            "workers": 64
+          },
+          "operations": 7507,
+          "elapsedMs": 15061,
+          "throughput": 498.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 7507,
+            "mean": 128.152,
+            "min": 34.622,
+            "p50": 127.338,
+            "p90": 198.782,
+            "p95": 213.061,
+            "p99": 245.145,
+            "max": 299.392
+          },
+          "statementsPerOperation": 7.02,
+          "statements": null,
+          "activity": {
+            "samples": 427,
+            "connections": {
+              "idle:Client/ClientRead": 25.1,
+              "idle in transaction:Client/ClientRead": 15.01,
+              "idle": 0.14,
+              "active": 0.05,
+              "active:Client/ClientRead": 0.05,
+              "active:IO/WalSync": 0.02,
+              "idle in transaction": 0.01,
+              "idle in transaction:LWLock/WALWrite": 0,
+              "active:IO/WalWrite": 0
+            }
+          },
+          "cpu": {
+            "client": 142.4,
+            "server": 40.2
+          },
+          "extra": null
+        },
+        {
+          "name": "kill-1-of-3",
+          "parameters": {
+            "runners": 3,
+            "actors": 256,
+            "workers": 16,
+            "shardLockExpirationSeconds": 5
+          },
+          "operations": 8153,
+          "elapsedMs": 20013,
+          "throughput": 407.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 8153,
+            "mean": 39.256,
+            "min": 2.496,
+            "p50": 31.096,
+            "p90": 41.529,
+            "p95": 48.35,
+            "p99": 61.664,
+            "max": 3812.815
+          },
+          "statementsPerOperation": 7.05,
+          "statements": null,
+          "activity": {
+            "samples": 678,
+            "connections": {
+              "idle:Client/ClientRead": 16.52,
+              "idle in transaction:Client/ClientRead": 4.85,
+              "idle": 0.08,
+              "active": 0.04,
+              "idle in transaction": 0.02,
+              "active:IO/WalSync": 0.01,
+              "active:Client/ClientRead": 0.01,
+              "idle in transaction:IO/WalWrite": 0,
+              "active:IO/WalWrite": 0
+            }
+          },
+          "cpu": {
+            "client": 121.2,
+            "server": 31.7
+          },
+          "extra": {
+            "lockExpiredMs": 3443,
+            "takeoverMs": 3695,
+            "resumedMs": 3817
+          }
+        }
+      ]
+    }
+  ]
+}

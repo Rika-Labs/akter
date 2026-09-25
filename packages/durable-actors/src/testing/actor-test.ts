@@ -1,3 +1,4 @@
+import type { PgClient } from "@effect/sql-pg"
 import type { PgliteClient } from "@effect/sql-pglite"
 import {
   Context,
@@ -33,6 +34,34 @@ import { compress, decompress, type Placement, routingKey } from "../runtime/sto
 import { VERSION_KEY } from "../state/migration.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
 import { OutboxClock, outboxTime } from "../runtime/turn/outbox.ts"
+import { type ClusterOptions, clusterLayer } from "./cluster.ts"
+
+/**
+ * Present while `ActorTest.cluster` builds one of its runners: the runner
+ * shares the cluster's tenant and opens its database connections through
+ * `connect`, so killing it can cut them.
+ */
+export class ClusterMember extends Context.Service<
+  ClusterMember,
+  {
+    readonly tenant: string
+    readonly connect: NonNullable<PgClient.PgPoolConfig["stream"]>
+  }
+>()("durable-actors/testing/actor-test/ClusterMember") {}
+
+export interface TestOptions {
+  /**
+   * Postgres connection string or a PGlite client config. Omitted, a fresh
+   * in-memory PGlite database is created per layer build; `dataDir` retains
+   * a database across builds. PGlite is single-process and supplies no
+   * independent-connection behavior.
+   */
+  readonly database?: Redacted.Redacted<string> | PgliteClient.PgliteClientConfig
+  readonly as?: Caller
+  readonly authorize?: Options["authorize"]
+  readonly retryWindowMs?: number
+  readonly maxResidentActors?: number
+}
 
 export interface Inspection {
   readonly generation: string | undefined
@@ -112,23 +141,20 @@ export class ActorTest extends Context.Service<
     ) => Effect.Effect<void>
   }
 >()("durable-actors/testing/actor-test/ActorTest") {
-  static readonly layer = (options: {
-    /**
-     * Postgres connection string or a PGlite client config. Omitted, a fresh
-     * in-memory PGlite database is created per layer build; `dataDir` retains
-     * a database across builds. PGlite is single-process and supplies no
-     * independent-connection behavior.
-     */
-    readonly database?: Redacted.Redacted<string> | PgliteClient.PgliteClientConfig
-    readonly as?: Caller
-    readonly authorize?: Options["authorize"]
-    readonly retryWindowMs?: number
-    readonly maxResidentActors?: number
-  }) =>
+  /**
+   * Runs `runners` runtimes in this process against one Postgres database,
+   * each a distinct Cluster runner with its own address, connection pool, and
+   * expiring shard locks. Provides `ActorCluster`; see its controls.
+   */
+  static readonly cluster = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>) =>
+    clusterLayer(options)
+
+  static readonly layer = (options: TestOptions) =>
     Layer.unwrap(
       Effect.gen(function* () {
         const crypto = yield* Crypto.Crypto
-        const tenant = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+        const member = Option.getOrUndefined(yield* Effect.serviceOption(ClusterMember))
+        const tenant = member?.tenant ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie))
         const faults = new Map<TurnPoint, Array<Effect.Effect<void>>>()
 
         let clockOffset = 0
@@ -358,7 +384,11 @@ export class ActorTest extends Context.Service<
           Layer.provide(hooks),
           Layer.provideMerge(
             options.database !== undefined && Redacted.isRedacted(options.database)
-              ? Database.postgres({ url: options.database, maxConnections: 10 })
+              ? Database.postgres({
+                  url: options.database,
+                  maxConnections: 10,
+                  stream: member?.connect,
+                })
               : Database.pglite(options.database),
           ),
         )

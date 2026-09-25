@@ -14,6 +14,7 @@ import {
 } from "effect"
 import {
   ClusterError,
+  EntityId,
   MessageStorage,
   RunnerHealth,
   Runners,
@@ -71,6 +72,31 @@ export interface Options {
    */
   readonly maxResidentActors?: number
 }
+
+/**
+ * How a runtime joins a cluster of runners instead of running as the embedded
+ * single runner. Package-internal: `ActorTest.cluster` provides it to each of
+ * its runners.
+ */
+export class RunnerWiring extends Context.Service<
+  RunnerWiring,
+  {
+    readonly config: Partial<ShardingConfig.ShardingConfig["Service"]>
+    /** Provides `Sharding` together with the runner-to-runner transport. */
+    readonly sharding: Layer.Layer<
+      Sharding.Sharding,
+      never,
+      | ShardingConfig.ShardingConfig
+      | MessageStorage.MessageStorage
+      | RunnerStorage.RunnerStorage
+      | RunnerHealth.RunnerHealth
+    >
+    /** Wraps the SQL runner storage, e.g. to withhold heartbeats or a graceful release. */
+    readonly storage: (
+      storage: RunnerStorage.RunnerStorage["Service"],
+    ) => RunnerStorage.RunnerStorage["Service"]
+  }
+>()("durable-actors/runtime/layer/RunnerWiring") {}
 
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
@@ -135,6 +161,12 @@ export const layer = (options: Options) => {
           )
       })
 
+      const entityId = (ref: ActorRef) =>
+        Schema.encodeEffect(Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])))([
+          ref.tenant,
+          ref.id,
+        ]).pipe(Effect.orDie)
+
       const publicActors = Actors.of({
         mintCommandId: Effect.gen(function* () {
           const now = yield* databaseTime
@@ -156,11 +188,9 @@ export const layer = (options: Options) => {
               reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
             })
 
-          const entityId = yield* Schema.encodeEffect(
-            Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-          )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie)
+          const address = yield* entityId(request.ref)
 
-          const isResident = () => residency.get(request.ref.actor)?.(entityId) === true
+          const isResident = () => residency.get(request.ref.actor)?.(address) === true
           let rejectedAtCapacity = false
 
           return yield* Effect.gen(function* () {
@@ -191,7 +221,7 @@ export const layer = (options: Options) => {
               return retained
             }
 
-            const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(entityId)
+            const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(address)
 
             yield* (yield* TurnHooks).at("beforeDelivery", request)
 
@@ -406,6 +436,12 @@ export const layer = (options: Options) => {
         execute: (request) => dispatch(request, true),
         deliver: (request) => dispatch(request, false),
         drainOutbox: relay.drain,
+        shardId: (ref) =>
+          entityId(ref).pipe(
+            Effect.flatMap((id) => commandEntity(ref.actor).getShardId(EntityId.make(id))),
+            Effect.map(String),
+            Effect.provideService(Sharding.Sharding, sharding),
+          ),
       })
 
       return Context.make(Actors, publicActors).pipe(Context.add(InternalActors, internalActors))
@@ -415,6 +451,7 @@ export const layer = (options: Options) => {
   return Layer.unwrap(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
+      const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
       yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${retryWindowMs}) ON CONFLICT DO NOTHING`
 
@@ -442,13 +479,19 @@ export const layer = (options: Options) => {
 
       // Commands are direct, so Cluster keeps no message storage; durable
       // intents will use the actor-shard outbox instead.
-      const sharding = Sharding.layer.pipe(
-        Layer.provideMerge(Runners.layerNoop),
+      const sharding = (
+        wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))
+      ).pipe(
         Layer.provideMerge(MessageStorage.layerNoop),
         Layer.provide([
           runnerStorage === "memory"
             ? RunnerStorage.layerMemory
-            : Layer.orDie(SqlRunnerStorage.layer),
+            : Layer.effect(
+                RunnerStorage.RunnerStorage,
+                SqlRunnerStorage.make({}).pipe(
+                  Effect.map(wiring?.storage ?? ((storage) => storage)),
+                ),
+              ).pipe(Layer.orDie),
           RunnerHealth.layerNoop,
         ]),
         Layer.provide(
@@ -456,6 +499,7 @@ export const layer = (options: Options) => {
             shardsPerGroup: 1,
             simulateRemoteSerialization: true,
             maxResidentEntities: maxResidentActors,
+            ...wiring?.config,
           }),
         ),
       )
