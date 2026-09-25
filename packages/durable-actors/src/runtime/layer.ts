@@ -52,6 +52,7 @@ import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
+import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import { checkReceipt } from "./turn/receipt.ts"
@@ -323,6 +324,11 @@ export const layer = (options: Options) => {
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         tables: (scope, write) =>
           bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
+        blobs: (scope, write) => bindBlobs(scope, write).pipe(Effect.provideContext(services)),
+        declaredBlobs: (actor) =>
+          (registrations.get(actor) ?? queryRegistrations.get(actor))?.blobs.map(
+            (blob) => blob.name,
+          ) ?? [],
         register: Effect.fnUntraced(function* (registration: Registration) {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
