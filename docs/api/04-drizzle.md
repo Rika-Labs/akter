@@ -73,6 +73,10 @@ Rejected, as a defect that rolls back the turn and never runs unscoped or in a s
 - use of a `rows` or `group` capability after its turn or query ended (including from a fiber forked during it), or from another actor's turn;
 - mutation methods on `read.rows`, and anything other than select on `group`.
 
+Every scoped statement filters on `routing_key`, `tenant_id`, and `actor_id` first, so an ordered or ranged read is fast only when an index leads with those three columns and continues with the `orderBy` or range column. The primary key serves reads by business key. For any other ordered read, such as `all({ orderBy: { sentAt: "desc" }, limit: 20 })`, declare an `index()` on that column, as `chat_messages_sent` does above; `Actor.table` prefixes it with the ownership columns. Without one, Postgres reads all of the actor's rows and sorts them on every call. The `owned-rows` benchmark's `read-page-20` case measured that sort at 0.44 ms per call over 1,000 rows, against 0.02 ms with the index, and the difference grows with the actor's row count.
+
+A Drizzle `customType` whose `toDriver` returns a SQL expression instead of a plain value is application code, and it bypasses scoping: the framework checks the plain values a handler passes, but Drizzle calls the encoder later, while rendering the statement, and renders any SQL it returns into the statement as is. Keep `toDriver` returning plain values; an encoder that builds SQL can write or read outside the actor's scope, and the framework cannot detect it.
+
 Raw SQL, Drizzle's relational query API (`db.query`), `returning`, `onConflict` options, `insert ... select`, update/delete joins, foreign keys, cascades, and CTEs are not supported on owned tables yet; supporting one needs evidence in the conformance suite first.
 
 ## Placement group reads
