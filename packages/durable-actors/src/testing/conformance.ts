@@ -39,6 +39,7 @@ import {
   foundationLayer,
   type FoundationFixture,
 } from "./foundation.ts"
+import { heapConformance } from "./conformance/heap.ts"
 import {
   outboxConformance,
   outboxFixture,
@@ -272,6 +273,7 @@ const makeFixture = (): ConformanceFixture => ({
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
+  ...heapConformance,
   ...eventsConformance,
   ...reducerConformance,
   ...outboxConformance,

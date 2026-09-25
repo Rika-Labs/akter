@@ -53,6 +53,7 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `completes an in-flight command past expiry but refuses the external outcome`
 - `rejects an expired identity after receipt pruning and runtime restart`
 - `isolates durable state between fresh layer builds`
+- `retains bounded heap for touched actors once every activation hibernates`: touches 1,000 actors, waits for every activation to hibernate, and allows under 10 retained objects and 1 KiB of JavaScript heap per actor (the #41 leak retained about 95 objects and 11 KiB)
 
 Event cases live in [`conformance/events.ts`](../../packages/durable-actors/src/testing/conformance/events.ts) and join the same list:
 
