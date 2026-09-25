@@ -12,6 +12,7 @@
   "dependencies": {
     "@effect/platform-bun": "catalog:",
     "@electric-sql/pglite": "0.5.8",
+    "drizzle-orm": "catalog:",
     "durable-actors": "workspace:*",
     "effect": "catalog:"
   },
