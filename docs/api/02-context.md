@@ -72,4 +72,4 @@ Values that live for one activation are ordinary Effect values in the layer's bu
 
 `CurrentCaller` defaults to `Anonymous`. The edge sets it per request, `ActorTest.layer` per test, and `Actor.as(caller)` around an Effect; `X.get` captures it when the handle is acquired. `turn.caller` is the full caller and `turn.principal` the optional principal. Workflow bodies expose `principal` and act through handles carrying persisted System/on-behalf-of attribution.
 
-A transaction-bound capability used after its turn ends, including from a forked fiber, dies. Runtime guards still reject request/reply operations inside a turn even when a handle was captured outside it.
+A transaction-bound capability used after its turn ends, or from a fiber forked inside it, dies. Runtime guards still reject request/reply operations inside a turn even when a handle was captured outside it.
