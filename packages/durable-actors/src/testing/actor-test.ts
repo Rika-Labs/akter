@@ -40,7 +40,10 @@ export interface Inspection {
   readonly receipts: number
   /** Pending `actor_outbox` rows this actor sent. */
   readonly outbox: number
-  /** The actor's row count per owned table; present when its type owns tables. */
+  /**
+   * The actor's row count per owned table, keyed by table name (schema-qualified
+   * outside the current schema); present when its type owns tables.
+   */
   readonly rows?: Readonly<Record<string, number>>
 }
 
@@ -234,14 +237,19 @@ export class ActorTest extends Context.Service<
                 }>`SELECT count(*)::integer AS count FROM actor_outbox
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-                const tables = yield* sql<{ table_schema: string; table_name: string }>`
-                  SELECT table_schema, table_name FROM actor_tables WHERE actor_type = ${ref.actor}
-                  ORDER BY table_name`
+                const tables = yield* sql<{
+                  table_schema: string
+                  table_name: string
+                  label: string
+                }>`
+                  SELECT table_schema, table_name, CASE WHEN table_schema = current_schema()
+                    THEN table_name ELSE table_schema || '.' || table_name END AS label
+                  FROM actor_tables WHERE actor_type = ${ref.actor} ORDER BY label`
 
                 const rows: Record<string, number> = {}
 
-                for (const { table_schema, table_name } of tables)
-                  rows[table_name] = (yield* sql<{ count: number }>`
+                for (const { table_schema, table_name, label } of tables)
+                  rows[label] = (yield* sql<{ count: number }>`
                     SELECT count(*)::integer AS count FROM ${sql(table_schema)}.${sql(table_name)}
                     WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_id = ${ref.id}`)[0]!.count
 

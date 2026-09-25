@@ -60,6 +60,7 @@ interface BuiltColumn extends PgColumn {
   primary: boolean
   isUnique: boolean
   readonly uniqueName: string | undefined
+  readonly uniqueType: "distinct" | "not distinct" | undefined
 }
 
 type ExtraColumns = Record<string, ExtraConfigColumn>
@@ -288,7 +289,16 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
       }
 
       if (is(builder, IndexBuilder)) {
-        const config = (builder as IndexBuilder & { readonly config: Prefixable }).config
+        const config = (
+          builder as IndexBuilder & { readonly config: Prefixable & { readonly method?: string } }
+        ).config
+
+        // Only btree takes the bigint and text prefix; other methods cannot lead with it.
+        if (config.method !== undefined && config.method !== "btree")
+          throw new Error(
+            `Owned table ${name} supports btree indexes only; a ${config.method} index cannot lead with routing_key`,
+          )
+
         config.columns = [...owner, ...config.columns]
       } else if (is(builder, UniqueConstraintBuilder)) {
         const constraint = builder as UniqueConstraintBuilder & Prefixable
@@ -300,8 +310,10 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
 
     const [routing, tenant, actor] = owner
 
-    for (const [key, column] of uniques)
-      result.push(unique(column.uniqueName).on(routing!, tenant!, actor!, self[key]!))
+    for (const [key, column] of uniques) {
+      const constraint = unique(column.uniqueName).on(routing!, tenant!, actor!, self[key]!)
+      result.push(column.uniqueType === "not distinct" ? constraint.nullsNotDistinct() : constraint)
+    }
 
     const [first, ...rest] = [...owner, ...key.map((column) => self[column]!)]
     result.push(primaryKey({ name: primaryName, columns: [first!, ...rest] }))

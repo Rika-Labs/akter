@@ -86,11 +86,11 @@ The cases live in [`conformance/tables.ts`](../../packages/durable-actors/src/te
 
 - `scopes owned rows by tenant and actor for every supported operation` — two tenants with equal actor ids and two actors in one tenant with equal business keys run interleaved `insert`, `upsert`, `update().where`, `delete().where`, `one`, `all` (order, limit, offset), and `count` without ownership fields (S2).
 - `keeps unique constraints per actor and rejects a duplicate key as a defect without a receipt`
-- `cannot write another actor's rows, even with an explicit actor_id` — ownership in values, filters, update sets, and upserts, `RAW` filters, SQL values, unknown columns, and undeclared tables each fail the turn; the attacker's earlier insert in the same turn is rolled back and no receipt is written (A4).
-- `rolls back owned rows with a declared failure and keeps its receipt`
+- `cannot write another actor's rows, even with an explicit actor_id` — ownership in values, filters, update sets, and upserts, `RAW` filters, SQL values, plain objects Drizzle would render as SQL (in filters and values), unknown columns, and undeclared tables each fail the turn; the attacker's earlier insert in the same turn is rolled back and no receipt is written (A4).
+- `rolls back every owned-row write with a declared failure and keeps its receipt` — insert, update, upsert, and delete in one turn, then a declared failure.
 - `retries a crash before commit to exactly one owned row` (T1)
-- `gives queries read-only rows and rejects escaped row capabilities` (A3)
-- `joins owned tables across the placement group and never beyond it` — inner and left joins across two actor types stay inside the tenant's group; raw SQL, subqueries, right joins, locks, and unowned tables are rejected.
+- `gives queries read-only rows and rejects escaped row capabilities` — escaped `rows` and `group` capabilities (A3)
+- `joins owned tables across the placement group and never beyond it` — inner and left joins across two actor types stay inside the tenant's group; a balanced `true or true` stays inside the group; raw SQL, unbalanced parentheses, SQL-valued parameters, SQL look-alike objects, subqueries, right joins, locks, ownership columns, and unowned tables are rejected.
 
 Postgres only (independent connections):
 
@@ -99,9 +99,9 @@ Postgres only (independent connections):
 - `rejects an owned-row capability used from another still-active turn`
 - `retries an owned-row write that times out on a real lock` — a table lock held on a second connection makes the row insert hit `lock_timeout`; the turn retries as a retryable SQL defect and commits one row.
 
-Declarations and startup, in [`owned.test.ts`](../../packages/durable-actors/src/tables/owned.test.ts) and `pglite.test.ts`: `generates ownership-prefixed keys, uniques, and indexes through drizzle-kit` (drizzle-kit's DDL equals the fixture DDL), `prefixes a composite primary key and keeps business types free of ownership`, `rejects tables that cannot be owned`, `gives one actor type a table and types rows by the declared tables`, and `refuses to start without a correctly keyed table or under a second owner`. Postgres SIGKILL, in [`crash/rows.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/rows.test.ts): `leaves no owned row after SIGKILL beforeCommit and retries to exactly one` and `leaves one owned row after SIGKILL afterCommit and retries to exactly one`, inspected through a separate pool.
+Declarations and startup, in [`owned.test.ts`](../../packages/durable-actors/src/tables/owned.test.ts) and `pglite.test.ts`: `generates ownership-prefixed keys, uniques, and indexes through drizzle-kit` (drizzle-kit's DDL equals the fixture DDL), `prefixes a composite primary key and keeps business types free of ownership`, `keeps NULLS NOT DISTINCT on a column unique and rejects non-btree indexes`, `rejects tables that cannot be owned`, `gives one actor type a table and types rows by the declared tables`, and `refuses to start without a correctly keyed table or under a second owner`. Postgres SIGKILL, in [`crash/rows.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/rows.test.ts): `leaves no owned row after SIGKILL beforeCommit and retries to exactly one` and `leaves one owned row after SIGKILL afterCommit and retries to exactly one`, inspected through a separate pool.
 
-**Executed 2026-09-24 (M1.4):** `bun run --filter durable-actors test` passed 61 tests with 10 independent-connection cases skipped on PGlite; `test:integration` on disposable Postgres 18 passed 58 tests (the shared and Postgres-only conformance cases, migration rollback, and four SIGKILL recoveries).
+**Executed 2026-09-24 (M1.4):** `bun run --filter durable-actors test` passed 62 tests with 10 independent-connection cases skipped on PGlite; `test:integration` on disposable Postgres 18 passed 58 tests (the shared and Postgres-only conformance cases, migration rollback, and four SIGKILL recoveries).
 
 ### Backend-specific cases
 

@@ -29,7 +29,7 @@ export const messages = Actor.table(
 export const Room = Actor.make("Room", { key: RoomId, tables: [messages], api: { Post, Recent } })
 ```
 
-`Actor.table(pgTable(...))` takes an ordinary Drizzle table and returns it as an `OwnedTable`. It adds `routing_key bigint`, `tenant_id text`, and `actor_id text` columns and prefixes the table's primary key (column-level or `primaryKey()`), every `unique()`/`.unique()` constraint, and every `index()`/`uniqueIndex()` with `(routing_key, tenant_id, actor_id)`. Keys and uniqueness are therefore per actor, and every scoped scan leads with `routing_key`. drizzle-kit generates the table, columns, and prefixed keys from the returned value; application tables are created by drizzle-kit migrations, not by the framework.
+`Actor.table(pgTable(...))` takes an ordinary Drizzle table and returns it as an `OwnedTable`. It adds `routing_key bigint`, `tenant_id text`, and `actor_id text` columns and prefixes the table's primary key (column-level or `primaryKey()`), every `unique()`/`.unique()` constraint, and every `index()`/`uniqueIndex()` with `(routing_key, tenant_id, actor_id)`; `NULLS NOT DISTINCT` is kept. Only btree indexes are supported, because other access methods (GIN, GiST, hash, BRIN) cannot lead with the ownership prefix; generating DDL for one fails with an error. Keys and uniqueness are therefore per actor, and every scoped scan leads with `routing_key`. drizzle-kit generates the table, columns, and prefixed keys from the returned value; application tables are created by drizzle-kit migrations, not by the framework.
 
 `Actor.table` rejects a table that has no primary key, declares a column whose key or SQL name is `routing_key`, `tenant_id`, or `actor_id`, declares a foreign key (inline `.references()` or `foreignKey()`), is an alias, or is already owned. An owned table is listed in exactly one actor type's `tables`; `Actor.make` rejects a table another actor type already lists, and the runtime records the owner in `actor_tables` so a later deployment cannot move a table to a second actor type. At startup each registered table must exist with the primary key `(routing_key, tenant_id, actor_id, <business key>)`; otherwise the layer fails instead of running unscoped.
 
@@ -50,7 +50,7 @@ const one = yield * read.rows(messages).one({ where: { id } }) // Option<Row>
 const total = yield * read.rows(messages).count({ where: { author } })
 ```
 
-Filters are Drizzle's object filters (`TableFilter`) over business columns: equality by value, the column operators (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `notIn`, `like`, `ilike`, `notLike`, `notIlike`, `isNull`, `isNotNull`, `arrayContains`, `arrayContained`, `arrayOverlaps`), and `AND`, `OR`, and `NOT`. `orderBy` is `{ column: "asc" | "desc" }`. Rows are returned with business columns only. `update(values)` and `delete()` run only once given `.where(filter)`; `.where({})` affects every row of the actor. `upsert` inserts, or on a conflict of the scoped primary key updates the supplied non-key columns. Insert and update values are plain JavaScript values.
+Filters are Drizzle's object filters (`TableFilter`) over business columns: equality by value, the column operators (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `notIn`, `like`, `ilike`, `notLike`, `notIlike`, `isNull`, `isNotNull`, `arrayContains`, `arrayContained`, `arrayOverlaps`), and `AND`, `OR`, and `NOT`. `orderBy` is `{ column: "asc" | "desc" }`. Rows are returned with business columns only. `update(values)` and `delete()` run only once given `.where(filter)`; `.where({})` affects every row of the actor. `upsert` inserts, or on a conflict of the scoped primary key updates the supplied non-key columns. Insert, update, and filter values are plain data: strings, numbers, bigints, booleans, `null`, `Date`, `Uint8Array`, arrays, and plain objects. The framework copies them before building SQL and rejects functions, class instances, and anything Drizzle would render as SQL, at any depth. A `Date` or `Uint8Array` is compared with `{ eq: value }`, not as a bare filter value, which Drizzle would otherwise read as an empty operator map.
 
 A write error that is not retryable, such as a duplicate key, is a deterministic defect: the turn rolls back without a receipt. Check first with `one`, or use `upsert`.
 
@@ -70,7 +70,7 @@ Rejected, as a defect that rolls back the turn and never runs unscoped or in a s
 - ownership columns in insert values, update values, upsert values, filters, or `orderBy`;
 - unknown columns, `RAW` filters, and SQL values (`sql`, columns, subqueries, placeholders) in values or filters;
 - `rows(table)` for a table the actor type does not list;
-- use of a `rows` or `group` capability after its turn or query ended, or from another turn, including from a forked fiber;
+- use of a `rows` or `group` capability after its turn or query ended (including from a fiber forked during it), or from another actor's turn;
 - mutation methods on `read.rows`, and anything other than select on `group`.
 
 Raw SQL, Drizzle's relational query API (`db.query`), `returning`, `onConflict` options, `insert ... select`, update/delete joins, foreign keys, cascades, and CTEs are not supported on owned tables yet; supporting one needs evidence in the conformance suite first.
@@ -93,7 +93,7 @@ const rows =
   )
 ```
 
-The builder gets only `select` and `selectDistinct`. The base table and every joined table must be owned tables (aliases of them are allowed); the framework adds `routing_key = <group> AND tenant_id = <tenant>` to the base table's `WHERE` and to each join's `ON`. Only inner and left joins are supported. Expressions in the selection, `where`, `having`, `orderBy`, `groupBy`, and `ON` may use columns, values, and Drizzle's comparison, boolean, pattern, null, and aggregate operators; raw SQL text, table references, subqueries, set operators, `WITH`, locking clauses, lateral joins, and placeholders are rejected. Fleet-wide reads use declared `Fleet.view` definitions ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)).
+The builder gets only `select` and `selectDistinct`. The base table and every joined table must be owned tables (aliases of them are allowed); the framework adds `routing_key = <group> AND tenant_id = <tenant>` to the base table's `WHERE` and to each join's `ON`. Only inner and left joins are supported. Expressions in the selection, `where`, `having`, `orderBy`, `groupBy`, and `ON` may use business columns, plain values, and Drizzle's comparison, boolean, pattern, null, and aggregate operators, and each must balance its parentheses, so the framework's parenthesized scope predicate cannot be closed from inside. Ownership columns cannot be selected or filtered (so `db.select()` without fields is rejected); raw SQL text beyond operator words, table references, subqueries, identifiers, SQL-valued parameters, set operators, `WITH`, locking clauses, lateral joins, and placeholders are rejected. Fleet-wide reads use declared `Fleet.view` definitions ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)).
 
 ## Transactions and backends
 

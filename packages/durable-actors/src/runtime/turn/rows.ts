@@ -8,6 +8,7 @@ import {
   eq,
   getTableColumns,
   is,
+  noopEncoder,
   Param,
   Placeholder,
   relationsFilterToSQL,
@@ -114,43 +115,82 @@ const checkColumn = (info: Ownership, key: string) => {
   if (!info.columns.includes(key)) reject(`Unknown column ${key} of ${info.name}`)
 }
 
-const checkValues = (info: Ownership, values: OperandRecord) => {
+/**
+ * Copies an application value into fresh primitives, dates, bytes, arrays, and
+ * plain records. Drizzle renders anything with `getSQL` as SQL, so a function,
+ * class instance, or SQL wrapper anywhere inside is rejected, and the copy
+ * means a getter cannot change the value after it was checked.
+ */
+const copyOperand = (info: Ownership, value: Operand): Operand => {
+  if (value === null || value === undefined) return value
+
+  if (
+    Predicate.isString(value) ||
+    Predicate.isNumber(value) ||
+    Predicate.isBigInt(value) ||
+    Predicate.isBoolean(value)
+  )
+    return value
+
+  const prototype = Object.getPrototypeOf(value)
+
+  if (prototype === Date.prototype) return value
+
+  if (value instanceof Uint8Array && (prototype === Uint8Array.prototype || Buffer.isBuffer(value)))
+    return Uint8Array.from(value)
+
+  if (Array.isArray(value) && prototype === Array.prototype)
+    return value.map((item: Operand) => copyOperand(info, item))
+
+  if (!isRecord(value)) return reject(`Values on ${info.name} are plain data, not SQL or objects`)
+
+  const copy: Record<string, Operand> = {}
+
+  for (const key of Object.keys(value)) {
+    if (key === "RAW") reject(`RAW filters on ${info.name} are not supported`)
+
+    copy[key] = copyOperand(info, value[key])
+  }
+
+  return copy
+}
+
+const copyValues = (info: Ownership, values: OperandRecord): OperandRecord => {
   if (!isRecord(values)) reject(`Rows of ${info.name} are plain objects`)
 
-  for (const [key, value] of Object.entries(values)) {
-    checkColumn(info, key)
+  for (const key of Object.keys(values)) checkColumn(info, key)
 
-    if (isEntity(value)) reject(`Column ${key} of ${info.name} takes a value, not SQL`)
-  }
+  return copyOperand(info, values) as OperandRecord
 }
 
-const checkOperand = (info: Ownership, value: Operand): void => {
-  if (isEntity(value)) reject(`Filters on ${info.name} take values, not SQL`)
-
-  if (Array.isArray(value)) for (const item of value) checkOperand(info, item)
-  else if (isRecord(value))
-    for (const [key, item] of Object.entries(value)) {
-      if (key === "RAW") reject(`RAW filters on ${info.name} are not supported`)
-
-      checkOperand(info, item)
-    }
-}
-
-const checkFilter = (info: Ownership, filter: Operand): void => {
+const copyFilter = (info: Ownership, filter: Operand): OperandRecord => {
   if (!isRecord(filter)) return reject(`Filters on ${info.name} are plain objects`)
 
-  for (const [key, value] of Object.entries(filter)) {
+  const copy: Record<string, Operand> = {}
+
+  for (const key of Object.keys(filter)) {
+    const value = filter[key]
+
     if (key === "RAW") reject(`RAW filters on ${info.name} are not supported`)
     else if (key === "AND" || key === "OR") {
       if (!Array.isArray(value)) return reject(`${key} on ${info.name} takes an array`)
 
-      for (const item of value) checkFilter(info, item)
-    } else if (key === "NOT") checkFilter(info, value)
+      copy[key] = value.map((item: Operand) => copyFilter(info, item))
+    } else if (key === "NOT") copy[key] = copyFilter(info, value)
     else {
       checkColumn(info, key)
-      checkOperand(info, value)
+      const operand = copyOperand(info, value)
+
+      // Drizzle reads any object here as an operator map, so a bare date or
+      // byte string would match every row instead of one.
+      if (operand instanceof Date || operand instanceof Uint8Array)
+        reject(`Compare ${key} of ${info.name} with { eq: value }`)
+
+      copy[key] = operand
     }
   }
+
+  return copy
 }
 
 const checkOrder = (info: Ownership, order: Order<AnyOwnedTable>) => {
@@ -164,20 +204,78 @@ const checkOrder = (info: Ownership, order: Order<AnyOwnedTable>) => {
 
 // Drizzle's comparison, boolean, pattern, and aggregate operators emit only
 // these words; anything else in a group query's SQL text is rejected so raw
-// fragments cannot name other tables or subqueries.
+// fragments cannot name other tables, subqueries, or comments.
 const OPERATOR_TEXT =
   /^(?:\s+|[(),*=<>!~@&|]+|and|or|not|in|is|null|like|ilike|between|asc|desc|nulls|first|last|distinct|true|false|count|sum|avg|min|max|lower|upper|coalesce)*$/i
 
+/**
+ * Checks one group expression and returns its parenthesis depth change. The
+ * framework wraps its scope predicate and each expression in parentheses, so
+ * an expression whose depth ever goes negative or does not return to zero
+ * could close the scope's parentheses and escape it.
+ */
 const checkExpression = (chunk: Expression): void => {
-  if (Array.isArray(chunk)) for (const item of chunk) checkExpression(item)
-  else if (is(chunk, StringChunk)) {
-    if (!OPERATOR_TEXT.test(chunk.value))
-      reject(`Group queries support Drizzle operators, not raw SQL: ${chunk.value}`)
-  } else if (is(chunk, SQL.Aliased)) checkExpression(chunk.sql)
-  else if (is(chunk, SQL)) for (const item of chunk.queryChunks) checkExpression(item)
-  else if (is(chunk, Column) || is(chunk, Param)) return
-  else if (isEntity(chunk))
-    reject("Group queries cannot reference tables, subqueries, or placeholders")
+  let depth = 0
+
+  const walk = (node: Expression): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item)
+
+      return
+    }
+
+    if (is(node, StringChunk)) {
+      if (!OPERATOR_TEXT.test(node.value))
+        reject(`Group queries support Drizzle operators, not raw SQL: ${node.value}`)
+
+      for (const character of node.value) {
+        if (character === "(") depth += 1
+        else if (character === ")") depth -= 1
+
+        if (depth < 0) reject("Group query expressions must balance their parentheses")
+      }
+
+      return
+    }
+
+    if (is(node, SQL.Aliased)) return walk(node.sql)
+
+    if (is(node, SQL)) return walk(node.queryChunks)
+
+    if (is(node, Column)) {
+      if (reserved.includes(node.name))
+        reject("Group queries do not read or filter ownership columns")
+
+      return
+    }
+
+    if (is(node, Param)) {
+      if (node.encoder !== noopEncoder && !is(node.encoder, Column))
+        reject("Group query parameters are plain values")
+
+      copyOperand(GROUP, node.value as Operand)
+
+      return
+    }
+
+    if (isEntity(node))
+      reject("Group queries cannot reference tables, subqueries, names, or placeholders")
+
+    copyOperand(GROUP, node as Operand)
+  }
+
+  walk(chunk)
+
+  if (depth !== 0) reject("Group query expressions must balance their parentheses")
+}
+
+const GROUP: Ownership = {
+  name: "a group query",
+  schema: undefined,
+  table: "",
+  columns: [],
+  primaryKey: [],
+  owner: undefined,
 }
 
 const checkSelection = (fields: SQLChunk | Selection): void => {
@@ -241,13 +339,13 @@ export const bindTables = Effect.fnUntraced(function* (
     const where = (filter: Filter<AnyOwnedTable> | undefined) => {
       const info = check()
 
-      if (filter !== undefined) checkFilter(info, filter as OperandRecord)
+      const copy = filter === undefined ? {} : copyFilter(info, filter as OperandRecord)
 
       return and(
         eq(columns["routing_key"]!, routingKey),
         eq(columns["tenant_id"]!, ref.tenant),
         eq(columns["actor_id"]!, ref.id),
-        relationsFilterToSQL(table, filter ?? {}),
+        relationsFilterToSQL(table, copy as Filter<AnyOwnedTable>),
       )
     }
 
@@ -279,9 +377,10 @@ export const bindTables = Effect.fnUntraced(function* (
       const info = check()
       const list: ReadonlyArray<Insert<AnyOwnedTable>> = Array.isArray(values) ? values : [values]
 
-      for (const value of list) checkValues(info, value as OperandRecord)
-
-      return { info, list: list.map((value) => ({ ...value, ...owner })) }
+      return {
+        info,
+        list: list.map((value) => ({ ...copyValues(info, value as OperandRecord), ...owner })),
+      }
     }
 
     const filtered = <A, E>(
@@ -340,12 +439,12 @@ export const bindTables = Effect.fnUntraced(function* (
         }).pipe(Effect.asVoid),
       update: (values) =>
         filtered((filter) => {
-          checkValues(check(), values as OperandRecord)
+          const copy = copyValues(check(), values as OperandRecord)
 
-          if (Object.keys(values).length === 0)
+          if (Object.keys(copy).length === 0)
             reject(`An update of ${check().name} sets at least one column`)
 
-          return db.update(table).set(values).where(where(filter))
+          return db.update(table).set(copy).where(where(filter))
         }),
       delete: () => filtered((filter) => db.delete(table).where(where(filter))),
     } satisfies ScopedRows<AnyOwnedTable> as ScopedRows<AnyOwnedTable>
@@ -423,17 +522,6 @@ export const checkTables = Effect.fnUntraced(function* (
     const schema =
       info.schema ?? (yield* sql<{ schema: string }>`SELECT current_schema() AS schema`)[0]!.schema
 
-    yield* sql`INSERT INTO actor_tables (table_schema, table_name, actor_type)
-      VALUES (${schema}, ${info.table}, ${actor}) ON CONFLICT DO NOTHING`
-
-    const [recorded] = yield* sql<{ actor_type: string }>`
-      SELECT actor_type FROM actor_tables WHERE table_schema = ${schema} AND table_name = ${info.table}`
-
-    if (recorded?.actor_type !== actor)
-      return yield* Effect.die(
-        new Error(`Table ${info.name} is owned by actor ${recorded?.actor_type}, not ${actor}`),
-      )
-
     const key = yield* sql<{ name: string }>`
       SELECT a.attname AS name FROM pg_index i
       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
@@ -450,6 +538,17 @@ export const checkTables = Effect.fnUntraced(function* (
         new Error(
           `Owned table ${info.name} needs primary key (${expected.join(", ")}); apply its drizzle-kit migration`,
         ),
+      )
+
+    yield* sql`INSERT INTO actor_tables (table_schema, table_name, actor_type)
+      VALUES (${schema}, ${info.table}, ${actor}) ON CONFLICT DO NOTHING`
+
+    const [recorded] = yield* sql<{ actor_type: string }>`
+      SELECT actor_type FROM actor_tables WHERE table_schema = ${schema} AND table_name = ${info.table}`
+
+    if (recorded?.actor_type !== actor)
+      return yield* Effect.die(
+        new Error(`Table ${info.name} is owned by actor ${recorded?.actor_type}, not ${actor}`),
       )
   }
 })

@@ -1,6 +1,15 @@
 import { generateDrizzleJson, generateMigration } from "drizzle-kit/api-postgres"
-import { alias, foreignKey, integer, pgTable, primaryKey, text, unique } from "drizzle-orm/pg-core"
-import { Effect } from "effect"
+import {
+  alias,
+  foreignKey,
+  index,
+  integer,
+  pgTable,
+  primaryKey,
+  text,
+  unique,
+} from "drizzle-orm/pg-core"
+import { Cause, Effect, Exit } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, type Insert, type Row } from "../index.ts"
 import { labels, notes, tablesDdl } from "../testing/conformance/tables.ts"
@@ -37,6 +46,37 @@ describe("owned table declarations", () => {
         )
         expectTypeOf<keyof Row<typeof lines>>().toEqualTypeOf<"order" | "line" | "sku">()
         expectTypeOf<keyof Insert<typeof lines>>().toEqualTypeOf<"order" | "line" | "sku">()
+      }),
+    ))
+
+  it("keeps NULLS NOT DISTINCT on a column unique and rejects non-btree indexes", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const handles = Actor.table(
+          pgTable("owned_handles", {
+            id: text("id").primaryKey(),
+            handle: text("handle").unique("owned_handles_handle", { nulls: "not distinct" }),
+          }),
+        )
+
+        expect((yield* migration({ handles })).join("\n").replaceAll(/\s+/g, " ")).toContain(
+          `CONSTRAINT "owned_handles_handle" UNIQUE NULLS NOT DISTINCT("routing_key","tenant_id","actor_id","handle")`,
+        )
+
+        const tags = Actor.table(
+          pgTable("owned_hashed", { id: text("id").primaryKey(), tag: text("tag") }, (table) => [
+            index("owned_hashed_tag").using("gin", table.tag),
+          ]),
+        )
+
+        yield* migration({ tags }).pipe(
+          Effect.exit,
+          Effect.map((exit) =>
+            expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+              "btree indexes only",
+            ),
+          ),
+        )
       }),
     ))
 

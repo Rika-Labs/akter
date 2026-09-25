@@ -1,4 +1,4 @@
-import { eq, inArray, sql as drizzleSql } from "drizzle-orm"
+import { eq, inArray, Param, sql as drizzleSql } from "drizzle-orm"
 import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
@@ -77,9 +77,21 @@ const Misuse = Schema.Literals([
   "rawFilter",
   "unknownColumn",
   "undeclaredTable",
+  "wrappedFilter",
+  "wrappedValue",
 ])
 
-const GroupMisuse = Schema.Literals(["raw", "rightJoin", "lock", "unowned", "subquery"])
+const GroupMisuse = Schema.Literals([
+  "raw",
+  "rightJoin",
+  "lock",
+  "unowned",
+  "subquery",
+  "parentheses",
+  "param",
+  "wrapper",
+  "ownership",
+])
 
 const Write = Actor.command("Write", {
   input: Schema.Struct({ id: Schema.String, body: Schema.String }),
@@ -111,6 +123,8 @@ const WriteThenHold = Actor.command("WriteThenHold", { input: Schema.String })
 
 const Capture = Actor.command("Capture")
 
+const CaptureGroup = Actor.command("CaptureGroup")
+
 const Replay = Actor.command("Replay")
 
 const List = Actor.query("List", { output: Schema.Array(Note) })
@@ -136,6 +150,8 @@ const Catalog = Actor.query("Catalog", { input: Schema.Boolean, output: Schema.A
 
 const Misgroup = Actor.query("Misgroup", { input: GroupMisuse })
 
+const Everything = Actor.query("Everything", { output: Schema.Array(Schema.String) })
+
 const Notebook = Actor.make("Notebook", {
   key: Schema.String,
   tables: [notes],
@@ -150,6 +166,7 @@ const Notebook = Actor.make("Notebook", {
     WriteThenMisuse,
     WriteThenHold,
     Capture,
+    CaptureGroup,
     Replay,
     List,
     Get,
@@ -158,6 +175,7 @@ const Notebook = Actor.make("Notebook", {
     QueryWrite,
     Catalog,
     Misgroup,
+    Everything,
   },
 })
 
@@ -166,6 +184,9 @@ const Label = Actor.command("Label", {
 })
 
 const Shelf = Actor.make("Shelf", { key: Schema.String, tables: [labels], api: { Label } })
+
+// A plain object Drizzle would render as SQL; it would close the scope's parentheses.
+const sqlLookalike = { getSQL: () => drizzleSql.raw("'zzz')) or ((true") } as never
 
 // Rows seen through the loosest static type, as code bypassing the declared table types would.
 const misuse = (loose: ScopedRows<AnyOwnedTable>, kind: typeof Misuse.Type) => {
@@ -184,6 +205,10 @@ const misuse = (loose: ScopedRows<AnyOwnedTable>, kind: typeof Misuse.Type) => {
       return loose.delete().where({ RAW: { eq: drizzleSql`true` } })
     case "unknownColumn":
       return loose.insert({ id: "unknown", body: "unknown", secret: 1 })
+    case "wrappedFilter":
+      return loose.delete().where({ id: { eq: sqlLookalike } })
+    case "wrappedValue":
+      return loose.insert({ id: "wrapped", body: sqlLookalike })
     case "undeclaredTable":
       return loose.all()
   }
@@ -217,7 +242,11 @@ const NotebookLive = (fixture: TablesFixture) =>
         yield* (yield* Notebook.Turn).rows(notes).delete().where({})
       }),
       WriteThenReject: Effect.fnUntraced(function* (id) {
-        yield* (yield* Notebook.Turn).rows(notes).insert({ id, body: id })
+        const rows = (yield* Notebook.Turn).rows(notes)
+        yield* rows.insert({ id, body: id })
+        yield* rows.update({ rank: 3 }).where({})
+        yield* rows.upsert({ id: "kept", body: "upserted", rank: 9 })
+        yield* rows.delete().where({ id })
 
         return yield* NotebookRejected.make({})
       }),
@@ -239,6 +268,11 @@ const NotebookLive = (fixture: TablesFixture) =>
         const rows = (yield* Notebook.Turn).rows(notes)
         fixture.escaped = rows.insert({ id: "escaped", body: "escaped" })
         yield* rows.insert({ id: "captured", body: "captured" })
+      }),
+      CaptureGroup: Effect.fnUntraced(function* () {
+        fixture.escaped = (yield* Notebook.Turn).group((db) =>
+          db.select({ id: notes.id }).from(notes),
+        )
       }),
       Replay: () => Effect.suspend(() => fixture.escaped).pipe(Effect.asVoid),
     }),
@@ -283,6 +317,16 @@ const NotebookReads = Notebook.toQueryLayer(
           .orderBy(notes.id, labels.label)
       })
     }),
+    Everything: Effect.fnUntraced(function* () {
+      const found = yield* (yield* Notebook.Read).group((db) =>
+        db
+          .select({ body: notes.body })
+          .from(notes)
+          .where(drizzleSql`true or true`),
+      )
+
+      return found.map((note) => note.body)
+    }),
     Misgroup: Effect.fnUntraced(function* (kind) {
       yield* (yield* Notebook.Read).group((db) => {
         switch (kind) {
@@ -305,6 +349,23 @@ const NotebookReads = Notebook.toQueryLayer(
             return db.select({ id: notes.id }).from(notes).for("update")
           case "unowned":
             return db.select({ id: unowned.id }).from(unowned)
+          case "parentheses":
+            return db
+              .select({ id: notes.id })
+              .from(notes)
+              .where(drizzleSql`true)) or ((true`)
+          case "param":
+            return db
+              .select({ id: notes.id })
+              .from(notes)
+              .where(drizzleSql`${new Param(drizzleSql.raw("true"))}`)
+          case "wrapper":
+            return db
+              .select({ id: notes.id })
+              .from(notes)
+              .where(drizzleSql`${sqlLookalike}`)
+          case "ownership":
+            return db.select({ id: notes.tenant_id }).from(notes)
         }
       })
     }),
@@ -417,10 +478,12 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
             ["ownerFilter", "Ownership column actor_id"],
             ["ownerSet", "Ownership column tenant_id"],
             ["ownerUpsert", "Ownership column routing_key"],
-            ["rawValue", "takes a value, not SQL"],
+            ["rawValue", "plain data"],
             ["rawFilter", "RAW filters"],
             ["unknownColumn", "Unknown column secret"],
             ["undeclaredTable", "is not an owned table of Notebook"],
+            ["wrappedFilter", "plain data"],
+            ["wrappedValue", "plain data"],
           ]
 
           for (const [kind, message] of rejections)
@@ -435,7 +498,7 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "rolls back owned rows with a declared failure and keeps its receipt",
+    name: "rolls back every owned-row write with a declared failure and keeps its receipt",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -478,8 +541,12 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
           expect(defect(yield* notebook.Replay().pipe(Effect.exit))).toContain(
             "Table capability escaped its turn",
           )
+          yield* notebook.CaptureGroup()
+          expect(defect(yield* fixture.tables.escaped.pipe(Effect.exit))).toContain(
+            "Table capability escaped its turn",
+          )
           expect(yield* notebook.List()).toEqual([{ id: "captured", body: "captured", rank: 0 }])
-          expect(yield* test.inspect(notebook.ref)).toMatchObject({ ...rowsOf(1), receipts: 1 })
+          expect(yield* test.inspect(notebook.ref)).toMatchObject({ ...rowsOf(1), receipts: 2 })
         }),
       ),
   },
@@ -508,6 +575,10 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
             { note: "a", body: `a-${t}`, label: `x-${t}` },
             { note: "b", body: `b-${t}`, label: `y-${t}` },
           ])
+          // A balanced "or true" stays inside the framework's parenthesized scope.
+          const everything = yield* reader.Everything()
+          expect(everything).toContain(`a-${t}`)
+          expect(everything.filter((body) => body.includes(other))).toEqual([])
           expect(yield* reader.Catalog(true)).toEqual([
             { note: "a", body: `a-${t}`, label: `x-${t}` },
             { note: "b", body: `b-${t}`, label: `y-${t}` },
@@ -520,6 +591,10 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
             ["rightJoin", "inner and left joins"],
             ["lock", "read-only"],
             ["unowned", "owned tables only"],
+            ["parentheses", "balance their parentheses"],
+            ["param", "plain data"],
+            ["wrapper", "plain data"],
+            ["ownership", "ownership columns"],
           ] as const)
             expect(defect(yield* reader.Misgroup(kind).pipe(Effect.exit))).toContain(message)
         }),
