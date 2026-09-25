@@ -1,5 +1,16 @@
 import type { PgliteClient } from "@effect/sql-pglite"
-import { Context, Crypto, Deferred, Effect, Layer, Redacted, Schema, Option } from "effect"
+import {
+  Context,
+  Crypto,
+  DateTime,
+  Deferred,
+  Duration,
+  Effect,
+  Layer,
+  Redacted,
+  Schema,
+  Option,
+} from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import {
   Anonymous,
@@ -21,11 +32,22 @@ import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.
 import { compress, decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
 import { VERSION_KEY } from "../state/migration.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
+import { OutboxClock, outboxTime } from "../runtime/turn/outbox.ts"
 
 export interface Inspection {
   readonly generation: string | undefined
   readonly state: Schema.JsonObject["Type"]
   readonly receipts: number
+  readonly events: number
+  /** Pending intents and timers this actor sent, including effect routes awaiting delivery. */
+  readonly outbox: number
+  /** Effects this actor performed whose executor has not yet settled them. */
+  readonly effects: number
+  /**
+   * The actor's row count per owned table, keyed by table name (schema-qualified
+   * outside the current schema); present when its type owns tables.
+   */
+  readonly rows?: Readonly<Record<string, number>>
 }
 
 interface TestDefinition {
@@ -70,6 +92,15 @@ export class ActorTest extends Context.Service<
     }>
     readonly invalidate: (ref: ActorRef) => Effect.Effect<void>
     /**
+     * Moves the outbox clock forward by `duration`, then delivers every intent
+     * and timer that is due, including intents those deliveries stage.
+     */
+    readonly advance: (duration: Duration.Input) => Effect.Effect<void>
+    /** The outbox clock: database time plus every `advance` so far; `Intent.at` is due against it. */
+    readonly now: Effect.Effect<DateTime.Utc>
+    /** Committed receipts of `command` on the actor `ref`. */
+    readonly receiptsFor: (ref: ActorRef, command: string) => Effect.Effect<number>
+    /**
      * Writes raw stored state, as an older deployment would have, so tests can
      * exercise state migrations. `version` is the number of migrations the
      * stored shape has already passed through.
@@ -99,9 +130,14 @@ export class ActorTest extends Context.Service<
         const tenant = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
         const faults = new Map<TurnPoint, Array<Effect.Effect<void>>>()
 
-        const hooks = Layer.succeed(TurnHooks, {
-          at: (point) => Effect.suspend(() => faults.get(point)?.shift() ?? Effect.void),
-        })
+        let clockOffset = 0
+
+        const hooks = Layer.mergeAll(
+          Layer.succeed(TurnHooks, {
+            at: (point) => Effect.suspend(() => faults.get(point)?.shift() ?? Effect.void),
+          }),
+          Layer.succeed(OutboxClock, { offsetMillis: () => clockOffset }),
+        )
 
         const addFault = (point: TurnPoint, fault: Effect.Effect<void>) =>
           Effect.sync(() => {
@@ -199,7 +235,35 @@ export class ActorTest extends Context.Service<
                 }>`SELECT count(*)::integer AS count FROM actor_receipts
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-                return {
+                const events = yield* sql<{
+                  count: number
+                }>`SELECT count(*)::integer AS count FROM actor_events
+            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+
+                const outbox = yield* sql<{
+                  intents: number
+                  effects: number
+                }>`SELECT count(*) FILTER (WHERE kind = 'intent')::integer AS intents,
+              count(*) FILTER (WHERE kind = 'effect')::integer AS effects FROM actor_outbox
+            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+
+                const tables = yield* sql<{
+                  table_schema: string
+                  table_name: string
+                  label: string
+                }>`
+                  SELECT table_schema, table_name, CASE WHEN table_schema = current_schema()
+                    THEN table_name ELSE table_schema || '.' || table_name END AS label
+                  FROM actor_tables WHERE actor_type = ${ref.actor} ORDER BY label`
+
+                const rows: Record<string, number> = {}
+
+                for (const { table_schema, table_name, label } of tables)
+                  rows[label] = (yield* sql<{ count: number }>`
+                    SELECT count(*)::integer AS count FROM ${sql(table_schema)}.${sql(table_name)}
+                    WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_id = ${ref.id}`)[0]!.count
+
+                const inspection: Inspection = {
                   generation: generations[0]?.generation,
                   state: Object.fromEntries(
                     yield* Effect.forEach(
@@ -215,7 +279,12 @@ export class ActorTest extends Context.Service<
                     ),
                   ),
                   receipts: receipts[0]!.count,
+                  events: events[0]!.count,
+                  outbox: outbox[0]!.intents,
+                  effects: outbox[0]!.effects,
                 }
+
+                return tables.length > 0 ? { ...inspection, rows } : inspection
               }, Effect.orDie),
               seed: Effect.fnUntraced(function* (ref, state, version) {
                 const key = yield* storedRoutingKey(ref)
@@ -232,6 +301,33 @@ export class ActorTest extends Context.Service<
                 for (const [name, value] of rows)
                   yield* sql`INSERT INTO actor_state (routing_key, tenant_id, actor_type, actor_id, key, value)
             VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${name}, ${compress(value)})`
+              }, Effect.orDie),
+              advance: Effect.fnUntraced(function* (duration: Duration.Input) {
+                const millis = Duration.toMillis(duration)
+
+                if (!Number.isFinite(millis) || millis < 0)
+                  return yield* Effect.die(
+                    new Error("advance needs a finite, non-negative duration"),
+                  )
+
+                clockOffset += millis
+                yield* internalActors.drainOutbox
+              }),
+              now: outboxTime.pipe(
+                Effect.map((millis) => DateTime.makeUnsafe(millis)),
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.provideService(OutboxClock, { offsetMillis: () => clockOffset }),
+                Effect.orDie,
+              ),
+              receiptsFor: Effect.fnUntraced(function* (ref: ActorRef, command: string) {
+                const routing = yield* storedRoutingKey(ref)
+
+                const rows = yield* sql<{ count: number }>`
+                  SELECT count(*)::integer AS count FROM actor_receipts
+                  WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor}
+                    AND actor_id = ${ref.id} AND command = ${command}`
+
+                return rows[0]!.count
               }, Effect.orDie),
               invalidate: Effect.fnUntraced(function* (ref: ActorRef) {
                 const routing = yield* storedRoutingKey(ref)

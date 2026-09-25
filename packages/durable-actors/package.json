@@ -11,18 +11,20 @@
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/actor packages/durable-actors/src/identity packages/durable-actors/src/runtime/database/pglite.test.ts",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/actor packages/durable-actors/src/identity packages/durable-actors/src/members packages/durable-actors/src/tables packages/durable-actors/src/runtime/database/pglite.test.ts packages/durable-actors/src/runtime/turn/relay.test.ts packages/durable-actors/src/runtime/effects",
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/testing/conformance.test.ts packages/durable-actors/src/testing/conformance/crash"
   },
   "dependencies": {
     "@effect/sql-pg": "catalog:",
     "@effect/sql-pglite": "catalog:",
     "@electric-sql/pglite": "0.5.8",
+    "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",
     "@types/pg": "8.23.1",
+    "drizzle-kit": "catalog:",
     "pg": "8.23.0",
     "vitest": "catalog:"
   }

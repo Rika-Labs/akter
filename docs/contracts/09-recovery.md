@@ -5,7 +5,7 @@
 **Owner role:** reliability.  
 **Change policy:** every new durable record needs a crash-point analysis.
 
-Recovery MUST derive authority and consequences from durable rows, never process memory. Before-COMMIT failure MUST roll back the receipt, state, events, intents, and effects. An intent from such a turn MUST never be delivered. After-COMMIT reply loss MUST resolve through the receipt without re-running the handler; external result delivery remains subject to the access and expiry rules in [receipts](04-receipts.md).
+Recovery MUST derive authority and consequences from durable rows, never process memory. Before-COMMIT failure MUST roll back the receipt, state, events, intents, and effects. An intent from such a turn MUST never be delivered. After-COMMIT reply loss MUST resolve through the receipt without re-running the handler; external result delivery remains subject to the access and expiry rules in [receipts](04-receipts.md). A crash after an effect executor succeeds but before its `onSuccess` route commits MUST leave the effect pending: if the result was not yet recorded, the executor runs again under the same effect id; if it was, the route is redelivered and its receipt deduplicates it ([background work](08-background-work.md)).
 
 Retryable defects MUST restart the activation; an uncommitted command is not durable, and the caller's handle MUST retry it with the same command id. Committed intents MUST be recovered from `actor_outbox`. Deterministic defects MUST follow [command turn](02-command-turns.md) rules and leave the activation resident. Hibernation MUST discard activation-local values while preserving committed state, parked connections, and connection state.
 

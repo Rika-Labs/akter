@@ -18,6 +18,8 @@ Every admitted command attempt MUST execute within one framework-owned transacti
 
 Commands already waiting for the same actor MAY share one transaction as a turn batch under [ADR 0005](../decisions/0005-turn-latency-batching-and-regional-placement.md). Each command in a batch MUST keep its own receipt, output, and declared-failure isolation; a defect MUST abort the batch, and its commands MUST then execute one per transaction until the failing command is processed. The next batch MAY execute in memory while the previous batch commits, but no reply, broadcast, or intent from a batch MAY become visible before that batch commits. The runtime MUST NOT delay a lone command to form a batch.
 
+A reducer call is a command turn whose handler step is the declared pure `reduce(state, input)`; it has the same admission, receipt, conflict, replay, and declared-failure rules as a command. A throwing `reduce` or a returned state the schema rejects is a deterministic defect.
+
 Resolving a retained receipt skips state migration and handler execution. External receipt delivery still requires current receipt-access authorization; a denied caller MUST NOT fall through to a new execution.
 
 The foundation labels retain their meaning from the agreed design:
