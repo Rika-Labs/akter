@@ -18,6 +18,7 @@ import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 import { payloadHash } from "../runtime/turn/receipt.ts"
 import { ActorTest } from "./actor-test.ts"
+import { capacityConformance } from "./conformance/capacity.ts"
 import { reducerConformance, reducerLayer } from "./conformance/reducers.ts"
 import {
   tablesConformance,
@@ -273,6 +274,7 @@ const makeFixture = (): ConformanceFixture => ({
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
+  ...capacityConformance,
   ...heapConformance,
   ...eventsConformance,
   ...reducerConformance,

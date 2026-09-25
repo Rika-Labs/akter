@@ -21,6 +21,6 @@ Assume clients are hostile, input is untrusted, networks fail, runners restart, 
 | Restore rollback repeats an external effect | provider idempotency keys, effect records, reconciliation before execution resumes                                                                    |
 | Activation memory treated as authority      | durable database facts only; memory, leases, and placement never authorize                                                                            |
 
-`ActorError` exposes bounded reasons—`ActorUnavailable`, `MailboxFull`, `Timeout`, `CommandConflict`, `NotCreated`, `Unauthorized`, `InvalidInput`, and `TransportError`—without leaking secret internals. `isRetryable` and `retryAfter` guide clients without granting authority.
+`ActorError` exposes bounded reasons—`ActorUnavailable`, `MailboxFull`, `RunnerAtCapacity`, `Timeout`, `CommandConflict`, `NotCreated`, `Unauthorized`, `InvalidInput`, and `TransportError`—without leaking secret internals. `isRetryable` and `retryAfter` guide clients without granting authority.
 
 Every control needs a conformance or integration test, an observable failure signal, and a recovery procedure. Hosted claims additionally require the Neki relay and Railway topology verification gates.

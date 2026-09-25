@@ -36,7 +36,7 @@ export interface CaseResult {
   readonly extra: Readonly<Record<string, number | string>> | null
 }
 
-export type ActorServices = Layer.Success<typeof runtimeLayer> | SqlClient.SqlClient
+export type ActorServices = Layer.Success<ReturnType<typeof runtimeLayer>> | SqlClient.SqlClient
 
 // The effect round trip ends when its route's turn commits, which only the
 // runtime's post-commit hook observes; every other point stays a no-op.
@@ -44,13 +44,16 @@ const hooks = Layer.succeed(TurnHooks, {
   at: (point, request) => (point === "afterCommit" ? afterCommit(request) : Effect.void),
 })
 
-const runtimeLayer = ProbeLive.pipe(
-  Layer.provideMerge(
-    Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(Layer.provide(hooks)),
-  ),
-  Layer.provide(BunCrypto.layer),
-  Layer.orDie,
-)
+const runtimeLayer = (maxResidentActors: number | undefined) =>
+  ProbeLive.pipe(
+    Layer.provideMerge(
+      Actors.layer({ authorize: () => Effect.succeed(true), maxResidentActors }).pipe(
+        Layer.provide(hooks),
+      ),
+    ),
+    Layer.provide(BunCrypto.layer),
+    Layer.orDie,
+  )
 
 export interface ScenarioContext {
   readonly backend: Backend
@@ -60,7 +63,7 @@ export interface ScenarioContext {
    * case inherits another's activations, caches, or rows.
    */
   readonly withRuntime: <A, E>(
-    options: { readonly maxConnections?: number },
+    options: { readonly maxConnections?: number; readonly maxResidentActors?: number },
     body: (instruments: Instruments | undefined) => Effect.Effect<A, E, ActorServices>,
   ) => Effect.Effect<A, E>
 }
@@ -82,7 +85,9 @@ export const withRuntime =
           maxConnections: options.maxConnections ?? DEFAULT_POOL,
         })
 
-        const services = yield* Layer.build(runtimeLayer.pipe(Layer.provideMerge(database.layer)))
+        const services = yield* Layer.build(
+          runtimeLayer(options.maxResidentActors).pipe(Layer.provideMerge(database.layer)),
+        )
 
         return yield* body(database.instruments).pipe(Effect.provideContext(services))
       }),

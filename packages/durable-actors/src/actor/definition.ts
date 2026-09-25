@@ -120,6 +120,7 @@ type HandleReason =
   | "InvalidCommandId"
   | "Unauthorized"
   | "Timeout"
+  | "RunnerAtCapacity"
 
 type Values<Record extends MemberRecord> = Record[keyof Record]
 

@@ -28,6 +28,16 @@ export class NotCreated extends Schema.TaggedError<NotCreated>()("NotCreated", {
 
 export class MailboxFull extends Schema.TaggedError<MailboxFull>()("MailboxFull", {}) {}
 
+/**
+ * The runner already holds its `maxResidentActors` activations and cannot
+ * start another, so the command was not admitted. It says nothing about an
+ * earlier attempt with the same command id, which may have committed.
+ */
+export class RunnerAtCapacity extends Schema.TaggedError<RunnerAtCapacity>()(
+  "RunnerAtCapacity",
+  {},
+) {}
+
 export const Reason = Schema.Union([
   CommandConflict,
   CommandExpired,
@@ -37,13 +47,16 @@ export const Reason = Schema.Union([
   Timeout,
   NotCreated,
   MailboxFull,
+  RunnerAtCapacity,
 ])
 
 export type Reason = typeof Reason.Type
 
 export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", { reason: Reason }) {
   get isRetryable(): boolean {
-    return Schema.is(Schema.Union([ActorUnavailable, Timeout, MailboxFull]))(this.reason)
+    return Schema.is(Schema.Union([ActorUnavailable, Timeout, MailboxFull, RunnerAtCapacity]))(
+      this.reason,
+    )
   }
 
   get retryAfter(): Option.Option<number> {

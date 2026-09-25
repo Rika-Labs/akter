@@ -65,6 +65,7 @@ export {
   Timeout,
   NotCreated,
   MailboxFull,
+  RunnerAtCapacity,
 } from "./errors/actor.ts"
 
 export { RetentionGap, UnknownCursor } from "./errors/events.ts"

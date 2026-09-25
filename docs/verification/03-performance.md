@@ -142,9 +142,9 @@ None of the four slices has its own scenario yet. Outbox relay latency, timers d
 
    Callers queue for a connection while pooled connections wait on the runtime, so the pool amplifies bottleneck 1 rather than replacing it.
 
-4. **The runner-wide activation cap.** Effect Cluster admits at most 10,000 resident entities per runner by default (`maxResidentEntities`), and the framework doesn't configure it.
+4. **The runner-wide activation cap.** Effect Cluster admits at most 10,000 resident entities per runner by default (`maxResidentEntities`), and the framework didn't configure it before ADR 0019.
    - **Failures:** touching 100,000 actors within the 60-second `hibernateAfter` window failed 8,241 commands with `MailboxFull`. The repeat run failed 10,085 and the merge 11,680.
-   - **Contract gap:** the actor's policy leaves its mailbox unbounded, and the handle's types don't list `MailboxFull` for an unbounded mailbox. Tracked in #39.
+   - **Contract gap:** the actor's policy leaves its mailbox unbounded, and the handle's types don't list `MailboxFull` for an unbounded mailbox. Tracked in #39, and resolved by [ADR 0019](../decisions/0019-runner-capacity-and-pool-size.md). See "Runner capacity and pool size" below.
    - **Effect on later turns:** because of the cap, 92% of steady-state turns over 100k actors started a new activation.
 5. **Memory per activation.** Measured after a forced garbage collection, the heap grew by 150–490 MiB across the three clean runs when 10k actors were first touched, all of them resident. That is roughly 15–50 KiB per activation. At 100k actors the heap grew by 0.8–1.0 GiB, although the 10,000-entity cap held fewer activations than at 10k. So memory grew with commands executed, not only with actors resident, and part of it outlived hibernation.
    - **Cause (#41):** the runtime built a new Cluster entity object for every command, and Sharding caches one RPC client per entity object, by identity, until the runtime closes. Every executed command retained one client, about 11 KiB and 95 objects of JavaScript heap. The runtime now reuses one entity per actor type.
@@ -157,13 +157,29 @@ None of the four slices has its own scenario yet. Outbox relay latency, timers d
    - **zstd:** at most 0.11 ms at 60 KiB.
    - **Large stored state:** holding a 60 KiB state while changing a counter costs about the same as holding a 256 B state. A hibernated actor wakes with a 60 KiB state in about the same time as with a small one.
 
+### Runner capacity and pool size (#39, #42)
+
+[ADR 0019](../decisions/0019-runner-capacity-and-pool-size.md) adds `Actors.layer({ maxResidentActors })` (default 10,000) and the retryable `RunnerAtCapacity` reason, and it defaults `Database.postgres` to 50 connections. Its `many-actors` runs happened on a different VM from the files above. That VM has the same 4-vCPU EPYC shape but ran about twice as fast, so compare these files only with each other:
+
+- `2026-09-25-f083e80-main-same-machine-postgres.json`: the harness at #38's head, without this change.
+- `2026-09-25-281a4b3-runner-capacity-postgres.json`: this change. The 100k count runs with `maxResidentActors: 100000`. With the default, each of the 90,000 callers over the limit would retry for its whole 30-second delivery timeout.
+- `2026-09-25-281a4b3-runner-capacity-repeat-postgres.json`: a repeat on the same SHA. It's marked `dirty` because documentation files were edited while it ran. No runtime or harness file changed.
+
+| Case (64 callers)           | Without the change             | With it, run 1     | With it, repeat    |
+| --------------------------- | ------------------------------ | ------------------ | ------------------ |
+| first-touch-100000          | 155 op/s, 51,682 `MailboxFull` | 252 op/s, 0 errors | 240 op/s, 0 errors |
+| steady-100000               | 142 op/s, 1,289 `MailboxFull`  | 244 op/s, 0 errors | 218 op/s, 0 errors |
+| steady-10000, pool 10 (p99) | 509 ms                         | 535 ms             | 495 ms             |
+| steady-10000, pool 25 (p99) | 901 ms                         | 495 ms             | 482 ms             |
+| steady-10000, pool 50 (p99) | 228 ms                         | 212 ms             | 242 ms             |
+
+First touch of 100k actors grew the heap by 1.0–1.8 GiB across the two runs. The run without the change grew it by 0.9 GiB, even though at most 10,000 actors were resident. This fits finding 5: memory follows actors touched, not actors resident. `steady-100000` still started a new activation for 89% of its turns. First touch took about 400 seconds, so most actors had already hibernated under the 60-second `hibernateAfter`. At 10k actors, 50 connections cut p99 by more than half against 10 connections in all three runs, and 25 connections gave no consistent gain. That's why the default is 50.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
 
 - Compute the payload hash and the database time once per command, instead of twice and three times. That removes three to four round trips from every command (#40).
-- Configure `maxResidentEntities` from actor policy or deployment options. Then either map runner-capacity rejections to a distinct `ActorError` reason, or make an unbounded mailbox mean that no capacity rejection is surfaced (#39).
-- Size the default pool to the expected caller concurrency, or document that 10 connections cap concurrent turns.
 - Report Cluster's never-cleared processed-request set under `MessageStorage.layerNoop` upstream (#46).
 - Rerun `many-actors` after #41 and measure heap per resident activation before making any claim above 10k actors per runner.
 - Add a measured stored-actor overhead case, using relation sizes after N actors, and several-runner cases before testing the per-shard turn hypothesis.
