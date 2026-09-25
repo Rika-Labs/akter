@@ -77,7 +77,6 @@ interface TableInternals {
   [ExtraConfigKey]: ExtraConfig | undefined
   readonly [IsAliasKey]: boolean
   readonly [ForeignKeysKey]: ReadonlyArray<ForeignKeyBuilder>
-  [OwnedTypeId]?: Ownership
 }
 
 interface KeyBuilder {
@@ -95,7 +94,11 @@ interface ColumnBuilderInternals {
   readonly buildExtraConfigColumn: (table: AnyPgTable) => ExtraConfigColumn
 }
 
-const OwnedTypeId: unique symbol = Symbol.for("durable-actors/OwnedTable")
+declare const OwnedTypeId: unique symbol
+
+// Ownership lives beside the table, keyed by the table object itself, so no
+// other object can claim it by copying a property or symbol.
+const owned = new WeakMap<object, Ownership>()
 
 /** What the framework knows about an owned table; aliases forward it. */
 export interface Ownership {
@@ -201,8 +204,7 @@ export interface TableAccess {
 }
 
 /** The ownership of `table`, or undefined when it is not an owned table. */
-export const ownership = (table: PgSelectConfig["table"]): Ownership | undefined =>
-  OwnedTypeId in table ? (table as Partial<TableInternals>)[OwnedTypeId] : undefined
+export const ownership = (table: PgSelectConfig["table"]): Ownership | undefined => owned.get(table)
 
 const isOwned = <T extends AnyPgTable>(table: T): table is T & OwnedTable<T> =>
   ownership(table) !== undefined
@@ -323,14 +325,14 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
 
   const schema = internals[SchemaKey]
 
-  internals[OwnedTypeId] = {
+  owned.set(source, {
     name: schema === undefined ? name : `${schema}.${name}`,
     schema,
     table: name,
     columns: Object.keys(columns),
     primaryKey: key,
     owner: undefined,
-  }
+  })
 
   if (!isOwned(source)) throw new Error(`Table ${name} did not take ownership`)
 

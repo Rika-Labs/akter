@@ -1,6 +1,6 @@
-import { eq, inArray, Param, sql as drizzleSql } from "drizzle-orm"
+import { eq, inArray, Param, SQL, sql as drizzleSql, StringChunk } from "drizzle-orm"
 import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor } from "../../index.ts"
 import type { AnyOwnedTable, ScopedRows } from "../../tables/owned.ts"
@@ -150,6 +150,22 @@ const Catalog = Actor.query("Catalog", { input: Schema.Boolean, output: Schema.A
 
 const Misgroup = Actor.query("Misgroup", { input: GroupMisuse })
 
+/** Queries that try to smuggle SQL past validation; any rows they return must stay in scope. */
+const Smuggle = Schema.Literals([
+  "dateFilter",
+  "dateGroup",
+  "hiddenWhere",
+  "hiddenSelection",
+  "shiftingText",
+  "shiftingParam",
+  "shiftingChunks",
+])
+
+const Smuggled = Actor.query("Smuggled", {
+  input: Smuggle,
+  output: Schema.Array(Schema.String),
+})
+
 const Everything = Actor.query("Everything", { output: Schema.Array(Schema.String) })
 
 const Notebook = Actor.make("Notebook", {
@@ -176,6 +192,7 @@ const Notebook = Actor.make("Notebook", {
     Catalog,
     Misgroup,
     Everything,
+    Smuggled,
   },
 })
 
@@ -187,6 +204,29 @@ const Shelf = Actor.make("Shelf", { key: Schema.String, tables: [labels], api: {
 
 // A plain object Drizzle would render as SQL; it would close the scope's parentheses.
 const sqlLookalike = { getSQL: () => drizzleSql.raw("'zzz')) or ((true") } as never
+
+const escape = "'zzz')) or ((true"
+
+// A date that also looks like SQL to Drizzle.
+const sqlDate = (text: string) =>
+  Object.assign(DateTime.toDateUtc(DateTime.makeUnsafe(0)), {
+    getSQL: () => drizzleSql.raw(text),
+  }) as never
+
+// SQL hidden from Object.keys, so a copy would drop it but the original would render.
+const hiddenSql = (text: string) =>
+  Object.defineProperty({}, "getSQL", { value: () => drizzleSql.raw(text) }) as never
+
+// Safe on the first reads, then raw SQL: only a value read once can be trusted.
+const shifting = <T>(safe: T, evil: T, safeReads: number) => {
+  let reads = 0
+
+  return () => {
+    reads += 1
+
+    return reads <= safeReads ? safe : evil
+  }
+}
 
 // Rows seen through the loosest static type, as code bypassing the declared table types would.
 const misuse = (loose: ScopedRows<AnyOwnedTable>, kind: typeof Misuse.Type) => {
@@ -324,6 +364,65 @@ const NotebookReads = Notebook.toQueryLayer(
           .from(notes)
           .where(drizzleSql`true or true`),
       )
+
+      return found.map((note) => note.body)
+    }),
+    Smuggled: Effect.fnUntraced(function* (kind) {
+      const read = yield* Notebook.Read
+
+      if (kind === "dateFilter") {
+        const found = yield* read.rows(notes).all({ where: { id: { eq: sqlDate(escape) } } })
+
+        return found.map((note) => note.body)
+      }
+
+      const found = yield* read.group((db) => {
+        const base = db.select({ body: notes.body }).from(notes)
+
+        switch (kind) {
+          case "dateGroup":
+            return base.where(drizzleSql`${sqlDate("true)) or ((true")}`)
+          case "hiddenWhere":
+            return base.where(drizzleSql`${hiddenSql("true)) or ((true")}`)
+          case "hiddenSelection":
+            return db
+              .select({
+                body: drizzleSql<string>`${hiddenSql("(select string_agg(body, ',') from conformance_notes)")}`.as(
+                  "body",
+                ),
+              })
+              .from(notes)
+          case "shiftingText": {
+            const chunk = new StringChunk("true")
+            const value = shifting("true", "true)) or ((true", 2)
+            Object.defineProperty(chunk, "value", { get: value })
+
+            return base.where(new SQL([chunk]))
+          }
+
+          case "shiftingParam": {
+            const param = new Param(true)
+            const value = shifting<unknown>(true, drizzleSql.raw("true)) or ((true"), 1)
+            Object.defineProperty(param, "value", { get: value })
+
+            return base.where(drizzleSql`${param}`)
+          }
+
+          case "shiftingChunks": {
+            const expression = new SQL([new StringChunk("true")])
+
+            const chunks = shifting(
+              [new StringChunk("true")],
+              [new StringChunk("true)) or ((true")],
+              1,
+            )
+
+            Object.defineProperty(expression, "queryChunks", { get: chunks })
+
+            return base.where(expression)
+          }
+        }
+      })
 
       return found.map((note) => note.body)
     }),
@@ -575,6 +674,18 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
             { note: "a", body: `a-${t}`, label: `x-${t}` },
             { note: "b", body: `b-${t}`, label: `y-${t}` },
           ])
+          const leaks: Record<string, ReadonlyArray<string>> = {}
+
+          for (const kind of Smuggle.literals) {
+            const exit = yield* reader.Smuggled(kind).pipe(Effect.exit)
+
+            leaks[kind] = Exit.isSuccess(exit)
+              ? exit.value.filter((body) => body.includes(other))
+              : []
+          }
+
+          expect(leaks).toEqual(Object.fromEntries(Smuggle.literals.map((kind) => [kind, []])))
+
           // A balanced "or true" stays inside the framework's parenthesized scope.
           const everything = yield* reader.Everything()
           expect(everything).toContain(`a-${t}`)

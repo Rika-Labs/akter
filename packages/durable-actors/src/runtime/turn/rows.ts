@@ -10,18 +10,24 @@ import {
   is,
   noopEncoder,
   Param,
-  Placeholder,
   relationsFilterToSQL,
   relationsOrderToSQL,
   SQL,
   sql as fragment,
   StringChunk,
   Table,
+  type DriverValueDecoder,
   type SQLChunk,
 } from "drizzle-orm"
 import * as PostgresDrizzle from "drizzle-orm/effect-postgres"
 import * as PgliteDrizzle from "drizzle-orm/effect-pglite"
-import { PgSelectBase, type PgSelectConfig } from "drizzle-orm/pg-core"
+import {
+  PgSelectBase,
+  type PgColumn,
+  type PgSelectConfig,
+  type SelectedFields,
+} from "drizzle-orm/pg-core"
+import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core"
 import { Cause, Effect, Option, Predicate } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
@@ -134,7 +140,8 @@ const copyOperand = (info: Ownership, value: Operand): Operand => {
 
   const prototype = Object.getPrototypeOf(value)
 
-  if (prototype === Date.prototype) return value
+  // A structured clone keeps only the time, dropping any own properties such as getSQL.
+  if (prototype === Date.prototype) return structuredClone(value as Date)
 
   if (value instanceof Uint8Array && (prototype === Uint8Array.prototype || Buffer.isBuffer(value)))
     return Uint8Array.from(value)
@@ -208,67 +215,6 @@ const checkOrder = (info: Ownership, order: Order<AnyOwnedTable>) => {
 const OPERATOR_TEXT =
   /^(?:\s+|[(),*=<>!~@&|]+|and|or|not|in|is|null|like|ilike|between|asc|desc|nulls|first|last|distinct|true|false|count|sum|avg|min|max|lower|upper|coalesce)*$/i
 
-/**
- * Checks one group expression and returns its parenthesis depth change. The
- * framework wraps its scope predicate and each expression in parentheses, so
- * an expression whose depth ever goes negative or does not return to zero
- * could close the scope's parentheses and escape it.
- */
-const checkExpression = (chunk: Expression): void => {
-  let depth = 0
-
-  const walk = (node: Expression): void => {
-    if (Array.isArray(node)) {
-      for (const item of node) walk(item)
-
-      return
-    }
-
-    if (is(node, StringChunk)) {
-      if (!OPERATOR_TEXT.test(node.value))
-        reject(`Group queries support Drizzle operators, not raw SQL: ${node.value}`)
-
-      for (const character of node.value) {
-        if (character === "(") depth += 1
-        else if (character === ")") depth -= 1
-
-        if (depth < 0) reject("Group query expressions must balance their parentheses")
-      }
-
-      return
-    }
-
-    if (is(node, SQL.Aliased)) return walk(node.sql)
-
-    if (is(node, SQL)) return walk(node.queryChunks)
-
-    if (is(node, Column)) {
-      if (reserved.includes(node.name))
-        reject("Group queries do not read or filter ownership columns")
-
-      return
-    }
-
-    if (is(node, Param)) {
-      if (node.encoder !== noopEncoder && !is(node.encoder, Column))
-        reject("Group query parameters are plain values")
-
-      copyOperand(GROUP, node.value as Operand)
-
-      return
-    }
-
-    if (isEntity(node))
-      reject("Group queries cannot reference tables, subqueries, names, or placeholders")
-
-    copyOperand(GROUP, node as Operand)
-  }
-
-  walk(chunk)
-
-  if (depth !== 0) reject("Group query expressions must balance their parentheses")
-}
-
 const GROUP: Ownership = {
   name: "a group query",
   schema: undefined,
@@ -278,11 +224,116 @@ const GROUP: Ownership = {
   owner: undefined,
 }
 
-const checkSelection = (fields: SQLChunk | Selection): void => {
-  if (is(fields, Column) || is(fields, SQL) || is(fields, SQL.Aliased)) checkExpression(fields)
-  else if (!isEntity(fields) && isRecord(fields))
-    for (const value of Object.values(fields as Selection)) checkSelection(value)
-  else reject("Group queries select columns and Drizzle expressions")
+/**
+ * Rebuilds a group query's expressions from values read once, so what was
+ * checked is exactly what renders: getters, proxies, and hidden `getSQL`
+ * members on the caller's objects never reach Drizzle. Columns resolve to the
+ * real columns of the query's owned tables, text must be operator words with
+ * balanced parentheses (the scope predicate is parenthesized beside it), and
+ * parameters carry copied plain data.
+ */
+type Decoded = SQL & { decoder: DriverValueDecoder<unknown, unknown> }
+
+const groupRebuilder = (tables: ReadonlyArray<AnyOwnedTable>) => {
+  const column = (node: Column): PgColumn => {
+    const table = (node as PgColumn & { readonly table: AnyOwnedTable }).table
+    const name = node.name
+
+    if (!tables.includes(table))
+      return reject("Group queries reference columns of the tables they select from or join")
+
+    if (reserved.includes(name))
+      return reject("Group queries do not read or filter ownership columns")
+
+    const real = Object.values(getTableColumns(table)).find((candidate) => candidate.name === name)
+
+    return real ?? reject(`Unknown column ${name}`)
+  }
+
+  const expression = (root: Expression): Expression => {
+    let depth = 0
+
+    const walk = (node: Expression): Expression => {
+      if (node === undefined) return undefined
+
+      if (Array.isArray(node)) return node.map(walk)
+
+      if (is(node, StringChunk)) {
+        const text = String(node.value)
+
+        if (!OPERATOR_TEXT.test(text))
+          reject(`Group queries support Drizzle operators, not raw SQL: ${text}`)
+
+        for (const character of text) {
+          if (character === "(") depth += 1
+          else if (character === ")") depth -= 1
+
+          if (depth < 0) reject("Group query expressions must balance their parentheses")
+        }
+
+        return new StringChunk(text)
+      }
+
+      if (is(node, SQL.Aliased)) {
+        const alias = String(node.fieldAlias)
+
+        return new SQL.Aliased(walk(node.sql) as SQL, alias)
+      }
+
+      if (is(node, SQL)) {
+        const decoder = (node as Decoded).decoder
+        const rebuilt = new SQL(walk([...node.queryChunks]) as Array<SQLChunk>) as Decoded
+
+        // A decoder only maps result values in JavaScript; a column decoder is resolved.
+        rebuilt.decoder = is(decoder, Column)
+          ? column(decoder)
+          : { mapFromDriverValue: decoder.mapFromDriverValue.bind(decoder) }
+
+        return rebuilt
+      }
+
+      if (is(node, Column)) return column(node)
+
+      if (is(node, Param)) {
+        const encoder = node.encoder
+        const value = copyOperand(GROUP, node.value as Operand)
+
+        if (encoder === noopEncoder) return new Param(value)
+
+        if (is(encoder, Column)) return new Param(value, column(encoder))
+
+        return reject("Group query parameters are plain values")
+      }
+
+      if (isEntity(node))
+        return reject("Group queries cannot reference tables, subqueries, names, or placeholders")
+
+      return copyOperand(GROUP, node as Operand) as Expression
+    }
+
+    const rebuilt = walk(root)
+
+    if (depth !== 0) reject("Group query expressions must balance their parentheses")
+
+    return rebuilt
+  }
+
+  const selection = (fields: SQLChunk | Selection): SQLChunk | Selection => {
+    if (is(fields, Column)) return column(fields)
+
+    if (is(fields, SQL) || is(fields, SQL.Aliased)) return expression(fields) as SQLChunk
+
+    if (isEntity(fields) || !isRecord(fields))
+      return reject("Group queries select columns and Drizzle expressions")
+
+    const copy: Record<string, SQLChunk | Selection> = {}
+
+    for (const key of Object.keys(fields)) copy[key] = selection((fields as Selection)[key]!)
+
+    return copy
+  }
+
+  return { expression, selection }
 }
 
 export const bindTables = Effect.fnUntraced(function* (
@@ -450,17 +501,29 @@ export const bindTables = Effect.fnUntraced(function* (
     } satisfies ScopedRows<AnyOwnedTable> as ScopedRows<AnyOwnedTable>
   }
 
-  const inGroup = (table: PgSelectConfig["table"]) => {
-    if (!is(table, Table) || ownership(table) === undefined)
-      return reject("Group queries read owned tables only")
-
+  const inGroup = (table: AnyOwnedTable) => {
     const columns = getTableColumns(table)
 
     return and(eq(columns["routing_key"]!, routingKey), eq(columns["tenant_id"]!, ref.tenant))
   }
 
-  const group: Group = (build) =>
-    run(() => {
+  const ownedTable = (table: PgSelectConfig["table"]): AnyOwnedTable =>
+    is(table, Table) && ownership(table) !== undefined
+      ? (table as AnyOwnedTable)
+      : reject("Group queries read owned tables only, not aliases or subqueries")
+
+  const bound = (value: PgSelectConfig["limit"]) => {
+    if (value === undefined) return undefined
+
+    if (!Predicate.isNumber(value)) return reject("Group query limits are numbers")
+
+    return value
+  }
+
+  // The caller's select is only read, once per part; the query that runs is
+  // built fresh from the framework's own client.
+  const group: Group = <A>(build: Parameters<Group>[0]) =>
+    run((): Effect.Effect<A, EffectDrizzleQueryError> => {
       const query = build({
         select: db.select.bind(db),
         selectDistinct: db.selectDistinct.bind(db),
@@ -468,7 +531,9 @@ export const bindTables = Effect.fnUntraced(function* (
 
       if (!is(query, PgSelectBase)) return reject("A group query is a Drizzle select")
 
-      const { config } = query as typeof query & { readonly config: PgSelectConfig }
+      const config: PgSelectConfig = {
+        ...(query as typeof query & { readonly config: PgSelectConfig }).config,
+      }
 
       if ((config.withList?.length ?? 0) > 0) reject("Group queries cannot use WITH")
 
@@ -477,28 +542,60 @@ export const bindTables = Effect.fnUntraced(function* (
       if (config.lockingClause !== undefined)
         reject("Group queries are read-only and take no locks")
 
-      for (const bound of [config.limit, config.offset])
-        if (is(bound, Placeholder)) reject("Group query limits are numbers")
+      if (config.comment !== undefined) reject("Group queries take no SQL comments")
 
-      checkSelection(config.fields as Selection)
+      if (config.distinct !== undefined && config.distinct !== false && config.distinct !== true)
+        reject("Group queries support selectDistinct, not DISTINCT ON")
 
-      for (const expression of [config.where, config.having]) checkExpression(expression)
+      const from = ownedTable(config.table)
 
-      for (const expression of [...(config.orderBy ?? []), ...(config.groupBy ?? [])])
-        checkExpression(expression)
+      const joins = [...(config.joins ?? [])].map((join) => {
+        const joinType = join.joinType
+        const lateral = join.lateral
 
-      if (config.distinct instanceof Object) checkExpression(config.distinct.on)
-
-      config.where = and(inGroup(config.table), config.where)
-
-      for (const join of config.joins ?? []) {
-        if ((join.joinType !== "inner" && join.joinType !== "left") || join.lateral === true)
+        if ((joinType !== "inner" && joinType !== "left") || lateral === true)
           reject("Group queries support inner and left joins")
-        checkExpression(join.on)
-        join.on = and(join.on, inGroup(join.table))
+
+        return { joinType, table: ownedTable(join.table), on: join.on }
+      })
+
+      const rebuild = groupRebuilder([from, ...joins.map((join) => join.table)])
+      const fields = rebuild.selection(config.fields as Selection) as SelectedFields
+      const where = rebuild.expression(config.where) as SQL | undefined
+      const having = rebuild.expression(config.having) as SQL | undefined
+      const orderBy = rebuild.expression([...(config.orderBy ?? [])]) as Array<SQL>
+      const groupBy = rebuild.expression([...(config.groupBy ?? [])]) as Array<SQL>
+      const limit = bound(config.limit)
+      const offset = bound(config.offset)
+
+      let fresh = (config.distinct === true ? db.selectDistinct(fields) : db.select(fields))
+        .from(from)
+        .$dynamic()
+
+      for (const join of joins) {
+        const on = and(rebuild.expression(join.on) as SQL | undefined, inGroup(join.table))
+
+        fresh =
+          join.joinType === "inner"
+            ? fresh.innerJoin(join.table, on)
+            : fresh.leftJoin(join.table, on)
       }
 
-      return query
+      fresh = fresh.where(and(inGroup(from), where))
+
+      if (groupBy.length > 0) fresh = fresh.groupBy(...groupBy)
+
+      if (having !== undefined) fresh = fresh.having(having)
+
+      if (orderBy.length > 0) fresh = fresh.orderBy(...orderBy)
+
+      if (limit !== undefined) fresh = fresh.limit(limit)
+
+      if (offset !== undefined) fresh = fresh.offset(offset)
+
+      const rows: Effect.Effect<unknown, EffectDrizzleQueryError> = fresh
+
+      return rows as Effect.Effect<A, EffectDrizzleQueryError>
     })
 
   return { rows, group } satisfies TableAccess
