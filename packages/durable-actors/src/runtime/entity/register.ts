@@ -29,14 +29,15 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
     entity,
     Effect.gen(function* () {
       const { entityId } = yield* Entity.CurrentAddress
-      resident.set(entityId, (resident.get(entityId) ?? 0) + 1)
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          const count = resident.get(entityId)! - 1
+      yield* Effect.acquireRelease(
+        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
+        () =>
+          Effect.sync(() => {
+            const count = resident.get(entityId)! - 1
 
-          if (count === 0) resident.delete(entityId)
-          else resident.set(entityId, count)
-        }),
+            if (count === 0) resident.delete(entityId)
+            else resident.set(entityId, count)
+          }),
       )
       const cache = emptyActivationCache()
 

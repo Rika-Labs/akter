@@ -206,7 +206,12 @@ export const layer = (options: Options) => {
                 reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
               })
 
-            let rejected: ActorError | undefined
+            const entityId = yield* Schema.encodeEffect(
+              Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+            )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie)
+
+            const isResident = () => residency.get(request.ref.actor)?.(entityId) === true
+            let rejectedAtCapacity = false
 
             return yield* Effect.gen(function* () {
               yield* authorize(request)
@@ -224,10 +229,6 @@ export const layer = (options: Options) => {
                 return retained
               }
 
-              const entityId = yield* Schema.encodeEffect(
-                Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-              )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie)
-
               const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(
                 entityId,
               )
@@ -235,11 +236,9 @@ export const layer = (options: Options) => {
               yield* (yield* TurnHooks).at("beforeDelivery", request)
 
               // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
-              const deliver = Effect.suspend(() => {
-                rejected = undefined
-
-                return client.Execute(request).pipe(Effect.forkIn(scope))
-              }).pipe(
+              const deliver = Effect.suspend(() =>
+                client.Execute(request).pipe(Effect.forkIn(scope)),
+              ).pipe(
                 Effect.flatMap(Fiber.join),
                 Effect.catchCause((cause) => {
                   const failure = Cause.findErrorOption(cause)
@@ -253,15 +252,12 @@ export const layer = (options: Options) => {
                     Option.isSome(failure) &&
                     Schema.is(ClusterError.MailboxFull)(failure.value)
                   ) {
-                    if (
-                      registration.policy.mailboxCapacity !== "unbounded" &&
-                      residency.get(request.ref.actor)?.(entityId) === true
-                    )
+                    if (registration.policy.mailboxCapacity !== "unbounded" && isResident())
                       return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
 
-                    rejected = ActorError.make({ reason: RunnerAtCapacity.make({}) })
+                    rejectedAtCapacity = true
 
-                    return Effect.fail(rejected)
+                    return Effect.fail(ActorError.make({ reason: RunnerAtCapacity.make({}) }))
                   }
 
                   // Direct commands are not persisted. A restarted activation
@@ -295,12 +291,17 @@ export const layer = (options: Options) => {
             }).pipe(
               Effect.timeoutOrElse({
                 duration: registration.policy.deliveryMs,
-                // Waiting out a capacity rejection, no attempt is in flight, so
-                // the more precise answer is that the runner never admitted it.
+                // A turn runs only in a resident activation. After a capacity
+                // rejection with none resident, the latest attempt was not
+                // admitted; an earlier one may still have committed.
                 orElse: () =>
                   Effect.fail(
-                    rejected ??
-                      ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
+                    ActorError.make({
+                      reason:
+                        rejectedAtCapacity && !isResident()
+                          ? RunnerAtCapacity.make({})
+                          : Timeout.make({ commandId: request.commandId }),
+                    }),
                   ),
               }),
             )

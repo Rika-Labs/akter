@@ -1,26 +1,43 @@
-import { Clock, Crypto, Effect, Exit, Layer, Option, Schema } from "effect"
-import { Actor, ActorError, Actors, RunnerAtCapacity } from "../../index.ts"
+import {
+  Clock,
+  Crypto,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Schema,
+  type Scope,
+} from "effect"
+import { Actor, ActorError, Actors, MailboxFull, RunnerAtCapacity } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 const Touch = Actor.command("Touch", { output: Schema.Finite })
 
+const Hold = Actor.command("Hold")
+
+let hold: Effect.Effect<void> = Effect.void
+
 const count = Actor.state({
   count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
+// Long enough that a caller admitted behind PGlite's single connection
+// still commits before its deadline on a loaded machine.
 const Unbounded = Actor.make("CapacityUnbounded", {
   key: Schema.NonEmptyString,
   state: count,
   api: { Touch },
-  policy: { deliveryTimeout: "1 second" },
+  policy: { deliveryTimeout: "5 seconds" },
 })
 
 const Bounded = Actor.make("CapacityBounded", {
   key: Schema.NonEmptyString,
   state: count,
-  api: { Touch },
-  policy: { deliveryTimeout: "1 second", mailboxCapacity: 4 },
+  api: { Touch, Hold },
+  policy: { deliveryTimeout: "5 seconds", mailboxCapacity: 1 },
 })
 
 // Cluster's idle sweep runs every 5 seconds at its fastest, so a waiting
@@ -31,6 +48,9 @@ const Sleepy = Actor.make("CapacitySleepy", {
   api: { Touch },
   policy: { deliveryTimeout: "20 seconds", hibernateAfter: "1 second" },
 })
+
+// Default policies: it never hibernates during a case, so it keeps its slot.
+const WarmUp = Actor.make("CapacityWarmUp", { key: Schema.NonEmptyString, api: { Touch } })
 
 const CapacityLive = Layer.mergeAll(
   Sleepy.toLayer(
@@ -61,15 +81,21 @@ const CapacityLive = Layer.mergeAll(
 
         return turn.state.count
       }),
+      Hold: () => Effect.suspend(() => hold),
     }),
   ),
+  WarmUp.toLayer(Effect.succeed({ Touch: () => Effect.succeed(0) })),
 )
 
-/** A runtime of its own on a fresh database, so only these actors hold resident slots. */
+/**
+ * A runtime of its own on a fresh database, so only these actors hold resident
+ * slots. A runner on Postgres takes seconds to acquire its shards, so one
+ * warm-up command with a long delivery timeout runs first, in a slot of its own.
+ */
 const withCapacity = <A, E>(
   environment: ConformanceEnvironment,
   maxResidentActors: number,
-  body: Effect.Effect<A, E, Actors | ActorTest>,
+  body: Effect.Effect<A, E, Actors | ActorTest | Scope.Scope>,
 ) =>
   environment.run(
     Effect.gen(function* () {
@@ -81,14 +107,20 @@ const withCapacity = <A, E>(
       const services = yield* Layer.build(
         Layer.fresh(
           CapacityLive.pipe(
-            Layer.provideMerge(ActorTest.layer({ database, maxResidentActors })),
+            Layer.provideMerge(
+              ActorTest.layer({ database, maxResidentActors: maxResidentActors + 1 }),
+            ),
             Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
             Layer.orDie,
           ),
         ),
       )
 
-      return yield* body.pipe(Effect.provideContext(services))
+      return yield* WarmUp.get("warm-up").pipe(
+        Effect.flatMap((actor) => actor.Touch()),
+        Effect.andThen(body),
+        Effect.provideContext(services),
+      )
     }),
   )
 
@@ -145,7 +177,7 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
           for (const { id, exit, elapsedMs } of rejected) {
             expect(admitted.has(id)).toBe(false)
             // Retried for the whole delivery timeout before giving up.
-            expect(elapsedMs >= 900).toBe(true)
+            expect(elapsedMs >= 4500).toBe(true)
             expect(Exit.findErrorOption(exit)).toMatchObject({
               value: { reason: RunnerAtCapacity.make({}), isRetryable: true },
             })
@@ -169,6 +201,34 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* (yield* Bounded.get("resident")).Touch()).toBe(1)
           const exit = yield* (yield* Bounded.get("waiting")).Touch().pipe(Effect.exit)
           expect(reasonOf(exit)).toBe("RunnerAtCapacity")
+        }),
+      ),
+  },
+  {
+    name: "a resident bounded actor with a full mailbox still reports MailboxFull",
+    // The held turn keeps its transaction open, which blocks PGlite's only connection.
+    requiresIndependentConnections: true,
+    timeoutMs: 30_000,
+    run: ({ environment, expect }) =>
+      withCapacity(
+        environment,
+        10,
+        Effect.gen(function* () {
+          const actor = yield* Bounded.get("busy")
+          const reached = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          hold = Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
+
+          const held = yield* actor.Hold().pipe(Effect.forkScoped)
+          yield* Deferred.await(reached)
+          const exit = yield* actor.Touch().pipe(Effect.exit)
+          expect(Exit.findErrorOption(exit)).toMatchObject({
+            value: { reason: MailboxFull.make({}) },
+          })
+          yield* Deferred.succeed(release, undefined)
+          // Only the second caller is under test; the held one may pass its own deadline.
+          yield* Fiber.await(held)
+          hold = Effect.void
         }),
       ),
   },

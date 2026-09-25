@@ -142,7 +142,7 @@ None of the four slices has its own scenario yet. Outbox relay latency, timers d
 
    Callers queue for a connection while pooled connections wait on the runtime, so the pool amplifies bottleneck 1 rather than replacing it.
 
-4. **The runner-wide activation cap.** Effect Cluster admits at most 10,000 resident entities per runner by default (`maxResidentEntities`), and the framework doesn't configure it.
+4. **The runner-wide activation cap.** Effect Cluster admits at most 10,000 resident entities per runner by default (`maxResidentEntities`), and the framework didn't configure it before ADR 0019.
    - **Failures:** touching 100,000 actors within the 60-second `hibernateAfter` window failed 8,241 commands with `MailboxFull`. The repeat run failed 10,085 and the merge 11,680.
    - **Contract gap:** the actor's policy leaves its mailbox unbounded, and the handle's types don't list `MailboxFull` for an unbounded mailbox. Tracked in #39, and resolved by [ADR 0019](../decisions/0019-runner-capacity-and-pool-size.md). See "Runner capacity and pool size" below.
    - **Effect on later turns:** because of the cap, 92% of steady-state turns over 100k actors started a new activation.
@@ -169,7 +169,7 @@ None of the four slices has its own scenario yet. Outbox relay latency, timers d
 | steady-10000, pool 25 (p99) | 901 ms                         | 495 ms             | 482 ms             |
 | steady-10000, pool 50 (p99) | 228 ms                         | 212 ms             | 242 ms             |
 
-With every actor resident, first touch of 100k actors grew the heap by 1.05 GiB, about 11 KiB per activation. `steady-100000` still started a new activation for 89% of its turns. First touch took about 400 seconds, so most actors had already hibernated under the 60-second `hibernateAfter`. At 10k actors, 50 connections cut p99 by more than half against 10 connections in all three runs, and 25 connections gave no consistent gain. That's why the default is 50.
+First touch of 100k actors grew the heap by 1.0–1.8 GiB across the two runs. The run without the change grew it by 0.9 GiB, even though at most 10,000 actors were resident. This fits finding 5: memory follows actors touched, not actors resident. `steady-100000` still started a new activation for 89% of its turns. First touch took about 400 seconds, so most actors had already hibernated under the 60-second `hibernateAfter`. At 10k actors, 50 connections cut p99 by more than half against 10 connections in all three runs, and 25 connections gave no consistent gain. That's why the default is 50.
 
 ### Recommendations (not applied)
 

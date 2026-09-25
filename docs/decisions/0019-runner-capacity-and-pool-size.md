@@ -14,7 +14,7 @@ Cluster uses the same error for both causes: a resident entity whose mailbox is 
 
 - `Actors.layer` accepts `maxResidentActors`, a positive integer that defaults to 10,000. It sets Cluster's `maxResidentEntities`. The name follows [API naming](../api/naming.md): it counts actors, not Cluster entities, and it describes a runner, so it's a layer option, not an actor policy.
 - A new `ActorError` reason, `RunnerAtCapacity`, reports that the runner couldn't start an activation for the command, so that attempt wasn't admitted. `isRetryable` is true. Every command handle's error type includes it. Queries don't include it, because they start no activation.
-- The handle retries `RunnerAtCapacity` with the same command id and the same capped exponential backoff as `ActorUnavailable`, within `deliveryTimeout`. If the timeout passes while the handle is waiting out a capacity rejection, the caller receives `RunnerAtCapacity`. If an attempt is in flight, the caller receives `Timeout`, as before.
+- The handle retries `RunnerAtCapacity` with the same command id and the same capped exponential backoff as `ActorUnavailable`, within `deliveryTimeout`. When the timeout passes, the caller receives `RunnerAtCapacity` if an attempt was rejected at capacity and the actor has no resident activation. Otherwise it receives `Timeout`, as before. An earlier version decided this by whether an attempt was in flight, and CI showed that this depends on timing.
 - The runtime maps Cluster's `MailboxFull` to `MailboxFull` only when the actor has a finite `mailboxCapacity` and its activation is resident. Each actor type's registration counts its resident activations for this check. Every other case is `RunnerAtCapacity`, so an unbounded actor can never report `MailboxFull`.
 - `Database.postgres` defaults `maxConnections` to 50. An explicit value still wins.
 
@@ -31,6 +31,7 @@ Cluster uses the same error for both causes: a resident entity whose mailbox is 
 - A caller over capacity now waits up to `deliveryTimeout` (30 s by default) before failing, instead of failing at once. That's intended: slots free as idle actors hibernate. A deployment that routinely exceeds the limit needs a higher limit, more memory, or more runners.
 - `RunnerAtCapacity` and `Timeout` both leave an earlier attempt with the same command id possibly committed, so callers retry with the same id.
 - A pool of 50 opens connections only as load needs them, and it releases idle ones after 10 seconds. A deployment with several runners must keep `runners × maxConnections` below the server's `max_connections`, or use a pooler.
+- A bounded actor can still receive `MailboxFull` for a capacity rejection in one narrow window. Cluster removes a hibernating activation from its map before it closes the handler scope where the count drops. A command sent to that actor in between is rejected for capacity while the actor still counts as resident. Cluster offers no hook to close the window, and the command can be retried like any `MailboxFull`. Unbounded actors are unaffected.
 - Two `Actors.layer` builds that share a layer memo map also share Cluster's `Sharding` layer, so the second build's `maxResidentActors` has no effect. The capacity conformance cases build their runtime with `Layer.fresh`. Applications build one runtime.
 
 ## Evidence and revisit conditions

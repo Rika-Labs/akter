@@ -32,9 +32,10 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `retries the same command after execution timeout without a partial commit`
 - `retries the same command after retryable SQL defect without a partial commit`
 - `delivery timeout stops waiting while the admitted command commits once`
-- `over-capacity load on an unbounded mailbox fails RunnerAtCapacity after deliveryTimeout, never MailboxFull`: 64 concurrent callers over 32 actors with `maxResidentActors: 8`. Exactly 8 actors commit. Every other caller receives a retryable `RunnerAtCapacity` after its full delivery timeout, and no rejected actor has a receipt. In [`conformance/capacity.ts`](../../packages/durable-actors/src/testing/conformance/capacity.ts).
+- `over-capacity load on an unbounded mailbox fails RunnerAtCapacity after deliveryTimeout, never MailboxFull`: 64 concurrent callers over 32 actors with 8 free activation slots. A warm-up actor holds one more slot while the runner acquires its shards. Exactly 8 actors commit. Every other caller receives a retryable `RunnerAtCapacity` after its full delivery timeout, and no rejected actor has a receipt. In [`conformance/capacity.ts`](../../packages/durable-actors/src/testing/conformance/capacity.ts).
 - `a bounded mailbox that is not resident reports RunnerAtCapacity, not MailboxFull`
-- `a caller over capacity succeeds on retry once an idle actor hibernates`: `maxResidentActors: 2`. The third actor's command is retried until Cluster's idle sweep evicts one of the first two, and then it commits once.
+- `a resident bounded actor with a full mailbox still reports MailboxFull` (Postgres only, because the held turn occupies PGlite's single connection)
+- `a caller over capacity succeeds on retry once an idle actor hibernates`: 2 free slots. The third actor's command is retried until Cluster's idle sweep evicts one of the first two, and then it commits once.
 - `commits state and receipt, replays an identical command effect, and keeps its generation`
 - `rolls back declared failures and replays their class and payload without executing again`
 - `deduplicates concurrent deliveries and rejects changed input or command`
