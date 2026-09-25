@@ -41,12 +41,14 @@ const runRelay = () =>
     yield* seed
     const delivered: Array<Request> = []
 
-    const relay = yield* outboxRelay((request) =>
-      Effect.sync(() => {
-        delivered.push(request)
+    const relay = yield* outboxRelay(
+      (request) =>
+        Effect.sync(() => {
+          delivered.push(request)
 
-        return Outcome.cases.Success.make({ value: "{}" })
-      }),
+          return Outcome.cases.Success.make({ value: "{}" })
+        }),
+      () => undefined,
     )
 
     const fiber = yield* relay.run.pipe(Effect.forkChild)

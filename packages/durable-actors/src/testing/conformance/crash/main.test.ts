@@ -56,7 +56,9 @@ describe("process death with Postgres", () => {
                 { migration_id: 3 },
                 { migration_id: 4 },
                 { migration_id: 5 },
+                { migration_id: 6 },
                 { migration_id: 7 },
+                { migration_id: 8 },
               ])
               expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
                 { receipts: 0 },
@@ -130,12 +132,13 @@ describe("process death with Postgres", () => {
 
             const before = yield* Effect.promise(() =>
               pool.query(
-                "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM actor_state) AS state",
+                "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM actor_state) AS state, (SELECT count(*)::int FROM actor_events) AS events",
               ),
             )
 
+            const committed = point === "afterCommit" ? 1 : 0
             expect(before.rows).toEqual([
-              { receipts: point === "afterCommit" ? 1 : 0, state: point === "afterCommit" ? 1 : 0 },
+              { receipts: committed, state: committed, events: committed },
             ])
             expect(
               (yield* Effect.promise(() =>
@@ -150,13 +153,15 @@ describe("process death with Postgres", () => {
                 .split("\n")
                 .filter((line) => line.startsWith("RESULT "))
                 .map((line) => line.slice("RESULT ".length)),
-            ).toEqual(['{"value":47,"receipts":1,"state":"47"}'])
+            ).toEqual(['{"value":47,"receipts":1,"events":1,"state":"47"}'])
 
             const after = yield* Effect.promise(() =>
-              pool.query("SELECT count(*)::int AS receipts FROM actor_receipts"),
+              pool.query(
+                "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM actor_events) AS events",
+              ),
             )
 
-            expect(after.rows).toEqual([{ receipts: 1 }])
+            expect(after.rows).toEqual([{ receipts: 1, events: 1 }])
           }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
         ),
       25_000,

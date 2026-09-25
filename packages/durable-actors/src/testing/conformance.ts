@@ -16,8 +16,9 @@ import { Actor, Actors, CurrentCaller, User } from "../index.ts"
 import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
-import { payloadHash } from "../runtime/turn/receipt.ts"
 import { ActorTest } from "./actor-test.ts"
+import { admissionConformance, admissionLayer, payloadHash } from "./conformance/admission.ts"
+import { capacityConformance } from "./conformance/capacity.ts"
 import { reducerConformance, reducerLayer } from "./conformance/reducers.ts"
 import {
   blobsConformance,
@@ -32,18 +33,32 @@ import {
   type TablesFixture,
 } from "./conformance/tables.ts"
 import {
+  eventsConformance,
+  eventsFixture,
+  eventsLayer,
+  eventsQueryLayer,
+  type EventsFixture,
+} from "./conformance/events.ts"
+import {
   defectRecorder,
   foundationConformance,
   foundationFixture,
   foundationLayer,
   type FoundationFixture,
 } from "./foundation.ts"
+import { heapConformance } from "./conformance/heap.ts"
 import {
   outboxConformance,
   outboxFixture,
   outboxLayer,
   type OutboxFixture,
 } from "./conformance/outbox.ts"
+import {
+  effectsConformance,
+  effectsFixture,
+  effectsLayer,
+  type EffectsFixture,
+} from "./conformance/effects.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -125,8 +140,10 @@ export interface ConformanceBackend {
 /** Mutable per-suite fixture shared by the fixture handlers and the cases. */
 export interface ConformanceFixture {
   readonly foundation: FoundationFixture
+  readonly events: EventsFixture
   readonly outbox: OutboxFixture
   readonly tables: TablesFixture
+  readonly effects: EffectsFixture
   readonly blobs: BlobsFixture
   executions: number
   queries: number
@@ -242,8 +259,10 @@ const CounterLive = (fixture: ConformanceFixture) =>
 
 const makeFixture = (): ConformanceFixture => ({
   foundation: foundationFixture(),
+  events: eventsFixture(),
   outbox: outboxFixture(),
   tables: tablesFixture(),
+  effects: effectsFixture(),
   blobs: blobsFixture(),
   executions: 0,
   queries: 0,
@@ -263,9 +282,14 @@ const makeFixture = (): ConformanceFixture => ({
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
+  ...admissionConformance,
+  ...capacityConformance,
+  ...heapConformance,
+  ...eventsConformance,
   ...reducerConformance,
   ...outboxConformance,
   ...tablesConformance,
+  ...effectsConformance,
   ...blobsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
@@ -278,7 +302,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
           const increment = counter.Increment(7)
           expect(yield* increment).toBe(7)
@@ -288,7 +314,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: "1",
             state: { count: 10 },
             receipts: 2,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
         }),
       ),
@@ -312,7 +340,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: "1",
             state: { count: 5 },
             receipts: 2,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
         }),
       ),
@@ -478,7 +508,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
           yield* Fiber.interrupt(waiter)
           yield* pause.release
@@ -555,7 +587,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
           expect(yield* counter.Increment(4)).toBe(4)
           yield* test.invalidate(counter.ref)
@@ -654,7 +688,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
         }).pipe(
           Effect.ensuring(
@@ -681,7 +717,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: "3",
             state: { count: 13 },
             receipts: 2,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
         }),
       ),
@@ -702,7 +740,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
           yield* counter.Escape()
           const escapedExit = yield* fixture.escaped.pipe(Effect.exit)
@@ -749,7 +789,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
             outbox: 0,
+            effects: 0,
           })
         }),
       ),
@@ -1144,7 +1186,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
                   generation: undefined,
                   state: {},
                   receipts: 0,
+                  events: 0,
                   outbox: 0,
+                  effects: 0,
                 })
                 expect(yield* counter.Increment(6)).toBe(6)
                 expect(yield* test.inspect(counter.ref)).toMatchObject({
@@ -1196,9 +1240,13 @@ export const describeConformance = (options: {
     CounterLive(fixture),
     CounterReads(fixture),
     foundationLayer(fixture.foundation),
+    admissionLayer,
+    eventsLayer(fixture.events),
+    eventsQueryLayer(fixture.events),
     reducerLayer,
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),
+    effectsLayer(fixture.effects),
     blobsLayer(fixture.blobs),
   )
 

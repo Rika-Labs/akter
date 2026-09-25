@@ -4,7 +4,9 @@ import { InTurn } from "./handles/intents.ts"
 import { CurrentCommandId } from "./identity/command.ts"
 import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
+import { Event } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
+import { DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
 import { blob } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
@@ -13,7 +15,10 @@ export const Actor = {
   make: Definition.make,
   command: Command.make,
   query: Query.make,
+  Event: Event.make,
   reducer: Reducer.make,
+  effect,
+  DeadLetter,
   state: ActorStates.make,
   table,
   blob,
@@ -62,11 +67,18 @@ export {
   Timeout,
   NotCreated,
   MailboxFull,
+  RunnerAtCapacity,
 } from "./errors/actor.ts"
 
-export type { CommandContext, QueryContext, Turn } from "./contexts/command.ts"
+export { RetentionGap, UnknownCursor } from "./errors/events.ts"
 
-export type { Handle, Intents } from "./actor/definition.ts"
+export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/command.ts"
+
+export type { ExecutorContext, PerformContext } from "./contexts/effect.ts"
+
+export type { EffectClass, EffectPolicy } from "./members/effect.ts"
+
+export type { Executors, Handle, Intents } from "./actor/definition.ts"
 
 export type { Commutative, Reducer } from "./members/reducer.ts"
 

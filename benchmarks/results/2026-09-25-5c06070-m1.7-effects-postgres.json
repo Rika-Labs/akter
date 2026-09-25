@@ -1,0 +1,221 @@
+{
+  "schema": 2,
+  "label": "m1.7-effects",
+  "note": "M1.7 effect round trip on feat/15-effects, stacked on feat/14-outbox",
+  "profile": "full",
+  "startedAt": "2026-09-25T05:37:25.150Z",
+  "finishedAt": "2026-09-25T05:37:47.878Z",
+  "git": {
+    "sha": "5c06070da48651f28c388107b188164c35d45f87",
+    "shortSha": "5c06070",
+    "branch": "feat/15-effects",
+    "mainBase": "76ac433e261d32e2590d1c8bfb7cb58cb1e371bc",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.3.14",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "AMD EPYC",
+    "logicalCpus": 4,
+    "memoryGiB": 15.6,
+    "os": "Linux 6.1.158+",
+    "hostname": "cox.local",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "effect-round-trip",
+      "description": "Perform an effect, run its executor after commit, and commit its onSuccess turn: one caller for latency, then 64 callers on 64 actors.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 9432,
+          "throughput": 106,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 9.428,
+            "min": 5.965,
+            "p50": 9.313,
+            "p90": 11.349,
+            "p95": 12.104,
+            "p99": 14.878,
+            "max": 25.465
+          },
+          "statementsPerOperation": 29.01,
+          "statements": [
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now",
+              "calls": 8000,
+              "meanMs": 0.004
+            },
+            {
+              "query": "SELECT $1::jsonb::text AS canonical",
+              "calls": 4000,
+              "meanMs": 0.002
+            },
+            {
+              "query": "SELECT caller_key, command, payload_hash, outcome FROM actor_receipts WHERE routing_key = $1 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4 AND comman",
+              "calls": 2000,
+              "meanMs": 0.011
+            },
+            {
+              "query": "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)",
+              "calls": 2000,
+              "meanMs": 0.007
+            },
+            {
+              "query": "SELECT o.routing_key::text AS routing_key, o.intent_id, o.kind, o.attempts, o.last_error, o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.t",
+              "calls": 2000,
+              "meanMs": 0.151
+            },
+            {
+              "query": "INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms) VALUES ($1, $2,",
+              "calls": 2000,
+              "meanMs": 0.035
+            },
+            {
+              "query": "SELECT g.generation::text AS generation, g.created, r.caller_key, r.command, r.payload_hash, r.outcome FROM actor_generations g LEFT JOIN actor_receipts r ON r.",
+              "calls": 2000,
+              "meanMs": 0.018
+            },
+            {
+              "query": "INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+              "calls": 2000,
+              "meanMs": 0.014
+            },
+            {
+              "query": "UPDATE actor_outbox SET kind = 'intent', command = $1, payload = $2, due_at_ms = $3, attempts = 0, last_error = NULL, ambiguous = false WHERE routing_key = $4 A",
+              "calls": 1000,
+              "meanMs": 0.041
+            },
+            {
+              "query": "DELETE FROM actor_outbox WHERE routing_key = $1 AND intent_id = $2",
+              "calls": 1000,
+              "meanMs": 0.019
+            },
+            {
+              "query": "UPDATE actor_outbox SET attempts = $1, due_at_ms = $2, ambiguous = true, last_error = $3 WHERE routing_key = $4 AND intent_id = $5 AND kind = 'effect' AND attem",
+              "calls": 1000,
+              "meanMs": 0.048
+            },
+            {
+              "query": "INSERT INTO actor_state (routing_key, tenant_id, actor_type, actor_id, key, value) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (routing_key, tenant_id, actor_ty",
+              "calls": 1000,
+              "meanMs": 0.024
+            },
+            {
+              "query": "INSERT INTO actor_outbox (\"routing_key\",\"intent_id\",\"kind\",\"bucket\",\"due_at_ms\",\"tenant_id\",\"actor_type\",\"actor_id\",\"timer_key\",\"target_type\",\"target_id\",\"comma",
+              "calls": 1000,
+              "meanMs": 0.061
+            },
+            {
+              "query": "BEGIN",
+              "calls": 3,
+              "meanMs": 0.001
+            },
+            {
+              "query": "COMMIT",
+              "calls": 3,
+              "meanMs": 0.001
+            },
+            {
+              "query": "SAVEPOINT $1",
+              "calls": 3,
+              "meanMs": 0.001
+            }
+          ],
+          "activity": {
+            "samples": 366,
+            "connections": {
+              "idle:Client/ClientRead": 6.68,
+              "idle in transaction:Client/ClientRead": 0.26,
+              "active": 0.17,
+              "idle": 0.08,
+              "active:IO/WalSync": 0.04,
+              "idle in transaction": 0.03,
+              "active:Client/ClientRead": 0.02,
+              "active:IO/WalWrite": 0.01
+            }
+          },
+          "cpu": {
+            "client": 87.2,
+            "server": 29.1
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "actors": 64,
+            "workers": 64
+          },
+          "operations": 2284,
+          "elapsedMs": 10132,
+          "throughput": 225.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2284,
+            "mean": 282.297,
+            "min": 126.486,
+            "p50": 276.776,
+            "p90": 344.595,
+            "p95": 368.965,
+            "p99": 420.269,
+            "max": 494.181
+          },
+          "statementsPerOperation": 25.07,
+          "statements": null,
+          "activity": {
+            "samples": 360,
+            "connections": {
+              "idle:Client/ClientRead": 5.33,
+              "idle in transaction:Client/ClientRead": 4.1,
+              "active:IO/WalSync": 0.18,
+              "active": 0.15,
+              "idle": 0.08,
+              "idle in transaction": 0.06,
+              "active:Client/ClientRead": 0.06,
+              "active:LWLock/WALWrite": 0.02,
+              "idle in transaction:LWLock/WALWrite": 0.01,
+              "active:IO/WalWrite": 0.01,
+              "idle in transaction:IO/WalWrite": 0
+            }
+          },
+          "cpu": {
+            "client": 144.7,
+            "server": 50.5
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}

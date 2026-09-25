@@ -28,6 +28,6 @@ Effects are at least once. Exactly-once external outcomes require provider idemp
 
 An old generation cannot commit after losing its fence. Work committed before a crash remains discoverable. Work not committed disappears with the transaction. Cross-actor operations are durable messages, not distributed transactions.
 
-Framework failures use one `ActorError` with typed reasons: `ActorUnavailable`, `MailboxFull`, `Timeout`, `CommandConflict`, `NotCreated`, `Unauthorized`, `InvalidInput`, and `TransportError`. Application-declared failures remain distinct and replay faithfully.
+Framework failures use one `ActorError` with typed reasons: `ActorUnavailable`, `MailboxFull`, `RunnerAtCapacity`, `Timeout`, `CommandConflict`, `NotCreated`, `Unauthorized`, `InvalidInput`, and `TransportError`. Application-declared failures remain distinct and replay faithfully.
 
 See [boundaries](08-boundaries.md) for the limits of these guarantees.

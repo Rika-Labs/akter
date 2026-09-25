@@ -9,7 +9,7 @@ Durable event subscriptions MUST use an event cursor and MUST preserve actor-str
 
 `X.Read` and `X.Connection` MUST expose committed state only. Committed state changes MUST publish only after commit, and browser handles MUST receive them to reconcile optimistic reducers. Workflow bodies and effect executors do not receive direct actor-state access.
 
-`Actor.stream` is live and non-persisted; it ends with the activation and does not promise replay. Durable output uses `events(Event, { after })`, whose cursor is exclusive, and yields the committed event with its sequence, timestamp, and command id.
+`Actor.stream` is live and non-persisted; it ends with the activation and does not promise replay. Durable output uses `events(Event, { after })`, whose cursor is exclusive, and yields the committed event with its cursor (its per-actor sequence), timestamp, and command id. A cursor the actor never issued MUST fail with `UnknownCursor`, and a cursor followed by pruned history MUST fail with `RetentionGap`; replay MUST NOT resume past either.
 
 Realtime sessions MUST be declared with `Actor.connection`. Connection state MUST be stored in `actor_connections`, scoped to tenant and actor, and limited to 16 KiB. With `policy.connections: "park"` (the default), open sockets MUST NOT keep the activation resident: hibernation leaves sockets open, and an inbound frame or broadcast wakes the activation. A resumed handler MUST observe restored connection `state` and `resumed === true` on `X.Connection`.
 
