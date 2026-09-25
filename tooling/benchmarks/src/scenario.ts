@@ -1,9 +1,11 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actors } from "durable-actors/runtime"
+import { TurnHooks } from "durable-actors/testing"
 import { Effect, Layer } from "effect"
 import type { SqlClient } from "effect/unstable/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"
 import { type Limit, load, now, type Summary, summarize, throughput } from "./measure.ts"
+import { afterCommit } from "./probe/effects.ts"
 import { ProbeLive } from "./probe/layer.ts"
 
 export type Profile = "quick" | "full"
@@ -36,9 +38,19 @@ export interface CaseResult {
 
 export type ActorServices = Layer.Success<ReturnType<typeof runtimeLayer>> | SqlClient.SqlClient
 
+// The effect round trip ends when its route's turn commits, which only the
+// runtime's post-commit hook observes; every other point stays a no-op.
+const hooks = Layer.succeed(TurnHooks, {
+  at: (point, request) => (point === "afterCommit" ? afterCommit(request) : Effect.void),
+})
+
 const runtimeLayer = (maxResidentActors: number | undefined) =>
   ProbeLive.pipe(
-    Layer.provideMerge(Actors.layer({ authorize: () => Effect.succeed(true), maxResidentActors })),
+    Layer.provideMerge(
+      Actors.layer({ authorize: () => Effect.succeed(true), maxResidentActors }).pipe(
+        Layer.provide(hooks),
+      ),
+    ),
     Layer.provide(BunCrypto.layer),
     Layer.orDie,
   )

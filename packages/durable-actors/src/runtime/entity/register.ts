@@ -11,10 +11,25 @@ import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 // Commands are direct: the Cluster message is volatile and the receipt
 // committed inside the turn is the only durable admission record.
 // A lost runner loses only uncommitted work, which the caller retries by id.
-export const commandEntity = (name: string) =>
+const makeCommandEntity = (name: string) =>
   Entity.make(name, [
     Rpc.make("Execute", { payload: Request, success: Outcome, error: ActorError }),
   ]).annotateRpcs(ClusterSchema.Uninterruptible, true)
+
+const commandEntities = new Map<string, ReturnType<typeof makeCommandEntity>>()
+
+// Sharding keeps one RPC client per entity object, by identity, until the
+// runtime closes; a fresh entity per command would retain a client per command.
+export const commandEntity = (name: string) => {
+  const cached = commandEntities.get(name)
+
+  if (cached !== undefined) return cached
+
+  const entity = makeCommandEntity(name)
+  commandEntities.set(name, entity)
+
+  return entity
+}
 
 export const registerActor = Effect.fnUntraced(function* (registration: Registration) {
   const sharding = yield* Sharding.Sharding

@@ -1,6 +1,6 @@
 # Post-foundation API sketches
 
-**Responsibility:** show the intended developer experience for ADRs [0014](../decisions/0014-adoption-observation-and-client-reach.md), [0015](../decisions/0015-durable-agent-runtime-boundary.md), and [0016](../decisions/0016-generated-durable-applications.md).
+**Responsibility:** show the intended developer experience for ADRs [0014](../decisions/0014-adoption-observation-and-client-reach.md) and [0016](../decisions/0016-generated-durable-applications.md).
 
 **Authority:** illustrative proposal only. These names and signatures are not exported and are subject to API/versioning review.
 
@@ -85,19 +85,9 @@ export default Actor.serve.handler({ actors: [ChatLive], database: Database.post
 
 The handler is illustrative. A persistent edge must wake runners, recover due work, and terminate or reconnect sockets after gateway failure. Benchmark warm and cold turns separately.
 
-## Agent runtime and generated apps
+## Generated apps
 
 ```ts
-const Coder = Actor.make(
-  "Coder",
-  Agent.definition({
-    model: Model.provider("model-id"),
-    sandbox: Sandbox.provider(containerLayer),
-    tools: { Shell, ReadFile },
-    budget: { usd: 20 },
-  }),
-)
-
 const TodoList = Actor.make("TodoList", {
   key: TodoListId,
   tables: [todos],
@@ -105,4 +95,6 @@ const TodoList = Actor.make("TodoList", {
 })
 ```
 
-`Agent.definition` is proposed composition into an ordinary actor, not a second actor constructor. Its budget is reserved in a turn before issuing model/tool effects, then settled or reconciled when a provider outcome is known; charging only after a model reply cannot prevent overspend. Sandboxes cannot write authoritative actor data. Generated `TodoList` source is validated in isolation and activated as a versioned build; no generated handler runs in the control-plane process.
+Generated `TodoList` source is validated in isolation and activated as a versioned build; no generated handler runs in the control-plane process.
+
+The `Agent.definition` sketch for ADR 0015 was removed: the agent runtime is Outlast, a separate product ([ADR 0017](../decisions/0017-m1-record-corrections.md)).

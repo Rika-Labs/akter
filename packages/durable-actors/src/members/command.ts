@@ -9,11 +9,11 @@ export type DeclaredError = ValueSchema & {
   readonly Type: Cause.YieldableError & { readonly _tag: string }
 }
 
-export type MemberKind = "command" | "query"
+export type MemberKind = "command" | "query" | "reducer"
 
 /**
- * An `api` or `internal` member. Commands run as fenced, receipted turns;
- * queries read committed state without an activation.
+ * An `api` or `internal` member. Commands and reducers run as fenced,
+ * receipted turns; queries read committed state without an activation.
  */
 export interface Member<
   Kind extends MemberKind,

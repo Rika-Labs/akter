@@ -43,4 +43,8 @@ Each invariant MUST have a named executable case in `describeConformance` or an 
 | X1 | Simulation failures reproduce from their seed. | `ActorTest.simulate` reruns a failing seed to the same fault schedule and outcome. |
 External replay and conflict cases assume an unexpired command identity and current receipt-access authorization. Rejected access or expiry must not invoke the handler. Trusted internal recovery follows the retained obligation rather than rechecking the originating caller as a new external admission.
 
+M1, M2, and M3 for relay-delivered commands have single-runner, same-shard evidence from M1.6 on PGlite and Postgres, with SIGKILL cases on Postgres; the case names are in the [conformance ledger](01-conformance.md#outbox-intents-and-timers-m16). Cross-shard, cross-region, and multi-runner delivery remain unverified.
+
+P1 has single-runner evidence from M1.7 on PGlite and Postgres: a lost result reruns the executor under the same effect id, and a dead letter reports `ambiguous` unless the last attempt failed with a typed error; the case names are in the [conformance ledger](01-conformance.md#effects-with-routes-m17). Provider-specific reconciliation remains per adapter.
+
 The mapping from these invariants to normative guarantees is in [runtime contracts](../contracts/README.md); crash expectations are in the [failure matrix](02-failure-matrix.md).
