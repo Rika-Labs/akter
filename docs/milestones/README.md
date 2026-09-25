@@ -67,6 +67,8 @@ Migrations and ADRs are reserved up front so parallel slices don't collide.
 
 Migrations follow the wave order, because the Effect migrator skips any id at or below the latest one applied. An "if needed" number that goes unused just leaves a gap, which the migrator allows. A slice that needs a migration it wasn't assigned takes the next number above the highest merged migration. It then renumbers every unmerged reservation above it and updates their issues.
 
+Within a wave, migrations merge in number order. If a higher number is ready first, it is renumbered above the highest merged migration at merge time instead of merging ahead. Until a deployed database exists, a local database that already ran a higher number is recreated.
+
 | Migration                         | Slice                                        | Wave |
 | --------------------------------- | -------------------------------------------- | ---- |
 | `0010_relay` (if needed)          | M2.4 multi-runner relay                      | 3    |
