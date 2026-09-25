@@ -72,12 +72,17 @@ export interface LoadResult {
  * until `operations` are claimed or `durationMs` passes, and times every
  * operation. Failures are counted, not retried, so they stay visible.
  */
-export const load = <E, R>(options: {
-  readonly workers: number
-  readonly operations?: number
-  readonly durationMs?: number
-  readonly operation: (index: number) => Effect.Effect<unknown, E, R>
-}) =>
+/** A load stops after a count of operations, a duration, or whichever comes first. */
+export type Limit =
+  | { readonly operations: number; readonly durationMs?: number }
+  | { readonly operations?: number; readonly durationMs: number }
+
+export const load = <E, R>(
+  options: Limit & {
+    readonly workers: number
+    readonly operation: (index: number) => Effect.Effect<unknown, E, R>
+  },
+) =>
   Effect.gen(function* () {
     const samples: Array<number> = []
     const next = yield* Ref.make(0)

@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { SqlClient } from "effect/unstable/sql"
 import { load, shuffled } from "../measure.ts"
 import { Probe } from "../probe/contract.ts"
 import { type CaseResult, DEFAULT_POOL, measure, type Scenario } from "../scenario.ts"
@@ -12,16 +13,43 @@ const add = (actor: number) =>
 const pick = (index: number, actors: number) =>
   Number((BigInt(index) * 2_654_435_761n) % BigInt(actors))
 
-const rssMiB = () => Math.round(process.memoryUsage().rss / 1024 / 1024)
+/** Resident and heap memory after a full collection, in MiB. */
+const memory = Effect.sync(() => {
+  Bun.gc(true)
+  const { rss, heapUsed } = process.memoryUsage()
+
+  return { rss: rss / 1024 / 1024, heap: heapUsed / 1024 / 1024 }
+})
+
+const round = (value: number) => Math.round(value * 10) / 10
+
+/** Total activations of Probe actors so far: each new activation advances a generation. */
+const activations = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+
+  const [row] = yield* sql<{ total: string }>`
+    SELECT coalesce(sum(generation), 0)::text AS total
+    FROM actor_generations WHERE actor_type = 'Probe'`.pipe(Effect.orDie)
+
+  return Number(row!.total)
+})
+
+/** Cluster's default cap on resident entities per runner, which the framework does not set. */
+const MAX_RESIDENT_ENTITIES = 10_000
+
+const HIBERNATE_AFTER_MS = 60_000
 
 /**
  * Concurrent callers spread over many actors. First touch creates and
- * activates every actor once; steady state then picks actors uniformly while
- * every activation is warm. A pool sweep isolates the connection pool.
+ * activates every actor once; steady state then picks actors uniformly. An
+ * actor stays warm only while it is resident: Cluster admits 10,000 resident
+ * entities per runner, and an idle one hibernates after 60 seconds, so
+ * `extra.coldFraction` reports how many steady-state turns started a new
+ * activation. A pool sweep isolates the connection pool.
  */
 export const manyActors: Scenario = {
   name: "many-actors",
-  description: `${WORKERS} concurrent callers over 1k/10k/100k actors: first touch (create + activate each actor once), then uniform steady-state load over warm activations, then a connection-pool sweep at 10k actors.`,
+  description: `${WORKERS} concurrent callers over 1k/10k/100k actors: first touch (create + activate each actor once), then uniform steady-state load (warm only while resident; see coldFraction), then a connection-pool sweep at 10k actors.`,
   run: (context) =>
     Effect.gen(function* () {
       const quick = context.profile === "quick"
@@ -36,6 +64,7 @@ export const manyActors: Scenario = {
           ...(yield* context.withRuntime({}, (instruments) =>
             Effect.gen(function* () {
               const order = shuffled(actors)
+              const before = yield* memory
 
               const first = yield* measure({
                 name: `first-touch-${actors}`,
@@ -46,17 +75,47 @@ export const manyActors: Scenario = {
                 operation: (index) => add(order[index]!),
               })
 
+              const after = yield* memory
+              const activated = yield* activations
+
               const steady = yield* measure({
                 name: `steady-${actors}`,
-                parameters: { actors, workers: WORKERS, pool: DEFAULT_POOL },
+                parameters: {
+                  actors,
+                  workers: WORKERS,
+                  pool: DEFAULT_POOL,
+                  hibernateAfterMs: HIBERNATE_AFTER_MS,
+                  maxResidentEntities: MAX_RESIDENT_ENTITIES,
+                },
                 instruments,
                 workers: WORKERS,
                 durationMs,
                 operation: (index) => add(pick(index, actors)),
-                extra: { rssMiBAfterFirstTouch: rssMiB() },
               })
 
-              return [first, steady]
+              const cold = (yield* activations) - activated
+
+              const cases: Array<CaseResult> = [
+                {
+                  ...first,
+                  extra: {
+                    rssDeltaMiB: round(after.rss - before.rss),
+                    heapDeltaMiB: round(after.heap - before.heap),
+                    rssKiBPerActor: round(((after.rss - before.rss) * 1024) / actors),
+                  },
+                },
+                {
+                  ...steady,
+                  extra: {
+                    coldFraction:
+                      steady.operations === 0
+                        ? 0
+                        : Math.round((cold / steady.operations) * 1000) / 1000,
+                  },
+                },
+              ]
+
+              return cases
             }),
           )),
         )

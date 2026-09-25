@@ -12,7 +12,7 @@ import {
 } from "effect"
 import { type Backend, type BackendName, pglite, postgres } from "./backend.ts"
 import { machine, runtimeVersions, source } from "./environment.ts"
-import { type CaseResult, type Profile, type Scenario, withRuntime } from "./scenario.ts"
+import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { manyActors } from "./scenarios/many-actors.ts"
@@ -30,7 +30,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   manyActors,
 ]
 
-const RESULT_SCHEMA = 1
+const RESULT_SCHEMA = 2
 
 const flag = (name: string) => {
   const index = process.argv.indexOf(`--${name}`)
@@ -52,15 +52,32 @@ const describeCase = (scenario: string, result: CaseResult) => {
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  const profile: Profile = flag("profile") === "quick" ? "quick" : "full"
-  const requested = flag("backend") ?? "all"
+
+  const profile = yield* Schema.decodeUnknownEffect(Schema.Literals(["quick", "full"]))(
+    flag("profile") ?? "full",
+  ).pipe(Effect.orDie)
+
+  const requested = yield* Schema.decodeUnknownEffect(
+    Schema.Literals(["all", "postgres", "pglite"]),
+  )(flag("backend") ?? "all").pipe(Effect.orDie)
+
   const only = flag("scenario")?.split(",")
+
+  const unknown = only?.filter((name) => !SCENARIOS.some((scenario) => scenario.name === name))
+
+  if (unknown !== undefined && unknown.length > 0)
+    return yield* Effect.die(
+      new Error(
+        `Unknown scenario ${unknown.join(", ")}; known: ${SCENARIOS.map((s) => s.name).join(", ")}`,
+      ),
+    )
+
   const label = flag("label")
   const note = flag("note")
   const external = Option.getOrUndefined(yield* Config.option(Config.String("BENCH_DATABASE_URL")))
 
   const backends: ReadonlyArray<BackendName> =
-    requested === "all" ? ["postgres", "pglite"] : [requested === "pglite" ? "pglite" : "postgres"]
+    requested === "all" ? ["postgres", "pglite"] : [requested]
 
   const selected = SCENARIOS.filter(
     (scenario) => only === undefined || only.includes(scenario.name),
@@ -72,7 +89,12 @@ const program = Effect.gen(function* () {
     )
 
   const code = yield* source
-  const host = yield* machine
+  const host = yield* machine(external !== undefined)
+
+  if (code.dirty)
+    yield* Console.warn(
+      "warning: tracked files have uncommitted changes; this result is recorded as dirty and is not a baseline",
+    )
   const versions = yield* runtimeVersions
   const root = path.resolve(import.meta.dir, "../../..")
   const directory = path.resolve(root, flag("out") ?? "benchmarks/results")

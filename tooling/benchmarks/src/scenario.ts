@@ -3,7 +3,7 @@ import { Actors } from "durable-actors/runtime"
 import { Effect, Layer } from "effect"
 import type { SqlClient } from "effect/unstable/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"
-import { load, now, type Summary, summarize, throughput } from "./measure.ts"
+import { type Limit, load, now, type Summary, summarize, throughput } from "./measure.ts"
 import { ProbeLive } from "./probe/layer.ts"
 
 export type Profile = "quick" | "full"
@@ -21,9 +21,10 @@ export interface CaseResult {
   readonly errorKinds: Readonly<Record<string, number>>
   readonly latencyMs: Summary
   /**
-   * Statements pg_stat_statements recorded per successful operation. It
-   * records transaction control (BEGIN, SAVEPOINT, COMMIT) only once per
-   * distinct text, so those are not in this count.
+   * Statements pg_stat_statements recorded per attempted operation, without
+   * Cluster's runner bookkeeping. It records transaction control (BEGIN,
+   * SAVEPOINT, COMMIT) only once per distinct text, so those are not in this
+   * count.
    */
   readonly statementsPerOperation: number | null
   readonly statements: ReadonlyArray<StatementCount> | null
@@ -85,17 +86,17 @@ const percent = (seconds: number, elapsedMs: number) =>
  * runs the load, and reports latency, throughput, statements per operation,
  * and client and server CPU.
  */
-export const measure = Effect.fnUntraced(function* <E, R>(options: {
-  readonly name: string
-  readonly parameters: Parameters
-  readonly instruments: Instruments | undefined
-  readonly workers: number
-  readonly operations?: number
-  readonly durationMs?: number
-  readonly operation: (index: number) => Effect.Effect<unknown, E, R>
-  readonly listStatements?: boolean
-  readonly extra?: Readonly<Record<string, number | string>>
-}) {
+export const measure = Effect.fnUntraced(function* <E, R>(
+  options: Limit & {
+    readonly name: string
+    readonly parameters: Parameters
+    readonly instruments: Instruments | undefined
+    readonly workers: number
+    readonly operation: (index: number) => Effect.Effect<unknown, E, R>
+    readonly listStatements?: boolean
+    readonly extra?: Readonly<Record<string, number | string>>
+  },
+) {
   const instruments = options.instruments
 
   if (instruments !== undefined) yield* instruments.resetStatements
@@ -104,12 +105,7 @@ export const measure = Effect.fnUntraced(function* <E, R>(options: {
   const clientBefore = process.cpuUsage()
   const started = yield* now
 
-  const run = load({
-    workers: options.workers,
-    operations: options.operations,
-    durationMs: options.durationMs,
-    operation: options.operation,
-  })
+  const run = load(options)
 
   const [result, activity] =
     instruments === undefined ? [yield* run, undefined] : yield* instruments.sampleActivity(run)
@@ -119,6 +115,7 @@ export const measure = Effect.fnUntraced(function* <E, R>(options: {
   const serverAfter = serverCpu === undefined ? undefined : yield* serverCpu
   const statements = instruments === undefined ? undefined : yield* instruments.statements
   const succeeded = result.samples.length
+  const attempted = succeeded + result.errors
 
   return {
     name: options.name,
@@ -130,9 +127,9 @@ export const measure = Effect.fnUntraced(function* <E, R>(options: {
     errorKinds: result.errorKinds,
     latencyMs: summarize(result.samples),
     statementsPerOperation:
-      statements === undefined || succeeded === 0
+      statements === undefined || attempted === 0
         ? null
-        : Math.round((statements.calls / succeeded) * 100) / 100,
+        : Math.round((statements.calls / attempted) * 100) / 100,
     statements: options.listStatements === true ? (statements?.top ?? null) : null,
     activity: activity ?? null,
     cpu: {

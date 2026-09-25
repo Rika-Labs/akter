@@ -1,4 +1,4 @@
-import { cpus, release, totalmem, type as osType } from "node:os"
+import { cpus, hostname, release, totalmem, type as osType } from "node:os"
 import { Effect } from "effect"
 
 const git = (args: ReadonlyArray<string>) =>
@@ -46,18 +46,21 @@ export const source = Effect.gen(function* () {
   }
 })
 
-export const machine = Effect.sync(() => {
-  const processors = cpus()
+export const machine = (external: boolean) =>
+  Effect.sync(() => {
+    const processors = cpus()
 
-  return {
-    cpuModel: processors[0]?.model ?? "unknown",
-    logicalCpus: processors.length,
-    memoryGiB: Math.round((totalmem() / 1024 ** 3) * 10) / 10,
-    os: `${osType()} ${release()}`,
-    topology:
-      "single cloud VM; the benchmark client, actor runtime, and database share its CPUs; database over loopback TCP",
-  }
-})
+    return {
+      cpuModel: processors[0]?.model ?? "unknown",
+      logicalCpus: processors.length,
+      memoryGiB: Math.round((totalmem() / 1024 ** 3) * 10) / 10,
+      os: `${osType()} ${release()}`,
+      hostname: hostname(),
+      topology: external
+        ? "benchmark client and actor runtime on this machine; Postgres at BENCH_DATABASE_URL"
+        : "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP",
+    }
+  })
 
 export const runtimeVersions = Effect.gen(function* () {
   return {

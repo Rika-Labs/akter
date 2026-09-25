@@ -175,6 +175,7 @@ export const postgres = (external: string | undefined) =>
           SELECT s.query, s.calls::text AS calls, s.mean_exec_time AS mean
           FROM pg_stat_statements s JOIN pg_database d ON d.oid = s.dbid
           WHERE d.datname = ${name}
+            AND s.query NOT LIKE '%cluster_%' AND s.query NOT LIKE '%pg_locks%'
           ORDER BY s.calls DESC`
 
         return {
