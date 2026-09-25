@@ -1,6 +1,6 @@
 # ADR 0020: The two-round-trip turn pipeline
 
-**Status:** proposed (2026-09-26). Dallen set the target on 2026-09-25: two SQL round trips per turn, and no one-round-trip fast path.
+**Status:** accepted (2026-09-26, Dallen, on [#54](https://github.com/Rika-Labs/durable-actors/issues/54)). Dallen set the target on 2026-09-25: two SQL round trips per turn, and no one-round-trip fast path. On acceptance, he also approved the connection split (`maxConnections` 50 plus `offTurnConnections` 10) and the narrower batch allowance. Implementation (P4) and its evidence remain pending.
 
 **Responsibility:** decide how the runtime issues a command turn in two database round trips, as [ADR 0005](0005-turn-latency-batching-and-regional-placement.md) requires, and what the implementation must prove.
 
@@ -190,9 +190,9 @@ These reads happen before or after the turn, so they fall outside the two round 
 
 Neki's router must forward pipelined extended-protocol cycles in order, on the pinned session that `__neki.tx_mode='single'` requires. This is unverified, so pipelining on Neki stays gated until the **Neki locking and pinning** gate records it.
 
-## Open questions and recommended defaults
+## Defaults for the open questions
 
-These defaults stand unless review objects.
+These recommended defaults were accepted with the ADR.
 
 1. **Where turn connections come from.** Recommended: a second `PgPool` with `multiplex: true` and `multiplexConcurrency: 1`, sized by the existing `maxConnections`. The ordinary `SqlClient` pool serves queries, pre-delivery reads, the relay, migrations, and Cluster runner storage (which holds one connection for the layer's lifetime). It gets a new `Database.postgres` option, `offTurnConnections`, which defaults to 10. **Behaviour change:** a runner can now hold up to `maxConnections + offTurnConnections` connections (60 by default) instead of `maxConnections`. P4 amends ADR 0019's sizing and the `Database.postgres` documentation:
 
@@ -243,7 +243,7 @@ These defaults stand unless review objects.
 - **Unchanged:** contracts 01, 04, 09, and 10, and invariant R2. The handler still runs only after the fence and the receipt.
 - **For P5 to revisit:** the ledger check **Pipelined batches** and invariant B1 still hold as written, but with the narrowed allowance, batch N+1 has no staged work to hide until N's commit reply arrives.
 
-The contract text cites this ADR while it is still proposed. The clarifications apply only to a runtime that pipelines, which none does yet. The narrowed batch allowance constrains P5, which doesn't exist yet. If review rejects this ADR, the contract edits are reverted along with it.
+The clarifications apply only to a runtime that pipelines, which none does yet. The narrowed batch allowance constrains P5, which doesn't exist yet.
 
 ## Verification the implementation (P4) must add
 
