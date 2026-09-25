@@ -1,0 +1,991 @@
+{
+  "schema": 1,
+  "label": "m1-merge",
+  "note": "local merge, not pushed: main 76ac433 + #34 outbox 925ae03 + #36 effects c1ec6df + #33 events dd6d8f3 + #32 reducers ad2675b + harness; conflicts resolved locally for the benchmark only",
+  "profile": "full",
+  "startedAt": "2026-09-25T03:35:00.596Z",
+  "finishedAt": "2026-09-25T03:40:23.609Z",
+  "git": {
+    "sha": "5e25b07d866dae09183d11a6bd0ea15a1daaf3f0",
+    "shortSha": "5e25b07",
+    "branch": "local/m1-bench-merge",
+    "mainBase": "76ac433e261d32e2590d1c8bfb7cb58cb1e371bc",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "5e25b07d866dae09183d11a6bd0ea15a1daaf3f0",
+        "parents": [
+          "f225d001e9bf12462ebcd6462b1ecae76bffab2d",
+          "8da5f88a0d79c0e96f42bf4f09b6909e3e1dcfa8"
+        ]
+      },
+      {
+        "commit": "f225d001e9bf12462ebcd6462b1ecae76bffab2d",
+        "parents": [
+          "af7188bbb374802621bc89d213de4e384021e881",
+          "33b2f2a7fb1c2a5a7eebbb38d4c2e0e74dbe00eb"
+        ]
+      },
+      {
+        "commit": "af7188bbb374802621bc89d213de4e384021e881",
+        "parents": [
+          "9b4a3b7a89d71f5bfe989d0ecd1679d6e016d186",
+          "ad2675bbb4da15895c7d7d4f3a54ef192f2fce27"
+        ]
+      },
+      {
+        "commit": "9b4a3b7a89d71f5bfe989d0ecd1679d6e016d186",
+        "parents": [
+          "c1ec6df4c433f82f3ea06b4e43ffdbf994125b4d",
+          "dd6d8f39074b9b213dbc552909eee027d78fe3b9"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.3.14",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "AMD EPYC",
+    "logicalCpus": 4,
+    "memoryGiB": 15.6,
+    "os": "Linux 6.1.158+",
+    "topology": "single cloud VM; the benchmark client, actor runtime, and database share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "hot-actor",
+      "description": "Warm command turns on one actor: sequential latency, then 8 and 64 concurrent callers competing for its single turn slot.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 21719,
+          "throughput": 138.1,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 7.236,
+            "min": 3.508,
+            "p50": 5.293,
+            "p90": 12.482,
+            "p95": 15.351,
+            "p99": 18.203,
+            "max": 29.327
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 133.2,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-8",
+          "parameters": {
+            "actors": 1,
+            "workers": 8
+          },
+          "operations": 2001,
+          "elapsedMs": 10030,
+          "throughput": 199.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2001,
+            "mean": 40.033,
+            "min": 16.733,
+            "p50": 38.082,
+            "p90": 48.478,
+            "p95": 56.328,
+            "p99": 68.007,
+            "max": 76.353
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 120.1,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "actors": 1,
+            "workers": 64
+          },
+          "operations": 2142,
+          "elapsedMs": 10221,
+          "throughput": 209.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2142,
+            "mean": 302.172,
+            "min": 96.07,
+            "p50": 297.095,
+            "p90": 353.665,
+            "p95": 371.037,
+            "p99": 400.599,
+            "max": 419.34
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 132.6,
+            "server": null
+          },
+          "extra": null
+        }
+      ]
+    },
+    {
+      "name": "cold-activation",
+      "description": "First turn of a new activation, sequentially: a never-seen actor, and an existing actor after it hibernated (new generation, state read from storage).",
+      "cases": [
+        {
+          "name": "new-actor",
+          "parameters": {
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 8571,
+          "throughput": 116.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 8.567,
+            "min": 4.344,
+            "p50": 6.878,
+            "p90": 15.56,
+            "p95": 17.41,
+            "p99": 19.294,
+            "max": 71.93
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 123.5,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "after-hibernation",
+          "parameters": {
+            "workers": 1,
+            "actors": 500,
+            "hibernateAfterMs": 250
+          },
+          "operations": 500,
+          "elapsedMs": 4198,
+          "throughput": 119.1,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 8.391,
+            "min": 4.317,
+            "p50": 6.389,
+            "p90": 14.463,
+            "p95": 17.608,
+            "p99": 20.064,
+            "max": 24.037
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 119.4,
+            "server": null
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "query-latency",
+      "description": "Query handler reads of committed state: sequential on one actor, then 64 concurrent callers over 1k actors.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 1849,
+          "throughput": 1622.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 0.614,
+            "min": 0.482,
+            "p50": 0.567,
+            "p90": 0.687,
+            "p95": 0.784,
+            "p99": 1.644,
+            "max": 13.615
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 118.5,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64
+          },
+          "operations": 14597,
+          "elapsedMs": 10031,
+          "throughput": 1455.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 14597,
+            "mean": 43.898,
+            "min": 7.032,
+            "p50": 40.631,
+            "p90": 47.517,
+            "p95": 53.995,
+            "p99": 129.251,
+            "max": 143.907
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 112,
+            "server": null
+          },
+          "extra": null
+        }
+      ]
+    },
+    {
+      "name": "receipt-replay",
+      "description": "Same-command-id retries of committed commands: sequential replay latency, then 64 concurrent replayers.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "commands": 1000,
+            "actors": 100,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 1307,
+          "throughput": 765.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 1.304,
+            "min": 0.928,
+            "p50": 1.224,
+            "p90": 1.321,
+            "p95": 1.984,
+            "p99": 3.042,
+            "max": 4.775
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 103.7,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "commands": 1000,
+            "actors": 100,
+            "workers": 64
+          },
+          "operations": 8559,
+          "elapsedMs": 10069,
+          "throughput": 850,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 8559,
+            "mean": 75.122,
+            "min": 55.949,
+            "p50": 71.007,
+            "p90": 92.826,
+            "p95": 104.374,
+            "p99": 120.038,
+            "max": 132.734
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 113.2,
+            "server": null
+          },
+          "extra": null
+        }
+      ]
+    },
+    {
+      "name": "state-size",
+      "description": "State growing toward the default maxStateBytes (65,536): rewrite the blob every turn, hold it while touching a counter, and wake an actor that stores it.",
+      "cases": [
+        {
+          "name": "rewrite-256",
+          "parameters": {
+            "stateBytes": 256,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 3866,
+          "throughput": 129.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 7.726,
+            "min": 3.859,
+            "p50": 5.066,
+            "p90": 14.278,
+            "p95": 16.953,
+            "p99": 20.831,
+            "max": 55.117
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 117.8,
+            "server": null
+          },
+          "extra": {
+            "compressedBytes": 262,
+            "zstdCompressP50Ms": 0.006,
+            "zstdDecompressP50Ms": 0.002
+          }
+        },
+        {
+          "name": "hold-256",
+          "parameters": {
+            "stateBytes": 256,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 3481,
+          "throughput": 143.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 6.959,
+            "min": 3.55,
+            "p50": 4.939,
+            "p90": 12.573,
+            "p95": 14.76,
+            "p99": 17.722,
+            "max": 26.523
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 114.1,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-256",
+          "parameters": {
+            "stateBytes": 256,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 1017,
+          "throughput": 98.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 10.169,
+            "min": 4.559,
+            "p50": 9.695,
+            "p90": 18.33,
+            "p95": 19.681,
+            "p99": 21.25,
+            "max": 21.859
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 113.4,
+            "server": null
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "rewrite-4096",
+          "parameters": {
+            "stateBytes": 4096,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 4184,
+          "throughput": 119.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 8.364,
+            "min": 4.388,
+            "p50": 6.741,
+            "p90": 15.354,
+            "p95": 17.097,
+            "p99": 19.495,
+            "max": 54.742
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 134.9,
+            "server": null
+          },
+          "extra": {
+            "compressedBytes": 3130,
+            "zstdCompressP50Ms": 0.014,
+            "zstdDecompressP50Ms": 0.01
+          }
+        },
+        {
+          "name": "hold-4096",
+          "parameters": {
+            "stateBytes": 4096,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 3218,
+          "throughput": 155.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 6.432,
+            "min": 3.559,
+            "p50": 4.458,
+            "p90": 11.212,
+            "p95": 13.431,
+            "p99": 16.383,
+            "max": 18.612
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 125.8,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-4096",
+          "parameters": {
+            "stateBytes": 4096,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 808,
+          "throughput": 123.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 8.078,
+            "min": 4.68,
+            "p50": 5.642,
+            "p90": 13.693,
+            "p95": 16.794,
+            "p99": 20.086,
+            "max": 20.822
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 120.2,
+            "server": null
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "rewrite-16384",
+          "parameters": {
+            "stateBytes": 16384,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 5449,
+          "throughput": 91.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 10.892,
+            "min": 5.605,
+            "p50": 10.708,
+            "p90": 18.912,
+            "p95": 21.372,
+            "p99": 25.298,
+            "max": 49.971
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 117.6,
+            "server": null
+          },
+          "extra": {
+            "compressedBytes": 12317,
+            "zstdCompressP50Ms": 0.079,
+            "zstdDecompressP50Ms": 0.077
+          }
+        },
+        {
+          "name": "hold-16384",
+          "parameters": {
+            "stateBytes": 16384,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 3118,
+          "throughput": 160.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 6.232,
+            "min": 3.537,
+            "p50": 4.363,
+            "p90": 9.687,
+            "p95": 12.314,
+            "p99": 17.372,
+            "max": 27.206
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 117,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-16384",
+          "parameters": {
+            "stateBytes": 16384,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 909,
+          "throughput": 110,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 9.084,
+            "min": 5.162,
+            "p50": 7.556,
+            "p90": 15.519,
+            "p95": 20.142,
+            "p99": 21.689,
+            "max": 25.29
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 118.6,
+            "server": null
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "rewrite-32768",
+          "parameters": {
+            "stateBytes": 32768,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 6359,
+          "throughput": 78.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 12.712,
+            "min": 7.084,
+            "p50": 11.79,
+            "p90": 21.022,
+            "p95": 24.341,
+            "p99": 29.419,
+            "max": 82.921
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 128.6,
+            "server": null
+          },
+          "extra": {
+            "compressedBytes": 24566,
+            "zstdCompressP50Ms": 0.047,
+            "zstdDecompressP50Ms": 0.048
+          }
+        },
+        {
+          "name": "hold-32768",
+          "parameters": {
+            "stateBytes": 32768,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 3331,
+          "throughput": 150.1,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 6.658,
+            "min": 3.52,
+            "p50": 4.655,
+            "p90": 11.367,
+            "p95": 14.502,
+            "p99": 18.171,
+            "max": 21.769
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 119.8,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-32768",
+          "parameters": {
+            "stateBytes": 32768,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 1117,
+          "throughput": 89.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 11.164,
+            "min": 6.265,
+            "p50": 10.795,
+            "p90": 20.331,
+            "p95": 21.32,
+            "p99": 23.436,
+            "max": 23.623
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 120,
+            "server": null
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "rewrite-61440",
+          "parameters": {
+            "stateBytes": 61440,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 7806,
+          "throughput": 64.1,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 15.607,
+            "min": 9.536,
+            "p50": 14.262,
+            "p90": 24.626,
+            "p95": 28.612,
+            "p99": 41.291,
+            "max": 87.932
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 116.5,
+            "server": null
+          },
+          "extra": {
+            "compressedBytes": 46010,
+            "zstdCompressP50Ms": 0.068,
+            "zstdDecompressP50Ms": 0.086
+          }
+        },
+        {
+          "name": "hold-61440",
+          "parameters": {
+            "stateBytes": 61440,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 3354,
+          "throughput": 149.1,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 6.704,
+            "min": 3.6,
+            "p50": 4.462,
+            "p90": 11.61,
+            "p95": 15.438,
+            "p99": 17.692,
+            "max": 22.448
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 114.3,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-61440",
+          "parameters": {
+            "stateBytes": 61440,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 1352,
+          "throughput": 74,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 13.504,
+            "min": 7.177,
+            "p50": 12.547,
+            "p90": 23.121,
+            "p95": 24.741,
+            "p99": 28.401,
+            "max": 31.324
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 118.1,
+            "server": null
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "many-actors",
+      "description": "64 concurrent callers over 1k/10k/100k actors: first touch (create + activate each actor once), then uniform steady-state load over warm activations, then a connection-pool sweep at 10k actors.",
+      "cases": [
+        {
+          "name": "first-touch-1000",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "pool": 10
+          },
+          "operations": 1000,
+          "elapsedMs": 6358,
+          "throughput": 157.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 395.726,
+            "min": 92.752,
+            "p50": 389.873,
+            "p90": 474.101,
+            "p95": 499.081,
+            "p99": 557.702,
+            "max": 589.804
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 135.7,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "steady-1000",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "pool": 10
+          },
+          "operations": 3831,
+          "elapsedMs": 20237,
+          "throughput": 189.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3831,
+            "mean": 336.074,
+            "min": 94.676,
+            "p50": 333.764,
+            "p90": 375.725,
+            "p95": 389.741,
+            "p99": 438.929,
+            "max": 473.484
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 133.7,
+            "server": null
+          },
+          "extra": {
+            "rssMiBAfterFirstTouch": 867
+          }
+        },
+        {
+          "name": "first-touch-10000",
+          "parameters": {
+            "actors": 10000,
+            "workers": 64,
+            "pool": 10
+          },
+          "operations": 10000,
+          "elapsedMs": 60528,
+          "throughput": 165.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10000,
+            "mean": 386.289,
+            "min": 92.411,
+            "p50": 381.524,
+            "p90": 434.195,
+            "p95": 458.508,
+            "p99": 498.311,
+            "max": 543.54
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 133,
+            "server": null
+          },
+          "extra": null
+        },
+        {
+          "name": "steady-10000",
+          "parameters": {
+            "actors": 10000,
+            "workers": 64,
+            "pool": 10
+          },
+          "operations": 3719,
+          "elapsedMs": 20250,
+          "throughput": 183.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3719,
+            "mean": 346.235,
+            "min": 111.015,
+            "p50": 345.998,
+            "p90": 387.168,
+            "p95": 396.144,
+            "p99": 413.796,
+            "max": 442.254
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 138.6,
+            "server": null
+          },
+          "extra": {
+            "rssMiBAfterFirstTouch": 1335
+          }
+        }
+      ]
+    }
+  ]
+}
