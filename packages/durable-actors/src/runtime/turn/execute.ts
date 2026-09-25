@@ -14,7 +14,7 @@ import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, writeOutbox } from "./outbox.ts"
-import { checkReceipt, OutcomeJson, payloadHash, type StoredReceipt } from "./receipt.ts"
+import { checkReceipt, hashCanonical, OutcomeJson, type StoredReceipt } from "./receipt.ts"
 
 /**
  * What one activation remembers between turns. `generation` is the
@@ -36,6 +36,7 @@ export const emptyActivationCache = (): ActivationCache => ({
 interface Admission {
   readonly generation: string
   readonly created: boolean
+  readonly canonical: string
   readonly caller_key: string | null
   readonly command: string | null
   readonly payload_hash: string | null
@@ -56,19 +57,24 @@ export const executeTurn = Effect.fnUntraced(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
-  const hash = yield* payloadHash(request.payload).pipe(Effect.orDie)
   const { tenant, actor, id } = request.ref
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
   const transaction = Effect.gen(function* () {
-    yield* sql`SELECT set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
-      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)`
+    // set_config runs before the row is inserted, so lock_timeout bounds the
+    // insert's row waits but not the table lock taken when the statement starts;
+    // statement_timeout applies from the next statement, and commandTimeout
+    // bounds the whole transaction either way.
     yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-      VALUES (${routingKey}, ${tenant}, ${actor}, ${id}) ON CONFLICT DO NOTHING`
+      SELECT ${routingKey}, ${tenant}, ${actor}, ${id}
+      FROM (SELECT set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
+        set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)) AS timeouts
+      ON CONFLICT DO NOTHING`
 
     const admission = (yield* sql<Admission>`
       SELECT g.generation::text AS generation, g.created,
+        ${request.payload}::jsonb::text AS canonical,
         r.caller_key, r.command, r.payload_hash, r.outcome
       FROM actor_generations g
       LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
@@ -76,6 +82,8 @@ export const executeTurn = Effect.fnUntraced(function* (
       WHERE g.routing_key = ${routingKey} AND g.tenant_id = ${tenant}
         AND g.actor_type = ${actor} AND g.actor_id = ${id}
       FOR UPDATE OF g`)[0]!
+
+    const hash = yield* hashCanonical(admission.canonical)
 
     let current = admission.generation
 
