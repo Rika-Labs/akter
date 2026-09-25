@@ -16,9 +16,10 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
+      # The merge ref, not the head: two pull requests can each add a statement
+      # and bump the same baseline line to the same value, merging cleanly.
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2.2.0
         with:

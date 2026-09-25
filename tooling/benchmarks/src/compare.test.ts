@@ -133,6 +133,17 @@ describe("compareStatements", () => {
     expect([...added, ...removed]).toEqual([])
   })
 
+  it("fails one extra statement in every fourth operation", () => {
+    const { cases } = compareStatements({
+      baseline,
+      result: ci({ sequential: 7.26, "concurrent-8": 7.02 }),
+    })
+
+    expect(cases.find((entry) => entry.key === "hot-actor/sequential")).toMatchObject({
+      changed: true,
+    })
+  })
+
   it("fails an extra statement and a stale baseline alike", () => {
     const { cases } = compareStatements({
       baseline,
@@ -163,5 +174,17 @@ describe("compareStatements", () => {
       statementsPerOperation: { "hot-actor/sequential": 7.01, "hot-actor/concurrent-8": 7.02 },
     })
     expect(() => toBaseline({ ...ci({}), profile: "quick" })).toThrow()
+
+    const uncounted = ci({ sequential: 7 })
+    const [scenario] = uncounted.scenarios
+
+    expect(() =>
+      toBaseline({
+        ...uncounted,
+        scenarios: [
+          { ...scenario!, cases: [{ ...scenario!.cases[0]!, statementsPerOperation: null }] },
+        ],
+      }),
+    ).toThrow("has no statement count")
   })
 })

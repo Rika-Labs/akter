@@ -13,7 +13,7 @@ const Result = Schema.Struct({
   schema: Schema.Finite,
   label: Schema.NullOr(Schema.String),
   profile: Schema.String,
-  git: Schema.Struct({ shortSha: Schema.String }),
+  git: Schema.Struct({ shortSha: Schema.String, dirty: Schema.optional(Schema.Boolean) }),
   backend: Schema.Struct({ name: Schema.String }),
   machine: Schema.Struct({
     cpuModel: Schema.String,
@@ -150,9 +150,9 @@ export type Baseline = typeof Baseline.Type
  * before the gate fails. Relay passes and Cluster retries land inside the
  * measured window a varying number of times, so repeat runs of one commit
  * differ by up to 0.13 under CPU load; one extra statement in every fourth
- * operation still fails.
+ * operation adds 0.25 and fails.
  */
-export const STATEMENT_TOLERANCE = 0.25
+export const STATEMENT_TOLERANCE = 0.2
 
 export const toBaseline = (result: Result): Baseline => {
   if (result.profile !== "ci" || result.backend.name !== "postgres")
@@ -191,7 +191,14 @@ export const compareStatements = (input: {
 
     return before === undefined
       ? []
-      : [{ key, before, after, changed: Math.abs(after - before) > STATEMENT_TOLERANCE }]
+      : [
+          {
+            key,
+            before,
+            after,
+            changed: Math.round(Math.abs(after - before) * 100) / 100 > STATEMENT_TOLERANCE,
+          },
+        ]
   })
 
   return {
@@ -264,7 +271,10 @@ const program = Effect.gen(function* () {
 
   const after = yield* read(afterPath)
 
-  if (process.argv.includes("--statements")) return yield* statements(beforePath, after)
+  if (process.argv.includes("--statements")) return yield* statements(beforePath, afterPath, after)
+
+  if (process.argv.includes("--update"))
+    return yield* Effect.die(new Error("--update rewrites a statement baseline; pass --statements"))
 
   const before = yield* read(beforePath)
 
@@ -313,10 +323,19 @@ const program = Effect.gen(function* () {
     return yield* Effect.die(new Error("Regressions found"))
 })
 
-const statements = Effect.fnUntraced(function* (baselinePath: string, result: Result) {
+const statements = Effect.fnUntraced(function* (
+  baselinePath: string,
+  resultPath: string,
+  result: Result,
+) {
   const fs = yield* FileSystem.FileSystem
 
   if (process.argv.includes("--update")) {
+    if (result.git.dirty === true)
+      return yield* Effect.die(
+        new Error("the run had uncommitted changes; commit and rerun before updating the baseline"),
+      )
+
     const json = yield* Schema.encodeEffect(Schema.fromJsonString(Baseline, { space: 2 }))(
       toBaseline(result),
     ).pipe(Effect.orDie)
@@ -355,8 +374,7 @@ const statements = Effect.fnUntraced(function* (baselinePath: string, result: Re
 
   yield* Console.log(
     `\n${failures} case(s) differ from the baseline. If the change is intended, update the baseline in this pull request and say why:\n` +
-      `  bun run bench --profile ci --out /tmp/statements\n` +
-      `  bun run bench:compare --statements ${baselinePath} /tmp/statements/<file>.json --update`,
+      `  bun run bench:compare --statements ${baselinePath} ${resultPath} --update`,
   )
 
   if (process.argv.includes("--fail"))

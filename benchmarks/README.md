@@ -81,7 +81,7 @@ The `main` and `main-repeat` files show the run-to-run noise on one cloud VM. Mo
 
 The `Statements` workflow fails a pull request to `main` whose statements per operation differ from `baselines/statements.json`. Statements per operation are the one metric that stays the same across machines, so the gate runs on an ordinary CI runner; latency and throughput stay report-only.
 
-The job runs `bun run bench --profile ci`: `hot-actor`, `cold-activation`, `query-latency`, `receipt-replay`, `events`, `outbox`, `owned-rows`, and `effect-round-trip` on Postgres at the `quick` counts, in about 75 seconds. It then compares every case with the baseline and fails when a case moves by more than 0.25 statements per operation in either direction, or when a case is added or removed. Repeat runs of one commit differ by up to 0.13, because relay passes and Cluster retries fall inside a measured window a varying number of times; one extra statement in every fourth operation still fails.
+The job runs `bun run bench --profile ci`: `hot-actor`, `cold-activation`, `query-latency`, `receipt-replay`, `events`, `outbox`, `owned-rows`, and `effect-round-trip` on Postgres at the `quick` counts, in about 75 seconds. It then compares every case with the baseline and fails when a case moves by more than 0.2 statements per operation in either direction, or when a case is added or removed. Repeat runs of one commit differ by up to 0.13, because relay passes and Cluster retries fall inside a measured window a varying number of times; one extra statement in every fourth operation adds 0.25 and fails.
 
 A fall fails too: a lower count left out of the baseline would let a later change add the statement back unnoticed. When a change to the count is intended, update the baseline in the same pull request and say why in its description:
 
@@ -91,7 +91,7 @@ bun run bench:compare --statements benchmarks/baselines/statements.json /tmp/sta
 bun run bench:compare --statements benchmarks/baselines/statements.json /tmp/statements/<file>-ci.json --update # rewrite the baseline
 ```
 
-Commit the run first so the baseline's `sha` names the code it measured. The workflow uploads its result file as the `statements-<sha>` artifact, which `--update` accepts too.
+Commit before the run: `--update` refuses a run with uncommitted changes, and the baseline's `sha` names the commit it measured. The workflow uploads its result file as the `statements-<sha>` artifact, which `--update` accepts too.
 
 ## Results
 
