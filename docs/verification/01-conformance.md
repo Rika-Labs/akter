@@ -103,6 +103,27 @@ Declarations and startup, in [`owned.test.ts`](../../packages/durable-actors/src
 
 **Executed 2026-09-24 (M1.4):** `bun run --filter durable-actors test` passed 62 tests with 10 independent-connection cases skipped on PGlite; `test:integration` on disposable Postgres 18 passed 58 tests (the shared and Postgres-only conformance cases, migration rollback, and four SIGKILL recoveries).
 
+### M1.blob actor blobs
+
+The cases live in [`conformance/blobs.ts`](../../packages/durable-actors/src/testing/conformance/blobs.ts) and cover the blob part of **Declared-failure rollback** and **Automatic adapter scoping** below, plus invariants A3, S2, and T1 for blobs. Shared (PGlite and Postgres):
+
+- `scopes blob entries by tenant, actor type, and actor for equal names` — equal entry names written interleaved by two tenants with equal actor ids, two actors in one tenant, and a second actor type declaring the same blob name; every read and `inspect` count stays in its own scope (S2).
+- `round-trips appended chunks through compact and replaces them with set` — `append` creates an entry and adds chunks, `compact` returns the same bytes in the turn and afterwards, `set` replaces every chunk, and an empty entry reads as empty rather than absent.
+- `rolls back every blob write with a declared failure and keeps its receipt` — `set`, `append`, and `compact` of an existing entry, `set` and `append` of a new one, and a state change, then a declared failure: the pre-turn bytes survive, the new entry is absent, and the failure replays from one receipt.
+- `retries a blob append that crashes before commit to exactly one chunk` (T1)
+- `replays a blob append committed before a crash without appending again`
+- `exempts blob bytes from maxStateBytes` — a 256 KiB entry commits under a 1,024-byte `maxStateBytes`.
+- `rejects undeclared blobs and malformed entries as defects without a receipt` — an undeclared blob, an empty entry name, and a non-`Uint8Array` value each fail the turn, and the turn's earlier write rolls back.
+- `gives queries read-only blobs and rejects escaped blob capabilities` — a query's `BlobRead` has no `set`, and a `set` captured from a turn fails both after the turn and from another turn (A3).
+
+Postgres only (independent connections):
+
+- `keeps uncommitted blob writes invisible to a query` — a query reads the committed bytes while an append is paused before commit.
+
+Declarations, in [`definition.test.ts`](../../packages/durable-actors/src/actor/definition.test.ts): `declares blobs, keeps queries read-only, and rejects undeclared or duplicate blobs` — `turn.blob` is typed `BlobWrite`, `read.blob` `BlobRead` with only `get`, an undeclared blob and a query write are type errors, and invalid names, duplicates, and look-alike objects fail `Actor.make`. Postgres SIGKILL, in [`crash/blobs.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/blobs.test.ts): `leaves no blob chunk after SIGKILL beforeCommit and retries to exactly one` and `leaves one blob chunk after SIGKILL afterCommit and retries to exactly one`, inspected through a separate pool.
+
+**Executed 2026-09-25 (M1.blob, rebased on #35 with outbox and reducers):** `bun run check` passed 57/57 tasks, with `durable-actors` tests at 98 passed and 12 independent-connection cases skipped on PGlite; `test:integration` on disposable Postgres 18.6 passed 92 tests, including the Postgres-only blob case and both blob SIGKILL recoveries.
+
 ### Backend-specific cases
 
 - PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.

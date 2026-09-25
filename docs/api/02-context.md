@@ -41,6 +41,23 @@ Only command handlers and workflow bodies may call `X.intents(id)`; it requires 
 
 `turn.rows(table)` and `read.rows(table)` accept only the actor type's declared `tables` and scope every operation to the current tenant and actor; `group` reads across the placement group. Neither takes ownership fields or predicates. The operations, filters, and rejected uses are in [Drizzle integration](04-drizzle.md).
 
+## Blobs
+
+`turn.blob(B)` and `read.blob(B)` accept only the actor type's declared `blobs` and address entries of the current tenant, actor type, and actor by name alone. `turn.blob` returns `BlobWrite` (`get`, `set`, `append`, `compact`), bound to the turn transaction, so a turn reads its own writes and a declared failure discards them. `read.blob` returns `BlobRead`, which has only `get`; the object carries no write methods, whatever a cast claims. `get` returns `Option.none()` for an entry that was never written and `Option.some` of an empty array for one set to no bytes.
+
+```ts
+const Attachments = Actor.blob("attachments")
+
+// in a command handler
+const files = (yield * Room.Turn).blob(Attachments)
+yield * files.set(id, bytes)
+yield * files.append("log", line) // a new chunk; earlier chunks are not rewritten
+yield * files.compact("log") // one chunk, same bytes
+
+// in a query handler
+const file = yield * (yield * Room.Read).blob(Attachments).get(id)
+```
+
 ## Command turns
 
 A command's context is the only writable one. One framework-owned transaction performs, in order, the generation fence, receipt resolution, state decode (or reuse of the activation's cached state), handler, staged writes and intents, receipt update, and commit ([command turns](../contracts/02-command-turns.md)). `DateTime.now` is pinned per turn.
