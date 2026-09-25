@@ -8,6 +8,7 @@ const result = (
     p99: number
     errors?: number
     statements?: number
+    cpu?: number
   }>,
 ): Result => ({
   schema: 1,
@@ -19,12 +20,13 @@ const result = (
   scenarios: [
     {
       name: "hot-actor",
-      cases: cases.map(({ name, throughput, p99, errors, statements }) => ({
+      cases: cases.map(({ name, throughput, p99, errors, statements, cpu }) => ({
         name,
         throughput,
         errors: errors ?? 0,
         statementsPerOperation: statements ?? 11,
         latencyMs: { p50: 1, p95: 2, p99 },
+        cpu: { clientMsPerOperation: cpu ?? null },
       })),
     },
   ],
@@ -42,6 +44,28 @@ describe("compare", () => {
     expect(byMetric["throughput"]).toMatchObject({ worse: 0.2, regression: true })
     expect(byMetric["p99"]).toMatchObject({ regression: true })
     expect(byMetric["p50"]).toMatchObject({ worse: 0, regression: false })
+  })
+
+  it("compares CPU per operation when both runs report it", () => {
+    const { changes } = compare({
+      before: result([{ name: "sequential", throughput: 300, p99: 10, cpu: 1 }]),
+      after: result([{ name: "sequential", throughput: 300, p99: 10, cpu: 1.2 }]),
+      threshold: 0.1,
+    })
+
+    expect(changes.find((change) => change.metric === "cpu")).toMatchObject({
+      before: 1,
+      after: 1.2,
+      regression: true,
+    })
+
+    const { changes: older } = compare({
+      before: result([{ name: "sequential", throughput: 300, p99: 10 }]),
+      after: result([{ name: "sequential", throughput: 300, p99: 10, cpu: 1 }]),
+      threshold: 0.1,
+    })
+
+    expect(older.some((change) => change.metric === "cpu")).toBe(false)
   })
 
   it("treats improvements and changes within the threshold as passing", () => {
