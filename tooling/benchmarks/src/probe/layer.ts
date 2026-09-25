@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect"
-import { Probe, SleepyProbe } from "./contract.ts"
-import { ProbeReads, SleepyProbeReads } from "./queries.ts"
+import { EventProbe, Probe, SleepyProbe, Ticked } from "./contract.ts"
+import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
 
 const ProbeCommands = Probe.toLayer(
   Effect.succeed({
@@ -36,6 +36,18 @@ const SleepyProbeCommands = SleepyProbe.toLayer(
   }),
 )
 
+const EventProbeCommands = EventProbe.toLayer(
+  Effect.succeed({
+    Emit: Effect.fnUntraced(function* (count: number) {
+      const turn = yield* EventProbe.Turn
+
+      for (let n = 0; n < count; n++) yield* turn.emit(Ticked.make({ n }))
+
+      return count
+    }),
+  }),
+)
+
 /**
  * SleepyProbe registers first: Cluster's entity reaper fixes its first sweep
  * interval from the first registration (at most 30 seconds), and a short
@@ -46,4 +58,6 @@ export const ProbeLive = Layer.mergeAll(
   SleepyProbeReads,
   ProbeCommands,
   ProbeReads,
+  EventProbeCommands,
+  EventProbeReads,
 )
