@@ -34,16 +34,24 @@ const activations = Effect.gen(function* () {
   return Number(row!.total)
 })
 
-/** Cluster's default cap on resident entities per runner, which the framework does not set. */
-const MAX_RESIDENT_ENTITIES = 10_000
+/** The runtime's default `maxResidentActors`. */
+const MAX_RESIDENT_ACTORS = 10_000
+
+/**
+ * The resident limit for a count: the default, or the count itself past it,
+ * because with the default a caller over the limit retries for the whole
+ * 30-second delivery timeout and 90,000 of them would take hours.
+ */
+const residentLimit = (actors: number) => Math.max(actors, MAX_RESIDENT_ACTORS)
 
 const HIBERNATE_AFTER_MS = 60_000
 
 /**
  * Concurrent callers spread over many actors. First touch creates and
  * activates every actor once; steady state then picks actors uniformly. An
- * actor stays warm only while it is resident: Cluster admits 10,000 resident
- * entities per runner, and an idle one hibernates after 60 seconds, so
+ * actor stays warm only while it is resident: the runner keeps
+ * `maxResidentActors` activations (10,000 by default, raised to 100,000 for
+ * the 100k count), and an idle one hibernates after 60 seconds, so
  * `extra.coldFraction` reports how many steady-state turns started a new
  * activation. A pool sweep isolates the connection pool.
  */
@@ -61,62 +69,69 @@ export const manyActors: Scenario = {
 
       for (const actors of counts)
         results.push(
-          ...(yield* context.withRuntime({}, (instruments) =>
-            Effect.gen(function* () {
-              const order = shuffled(actors)
-              const before = yield* memory
+          ...(yield* context.withRuntime(
+            { maxResidentActors: residentLimit(actors) },
+            (instruments) =>
+              Effect.gen(function* () {
+                const order = shuffled(actors)
+                const before = yield* memory
 
-              const first = yield* measure({
-                name: `first-touch-${actors}`,
-                parameters: { actors, workers: WORKERS, pool: DEFAULT_POOL },
-                instruments,
-                workers: WORKERS,
-                operations: actors,
-                operation: (index) => add(order[index]!),
-              })
-
-              const after = yield* memory
-              const activated = yield* activations
-
-              const steady = yield* measure({
-                name: `steady-${actors}`,
-                parameters: {
-                  actors,
+                const first = yield* measure({
+                  name: `first-touch-${actors}`,
+                  parameters: {
+                    actors,
+                    workers: WORKERS,
+                    pool: DEFAULT_POOL,
+                    maxResidentActors: residentLimit(actors),
+                  },
+                  instruments,
                   workers: WORKERS,
-                  pool: DEFAULT_POOL,
-                  hibernateAfterMs: HIBERNATE_AFTER_MS,
-                  maxResidentEntities: MAX_RESIDENT_ENTITIES,
-                },
-                instruments,
-                workers: WORKERS,
-                durationMs,
-                operation: (index) => add(pick(index, actors)),
-              })
+                  operations: actors,
+                  operation: (index) => add(order[index]!),
+                })
 
-              const cold = (yield* activations) - activated
+                const after = yield* memory
+                const activated = yield* activations
 
-              const cases: Array<CaseResult> = [
-                {
-                  ...first,
-                  extra: {
-                    rssDeltaMiB: round(after.rss - before.rss),
-                    heapDeltaMiB: round(after.heap - before.heap),
-                    rssKiBPerActor: round(((after.rss - before.rss) * 1024) / actors),
+                const steady = yield* measure({
+                  name: `steady-${actors}`,
+                  parameters: {
+                    actors,
+                    workers: WORKERS,
+                    pool: DEFAULT_POOL,
+                    hibernateAfterMs: HIBERNATE_AFTER_MS,
+                    maxResidentActors: residentLimit(actors),
                   },
-                },
-                {
-                  ...steady,
-                  extra: {
-                    coldFraction:
-                      steady.operations === 0
-                        ? 0
-                        : Math.round((cold / steady.operations) * 1000) / 1000,
-                  },
-                },
-              ]
+                  instruments,
+                  workers: WORKERS,
+                  durationMs,
+                  operation: (index) => add(pick(index, actors)),
+                })
 
-              return cases
-            }),
+                const cold = (yield* activations) - activated
+
+                const cases: Array<CaseResult> = [
+                  {
+                    ...first,
+                    extra: {
+                      rssDeltaMiB: round(after.rss - before.rss),
+                      heapDeltaMiB: round(after.heap - before.heap),
+                      rssKiBPerActor: round(((after.rss - before.rss) * 1024) / actors),
+                    },
+                  },
+                  {
+                    ...steady,
+                    extra: {
+                      coldFraction:
+                        steady.operations === 0
+                          ? 0
+                          : Math.round((cold / steady.operations) * 1000) / 1000,
+                    },
+                  },
+                ]
+
+                return cases
+              }),
           )),
         )
 

@@ -102,5 +102,91 @@ export const migrate = Migrator.make({})({
         encoding integer NOT NULL
       )`
     }),
+    // Every intent and timer lives on its sender's shard. `bucket` is the top
+    // eight bits of `routing_key`, so the relay probes `(bucket, due_at_ms)` and
+    // never reads actors with nothing due.
+    "0004_outbox": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`CREATE TABLE actor_outbox (
+        routing_key bigint NOT NULL,
+        intent_id text NOT NULL,
+        bucket integer NOT NULL CHECK (bucket = routing_key >> 56),
+        due_at_ms bigint NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        timer_key text,
+        target_type text NOT NULL,
+        target_id text NOT NULL,
+        command text NOT NULL,
+        payload text NOT NULL,
+        caller text NOT NULL,
+        attempts integer NOT NULL DEFAULT 0,
+        PRIMARY KEY (routing_key, intent_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+      yield* sql`CREATE INDEX actor_outbox_due ON actor_outbox (bucket, due_at_ms)`
+      yield* sql`CREATE UNIQUE INDEX actor_outbox_timer
+        ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, timer_key)
+        WHERE timer_key IS NOT NULL`
+    }),
+    // Application tables come from drizzle-kit; the framework only records
+    // which actor type owns each one, so a second owner cannot read its rows.
+    "0005_tables": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`CREATE TABLE actor_tables (
+        table_schema text NOT NULL,
+        table_name text NOT NULL,
+        actor_type text NOT NULL,
+        PRIMARY KEY (table_schema, table_name)
+      )`
+    }),
+    // Events share the actor's routing key and commit with its turn. The
+    // sequence counter lives on the fenced generation row, so a pruned stream
+    // never reissues a cursor.
+    "0006_events": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`ALTER TABLE actor_generations ADD COLUMN event_sequence bigint NOT NULL DEFAULT 0`
+      yield* sql`CREATE TABLE actor_events (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        sequence bigint NOT NULL CHECK (sequence > 0),
+        event text NOT NULL,
+        command_id text NOT NULL,
+        value bytea NOT NULL,
+        emitted_at_ms bigint NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, sequence),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    }),
+    // An effect is an outbox row whose executor runs when it is due. On
+    // success or exhaustion it becomes an intent to its route, so the route
+    // is delivered like any intent, with the effect id as its command id.
+    // `ambiguous` records whether the last attempt's outcome is unknown.
+    "0008_effects": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`ALTER TABLE actor_outbox
+        ADD COLUMN kind text NOT NULL DEFAULT 'intent' CHECK (kind IN ('intent', 'effect')),
+        ADD COLUMN last_error text,
+        ADD COLUMN ambiguous boolean NOT NULL DEFAULT false`
+      // Exhausted effects stay visible to operators after their row settles.
+      yield* sql`CREATE TABLE actor_dead_letters (
+        routing_key bigint NOT NULL,
+        effect_id text NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        effect text NOT NULL,
+        payload text NOT NULL,
+        attempts integer NOT NULL,
+        cause text NOT NULL,
+        ambiguous boolean NOT NULL,
+        dead_at_ms bigint NOT NULL,
+        PRIMARY KEY (routing_key, effect_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    }),
   }),
 })

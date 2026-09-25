@@ -1,6 +1,9 @@
-import { Effect, Layer } from "effect"
-import { Probe, SleepyProbe } from "./contract.ts"
-import { ProbeReads, SleepyProbeReads } from "./queries.ts"
+import { DateTime, Deferred, Effect, Layer } from "effect"
+import { Intent } from "durable-actors"
+import { EventProbe, Probe, Sender, Sink, SleepyProbe, Ticked } from "./contract.ts"
+import { EffectProbeLive } from "./effects.ts"
+import { LedgerLive } from "./ledger.ts"
+import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
 
 const ProbeCommands = Probe.toLayer(
   Effect.succeed({
@@ -36,6 +39,56 @@ const SleepyProbeCommands = SleepyProbe.toLayer(
   }),
 )
 
+const EventProbeCommands = EventProbe.toLayer(
+  Effect.succeed({
+    Emit: Effect.fnUntraced(function* (count: number) {
+      const turn = yield* EventProbe.Turn
+
+      for (let n = 0; n < count; n++) yield* turn.emit(Ticked.make({ n }))
+
+      return count
+    }),
+  }),
+)
+
+/**
+ * Pending deliveries by intent payload. A benchmark registers an id before
+ * sending it, and the sink's handler completes it when the relay delivers.
+ * A handler that runs twice (a retried turn) completes an already-done
+ * Deferred, which is a no-op.
+ */
+export const deliveries = new Map<string, Deferred.Deferred<void>>()
+
+/** Sinks are spread over this many actors, so deliveries don't queue behind one activation. */
+export const SINKS = 64
+
+export const sinkOf = (id: string) => `sink-${Number(id.split("-").at(-1)) % SINKS}`
+
+const SinkCommands = Sink.toLayer(
+  Effect.succeed({
+    Deliver: (id: string) =>
+      Effect.suspend(() => {
+        const pending = deliveries.get(id)
+
+        return pending === undefined ? Effect.void : Deferred.succeed(pending, undefined)
+      }).pipe(Effect.asVoid),
+  }),
+)
+
+const SenderCommands = Sender.toLayer(
+  Effect.succeed({
+    Send: Effect.fnUntraced(function* (id: string) {
+      yield* (yield* Sink.intents(sinkOf(id))).Deliver(id)
+    }),
+    SendAt: Effect.fnUntraced(function* ({ ids, atMs }) {
+      for (const id of ids)
+        yield* (yield* Sink.intents(sinkOf(id)))
+          .Deliver(id)
+          .pipe(Intent.at(DateTime.makeUnsafe(atMs)))
+    }),
+  }),
+)
+
 /**
  * SleepyProbe registers first: Cluster's entity reaper fixes its first sweep
  * interval from the first registration (at most 30 seconds), and a short
@@ -46,4 +99,10 @@ export const ProbeLive = Layer.mergeAll(
   SleepyProbeReads,
   ProbeCommands,
   ProbeReads,
+  EventProbeCommands,
+  EventProbeReads,
+  SinkCommands,
+  SenderCommands,
+  LedgerLive,
+  EffectProbeLive,
 )

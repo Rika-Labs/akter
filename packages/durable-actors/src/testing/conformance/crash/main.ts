@@ -8,8 +8,11 @@ import { TurnHooks } from "../../../runtime/turn/hooks.ts"
 
 const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
 
+class Incremented extends Actor.Event<Incremented>()("Incremented", { count: Schema.Finite }) {}
+
 const Counter = Actor.make("ProcessCounter", {
   key: Schema.String,
+  events: [Incremented],
   state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Increment },
 })
@@ -19,6 +22,7 @@ const CounterLive = Counter.toLayer(
     Increment: Effect.fnUntraced(function* (amount: number) {
       const turn = yield* Counter.Turn
       yield* turn.state.set({ count: turn.state.count + amount })
+      yield* turn.emit(Incremented.make({ count: turn.state.count }))
 
       return turn.state.count
     }),
@@ -63,15 +67,27 @@ const program = Effect.gen(function* () {
 
   const rows = yield* sql<{
     receipts: number
+    events: number
     state_bytes: Uint8Array
   }>`SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts,
+      (SELECT count(*)::int FROM actor_events) AS events,
       (SELECT value FROM actor_state WHERE key = 'count') AS state_bytes`
 
   const result = yield* Schema.encodeEffect(
     Schema.fromJsonString(
-      Schema.Struct({ value: Schema.Finite, receipts: Schema.Int, state: Schema.String }),
+      Schema.Struct({
+        value: Schema.Finite,
+        receipts: Schema.Int,
+        events: Schema.Int,
+        state: Schema.String,
+      }),
     ),
-  )({ value, receipts: rows[0]!.receipts, state: decompress(rows[0]!.state_bytes) })
+  )({
+    value,
+    receipts: rows[0]!.receipts,
+    events: rows[0]!.events,
+    state: decompress(rows[0]!.state_bytes),
+  })
 
   // Tagged so the parent ignores runtime logs that share stdout.
   yield* Console.log(`RESULT ${result}`)
