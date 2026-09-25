@@ -185,6 +185,7 @@ export const layer = (options: Options) => {
 
             if (admission.receipt !== undefined) {
               const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
+
               if (external) yield* authorize(request)
 
               return retained
