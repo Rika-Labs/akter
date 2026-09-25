@@ -42,6 +42,9 @@ const Rewrite = Actor.command("Rewrite", { input: Entry, output: Schema.String }
 
 const WriteForked = Actor.command("WriteForked")
 
+/** A timeout runs its effect on a child fiber, so it is a forked use too. */
+const WriteTimed = Actor.command("WriteTimed")
+
 const Large = Actor.command("Large", { input: Schema.Int })
 
 const Capture = Actor.command("Capture")
@@ -70,6 +73,7 @@ const Drawer = Actor.make("Drawer", {
     WriteThenMisuse,
     Rewrite,
     WriteForked,
+    WriteTimed,
     Large,
     Capture,
     Replay,
@@ -165,6 +169,12 @@ const DrawerLive = (fixture: BlobsFixture) =>
         yield* Effect.forkChild(blob.set("forked", bytes("forked"))).pipe(
           Effect.flatMap(Fiber.join),
         )
+      }),
+      WriteTimed: Effect.fnUntraced(function* () {
+        yield* (yield* Drawer.Turn)
+          .blob(files)
+          .set("timed", bytes("timed"))
+          .pipe(Effect.timeout("5 seconds"), Effect.orDie)
       }),
       Large: Effect.fnUntraced(function* (size) {
         yield* (yield* Drawer.Turn).blob(files).set("large", new Uint8Array(size).fill(7))
@@ -424,11 +434,13 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           expect(defect(yield* fixture.blobs.escaped.pipe(Effect.exit))).toContain(
             "Blob capability escaped its query",
           )
-          expect(defect(yield* drawer.WriteForked().pipe(Effect.exit))).toContain(
-            "Blob capability escaped its turn",
-          )
+          for (const forked of [drawer.WriteForked(), drawer.WriteTimed()])
+            expect(defect(yield* forked.pipe(Effect.exit))).toContain(
+              "Blob capability used from a fiber other than its turn's",
+            )
           expect(yield* drawer.Get("owned")).toEqual(Option.none())
           expect(yield* drawer.Get("forked")).toEqual(Option.none())
+          expect(yield* drawer.Get("timed")).toEqual(Option.none())
           expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(1), receipts: 1 })
         }),
       ),

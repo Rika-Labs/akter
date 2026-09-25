@@ -115,7 +115,7 @@ The cases live in [`conformance/blobs.ts`](../../packages/durable-actors/src/tes
 - `replays a blob append committed before a crash without appending again`
 - `exempts blob bytes from maxStateBytes` — a 256 KiB entry commits under a 1,024-byte `maxStateBytes`.
 - `rejects undeclared blobs and malformed entries as defects without a receipt` — an undeclared blob, an empty entry name, a lone surrogate (which Postgres would store as U+FFFD, aliasing another name), a NUL, and a non-`Uint8Array` value each fail the turn, and the turn's earlier write rolls back.
-- `gives queries read-only blobs and rejects escaped blob capabilities` — a query's `BlobRead` has no `set`; a `set` captured from a turn fails after the turn and from another turn; a `get` captured from a query fails after the query; and a `set` from a fiber forked inside the turn dies and rolls the turn back (A3). The forked-fiber guard is shared with owned rows and `group`.
+- `gives queries read-only blobs and rejects escaped blob capabilities` — a query's `BlobRead` has no `set`; a `set` captured from a turn fails after the turn and from another turn; a `get` captured from a query fails after the query; and a `set` from a fiber forked inside the turn, or wrapped in `Effect.timeout`, dies and rolls the turn back (A3). The forked-fiber guard is shared with owned rows and `group`.
 
 Postgres only (independent connections):
 

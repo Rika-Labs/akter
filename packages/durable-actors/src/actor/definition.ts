@@ -576,8 +576,16 @@ const make = <
 
             const escaped = (capability: string) =>
               Effect.gen(function* () {
-                if (!open || (yield* InsideTurn) !== turn || Fiber.getCurrent() !== owner)
+                if (!open || (yield* InsideTurn) !== turn)
                   return yield* Effect.die(new Error(`${capability} capability escaped its turn`))
+
+                // The turn's one connection takes no concurrent statements.
+                if (Fiber.getCurrent() !== owner)
+                  return yield* Effect.die(
+                    new Error(
+                      `${capability} capability used from a fiber other than its turn's; timeout, race, and concurrent combinators run on other fibers`,
+                    ),
+                  )
               })
 
             const access = yield* actors.tables(
@@ -776,8 +784,16 @@ const make = <
 
             const escaped = (capability: string) =>
               Effect.gen(function* () {
-                if (!open || (yield* InsideTurn) !== query || Fiber.getCurrent() !== owner)
+                if (!open || (yield* InsideTurn) !== query)
                   return yield* Effect.die(new Error(`${capability} capability escaped its query`))
+
+                // The query's one connection takes no concurrent statements.
+                if (Fiber.getCurrent() !== owner)
+                  return yield* Effect.die(
+                    new Error(
+                      `${capability} capability used from a fiber other than its query's; timeout, race, and concurrent combinators run on other fibers`,
+                    ),
+                  )
               })
 
             const access = yield* actors.tables(
