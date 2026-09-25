@@ -17,8 +17,11 @@ const DRAIN_PASSES = 100
 /** An executor attempt keeps its row out of scans this long: its timeout plus margin. */
 const EXECUTION_LEASE_MS = 60_000
 
-/** How long an effect waits when this process registers no executor for it. */
-const UNREGISTERED_DELAY_MS = 60_000
+/**
+ * How long an effect waits when this process registers no executor for it. It
+ * is short because the relay can start before the effect layer registers.
+ */
+const UNREGISTERED_DELAY_MS = 5_000
 
 const backoffMs = (attempts: number) => 1000 * 2 ** Math.min(attempts, 8)
 
