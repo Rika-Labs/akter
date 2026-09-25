@@ -3,6 +3,7 @@ import type { ActorError } from "../errors/actor.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { StagedOutbox } from "./intents.ts"
+import type { AnyOwnedTable, TableAccess, TableScope } from "../tables/owned.ts"
 
 export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
@@ -50,6 +51,7 @@ export interface RegisteredQuery {
 export interface QueryRegistration {
   readonly name: string
   readonly placement: "tenant" | "actor"
+  readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly queries: ReadonlyMap<string, RegisteredQuery>
 }
 
@@ -58,6 +60,7 @@ export interface Registration {
   readonly singleton: boolean
   readonly placement: "tenant" | "actor"
   readonly policy: TurnPolicy
+  readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly commands: ReadonlyMap<string, RegisteredCommand>
 }
 
@@ -77,6 +80,11 @@ export class InternalActors extends Context.Service<
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>
+    /**
+     * Binds owned-table capabilities to the calling fiber's turn or query.
+     * Writable access requires the turn transaction and never opens its own.
+     */
+    readonly tables: (scope: TableScope, write: boolean) => Effect.Effect<TableAccess>
   }
 >()("durable-actors/handles/actors/InternalActors") {}
 

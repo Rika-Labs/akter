@@ -37,6 +37,10 @@ const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(funct
 
 Only command handlers and workflow bodies may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker, which command turns provide and `X.toLayer` removes from handler requirements (workflow bodies are target API). A command handler that acquires a handle with `X.get` does not compile. Request/reply handles (`X.get`) are available outside turns: in applications, workflow bodies, and effect executors. Executors report results by returning a value; the framework delivers it to the effect's `onSuccess` route ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)). Workflow activities and durable sleep use Effect's `Activity` and `DurableClock`.
 
+## Owned rows
+
+`turn.rows(table)` and `read.rows(table)` accept only the actor type's declared `tables` and scope every operation to the current tenant and actor; `group` reads across the placement group. Neither takes ownership fields or predicates. The operations, filters, and rejected uses are in [Drizzle integration](04-drizzle.md).
+
 ## Command turns
 
 A command's context is the only writable one. One framework-owned transaction performs, in order, the generation fence, receipt resolution, state decode (or reuse of the activation's cached state), handler, staged writes and intents, receipt update, and commit ([command turns](../contracts/02-command-turns.md)). `DateTime.now` is pinned per turn.

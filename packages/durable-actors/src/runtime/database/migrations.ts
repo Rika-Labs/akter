@@ -130,5 +130,16 @@ export const migrate = Migrator.make({})({
         ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, timer_key)
         WHERE timer_key IS NOT NULL`
     }),
+    // Application tables come from drizzle-kit; the framework only records
+    // which actor type owns each one, so a second owner cannot read its rows.
+    "0005_tables": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`CREATE TABLE actor_tables (
+        table_schema text NOT NULL,
+        table_name text NOT NULL,
+        actor_type text NOT NULL,
+        PRIMARY KEY (table_schema, table_name)
+      )`
+    }),
   }),
 })

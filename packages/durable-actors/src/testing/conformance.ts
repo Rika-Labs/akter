@@ -20,6 +20,12 @@ import { payloadHash } from "../runtime/turn/receipt.ts"
 import { ActorTest } from "./actor-test.ts"
 import { reducerConformance, reducerLayer } from "./conformance/reducers.ts"
 import {
+  tablesConformance,
+  tablesFixture,
+  tablesLayer,
+  type TablesFixture,
+} from "./conformance/tables.ts"
+import {
   defectRecorder,
   foundationConformance,
   foundationFixture,
@@ -114,6 +120,7 @@ export interface ConformanceBackend {
 export interface ConformanceFixture {
   readonly foundation: FoundationFixture
   readonly outbox: OutboxFixture
+  readonly tables: TablesFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -229,6 +236,7 @@ const CounterLive = (fixture: ConformanceFixture) =>
 const makeFixture = (): ConformanceFixture => ({
   foundation: foundationFixture(),
   outbox: outboxFixture(),
+  tables: tablesFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -249,6 +257,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
   ...reducerConformance,
   ...outboxConformance,
+  ...tablesConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1180,6 +1189,7 @@ export const describeConformance = (options: {
     foundationLayer(fixture.foundation),
     reducerLayer,
     outboxLayer(fixture.outbox),
+    tablesLayer(fixture.tables),
   )
 
   let store: ConformanceStore | undefined

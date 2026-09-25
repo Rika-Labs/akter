@@ -35,6 +35,7 @@ import type {
 } from "../members/command.ts"
 import type { AnyReducer } from "../members/reducer.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
+import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
 import {
   type ActorState,
   ActorStates,
@@ -209,11 +210,14 @@ interface Definition<
   Fields extends StateFields,
   Api extends MemberRecord,
   Internal extends CommandRecord,
+  Tables extends ReadonlyArray<AnyOwnedTable>,
 > {
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
   readonly placement?: "tenant" | "actor"
   readonly state?: ActorState<Fields>
+  /** `Actor.table` tables whose rows this actor type owns. */
+  readonly tables?: Tables
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>>
@@ -226,9 +230,10 @@ const make = <
   const Internal extends CommandRecord = {},
   const K extends Key = undefined,
   const P extends Policy<CommandsOf<Api> | Values<Internal>> = {},
+  const T extends ReadonlyArray<AnyOwnedTable> = [],
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal> & { readonly key?: K; readonly policy?: P },
+  definition: Definition<K, Fields, Api, Internal, T> & { readonly key?: K; readonly policy?: P },
 ) => {
   Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/)).make(name)
   const api: MemberRecord = definition.api
@@ -261,6 +266,24 @@ const make = <
   for (const reducer of reducers)
     if (reducer.state !== definition.state)
       throw new Error(`Reducer ${reducer.tag} must declare its actor's state`)
+
+  const tables: ReadonlyArray<AnyOwnedTable> = definition.tables ?? []
+  const placement = definition.placement ?? "tenant"
+
+  // One actor type owns a table, so equal actor ids of two types never share rows.
+  for (const table of tables) {
+    const info = ownership(table)
+
+    if (info === undefined) throw new Error("tables takes Actor.table values")
+
+    if (tables.indexOf(table) !== tables.lastIndexOf(table))
+      throw new Error(`Table ${info.name} is listed twice`)
+
+    if (info.owner !== undefined && info.owner !== name)
+      throw new Error(`Table ${info.name} is already owned by actor ${info.owner}`)
+    info.owner = name
+  }
+
   const migrations = definition.state?.migrations ?? []
   ActorStates.validateChain(fields, migrations)
   const version = migrations.length
@@ -319,11 +342,15 @@ const make = <
 
   type State = StateOf<Fields>
 
-  class Turn extends Context.Service<Turn, CommandContext<State>>()(
+  type Owned = T[number]
+
+  class Turn extends Context.Service<Turn, CommandContext<State, Owned>>()(
     `durable-actors/Turn/${name}`,
   ) {}
 
-  class Read extends Context.Service<Read, QueryContext<State>>()(`durable-actors/Read/${name}`) {}
+  class Read extends Context.Service<Read, QueryContext<State, Owned>>()(
+    `durable-actors/Read/${name}`,
+  ) {}
 
   const getHandle = Effect.fnUntraced(function* (
     id: string,
@@ -524,18 +551,33 @@ const make = <
 
             const view = { set }
 
+            const access = yield* actors.tables(
+              {
+                ref: request.ref,
+                placement,
+                tables,
+                guard: Effect.gen(function* () {
+                  if (!open || (yield* InsideTurn) !== turn)
+                    return yield* Effect.die(new Error("Table capability escaped its turn"))
+                }),
+              },
+              true,
+            )
+
             for (const key of Object.keys(fields)) {
               const field = key as keyof typeof current
               Object.defineProperty(view, key, { enumerable: true, get: () => current[field] })
             }
 
-            const context: CommandContext<State> = {
+            const context: CommandContext<State, Owned> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
               principal: principal(request.caller),
               commandId: request.commandId,
               state: Object.freeze(view) as CommandContext<State>["state"],
+              rows: access.rows as CommandContext<State, Owned>["rows"],
+              group: access.group,
             }
 
             const outbox = openOutbox({
@@ -635,8 +677,9 @@ const make = <
         name,
         commands,
         singleton: isSingleton,
-        placement: definition.placement ?? "tenant",
+        placement,
         policy,
+        tables,
       })
     })
 
@@ -697,13 +740,30 @@ const make = <
         registered.set(member.tag, {
           run: Effect.fnUntraced(function* (request, rows) {
             const { state } = yield* decodeStored(rows)
+            let open = true
+            const query = Symbol()
 
-            const context: QueryContext<State> = {
+            const access = yield* actors.tables(
+              {
+                ref: request.ref,
+                placement,
+                tables,
+                guard: Effect.gen(function* () {
+                  if (!open || (yield* InsideTurn) !== query)
+                    return yield* Effect.die(new Error("Table capability escaped its query"))
+                }),
+              },
+              false,
+            )
+
+            const context: QueryContext<State, Owned> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
               principal: principal(request.caller),
               state: Object.freeze(state) as Readonly<State>,
+              rows: access.rows as QueryContext<State, Owned>["rows"],
+              group: access.group,
             }
 
             return yield* Effect.gen(function* () {
@@ -729,11 +789,16 @@ const make = <
                 }),
               ),
               Effect.catchDefect((cause) => Effect.succeed(Outcome.cases.Defect.make({ cause }))),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  open = false
+                }),
+              ),
               Effect.provideService(Read, context),
               Effect.provideContext(services),
               // A query is read-only: marking it as a turn makes any command or
               // query call from its handler a defect instead of a write.
-              Effect.provideService(InsideTurn, Symbol()),
+              Effect.provideService(InsideTurn, query),
             )
           }),
         })
@@ -741,7 +806,8 @@ const make = <
 
       yield* actors.registerQueries({
         name,
-        placement: definition.placement ?? "tenant",
+        placement,
+        tables,
         queries: registered,
       })
     })
