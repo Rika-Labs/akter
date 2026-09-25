@@ -1,8 +1,8 @@
 import { Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { shuffled } from "../measure.ts"
-import { SleepyProbe } from "../probe/contract.ts"
-import { type CaseResult, DEFAULT_POOL, measure, type Scenario } from "../scenario.ts"
+import { shuffled } from "../../measure.ts"
+import { SleepyProbe } from "../../probe/contract.ts"
+import { type CaseResult, DEFAULT_POOL, measure, type Scenario } from "../../scenario.ts"
 import { pick } from "./many-actors.ts"
 
 const WORKERS = 64

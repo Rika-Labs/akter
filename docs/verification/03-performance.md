@@ -118,7 +118,7 @@ Merge results:
 
 One difference exceeds the noise and repeated in both merge runs: rewriting a 16–32 KiB blob every turn. At 32 KiB, p50 was 12.4 and 11.8 ms on the merge, against 4.3 to 8.0 ms across four `main` runs. Statement counts are unchanged, so any extra cost is in the runtime, not the database. Treat it as a lead to confirm with a focused repeat, not an attributed regression.
 
-None of the four slices has its own scenario yet. Outbox relay latency, timers due at scale, event append and replay, and effect round trips are untested.
+The merge had no scenario for the four slices. Each has one now; `benchmarks/README.md` maps every shipped feature to its scenarios.
 
 ### Bottlenecks
 
@@ -175,6 +175,16 @@ None of the four slices has its own scenario yet. Outbox relay latency, timers d
 | steady-10000, pool 50 (p99) | 228 ms                         | 212 ms             | 242 ms             |
 
 First touch of 100k actors grew the heap by 1.0–1.8 GiB across the two runs. The run without the change grew it by 0.9 GiB, even though at most 10,000 actors were resident. This fits finding 5: memory follows actors touched, not actors resident. `steady-100000` still started a new activation for 89% of its turns. First touch took about 400 seconds, so most actors had already hibernated under the 60-second `hibernateAfter`. At 10k actors, 50 connections cut p99 by more than half against 10 connections in all three runs, and 25 connections gave no consistent gain. That's why the default is 50.
+
+### Reducers, capacity, and owned-table ordering (#58)
+
+`2026-09-25-8db29a9-coverage-{postgres,pglite}.json` runs `hot-actor`, `owned-rows`, `reducers`, and `capacity` on `main` `96eb5e1` plus the new scenarios, with Bun 1.3.14 on a 4-vCPU cloud VM. `hot-actor` in the same run is the baseline. The Postgres figures:
+
+- **Server reducers cost the same as a command handler.** A reducer that replies with the new state issues 7.01 statements per operation, like a `hot-actor` command turn, at 2.44 ms p50 against the command's 2.59 ms. The commutative reducer also issues 7.01. A reducer that fails with a declared error issues 6.01, because it commits a failure receipt and skips the state upsert. With 64 callers on one actor, reducers reach 379 op/s against 411 op/s for commands, which is within this VM's noise. Reducers add no round trip, so the M1 reducer design needs no performance follow-up.
+- **Past `maxResidentActors`, the idle sweep sets the pace.** With the limit at 1,000 and 64 callers on actors that hibernate after 250 ms, steady state over 1,000 actors ran at 514 op/s with no errors. Over 4,000 actors it fell to 175 op/s, p95 rose from 0.34 s to 2.8 s, and 99.4% of turns started a new activation. A caller over the limit waits for Cluster's idle sweep to evict a hibernated activation, and the sweep runs about every 5 seconds, so throughput past the limit is bounded by roughly the limit per sweep interval, not by the database. The CPU of both the runtime and Postgres fell, which confirms that callers were waiting rather than working. No caller hit its 30-second delivery timeout. Size `maxResidentActors` to the working set: the limit is a cliff, not a gradual slowdown.
+- **An ordered owned-table read needs its own index.** The `owned-rows` page query (top 20 of 1,000 rows by `amount`) now reads an ownership-prefixed index on `amount`. Its statement went from 0.44 ms mean execution in `2026-09-25-2ee0bba-owned-rows-postgres.json` to 0.03 ms, because Postgres no longer reads and sorts every row of the actor. [Drizzle integration](../api/04-drizzle.md) now tells applications to declare that index.
+
+On PGlite, reducers ran at 197–202 op/s against 144 op/s for commands in the same run, with the same statements; PGlite's order effects on one connection make that gap noise rather than a reducer advantage. The capacity cases stayed near 200 op/s at and past the limit, because at that rate 86% of turns were already cold at the limit, so exceeding it changed little.
 
 ### Recommendations (not applied)
 

@@ -64,7 +64,7 @@ Every feature ships with a scenario. A pull request that adds a durable mechanis
 
 ### Adding a scenario
 
-Add a file under `tooling/benchmarks/src/scenarios/` that exports a `Scenario`, and append it to `SCENARIOS` in `tooling/benchmarks/src/main.ts`. Use `context.withRuntime` for a fresh database and runtime, and `measure` for each case, so the case gets the same latency, throughput, statement, activity, and CPU fields as every other. If the scenario needs its own actor, define it beside `Probe` and add its layer to `ProbeLive`. Then add a row to the table above.
+Add a file under `tooling/benchmarks/src/scenarios/` (scale and memory scenarios go in `scenarios/scale/`) that exports a `Scenario`, and append it to `SCENARIOS` in `tooling/benchmarks/src/main.ts`. Use `context.withRuntime` for a fresh database and runtime, and `measure` for each case, so the case gets the same latency, throughput, statement, activity, and CPU fields as every other. If the scenario needs its own actor, define it beside `Probe` and add its layer to `ProbeLive`. Then add a row to the table above.
 
 ## Reading a result
 
