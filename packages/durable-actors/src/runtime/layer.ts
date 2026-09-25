@@ -75,26 +75,30 @@ export interface Options {
 
 /**
  * How a runtime joins a cluster of runners instead of running as the embedded
- * single runner. Package-internal: `ActorTest.cluster` supplies it.
+ * single runner. Package-internal: `ActorTest.cluster` provides it to each of
+ * its runners.
  */
-export interface RunnerWiring {
-  readonly config: Partial<ShardingConfig.ShardingConfig["Service"]>
-  /** Provides `Sharding` together with the runner-to-runner transport. */
-  readonly sharding: Layer.Layer<
-    Sharding.Sharding,
-    never,
-    | ShardingConfig.ShardingConfig
-    | MessageStorage.MessageStorage
-    | RunnerStorage.RunnerStorage
-    | RunnerHealth.RunnerHealth
-  >
-  /** Wraps the SQL runner storage, e.g. to withhold heartbeats or a graceful release. */
-  readonly storage: (storage: RunnerStorage.RunnerStorage["Service"]) => RunnerStorage.RunnerStorage["Service"]
-}
+export class RunnerWiring extends Context.Service<
+  RunnerWiring,
+  {
+    readonly config: Partial<ShardingConfig.ShardingConfig["Service"]>
+    /** Provides `Sharding` together with the runner-to-runner transport. */
+    readonly sharding: Layer.Layer<
+      Sharding.Sharding,
+      never,
+      | ShardingConfig.ShardingConfig
+      | MessageStorage.MessageStorage
+      | RunnerStorage.RunnerStorage
+      | RunnerHealth.RunnerHealth
+    >
+    /** Wraps the SQL runner storage, e.g. to withhold heartbeats or a graceful release. */
+    readonly storage: (
+      storage: RunnerStorage.RunnerStorage["Service"],
+    ) => RunnerStorage.RunnerStorage["Service"]
+  }
+>()("durable-actors/runtime/layer/RunnerWiring") {}
 
-export const layer = (options: Options) => makeLayer(options)
-
-export const makeLayer = (options: Options, wiring?: RunnerWiring) => {
+export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
   ).make(options.retryWindowMs ?? 86_400_000)
@@ -434,9 +438,7 @@ export const makeLayer = (options: Options, wiring?: RunnerWiring) => {
         drainOutbox: relay.drain,
         shardId: (ref) =>
           entityId(ref).pipe(
-            Effect.flatMap((id) =>
-              commandEntity(ref.actor).getShardId(EntityId.make(id)),
-            ),
+            Effect.flatMap((id) => commandEntity(ref.actor).getShardId(EntityId.make(id))),
             Effect.map(String),
             Effect.provideService(Sharding.Sharding, sharding),
           ),
@@ -449,6 +451,7 @@ export const makeLayer = (options: Options, wiring?: RunnerWiring) => {
   return Layer.unwrap(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
+      const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
       yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${retryWindowMs}) ON CONFLICT DO NOTHING`
 
@@ -476,14 +479,18 @@ export const makeLayer = (options: Options, wiring?: RunnerWiring) => {
 
       // Commands are direct, so Cluster keeps no message storage; durable
       // intents will use the actor-shard outbox instead.
-      const sharding = (wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))).pipe(
+      const sharding = (
+        wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))
+      ).pipe(
         Layer.provideMerge(MessageStorage.layerNoop),
         Layer.provide([
           runnerStorage === "memory"
             ? RunnerStorage.layerMemory
             : Layer.effect(
                 RunnerStorage.RunnerStorage,
-                SqlRunnerStorage.make({}).pipe(Effect.map(wiring?.storage ?? ((storage) => storage))),
+                SqlRunnerStorage.make({}).pipe(
+                  Effect.map(wiring?.storage ?? ((storage) => storage)),
+                ),
               ).pipe(Layer.orDie),
           RunnerHealth.layerNoop,
         ]),

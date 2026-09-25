@@ -33,6 +33,8 @@ export interface Instruments {
 
 export interface CaseDatabase {
   readonly layer: Layer.Layer<SqlClient.SqlClient>
+  /** The case database's URL on a real server, for runtimes that open their own pools. */
+  readonly url: Redacted.Redacted<string> | undefined
   readonly instruments: Instruments | undefined
 }
 
@@ -228,6 +230,7 @@ export const postgres = (external: string | undefined) =>
         layer: Database.postgres({ url: url(name), maxConnections: options.maxConnections }).pipe(
           Layer.orDie,
         ),
+        url: url(name),
         instruments: {
           resetStatements: admin`SELECT pg_stat_statements_reset()`.pipe(
             Effect.orDie,
@@ -253,6 +256,10 @@ export const pglite = Effect.gen(function* () {
     version,
     settings: { connections: "1 (in-process)", storage: "in-memory" },
     database: () =>
-      Effect.succeed({ layer: Database.pglite().pipe(Layer.orDie), instruments: undefined }),
+      Effect.succeed({
+        layer: Database.pglite().pipe(Layer.orDie),
+        url: undefined,
+        instruments: undefined,
+      }),
   } satisfies Backend
 }).pipe(Effect.orDie)

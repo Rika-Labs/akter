@@ -56,6 +56,7 @@ const withCluster = <A, E>(
   environment.run(
     Effect.gen(function* () {
       const database = yield* environment.freshDatabase
+
       const context = yield* Layer.build(
         ActorTest.cluster({
           database,
@@ -74,7 +75,9 @@ const add = (runner: number, id: string, amount: number) =>
   Effect.gen(function* () {
     const cluster = yield* ActorCluster
 
-    return yield* cluster.on(runner)(Tally.get(id).pipe(Effect.flatMap((tally) => tally.Add(amount))))
+    return yield* cluster.on(runner)(
+      Tally.get(id).pipe(Effect.flatMap((tally) => tally.Add(amount))),
+    )
   })
 
 const refOf = (id: string) =>
@@ -174,11 +177,14 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           const caller = (owner + 1) % 3
           expect(yield* add(caller, "paused", 1)).toBe(1)
 
-          const pause = yield* cluster.on(owner)(ActorTest.use((test) => test.pauseNext("beforeCommit")))
+          const pause = yield* cluster.on(owner)(
+            ActorTest.use((test) => test.pauseNext("beforeCommit")),
+          )
+
           const retried = yield* add(caller, "paused", 2).pipe(Effect.forkChild)
           yield* pause.reached
 
-          const held = (yield* lockOf(caller, ref))
+          const held = yield* lockOf(caller, ref)
           const killed = (yield* lockOf(caller, ref)).now
           yield* cluster.kill(owner)
           yield* pause.release
@@ -198,6 +204,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
               until: (lock) => lock.address !== held.address,
             }),
           )
+
           const next = (yield* cluster.owner(ref))!
           expect(next === owner).toBe(false)
           // No survivor takes the shard while the dead runner's lock is live.
@@ -212,7 +219,9 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 2,
             events: 2,
           })
-          expect(yield* cluster.on(next)(ActorTest.use((test) => test.receiptsFor(ref, "Add")))).toBe(2)
+          expect(
+            yield* cluster.on(next)(ActorTest.use((test) => test.receiptsFor(ref, "Add"))),
+          ).toBe(2)
         }),
       ),
   },
@@ -274,7 +283,10 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           )
           yield* heartbeat.resume
 
-          const log = yield* cluster.on(rival)(Tally.get("raced").pipe(Effect.flatMap((tally) => tally.Log())))
+          const log = yield* cluster.on(rival)(
+            Tally.get("raced").pipe(Effect.flatMap((tally) => tally.Log())),
+          )
+
           expect(log.map(({ cursor }) => cursor)).toEqual(
             Array.from({ length: 25 }, (_, index) => String(index + 1)),
           )

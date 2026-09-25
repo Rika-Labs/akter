@@ -14,20 +14,15 @@ import {
   Schedule,
   Scope,
 } from "effect"
-import {
-  RunnerAddress,
-  RunnerServer,
-  Runners,
-  RunnerStorage,
-} from "effect/unstable/cluster"
+import { RunnerAddress, RunnerServer, Runners, RunnerStorage } from "effect/unstable/cluster"
 import { NetAddress } from "effect/unstable/net"
 import { RpcClient, RpcSerialization, RpcServer } from "effect/unstable/rpc"
 import { Socket, SocketServer } from "effect/unstable/socket"
 import { SqlClient } from "effect/unstable/sql"
 import { InternalActors } from "../handles/actors.ts"
 import type { ActorRef } from "../identity/caller.ts"
-import { Database } from "../runtime/layer.ts"
-import { type TestOptions, testLayer } from "./actor-test.ts"
+import { Database, RunnerWiring } from "../runtime/layer.ts"
+import { ActorTest, ClusterMember, type TestOptions } from "./actor-test.ts"
 
 // Enough shards that every runner of a small cluster owns several, so actors
 // spread and a killed runner's actors move.
@@ -44,7 +39,7 @@ const TIMINGS = {
 } as const
 
 /** Services each runner provides to effects run with `cluster.on(runner)`. */
-export type RunnerServices = Layer.Success<ReturnType<typeof testLayer>>
+export type RunnerServices = Layer.Success<ReturnType<typeof ActorTest.layer>>
 
 export interface ClusterOptions<ROut, E, RIn> extends TestOptions {
   /** Number of runners, at least 1. */
@@ -65,7 +60,9 @@ export class ActorCluster extends Context.Service<
      */
     readonly on: (
       runner: number,
-    ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, Exclude<R, RunnerServices>>
+    ) => <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E, Exclude<R, RunnerServices>>
     /**
      * Stops `runner` the way a crash does: its connections close, rolling back
      * open turns, and its shard locks and heartbeat are left to expire.
@@ -78,7 +75,9 @@ export class ActorCluster extends Context.Service<
      * serving the shards it holds: other runners take its shards once its
      * locks expire, and only the database fence stands between the two.
      */
-    readonly pauseHeartbeat: (runner: number) => Effect.Effect<{ readonly resume: Effect.Effect<void> }>
+    readonly pauseHeartbeat: (
+      runner: number,
+    ) => Effect.Effect<{ readonly resume: Effect.Effect<void> }>
     /** The runner holding an unexpired lock on the shard that places `ref`. */
     readonly owner: (ref: ActorRef) => Effect.Effect<number | undefined>
     /** Waits until every running runner holds exactly the shards assigned to it. */
@@ -100,8 +99,8 @@ interface Runner {
 const key = (address: RunnerAddress.RunnerAddress) => `${address.host}:${address.port}`
 
 const unreachable = (address: RunnerAddress.RunnerAddress) =>
-  new Socket.SocketError({
-    reason: new Socket.SocketOpenError({
+  Socket.SocketError.make({
+    reason: Socket.SocketOpenError.make({
       kind: "Unknown",
       cause: new Error(`Runner ${key(address)} is unreachable`),
     }),
@@ -112,17 +111,19 @@ const unreachable = (address: RunnerAddress.RunnerAddress) =>
  * decoded as it would be on a socket, and a killed runner's connections fail
  * mid-stream.
  */
-const makeNetwork = Effect.gen(function* () {
+const makeNetwork = Effect.sync(() => {
   const listeners = new Map<string, Queue.Queue<Socket.Socket>>()
   const links = new Map<string, Set<() => void>>()
 
   const pipe = (sever: Set<() => void>) => {
     let controller: TransformStreamDefaultController<Uint8Array> | undefined
+
     const stream = new TransformStream<Uint8Array, Uint8Array>({
       start: (started) => {
         controller = started
       },
     })
+
     sever.add(() => controller?.error(new Error("Runner killed")))
 
     return stream
@@ -167,6 +168,7 @@ const makeNetwork = Effect.gen(function* () {
 
   const close = (address: RunnerAddress.RunnerAddress) => {
     listeners.delete(key(address))
+
     for (const sever of links.get(key(address)) ?? []) sever()
     links.delete(key(address))
   }
@@ -218,8 +220,11 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
       const tenant = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
       const network = yield* makeNetwork
       const services = yield* Effect.context<Crypto.Crypto | Exclude<RIn, RunnerServices>>()
+
       const sql = Context.get(
-        yield* Layer.build(Database.postgres({ url: database, maxConnections: 2 })).pipe(Effect.orDie),
+        yield* Layer.build(Database.postgres({ url: database, maxConnections: 2 })).pipe(
+          Effect.orDie,
+        ),
         SqlClient.SqlClient,
       )
 
@@ -239,7 +244,12 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           return refused
         }
 
-        const socket = connect({ host: url.hostname, port: Number(url.port || 5432), noDelay: true })
+        const socket = connect({
+          host: url.hostname,
+          port: Number(url.port || 5432),
+          noDelay: true,
+        })
+
         sockets.add(socket)
         socket.once("close", () => sockets.delete(socket))
 
@@ -248,7 +258,9 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
 
       const storage =
         (runner: Runner) =>
-        (inner: RunnerStorage.RunnerStorage["Service"]): RunnerStorage.RunnerStorage["Service"] => ({
+        (
+          inner: RunnerStorage.RunnerStorage["Service"],
+        ): RunnerStorage.RunnerStorage["Service"] => ({
           ...inner,
           getRunners: Effect.suspend(() =>
             runner.heartbeat === "running" || runner.runners === undefined
@@ -264,12 +276,15 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           refresh: (address, shardIds) =>
             Effect.suspend(() => {
               if (runner.heartbeat === "running") return inner.refresh(address, shardIds)
+
               // A paused runner believes every lock it asks about is still its own.
               return Effect.succeed(runner.heartbeat === "paused" ? Array.from(shardIds) : [])
             }),
           acquire: (address, shardIds) =>
             Effect.suspend(() =>
-              runner.heartbeat === "running" ? inner.acquire(address, shardIds) : Effect.succeed([]),
+              runner.heartbeat === "running"
+                ? inner.acquire(address, shardIds)
+                : Effect.succeed([]),
             ),
           release: (address, shardId) =>
             Effect.suspend(() =>
@@ -285,7 +300,9 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
             ),
           setRunnerHealth: (address, healthy) =>
             Effect.suspend(() =>
-              runner.heartbeat === "running" ? inner.setRunnerHealth(address, healthy) : Effect.void,
+              runner.heartbeat === "running"
+                ? inner.setRunnerHealth(address, healthy)
+                : Effect.void,
             ),
         })
 
@@ -302,21 +319,22 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
 
         const layer = options.actors.pipe(
           Layer.provideMerge(
-            testLayer(options, {
-              tenant,
-              wiring: {
-                config: {
-                  ...TIMINGS,
-                  runnerAddress: Option.some(runner.address),
-                  shardsPerGroup: SHARDS,
-                  shardLockExpiration: expiration,
-                  shardLockDisableAdvisory: true,
-                },
-                sharding: network.runner(runner.address),
-                storage: storage(runner),
-              },
-              connect: dial(runner),
-            }),
+            ActorTest.layer(options).pipe(
+              Layer.provide([
+                Layer.succeed(ClusterMember, { tenant, connect: dial(runner) }),
+                Layer.succeed(RunnerWiring, {
+                  config: {
+                    ...TIMINGS,
+                    runnerAddress: Option.some(runner.address),
+                    shardsPerGroup: SHARDS,
+                    shardLockExpiration: expiration,
+                    shardLockDisableAdvisory: true,
+                  },
+                  sharding: network.runner(runner.address),
+                  storage: storage(runner),
+                }),
+              ]),
+            ),
           ),
         )
 
@@ -339,9 +357,11 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         runner.context = undefined
         runner.sockets = undefined
         network.close(runner.address)
+
         for (const socket of sockets ?? []) socket.destroy()
 
-        if (scope !== undefined) stopping.push(yield* Effect.forkDetach(Scope.close(scope, Exit.void)))
+        if (scope !== undefined)
+          stopping.push(yield* Effect.forkDetach(Scope.close(scope, Exit.void)))
       })
 
       const at = (index: number) =>
@@ -372,6 +392,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         if (serving.length === 0) return true
 
         const ring = HashRing.make<RunnerAddress.RunnerAddress>()
+
         for (const runner of serving) HashRing.add(ring, runner.address, { weight: 1 })
         const expected = HashRing.getShards(ring, SHARDS)!
         const held = new Map((yield* locks).map((lock) => [lock.shard_id, lock.address]))
