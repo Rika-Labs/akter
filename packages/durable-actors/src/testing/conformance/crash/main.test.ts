@@ -57,8 +57,8 @@ describe("process death with Postgres", () => {
                 { migration_id: 4 },
                 { migration_id: 5 },
                 { migration_id: 6 },
-                { migration_id: 7 },
                 { migration_id: 8 },
+                { migration_id: 9 },
               ])
               expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
                 { receipts: 0 },
