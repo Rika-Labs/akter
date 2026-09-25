@@ -295,6 +295,8 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
               generation: undefined,
               state: {},
               receipts: 0,
+              events: 0,
+              outbox: 0,
             })
           expect(yield* minted.Ping()).toBe("minted")
           expect(yield* named.Ping()).toBe("named")
@@ -305,6 +307,8 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             generation: "1",
             state: {},
             receipts: 1,
+            events: 0,
+            outbox: 0,
           })
         }),
       ),
@@ -323,6 +327,8 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             generation: undefined,
             state: {},
             receipts: 0,
+            events: 0,
+            outbox: 0,
           })
           const reject = actor.Create(false)
           const before = fixture.foundation.creates
@@ -333,6 +339,8 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             generation: "1",
             state: {},
             receipts: 1,
+            events: 0,
+            outbox: 0,
           })
           expect(yield* actor.Read().pipe(Effect.flip)).toMatchObject({
             reason: NotCreated.make({}),
@@ -595,6 +603,8 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(actor.ref)).toEqual({
             state: { count: 1 },
             receipts: 2,
+            events: 0,
+            outbox: 0,
             generation: String(Number(before.generation) + 1),
           })
         }),
@@ -645,6 +655,8 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(actor.ref)).toEqual({
             state: { count: 1 },
             receipts: 1,
+            events: 0,
+            outbox: 0,
             generation: "1",
           })
         }),

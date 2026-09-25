@@ -2,6 +2,7 @@ import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Cause, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
+import { pgTable, text } from "drizzle-orm/pg-core"
 import { SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { Actor, NotCreated } from "../../index.ts"
@@ -129,6 +130,9 @@ describe("PGlite migrations", () => {
             { migration_id: 1 },
             { migration_id: 2 },
             { migration_id: 3 },
+            { migration_id: 4 },
+            { migration_id: 5 },
+            { migration_id: 6 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },
@@ -316,5 +320,60 @@ describe("placement adoption", () => {
         yield* Effect.promise(() => again.runtime.dispose())
         expect(Exit.isSuccess(started)).toBe(true)
       }).pipe(Effect.scoped),
+    ))
+})
+
+const GuardPing = Actor.command("Ping")
+
+const guarded = Actor.table(pgTable("owned_guarded", { id: text("id").primaryKey() }))
+
+const Guarded = Actor.make("Guarded", {
+  key: Schema.String,
+  tables: [guarded],
+  api: { Ping: GuardPing },
+})
+
+const GuardedLive = Guarded.toLayer(Effect.succeed({ Ping: () => Effect.void }))
+
+const start = (ddl: string | undefined, claim?: string) =>
+  Effect.gen(function* () {
+    const setup = ManagedRuntime.make(
+      Layer.empty.pipe(Layer.provideMerge(ActorTest.layer({})), Layer.provide(BunCrypto.layer)),
+    )
+
+    return yield* Effect.promise(() =>
+      setup.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+
+          if (ddl !== undefined) yield* sql.unsafe(ddl)
+
+          if (claim !== undefined)
+            yield* sql`INSERT INTO actor_tables VALUES (current_schema(), 'owned_guarded', ${claim})`
+
+          return yield* Layer.build(GuardedLive).pipe(Effect.scoped, Effect.exit)
+        }),
+      ),
+    ).pipe(Effect.ensuring(Effect.promise(() => setup.dispose())))
+  })
+
+describe("owned table startup", () => {
+  it("refuses to start without a correctly keyed table or under a second owner", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const keyed = `CREATE TABLE owned_guarded (routing_key bigint, tenant_id text, actor_id text, id text,
+          PRIMARY KEY (routing_key, tenant_id, actor_id, id))`
+
+        for (const [ddl, claim, message] of [
+          [undefined, undefined, "needs primary key (routing_key, tenant_id, actor_id, id)"],
+          ["CREATE TABLE owned_guarded (id text PRIMARY KEY)", undefined, "needs primary key"],
+          [keyed, "Other", "owned by actor Other, not Guarded"],
+        ] as const) {
+          const exit = yield* start(ddl, claim)
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(message)
+        }
+
+        expect(Exit.isSuccess(yield* start(keyed))).toBe(true)
+      }),
     ))
 })

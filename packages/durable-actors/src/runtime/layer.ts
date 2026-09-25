@@ -33,6 +33,7 @@ import {
 import {
   Actors,
   InternalActors,
+  Outcome,
   type QueryRegistration,
   type Registration,
   type Request,
@@ -41,9 +42,14 @@ import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
+import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
+import { OutboxRuntime } from "./turn/outbox.ts"
+import { outboxRelay } from "./turn/relay.ts"
+import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
+import type { AnyOwnedTable } from "../tables/owned.ts"
 import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
 
 export interface Options {
@@ -71,6 +77,12 @@ export const layer = (options: Options) => {
       const services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
       >()
+
+      const database = yield* rowsDatabase
+
+      // Tables that passed the startup check for an actor type of this runtime;
+      // group reads may only touch these, never other Actor.table values.
+      const checked = new Set<AnyOwnedTable>()
 
       const allow = Effect.fnUntraced(function* (request: Request) {
         if (!(yield* options.authorize(request)))
@@ -115,13 +127,120 @@ export const layer = (options: Options) => {
         }).pipe(Effect.provideContext(services), Effect.orDie),
       })
 
+      // Intents are admitted by their sending turn, so internal delivery skips
+      // the external access and expiry checks; revocation stops new commands,
+      // not committed obligations.
+      const dispatch = Effect.fnUntraced(
+        function* (request: Request, external: boolean) {
+          const registration = registrations.get(request.ref.actor)
+
+          if (registration === undefined)
+            return yield* ActorError.make({
+              reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+            })
+
+          return yield* Effect.gen(function* () {
+            if (external) yield* authorize(request)
+            const hash = yield* payloadHash(request.payload)
+
+            const retained = yield* resolveReceipt(
+              request,
+              hash,
+              routingKey({ ref: request.ref, placement: registration.placement }),
+            )
+
+            if (retained !== undefined) {
+              if (external) yield* authorize(request)
+
+              return retained
+            }
+
+            const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(
+              yield* Schema.encodeEffect(
+                Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+              )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie),
+            )
+
+            yield* (yield* TurnHooks).at("beforeDelivery", request)
+
+            // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
+            const deliver = Effect.suspend(() =>
+              client.Execute(request).pipe(Effect.forkIn(scope)),
+            ).pipe(
+              Effect.flatMap(Fiber.join),
+              Effect.catchCause((cause) => {
+                const failure = Cause.findErrorOption(cause)
+
+                if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
+                  return Effect.fail(failure.value)
+
+                if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value))
+                  return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
+
+                // Direct commands are not persisted. A restarted activation
+                // or lost runner drops the uncommitted attempt, so
+                // the handle retries with the same command id; the receipt
+                // replays anything that did commit.
+                return Effect.fail(
+                  ActorError.make({
+                    reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                  }),
+                )
+              }),
+            )
+
+            const outcome = yield* deliver.pipe(
+              Effect.retry({
+                while: (error) => Schema.is(ActorUnavailable)(error.reason),
+                // Exponential backoff capped at 500 ms; the delivery timeout bounds the total.
+                schedule: Schedule.min([
+                  Schedule.exponential("10 millis", 2),
+                  Schedule.spaced("500 millis"),
+                ]),
+              }),
+            )
+
+            if (external) yield* authorize(request)
+
+            return outcome
+          }).pipe(
+            Effect.timeoutOrElse({
+              duration: registration.policy.deliveryMs,
+              orElse: () =>
+                Effect.fail(
+                  ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
+                ),
+            }),
+          )
+        },
+        Effect.provideContext(services),
+        Effect.catchIf(SqlError.isSqlError, (cause) =>
+          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+        ),
+      )
+
+      const relay = yield* outboxRelay((request) => dispatch(request, false))
+      yield* relay.run.pipe(Effect.forkIn(scope))
+      const outbox = { retryWindowMs, wake: relay.wake }
+
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+        tables: (scope, write) =>
+          bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
         register: Effect.fnUntraced(function* (registration: Registration) {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-          yield* registerActor(registration).pipe(Effect.provideContext(services))
+          yield* checkTables(registration.name, registration.tables).pipe(
+            Effect.provideContext(services),
+            Effect.orDie,
+          )
+
+          for (const table of registration.tables) checked.add(table)
+          yield* registerActor(registration).pipe(
+            Effect.provideContext(services),
+            Effect.provideService(OutboxRuntime, outbox),
+          )
           registrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
@@ -133,6 +252,12 @@ export const layer = (options: Options) => {
           if (queryRegistrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
+          yield* checkTables(registration.name, registration.tables).pipe(
+            Effect.provideContext(services),
+            Effect.orDie,
+          )
+
+          for (const table of registration.tables) checked.add(table)
           queryRegistrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
@@ -156,15 +281,36 @@ export const layer = (options: Options) => {
             const sql = yield* SqlClient.SqlClient
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-            const rows = yield* sql<{ key: string; value: Uint8Array }>`
-              SELECT key, value FROM actor_state
-              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+            // The event head is read with state in one statement, and every replay
+            // in this query stops at it, so state and events describe one moment.
+            const rows = yield* sql<{
+              head: string | null
+              key: string | null
+              value: Uint8Array | null
+            }>`
+              SELECT g.event_sequence::text AS head, s.key, s.value
+              FROM (VALUES (1)) AS one (x)
+              LEFT JOIN actor_generations g ON g.routing_key = ${key} AND g.tenant_id = ${request.ref.tenant}
+                AND g.actor_type = ${request.ref.actor} AND g.actor_id = ${request.ref.id}
+              LEFT JOIN actor_state s ON s.routing_key = g.routing_key AND s.tenant_id = g.tenant_id
+                AND s.actor_type = g.actor_type AND s.actor_id = g.actor_id`
 
-            const outcome = yield* query.run(
-              request,
-              rows.map(({ key, value }) => [key, decompress(value)] as const),
+            const head = rows[0]?.head ?? "0"
+            const state: Array<readonly [string, string]> = []
+
+            for (const row of rows)
+              if (row.key !== null) state.push([row.key, decompress(row.value!)])
+
+            const outcome = yield* query.run(request, state, head, (tag, after) =>
+              replayEvents(request.ref, key, tag, after, BigInt(head)).pipe(
+                Effect.catchIf(SqlError.isSqlError, Effect.die),
+                Effect.provideContext(services),
+              ),
             )
+
+            // A failed replay read is unavailability, not a deterministic query defect.
+            if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
+              return yield* outcome.cause
 
             // Access can be revoked while the handler runs; like a command's
             // outcome, a query result is released only to a caller still allowed.
@@ -177,94 +323,9 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
-        execute: Effect.fnUntraced(
-          function* (request: Request) {
-            const registration = registrations.get(request.ref.actor)
-
-            if (registration === undefined)
-              return yield* ActorError.make({
-                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-              })
-
-            return yield* Effect.gen(function* () {
-              yield* authorize(request)
-              const hash = yield* payloadHash(request.payload)
-
-              const retained = yield* resolveReceipt(
-                request,
-                hash,
-                routingKey({ ref: request.ref, placement: registration.placement }),
-              )
-
-              if (retained !== undefined) {
-                yield* authorize(request)
-
-                return retained
-              }
-
-              const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(
-                yield* Schema.encodeEffect(
-                  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-                )([request.ref.tenant, request.ref.id]).pipe(Effect.orDie),
-              )
-
-              yield* (yield* TurnHooks).at("beforeDelivery", request)
-
-              // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
-              const deliver = Effect.suspend(() =>
-                client.Execute(request).pipe(Effect.forkIn(scope)),
-              ).pipe(
-                Effect.flatMap(Fiber.join),
-                Effect.catchCause((cause) => {
-                  const failure = Cause.findErrorOption(cause)
-
-                  if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
-                    return Effect.fail(failure.value)
-
-                  if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value))
-                    return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
-
-                  // Direct commands are not persisted. A restarted activation
-                  // or lost runner drops the uncommitted attempt, so
-                  // the handle retries with the same command id; the receipt
-                  // replays anything that did commit.
-                  return Effect.fail(
-                    ActorError.make({
-                      reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
-                    }),
-                  )
-                }),
-              )
-
-              const outcome = yield* deliver.pipe(
-                Effect.retry({
-                  while: (error) => Schema.is(ActorUnavailable)(error.reason),
-                  // Exponential backoff capped at 500 ms; the delivery timeout bounds the total.
-                  schedule: Schedule.min([
-                    Schedule.exponential("10 millis", 2),
-                    Schedule.spaced("500 millis"),
-                  ]),
-                }),
-              )
-
-              yield* authorize(request)
-
-              return outcome
-            }).pipe(
-              Effect.timeoutOrElse({
-                duration: registration.policy.deliveryMs,
-                orElse: () =>
-                  Effect.fail(
-                    ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
-                  ),
-              }),
-            )
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        ),
+        execute: (request) => dispatch(request, true),
+        deliver: (request) => dispatch(request, false),
+        drainOutbox: relay.drain,
       })
 
       return Context.make(Actors, publicActors).pipe(Context.add(InternalActors, internalActors))

@@ -1,7 +1,10 @@
 import { Context, Effect, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
+import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
 import type { TurnPolicy } from "../policies/command.ts"
+import type { StagedOutbox } from "./intents.ts"
+import type { AnyOwnedTable, TableAccess, TableScope } from "../tables/owned.ts"
 
 export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
@@ -26,7 +29,29 @@ export interface BusinessResult {
   readonly state: ReadonlyArray<readonly [string, string]>
   /** `state` lists every stored key; the turn deletes any other stored key. */
   readonly complete: boolean
+  /** Encoded events in emit order, appended with the commit. */
+  readonly events: ReadonlyArray<EmittedEvent>
+  /** Intents to commit with the turn; a declared failure stages none. */
+  readonly outbox: StagedOutbox
 }
+
+export interface EmittedEvent {
+  readonly tag: string
+  readonly value: string
+}
+
+export interface StoredEvent {
+  readonly cursor: string
+  readonly commandId: string
+  readonly value: string
+  readonly timestampMs: number
+}
+
+/** Reads one actor's committed events of one tag after an exclusive cursor, up to the query's snapshot. */
+export type EventReader = (
+  tag: string,
+  after: string | undefined,
+) => Effect.Effect<ReadonlyArray<StoredEvent>, UnknownCursor | RetentionGap>
 
 export interface RegisteredCommand {
   readonly internal: boolean
@@ -41,12 +66,15 @@ export interface RegisteredQuery {
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
+    cursor: string,
+    events: EventReader,
   ) => Effect.Effect<Outcome>
 }
 
 export interface QueryRegistration {
   readonly name: string
   readonly placement: "tenant" | "actor"
+  readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly queries: ReadonlyMap<string, RegisteredQuery>
 }
 
@@ -55,6 +83,7 @@ export interface Registration {
   readonly singleton: boolean
   readonly placement: "tenant" | "actor"
   readonly policy: TurnPolicy
+  readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly commands: ReadonlyMap<string, RegisteredCommand>
 }
 
@@ -64,9 +93,21 @@ export class InternalActors extends Context.Service<
   {
     readonly register: (actor: Registration) => Effect.Effect<void, never, Scope.Scope>
     readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /**
+     * Delivers a committed intent. The obligation was admitted by its sending
+     * turn, so external access and command-id expiry are not checked again.
+     */
+    readonly deliver: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /** Runs relay passes until no due intent remains; used by `ActorTest.advance`. */
+    readonly drainOutbox: Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>
+    /**
+     * Binds owned-table capabilities to the calling fiber's turn or query.
+     * Writable access requires the turn transaction and never opens its own.
+     */
+    readonly tables: (scope: TableScope, write: boolean) => Effect.Effect<TableAccess>
   }
 >()("durable-actors/handles/actors/InternalActors") {}
 
