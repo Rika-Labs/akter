@@ -1,4 +1,16 @@
-import { Context, DateTime, Effect, Layer, Option, Result, Schema, Scope, Semaphore } from "effect"
+import {
+  Cause,
+  Context,
+  DateTime,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Result,
+  Schema,
+  Scope,
+  Semaphore,
+} from "effect"
 import {
   type CommandContext,
   type EventEntry,
@@ -6,13 +18,16 @@ import {
   outsideTurn,
   type QueryContext,
 } from "../contexts/command.ts"
+import type { ExecutorContext, PerformContext } from "../contexts/effect.ts"
 import type { ActorError } from "../errors/actor.ts"
 import {
   Actors,
   type BusinessResult,
+  type EffectRoute,
   InternalActors,
   Outcome,
   type RegisteredCommand,
+  type RegisteredEffect,
   type RegisteredQuery,
   type EmittedEvent,
   Request,
@@ -37,6 +52,8 @@ import type {
   ValueSchema,
 } from "../members/command.ts"
 import type { AnyReducer } from "../members/reducer.ts"
+import type { AnyEffect, EffectPolicy } from "../members/effect.ts"
+import type { NoDatabase } from "../runtime/effects/isolation.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
 import {
@@ -191,6 +208,19 @@ export type QueryHandlers<Members extends MemberRecord, R> = HandlerMap<
   R
 >
 
+/** One executor per declared effect, returning the effect's `success` type. */
+export type Executors<Effects extends AnyEffect, R> = {
+  readonly [Tag in Effects["tag"]]: (
+    effect: Extract<Effects, { readonly tag: Tag }>["Type"],
+  ) => Effect.Effect<Extract<Effects, { readonly tag: Tag }>["success"]["Type"], unknown, R>
+}
+
+/** Retries after an effect's first failed attempt when its policy names none. */
+const DEFAULT_EFFECT_RETRIES = 3
+
+/** An attempt that runs longer is abandoned and counts as an unknown outcome. */
+const EXECUTOR_TIMEOUT = "30 seconds"
+
 /** `api` and `internal` keys must equal their member's tag. */
 type TagsMatch<Members extends MemberRecord> = {
   readonly [K in keyof Members]: Members[K] & { readonly tag: K }
@@ -215,6 +245,7 @@ interface Definition<
   Internal extends CommandRecord,
   Events extends ReadonlyArray<EventClass>,
   Tables extends ReadonlyArray<AnyOwnedTable>,
+  Effects extends ReadonlyArray<AnyEffect>,
 > {
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
@@ -226,7 +257,9 @@ interface Definition<
   readonly tables?: Tables
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
-  readonly policy?: Policy<CommandsOf<Api> | Values<Internal>>
+  /** `Actor.effect` classes this actor's turns may `perform`. */
+  readonly effects?: Effects
+  readonly policy?: Policy<CommandsOf<Api> | Values<Internal>, Effects[number]>
 }
 
 const make = <
@@ -235,12 +268,13 @@ const make = <
   const Fields extends StateFields = {},
   const Internal extends CommandRecord = {},
   const K extends Key = undefined,
-  const P extends Policy<CommandsOf<Api> | Values<Internal>> = {},
   const Events extends ReadonlyArray<EventClass> = readonly [],
   const T extends ReadonlyArray<AnyOwnedTable> = [],
+  const Effects extends ReadonlyArray<AnyEffect> = readonly [],
+  const P extends Policy<CommandsOf<Api> | Values<Internal>, Effects[number]> = {},
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal, Events, T> & {
+  definition: Definition<K, Fields, Api, Internal, Events, T, Effects> & {
     readonly key?: K
     readonly policy?: P
   },
@@ -270,6 +304,28 @@ const make = <
   const fields: StateFields = definition.state?.fields ?? {}
   const policy = resolvePolicy({ declared: definition.policy, commands: members })
   const isSingleton = Schema.is(SingletonKeySchema)(definition.key)
+  const effects = new Map<string, AnyEffect>()
+
+  for (const declared of definition.effects ?? []) {
+    if (effects.has(declared.tag)) throw new Error(`Duplicate effect: ${declared.tag}`)
+    effects.set(declared.tag, declared)
+  }
+
+  const effectPolicies: Readonly<Record<string, EffectPolicy<AnyEffect, AnyCommand> | undefined>> =
+    definition.policy?.effects ?? {}
+
+  for (const [tag, effectPolicy] of Object.entries(effectPolicies)) {
+    if (!effects.has(tag)) throw new Error(`policy.effects.${tag} names no declared effect`)
+
+    for (const route of [effectPolicy?.onSuccess, effectPolicy?.onDeadLetter])
+      if (route !== undefined && !members.includes(route))
+        throw new Error(`policy.effects.${tag} routes must name a command of this actor`)
+
+    const times = effectPolicy?.retry?.times
+
+    if (times !== undefined && (!Number.isInteger(times) || times < 0 || times > 100))
+      throw new Error(`policy.effects.${tag}.retry.times must be an integer from 0 to 100`)
+  }
 
   if ("set" in fields) throw new Error("State key 'set' is reserved")
 
@@ -364,8 +420,13 @@ const make = <
 
   type Owned = T[number]
 
-  class Turn extends Context.Service<Turn, CommandContext<State, Event, Owned>>()(
-    `durable-actors/Turn/${name}`,
+  class Turn extends Context.Service<
+    Turn,
+    CommandContext<State, Event, Owned> & PerformContext<Effects[number]>
+  >()(`durable-actors/Turn/${name}`) {}
+
+  class Executor extends Context.Service<Executor, ExecutorContext>()(
+    `durable-actors/Executor/${name}`,
   ) {}
 
   class Read extends Context.Service<Read, QueryContext<State, Event, Owned>>()(
@@ -606,7 +667,29 @@ const make = <
               Object.defineProperty(view, key, { enumerable: true, get: () => current[field] })
             }
 
-            const context: CommandContext<State, Event, Owned> = {
+            const outbox = openOutbox({
+              sender: request.ref,
+              onBehalfOf: Option.getOrUndefined(principal(request.caller)),
+            })
+
+            const perform = Effect.fnUntraced(function* (instance: { readonly _tag: string }) {
+              if (!open || (yield* InsideTurn) !== turn)
+                return yield* Effect.die(new Error("Effect capability escaped its turn"))
+
+              const declared = effects.get(instance._tag)
+
+              if (declared === undefined)
+                return yield* Effect.die(new Error(`Undeclared effect: ${instance._tag}`))
+
+              outbox.perform({
+                effect: declared.tag,
+                payload: yield* Schema.encodeUnknownEffect(
+                  Schema.fromJsonString(Schema.toCodecJson(declared)),
+                )(instance).pipe(Effect.orDie),
+              })
+            })
+
+            const context: CommandContext<State, Event, Owned> & PerformContext<Effects[number]> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -616,12 +699,8 @@ const make = <
               emit,
               rows: access.rows as CommandContext<State, Event, Owned>["rows"],
               group: access.group,
+              perform,
             }
-
-            const outbox = openOutbox({
-              sender: request.ref,
-              onBehalfOf: Option.getOrUndefined(context.principal),
-            })
 
             return yield* Effect.gen(function* () {
               const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(
@@ -896,6 +975,117 @@ const make = <
       }),
     ) as Layer.Layer<never, never, Exclude<R, Read> | Exclude<RB, Scope.Scope> | InternalActors>
 
+  // A route's payload is its command's input, encoded the way intents encode it.
+  const routeCodec = (command: AnyCommand) => {
+    const codec = Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.input })))
+
+    return (value: typeof command.input.Type) =>
+      Schema.encodeEffect(codec)({ value }).pipe(
+        Effect.map((payload): EffectRoute => ({ command: command.tag, payload })),
+      )
+  }
+
+  const registerEffects = <R>(
+    executors: Executors<Effects[number], R>,
+    services: Context.Context<R>,
+  ) =>
+    Effect.gen(function* () {
+      const actors = yield* InternalActors
+      const registered = new Map<string, RegisteredEffect>()
+
+      for (const declared of effects.values()) {
+        const execute = (
+          executors as Record<
+            string,
+            (effect: AnyEffect["Type"]) => Effect.Effect<unknown, Cause.YieldableError, R>
+          >
+        )[declared.tag]
+
+        if (execute === undefined)
+          return yield* Effect.die(new Error(`Missing executor ${declared.tag}`))
+
+        const routes = effectPolicies[declared.tag]
+        const decode = Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(declared)))
+        const onSuccess = routes?.onSuccess === undefined ? undefined : routeCodec(routes.onSuccess)
+
+        const onDeadLetter =
+          routes?.onDeadLetter === undefined ? undefined : routeCodec(routes.onDeadLetter)
+
+        registered.set(declared.tag, {
+          attempts: 1 + (routes?.retry?.times ?? DEFAULT_EFFECT_RETRIES),
+          execute: Effect.fnUntraced(function* (payload, context) {
+            const effect = yield* decode(payload).pipe(
+              Effect.mapError((error) => ({ cause: String(error), ambiguous: false })),
+            )
+
+            const exit = yield* execute(effect).pipe(
+              Effect.timeoutOrElse({
+                duration: EXECUTOR_TIMEOUT,
+                orElse: () => Effect.die(new Error(`Executor timed out after ${EXECUTOR_TIMEOUT}`)),
+              }),
+              Effect.provideService(Executor, context),
+              Effect.provideService(Tenant, context.ref.tenant),
+              Effect.exit,
+            )
+
+            if (Exit.isFailure(exit))
+              // Only a typed failure says the provider did not apply the call;
+              // a defect, timeout, or interruption leaves the outcome unknown.
+              return yield* Effect.fail({
+                cause: Cause.pretty(exit.cause),
+                ambiguous:
+                  !Cause.hasFails(exit.cause) ||
+                  Cause.hasDies(exit.cause) ||
+                  Cause.hasInterrupts(exit.cause),
+              })
+
+            if (onSuccess === undefined) return undefined
+
+            // The provider already applied the call, so a result the route
+            // cannot accept is dead-lettered instead of executed again.
+            return yield* onSuccess(exit.value).pipe(
+              Effect.mapError((error) => ({
+                cause: `The onSuccess route cannot accept the result: ${String(error)}`,
+                ambiguous: true,
+                final: true,
+              })),
+            )
+          }) as RegisteredEffect["execute"],
+          // A payload that no longer decodes is still dead-lettered for
+          // operators; only its route, which needs the decoded effect, is skipped.
+          deadLetter: Effect.fnUntraced(function* (payload, letter) {
+            const effect = yield* decode(payload).pipe(Effect.option)
+
+            if (onDeadLetter === undefined || Option.isNone(effect)) return undefined
+
+            return yield* onDeadLetter({ ...letter, effect: effect.value })
+          }, Effect.orDie),
+        })
+      }
+
+      yield* actors.registerEffects({
+        name,
+        services: services as Context.Context<never>,
+        effects: registered,
+      })
+    })
+
+  /**
+   * Implements every declared effect's executor. Executors run after the
+   * turn that performed the effect commits, read `yield* X.Executor`, and have
+   * no database capability; the return value is routed to `onSuccess`.
+   */
+  const toEffectLayer = <R, RB>(
+    build: Effect.Effect<Executors<Effects[number], R>, never, RB> & NoDatabase<R | RB>,
+  ): Layer.Layer<never, never, Exclude<R, Executor> | Exclude<RB, Scope.Scope> | InternalActors> =>
+    Layer.effectDiscard(
+      Effect.gen(function* () {
+        const executors = yield* build
+        const services = yield* Effect.context<Exclude<R, Executor>>()
+        yield* registerEffects(executors, services as Context.Context<R>)
+      }),
+    ) as Layer.Layer<never, never, Exclude<R, Executor> | Exclude<RB, Scope.Scope> | InternalActors>
+
   const create = Effect.fnUntraced(function* () {
     yield* outsideTurn
 
@@ -953,8 +1143,10 @@ const make = <
     api: definition.api as Api,
     Turn,
     Read,
+    Executor,
     toLayer,
     toQueryLayer,
+    toEffectLayer,
     get: get as K extends SingletonKey
       ? () => Effect.Effect<PublicHandle, never, Actors>
       : (id: Id) => Effect.Effect<PublicHandle, never, Actors>,

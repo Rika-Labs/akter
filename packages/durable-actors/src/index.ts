@@ -6,6 +6,7 @@ import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
 import { Event } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
+import { DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
 import { table } from "./tables/owned.ts"
 
@@ -15,6 +16,8 @@ export const Actor = {
   query: Query.make,
   Event: Event.make,
   reducer: Reducer.make,
+  effect,
+  DeadLetter,
   state: ActorStates.make,
   table,
   migration: ActorStates.migration,
@@ -68,7 +71,11 @@ export { RetentionGap, UnknownCursor } from "./errors/events.ts"
 
 export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/command.ts"
 
-export type { Handle, Intents } from "./actor/definition.ts"
+export type { ExecutorContext, PerformContext } from "./contexts/effect.ts"
+
+export type { EffectClass, EffectPolicy } from "./members/effect.ts"
+
+export type { Executors, Handle, Intents } from "./actor/definition.ts"
 
 export type { Commutative, Reducer } from "./members/reducer.ts"
 

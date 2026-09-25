@@ -161,5 +161,32 @@ export const migrate = Migrator.make({})({
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
     }),
+    // An effect is an outbox row whose executor runs when it is due. On
+    // success or exhaustion it becomes an intent to its route, so the route
+    // is delivered like any intent, with the effect id as its command id.
+    // `ambiguous` records whether the last attempt's outcome is unknown.
+    "0008_effects": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`ALTER TABLE actor_outbox
+        ADD COLUMN kind text NOT NULL DEFAULT 'intent' CHECK (kind IN ('intent', 'effect')),
+        ADD COLUMN last_error text,
+        ADD COLUMN ambiguous boolean NOT NULL DEFAULT false`
+      // Exhausted effects stay visible to operators after their row settles.
+      yield* sql`CREATE TABLE actor_dead_letters (
+        routing_key bigint NOT NULL,
+        effect_id text NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        effect text NOT NULL,
+        payload text NOT NULL,
+        attempts integer NOT NULL,
+        cause text NOT NULL,
+        ambiguous boolean NOT NULL,
+        dead_at_ms bigint NOT NULL,
+        PRIMARY KEY (routing_key, effect_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    }),
   }),
 })

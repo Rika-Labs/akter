@@ -23,6 +23,13 @@ export interface StagedIntent {
   readonly key: string | undefined
 }
 
+/** An effect a turn performed: its tag, encoded instance, and the caller its routes see. */
+export interface StagedEffect {
+  readonly effect: string
+  readonly payload: string
+  readonly caller: Caller
+}
+
 /**
  * Everything one turn asked the outbox to do. `replaced` lists keys whose
  * committed rows the turn deletes before inserting `intents`.
@@ -30,9 +37,10 @@ export interface StagedIntent {
 export interface StagedOutbox {
   readonly intents: ReadonlyArray<StagedIntent>
   readonly replaced: ReadonlyArray<string>
+  readonly effects: ReadonlyArray<StagedEffect>
 }
 
-export const emptyOutbox: StagedOutbox = { intents: [], replaced: [] }
+export const emptyOutbox: StagedOutbox = { intents: [], replaced: [], effects: [] }
 
 /**
  * Marks a command turn. Only the runtime provides it, and `X.toLayer` removes
@@ -49,6 +57,7 @@ interface Staging {
   open: boolean
   intents: Array<StagedIntent>
   readonly replaced: Set<string>
+  readonly effects: Array<StagedEffect>
 }
 
 // Keyed by the provided marker, so a hand-built `InTurn` value stages nothing.
@@ -63,15 +72,32 @@ export const openOutbox = ({
   readonly onBehalfOf: Principal | undefined
 }) => {
   const marker = InTurn.of({ turn: Symbol() })
-  const staging: Staging = { sender, onBehalfOf, open: true, intents: [], replaced: new Set() }
+
+  const staging: Staging = {
+    sender,
+    onBehalfOf,
+    open: true,
+    intents: [],
+    replaced: new Set(),
+    effects: [],
+  }
+
   stagings.set(marker, staging)
 
   return {
     marker,
+    /** Stages an effect; the caller checks that its turn is still running. */
+    perform: (effect: Pick<StagedEffect, "effect" | "payload">) => {
+      // Routes deliver to the performing actor as the effect, on the turn's principal.
+      staging.effects.push({
+        ...effect,
+        caller: System.make({ source: "effect", ref: sender, onBehalfOf }),
+      })
+    },
     close: (): StagedOutbox => {
       staging.open = false
 
-      return { intents: staging.intents, replaced: [...staging.replaced] }
+      return { intents: staging.intents, replaced: [...staging.replaced], effects: staging.effects }
     },
   }
 }
