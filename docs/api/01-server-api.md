@@ -147,9 +147,9 @@ Proposed in [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-mar
 
 ```ts
 export const Ship = Actor.workflow("Ship", {
-  payload: { orderId: OrderId, address: Address },
-  success: Label,
-  error: ShippingFailed,
+  input: { orderId: OrderId, address: Address },
+  output: Label,
+  errors: [ShippingFailed],
   key: ({ orderId }) => orderId, // optional; defaults to the start's command id
   steps: ["label", "cool-off", "Paid", "fraud-v2"], // every activity, clock, and wait name
   versions: { "fraud-check": { current: 2, min: 1 } },

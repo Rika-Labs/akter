@@ -93,6 +93,16 @@ CREATE TABLE actor_workflow_step (
 CREATE INDEX actor_workflow_step_waits
   ON actor_workflow_step (routing_key, wait_event)
   WHERE kind = 'wait' AND exit IS NULL;
+
+-- The last accepted step and marker manifest per workflow (decision 7).
+CREATE TABLE actor_workflow_manifests (
+  actor_type     text   NOT NULL,
+  workflow       text   NOT NULL,
+  manifest_hash  text   NOT NULL,
+  manifest       jsonb  NOT NULL,           -- { steps: [...], versions: { name: { current, min } } }
+  recorded_at_ms bigint NOT NULL,
+  PRIMARY KEY (actor_type, workflow)
+);
 ```
 
 - **Pending rows.** A step row is written before its work starts, with `exit` NULL: an activity attempt before it runs (as an effect attempt is), a clock when it is scheduled, and a wait when it registers. Settling a step is `UPDATE … SET exit = … WHERE exit IS NULL`, so exactly one writer settles it. A second writer reads the recorded exit and uses that.
@@ -111,15 +121,15 @@ The execution id handed to Effect's engine API and shown on `WorkflowRun` is:
 w1.<base64url(JSON.stringify([tenant, actorType, actorId, workflow, key]))>
 ```
 
-- `key` is the execution key. By default it is the start's command id: the intent id for `later.Ship(input)`, and the handle's command id for `order.Ship(input)`. A handle retry keeps its command id, so it attaches to the same execution. `Actor.workflow(tag, { key })` overrides this with a function of the payload, and then a second start with the same key attaches to the existing execution without comparing payloads, as Effect's `Workflow.execute` does.
+- `key` is the execution key. `Actor.workflow` uses the same `input`, `output`, and `errors` fields as `Actor.command`. By default it is the start's command id: the intent id for `later.Ship(input)`, and the handle's command id for `order.Ship(input)`. A handle retry keeps its command id, so it attaches to the same execution. `Actor.workflow(tag, { key })` overrides this with a function of the input, and then a second start with the same key attaches to the existing execution without comparing payloads, as Effect's `Workflow.execute` does.
 - The encoded id is capped at 1,024 bytes, and `key` at 256 UTF-8 bytes. Longer keys fail the start with `InvalidExecutionKey`.
 - The deployment is not encoded. Each deployment (and each region of a hosted deployment) has its own database, so a row's deployment is its database, as it already is for `routing_key`, receipts and outbox rows. A `WorkflowRun` id presented to another deployment finds nothing.
 
 ```ts
 export const Ship = Actor.workflow("Ship", {
-  payload: { orderId: OrderId, address: Address },
-  success: Label,
-  error: ShippingFailed,
+  input: { orderId: OrderId, address: Address },
+  output: Label,
+  errors: [ShippingFailed],
   key: ({ orderId }) => orderId, // optional; defaults to the start's command id
   steps: ["label", "cool-off", "Paid", "fraud"], // decision 7
   versions: { "fraud-check": { current: 1 } }, // decision 6
@@ -247,7 +257,7 @@ The check is one function with two callers. It reads open executions only (finis
 
   `--entry` names a module that exports the application's `actors` array. The command opens a read-only transaction and prints each blocking group with its count and oldest start. It exits 1 on any incompatibility and 0 otherwise. `--json` gives machine output for CI.
 
-- **Startup refusal.** `Actors.layer` runs the same check after migrations and before it registers entities. It refuses to start, as a placement mismatch does. To keep startup cost off the common path, `actor_workflow_manifests (actor_type, workflow, manifest_hash, manifest jsonb, recorded_at_ms)` records the last accepted manifest (steps and markers). The full check runs only when the deployed manifest differs from the recorded one, and a passing check records the new manifest. A rollback's manifest also differs, so the check catches a rollback that would strand executions on newer markers.
+- **Startup refusal.** `Actors.layer` runs the same check after migrations and before it registers entities. It refuses to start, as a placement mismatch does. To keep startup cost off the common path, `actor_workflow_manifests` (decision 1) records the last accepted manifest (steps and markers). The full check runs only when the deployed manifest differs from the recorded one, and a passing check records the new manifest. A rollback's manifest also differs, so the check catches a rollback that would strand executions on newer markers.
 
 **Behaviour change:** none against a contract. This makes ADR 0014 item 4 concrete and adds the `steps` field to `Actor.workflow`.
 
@@ -326,13 +336,13 @@ Expected divergence: our engine settles a pending attempt older than the retry w
 
 ## Consequences and evidence
 
-M2.7 builds decisions 1–5 and 8–10 in a two-PR stack (engine and storage; then `waitFor`, tenant and attribution resume). M2.8 builds decisions 6 and 7. Neither starts until this ADR is accepted.
+M2.7 builds decisions 1–5 and 8–10 in a two-PR stack (engine and storage; then `waitFor`, tenant and attribution resume). M2.8 builds decisions 6 and 7. `0011_workflows` also creates `actor_workflow_manifests`, so M2.8 needs no migration of its own. Neither starts until this ADR is accepted.
 
 Conformance cases M2.7 must add, in `conformance/workflows.ts`, on PGlite and Postgres (crash, contention and multi-runner cases on Postgres and the M2.1 harness):
 
 - the shared suite in decision 10;
 - `writes every workflow row under the owner's routing key` (**Workflow engine**: no state off the owner's shard);
-- `separates equal keys across tenants and owners` and `restores tenant and onBehalfOf on resume elsewhere` (gate **Workflow tenant isolation**, W1);
+- `separates equal keys across tenants and owners`, `restores tenant and onBehalfOf on resume elsewhere`, and `continues with recorded attribution after the starting caller loses access` (gate **Workflow tenant isolation**, W1, H2);
 - `resolves an event emitted by the starting turn`, `resolves an event committed between start and registration`, `resolves an event racing registration on Postgres`, and `resolves two sequential waits with two events` (gate **`waitFor` registration**, W2);
 - `settles a wait exactly once when its event and timeout race`;
 - `resumes after runner kill during an activity` and `does not rerun an activity whose exit was recorded` (harness);
@@ -344,7 +354,7 @@ Conformance cases M2.7 must add, in `conformance/workflows.ts`, on PGlite and Po
 - `deletes steps on finish and prunes finished executions after keepWorkflows`;
 - `keeps events above an open wait's cursor from pruning`.
 
-Conformance cases M2.8 must add, in `conformance/workflow-compatibility.ts`:
+Conformance cases M2.8 must add, in `conformance/workflow-versions.ts`:
 
 - `records markers at start and reads 0 for executions older than the marker`;
 - `refuses startup when a recorded step is removed or renamed`, `… when a marker leaves min..current`, and `… when a workflow member is removed`;
