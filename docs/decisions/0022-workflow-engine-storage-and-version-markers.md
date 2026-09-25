@@ -14,7 +14,7 @@
 
 ADR 0012 chose our own implementation of Effect's `WorkflowEngine` (`effect/unstable/workflow`, `effect@4.0.0-rc.116`) over `ClusterWorkflowEngine`. Workflow state lives on the owner actor's shard, durable clocks are outbox timers, and `waitFor` matches owner events. It sketched one table and left these open:
 
-- the final table schema and indexes for migration `0011_workflows`;
+- the final table schema and indexes for migration `0012_workflows`;
 - how the execution id is encoded, and how long finished executions are kept;
 - what `WorkflowRun` offers on handles, and what `later.Ship(input)` returns inside a turn;
 - how `waitFor` closes the start-to-wait race, including an event committed by the turn that starts the workflow;
@@ -35,7 +35,7 @@ These facts from the shipped code and from Effect shape the answers:
 
 Each decision gives the recommended default. Items marked **Behaviour change** alter a statement in an existing contract, ADR, or API doc; the [list at the end](#behaviour-changes-against-existing-contracts) collects them.
 
-### 1. Storage (`0011_workflows`)
+### 1. Storage (`0012_workflows`)
 
 ```sql
 CREATE TABLE actor_workflow_executions (
@@ -356,7 +356,7 @@ Expected divergences, asserted on our engine only:
 
 ## Consequences and evidence
 
-M2.7 builds decisions 1–5 and 8–10 in a two-PR stack (engine and storage; then `waitFor`, tenant and attribution resume). It includes the `steps`, `waits` and `versions` declarations, marker rows at start, manifest hashes, and the runtime suspension for incompatible executions, because its start turn and emit path need them. M2.8 builds `wf.version` reads and decision 7's deploy check, startup refusal and CLI. `0011_workflows` creates all three tables, so M2.8 needs no migration of its own. Neither starts until this ADR is accepted.
+M2.7 builds decisions 1–5 and 8–10 in a two-PR stack (engine and storage; then `waitFor`, tenant and attribution resume). It includes the `steps`, `waits` and `versions` declarations, marker rows at start, manifest hashes, and the runtime suspension for incompatible executions, because its start turn and emit path need them. M2.8 builds `wf.version` reads and decision 7's deploy check, startup refusal and CLI. `0012_workflows` creates all three tables, so M2.8 needs no migration of its own. Neither starts until this ADR is accepted.
 
 Conformance cases M2.7 must add, in `conformance/workflows.ts`, on PGlite and Postgres (crash, contention and multi-runner cases on Postgres and the M2.1 harness):
 
