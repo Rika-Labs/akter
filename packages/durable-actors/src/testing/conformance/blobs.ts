@@ -20,7 +20,7 @@ class DrawerRejected extends Schema.TaggedError<DrawerRejected>()("DrawerRejecte
 
 const Entry = Schema.Struct({ name: Schema.String, text: Schema.String })
 
-const Misuse = Schema.Literals(["undeclared", "emptyName", "notBytes"])
+const Misuse = Schema.Literals(["undeclared", "emptyName", "loneSurrogate", "nul", "notBytes"])
 
 const Store = Actor.command("Store", { input: Entry })
 
@@ -37,6 +37,11 @@ const WriteThenReject = Actor.command("WriteThenReject", {
 
 const WriteThenMisuse = Actor.command("WriteThenMisuse", { input: Misuse })
 
+/** Sets, appends, and sets again in one turn; the last set wins. */
+const Rewrite = Actor.command("Rewrite", { input: Entry, output: Schema.String })
+
+const WriteForked = Actor.command("WriteForked")
+
 const Large = Actor.command("Large", { input: Schema.Int })
 
 const Capture = Actor.command("Capture")
@@ -48,6 +53,8 @@ const Get = Actor.query("Get", { input: Schema.String, output: Schema.Option(Sch
 const Size = Actor.query("Size", { input: Schema.String, output: Schema.Int })
 
 const QueryWrite = Actor.query("QueryWrite")
+
+const CaptureRead = Actor.query("CaptureRead")
 
 const Drawer = Actor.make("Drawer", {
   key: Schema.String,
@@ -61,12 +68,15 @@ const Drawer = Actor.make("Drawer", {
     AppendCompact,
     WriteThenReject,
     WriteThenMisuse,
+    Rewrite,
+    WriteForked,
     Large,
     Capture,
     Replay,
     Get,
     Size,
     QueryWrite,
+    CaptureRead,
   },
   // Well below the blobs written here: blob bytes never count toward it.
   policy: { maxStateBytes: 1_024 },
@@ -95,6 +105,10 @@ const misuse = (loose: (blob: AnyBlob) => BlobWrite, kind: typeof Misuse.Type) =
       return loose(undeclared).set("x", bytes("x"))
     case "emptyName":
       return loose(files).set("", bytes("x"))
+    case "loneSurrogate":
+      return loose(files).set("\uD800", bytes("x"))
+    case "nul":
+      return loose(files).set("a\u0000b", bytes("x"))
     case "notBytes":
       return loose(files).set("x", "not bytes" as never)
   }
@@ -137,6 +151,21 @@ const DrawerLive = (fixture: BlobsFixture) =>
 
         yield* misuse(turn.blob as (blob: AnyBlob) => BlobWrite, kind)
       }),
+      Rewrite: Effect.fnUntraced(function* ({ name, text: last }) {
+        const blob = (yield* Drawer.Turn).blob(files)
+        yield* blob.set(name, bytes("first"))
+        yield* blob.append(name, bytes("-appended"))
+        yield* blob.set(name, bytes(last))
+
+        return Option.getOrThrow(text(yield* blob.get(name)))
+      }),
+      WriteForked: Effect.fnUntraced(function* () {
+        const blob = (yield* Drawer.Turn).blob(files)
+        yield* blob.set("owned", bytes("owned"))
+        yield* Effect.forkChild(blob.set("forked", bytes("forked"))).pipe(
+          Effect.flatMap(Fiber.join),
+        )
+      }),
       Large: Effect.fnUntraced(function* (size) {
         yield* (yield* Drawer.Turn).blob(files).set("large", new Uint8Array(size).fill(7))
       }),
@@ -149,23 +178,27 @@ const DrawerLive = (fixture: BlobsFixture) =>
     }),
   )
 
-const DrawerReads = Drawer.toQueryLayer(
-  Effect.succeed({
-    Get: Effect.fnUntraced(function* (name) {
-      return text(yield* (yield* Drawer.Read).blob(files).get(name))
-    }),
-    Size: Effect.fnUntraced(function* (name) {
-      const found = yield* (yield* Drawer.Read).blob(files).get(name)
+const DrawerReads = (fixture: BlobsFixture) =>
+  Drawer.toQueryLayer(
+    Effect.succeed({
+      Get: Effect.fnUntraced(function* (name) {
+        return text(yield* (yield* Drawer.Read).blob(files).get(name))
+      }),
+      Size: Effect.fnUntraced(function* (name) {
+        const found = yield* (yield* Drawer.Read).blob(files).get(name)
 
-      return Option.match(found, { onNone: () => -1, onSome: (value) => value.byteLength })
-    }),
-    QueryWrite: Effect.fnUntraced(function* () {
-      const blob = (yield* Drawer.Read).blob(files) as BlobWrite
+        return Option.match(found, { onNone: () => -1, onSome: (value) => value.byteLength })
+      }),
+      QueryWrite: Effect.fnUntraced(function* () {
+        const blob = (yield* Drawer.Read).blob(files) as BlobWrite
 
-      yield* blob.set("from-query", bytes("from-query"))
+        yield* blob.set("from-query", bytes("from-query"))
+      }),
+      CaptureRead: Effect.fnUntraced(function* () {
+        fixture.escaped = (yield* Drawer.Read).blob(files).get("captured")
+      }),
     }),
-  }),
-)
+  )
 
 const CabinetLive = Cabinet.toLayer(
   Effect.succeed({
@@ -184,7 +217,7 @@ const CabinetReads = Cabinet.toQueryLayer(
 )
 
 export const blobsLayer = (fixture: BlobsFixture) =>
-  Layer.mergeAll(DrawerLive(fixture), DrawerReads, CabinetLive, CabinetReads)
+  Layer.mergeAll(DrawerLive(fixture), DrawerReads(fixture), CabinetLive, CabinetReads)
 
 const defect = (exit: Exit.Exit<unknown, unknown>) =>
   Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "succeeded"
@@ -251,7 +284,9 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* drawer.Append({ name: "log", text: "!" })).toBe("reset!")
           yield* drawer.Store({ name: "empty", text: "" })
           expect(yield* drawer.Get("empty")).toEqual(Option.some(""))
-          expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(2), receipts: 8 })
+          expect(yield* drawer.Rewrite({ name: "twice", text: "second" })).toBe("second")
+          expect(yield* drawer.Get("twice")).toEqual(Option.some("second"))
+          expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(3), receipts: 9 })
         }),
       ),
   },
@@ -273,6 +308,32 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
             state: {},
             receipts: 2,
           })
+        }),
+      ),
+  },
+  {
+    name: "discards blob writes of a declared failure across a crash before and after its commit",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+
+          for (const point of ["beforeCommit", "afterCommit"] as const) {
+            const drawer = yield* Drawer.get(`rejected-${point}`)
+            yield* drawer.Store({ name: "kept", text: "kept" })
+            yield* test.crashNext(point)
+            const rejected = drawer.WriteThenReject("dropped")
+            expect(yield* rejected.pipe(Effect.flip)).toEqual(DrawerRejected.make({}))
+            // The retry with the same command id replays the committed failure.
+            expect(yield* rejected.pipe(Effect.flip)).toEqual(DrawerRejected.make({}))
+            expect(yield* drawer.Get("kept")).toEqual(Option.some("kept"))
+            expect(yield* drawer.Get("dropped")).toEqual(Option.none())
+            expect(yield* test.inspect(drawer.ref)).toMatchObject({
+              ...blobsOf(1),
+              state: {},
+              receipts: 2,
+            })
+          }
         }),
       ),
   },
@@ -330,6 +391,8 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           for (const [kind, message] of [
             ["undeclared", "undeclared is not a declared blob of Drawer"],
             ["emptyName", "Blob entry names"],
+            ["loneSurrogate", "Blob entry names"],
+            ["nul", "Blob entry names"],
             ["notBytes", "Blob bytes are a Uint8Array"],
           ] as const)
             expect(defect(yield* drawer.WriteThenMisuse(kind).pipe(Effect.exit))).toContain(message)
@@ -357,6 +420,15 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* drawer.Get("captured")).toEqual(Option.some("captured"))
           expect(yield* drawer.Get("escaped")).toEqual(Option.none())
           expect(yield* drawer.Get("from-query")).toEqual(Option.none())
+          yield* drawer.CaptureRead()
+          expect(defect(yield* fixture.blobs.escaped.pipe(Effect.exit))).toContain(
+            "Blob capability escaped its query",
+          )
+          expect(defect(yield* drawer.WriteForked().pipe(Effect.exit))).toContain(
+            "Blob capability escaped its turn",
+          )
+          expect(yield* drawer.Get("owned")).toEqual(Option.none())
+          expect(yield* drawer.Get("forked")).toEqual(Option.none())
           expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(1), receipts: 1 })
         }),
       ),

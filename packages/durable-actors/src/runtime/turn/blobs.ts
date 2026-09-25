@@ -32,9 +32,18 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
           new Error(`${String(blob?.name)} is not a declared blob of ${ref.actor}`),
         )
 
-      if (!Predicate.isString(name) || name.length === 0 || name.length > MAX_NAME_LENGTH)
+      // A lone surrogate would reach Postgres as U+FFFD and alias another name; NUL is rejected by Postgres.
+      if (
+        !Predicate.isString(name) ||
+        name.length === 0 ||
+        name.length > MAX_NAME_LENGTH ||
+        !name.isWellFormed() ||
+        name.includes("\u0000")
+      )
         return yield* Effect.die(
-          new Error(`Blob entry names are 1-${MAX_NAME_LENGTH} character strings`),
+          new Error(
+            `Blob entry names are well-formed 1-${MAX_NAME_LENGTH} character strings without NUL`,
+          ),
         )
 
       return sql`routing_key = ${routingKey} AND tenant_id = ${ref.tenant}
@@ -70,9 +79,8 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
 
             const bytes = found?.bytes ?? null
 
-            return bytes === null
-              ? Option.none<Uint8Array>()
-              : Option.some(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength))
+            // A copy: a driver may decode into a pooled buffer shared with unrelated values.
+            return bytes === null ? Option.none<Uint8Array>() : Option.some(Uint8Array.from(bytes))
           }),
         ),
     }

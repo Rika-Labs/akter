@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Result, Schema, Scope, Semaphore } from "effect"
+import { Context, Effect, Fiber, Layer, Option, Result, Schema, Scope, Semaphore } from "effect"
 import {
   type CommandContext,
   InsideTurn,
@@ -571,9 +571,12 @@ const make = <
 
             const view = { set }
 
+            // A forked fiber inherits InsideTurn, so the turn's own fiber is checked too.
+            const owner = Fiber.getCurrent()
+
             const escaped = (capability: string) =>
               Effect.gen(function* () {
-                if (!open || (yield* InsideTurn) !== turn)
+                if (!open || (yield* InsideTurn) !== turn || Fiber.getCurrent() !== owner)
                   return yield* Effect.die(new Error(`${capability} capability escaped its turn`))
               })
 
@@ -768,9 +771,12 @@ const make = <
             let open = true
             const query = Symbol()
 
+            // A forked fiber inherits InsideTurn, so the query's own fiber is checked too.
+            const owner = Fiber.getCurrent()
+
             const escaped = (capability: string) =>
               Effect.gen(function* () {
-                if (!open || (yield* InsideTurn) !== query)
+                if (!open || (yield* InsideTurn) !== query || Fiber.getCurrent() !== owner)
                   return yield* Effect.die(new Error(`${capability} capability escaped its query`))
               })
 
