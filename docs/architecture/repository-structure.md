@@ -31,6 +31,8 @@ tooling/
   oxlint/                   @durable-actors/oxlint     anti-slop rules, directives check, per-file structure rules
   structure/                @durable-actors/structure  tree checker and the exemptions file
   databases/                @durable-actors/databases  disposable Postgres, Neki and PGlite for tests
+  benchmarks/               @durable-actors/benchmarks  `bun run bench` performance harness (ADR 0018)
+benchmarks/                 committed benchmark results and how to read them; data only, no code
 docs/  research/  .github/src/
 ```
 

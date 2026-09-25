@@ -210,6 +210,18 @@
         "vitest": "catalog:",
       },
     },
+    "tooling/benchmarks": {
+      "name": "@durable-actors/benchmarks",
+      "dependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@electric-sql/pglite": "0.5.8",
+        "durable-actors": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "vitest": "catalog:",
+      },
+    },
     "tooling/databases": {
       "name": "@durable-actors/databases",
       "dependencies": {
@@ -434,6 +446,8 @@
     "@durable-actors/accounts": ["@durable-actors/accounts@workspace:packages/accounts"],
 
     "@durable-actors/api": ["@durable-actors/api@workspace:apps/api"],
+
+    "@durable-actors/benchmarks": ["@durable-actors/benchmarks@workspace:tooling/benchmarks"],
 
     "@durable-actors/billing": ["@durable-actors/billing@workspace:packages/billing"],
 
