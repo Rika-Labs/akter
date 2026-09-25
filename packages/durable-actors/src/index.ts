@@ -8,6 +8,7 @@ import { Event } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
 import { DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
+import { blob } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
 
 export const Actor = {
@@ -20,6 +21,7 @@ export const Actor = {
   DeadLetter,
   state: ActorStates.make,
   table,
+  blob,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
   /** Provided by the runtime only inside command turns; `X.intents` requires it. */
@@ -79,6 +81,10 @@ export type { EffectClass, EffectPolicy } from "./members/effect.ts"
 export type { Executors, Handle, Intents } from "./actor/definition.ts"
 
 export type { Commutative, Reducer } from "./members/reducer.ts"
+
+export type { AnyBlob, Blob } from "./members/blob.ts"
+
+export type { BlobRead, BlobWrite } from "./state/blob.ts"
 
 export type {
   Filter,

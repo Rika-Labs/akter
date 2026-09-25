@@ -1,8 +1,8 @@
 import type { ActorError } from "durable-actors"
 import { Effect } from "effect"
-import { load } from "../measure.ts"
-import { Ledger } from "../probe/ledger.ts"
-import { type CaseResult, measure, type Scenario } from "../scenario.ts"
+import { load } from "../../measure.ts"
+import { Ledger } from "../../probe/ledger.ts"
+import { type CaseResult, measure, type Scenario } from "../../scenario.ts"
 
 const SEEDED = 1000
 

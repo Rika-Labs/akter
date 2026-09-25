@@ -77,6 +77,8 @@ export interface Inspection {
    * outside the current schema); present when its type owns tables.
    */
   readonly rows?: Readonly<Record<string, number>>
+  /** The actor's entry count per declared blob; present when its type declares blobs. */
+  readonly blobs?: Readonly<Record<string, number>>
 }
 
 interface TestDefinition {
@@ -290,6 +292,18 @@ export class ActorTest extends Context.Service<
                     SELECT count(*)::integer AS count FROM ${sql(table_schema)}.${sql(table_name)}
                     WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_id = ${ref.id}`)[0]!.count
 
+                const declared = internalActors.declaredBlobs(ref.actor)
+
+                const stored = yield* sql<{ blob: string; entries: number }>`
+                  SELECT blob, count(DISTINCT name)::integer AS entries FROM actor_blobs
+                  WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant}
+                    AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
+                  GROUP BY blob`
+
+                const blobs = Object.fromEntries(declared.map((name) => [name, 0]))
+
+                for (const { blob, entries } of stored) blobs[blob] = entries
+
                 const inspection: Inspection = {
                   generation: generations[0]?.generation,
                   state: Object.fromEntries(
@@ -311,7 +325,9 @@ export class ActorTest extends Context.Service<
                   effects: outbox[0]!.effects,
                 }
 
-                return tables.length > 0 ? { ...inspection, rows } : inspection
+                const withRows = tables.length > 0 ? { ...inspection, rows } : inspection
+
+                return declared.length > 0 ? { ...withRows, blobs } : withRows
               }, Effect.orDie),
               seed: Effect.fnUntraced(function* (ref, state, version) {
                 const key = yield* storedRoutingKey(ref)
