@@ -1,10 +1,17 @@
 import { Effect, Fiber, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, CommandConflict } from "../../index.ts"
-import type { ActorRef } from "../../identity/caller.ts"
+import {
+  Actor,
+  Actors,
+  CommandConflict,
+  CommandExpired,
+  InvalidCommandId,
+  User,
+} from "../../index.ts"
+import { type ActorRef, callerKey } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
-import { payloadHash } from "../../runtime/turn/receipt.ts"
+import { hashCanonical } from "../../runtime/turn/receipt.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
@@ -14,7 +21,13 @@ const Pair = Schema.Struct({ b: Schema.Int, a: Schema.Int })
 
 const Sum = Actor.command("Sum", { input: Pair, output: Schema.Int })
 
-const Adder = Actor.make("Adder", { key: Schema.String, state: Actor.state({}), api: { Sum } })
+const Echo = Actor.command("Echo", { input: Schema.String, output: Schema.String })
+
+const Adder = Actor.make("Adder", {
+  key: Schema.String,
+  state: Actor.state({}),
+  api: { Sum, Echo },
+})
 
 // Counts handler runs so replay cases can prove a stored outcome is not recomputed.
 const executions = { count: 0 }
@@ -27,8 +40,22 @@ export const admissionLayer = Adder.toLayer(
 
         return a + b
       }),
+    Echo: (text: string) =>
+      Effect.sync(() => {
+        executions.count += 1
+
+        return text
+      }),
   }),
 )
+
+/** The receipt hash of a payload: SHA-256 over its Postgres JSONB text. */
+export const payloadHash = Effect.fnUntraced(function* (payload: string) {
+  const sql = yield* SqlClient.SqlClient
+  const rows = yield* sql<{ canonical: string }>`SELECT ${payload}::jsonb::text AS canonical`
+
+  return yield* hashCanonical(rows[0]!.canonical)
+})
 
 // SHA-256 of `{"value": {"a": 1, "b": 2}}`, the hash the admission path stored for
 // `{ b: 2, a: 1 }` before canonicalization moved into the admission statements.
@@ -42,12 +69,12 @@ const writeLegacyReceipt = Effect.fnUntraced(function* (ref: ActorRef, commandId
     VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}) ON CONFLICT DO NOTHING`
   yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
     VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${commandId}, 'Sum', ${LEGACY_HASH},
-      '["User","alice"]', '{"_tag":"Success","value":"{\\"value\\":40}"}', ${commandTimes(commandId).expiresAt})`
+      ${callerKey(User.make({ subject: "alice" }))}, '{"_tag":"Success","value":"{\\"value\\":40}"}', ${commandTimes(commandId).expiresAt})`
 })
 
 export const admissionConformance: ReadonlyArray<ConformanceCase> = [
   {
-    name: "replays a receipt stored before admission folding and conflicts on a changed payload",
+    name: "replays a previously stored receipt by its canonical payload hash and conflicts on a changed payload",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -58,7 +85,6 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
           const before = executions.count
 
           expect(yield* adder.Sum({ b: 2, a: 1 }).pipe(Actor.commandId(id))).toBe(40)
-          expect(yield* adder.Sum({ a: 1, b: 2 }).pipe(Actor.commandId(id))).toBe(40)
           expect(
             yield* adder.Sum({ b: 1, a: 2 }).pipe(Actor.commandId(id), Effect.flip),
           ).toMatchObject({
@@ -70,7 +96,7 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "resolves a receipt stored before admission folding inside the turn's fenced admission",
+    name: "resolves a previously stored receipt inside the turn's fenced admission",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -99,6 +125,25 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(executions.count).toBe(before)
           expect(yield* test.inspect(adder.ref)).toMatchObject({ generation: "1", receipts: 3 })
+        }),
+      ),
+  },
+  {
+    name: "rejects malformed and expired identities as terminal even when Postgres rejects their text",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const adder = yield* Adder.get("unencodable")
+          const before = executions.count
+          const malformed = "v1.1000.6000.\u0000"
+          expect(
+            yield* adder.Echo("text").pipe(Actor.commandId(malformed), Effect.flip),
+          ).toMatchObject({ reason: InvalidCommandId.make({ commandId: malformed }) })
+          const expired = "v1.1000.61000.17b3670b-3f17-4a9b-aade-037e1dd1bba8"
+          expect(
+            yield* adder.Echo("\u0000").pipe(Actor.commandId(expired), Effect.flip),
+          ).toMatchObject({ reason: CommandExpired.make({ commandId: expired }) })
+          expect(executions.count).toBe(before)
         }),
       ),
   },

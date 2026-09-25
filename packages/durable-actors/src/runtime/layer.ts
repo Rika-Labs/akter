@@ -41,10 +41,10 @@ import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
-import { checkIdentity, databaseTime } from "./turn/admission.ts"
+import { checkIdentity, databaseTime, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
-import { checkReceipt, readAdmission } from "./turn/receipt.ts"
+import { checkReceipt } from "./turn/receipt.ts"
 
 export interface Options {
   readonly authorize: (request: {
@@ -189,9 +189,17 @@ export const layer = (options: Options) => {
             return yield* Effect.gen(function* () {
               yield* allow(request)
 
+              // Postgres rejects some malformed ids and payloads outright; they
+              // still fail as terminal identity errors, checked as before.
               const admission = yield* readAdmission(
                 request,
                 routingKey({ ref: request.ref, placement: registration.placement }),
+              ).pipe(
+                Effect.tapError(() =>
+                  Effect.flatMap(databaseTime, (now) =>
+                    checkIdentity(request.commandId, retryWindowMs, now),
+                  ),
+                ),
               )
 
               yield* checkIdentity(request.commandId, retryWindowMs, admission.now)

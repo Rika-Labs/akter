@@ -132,6 +132,7 @@ None of the four slices has its own scenario yet. Outbox relay latency, timers d
    - **Inside the transaction:** `set_config`, a generation insert, the fenced admission read, the state upsert, and the receipt insert.
    - **New activation:** adds a generation `UPDATE` and a state read.
    - On loopback each round trip is cheap. Over a real network, or through a Neki router with cross-zone commit, round trips become the dominant cost. Tracked in #40.
+   - **After #40:** one statement before delivery reads the clock, the canonical payload, and any retained receipt; `set_config` runs inside the generation insert; the fenced admission read returns the canonical payload. A warm turn now issues 7 counted statements, 10 round trips, and a receipt replay 2 statements instead of 4. The remaining pre-transaction statements are the handle minting the command id and the clock recheck before a reply, which the receipt contract requires. `2026-09-25-f083e80-before-40-*.json` and `2026-09-25-6418ab9-after-40-*.json` hold the comparison: warm-turn p50 fell from 1.86 to 1.58 ms on Postgres on that run's machine.
 3. **Connection pool under many callers.** With 64 callers over 10k actors:
 
    | Pool | Throughput (op/s) | p99 (ms) |
@@ -157,7 +158,7 @@ None of the four slices has its own scenario yet. Outbox relay latency, timers d
 
 These are runtime changes, so each belongs in its own pull request:
 
-- Compute the payload hash and the database time once per command, instead of twice and three times. That removes three to four round trips from every command (#40).
+- Compute the payload hash and the database time once per command, instead of twice and three times. That removes three to four round trips from every command (#40, done: 14 to 10 round trips per warm turn).
 - Configure `maxResidentEntities` from actor policy or deployment options. Then either map runner-capacity rejections to a distinct `ActorError` reason, or make an unbounded mailbox mean that no capacity rejection is surfaced (#39).
 - Size the default pool to the expected caller concurrency, or document that 10 connections cap concurrent turns.
 - Find where heap per touched actor goes before making any claim above 10k actors per runner.

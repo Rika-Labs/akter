@@ -80,5 +80,9 @@ Every file below comes from the same machine: a 4-vCPU AMD EPYC cloud VM with 15
 | `2026-09-25-6022f56-main-repeat-postgres.json` | the same code run again, to measure run-to-run noise                                                                                                           | Postgres 18.6 |
 | `2026-09-25-a169bc7-m1-merge-postgres.json`    | local, unpushed merge of `main` `76ac433` with #34 outbox `925ae03`, #36 effects `c1ec6df`, #33 events `dd6d8f3`, and #32 reducers `ad2675b`, plus the harness | Postgres 18.6 |
 | `2026-09-25-a169bc7-m1-merge-pglite.json`      | same                                                                                                                                                           | PGlite 0.5.8  |
+| `2026-09-25-f083e80-before-40-postgres.json`   | #38's harness at `f083e80`, runtime identical to `main`; the baseline for #40, on a different VM from the rows above                                           | Postgres 18.6 |
+| `2026-09-25-f083e80-before-40-pglite.json`     | same                                                                                                                                                           | PGlite 0.5.8  |
+| `2026-09-25-6418ab9-after-40-postgres.json`    | #40: one admission statement before delivery and timeouts folded into the generation insert, same VM as its baseline                                           | Postgres 18.6 |
+| `2026-09-25-6418ab9-after-40-pglite.json`      | same                                                                                                                                                           | PGlite 0.5.8  |
 
 The merge resolved conflicts locally for the benchmark only; the files' `git.merges` list the parents. The merged pull requests add no scenario of their own yet, so the merge result measures whether they slow the existing paths, not the new mechanisms.

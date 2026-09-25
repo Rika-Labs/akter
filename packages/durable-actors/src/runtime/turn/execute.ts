@@ -60,8 +60,10 @@ export const executeTurn = Effect.fnUntraced(function* (
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
   const transaction = Effect.gen(function* () {
-    // The timeouts are set before the row is inserted, so lock_timeout already
-    // bounds this statement's waits; statement_timeout applies from the next one.
+    // set_config runs before the row is inserted, so lock_timeout bounds the
+    // insert's row waits but not the table lock taken when the statement starts;
+    // statement_timeout applies from the next statement, and commandTimeout
+    // bounds the whole transaction either way.
     yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
       SELECT ${routingKey}, ${tenant}, ${actor}, ${id}
       FROM (SELECT set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),

@@ -16,9 +16,8 @@ import { Actor, Actors, CurrentCaller, User } from "../index.ts"
 import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
-import { payloadHash } from "../runtime/turn/receipt.ts"
 import { ActorTest } from "./actor-test.ts"
-import { admissionConformance, admissionLayer } from "./conformance/admission.ts"
+import { admissionConformance, admissionLayer, payloadHash } from "./conformance/admission.ts"
 import {
   defectRecorder,
   foundationConformance,
