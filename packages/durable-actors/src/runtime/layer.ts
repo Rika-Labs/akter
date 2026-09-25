@@ -47,6 +47,7 @@ import { TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
+import type { AnyOwnedTable } from "../tables/owned.ts"
 import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
 
 export interface Options {
@@ -76,6 +77,10 @@ export const layer = (options: Options) => {
       >()
 
       const database = yield* rowsDatabase
+
+      // Tables that passed the startup check for an actor type of this runtime;
+      // group reads may only touch these, never other Actor.table values.
+      const checked = new Set<AnyOwnedTable>()
 
       const allow = Effect.fnUntraced(function* (request: Request) {
         if (!(yield* options.authorize(request)))
@@ -219,7 +224,7 @@ export const layer = (options: Options) => {
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         tables: (scope, write) =>
-          bindTables(database, scope, write).pipe(Effect.provideContext(services)),
+          bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
         register: Effect.fnUntraced(function* (registration: Registration) {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
@@ -228,6 +233,8 @@ export const layer = (options: Options) => {
             Effect.provideContext(services),
             Effect.orDie,
           )
+
+          for (const table of registration.tables) checked.add(table)
           yield* registerActor(registration).pipe(
             Effect.provideContext(services),
             Effect.provideService(OutboxRuntime, outbox),
@@ -247,6 +254,8 @@ export const layer = (options: Options) => {
             Effect.provideContext(services),
             Effect.orDie,
           )
+
+          for (const table of registration.tables) checked.add(table)
           queryRegistrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {

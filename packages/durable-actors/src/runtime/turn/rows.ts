@@ -340,6 +340,7 @@ export const bindTables = Effect.fnUntraced(function* (
   database: Option.Option<Database>,
   scope: TableScope,
   write: boolean,
+  checked: ReadonlySet<AnyOwnedTable>,
 ) {
   const sql = yield* SqlClient.SqlClient
   const connection = yield* Effect.serviceOption(sql.transactionService)
@@ -508,9 +509,9 @@ export const bindTables = Effect.fnUntraced(function* (
   }
 
   const ownedTable = (table: PgSelectConfig["table"]): AnyOwnedTable =>
-    is(table, Table) && ownership(table) !== undefined
+    is(table, Table) && checked.has(table as AnyOwnedTable)
       ? (table as AnyOwnedTable)
-      : reject("Group queries read owned tables only, not aliases or subqueries")
+      : reject("Group queries read tables registered by an actor type, not aliases or subqueries")
 
   const bound = (value: PgSelectConfig["limit"]) => {
     if (value === undefined) return undefined

@@ -31,6 +31,14 @@ export const labels = Actor.table(
 
 const unowned = pgTable("conformance_unowned", { id: text("id").primaryKey() })
 
+// Wrapped but listed by no actor type, as a handler could do to reach framework tables.
+const receipts = Actor.table(
+  pgTable("actor_receipts", {
+    command_id: text("command_id").primaryKey(),
+    command: text("command"),
+  }),
+)
+
 /** What drizzle-kit generates for the tables above; `owned.test.ts` checks it stays so. */
 export const tablesDdl = [
   `CREATE TABLE "conformance_notes" (
@@ -91,6 +99,7 @@ const GroupMisuse = Schema.Literals([
   "param",
   "wrapper",
   "ownership",
+  "unlisted",
 ])
 
 const Write = Actor.command("Write", {
@@ -463,6 +472,8 @@ const NotebookReads = Notebook.toQueryLayer(
               .select({ id: notes.id })
               .from(notes)
               .where(drizzleSql`${sqlLookalike}`)
+          case "unlisted":
+            return db.select({ id: receipts.command }).from(receipts)
           case "ownership":
             return db.select({ id: notes.tenant_id }).from(notes)
         }
@@ -701,7 +712,8 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
             ["subquery", "cannot reference tables, subqueries"],
             ["rightJoin", "inner and left joins"],
             ["lock", "read-only"],
-            ["unowned", "owned tables only"],
+            ["unowned", "registered by an actor type"],
+            ["unlisted", "registered by an actor type"],
             ["parentheses", "balance their parentheses"],
             ["param", "plain data"],
             ["wrapper", "plain data"],
