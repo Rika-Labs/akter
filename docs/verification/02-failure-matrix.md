@@ -56,6 +56,9 @@ Unless a row exercises denial or expiry, external receipt replay assumes the ori
 | Caller gives up before a reply | Retrying the same id reports the committed outcome or executes once; a new id is a new operation. |
 | Commutative merge turn fails | No original command commits; each caller retries its own id and may merge again. |
 | Optimistic reducer rejected by the server | The browser handle removes the pending input and shows committed state. |
+| Statement fails inside a pipelined commit group | Every statement pipelined after it is aborted and `COMMIT` returns `ROLLBACK`, which the runtime treats as a failed commit; no receipt, state, row, event, or outbox row commits; the cache is discarded, the activation restarts, and the caller retries the same command id ([ADR 0020](../decisions/0020-two-round-trip-turn-pipeline.md)). |
+| Turn interrupted with a pipeline in flight | The runtime cancels and closes the leased connection and never reuses it. Before `COMMIT` is sent, the transaction rolls back. After, the outcome is commit-unknown. Either way, the caller's retry with the same command id resolves through the receipt or executes once. |
+
 Run applicable rows on PGlite, Postgres, Neki, the in-process multi-runner harness, and the served HTTP harness. Real Postgres is mandatory for lock-contention rows.
 
 Reducer evidence (M1.8): **Declared failure after attempted writes**, **During handler / before COMMIT**, **After COMMIT / before reply**, and part of **Deterministic defect** (rollback, `Die`, no receipt, and the actor serving the next call; the span is not asserted) are exercised for server reducer turns by the [reducer cases](01-conformance.md#reducer-cases-m18), on PGlite and Postgres. **Commutative merge turn fails** waits for M2 merging and **Optimistic reducer rejected by the server** for the M3 client.

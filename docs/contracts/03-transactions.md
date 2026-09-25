@@ -15,4 +15,6 @@ External calls, WebSocket writes, streams, workflow execution, and effect execut
 
 On every backend, intents and timers MUST be written to `actor_outbox` in the actor's shard within the turn transaction. After COMMIT, the owning runner's relay MUST deliver each due intent as a direct command using the intent id as the command id, and delete the row only after the receiver's receipt commits. Receiver receipts deduplicate at-least-once delivery ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)). This is not an exactly-once external-effect guarantee. Effects performed in a turn are `actor_outbox` rows of kind `effect` written in the same transaction; their executors run only after COMMIT ([background work](08-background-work.md)).
 
+An adapter that pipelines turn statements MUST prove that the server executes them in submission order within the transaction, and that a failed statement aborts every statement pipelined after it, so that the final `COMMIT` rolls back ([ADR 0020](../decisions/0020-two-round-trip-turn-pipeline.md)).
+
 Adapters MUST prove locking, connection pinning, rollback, and relay recovery through the gates in [conformance](../verification/01-conformance.md). SQL protocol compatibility alone is insufficient.
