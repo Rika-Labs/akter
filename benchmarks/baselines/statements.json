@@ -1,0 +1,33 @@
+{
+  "profile": "ci",
+  "backend": "postgres",
+  "sha": "d508ea5",
+  "statementsPerOperation": {
+    "hot-actor/sequential": 7.01,
+    "hot-actor/concurrent-8": 7.01,
+    "hot-actor/concurrent-64": 7.01,
+    "cold-activation/new-actor": 9,
+    "cold-activation/after-hibernation": 9.02,
+    "query-latency/sequential": 1,
+    "query-latency/concurrent-64": 1,
+    "receipt-replay/sequential": 2,
+    "receipt-replay/concurrent-64": 2,
+    "events/append-0": 6.01,
+    "events/append-1": 8.01,
+    "events/append-10": 8.01,
+    "events/replay-tail-10-of-1000": 2,
+    "events/replay-all-1000": 2,
+    "events/replay-tail-10-concurrent-64": 2,
+    "outbox/delivery-sequential": 16.28,
+    "outbox/delivery-concurrent-16": 13.34,
+    "outbox/drain-2000": 5.08,
+    "outbox/delivery-beside-10000-timers": 16.27,
+    "outbox/delivery-beside-100000-timers": 16.27,
+    "owned-rows/insert": 7.01,
+    "owned-rows/read-update": 8.01,
+    "owned-rows/read-one": 2,
+    "owned-rows/read-page-20": 2.01,
+    "effect-round-trip/sequential": 22,
+    "effect-round-trip/concurrent-64": 18.07
+  }
+}
