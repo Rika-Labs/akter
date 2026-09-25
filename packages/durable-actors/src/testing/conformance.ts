@@ -25,6 +25,7 @@ import {
   foundationLayer,
   type FoundationFixture,
 } from "./foundation.ts"
+import { heapConformance } from "./conformance/heap.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -37,6 +38,7 @@ export interface ConformanceMatchers {
   readonly toContain: <T>(expected: T) => void
   readonly toMatchObject: <T extends object | ReadonlyArray<unknown>>(expected: T) => void
   readonly toBeInstanceOf: <T>(expected: T) => void
+  readonly toBeLessThan: (expected: number) => void
 }
 
 export type ConformanceExpect = <T>(actual: T) => ConformanceMatchers
@@ -238,6 +240,7 @@ const makeFixture = (): ConformanceFixture => ({
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
+  ...heapConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
