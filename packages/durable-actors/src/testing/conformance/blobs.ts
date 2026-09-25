@@ -1,6 +1,7 @@
 import { Cause, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { Actor } from "../../index.ts"
 import type { AnyBlob } from "../../members/blob.ts"
+import { MAX_ENTRY_BYTES } from "../../runtime/turn/blobs.ts"
 import type { BlobWrite } from "../../state/blob.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
@@ -20,7 +21,15 @@ class DrawerRejected extends Schema.TaggedError<DrawerRejected>()("DrawerRejecte
 
 const Entry = Schema.Struct({ name: Schema.String, text: Schema.String })
 
-const Misuse = Schema.Literals(["undeclared", "emptyName", "loneSurrogate", "nul", "notBytes"])
+const Misuse = Schema.Literals([
+  "undeclared",
+  "emptyName",
+  "loneSurrogate",
+  "nul",
+  "longName",
+  "oversized",
+  "notBytes",
+])
 
 const Store = Actor.command("Store", { input: Entry })
 
@@ -44,6 +53,12 @@ const WriteForked = Actor.command("WriteForked")
 
 /** A timeout runs its effect on a child fiber, so it is a forked use too. */
 const WriteTimed = Actor.command("WriteTimed")
+
+/** Races a write against a sleep, so the guard's defect would be swallowed by the race. */
+const WriteRaced = Actor.command("WriteRaced")
+
+/** Appends `size` bytes to one growing entry. */
+const Grow = Actor.command("Grow", { input: Schema.Int })
 
 const Large = Actor.command("Large", { input: Schema.Int })
 
@@ -74,6 +89,8 @@ const Drawer = Actor.make("Drawer", {
     Rewrite,
     WriteForked,
     WriteTimed,
+    WriteRaced,
+    Grow,
     Large,
     Capture,
     Replay,
@@ -113,6 +130,11 @@ const misuse = (loose: (blob: AnyBlob) => BlobWrite, kind: typeof Misuse.Type) =
       return loose(files).set("\uD800", bytes("x"))
     case "nul":
       return loose(files).set("a\u0000b", bytes("x"))
+    case "longName":
+      // 171 three-byte characters: 513 UTF-8 bytes in 171 code units.
+      return loose(files).set("界".repeat(171), bytes("x"))
+    case "oversized":
+      return loose(files).set("x", new Uint8Array(MAX_ENTRY_BYTES + 1))
     case "notBytes":
       return loose(files).set("x", "not bytes" as never)
   }
@@ -175,6 +197,13 @@ const DrawerLive = (fixture: BlobsFixture) =>
           .blob(files)
           .set("timed", bytes("timed"))
           .pipe(Effect.timeout("5 seconds"), Effect.orDie)
+      }),
+      WriteRaced: Effect.fnUntraced(function* () {
+        const blob = (yield* Drawer.Turn).blob(files)
+        yield* Effect.race(blob.set("raced", bytes("raced")), Effect.sleep("200 millis"))
+      }),
+      Grow: Effect.fnUntraced(function* (size) {
+        yield* (yield* Drawer.Turn).blob(files).append("grow", new Uint8Array(size).fill(1))
       }),
       Large: Effect.fnUntraced(function* (size) {
         yield* (yield* Drawer.Turn).blob(files).set("large", new Uint8Array(size).fill(7))
@@ -391,6 +420,24 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "caps an entry at MAX_ENTRY_BYTES across appends as a defect without a receipt",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const drawer = yield* Drawer.get("capped")
+          const half = MAX_ENTRY_BYTES / 2
+          yield* drawer.Grow(half)
+          yield* drawer.Grow(half)
+          expect(defect(yield* drawer.Grow(1).pipe(Effect.exit))).toContain(
+            `A blob entry holds at most ${MAX_ENTRY_BYTES} bytes`,
+          )
+          expect(yield* drawer.Size("grow")).toBe(MAX_ENTRY_BYTES)
+          expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(1), receipts: 2 })
+        }),
+      ),
+  },
+  {
     name: "rejects undeclared blobs and malformed entries as defects without a receipt",
     run: ({ expect, environment }) =>
       environment.run(
@@ -403,6 +450,8 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
             ["emptyName", "Blob entry names"],
             ["loneSurrogate", "Blob entry names"],
             ["nul", "Blob entry names"],
+            ["longName", "Blob entry names"],
+            ["oversized", `A blob entry holds at most ${MAX_ENTRY_BYTES} bytes`],
             ["notBytes", "Blob bytes are a Uint8Array"],
           ] as const)
             expect(defect(yield* drawer.WriteThenMisuse(kind).pipe(Effect.exit))).toContain(message)
@@ -435,13 +484,14 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
             "Blob capability escaped its query",
           )
 
-          for (const forked of [drawer.WriteForked(), drawer.WriteTimed()])
+          for (const forked of [drawer.WriteForked(), drawer.WriteTimed(), drawer.WriteRaced()])
             expect(defect(yield* forked.pipe(Effect.exit))).toContain(
               "Blob capability used from a fiber other than its turn's",
             )
           expect(yield* drawer.Get("owned")).toEqual(Option.none())
           expect(yield* drawer.Get("forked")).toEqual(Option.none())
           expect(yield* drawer.Get("timed")).toEqual(Option.none())
+          expect(yield* drawer.Get("raced")).toEqual(Option.none())
           expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(1), receipts: 1 })
         }),
       ),

@@ -134,8 +134,9 @@ The cases live in [`conformance/blobs.ts`](../../packages/durable-actors/src/tes
 - `retries a blob append that crashes before commit to exactly one chunk` (T1)
 - `replays a blob append committed before a crash without appending again`
 - `exempts blob bytes from maxStateBytes` — a 256 KiB entry commits under a 1,024-byte `maxStateBytes`.
-- `rejects undeclared blobs and malformed entries as defects without a receipt` — an undeclared blob, an empty entry name, a lone surrogate (which Postgres would store as U+FFFD, aliasing another name), a NUL, and a non-`Uint8Array` value each fail the turn, and the turn's earlier write rolls back.
-- `gives queries read-only blobs and rejects escaped blob capabilities` — a query's `BlobRead` has no `set`; a `set` captured from a turn fails after the turn and from another turn; a `get` captured from a query fails after the query; and a `set` from a fiber forked inside the turn, or wrapped in `Effect.timeout`, dies and rolls the turn back (A3). The forked-fiber guard is shared with owned rows and `group`.
+- `caps an entry at MAX_ENTRY_BYTES across appends as a defect without a receipt` — two 4 MiB appends fill an entry to exactly 8 MiB; a one-byte append then fails the turn and the entry keeps its bytes.
+- `rejects undeclared blobs and malformed entries as defects without a receipt` — an undeclared blob, an empty entry name, a 513-byte name of 171 characters, a `set` of 8 MiB plus one byte, a lone surrogate (which Postgres would store as U+FFFD, aliasing another name), a NUL, and a non-`Uint8Array` value each fail the turn, and the turn's earlier write rolls back.
+- `gives queries read-only blobs and rejects escaped blob capabilities` — a query's `BlobRead` has no `set`; a `set` captured from a turn fails after the turn and from another turn; a `get` captured from a query fails after the query; and a `set` from a fiber forked inside the turn, wrapped in `Effect.timeout`, or raced against a sleep so that the race swallows its defect, dies and rolls the turn back (A3). The forked-fiber guard is shared with owned rows and `group`.
 
 Postgres only (independent connections):
 
@@ -144,6 +145,8 @@ Postgres only (independent connections):
 Declarations, in [`definition.test.ts`](../../packages/durable-actors/src/actor/definition.test.ts): `declares blobs, keeps queries read-only, and rejects undeclared or duplicate blobs` — `turn.blob` is typed `BlobWrite`, `read.blob` `BlobRead` with only `get`, an undeclared blob and a query write are type errors, and invalid names, duplicates, and look-alike objects fail `Actor.make`. Postgres SIGKILL, in [`crash/blobs.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/blobs.test.ts): `leaves no blob chunk after SIGKILL beforeCommit and retries to exactly one` and `leaves one blob chunk after SIGKILL afterCommit and retries to exactly one`, inspected through a separate pool.
 
 **Executed 2026-09-25 (M1.blob, rebased on #35 with outbox and reducers):** `bun run check` passed 57/57 tasks, with `durable-actors` tests at 99 passed and 12 independent-connection cases skipped on PGlite; `test:integration` on disposable Postgres 18.6 passed 93 tests, including the Postgres-only blob case and both blob SIGKILL recoveries.
+
+**Security review (contract 10), 2026-09-26:** a fresh-machine review of #61 at `912c471` covered `actor_blobs` tenant and actor isolation on every read, write, and compact; the fiber guard and capability escape; size and DoS; and SQL construction, with exploit cases on PGlite and Postgres. Isolation and SQL construction: no issue found. Fixed: an entry of 16 MiB or more could be written but not read, and its read closed a pooled Postgres connection and put the turn into a retry loop (high; now an 8 MiB entry cap enforced on `set` and `append`); 1,024-character names could exceed the btree key size (low; now 512 UTF-8 bytes); a guard defect swallowed by `race` let the turn commit without the write (low; the turn now fails). Open, tracked as a follow-up: no per-actor quota on blob entry count or total bytes, and no statement timeout on query reads (medium).
 
 ### Backend-specific cases
 

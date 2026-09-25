@@ -4,7 +4,14 @@ import type { AnyBlob } from "../../members/blob.ts"
 import type { BlobAccess, BlobRead, BlobScope, BlobWrite } from "../../state/blob.ts"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
 
-const MAX_NAME_LENGTH = 1024
+/** UTF-8 bytes of an entry name; the name shares a btree key with the ownership columns. */
+export const MAX_NAME_BYTES = 512
+
+/**
+ * Bytes one entry may hold. `get` returns an entry as one row, and the Postgres
+ * driver closes a connection on any message over 16 MiB, so an entry stays well below it.
+ */
+export const MAX_ENTRY_BYTES = 8 * 1024 * 1024
 
 /**
  * Binds blob capabilities to the calling fiber's turn or query. Every row is
@@ -36,13 +43,13 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
       if (
         !Predicate.isString(name) ||
         name.length === 0 ||
-        name.length > MAX_NAME_LENGTH ||
+        new TextEncoder().encode(name).byteLength > MAX_NAME_BYTES ||
         !name.isWellFormed() ||
         name.includes("\u0000")
       )
         return yield* Effect.die(
           new Error(
-            `Blob entry names are well-formed 1-${MAX_NAME_LENGTH} character strings without NUL`,
+            `Blob entry names are well-formed strings of 1-${MAX_NAME_BYTES} UTF-8 bytes without NUL`,
           ),
         )
 
@@ -52,10 +59,14 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
     })
 
     // A copy taken once, so later changes to the caller's buffer never reach the row.
-    const copy = (bytes: Uint8Array) =>
-      bytes instanceof Uint8Array
-        ? Effect.succeed(Uint8Array.from(bytes))
-        : Effect.die(new Error("Blob bytes are a Uint8Array"))
+    const copy = (bytes: Uint8Array) => {
+      if (!(bytes instanceof Uint8Array))
+        return Effect.die(new Error("Blob bytes are a Uint8Array"))
+
+      return bytes.byteLength > MAX_ENTRY_BYTES ? oversized : Effect.succeed(Uint8Array.from(bytes))
+    }
+
+    const oversized = Effect.die(new Error(`A blob entry holds at most ${MAX_ENTRY_BYTES} bytes`))
 
     const run = <A, E>(effect: Effect.Effect<A, E>) =>
       effect.pipe(
@@ -113,10 +124,16 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
             const where = yield* entry(name)
             const copied = yield* copy(bytes)
 
-            // Turns of one actor are serialized by its generation lock, so the next chunk is free.
-            yield* sql`INSERT INTO actor_blobs (routing_key, tenant_id, actor_type, actor_id, blob, name, chunk, bytes)
+            // Turns of one actor are serialized by its generation lock, so the next
+            // chunk is free and the size read here still holds at insert.
+            const inserted =
+              yield* sql`INSERT INTO actor_blobs (routing_key, tenant_id, actor_type, actor_id, blob, name, chunk, bytes)
               SELECT ${values(name, sql.literal("COALESCE(max(chunk) + 1, 0)"), copied)}
-              FROM actor_blobs WHERE ${where}`
+              FROM actor_blobs WHERE ${where}
+              HAVING COALESCE(sum(octet_length(bytes)), 0) + ${copied.byteLength} <= ${MAX_ENTRY_BYTES}
+              RETURNING chunk`
+
+            if (inserted.length === 0) return yield* oversized
           }),
         ),
       compact: (name) =>

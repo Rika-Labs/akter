@@ -670,6 +670,8 @@ const make = <
 
             // A forked fiber inherits InsideTurn, so the turn's own fiber is checked too.
             const owner = Fiber.getCurrent()
+            // Set on a use from another fiber of this turn, so a swallowed defect still fails the turn.
+            let misused: string | undefined
 
             const escaped = (capability: string) =>
               Effect.gen(function* () {
@@ -677,12 +679,11 @@ const make = <
                   return yield* Effect.die(new Error(`${capability} capability escaped its turn`))
 
                 // The turn's one connection takes no concurrent statements.
-                if (Fiber.getCurrent() !== owner)
-                  return yield* Effect.die(
-                    new Error(
-                      `${capability} capability used from a fiber other than its turn's; timeout, race, and concurrent combinators run on other fibers`,
-                    ),
-                  )
+                if (Fiber.getCurrent() !== owner) {
+                  misused = `${capability} capability used from a fiber other than its turn's; timeout, race, and concurrent combinators run on other fibers`
+
+                  return yield* Effect.die(new Error(misused))
+                }
               })
 
             const access = yield* actors.tables(
@@ -743,6 +744,8 @@ const make = <
               )
 
               const output = yield* handle(input.value)
+
+              if (misused !== undefined) return yield* Effect.die(new Error(misused))
 
               const value = yield* Schema.encodeEffect(outputCodec)({ value: output }).pipe(
                 Effect.orDie,
