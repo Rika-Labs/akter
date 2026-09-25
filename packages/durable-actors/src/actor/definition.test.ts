@@ -383,4 +383,101 @@ describe("actor declarations", () => {
     expect(() => Intent.after(-1)).toThrow("non-negative")
     expect(() => Intent.key("")).toThrow("1-200")
   })
+  it("types effects, executors, and routes against the executor's return type", () => {
+    class Moderate extends Actor.effect<Moderate>()("Moderate", {
+      input: { body: Schema.String },
+      success: Schema.Struct({ flagged: Schema.Boolean }),
+    }) {}
+
+    class Other extends Actor.effect<Other>()("Other") {}
+
+    const Post = Actor.command("Post")
+
+    const Moderated = Actor.command("Moderated", {
+      input: Schema.Struct({ flagged: Schema.Boolean }),
+    })
+
+    const Failed = Actor.command("Failed", { input: Actor.DeadLetter(Moderate) })
+
+    const Wrong = Actor.command("Wrong", { input: Schema.String })
+
+    const Room = Actor.make("EffectTypes", {
+      effects: [Moderate],
+      api: { Post },
+      internal: { Moderated, Failed },
+      policy: {
+        effects: { Moderate: { retry: { times: 2 }, onSuccess: Moderated, onDeadLetter: Failed } },
+      },
+    })
+
+    expect(Moderate.tag).toBe("Moderate")
+    expect(Moderate.make({ body: "hi" })).toBeInstanceOf(Moderate)
+
+    type Executor = (typeof Room.Executor)["Service"]
+
+    type Read = (typeof Room.Read)["Service"]
+
+    expectTypeOf<Executor["effectId"]>().toEqualTypeOf<string>()
+    expectTypeOf<Executor["attempt"]>().toEqualTypeOf<number>()
+    expectTypeOf<keyof Read>().not.toEqualTypeOf<keyof Read | "perform">()
+    expectTypeOf(Actor.effect()("NoSelf")).toBeString()
+
+    Actor.make("WrongSuccess", {
+      effects: [Moderate],
+      api: { Wrong },
+      // @ts-expect-error onSuccess must accept the executor's return type
+      policy: { effects: { Moderate: { onSuccess: Wrong } } },
+    })
+    Actor.make("WrongDeadLetter", {
+      effects: [Moderate],
+      api: { Moderated },
+      // @ts-expect-error onDeadLetter must accept Actor.DeadLetter(E)
+      policy: { effects: { Moderate: { onDeadLetter: Moderated } } },
+    })
+    expect(() =>
+      Actor.make("ForeignRoute", {
+        effects: [Moderate],
+        api: { Post },
+        // @ts-expect-error a route must name a command of this actor
+        policy: { effects: { Moderate: { onSuccess: Moderated } } },
+      }),
+    ).toThrow("routes must name a command of this actor")
+    expect(() =>
+      Actor.make("UndeclaredEffect", {
+        effects: [Moderate],
+        api: { Post },
+        // @ts-expect-error policy.effects keys must be declared effects
+        policy: { effects: { Other: {} } },
+      }),
+    ).toThrow("names no declared effect")
+    expect(() =>
+      Actor.make("DuplicateEffect", { effects: [Moderate, Moderate], api: { Post } }),
+    ).toThrow("Duplicate effect")
+    expect(() =>
+      Actor.make("BadRetry", {
+        effects: [Moderate],
+        api: { Post },
+        policy: { effects: { Moderate: { retry: { times: -1 } } } },
+      }),
+    ).toThrow("retry.times")
+
+    Room.toEffectLayer(Effect.succeed({ Moderate: () => Effect.succeed({ flagged: true }) }))
+    // @ts-expect-error an executor must return its effect's success type
+    Room.toEffectLayer(Effect.succeed({ Moderate: () => Effect.succeed("flagged") }))
+
+    const layer = Room.toLayer(
+      Effect.succeed({
+        Post: Effect.fnUntraced(function* () {
+          const turn = yield* Room.Turn
+          yield* turn.perform(Moderate.make({ body: "hi" }))
+          // @ts-expect-error only declared effects can be performed
+          yield* turn.perform(Other.make())
+        }),
+        Moderated: () => Effect.void,
+        Failed: (letter) => Effect.log(letter.effectId, letter.effect.body, letter.ambiguous),
+      }),
+    )
+
+    expectTypeOf(layer).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+  })
 })

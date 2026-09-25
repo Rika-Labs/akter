@@ -39,8 +39,10 @@ export interface Inspection {
   readonly state: Schema.JsonObject["Type"]
   readonly receipts: number
   readonly events: number
-  /** Pending `actor_outbox` rows this actor sent. */
+  /** Pending intents and timers this actor sent, including effect routes awaiting delivery. */
   readonly outbox: number
+  /** Effects this actor performed whose executor has not yet settled them. */
+  readonly effects: number
   /**
    * The actor's row count per owned table, keyed by table name (schema-qualified
    * outside the current schema); present when its type owns tables.
@@ -239,8 +241,10 @@ export class ActorTest extends Context.Service<
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
                 const outbox = yield* sql<{
-                  count: number
-                }>`SELECT count(*)::integer AS count FROM actor_outbox
+                  intents: number
+                  effects: number
+                }>`SELECT count(*) FILTER (WHERE kind = 'intent')::integer AS intents,
+              count(*) FILTER (WHERE kind = 'effect')::integer AS effects FROM actor_outbox
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
                 const tables = yield* sql<{
@@ -276,7 +280,8 @@ export class ActorTest extends Context.Service<
                   ),
                   receipts: receipts[0]!.count,
                   events: events[0]!.count,
-                  outbox: outbox[0]!.count,
+                  outbox: outbox[0]!.intents,
+                  effects: outbox[0]!.effects,
                 }
 
                 return tables.length > 0 ? { ...inspection, rows } : inspection
