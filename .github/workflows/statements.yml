@@ -1,0 +1,46 @@
+name: Statements
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: statements-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  statements:
+    name: Statements
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      # The merge ref, not the head: two pull requests can each add a statement
+      # and bump the same baseline line to the same value, merging cleanly.
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Restore Bun package cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
+      - run: bun install --frozen-lockfile --ignore-scripts
+      # The harness starts its own Postgres container, because a service
+      # container can't load pg_stat_statements through shared_preload_libraries.
+      - name: Count statements per operation
+        run: bun run bench --profile ci --out "$RUNNER_TEMP/statements"
+      - name: Compare with the committed baseline
+        run: bun run bench:compare --statements benchmarks/baselines/statements.json "$RUNNER_TEMP"/statements/*-ci.json --fail
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: statements-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/statements/
+          if-no-files-found: ignore
+          retention-days: 14

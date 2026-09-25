@@ -35,7 +35,7 @@ Split a shard, or stop placing new keys on it, when any of these persists at nor
 - **Flat latency with stored actors:** a fixed 10,000 turns/second on one shard with 10^5, 10^7, and 10^9 stored actors. Turn p99, wake latency, and timer lateness must stay within 10% across the three.
 - **Linear scale-out:** 1, 2, 4, 8, and 16 Neki shards with turns/second per shard held constant, including during an online reshard. Measure the single `cluster_*` shard group separately.
 - **Hot-actor ceiling:** maximum durable commands/second for one actor with turn batches off and on.
-- **Round trips:** database round trips per turn, expected to be two.
+- **Round trips:** database round trips per turn, expected to be two. The `Statements` CI job holds every pull request to `main` to the statements per operation in `benchmarks/baselines/statements.json`; a pull request that changes a count updates that file and says why ([benchmarks/README.md](../../benchmarks/README.md#statement-gate)).
 - **72-hour soak:** vacuum progress, transaction-ID age, WAL bytes per turn, full-page-image ratio, replica lag, and relay lag.
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
 - **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region.
