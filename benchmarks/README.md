@@ -99,7 +99,7 @@ The `main` and `main-repeat` files show the run-to-run noise on one cloud VM. Mo
 
 ## Results
 
-Every file below comes from the same machine: a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, running Linux 6.1. The client, the actor runtime, and Postgres share its CPUs.
+Every file below comes from a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, running Linux 6.1, where the client, the actor runtime, and Postgres share its CPUs. Rows that say "different VM" ran on another machine of that shape; compare latency and throughput only between files from the same machine.
 
 | File                                            | Code                                                                                                                                                                                                      | Backend       |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
@@ -120,5 +120,7 @@ Every file below comes from the same machine: a 4-vCPU AMD EPYC cloud VM with 15
 | `2026-09-25-f083e80-before-40-pglite.json`      | same                                                                                                                                                                                                      | PGlite 0.5.8  |
 | `2026-09-25-6418ab9-after-40-postgres.json`     | #40: one admission statement before delivery and timeouts folded into the generation insert, same VM as its baseline                                                                                      | Postgres 18.6 |
 | `2026-09-25-6418ab9-after-40-pglite.json`       | same                                                                                                                                                                                                      | PGlite 0.5.8  |
+| `2026-09-25-96eb5e1-main-postgres.json`         | `main` at `96eb5e1`, after M1.4–M1.8 (#35, #33, #34, #36, #32), #41, #39/#42, and #40 landed; the post-M1 baseline, on a different VM from the rows above                                                 | Postgres 18.6 |
+| `2026-09-25-96eb5e1-main-pglite.json`           | same                                                                                                                                                                                                      | PGlite 0.5.8  |
 
 The effect round trip runs its executor inside the single relay's pass, which settles at most 16 rows at a time, so `concurrent-64` measures that relay's ceiling more than per-actor cost. The merge resolved conflicts locally for the benchmark only; the files' `git.merges` list the parents. The merged pull requests add no scenario of their own yet, so the merge result measures whether they slow the existing paths, not the new mechanisms.
