@@ -1,6 +1,6 @@
 # ADR 0021: Multi-runner relay, effect executors, singletons, and cron
 
-**Status:** proposed (2026-09-25). If accepted, it amends [ADR 0006](0006-scale-rules-placement-and-query-tiers.md) and [ADR 0011](0011-direct-commands-outbox-and-performance.md) where they say a runner scans only the buckets it owns, and it decides how [ADR 0010](0010-one-way-effect-native-api.md)'s `policy.cron` and `cronSkipIfOlderThan` work. The contract, architecture, API, and verification amendments listed under [Amendments](#amendments) land in the same change.
+**Status:** accepted (2026-09-26; proposed 2026-09-25). It amends [ADR 0006](0006-scale-rules-placement-and-query-tiers.md) and [ADR 0011](0011-direct-commands-outbox-and-performance.md) where they say a runner scans only the buckets it owns, and it decides how [ADR 0010](0010-one-way-effect-native-api.md)'s `policy.cron` and `cronSkipIfOlderThan` work. The contract, architecture, API, and verification amendments listed under [Amendments](#amendments) land in the same change.
 
 **Responsibility:** decide how the outbox relay, effect executors, singleton cron, and per-actor cron behave when several runners share one database, so that M2.4 (relay) and M2.5 (cron) have no open design questions.
 
@@ -267,7 +267,9 @@ Singleton residency and the background loop use Cluster's `registerSingleton`, a
 
 ## Open questions and recommended defaults
 
-Each has a recommended default that this ADR adopts. Dallen can change any of them before acceptance.
+Each has a recommended default that this ADR adopts.
+
+**Resolution (2026-09-26).** Dallen accepted the ADR with every default below. He explicitly confirmed question 8: no runner-to-runner wakes. He delegated question 4 to the M2 planning lead, who kept the default: singleton cron runs in the default tenant only, and per-tenant jobs use a named actor.
 
 1. **Claim lease for intents.** Recommended: derived as the largest `commandTimeout + lockWait` + 5 s, and overridable with `relay.claimLease`. The alternative, a fixed 10 s, recovers faster after a relay crash, but a slow receiver would get duplicate deliveries.
 
