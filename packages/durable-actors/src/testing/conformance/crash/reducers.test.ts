@@ -4,26 +4,32 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 
-describe("owned rows across process death with Postgres", () => {
+const counts = `SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts,
+  (SELECT count(*)::int FROM actor_state WHERE key = 'count') AS state,
+  (SELECT json_agg(command_id) FROM actor_receipts) AS ids`
+
+describe("reducer turns across process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  // `AppendThenRefuse` inserts a row and then fails with a declared error, so
-  // only its terminal receipt may commit.
-  for (const [handler, point] of (["Append", "AppendThenRefuse"] as const).flatMap((handler) =>
-    (["beforeCommit", "afterCommit"] as const).map((point) => [handler, point] as const),
+  // A committed reply is the new count; 1000 overflows, so its reply is the declared failure.
+  for (const [amount, reply, state, point] of (
+    [
+      [5, "5", '"5"'],
+      [1000, "Overflow", "null"],
+    ] as const
+  ).flatMap((outcome) =>
+    (["beforeCommit", "afterCommit"] as const).map((point) => [...outcome, point] as const),
   )) {
-    const refused = handler === "AppendThenRefuse"
+    const outcome = reply === "Overflow" ? "declared failure" : "state change"
 
     it(
-      refused
-        ? `rolls back an owned row before a declared failure across SIGKILL ${point} and replays the failure`
-        : `leaves ${point === "beforeCommit" ? "no" : "one"} owned row after SIGKILL ${point} and retries to exactly one`,
+      `recovers a reducer ${outcome} after SIGKILL ${point} by retrying the same command id`,
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
             const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-            const name = `rows_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+            const name = `reducers_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
 
             const admin = yield* Effect.acquireRelease(
               Effect.sync(() => new Pool({ connectionString: database.href })),
@@ -51,15 +57,15 @@ describe("owned rows across process death with Postgres", () => {
               )).rows[0].now,
             )
 
-            const commandId = `v1.${now - 1_000}.${now - 1_000 + 86_400_000}.5d0c7f2e-7a0b-4f55-9d8e-2b1c6a3e4f10`
+            const commandId = `v1.${now - 1_000}.${now - 1_000 + 86_400_000}.0c4f9d8e-51a2-4b7c-8e3d-6f2a1b9c7d40`
 
             const command = (mode: string) =>
-              ChildProcess.make("bun", [new URL("./rows.ts", import.meta.url).pathname], {
+              ChildProcess.make("bun", [new URL("./reducers.ts", import.meta.url).pathname], {
                 env: {
                   CRASH_DATABASE_URL: database.href,
                   CRASH_POINT: mode,
                   CRASH_COMMAND_ID: commandId,
-                  CRASH_COMMAND: handler,
+                  CRASH_AMOUNT: String(amount),
                 },
                 extendEnv: true,
                 stderr: "inherit",
@@ -76,27 +82,36 @@ describe("owned rows across process death with Postgres", () => {
             yield* child.kill({ killSignal: "SIGKILL" })
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
 
-            const committed = point === "afterCommit" ? 1 : 0
-
-            // A separate pool sees only what the killed process committed.
-            expect(
-              (yield* Effect.promise(() =>
-                pool.query(
-                  "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM crash_entries) AS rows",
-                ),
-              )).rows,
-            ).toEqual([{ receipts: committed, rows: refused ? 0 : committed }])
+            // A separate pool sees only what the killed process committed: a declared
+            // failure commits its receipt and none of the reducer's state.
+            const committed = point === "afterCommit"
+            expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
+              {
+                receipts: committed ? 1 : 0,
+                state: committed && reply !== "Overflow" ? 1 : 0,
+                ids: committed ? [commandId] : null,
+              },
+            ])
 
             const recovery = yield* spawner.spawn(command("recover"))
             const output = yield* recovery.stdout.pipe(Stream.decodeText(), Stream.mkString)
             expect(yield* recovery.exitCode, output).toBe(0)
+
+            // After COMMIT the retry replays the stored outcome without reducing again.
             expect(
               output
                 .split("\n")
                 .filter((line) => line.startsWith("RESULT "))
                 .map((line) => line.slice("RESULT ".length)),
             ).toEqual([
-              `{"reply":"${refused ? "Refused" : "1"}","handled":${committed === 1 ? 0 : 1},"receipts":1,"rows":${refused ? 0 : 1}}`,
+              `{"reply":"${reply}","reductions":${committed ? 0 : 1},"receipts":1,"state":${state}}`,
+            ])
+            expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
+              {
+                receipts: 1,
+                state: reply === "Overflow" ? 0 : 1,
+                ids: [commandId],
+              },
             ])
           }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
         ),
