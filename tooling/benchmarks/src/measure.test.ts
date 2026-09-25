@@ -1,6 +1,7 @@
-import { Effect } from "effect"
+import { ActorError, Timeout } from "durable-actors"
+import { Cause, Effect } from "effect"
 import { describe, expect, it } from "vitest"
-import { load, shuffled, summarize } from "./measure.ts"
+import { errorKind, load, shuffled, summarize } from "./measure.ts"
 
 describe("summarize", () => {
   it("reports nearest-rank percentiles that are observed samples", () => {
@@ -37,8 +38,18 @@ describe("load", () => {
     ).then((result) => {
       expect(result.samples).toHaveLength(16)
       expect(result.errors).toBe(4)
+      expect(result.errorKinds).toEqual({ unknown: 4 })
       expect(new Set(seen).size).toBe(16)
     })
+  })
+})
+
+describe("errorKind", () => {
+  it("labels an actor error by its reason", () => {
+    expect(
+      errorKind(Cause.fail(ActorError.make({ reason: Timeout.make({ commandId: "c" }) }))),
+    ).toBe("ActorError/Timeout")
+    expect(errorKind(Cause.die(new TypeError("boom")))).toBe("TypeError")
   })
 })
 

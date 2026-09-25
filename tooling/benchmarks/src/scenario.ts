@@ -18,7 +18,7 @@ export interface CaseResult {
   /** Successful operations per second. */
   readonly throughput: number
   readonly errors: number
-  readonly firstError: string | null
+  readonly errorKinds: Readonly<Record<string, number>>
   readonly latencyMs: Summary
   /**
    * Statements pg_stat_statements recorded per successful operation. It
@@ -127,7 +127,7 @@ export const measure = Effect.fnUntraced(function* <E, R>(options: {
     elapsedMs: Math.round(result.elapsedMs),
     throughput: throughput(result),
     errors: result.errors,
-    firstError: result.firstError?.slice(0, 500) ?? null,
+    errorKinds: result.errorKinds,
     latencyMs: summarize(result.samples),
     statementsPerOperation:
       statements === undefined || succeeded === 0

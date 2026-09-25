@@ -1,4 +1,4 @@
-import { Effect, Exit, Ref } from "effect"
+import { Cause, Effect, Exit, Option, Ref, Schema } from "effect"
 
 /** Latency distribution in milliseconds. */
 export interface Summary {
@@ -42,11 +42,29 @@ export const summarize = (samples: ReadonlyArray<number>): Summary => {
 
 export const now = Effect.sync(() => performance.now())
 
+const Tagged = Schema.Struct({
+  _tag: Schema.String,
+  reason: Schema.optional(Schema.Struct({ _tag: Schema.String })),
+})
+
+/** `ActorError/Timeout`-style label for a failure, so a result says why operations failed. */
+export const errorKind = <E>(cause: Cause.Cause<E>) => {
+  const error = Cause.squash(cause)
+  const tagged = Schema.decodeUnknownOption(Tagged)(error)
+
+  if (Option.isNone(tagged)) return error instanceof Error ? error.name : "unknown"
+
+  const { _tag, reason } = tagged.value
+
+  return reason === undefined ? _tag : `${_tag}/${reason._tag}`
+}
+
 export interface LoadResult {
   readonly samples: ReadonlyArray<number>
   readonly elapsedMs: number
   readonly errors: number
-  readonly firstError: string | undefined
+  /** Failed operations by error tag and, for an `ActorError`, its reason. */
+  readonly errorKinds: Readonly<Record<string, number>>
 }
 
 /**
@@ -64,10 +82,7 @@ export const load = <E, R>(options: {
     const samples: Array<number> = []
     const next = yield* Ref.make(0)
 
-    const failures = yield* Ref.make<{ count: number; first: string | undefined }>({
-      count: 0,
-      first: undefined,
-    })
+    const failures = new Map<string, number>()
 
     const started = yield* now
     const deadline = options.durationMs === undefined ? Infinity : started + options.durationMs
@@ -83,11 +98,10 @@ export const load = <E, R>(options: {
         const after = yield* now
 
         if (Exit.isSuccess(exit)) samples.push(after - before)
-        else
-          yield* Ref.update(failures, ({ count, first }) => ({
-            count: count + 1,
-            first: first ?? String(exit.cause),
-          }))
+        else {
+          const kind = errorKind(exit.cause)
+          failures.set(kind, (failures.get(kind) ?? 0) + 1)
+        }
       }
     })
 
@@ -96,9 +110,16 @@ export const load = <E, R>(options: {
       discard: true,
     })
     const elapsedMs = (yield* now) - started
-    const { count, first } = yield* Ref.get(failures)
+    let errors = 0
 
-    return { samples, elapsedMs, errors: count, firstError: first } satisfies LoadResult
+    for (const count of failures.values()) errors += count
+
+    return {
+      samples,
+      elapsedMs,
+      errors,
+      errorKinds: Object.fromEntries(failures),
+    } satisfies LoadResult
   })
 
 /** Operations per second over the measured wall-clock window. */
