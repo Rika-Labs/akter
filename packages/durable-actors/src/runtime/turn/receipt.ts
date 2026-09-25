@@ -6,16 +6,20 @@ import { callerKey } from "../../identity/caller.ts"
 
 export const OutcomeJson = Schema.fromJsonString(Outcome)
 
-export const payloadHash = Effect.fnUntraced(function* (payload: string) {
-  const crypto = yield* Crypto.Crypto
-  const sql = yield* SqlClient.SqlClient
-  const rows = yield* sql<{ canonical: string }>`SELECT ${payload}::jsonb::text AS canonical`
-
-  const bytes = yield* crypto
-    .digest("SHA-256", new TextEncoder().encode(rows[0]!.canonical))
+/** SHA-256 over Postgres's JSONB text normalization of a payload, as stored in receipts. */
+export const hashCanonical = Effect.fnUntraced(function* (canonical: string) {
+  const bytes = yield* (yield* Crypto.Crypto)
+    .digest("SHA-256", new TextEncoder().encode(canonical))
     .pipe(Effect.orDie)
 
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
+})
+
+export const payloadHash = Effect.fnUntraced(function* (payload: string) {
+  const sql = yield* SqlClient.SqlClient
+  const rows = yield* sql<{ canonical: string }>`SELECT ${payload}::jsonb::text AS canonical`
+
+  return yield* hashCanonical(rows[0]!.canonical)
 })
 
 export interface StoredReceipt {
@@ -44,23 +48,29 @@ export const checkReceipt = Effect.fnUntraced(function* (
   return yield* Schema.decodeEffect(OutcomeJson)(receipt.outcome).pipe(Effect.orDie)
 })
 
-/** Reads a retained receipt outside a turn, before delivering to the actor. */
-export const resolveReceipt = Effect.fnUntraced(function* (
-  request: Request,
-  hash: string,
-  routingKey: bigint,
-) {
+/**
+ * Reads the database clock, the canonical payload, and any retained receipt
+ * outside a turn in one statement, so external admission costs one round trip
+ * before delivery. The receipt is only released after the identity and access
+ * checks that follow.
+ */
+export const readAdmission = Effect.fnUntraced(function* (request: Request, routingKey: bigint) {
   const sql = yield* SqlClient.SqlClient
 
-  const rows = yield* sql<StoredReceipt>`
-    SELECT caller_key, command, payload_hash, outcome FROM actor_receipts
-    WHERE routing_key = ${routingKey} AND tenant_id = ${request.ref.tenant}
-      AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-      AND command_id = ${request.commandId}`
+  const row = (yield* sql<
+    { now: string; canonical: string } & { [K in keyof StoredReceipt]: StoredReceipt[K] | null }
+  >`
+    SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
+      ${request.payload}::jsonb::text AS canonical,
+      r.caller_key, r.command, r.payload_hash, r.outcome
+    FROM (VALUES (1)) AS one (x)
+    LEFT JOIN actor_receipts r ON r.routing_key = ${routingKey} AND r.tenant_id = ${request.ref.tenant}
+      AND r.actor_type = ${request.ref.actor} AND r.actor_id = ${request.ref.id}
+      AND r.command_id = ${request.commandId}`)[0]!
 
-  const receipt = rows[0]
-
-  if (receipt === undefined) return undefined
-
-  return yield* checkReceipt(request, hash, receipt)
+  return {
+    now: Number(row.now),
+    hash: yield* hashCanonical(row.canonical),
+    receipt: row.outcome === null ? undefined : (row as StoredReceipt),
+  }
 })

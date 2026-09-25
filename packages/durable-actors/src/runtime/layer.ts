@@ -44,7 +44,7 @@ import { commandEntity, registerActor } from "./entity/register.ts"
 import { checkIdentity, databaseTime } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
-import { payloadHash, resolveReceipt } from "./turn/receipt.ts"
+import { checkReceipt, readAdmission } from "./turn/receipt.ts"
 
 export interface Options {
   readonly authorize: (request: {
@@ -187,16 +187,17 @@ export const layer = (options: Options) => {
               })
 
             return yield* Effect.gen(function* () {
-              yield* authorize(request)
-              const hash = yield* payloadHash(request.payload)
+              yield* allow(request)
 
-              const retained = yield* resolveReceipt(
+              const admission = yield* readAdmission(
                 request,
-                hash,
                 routingKey({ ref: request.ref, placement: registration.placement }),
               )
 
-              if (retained !== undefined) {
+              yield* checkIdentity(request.commandId, retryWindowMs, admission.now)
+
+              if (admission.receipt !== undefined) {
+                const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
                 yield* authorize(request)
 
                 return retained

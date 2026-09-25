@@ -18,6 +18,7 @@ import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 import { payloadHash } from "../runtime/turn/receipt.ts"
 import { ActorTest } from "./actor-test.ts"
+import { admissionConformance, admissionLayer } from "./conformance/admission.ts"
 import {
   defectRecorder,
   foundationConformance,
@@ -238,6 +239,7 @@ const makeFixture = (): ConformanceFixture => ({
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
+  ...admissionConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1157,6 +1159,7 @@ export const describeConformance = (options: {
     CounterLive(fixture),
     CounterReads(fixture),
     foundationLayer(fixture.foundation),
+    admissionLayer,
   )
 
   let store: ConformanceStore | undefined
