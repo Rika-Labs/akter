@@ -151,8 +151,9 @@ export const Ship = Actor.workflow("Ship", {
   output: Label,
   errors: [ShippingFailed],
   key: ({ orderId }) => orderId, // optional; defaults to the start's command id
-  steps: ["label", "cool-off", "Paid", "fraud-v2"], // every activity, clock, and wait name
-  versions: { "fraud-check": { current: 2, min: 1 } },
+  steps: ["label", "cool-off", "fraud", "fraud-v2"], // every activity, clock, and race name
+  waits: [Paid], // event classes the body waits for
+  versions: { "fraud-check": { current: 2, min: 1 } }, // fraud-check 1 still runs "fraud"
 })
 
 const executionId = yield * later.Ship(input) // in a turn: the execution id
@@ -163,7 +164,7 @@ yield * run.interrupt // idempotent, receipted
 const same = yield * Order.run(Ship, executionId) // reattach from a stored id
 ```
 
-A workflow intent returns the execution id (`Effect<string, never, Actor.InTurn>`), unlike other intents, which return `void`. `policy.keepWorkflows` (default `"7 days"`) keeps finished results for `poll`.
+A workflow intent returns the execution id (`Effect<string, never, Actor.InTurn>`) and mints its id when staged, unlike other intents, which return `void`. The framework drives Effect's `WorkflowEngine` directly with these ids, so applications don't call Effect's `Workflow.execute` or `Workflow.poll`, and a child `Workflow.execute` inside a body is unsupported. `poll` and `result` are admitted like queries; `interrupt` is a receipted public command authorized like the workflow member. `policy.keepWorkflows` (default `"7 days"`) keeps finished results for `poll`.
 
 Caller and tenant are ambient: the edge sets them per request, `ActorTest.layer` per test, and `Actor.as(caller)` and `Actor.tenant(tenant)` around an Effect. `get` takes no options. `Actor.commandId(id)` supplies an explicit command id. Acquiring a handle writes nothing; the first turn creates durable rows.
 

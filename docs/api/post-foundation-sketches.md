@@ -51,10 +51,10 @@ Ship: Effect.fn(function* (order) {
   }
   yield* wf.waitFor(Paid, { timeout: "1 day" })
 })
-// declared on the member: versions: { "fraud-check": { current: 1 } }, steps: ["fraud", "Paid"]
+// declared on the member: versions: { "fraud-check": { current: 1 } }, steps: ["fraud"], waits: [Paid]
 ```
 
-[ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) (proposed) replaces the earlier `wf.version(name, n)` sketch. Markers are declared on `Actor.workflow`, and every marker's `current` value is recorded when an execution starts. `wf.version(name)` returns the recorded value, or 0 for executions that predate the marker, so in-flight executions keep their branch even before they reach it. `durable workflows check` and startup compare the declared `steps` and `versions` with open executions, and refuse removed or renamed steps and markers outside `min..current`.
+[ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) (proposed) replaces the earlier `wf.version(name, n)` sketch. Markers are declared on `Actor.workflow`, and every marker's `current` value is recorded when an execution starts. `wf.version(name)` returns the recorded value, or 0 for executions that predate the marker, so in-flight executions keep their branch even before they reach it. `durable workflows check` and startup compare the declared `steps`, `waits`, and `versions` with open executions and the manifests they started under, and refuse removed or renamed steps (reached or not) and markers outside `min..current`.
 
 ## Inspect and reproduce
 

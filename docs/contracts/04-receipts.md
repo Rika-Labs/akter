@@ -19,6 +19,8 @@ External retry and receipt-retention horizons MUST be finite, configurable, and 
 
 Expiry MUST NOT cancel accepted durable work or reject its trusted internal redelivery. Cleanup MUST preserve the deduplication evidence needed by pending messages and recovery obligations, and MUST NOT race with admission into duplicate execution. See [retention](../operations/retention.md) and [ADR 0004](../decisions/0004-receipt-access-revocation-and-expiry.md).
 
+Proposed in [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) (pending acceptance): a workflow activity's actor calls use derived command ids whose receipts follow the normal retry window. An activity that would send such a call past its expiry bound does not send it and dies with `ActivityOutcomeUnknown`, so the framework never relies on a receipt that cleanup may have removed. This is an explicit exception to automatic recovery for that case, not a relaxation of cleanup.
+
 Framework retry guidance MUST use `ActorError.isRetryable` and `retryAfter`; declared failures MUST never be wrapped. Expiry MUST NOT trigger an automatic retry with a new id: a fresh id is an explicit new operation and does not resolve the old outcome. Concrete expiry and receipt-access-denial mappings require the compatibility design noted in the [error model](error-model.md).
 
 Verification: invariants R1–R5 in [invariants](../verification/invariants.md) and the receipt-access, expiry, and before/after commit rows in [failure cases](../verification/02-failure-matrix.md).
