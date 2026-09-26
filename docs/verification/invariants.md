@@ -47,7 +47,7 @@ M1, M2, and M3 for relay-delivered commands have single-runner, same-shard evide
 
 A1 has evidence with two real runners from M2.1 on Postgres: a stale activation fails its fence after another runner commits, and events stay gap-free while two runners race for one actor. M3 has evidence across a runner kill: a turn killed before COMMIT leaves no receipt or consequence and the caller's retry with the same id commits once on the new owner, and a turn killed after COMMIT but before its reply is replayed from its receipt on the new owner rather than run again. The case names are in the [conformance ledger](01-conformance.md#multi-runner-harness-m21).
 
-W1 and W2 are specified further by [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) (proposed): a wait sees the owner's events after its execution's cursor, including events of the turn that started it, and the cases that prove W1, W2 and H2 for workflows are named in the [conformance ledger](01-conformance.md#implementation-decision-checks).
+W1 and W2 are specified further by [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md): a wait sees the owner's events after its execution's cursor, including events of the turn that started it, and the cases that prove W1, W2 and H2 for workflows are named in the [conformance ledger](01-conformance.md#implementation-decision-checks).
 
 P1 has single-runner evidence from M1.7 on PGlite and Postgres: a lost result reruns the executor under the same effect id, and a dead letter reports `ambiguous` unless the last attempt failed with a typed error; the case names are in the [conformance ledger](01-conformance.md#effects-with-routes-m17). Provider-specific reconciliation remains per adapter.
 

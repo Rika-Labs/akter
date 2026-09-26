@@ -37,7 +37,7 @@ Split a shard, or stop placing new keys on it, when any of these persists at nor
 - **Hot-actor ceiling:** maximum durable commands/second for one actor with turn batches off and on.
 - **Round trips:** database round trips per turn, expected to be two. The `Statements` CI job holds every pull request to `main` to the statements per operation in `benchmarks/baselines/statements.json`; a pull request that changes a count updates that file and says why ([benchmarks/README.md](../../benchmarks/README.md#statement-gate)).
 - **72-hour soak:** vacuum progress, transaction-ID age, WAL bytes per turn, full-page-image ratio, replica lag, and relay lag.
-- **Workflows** (ADR 0022, proposed; M2.7's `workflow` scenario): statements and milliseconds per recorded activity step, resume latency after a runner kill, sleep lateness against the due time, and recovery resume turns per running execution. The emit-path wait lookup must not change the statement count for actor types without waits.
+- **Workflows** (ADR 0022; M2.7's `workflow` scenario): statements and milliseconds per recorded activity step, resume latency after a runner kill, sleep lateness against the due time, and recovery resume turns per running execution. The emit-path wait lookup must not change the statement count for actor types without waits.
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
 - **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region.
 

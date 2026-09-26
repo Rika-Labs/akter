@@ -46,15 +46,15 @@ The persisted queue stores the original command ID and expiry metadata, then rep
 ```ts
 Ship: Effect.fn(function* (order) {
   const wf = yield* Order.Workflow
-  if ((yield* wf.version("fraud-check")) >= 1) {
-    yield* Activity.make({ name: "fraud", success: Result, execute: fraud.screen(order) })
-  }
-  yield* wf.waitFor(Paid, { timeout: "1 day" })
+  if ((yield* wf.version("fraud-check")) >= 1) yield* Screen.run(order, fraud.screen)
+  yield* AwaitPaid({ timeout: "1 day" })
 })
-// declared on the member: versions: { "fraud-check": { current: 1 } }, steps: ["fraud"], waits: [Paid]
+// on the member: versions: { "fraud-check": { current: 1 } }
+// export const Screen = Ship.step("fraud", { input: Order, success: Result })
+// export const AwaitPaid = Ship.wait("paid", Paid)
 ```
 
-[ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) (proposed) replaces the earlier `wf.version(name, n)` sketch. Markers are declared on `Actor.workflow`, and every marker's `current` value is recorded when an execution starts. `wf.version(name)` returns the recorded value, or 0 for executions that predate the marker, so in-flight executions keep their branch even before they reach it. `durable workflows check` and startup compare the declared `steps`, `waits`, and `versions` with open executions and the manifests they started under, and refuse removed or renamed steps (reached or not) and markers outside `min..current`.
+[ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) replaces the earlier `wf.version(name, n)` sketch. Markers are declared on `Actor.workflow`, and every marker's `current` value is recorded when an execution starts. `wf.version(name)` returns the recorded value, or 0 for executions that predate the marker, so in-flight executions keep their branch even before they reach it. `durable workflows check` and startup compare the manifest derived from the registered step constructors and `versions` with open executions and the manifests they started under, and refuse removed or renamed steps (reached or not) and markers outside `min..current`.
 
 ## Inspect and reproduce
 

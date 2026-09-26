@@ -77,17 +77,17 @@ export const Counter = Actor.make("Counter", {
 })
 ```
 
-| Section     | Content                                                                                                                                                                                                                                                                |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `key`       | id schema (named, `X.get(id)`), `Actor.singleton` (`X.get()`), or omitted (minted, `X.create()`)                                                                                                                                                                       |
-| `placement` | `"tenant"` (default) or `"actor"`; a parent actor definition is target                                                                                                                                                                                                 |
-| `state`     | one `Actor.state(fields, { migrations })`; missing keys decode from defaults                                                                                                                                                                                           |
-| `tables`    | `Actor.table` Drizzle tables with framework ownership columns                                                                                                                                                                                                          |
-| `blobs`     | `Actor.blob` database-backed `bytea` chunks                                                                                                                                                                                                                            |
-| `events`    | `Actor.Event` classes                                                                                                                                                                                                                                                  |
-| `effects`   | `Actor.effect` classes, executed after commit                                                                                                                                                                                                                          |
-| `api`       | public commands, reducers, queries, streams, connections, and workflows; each key equals its member's tag                                                                                                                                                              |
-| `internal`  | commands callable only by System callers: outbox intents, effect routes, and cron                                                                                                                                                                                      |
+| Section     | Content                                                                                                                                                                                                                                                                                 |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | id schema (named, `X.get(id)`), `Actor.singleton` (`X.get()`), or omitted (minted, `X.create()`)                                                                                                                                                                                        |
+| `placement` | `"tenant"` (default) or `"actor"`; a parent actor definition is target                                                                                                                                                                                                                  |
+| `state`     | one `Actor.state(fields, { migrations })`; missing keys decode from defaults                                                                                                                                                                                                            |
+| `tables`    | `Actor.table` Drizzle tables with framework ownership columns                                                                                                                                                                                                                           |
+| `blobs`     | `Actor.blob` database-backed `bytea` chunks                                                                                                                                                                                                                                             |
+| `events`    | `Actor.Event` classes                                                                                                                                                                                                                                                                   |
+| `effects`   | `Actor.effect` classes, executed after commit                                                                                                                                                                                                                                           |
+| `api`       | public commands, reducers, queries, streams, connections, and workflows; each key equals its member's tag                                                                                                                                                                               |
+| `internal`  | commands callable only by System callers: outbox intents, effect routes, and cron                                                                                                                                                                                                       |
 | `policy`    | `hibernateAfter`, `commandTimeout`, `lockWait`, `deliveryTimeout`, `maxStateBytes`, `mailboxCapacity`, `createdBy`, `keepReceipts`, `keepEvents`, `effects` (per-effect `timeout`, `retry`, `onSuccess`, `onDeadLetter`), `connections`, `cron`, `cronSkipIfOlderThan`, `keepWorkflows` |
 
 Members:
@@ -175,7 +175,7 @@ Outside a turn, every call is request/reply and direct: the command runs in its 
 
 Inside a turn, `X.intents(id)` returns the same method shape as durable intents. They are committed with the turn, delivered after commit, and deduplicated by the receiver's receipt. Self-intents use `X.intents(turn.id)`. Calling `X.get` inside a turn is a type error, and a captured handle dies at runtime. Workflows start as `later.Ship(input)` inside a turn and `counter.Ship(input)` outside; outside calls return a `WorkflowRun`.
 
-Proposed in [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) (pending acceptance):
+Workflow members, runs, and steps follow [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md):
 
 ```ts
 export const Ship = Actor.workflow("Ship", {
@@ -183,10 +183,22 @@ export const Ship = Actor.workflow("Ship", {
   output: Label,
   errors: [ShippingFailed],
   key: ({ orderId }) => orderId, // optional; defaults to the start's command id
-  steps: ["label", "cool-off", "fraud", "fraud-v2"], // every activity, clock, and race name
-  waits: [Paid], // event classes the body waits for
   versions: { "fraud-check": { current: 2, min: 1 } }, // fraud-check 1 still runs "fraud"
 })
+// every step is a typed, module-level constructor with an explicit, static name
+export const Reserve = Ship.step("reserve", {
+  input: Order,
+  success: Reservation,
+  errors: [OutOfStock],
+})
+export const CoolOff = Ship.sleep("cool-off")
+export const AwaitPaid = Ship.wait("paid", Paid)
+export const FirstQuote = Ship.race("first-quote", { success: Quote })
+
+// in the body (X.toLayer)
+const reservation = yield * Reserve.run(order, (o) => inventory.reserve(o))
+yield * CoolOff("1 hour")
+const paid = yield * AwaitPaid({ where: (e) => e.orderId === order.id, timeout: "1 day" }) // Option<Paid>
 
 const executionId = yield * later.Ship(input) // in a turn: the execution id
 const run = yield * order.Ship(input) // outside: WorkflowRun<Label, ShippingFailed>
@@ -197,6 +209,8 @@ const same = yield * Order.run(Ship, executionId) // reattach from a stored id
 ```
 
 A workflow intent returns the execution id (`Effect<string, never, Actor.InTurn>`) and mints its id when staged, unlike other intents, which return `void`. The framework drives Effect's `WorkflowEngine` directly with these ids, so applications don't call Effect's `Workflow.execute` or `Workflow.poll`, and a child `Workflow.execute` inside a body is unsupported. `poll` and `result` are admitted like queries; `interrupt` is a receipted public command authorized like the workflow member. `policy.keepWorkflows` (default `"7 days"`) keeps finished results for `poll`.
+
+Workflow bodies use only these constructors: `Ship.step` (an activity; actor calls happen only inside its `execute`), `Ship.sleep` (a durable clock), `Ship.wait` (an owner-event wait, `Option.none()` after its timeout), and `Ship.race` (the first of several effects). They compile to Effect's `Activity`, `DurableClock`, and `DurableDeferred`, but using those primitives directly in a body, or a constructor created inside a body, dies with `Unregistered workflow step`. Two constructors with one name on a member throw. Step names are static: there are no dynamic or keyed names, and calling a step twice in one execution returns its first recorded result. The registered constructors and `versions` form the workflow's manifest, which `durable workflows check` and startup compare with open executions: a removed or renamed step, or a changed result schema for a step an open execution has recorded, refuses the deploy until those executions finish.
 
 Caller and tenant are ambient: the edge sets them per request, `ActorTest.layer` per test, and `Actor.as(caller)` and `Actor.tenant(tenant)` around an Effect. `get` takes no options. `Actor.commandId(id)` supplies an explicit command id. Acquiring a handle writes nothing; the first turn creates durable rows.
 
