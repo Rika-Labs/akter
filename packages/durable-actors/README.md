@@ -6,10 +6,10 @@ An Effect-native actor framework with durable identity, transactional turns, and
 
 ## Install
 
-The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests).
+The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests). Effect, Drizzle and the Effect SQL drivers are exact-version peer dependencies, so the application and the framework share one copy of each.
 
 ```sh
-bun add @durable-actors/core@alpha
+bun add @durable-actors/core@alpha effect@4.0.0-rc.116 @effect/sql-pg@4.0.0-rc.116 @effect/sql-pglite@4.0.0-rc.116 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
 | Entry                          | Responsibility                                                      |

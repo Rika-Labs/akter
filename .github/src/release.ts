@@ -14,6 +14,7 @@ export const FrameworkManifest = Schema.StructWithRest(
     private: Schema.optionalKey(Schema.Boolean),
     files: Schema.Array(Schema.String),
     dependencies: Schema.optionalKey(Specifiers),
+    peerDependencies: Schema.optionalKey(Specifiers),
     publishConfig: Schema.StructWithRest(
       Schema.Struct({ types: Schema.String, exports: Exports }),
       [Schema.Record(Schema.String, Schema.Json)],
@@ -30,6 +31,25 @@ const REQUIRED_FILES = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", 
 /** Sources, tests, build caches and the spawned crash fixtures stay in the repository. */
 const FORBIDDEN_FILE = /(^|\/)src\/|\.test\.|(^|\/)crash\/|\.tsbuildinfo$|(?<!\.d)\.ts$/
 
+const resolveSpecifiers = (
+  specifiers: Readonly<Record<string, string>>,
+  catalog: Readonly<Record<string, string>>,
+) => {
+  const resolved: Record<string, string> = {}
+
+  for (const [name, specifier] of Object.entries(specifiers)) {
+    if (specifier.startsWith("workspace:"))
+      throw new Error(`${name} is a workspace dependency; the framework must not have one`)
+
+    const version = specifier === "catalog:" ? catalog[name] : specifier
+
+    if (version === undefined) throw new Error(`${name} has no version in the root catalog`)
+    resolved[name] = version
+  }
+
+  return resolved
+}
+
 /**
  * The manifest npm receives: `publishConfig` entries replace the workspace's
  * source-pointing `types` and `exports`, `catalog:` versions become exact, and
@@ -43,17 +63,6 @@ export function publishManifest({
   catalog: Readonly<Record<string, string>>
 }) {
   const { types, exports, ...publishConfig } = manifest.publishConfig
-  const dependencies: Record<string, string> = {}
-
-  for (const [name, specifier] of Object.entries(manifest.dependencies ?? {})) {
-    if (specifier.startsWith("workspace:"))
-      throw new Error(`${name} is a workspace dependency; the framework must not have one`)
-
-    const version = specifier === "catalog:" ? catalog[name] : specifier
-
-    if (version === undefined) throw new Error(`${name} has no version in the root catalog`)
-    dependencies[name] = version
-  }
 
   const {
     private: _private,
@@ -62,7 +71,56 @@ export function publishManifest({
     ...rest
   } = manifest
 
-  return { ...rest, types, exports, dependencies, publishConfig }
+  return {
+    ...rest,
+    types,
+    exports,
+    dependencies: resolveSpecifiers(manifest.dependencies ?? {}, catalog),
+    peerDependencies: resolveSpecifiers(manifest.peerDependencies ?? {}, catalog),
+    publishConfig,
+  }
+}
+
+/** The package a bare import specifier names: `effect/unstable/sql` names `effect`. */
+const packageOf = (specifier: string) =>
+  specifier
+    .split("/")
+    .slice(0, specifier.startsWith("@") ? 2 : 1)
+    .join("/")
+
+/**
+ * Bare imports in the compiled modules that name neither a builtin nor a
+ * declared dependency or peer: each would fail to resolve for a consumer.
+ */
+export function undeclaredImports({
+  sources,
+  manifest,
+}: {
+  sources: ReadonlyArray<string>
+  manifest: PackedManifest
+}) {
+  const declared = new Set([
+    ...Object.keys(manifest.dependencies ?? {}),
+    ...Object.keys(manifest.peerDependencies ?? {}),
+  ])
+
+  const specifiers = sources.flatMap((source) =>
+    [...source.matchAll(/(?:from|import)\s*\(?\s*"([^"./][^"]*)"/g)].flatMap((match) =>
+      match[1] === undefined ? [] : [match[1]],
+    ),
+  )
+
+  return [
+    ...new Set(
+      specifiers.flatMap((specifier) => {
+        if (/^(node|bun):/.test(specifier)) return []
+
+        const name = packageOf(specifier)
+
+        return declared.has(name) ? [] : [name]
+      }),
+    ),
+  ].toSorted()
 }
 
 type Exports = typeof Exports.Type
@@ -72,6 +130,7 @@ export interface PackedManifest {
   readonly private?: boolean
   readonly exports: Exports
   readonly dependencies?: Readonly<Record<string, string>>
+  readonly peerDependencies?: Readonly<Record<string, string>>
 }
 
 const exportTargets = (exports: Exports) =>
@@ -100,7 +159,10 @@ export function tarballProblems({
 
   if (manifest.private === true) problems.push("manifest is private")
 
-  for (const [name, specifier] of Object.entries(manifest.dependencies ?? {}))
+  for (const [name, specifier] of Object.entries({
+    ...manifest.dependencies,
+    ...manifest.peerDependencies,
+  }))
     if (/^(catalog|workspace):/.test(specifier))
       problems.push(`dependency ${name} is unresolved (${specifier})`)
 

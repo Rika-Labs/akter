@@ -1,7 +1,12 @@
 import { BunServices } from "@effect/platform-bun"
 import { Console, Effect, FileSystem, ManagedRuntime, Path, Schema } from "effect"
 import { Manifest } from "./catalogs.ts"
-import { FrameworkManifest, publishManifest, tarballProblems } from "./release.ts"
+import {
+  FrameworkManifest,
+  publishManifest,
+  tarballProblems,
+  undeclaredImports,
+} from "./release.ts"
 
 const args = process.argv.slice(2)
 
@@ -27,10 +32,18 @@ const program = Effect.gen(function* () {
   const root = path.resolve(import.meta.dirname, "../..")
   const framework = path.join(root, "packages/durable-actors")
 
+  const out = args[outIndex + 1]
+
+  if (outIndex !== -1 && (out === undefined || out === "" || out.startsWith("--")))
+    return yield* Effect.die(new Error("--out needs a directory"))
+
   const stage =
-    outIndex === -1
+    out === undefined || outIndex === -1
       ? yield* fs.makeTempDirectoryScoped({ prefix: "durable-actors-pack-" })
-      : path.resolve(args[outIndex + 1] ?? "")
+      : path.resolve(out)
+
+  if (path.relative(stage, root) === "" || !path.relative(stage, root).startsWith(".."))
+    return yield* Effect.die(new Error(`--out ${stage} would replace the repository`))
 
   yield* fs.remove(path.join(framework, "dist"), { recursive: true, force: true })
   yield* run(["bun", "run", "build"], framework)
@@ -63,7 +76,18 @@ const program = Effect.gen(function* () {
   )
 
   const files = (result?.files ?? []).map((file) => file.path)
-  const problems = tarballProblems({ files, manifest: packed })
+
+  const sources = yield* Effect.forEach(
+    files.filter((file) => file.endsWith(".js")),
+    (file) => fs.readFileString(path.join(stage, file)),
+  )
+
+  const problems = [
+    ...tarballProblems({ files, manifest: packed }),
+    ...undeclaredImports({ sources, manifest: packed }).map(
+      (name) => `imports undeclared package ${name}`,
+    ),
+  ]
 
   if (problems.length > 0)
     return yield* Effect.die(new Error(`Tarball is not publishable:\n${problems.join("\n")}`))

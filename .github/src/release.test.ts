@@ -1,5 +1,10 @@
 import { expect, it } from "vitest"
-import { publishManifest, tarballProblems, type FrameworkManifest } from "./release.ts"
+import {
+  publishManifest,
+  tarballProblems,
+  undeclaredImports,
+  type FrameworkManifest,
+} from "./release.ts"
 
 const manifest: FrameworkManifest = {
   name: "@durable-actors/core",
@@ -8,7 +13,8 @@ const manifest: FrameworkManifest = {
   types: "./src/index.ts",
   exports: { ".": "./src/index.ts", "./runtime": "./src/runtime/index.ts" },
   scripts: { build: "tsc -p tsconfig.build.json" },
-  dependencies: { effect: "catalog:", "@electric-sql/pglite": "0.5.8" },
+  dependencies: { "@electric-sql/pglite": "0.5.8" },
+  peerDependencies: { effect: "catalog:" },
   devDependencies: { vitest: "catalog:" },
   publishConfig: {
     access: "public",
@@ -38,11 +44,12 @@ it("points the published manifest at dist, resolves the catalog, and drops dev-o
 
   expect(packed.types).toBe("./dist/index.d.ts")
   expect(packed.exports).toEqual(manifest.publishConfig.exports)
-  expect(packed.dependencies).toEqual({ effect: "4.0.0-rc.116", "@electric-sql/pglite": "0.5.8" })
+  expect(packed.dependencies).toEqual({ "@electric-sql/pglite": "0.5.8" })
+  expect(packed.peerDependencies).toEqual({ effect: "4.0.0-rc.116" })
   expect(packed.publishConfig).toEqual({ access: "public" })
   expect(packed).not.toHaveProperty("scripts")
   expect(packed).not.toHaveProperty("devDependencies")
-  expect(manifest.dependencies?.effect).toBe("catalog:")
+  expect(manifest.peerDependencies?.effect).toBe("catalog:")
 })
 
 it("refuses workspace dependencies and catalog entries the root doesn't define", () => {
@@ -68,7 +75,12 @@ it("accepts a complete tarball and names every missing, leaked, or unresolved en
         "dist/testing/conformance/crash/main.js",
         "dist/runtime/layer.ts",
       ],
-      manifest: { ...packed, private: true, dependencies: { effect: "catalog:" }, version: "next" },
+      manifest: {
+        ...packed,
+        private: true,
+        peerDependencies: { effect: "catalog:" },
+        version: "next",
+      },
     }),
   ).toEqual([
     "missing NOTICE",
@@ -81,4 +93,20 @@ it("accepts a complete tarball and names every missing, leaked, or unresolved en
     "dependency effect is unresolved (catalog:)",
     "version next is not a semantic version",
   ])
+})
+
+it("names bare imports that are neither builtins nor declared dependencies or peers", () => {
+  const packed = publishManifest({ manifest, catalog: { effect: "4.0.0-rc.116" } })
+
+  expect(
+    undeclaredImports({
+      sources: [
+        'import { Effect } from "effect";\nimport { SqlClient } from "effect/unstable/sql";',
+        'export { PGlite } from "@electric-sql/pglite";\nimport "./local.js";',
+        'const { heapStats } = await import("bun:jsc");\nimport net from "node:net";',
+        'import { Pool } from "pg";\nimport { BunServices } from "@effect/platform-bun/BunServices";',
+      ],
+      manifest: packed,
+    }),
+  ).toEqual(["@effect/platform-bun", "pg"])
 })

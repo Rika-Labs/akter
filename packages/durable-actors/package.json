@@ -69,18 +69,24 @@
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/durable-actors/src/testing/conformance.test.ts packages/durable-actors/src/testing/conformance/crash"
   },
   "dependencies": {
-    "@effect/sql-pg": "catalog:",
-    "@effect/sql-pglite": "catalog:",
-    "@electric-sql/pglite": "0.5.8",
-    "drizzle-orm": "catalog:",
-    "effect": "catalog:"
+    "@electric-sql/pglite": "0.5.8"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",
+    "@effect/sql-pg": "catalog:",
+    "@effect/sql-pglite": "catalog:",
     "@types/pg": "8.23.1",
     "drizzle-kit": "catalog:",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:",
     "pg": "8.23.0",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/sql-pg": "catalog:",
+    "@effect/sql-pglite": "catalog:",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:"
   },
   "engines": {
     "bun": ">=1.4.2"

@@ -160,19 +160,26 @@
     },
     "packages/durable-actors": {
       "name": "@durable-actors/core",
+      "version": "0.1.0-alpha.0",
       "dependencies": {
-        "@effect/sql-pg": "catalog:",
-        "@effect/sql-pglite": "catalog:",
         "@electric-sql/pglite": "0.5.8",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
       },
       "devDependencies": {
         "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@effect/sql-pglite": "catalog:",
         "@types/pg": "8.23.1",
         "drizzle-kit": "catalog:",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
         "pg": "8.23.0",
         "vitest": "catalog:",
+      },
+      "peerDependencies": {
+        "@effect/sql-pg": "catalog:",
+        "@effect/sql-pglite": "catalog:",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
       },
     },
     "packages/email": {

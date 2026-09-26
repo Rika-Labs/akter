@@ -22,10 +22,10 @@ Each run commits one increment and retries the same command Effect. `committed` 
 
 > **Alpha, single runner.** `0.1.0-alpha.0` is the first published build. Run one runtime process per database: multi-runner operation is not supported yet. APIs and stored formats may change between alphas without a migration path, so don't point it at data you need to keep.
 
-The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests). Effect is a regular dependency pinned to the release candidate the framework is tested against.
+The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests). Effect, Drizzle and the Effect SQL drivers are peer dependencies pinned to the exact release candidates the framework is tested against, so install those versions beside it:
 
 ```sh
-bun add @durable-actors/core@alpha
+bun add @durable-actors/core@alpha effect@4.0.0-rc.116 @effect/sql-pg@4.0.0-rc.116 @effect/sql-pglite@4.0.0-rc.116 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
 ```ts
@@ -38,7 +38,7 @@ Changes are listed in the [changelog](packages/durable-actors/CHANGELOG.md). The
 
 ## The API
 
-Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables. There is one way to do each task. The shape below follows [ADR 0010](docs/decisions/0010-one-way-effect-native-api.md). The reducer is target design; the command, state, policy, and `X.Turn` parts run today (see the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and the runnable [counter](examples/counter/src/counter/contract.ts)).
+Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables. There is one way to do each task. The shape below follows [ADR 0010](docs/decisions/0010-one-way-effect-native-api.md). The command, reducer, state, policy, and `X.Turn` parts run today (see the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and the runnable [counter](examples/counter/src/counter/contract.ts)).
 
 ```ts
 import { Effect, Result, Schema } from "effect"
@@ -136,12 +136,12 @@ The command/receipt recovery subset has completed fault tests; hibernation, prov
 
 ## One package, four entries
 
-| Entry                          | Responsibility                                                                         |
-| ------------------------------ | -------------------------------------------------------------------------------------- |
-| `@durable-actors/core`         | Actor contracts, members, policies, identity, errors, handles, and served composition. |
-| `@durable-actors/core/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.     |
-| `@durable-actors/core/client`  | A browser-safe Promise client derived from the same contracts, not a second runtime.   |
-| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                      |
+| Entry                          | Responsibility                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `@durable-actors/core`         | Actor contracts, members, policies, identity, errors, and handles; served composition is planned. |
+| `@durable-actors/core/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.                |
+| `@durable-actors/core/client`  | The planned browser-safe Promise client (M3.4); a placeholder in the alpha.                       |
+| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                                 |
 
 The same design targets **embedded** use inside an Effect application, **served** use through `Actor.serve`, and **hosted** operation behind managed ingress. Only the embedded Postgres foundation subset is implemented. Serving is optional; embedded callers do not need an HTTP hop.
 
