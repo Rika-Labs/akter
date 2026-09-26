@@ -67,7 +67,16 @@ The brief says Rivet has just announced cross-actor subscriptions. I couldn't fi
 
 ### Measured starting point
 
-The new `subscriptions` scenario measures hand-rolled fan-out: a publisher turn that stages one intent per subscriber, which is the commit-time fan-out this ADR rejects. The intents fall due in a day, so only the publisher's turn is timed. The results file for this branch is committed under `benchmarks/results/`, and [performance](../verification/03-performance.md#cross-actor-subscriptions-baseline) summarizes it. On a quick PGlite run the publisher's turn grew from 9.3 ms p50 with 1 subscriber to 33 ms with 256 and 104 ms with 1,024. Every subscriber added cost to the publisher's latency and to its lock hold time.
+The new `subscriptions` scenario measures hand-rolled fan-out: a publisher turn that stages one intent per subscriber, which is the commit-time fan-out this ADR rejects. The intents fall due in a day, so only the publisher's turn is timed. The results are in [`f4bff2b-adr-0026-baseline`](../../benchmarks/results/2026-09-26-f4bff2b-adr-0026-baseline-postgres.json), with a same-SHA repeat as the noise reference, and [performance](../verification/03-performance.md#cross-actor-subscriptions-baseline) summarizes them. On Postgres 18.6 (one 4-vCPU VM, one publisher):
+
+| Subscribers | Publisher turn p50 |      p99 | Publishes/s | Statements per turn |
+| ----------: | -----------------: | -------: | ----------: | ------------------: |
+|           1 |             2.5 ms |  11.7 ms |         324 |                8.01 |
+|          16 |             8.9 ms |  15.7 ms |         110 |                8.02 |
+|         256 |            42.5 ms |  64.0 ms |        24.5 |                8.10 |
+|       1,024 |           114.8 ms | 174.8 ms |         8.9 |                8.24 |
+
+The statement count barely moves, because the rows go in one multi-row insert, so the T2 statement gate wouldn't catch this growth. The latency and the time the publisher holds its generation row lock grow roughly linearly with subscribers, and so does its WAL.
 
 ## Decision
 
