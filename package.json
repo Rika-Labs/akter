@@ -48,11 +48,12 @@
     "lint:directives": "bun tooling/oxlint/src/directives.ts",
     "lint": "bun run lint:directives && bun run lint:structure && GOMAXPROCS=1 turbo run lint lint:root --concurrency=100%",
     "lint:structure": "bun tooling/structure/src/index.ts",
+    "pack:check": "bun .github/src/pack.ts",
     "lint:root": "oxlint --type-aware --deny-warnings --threads 1 *.ts",
     "format": "oxfmt . '!research/**'",
     "format:check": "oxfmt --check . '!research/**'",
-    "check": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100%",
-    "check:ci": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell && GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration test:e2e --concurrency=100% --summarize"
+    "check": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100% && bun run pack:check",
+    "check:ci": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell && GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration test:e2e --concurrency=100% --summarize && bun run pack:check"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",
