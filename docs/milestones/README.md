@@ -91,20 +91,20 @@ Migrations follow the wave order, because the Effect migrator skips any id at or
 
 Within a wave, migrations merge in number order. If a higher number is ready first, it is renumbered above the highest merged migration at merge time instead of merging ahead. Until a deployed database exists, a local database that already ran a higher number is recreated.
 
-| Migration                         | Slice                                             | Wave |
-| --------------------------------- | ------------------------------------------------- | ---- |
-| `0009_blobs`                      | M1.blob actor blobs (merged after `0008_effects`) | 1    |
-| `0010_retention`                  | M1.9 retention                                    | 1    |
-| `0011_relay`                      | M2.4 multi-runner relay                           | 3    |
-| `0012_workflows`                  | M2.7 workflow engine                              | 3    |
-| `0013_inspection_views`           | CR.4 SQL inspection views                         | 3    |
-| `0014_connections`                | M2.10 connections                                 | 4    |
-| `0015_effect_control` (if needed) | M2.13 effect cancellation and per-actor caps      | 4    |
-| `0016_subscriptions`              | M3.7 cross-actor event subscriptions              | 4    |
-| `0017_rls`                        | M4.5 row-level security                           | 7    |
-| `0018_commit_version`             | M4.9 read-your-writes                             | 7    |
-| `0019_content_blobs`              | M4.13 tenant-scoped content-addressed blobs       | 7    |
-| `0020_adoption`                   | M6.1 existing-schema adoption                     | 9    |
+| Migration               | Slice                                             | Wave |
+| ----------------------- | ------------------------------------------------- | ---- |
+| `0009_blobs`            | M1.blob actor blobs (merged after `0008_effects`) | 1    |
+| `0010_retention`        | M1.9 retention                                    | 1    |
+| `0011_relay`            | M2.4 multi-runner relay                           | 3    |
+| `0012_workflows`        | M2.7 workflow engine                              | 3    |
+| `0013_inspection_views` | CR.4 SQL inspection views                         | 3    |
+| `0014_connections`      | M2.10 connections                                 | 4    |
+| `0015_effect_control`   | M2.13 effect cancellation and per-actor caps      | 4    |
+| `0016_subscriptions`    | M3.7 cross-actor event subscriptions              | 4    |
+| `0017_rls`              | M4.5 row-level security                           | 7    |
+| `0018_commit_version`   | M4.9 read-your-writes                             | 7    |
+| `0019_content_blobs`    | M4.13 tenant-scoped content-addressed blobs       | 7    |
+| `0020_adoption`         | M6.1 existing-schema adoption                     | 9    |
 
 M2.5 (cron) needs no migration ([ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md)). M2.15 (`turn.mint`), M4.7 (payload evolution), M4.11 (parent placement), and M4.14 (PGlite in production) get a number from their ADR only if they need one.
 
