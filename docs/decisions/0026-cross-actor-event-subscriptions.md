@@ -68,16 +68,16 @@ The brief says Rivet has just announced cross-actor subscriptions. I couldn't fi
 
 ### Measured starting point
 
-The new `subscriptions` scenario measures hand-rolled fan-out: a publisher turn that stages one intent per subscriber, which is the commit-time fan-out this ADR rejects. The intents fall due in a day, so only the publisher's turn is timed. The results are in [`f4bff2b-adr-0026-baseline`](../../benchmarks/results/2026-09-26-f4bff2b-adr-0026-baseline-postgres.json), with a same-SHA repeat as the noise reference, and [performance](../verification/03-performance.md#cross-actor-subscriptions-baseline) summarizes them. On Postgres 18.6 (one 4-vCPU VM, one publisher):
+The new `subscriptions` scenario measures hand-rolled fan-out: a publisher turn that stages one intent per subscriber, which is the commit-time fan-out this ADR rejects. The intents fall due in a day, so only the publisher's turn is timed. The results are in [`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat as the noise reference, and [performance](../verification/03-performance.md#cross-actor-subscriptions-baseline) summarizes them. The handler generates the intent ids, so the command payload is the same size at every n. On Postgres 18.6 (one 4-vCPU VM, one publisher):
 
-| Subscribers | Publisher turn p50 |      p99 | Publishes/s | Statements per turn |
-| ----------: | -----------------: | -------: | ----------: | ------------------: |
-|           1 |             2.5 ms |  11.7 ms |         324 |                8.01 |
-|          16 |             8.9 ms |  15.7 ms |         110 |                8.02 |
-|         256 |            42.5 ms |  64.0 ms |        24.5 |                8.10 |
-|       1,024 |           114.8 ms | 174.8 ms |         8.9 |                8.24 |
+| Subscribers | Publisher turn p50 (run / repeat) | p99 (run / repeat) | Publishes/s | Statements per turn | Runtime CPU per turn |
+| ----------: | --------------------------------: | -----------------: | ----------: | ------------------: | -------------------: |
+|           1 |                      2.5 / 2.6 ms |       8.6 / 8.5 ms |         334 |                8.01 |               2.9 ms |
+|          16 |                      8.9 / 4.2 ms |     15.8 / 12.7 ms |         112 |                8.02 |               8.3 ms |
+|         256 |                    33.1 / 33.5 ms |     53.3 / 54.2 ms |        30.8 |                8.07 |              34.2 ms |
+|       1,024 |                    83.4 / 86.3 ms |   157.6 / 152.4 ms |        12.1 |                8.19 |              80.8 ms |
 
-The statement count barely moves, because the rows go in one multi-row insert, so the T2 statement gate wouldn't catch this growth. The latency and the time the publisher holds its generation row lock grow roughly linearly with subscribers, and so does its WAL.
+The 16-subscriber case is noisy between runs; the others agree within 4%. The statement count barely moves, because the rows go in one multi-row insert, so the T2 statement gate wouldn't catch this growth. The cost is mostly runtime CPU for staging each intent, about 80 µs per subscriber. The publisher holds its generation row lock and its activation for all of it, so latency, lock hold time, and WAL grow roughly linearly with subscribers.
 
 ## Decision
 
@@ -443,7 +443,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 **Default:** at relay time. The publisher's commit adds at most one keyed `feed` row, through a CTE in the append statement. Expansion and delivery run on any runner, per subscription row.
 
-**Alternative:** commit-time fan-out, with one outbox row per subscriber in the publisher's turn. It is simpler and has one hop less latency. But its cost grows with subscribers: the baseline above shows 115 ms p50 at 1,024 subscribers on Postgres, against 2.5 ms at one. It holds the publisher's row lock for that long, and it multiplies the publisher's WAL.
+**Alternative:** commit-time fan-out, with one outbox row per subscriber in the publisher's turn. It is simpler and has one hop less latency. But its cost grows with subscribers: the baseline above shows 83 ms p50 at 1,024 subscribers on Postgres, against 2.5 ms at one. It holds the publisher's row lock for that long, and it multiplies the publisher's WAL.
 
 **Example:** none; this is internal.
 
