@@ -229,7 +229,7 @@ On PGlite, which reports no statement counts, reducers ran at 197–202 op/s aga
 
 ### Cross-actor subscriptions baseline
 
-[ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed ([`f4bff2b-adr-0026-baseline`](../../benchmarks/results/2026-09-26-f4bff2b-adr-0026-baseline-postgres.json); the same-SHA repeat is within 12% at every size). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 8.9 ms with 16, 42.5 ms with 256, and 114.8 ms with 1,024, while statements per turn stay at 8.0–8.2. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
+[ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed ([`f4bff2b-adr-0026-baseline`](../../benchmarks/results/2026-09-26-f4bff2b-adr-0026-baseline-postgres.json); the same-SHA repeat's p50 is within 12% at every size). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 8.9 ms with 16, 42.5 ms with 256, and 114.8 ms with 1,024, while statements per turn stay at 8.0–8.3. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
 
 ### Recommendations (not applied)
 

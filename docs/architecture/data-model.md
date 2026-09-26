@@ -19,7 +19,7 @@ Framework-private records include:
 | Connection           | parked-session metadata                                                                                         | socket resumption     |
 | Blob                 | large actor-scoped bytes                                                                                        | application state     |
 | Subscription         | per-source subscription row with settled cursor on the source's shard; applied cursor on the subscriber's shard | subscription delivery |
-| `actor_outbox`       | intents, timers, workflow starts, effects                                                                       | delivery and recovery |
+| `actor_outbox`       | intents, timers, workflow starts, effects, subscription feeds and controls                                      | delivery and recovery |
 
 One Postgres database belongs to each deployment region. Commands are direct: the receipt is their only durable record, and there is no command message table. `tenant_id` appears on every framework and actor-owned table, with optional RLS. Actor state, tables, events, effects, blobs, and receipts share the actor ownership key and transaction boundary.
 

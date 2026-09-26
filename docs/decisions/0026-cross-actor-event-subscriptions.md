@@ -32,7 +32,7 @@ Sources were read on 2026-09-26.
 **Rivet Actors.**
 
 - **Events are broadcasts to connections.** `c.broadcast(name, …)` sends to clients that hold a `.connect()` connection. Events aren't stored, and a disconnected client misses them ([Realtime](https://rivet.dev/actors/docs/events/)).
-- **Actor-to-actor events use a connection.** The documented pattern is for the subscriber to open a connection to the publisher and register `conn.on(...)` handlers inside an action ([Communicating between actors, "Event-Driven Architecture"](https://rivet.dev/actors/docs/communicating-between-actors/)). The subscriber has to stay awake to hold that connection. An actor sleeps only when it has no active connections, apart from hibernatable WebSockets ([Lifecycle, "Sleeping"](https://rivet.dev/actors/docs/lifecycle/)). Events are lost across a crash, a move, or sleep.
+- **Actor-to-actor events use a connection.** The documented pattern is for the subscriber to open a connection to the publisher and register `conn.on(...)` handlers inside an action ([Communicating between actors, "Event-Driven Architecture"](https://rivet.dev/actors/docs/communicating-between-actors/)). The idle rule counts inbound connections, so the publisher stays awake while subscribers are connected. The subscriber's outbound connection doesn't keep it awake, just as an outbound `fetch` doesn't ([Lifecycle, "Sleeping"](https://rivet.dev/actors/docs/lifecycle/)). So the subscriber can sleep and drop the connection, and events are lost across a crash, a move, or sleep.
 - **Durable delivery uses queues.** They are per-actor, persisted, and wake the receiver ([Queues & Run Loops](https://rivet.dev/actors/docs/queues/), [changelog 2026-02-25](https://rivet.dev/changelog/2026-02-25-queues-for-rivet-actors/)). The sender addresses each receiver, so fan-out is still the publisher's job. As published on 2026-09-26, the docs say a message is removed when it is received and isn't redelivered if processing fails. Open [rivet#5763](https://github.com/rivet-dev/rivet/pull/5763) corrects them: a `completable: true` message stays stored until `complete()` and is delivered again after a restart. That makes it at-least-once, with deduplication left to the application.
 - **Durable Streams** ([changelog 2026-09-03](https://rivet.dev/changelog/2026-09-03-durable-streams-now-supports-rivet-actors/)) are an ordered log with offsets that a reader resumes from. Rivet's own example tails a stream from `onWake` with long-polling, and its client code notes: "If the agent went to sleep while idle, wake it here so it picks up the prompt." An append doesn't wake a sleeping reader.
 - **Authorization** is a per-event `canSubscribe` hook on the publisher ([Lifecycle, `canPublish` and `canSubscribe`](https://rivet.dev/actors/docs/lifecycle/)).
@@ -61,6 +61,7 @@ The brief says Rivet has just announced cross-actor subscriptions. I couldn't fi
 
 - **Latency is higher.** Rivet's broadcast is an in-memory send. Here, an event reaches a subscriber after the committing runner's relay wakes, or within one relay poll (1 s) otherwise, and each delivery is a full turn.
 - **Fan-in throughput is bounded by the subscriber's turn rate.** That is about 300 turns/s for one unbatched actor in the M1 baseline, and turn batches ([ADR 0005](0005-turn-latency-batching-and-regional-placement.md)) raise it.
+- **One source-to-subscriber pair is sequential.** It has one delivery in flight, so it runs at one relay-to-turn-to-settle cycle per event, several milliseconds each.
 - **Write amplification.** Each delivery writes a receipt and a cursor row.
 - **Scope is narrower.** Subscriptions are same-tenant and one-region, and a client subscribes through connections or SSE, not through this mechanism.
 - **Rivet and Durable Objects run at the edge**, which this deployment model doesn't.
@@ -87,6 +88,12 @@ A subscription is a declared member of the subscriber. Each committed event of t
 ```ts
 import { Actor } from "durable-actors"
 
+// The handler's input names only the source and the event classes, so the command
+// can be declared before the subscription that references it.
+export const RecordOrder = Actor.command("RecordOrder", {
+  input: Actor.Delivery({ source: Order, events: [OrderPlaced, OrderCancelled] }),
+})
+
 // Routed: every OrderPlaced or OrderCancelled from any Order in the tenant reaches
 // the CustomerSummary named by the event. Order doesn't know CustomerSummary exists.
 export const CustomerOrders = Actor.subscription("CustomerOrders", {
@@ -94,10 +101,6 @@ export const CustomerOrders = Actor.subscription("CustomerOrders", {
   events: [OrderPlaced, OrderCancelled],
   handler: RecordOrder,
   route: (event) => event.customerId,
-})
-
-export const RecordOrder = Actor.command("RecordOrder", {
-  input: Actor.Delivery(CustomerOrders),
 })
 
 export const CustomerSummary = Actor.make("CustomerSummary", {
@@ -109,10 +112,16 @@ export const CustomerSummary = Actor.make("CustomerSummary", {
 })
 ```
 
-- **Declaration.** `Actor.subscription(tag, { source, events, handler, route? })` declares a subscription. `source` is an actor definition. `events` is a non-empty list of that source's declared event classes; a class the source doesn't list fails to compile. `handler` is a command in the subscriber's `internal` section whose input accepts `Actor.Delivery(subscription)`, checked like an effect's `onSuccess` route. Tags are unique within the subscriber's `subscriptions`.
-- **Routed subscriptions.** A subscription with `route` is routed. `route(event, source: ActorRef)` is a pure function that returns the subscriber's id, which the subscriber's key schema checks. A singleton subscriber uses `route: Actor.singleton`, which sends every matching event in the tenant to the tenant's singleton. That is the fan-in dashboard. A routed subscription follows every actor of the source type in the tenant.
+- **Declaration.** `Actor.subscription(tag, { source, events, handler, route? })` declares a subscription.
+  - `source` is an actor definition.
+  - `events` is a non-empty list of that source's declared event classes. A class the source doesn't list fails to compile.
+  - `handler` is a command in the subscriber's `internal` section. Its input must accept `Actor.Delivery({ source, events })` for the same source and classes, which is checked like an effect's `onSuccess` route.
+  - Tags are unique within the subscriber's `subscriptions`.
+  - Nothing in the declaration refers back to the subscriber, so the declaration has no import cycle.
+- **Routed subscriptions.** A subscription with `route` is routed. `route(event, source: ActorRef)` is a pure function that returns the subscriber's id, which the subscriber's key schema checks. A singleton subscriber uses `route: Actor.singleton`, which sends every matching event in the tenant to the tenant's singleton. That is the fan-in dashboard. A routed subscription follows every actor of the source type in the tenant, starting at each source's first matching commit on a runner that registers the declaration ([section 3](#3-fan-out-at-relay-time-not-at-commit)). It doesn't backfill.
 - **Dynamic subscriptions.** A subscription without `route` is dynamic. It follows only the source instances that a subscriber's turn subscribes to ([section 2](#2-dynamic-subscribe-and-unsubscribe-from-a-turn)).
-- **The handler receives one delivery per turn**, as `Actor.Delivery(S)`:
+- **Only subscription deliveries reach a handler.** A command named as a subscription's `handler` accepts only the caller `System({ source: "subscription" })`. `X.intents(id)` doesn't expose it, so no other actor can stage a forged delivery, and a caller of any other kind that reaches it is a deterministic defect. The handler therefore can't be reached around the subscriber's cursor or its route.
+- **The handler receives one delivery per turn**, as `Actor.Delivery`:
 
 ```ts
 type Delivery<E> =
@@ -129,19 +138,29 @@ type Delivery<E> =
       readonly _tag: "RetentionGap"
       readonly subscription: string
       readonly source: ActorRef
-      readonly after: string // the last cursor this subscriber applied
+      readonly after: string // the position this subscription had reached
       readonly resumeAfter: string // the next delivery comes after this cursor
+    }
+  | {
+      readonly _tag: "Rejected" // a dynamic subscription the source refused; it is no longer active
+      readonly subscription: string
+      readonly source: ActorRef
+      readonly reason: "UnknownCursor"
+      readonly cursor: string
     }
 ```
 
 - **The handler runs in `X.Turn`.** It can do everything any command handler can: set state, write rows, emit its own events, stage intents, perform effects, subscribe or unsubscribe, and broadcast.
-- **The delivery's command id** is derived ([section 4](#4-cursors-receipts-and-at-least-once-transport-with-exactly-once-effect)). Its caller is `System({ source: "subscription", ref: <source ref> })` with no `onBehalfOf`: events don't store their emitter's principal. A handler that needs attribution reads it from the event's fields.
-- **Deploy check.** The runtime indexes routed subscriptions by `(source type, event tag)` when the layer is built. At startup it records those pairs in the deployment row. A runner that hosts a source type but lacks a routed subscription recorded for that type still marks feeds correctly, because marking is driven by data ([section 3](#3-fan-out-at-relay-time-not-at-commit)). A routed declaration takes effect on each source at that source's first matching commit on a runner that registers it.
+- **The delivery's command id** is derived ([section 4](#4-cursors-receipts-and-at-least-once-transport-with-exactly-once-effect)). Its caller is `System({ source: "subscription", ref: <source ref> })`, with no `onBehalfOf`: events don't store their emitter's principal. A handler that needs attribution reads it from the event's fields.
+- **Each delivery carries the subscription's epoch** in its envelope, beside the command id. The handler doesn't see it.
 
 ### 2. Dynamic subscribe and unsubscribe from a turn
 
 ```ts
-const Follow = Actor.subscription("Follow", {
+export const OnSupplier = Actor.command("OnSupplier", {
+  input: Actor.Delivery({ source: Supplier, events: [PriceChanged, Discontinued] }),
+})
+export const Follow = Actor.subscription("Follow", {
   source: Supplier,
   events: [PriceChanged, Discontinued],
   handler: OnSupplier,
@@ -156,13 +175,21 @@ yield * turn.unsubscribe(Follow, supplierId)
 ```
 
 - **Staging.** `turn.subscribe` and `turn.unsubscribe` stage like intents. They take effect only if the turn commits, and a declared failure or rollback discards them. They exist only on `X.Turn`, and only for dynamic subscriptions: passing a routed subscription is a type error. The source id is a string checked against the source's key schema.
-- **What the turn commits on the subscriber's shard.** Subscribing upserts the subscriber's cursor row for `(subscription, source)` with a new `epoch` (the previous epoch plus 1) and `applied` set from `from`. It also writes an outbox `control` row, keyed `$sub:<tag>:<source id>`, that carries the operation and the epoch. Unsubscribing deletes the cursor row and writes the same keyed control row with the `remove` operation. The key makes a later operation replace a pending earlier one.
-- **What the relay does on the source's shard.** It claims the control row like an intent and runs a framework statement there, not a turn, so the source is never activated. The statement locks the source's generation row `FOR SHARE`, which conflicts with the emit path's `FOR UPDATE` as in [ADR 0022](0022-workflow-engine-storage-and-version-markers.md) decision 5. It then upserts or deletes the source-side subscription row, fenced by epoch: an older epoch never overwrites a newer one. The statement creates the source's generation row (with `created = false`) if it doesn't exist, so an actor can subscribe to a source that hasn't been created yet.
+- **The subscriber's cursor row is the authority, and it keeps its epoch forever.**
+  - `subscribe` upserts the row with `active = true`, `epoch = epoch + 1` (or 1 when the row is new), and `applied` set from `from`. `applied` is 0 for `"start"`, the given cursor, or −1 for `"now"`, meaning "set by the source".
+  - `unsubscribe` sets `active = false` and `epoch = epoch + 1` on the row. It never deletes the row, so the epoch never goes back to an earlier value.
+  - Either way, one CTE in the commit statement upserts the row, returns its new epoch, and inserts the outbox `control` row that carries the operation and that epoch. The control row is keyed with the JSON array `["$sub", tag, source type, source id]`, so a later operation replaces a pending earlier one. It is one statement, so the turn keeps ADR 0020's two groups, and no write depends on a reply from an earlier group.
+- **What the relay does on the source's shard.** It claims the control row like an intent and runs one framework statement there, not a turn, so the source is never activated.
+  - The statement locks the source's generation row `FOR SHARE`, which conflicts with the emit path's `FOR UPDATE` as in [ADR 0022](0022-workflow-engine-storage-and-version-markers.md) decision 5. It creates that row with `created = false` if it doesn't exist, so an actor can subscribe to a source that hasn't been created yet.
+  - `subscribe` upserts the source-side row only if the stored epoch is **strictly lower** than the operation's. A rerun of the same control row after a crash is a no-op, so it can't reset `delivered`.
+  - A new row's `delivered` is the source's `event_sequence` for `"now"`, 0 for `"start"`, or the given cursor.
+  - In the same statement, the row is made due now if the source has an event after `delivered`, so a `"start"` or cursor subscription to a quiet source still delivers its history. The per-source tag summary is updated too ([section 3](#3-fan-out-at-relay-time-not-at-commit)).
+  - `remove` deletes the source-side row only where `epoch < $epoch`.
 - **`from` values:**
   - `"now"` delivers events committed after the registration reaches the source.
   - `"start"` delivers from cursor 0. If history has been pruned, the first delivery is a `RetentionGap`.
-  - A cursor string resumes after that cursor. A cursor above the source's current sequence fails the registration with `UnknownCursor` in the span, and the subscription is removed.
-- **Unsubscribing takes effect in the subscriber's turn.** Once it commits, the cursor row is gone. A delivery already in flight then finds no row and is acknowledged as `Unsubscribed` without running the handler. The relay deletes the source row when it sees that acknowledgement. An out-of-order control delivery therefore can't leave a subscription that keeps delivering.
+  - A cursor string resumes after that cursor. A cursor above the source's current sequence isn't registered. The relay delivers a `Rejected` delivery for that epoch instead, and its commit sets the subscriber's row to `active = false`. The subscriber is told, and it never believes it is subscribed to nothing.
+- **Unsubscribing takes effect in the subscriber's turn.** Once it commits, admission refuses every delivery for that row ([section 4](#4-cursors-receipts-and-at-least-once-transport-with-exactly-once-effect)). A delivery already in flight is acknowledged as `Unsubscribed` without running the handler. The relay then deletes the source row, but only where the source row's epoch equals the delivery's, so a stale acknowledgement can never delete a newer subscription.
 
 ### 3. Fan-out at relay time, not at commit
 
@@ -179,18 +206,33 @@ CREATE TABLE actor_subscriptions (
   subscription text NOT NULL,           -- the subscription's tag on subscriber_type
   subscriber_id text NOT NULL,
   events text[] NOT NULL,
-  epoch bigint NOT NULL DEFAULT 0,
-  delivered bigint NOT NULL,            -- last source cursor settled for this row
+  epoch bigint NOT NULL DEFAULT 0,      -- 0 for routed rows
+  delivered bigint NOT NULL,            -- the source position this row has settled through
+  marked bigint NOT NULL DEFAULT 0,     -- the highest source sequence an expansion has seen for this row
   bucket integer NOT NULL CHECK (bucket = routing_key >> 56),
-  due_at_ms bigint,                     -- null while caught up
+  due_at_ms bigint,                     -- null while caught up; the lease end while claimed
   attempts integer NOT NULL DEFAULT 0,
   last_error text,
+  gaps bigint NOT NULL DEFAULT 0,       -- gaps a routed row could not deliver (section 7)
   PRIMARY KEY (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id),
   FOREIGN KEY (routing_key, tenant_id, source_type, source_id) REFERENCES actor_generations
 ) WITH (fillfactor = 80);
-CREATE INDEX actor_subscriptions_due ON actor_subscriptions (bucket, due_at_ms) WHERE due_at_ms IS NOT NULL;
+CREATE INDEX actor_subscriptions_due ON actor_subscriptions (bucket, subscriber_type, due_at_ms)
+  WHERE due_at_ms IS NOT NULL;
 
--- On the subscriber's shard: what the subscriber has applied, per source. Authoritative for deduplication.
+-- On the source's shard: which event tags have at least one subscription row, so the emit probe is a key lookup.
+CREATE TABLE actor_subscription_tags (
+  routing_key bigint NOT NULL,
+  tenant_id text NOT NULL,
+  source_type text NOT NULL,
+  source_id text NOT NULL,
+  event text NOT NULL,
+  rows integer NOT NULL CHECK (rows > 0),
+  PRIMARY KEY (routing_key, tenant_id, source_type, source_id, event),
+  FOREIGN KEY (routing_key, tenant_id, source_type, source_id) REFERENCES actor_generations
+);
+
+-- On the subscriber's shard: what the subscriber has applied, per source. Authoritative for deduplication; never deleted.
 CREATE TABLE actor_subscription_cursors (
   routing_key bigint NOT NULL,          -- the subscriber's
   tenant_id text NOT NULL,
@@ -200,6 +242,7 @@ CREATE TABLE actor_subscription_cursors (
   source_type text NOT NULL,
   source_id text NOT NULL,
   epoch bigint NOT NULL DEFAULT 0,
+  active boolean NOT NULL DEFAULT true,
   applied bigint NOT NULL,
   PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id),
   FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
@@ -209,40 +252,68 @@ ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
   ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'));
 ```
 
+The claim index leads with `subscriber_type` after `bucket`. That way a runner that doesn't register a subscriber type never scans past that type's rows, which is the property `actor_outbox_due_kind` gives effects.
+
 **At commit (the publisher's turn).** The event-append statement gains one CTE, so the turn keeps its round trips and statement count ([ADR 0020](0020-two-round-trip-turn-pipeline.md), T2 baseline). The CTE:
 
-1. For routed subscriptions registered on this runner that name one of the emitted tags, it inserts the missing source-side rows with `delivered` set to this turn's first sequence minus 1 (`ON CONFLICT DO NOTHING`). The routed list is a bound parameter, and empty for most actor types.
-2. It upserts one outbox row of kind `feed` on the source, keyed `$feed` and due now, if the source has any subscription row for an emitted tag or step 1 inserted one. `ON CONFLICT` keeps the earlier `due_at_ms`. The probe `EXISTS (… WHERE source = me AND events && $tags)` uses the primary-key prefix. On an actor with no subscriptions it is one index probe and writes nothing.
+1. For routed subscriptions registered on this runner that name one of the emitted tags, it inserts the missing source-side rows with `delivered` set to this turn's first sequence minus 1 (`ON CONFLICT DO NOTHING`), and adds them to the tag summary. The routed list is a bound parameter, and empty for most actor types.
+2. It upserts one outbox row of kind `feed` on the source, keyed `$feed` and due now. It does so if `actor_subscription_tags` has a row for any emitted tag, or if step 1 inserted one. `ON CONFLICT` keeps the earlier `due_at_ms`. The probe is a primary-key lookup per emitted tag, so it costs the same with no subscriptions or with 10^5.
 
 A rolled-back or declared-failure turn emits no events, so it writes neither.
 
 **At relay time.**
 
-- **Expansion.** A runner claims a due `feed` row like an intent ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) section 1). It then expands it with one statement on the source's shard. The statement sets `due_at_ms` on every row of that source that has an undelivered matching event and isn't already due. The rows the runner has free subscription-delivery slots for get a lease instead of "now", so they are claimed in the same statement. The runner pages through a source with many subscriptions 1,000 rows at a time. Finally it deletes the `feed` row, fenced on the lease it holds. A commit that re-marked the row during expansion leaves it due again, so no commit's wake-up is lost.
-- **Delivery.** A runner claims due subscription rows with `FOR UPDATE SKIP LOCKED` and a lease, exactly as ADR 0021 claims intents. The claim scans only `actor_subscriptions_due`, so caught-up subscriptions cost nothing ([ADR 0006](0006-scale-rules-placement-and-query-tiers.md) due-work rule). The claim filters on subscriber types registered on the runner, as cron does for its ticks. For each claimed row the runner:
-  1. reads up to `subscriptions.batch` (default 16) matching events after `delivered`, together with the oldest retained sequence, in one statement (the M1.5 replay shape);
+- **Expansion.** A runner claims a due `feed` row like an intent ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) section 1). It then expands the feed with one statement on the source's shard. For every row of that source with an event tag at or below the head `H` that it read:
+  - it sets `marked = greatest(marked, H)`, even on a row that is currently claimed;
+  - it sets `due_at_ms = now` on rows that aren't claimed and have a matching event after `delivered`;
+  - it gives a lease instead of "now" to the rows the runner has free subscription-delivery slots for, so it claims them in the same statement.
+
+  A source with many subscriptions is paged 1,000 rows at a time. Finally the runner deletes the `feed` row, fenced on the lease it holds. A commit that re-marked the feed during expansion leaves it due, so it is expanded again.
+
+- **Delivery.** A runner claims due subscription rows with `FOR UPDATE SKIP LOCKED` and a lease, exactly as ADR 0021 claims intents. The claim scans only `actor_subscriptions_due`, and only for subscriber types registered on the runner, so caught-up subscriptions cost nothing ([ADR 0006](0006-scale-rules-placement-and-query-tiers.md) due-work rule). For each claimed row the runner:
+  1. reads, in one statement (the M1.5 replay shape), up to `subscriptions.batch` (default 16) matching events after `delivered`, the oldest retained sequence, and the head `H`;
   2. delivers a `RetentionGap` first if history after `delivered` was pruned ([section 7](#7-retention-and-keepevents));
-  3. delivers the events one command at a time, in cursor order, to the subscriber (the row's subscriber, or `route(event, source)` for a routed row). Consecutive deliveries to one subscriber queue in its mailbox, so turn batches can commit them together;
-  4. settles with one fenced statement: `delivered` becomes the last settled cursor, `attempts = 0`, and `due_at_ms` is set to now if more matching events exist and to null otherwise. The existence check is part of the statement, so an event whose commit races the settle is either seen or has already re-marked the feed.
+  3. delivers the events one command at a time, in cursor order, to the row's subscriber, or to `route(event, source)` for a routed row. Each delivery waits for the previous one's outcome;
+  4. renews the row's lease after each delivery, as ADR 0021's executors renew theirs, so a batch of slow turns never outlives its claim;
+  5. settles with one statement fenced on the lease and the epoch. `delivered` becomes the position scanned through: the last delivered cursor, or `H` when the batch ended because no more events matched. `attempts` becomes 0. `due_at_ms` becomes now if a matching event exists after the new `delivered` **or** `marked > delivered`, and null otherwise.
+- **No wake-up is lost.** Settle and expansion both update the same row, so row locks serialize them. Under READ COMMITTED, an `UPDATE` re-evaluates its `SET` on the newest row version it waited for. Suppose a commit lands after settle's snapshot. That commit wrote the feed row, so an expansion follows. If the expansion's update applied first, settle reads its `marked` and keeps the row due. If settle applied first, the expansion finds the row unclaimed and makes it due. `marked` is a source sequence, and `delivered` only ever records positions that were actually scanned, so `marked > delivered` never sticks as a false wake.
 - **Delivery concurrency.** Subscription deliveries use their own per-runner slots (`relay.subscriptionConcurrency`, default 16). A backlog of subscriptions can't delay intents, timers, or cron.
-- **Cost.** A burst of commits on one source coalesces into one expansion. With N subscribers and E events, the relay makes N × E delivery turns. That is the unavoidable work, and it is spread across runners because each subscription row is claimed independently.
+- **Cost.** A burst of commits on one source coalesces into one expansion. With N subscribers and E events, the relay makes N × E delivery turns. That is the unavoidable work. It is spread across runners, because each subscription row is claimed independently.
+- **One pair is sequential.** A single `(subscription, source, subscriber)` has at most one delivery in flight, so its throughput is one relay → turn → settle cycle per event, and turn batches don't help it. Turn batches help fan-in, where many rows deliver to one subscriber at once.
 
 ### 4. Cursors, receipts, and at-least-once transport with exactly-once effect
 
 - **Transport is at least once.** The relay may deliver a delivery twice: after a lease expires, after a crash before the settle, or from a stale runner.
-- **The effect on the subscriber is exactly once per `(subscription, source, cursor)`.** Two mechanisms enforce it.
-  - **The derived command id and its receipt.** The id is a UUIDv8 whose 122 free bits come from SHA-256 over the canonical encoding `["subscription/v1", tenant, subscriber type, subscription tag, subscriber id, source type, source id, kind, cursor]`, where `kind` is `event` or `gap`. The receipt's payload hash binds that same identity, not the event's re-encoded bytes, so a redelivery after a schema-compatible deploy replays instead of failing with `CommandConflict`. Two subscriptions, or two subscribers of one source, never share an id.
-  - **The subscriber-side cursor.** Admission reads `actor_subscription_cursors` in the same round trip as the generation fence and the receipt. If `applied ≥ cursor`, the delivery is acknowledged as `AlreadyApplied` without running the handler. Otherwise the handler runs, and the commit statement sets `applied = cursor`, again with no extra round trip. The cursor row never expires. Deduplication therefore survives receipt pruning, and a stale runner's out-of-order redelivery can't run an older event after a newer one.
+- **The effect on the subscriber is exactly once per `(subscription, epoch, source, cursor)`.** Two mechanisms enforce it.
+  - **The derived command id and its receipt.** The id has the shape of ADR 0022's derived activity ids, `v1.<s>.<s + retryWindow>.<digest>`. `s` is the event's `emitted_at_ms` (the gap's detection time for a `RetentionGap`). `digest` is SHA-256 over the canonical encoding `["subscription/v1", tenant, subscriber type, subscription tag, subscriber id, source type, source id, epoch, kind, cursor]`, where `kind` is `event`, `gap`, or `rejected`. The digest is formatted as a UUID with version nibble `8`. External admission accepts only version-4 ids, so no external caller can present a derived id and plant a receipt under it. The receipt's payload hash binds that same identity, not the event's re-encoded bytes, so a redelivery after a schema-compatible deploy replays instead of failing with `CommandConflict`. Two subscriptions, two subscribers of one source, or two epochs of one subscription never share an id.
+  - **The subscriber-side cursor.** Admission reads `actor_subscription_cursors` in the same round trip as the generation fence and the receipt, and handles the delivery by the row it finds:
+
+    | Cursor row                                 | Outcome                                                                                   |
+    | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+    | row epoch above the delivery's             | `Stale`: acknowledged without running the handler                                         |
+    | `active = false` at the delivery's epoch   | `Unsubscribed`: acknowledged without running the handler                                  |
+    | `applied ≥ cursor` at the delivery's epoch | `AlreadyApplied`: acknowledged without running the handler                                |
+    | otherwise                                  | the handler runs, and the commit statement sets `applied = cursor` in the same round trip |
+
+    A routed subscriber creates its row, at epoch 0, on its first delivery. The row never expires, so deduplication survives receipt pruning, and a stale runner can't run an older event after a newer one or deliver into a newer epoch.
+
+  - **Late deliveries rely on the cursor.** A delivery that arrives after its id's `expiresAt` may find its receipt pruned. The cursor still refuses a repeat.
 - **Declared failures advance the cursor.** The event was handled with a typed outcome, as for an intent. The failure receipt commits with `applied = cursor`.
 - **Defects and retryable failures don't.** A deterministic defect, `ActorUnavailable`, `RunnerAtCapacity`, or a timeout leaves the row claimed. It is redelivered with backoff, `max(claimLease, min(1 s × 2^(attempts − 1), relay.maxBackoff))`, which is ADR 0021's intent rule.
-- **Settle outcomes.** A delivery answers the relay with `Applied`, `AlreadyApplied`, `Unsubscribed` (dynamic, no cursor row: the relay deletes the source row), or `NotCreated`. `NotCreated` means a routed subscriber whose `createdBy` policy refuses creation. Today that rejection commits no receipt, so without a rule the delivery would retry forever. The rule is that the relay advances past the event and counts it in `durable-actors.subscription.skipped`, and routed events for a subscriber that doesn't exist are dropped. A subscriber that must see them lists the handler in `createdBy`, so the delivery creates it. A dynamic subscriber always exists, because it subscribed in a committed turn. Each outcome except a retryable failure advances `delivered`.
-- **Derived ids are internal.** They can't be admitted from outside: an external caller presenting one reaches an `internal` command and is a deterministic defect ([contract 10](../contracts/10-security.md)). The external retry horizon doesn't apply, because a delivery is trusted recovery of committed work ([contract 04](../contracts/04-receipts.md)).
+- **Settle outcomes.** A delivery answers the relay with one of these, and each except a retryable failure advances `delivered`:
+  - `Applied`.
+  - `AlreadyApplied`.
+  - `Stale` or `Unsubscribed`. The relay deletes the source row where its epoch equals the delivery's.
+  - `NotCreated`. This means a routed subscriber whose `createdBy` policy refuses creation. Today that rejection commits no receipt, so without a rule the delivery would retry forever. The relay advances past the event and counts it in `durable-actors.subscription.skipped`. Routed events for a subscriber that doesn't exist are dropped. A subscriber that must see them lists the handler in `createdBy`, so the delivery creates it. A dynamic subscriber always exists, because it subscribed in a committed turn.
+- **The retry horizon doesn't apply.** A delivery is trusted recovery of committed work ([contract 04](../contracts/04-receipts.md)), so the external retry horizon doesn't bound it.
 
 ### 5. Ordering per publisher
 
-- **Within one subscription and one source, delivery follows the source's cursor order,** across every event class the subscription names, with at most one delivery in flight. A subscription row is claimed by one runner at a time, and the subscriber cursor refuses anything at or below `applied`. So `OrderPlaced` is always applied before a later `OrderCancelled` from the same order.
+- **Within one subscription row, delivery follows the source's cursor order,** across every event class the subscription names, with at most one delivery in flight. A subscription row is claimed by one runner at a time, and the subscriber cursor refuses anything at or below `applied`. So `OrderPlaced` is always applied before a later `OrderCancelled` from the same order.
 - **Nothing else is ordered.** Deliveries from different sources, including fan-in to one subscriber, interleave arbitrarily. So do different subscriptions from one source, and a subscription delivery and an ordinary command. A subscriber that needs a cross-source order must carry it in the events, for example as a timestamp or a sequence from a coordinator.
-- **A delivery that keeps failing blocks only its own `(subscription, source)` row.** Later events wait behind it ([section 6](#6-backpressure-and-poison-deliveries)). Other sources, other subscriptions, and the publisher are unaffected.
+- **A delivery that keeps failing blocks its own row.**
+  - For a dynamic subscription, that row is one `(subscription, source, subscriber)`. Other sources, other subscriptions, and the publisher are unaffected.
+  - A routed row serves every subscriber the source's events route to, in the source's order. So one poisoned or `MailboxFull` subscriber holds back that source's later events for the other routed subscribers too. For a projection (one source routes to one customer), that is one subscriber. For a source whose events route to many subscribers, the order would otherwise break, so that is the price of keeping it ([open question 5](#q5-ordering)).
 
 ### 6. Backpressure and poison deliveries
 
@@ -256,16 +327,20 @@ A rolled-back or declared-failure turn emits no events, so it writes neither.
 
 - **Subscriptions hold back pruning, but only for a bounded time.** The M1.9 retention loop doesn't delete a source's event whose sequence is above the smallest `delivered` among that source's subscription rows. The hold ends once the event is older than `keepEvents` plus the source's `policy.holdEventsForSubscribers` (default `"7 days"`). After that the event is pruned like any other.
 - **This combines with workflow holds.** Pruning stops at the smaller of this bound and [ADR 0022](0022-workflow-engine-storage-and-version-markers.md)'s open-execution bound. It reads only rows on the source's shard.
-- **A gap is delivered, never skipped.** If a subscription's next matching event has been pruned, the relay delivers `{ _tag: "RetentionGap", after: delivered, resumeAfter: oldest retained − 1 }` under a `gap` id and moves `delivered` to `resumeAfter`. The handler decides how to resynchronize. It might mark itself stale and start a workflow that reads the source's state through a query, or stage an intent asking the source to re-publish a snapshot event.
+- **A gap is delivered, never skipped, when there is a recipient.** If history after a row's `delivered` has been pruned, the relay delivers `{ _tag: "RetentionGap", after: delivered, resumeAfter }` under a `gap` id and moves `delivered` to `resumeAfter`.
+  - `resumeAfter` is the oldest retained sequence minus 1, or the source's `event_sequence` when nothing is retained.
+  - Pruning is by position, not by tag, so a gap can be reported even when none of the pruned events matched the subscription.
+  - The handler decides how to resynchronize. It might mark itself stale and start a workflow that reads the source's state through a query, or stage an intent asking the source to re-publish a snapshot event.
+- **Which rows can receive a gap.** Dynamic rows and routed rows with `route: Actor.singleton` always can. A routed row with an id `route` can't: `route` needs the pruned event to name a subscriber. That row increments its `gaps` column, logs `Subscription gap without a recipient`, and counts it in `durable-actors.subscription.undeliverable_gaps`. Then it resumes. The hold makes this rare: a routed row gaps only after its delivery has been blocked for longer than the hold. Id-routed projections that can't tolerate a gap need a periodic reconciliation, such as a cron that re-reads the source.
 - **The gap ends in the gap's own commit.** A declared failure in the gap handler still commits and moves past the gap, like any delivery.
 - **A new `"start"` subscription** to a source whose history is already pruned begins with a `RetentionGap` from cursor 0.
 - **Metric.** `durable-actors.subscription.pinned_events` reports how many events subscriptions hold back.
 
 ### 8. Authorization and tenancy
 
-- **Same tenant only, by construction.** Every row carries the source's `tenant_id`. `route` returns only an id, and `turn.subscribe` takes only an id and uses the turn's tenant. No API accepts a tenant, so a cross-tenant subscription can't be expressed. Cross-tenant fan-in, such as an operator dashboard over every tenant, belongs to `Fleet.view` ([ADR 0006](0006-scale-rules-placement-and-query-tiers.md)).
-- **Sources may restrict their subscribers.** Within a tenant, any actor type in the deployment may subscribe to any event a source lists in `events`. The framework is trusted application infrastructure ([contract 10](../contracts/10-security.md)), and the `authorize` hook governs external callers, not System deliveries. A source may narrow this with `policy.subscribers: [CustomerSummary, Dashboard]`. `Actor.make` then fails for a subscriber declaration it excludes. The check is static, because every subscription, dynamic ones included, is declared on its subscriber.
-- **Handlers are internal.** They are absent from handles, HTTP, OpenAPI, and the Promise client. A non-System caller reaching one is a deterministic defect.
+- **Same tenant only.** Every row carries the source's `tenant_id`. `route` returns only an id, and `turn.subscribe` takes only an id and uses the turn's tenant. No API accepts a tenant, so a cross-tenant subscription can't be expressed. The runtime still checks, as ADR 0023 requires. At startup it checks that every registered subscription names a source type registered in the same deployment. At each delivery, it checks that the subscriber's tenant equals the source row's `tenant_id` before admission, and a mismatch is a deterministic defect. Cross-tenant fan-in, such as an operator dashboard over every tenant, belongs to `Fleet.view` ([ADR 0006](0006-scale-rules-placement-and-query-tiers.md)).
+- **Sources may restrict their subscribers.** Within a tenant, any actor type in the deployment may subscribe to any event a source lists in `events`. The framework is trusted application infrastructure ([contract 10](../contracts/10-security.md)), and the `authorize` hook governs external callers, not System deliveries. A source may narrow this with `policy.subscribers: ["CustomerSummary", "Dashboard"]`, subscriber type names given as strings so the source never imports its subscribers. The check runs when the runtime layer is built: a registered subscription whose subscriber type the source excludes fails startup. The check is static, because every subscription, dynamic ones included, is declared on its subscriber.
+- **Handlers are internal and accept only subscription deliveries** (section 1). They are absent from handles, HTTP, OpenAPI, the Promise client, and `X.intents`.
 - **Revocation doesn't stop a subscription.** It is accepted durable work between two actors ([ADR 0004](0004-receipt-access-revocation-and-expiry.md)). An application stops one with `turn.unsubscribe`, or by removing the declaration.
 - **Contract 07's revocation bound doesn't apply to actor-to-actor subscriptions.** That bound governs sessions held for an external principal: connections, streams, and client event feeds. A subscription has no external principal. It is created by a committed turn or by a declaration, and each delivery is trusted internal work. A client that reads a subscriber's projection does so through that subscriber's own queries, connections, or feeds, and those are reauthorized under contract 07 as usual.
 
@@ -304,11 +379,15 @@ The delivery is a turn on the owner, so its `emit` takes ADR 0022's emit-path wa
 
 ### 10. Composition with connections and waking parked subscribers
 
-This section is agreed with ADR 0023's owner (DURA-27).
+This section states the interface agreed with ADR 0023's owner (DURA-27). ADR 0023 lists these requirements under "Interface with cross-actor subscriptions".
 
 - **Delivery wakes a sleeping or parked subscriber.** A delivery is an ordinary System command turn through the subscriber's command entity, like any relay-delivered intent. It activates a hibernated subscriber, or a parked one, on its current owner. This is the durable wake path. It needs no runner-to-runner message: the committing runner's relay wakes locally, and any runner's poll is the correctness path ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) section 6).
-- **The handler has the full `X.Turn`, including `turn.broadcast(Member, frame, { except?, to? })`.** Frames flush after commit to the subscriber's parked connections through their holders, and a declared failure or rollback discards them. ADR 0023 stamps each frame with the subscriber's own event cursor at commit. A client that must not miss a projected change follows the subscriber's events and resynchronizes from that stamp. `delivery.cursor`, the source's cursor, is available to put in a frame's payload.
-- **A `RetentionGap` delivery is a turn too**, so it can broadcast a resync hint.
+- **The handler has the full `X.Turn`, including `turn.broadcast(Member, frame, { except?, to? })`.** Frames flush after commit to the subscriber's parked connections through their holders, and a declared failure or rollback discards them.
+- **Frames carry the subscriber's cursor.** ADR 0023 stamps each frame with the subscriber's own event cursor at commit. A client that must not miss a projected change follows the subscriber's events and resynchronizes from that stamp. `delivery.cursor`, the source's cursor, is available to put in a frame's payload.
+- **A receipt replay never re-broadcasts.** A redelivery acknowledged as `AlreadyApplied`, `Stale`, or `Unsubscribed` runs no handler. A delivery broadcast lost at an owner death is therefore recovered only through ADR 0023's `Resync` and the subscriber's events.
+- **Broadcasts are filtered by the subscriber.** A delivery broadcast exposes source event data to the subscriber's connections under the subscriber's authorization only. A handler whose connections may not all see the event filters them with `to:`.
+- **Delivery turns share the relay's bounded concurrency**, and they run in the subscriber's tenant (section 8).
+- **A `RetentionGap` or `Rejected` delivery is a turn too**, so it can broadcast a resync hint.
 - **Broadcast stays best-effort.** Whether a broadcast wakes a parked actor is ADR 0023's decision. Subscriptions are the durable way to wake an actor on another actor's change, and they don't depend on that decision.
 
 ## Open questions and recommended defaults
@@ -317,7 +396,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 ### Q1. Declaration API
 
-**Default:** a `subscriptions: [...]` section of `Actor.subscription` members on the subscriber, with the handler an `internal` command taking `Actor.Delivery(S)`. `route` makes a subscription routed; without it, the subscription is dynamic.
+**Default:** a `subscriptions: [...]` section of `Actor.subscription` members on the subscriber, with the handler an `internal` command taking `Actor.Delivery({ source, events })` that only subscription deliveries can reach. `route` makes a subscription routed; without it, the subscription is dynamic. `policy.subscribers` names subscriber types as strings, so a source never imports its subscribers.
 
 **Alternatives:**
 
@@ -327,7 +406,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 **Example:** section 1.
 
-**Conformance:** `rejects an event class the source doesn't declare`, `rejects a handler whose input doesn't accept the delivery` (type tests), `rejects duplicate subscription tags at Actor.make`, `routes each event to the id route returns`, `routes to the tenant's singleton with route: Actor.singleton`.
+**Conformance:** `rejects an event class the source doesn't declare`, `rejects a handler whose input doesn't accept the delivery` (type tests), `rejects duplicate subscription tags at Actor.make`, `routes each event to the id route returns`, `dies when a non-subscription System caller reaches a handler, and hides handlers from X.intents`, `routes to the tenant's singleton with route: Actor.singleton`.
 
 **Failure rows:** **Route throws or returns an id the key schema rejects**. The row backs off with `last_error`, and later events wait. It is a deterministic defect.
 
@@ -335,7 +414,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 ### Q2. Dynamic subscribe and unsubscribe
 
-**Default:** `turn.subscribe(S, id, { from })` and `turn.unsubscribe(S, id)` on `X.Turn`, as staged outbox `control` rows, fenced by epoch. `from` defaults to `"now"`. Unsubscribing takes effect when the subscriber's turn commits.
+**Default:** `turn.subscribe(S, id, { from })` and `turn.unsubscribe(S, id)` on `X.Turn`. Each is staged as an outbox `control` row with a strictly increasing epoch from the subscriber's cursor row, which is kept as a tombstone after unsubscribing. The epoch fences registration, every delivery, the derived id, and the source row's delete. `from` defaults to `"now"`. Unsubscribing takes effect when the subscriber's turn commits.
 
 **Alternative:** a request/reply `subscribe` call to the source. It is forbidden inside a turn, and it would wake the source.
 
@@ -349,10 +428,14 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 - `stages nothing when the subscribing turn fails with a declared error`
 - `runs no handler for a delivery in flight when unsubscribe commits`
 - `keeps the newest epoch when subscribe and unsubscribe control rows are delivered out of order`
-- `removes an orphan source row on an Unsubscribed acknowledgement`
+- `removes an orphan source row on an Unsubscribed acknowledgement, and never a newer epoch's row on a stale one`
+- `runs no stale-epoch delivery after unsubscribe and resubscribe from "start", and applies the new epoch from cursor 1`
+- `makes no change when a control row reruns at the same epoch after a crash`
+- `delivers retained history to a from: "start" subscription on a source that never emits again`
+- `delivers Rejected and deactivates the subscription for a cursor above the source's head`
 - `subscribes to a source that has never been created, and delivers its first event`
 
-**Failure rows:** **Subscribe and unsubscribe controls delivered out of order**; **Relay dies after the control claim, before the registration statement**.
+**Failure rows:** **Subscribe and unsubscribe controls delivered out of order**; **Relay dies after the control claim, before the registration statement**; **Control row reruns after its statement committed**; **Stale epoch delivery after resubscribe**.
 
 **Benchmark:** `subscriptions/subscribe-churn` (subscribe and unsubscribe turns per second, and control rows per operation).
 
@@ -367,8 +450,9 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 **Conformance:**
 
 - `writes one feed row per publishing turn whatever the subscriber count`
-- `writes no feed row for an actor with no subscriptions`
-- `loses no wake when a commit races a settle or an expansion` (Postgres, paused at `afterClaim`)
+- `writes no feed row for an actor with no subscriptions, and probes the tag summary by key with 10^5 non-matching rows`
+- `loses no wake when a commit races a settle or an expansion` (Postgres: pause settle after its snapshot, commit, expand, then resume settle)
+- `renews a subscription lease across a batch of slow deliveries`
 - `claims a source's subscriptions on several runners` (harness)
 - `leaves the publisher's statement count unchanged` (T2 gate)
 
@@ -378,7 +462,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 ### Q4. Cursors and delivery guarantees
 
-**Default:** at-least-once transport with exactly-once effect per `(subscription, source, cursor)`. The derived command id and its receipt deduplicate first. The subscriber-side `applied` cursor, which never expires, deduplicates after receipt pruning and against stale runners. Declared failures advance the cursor.
+**Default:** at-least-once transport with exactly-once effect per `(subscription, epoch, source, cursor)`. The derived command id and its receipt deduplicate first. The subscriber-side `applied` cursor, which never expires, deduplicates after receipt pruning and against stale runners. Declared failures advance the cursor.
 
 **Alternative:** receipts alone. That needs cleanup to keep delivery receipts for as long as the source-side row might redeliver, which can't be checked, because the two rows are on different shards.
 
@@ -390,7 +474,8 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 - `acknowledges a redelivery whose receipt was pruned without running the handler`
 - `refuses a stale runner's delivery below the applied cursor after a lease takeover`
 - `advances past a declared failure and replays its receipt`
-- `derives distinct command ids for two subscriptions and two subscribers of one source`
+- `derives distinct command ids for two subscriptions, two subscribers, and two epochs of one source`
+- `rejects a derived id presented by an external caller before admission`
 - `replays after a schema-compatible deploy instead of CommandConflict`
 - `delivers nothing for a rolled-back source turn` (E1)
 
@@ -400,7 +485,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 ### Q5. Ordering
 
-**Default:** source-cursor order within one `(subscription, source)`, across the subscription's event classes, with one delivery in flight. Nothing else is ordered.
+**Default:** source-cursor order within one subscription row, across the subscription's event classes, with one delivery in flight. A routed row serves every subscriber its source routes to, so a blocked routed subscriber holds back that source's later events for the others. Nothing else is ordered. The alternative for routed rows is to split a row per route result after its first delivery. That trades the source's order across subscribers for isolation, and it costs a source-side row per `(source, subscriber)` pair.
 
 **Alternative:** ordering per subscriber across sources, which needs a global sequence. [ADR 0006](0006-scale-rules-placement-and-query-tiers.md) prohibits one.
 
@@ -419,11 +504,12 @@ RecordOrder: Effect.fn(function* (d) {
 
 - `applies one source's events in cursor order under redelivery and two runners`
 - `holds later events behind a failing one on the same row only`
+- `holds a routed source's later events for every routed subscriber while one is blocked`
 - `interleaves two sources without blocking each other`
 
 **Failure rows:** **Poison delivery blocks one subscription** (other rows and the publisher keep moving).
 
-**Benchmark:** `subscriptions/fan-in-<n>` (10^4 sources emitting to one subscriber: throughput, and the subscriber's turn batch size).
+**Benchmark:** `subscriptions/fan-in-<n>` (10^4 sources emitting to one subscriber: throughput, and the subscriber's turn batch size), and `subscriptions/pair-throughput` (one source emitting to one subscriber as fast as it can: the sequential ceiling of one pair).
 
 ### Q6. Poison deliveries
 
@@ -444,7 +530,7 @@ durable subscriptions skip <row> --through <cursor> --reason "bad payload from v
 
 ### Q7. Retention and `keepEvents`
 
-**Default:** subscriptions hold back pruning for up to `policy.holdEventsForSubscribers` (`"7 days"`) past `keepEvents`, and then the subscriber gets a `RetentionGap`. The alternatives are an unbounded hold, where one dead subscriber grows a source's history forever, and no hold, where a routine outage turns into gaps.
+**Default:** subscriptions hold back pruning for up to `policy.holdEventsForSubscribers` (`"7 days"`) past `keepEvents`, and then the subscriber gets a `RetentionGap`. An id-routed row has no recipient for a gap, so it records and counts it instead (section 7). The alternatives are an unbounded hold, where one dead subscriber grows a source's history forever, and no hold, where a routine outage turns into gaps.
 
 **Example:**
 
@@ -458,6 +544,7 @@ Actor.make("Order", { …, policy: { keepEvents: "30 days", holdEventsForSubscri
 - `prunes past the hold and delivers one RetentionGap, then resumes`
 - `holds for the smaller of the subscription and workflow bounds`
 - `reports RetentionGap first for a from: "start" subscription after pruning`
+- `counts an id-routed gap on the row and delivers a singleton-routed gap`
 
 **Failure rows:** **Source events pruned before delivery**, **Retention races a delivery claim** (pruning and a claim interleave; the delivery sees either the event or the gap, never a skip).
 
@@ -467,7 +554,7 @@ Actor.make("Order", { …, policy: { keepEvents: "30 days", holdEventsForSubscri
 
 **Default:**
 
-- Same-tenant only, by construction.
+- Same-tenant only: impossible to express otherwise, and checked again at startup and at each delivery.
 - Open within a tenant for declared events, with `policy.subscribers` as a static allow-list on the source.
 - System caller `source: "subscription"`, with no `onBehalfOf`.
 
@@ -479,7 +566,7 @@ Actor.make("Order", { …, policy: { keepEvents: "30 days", holdEventsForSubscri
 **Example:**
 
 ```ts
-Actor.make("Payment", { …, policy: { subscribers: [Shipment, Ledger] } }) // anything else fails at Actor.make
+Actor.make("Payment", { …, policy: { subscribers: ["Shipment", "Ledger"] } }) // anything else fails when the runtime layer is built
 ```
 
 **Conformance:**
@@ -530,18 +617,18 @@ RecordOrder: Effect.fn(function* (d) {
 
 ### Q11. Migration number and build order
 
-**Default:** `0016_subscriptions`, built in wave 4 as #94 (DURA-22's #97 moved it from M3.7, wave 6). The build depends on M2.4's `0011_relay` (claims, the kind index, `scheduled_at_ms`) and M1.9's `0010_retention` (pruning bounds). It doesn't depend on workflows or connections. The migrator skips ids at or below the latest one applied, so `0016` must land after `0012`–`0015`, or the reservations are renumbered under the roadmap's rule.
+**Default:** `0016_subscriptions`, built in wave 4 as #94 (still M3.7, moved from wave 6 to wave 4 by DURA-22's #97). The build depends on M2.4's `0011_relay` (claims, the kind index, `scheduled_at_ms`) and M1.9's `0010_retention` (pruning bounds). It doesn't depend on workflows or connections. The migrator skips ids at or below the latest one applied, so `0016` must land after `0012`–`0015`, or the reservations are renumbered under the roadmap's rule.
 
 ## Behaviour changes against existing contracts
 
-| Document                                                  | Today                                                                     | After this ADR                                                                                                                                                 | Section |
-| --------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| [Contract 04](../contracts/04-receipts.md)                | Every command id is minted by a handle or client                          | Framework deliveries may carry ids derived from the durable record they deliver; derived ids are internal. Subscription receipts bind the delivery's identity. | 4       |
-| [Contract 05](../contracts/05-messaging.md)               | Events are owner-scoped; only the owner's queries and workflows read them | Declared subscriptions deliver committed events to other actors in the same tenant, in cursor order per source, as System command turns                        | 1–5     |
-| [Contract 07](../contracts/07-realtime.md)                | Durable event subscriptions use a cursor (client feeds)                   | The same rules cover actor-to-actor subscriptions: cursor order per source and explicit `RetentionGap` deliveries                                              | 5, 7    |
-| [Contract 10](../contracts/10-security.md)                | System sources are intents, effect routes, and cron                       | Adds `subscription`; subscriptions are same-tenant by construction; `policy.subscribers` restricts subscriber types                                            | 8       |
-| [Retention](../operations/retention.md)                   | Pruning covers replay cursors and workflow waits                          | Pruning also stops at subscriber cursors, for at most `holdEventsForSubscribers` past `keepEvents`                                                             | 7       |
-| [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) | The relay claims `intent` and `effect` rows                               | Also `feed` and `control` rows and subscription rows, with their own delivery slots                                                                            | 3       |
+| Document                                                  | Today                                                                     | After this ADR                                                                                                                                                               | Section |
+| --------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| [Contract 04](../contracts/04-receipts.md)                | Every command id is minted by a handle or client                          | Framework deliveries may carry ids derived from the durable record they deliver; derived ids are internal. Subscription receipts bind the delivery's identity.               | 4       |
+| [Contract 05](../contracts/05-messaging.md)               | Events are owner-scoped; only the owner's queries and workflows read them | Declared subscriptions deliver committed events to other actors in the same tenant, in cursor order per source, as System command turns                                      | 1–5     |
+| [Contract 07](../contracts/07-realtime.md)                | Durable event subscriptions use a cursor (client feeds)                   | The same rules cover actor-to-actor subscriptions: cursor order per source and explicit `RetentionGap` deliveries                                                            | 5, 7    |
+| [Contract 10](../contracts/10-security.md)                | System sources are intents, effect routes, and cron                       | Adds `subscription`; subscriptions are same-tenant by construction; `policy.subscribers` restricts subscriber types                                                          | 8       |
+| [Retention](../operations/retention.md)                   | Pruning covers replay cursors and workflow waits                          | Pruning also stops at subscriber cursors, for at most `holdEventsForSubscribers` past `keepEvents`                                                                           | 7       |
+| [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) | The relay claims `intent` and `effect` rows                               | Also `feed` and `control` outbox kinds, and subscription rows claimed by `(bucket, subscriber_type, due_at_ms)` with their own delivery slots and per-delivery lease renewal | 3       |
 
 ## Alternatives
 
@@ -558,9 +645,9 @@ RecordOrder: Effect.fn(function* (d) {
 
 - An actor can follow other actors' committed history and be woken for each new event, with exactly-once effect and per-source order, without the publisher knowing about it or paying for it.
 - Each delivered event costs one subscriber turn plus relay statements, roughly an intent delivery. Fan-out volume is N × E turns.
-- `actor_subscription_cursors` grows with the number of `(subscriber, source)` pairs ever delivered. Rows are small and are deleted on unsubscribe, but a routed fan-in subscriber keeps one per source. This is accepted; revisit it with actor deletion.
+- `actor_subscription_cursors` grows with the number of `(subscriber, source)` pairs ever delivered. Rows are small. They are kept after unsubscribing, as tombstones that hold the epoch, and a routed fan-in subscriber keeps one per source. This is accepted; revisit it with actor deletion.
 - Routed subscription rows exist per source actor that has emitted a matching event, like cron rows per actor.
-- A new routed declaration doesn't backfill history. It starts at each source's next matching commit. Backfill is a dynamic `from: "start"` subscription or a workflow.
+- A new routed declaration doesn't backfill history. It starts at each source's first matching commit on a runner that registers the declaration. During a rolling deploy, a source's matching events committed on old runners before that commit aren't delivered; this is start semantics, not a gap. Backfill is a dynamic `from: "start"` subscription or a workflow.
 - Removing a declaration in a deploy leaves its rows. As with cron rule 1 of ADR 0021, a runner that registers the subscriber type but lacks the declaration releases the row with backoff. It deletes the row once the row has been due for longer than one day, so a rolling deploy never loses a new declaration's rows.
 
 ## Amendments
@@ -572,6 +659,8 @@ In this change:
 - [Contract 07](../contracts/07-realtime.md): actor-to-actor subscriptions follow the cursor and gap rules.
 - [Contract 10](../contracts/10-security.md): the `subscription` System source, same-tenant scope, and `policy.subscribers`.
 - [Retention](../operations/retention.md): subscriber holds.
+- [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md): the `feed` and `control` outbox kinds, subscription claims with their own slots, and lease renewal per delivery. This extends ADR 0021 and doesn't change its intent or effect rules.
+- [M3](../milestones/M3.md): M3.7's evidence list matches this design.
 - [Server API](../api/01-server-api.md) and [context](../api/02-context.md): `subscriptions`, `Actor.subscription`, `Actor.Delivery`, `turn.subscribe`, `turn.unsubscribe`, and the two policies (target API).
 - [Data model](../architecture/data-model.md), [transaction catalog](../architecture/transaction-catalog.md), and [glossary](../GLOSSARY.md).
 - [Conformance](../verification/01-conformance.md): the **Subscription delivery** gate and decision check. [Failure matrix](../verification/02-failure-matrix.md): the new rows. [Invariants](../verification/invariants.md): E2. [Performance](../verification/03-performance.md): the baseline.
@@ -579,7 +668,7 @@ In this change:
 ## Required evidence (#94, `conformance/subscriptions.ts`, migration `0016_subscriptions`)
 
 - The conformance cases named under Q1–Q10 run on PGlite and Postgres. Crash, contention, and race cases run on Postgres only. Multi-runner cases run on the M2.1 harness.
-- Fault points `beforeSettle` (after the subscriber's commit, before the source-side settle) and `afterExpand` are added to `TurnHooks` and `crashNext`/`pauseNext`.
+- Fault points `beforeSettle` (after the subscriber's commit, before the source-side settle), `afterSettleSnapshot` (settle paused after its snapshot), and `afterExpand` are added to `TurnHooks` and `crashNext`/`pauseNext`.
 - **Due-work scans:** `EXPLAIN (ANALYZE, BUFFERS)` of the subscription claim beside 10^5 caught-up subscription rows reads none of them, and relay scan time stays within 10% of the empty case.
 - **Failure-matrix rows added in this change:**
   - **Subscriber crashes after delivery commit**
@@ -595,9 +684,15 @@ In this change:
   - **Retention races a delivery claim**
   - **Subscriber hibernated or parked when an event commits**
   - **Cross-tenant or unauthorized subscription attempt**
-- **Invariant:** E2, "each committed source event takes effect once per subscription, in source cursor order, or is reported as a gap".
+  - **Relay dies after the control claim, before the registration statement**
+  - **Control row reruns after its statement committed**
+  - **Stale epoch delivery after resubscribe**
+  - **Relay dies after claiming a feed row, before expansion**
+  - **Routed row loses history with no gap recipient**
+- **Invariant:** E2: each committed source event takes effect exactly once per active subscription, in source cursor order, or is reported as a gap. The listed exceptions are routed events before the source's routed row exists, routed events for a `createdBy`-refused subscriber (counted), and id-routed gaps (counted on the row).
 - **Benchmark:** `subscriptions`, extending this branch's `intent-fanout-<n>` baseline with these cases:
   - `commit-to-delivery` and `commit-to-delivery-hibernated`
+  - `pair-throughput`
   - `publish-with-<n>-subscribers`
   - `drain-<n>`
   - `fan-in-10000`

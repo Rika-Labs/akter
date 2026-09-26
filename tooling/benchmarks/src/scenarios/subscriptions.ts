@@ -26,11 +26,13 @@ export const subscriptions: Scenario = {
               const publisher = yield* Sender.get(`fanout-${subscribers}`)
               let next = 0
 
-              const publish = () =>
-                publisher.SendAt({
-                  ids: Array.from({ length: subscribers }, () => `subscriber-${next++}`),
-                  atMs: dueAt,
-                })
+              // The handler generates the ids, so the command payload is the same size at every n.
+              const publish = () => {
+                const offset = next
+                next += subscribers
+
+                return publisher.SendMany({ offset, count: subscribers, atMs: dueAt })
+              }
 
               yield* load({ workers: 1, operations: 10, operation: publish })
 
