@@ -1,0 +1,21 @@
+diff --git a/dist/unstable/cluster/Sharding.js b/dist/unstable/cluster/Sharding.js
+index 35cdacb0aecfddee7b50946a89f7610c7d4d432b..400d456d5c01c3e338b32d39649e88026ab75c50 100644
+--- a/dist/unstable/cluster/Sharding.js
++++ b/dist/unstable/cluster/Sharding.js
+@@ -310,9 +310,14 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+       activeShardsLatch.openUnsafe();
+       return Effect.logInfo("Shard lock storage has recovered");
+     });
+-    const refreshShardLocks = Effect.suspend(() => runnerStorage.refresh(selfAddress, [...acquiredShards, ...releasingShards])).pipe(Effect.flatMap(acquired => {
++    // Only shards this refresh asked about can be lost by it: a shard acquired
++    // while the refresh was in flight is absent from its result but still held.
++    const refreshShardLocks = Effect.suspend(() => {
++      const requested = [...acquiredShards, ...releasingShards];
++      return runnerStorage.refresh(selfAddress, requested).pipe(Effect.map(acquired => [requested, acquired]));
++    }).pipe(Effect.flatMap(([requested, acquired]) => {
+       for (const shardId of acquiredShards) {
+-        if (!acquired.includes(shardId)) {
++        if (requested.includes(shardId) && !acquired.includes(shardId)) {
+           MutableHashSet.remove(acquiredShards, shardId);
+           MutableHashSet.add(releasingShards, shardId);
+         }

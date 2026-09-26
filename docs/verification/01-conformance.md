@@ -208,6 +208,17 @@ Postgres only (independent connections):
 
 These cases are in-process. They exercise Cluster's lock expiry, shard movement, and the generation fence against real Postgres, but not real process death or network partitions; the multi-process drills (T7) cover those. The simulated rival case `orders events gap-free when a rival activation races the owner for one actor` in `conformance/events.ts` stays as a fast single-runner check.
 
+### Runner start-up and nightly stress (T4)
+
+Every first command on a fresh Postgres runner could stall for about 10 s. Effect Cluster (rc.116, unchanged on effect-smol `main`) compares a shard-lock refresh's answer against the shards held *when the answer arrives*. The runner's first refresh starts with no shards; if the first acquire commits while it is in flight, the answer lacks the new shard, so the runner releases it and reacquires it only on the next 10 s entity poll. It caused the known CI flakes: `isolates durable state between fresh layer builds` ("No healthy runners available"), the `beforeExecute`, `afterExecute` and `beforeCommit` effect SIGKILL cases (a crash child that hit its own 10 s timeout before its crash point, reported as "Unknown Error: 1"), and the `RunnerAtCapacity` timing that needed a warm-up actor. Under CPU load the stall hit 8 of 90 crash-child starts before the fix and 0 of 120 after.
+
+[`patches/effect@4.0.0-rc.116.patch`](../../patches/effect@4.0.0-rc.116.patch) releases only shards the refresh asked about. Remove it with the Effect upgrade that fixes the race upstream.
+
+- `keeps a shard acquired while its first lock refresh is in flight` in [`runtime/layer.test.ts`](../../packages/durable-actors/src/runtime/layer.test.ts) — lock storage whose first refresh reads before the first acquire commits and answers after it. The first call must answer within 5 s; unpatched it waits about 9 s for the entity poll.
+- The crash suites now fail with "the child exited before reaching its crash point" when a child dies on its own, instead of an opaque exit code.
+
+The `Stress` workflow ([`.github/workflows/stress.yml`](../../.github/workflows/stress.yml)) runs nightly and on `workflow_dispatch`. It runs `test` and `test:integration` 10 times (the `runs` input) with one `stress-ng` CPU worker per core, and lists every failing case by name with the runs it failed in, in the job summary and as annotations.
+
 The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
 
 Run `bun run --filter durable-actors test` for declaration, identity, and the PGlite suite; run `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter durable-actors test:integration` and `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/counter test:integration` for Postgres and crash coverage. The role must create/drop temporary databases; tests never use application data. The existing CI `check:ci` task runs these and records the tested revision in `evidence/sha.txt`, logs in `evidence/check.log`, and the `evidence-<head-sha>` artifact. The PR links its actual current-revision run; this ledger is a map to tests, not a replacement for that artifact.
