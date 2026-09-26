@@ -13,7 +13,7 @@ There are three run modes:
 - **Served:** the same runtime is exposed with `Actor.serve`, providing HTTP, WebSocket, SSE, and `/openapi.json`.
 - **Hosted:** our runners provide the served runtime behind `apps/edge`; Neki is the hosted database detail.
 
-`Actor.make` is the only actor constructor. Named and minted actors are placed by sharding. `key: Actor.singleton` uses `Sharding.registerSingleton`, so `X.get()`, cluster-wide cron, and the singleton's background loop have one live owner across runners. Each Cluster shard group runs in the availability zone of its Neki shard primary.
+`Actor.make` is the only actor constructor. Named and minted actors are placed by sharding. `key: Actor.singleton` uses `Sharding.registerSingleton`, so `X.get()` and the singleton's background loop have one live owner across runners. Cron ticks are outbox timers any runner's relay may claim, and don't depend on which runner owns the singleton ([ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md)). Each Cluster shard group runs in the availability zone of its Neki shard primary.
 
 Activations are disposable. `policy.hibernateAfter` permits sleep; parked connections stay at the edge and wake the actor on the next frame, and opening a connection or authenticating a session wakes the actors it addresses. Fibers forked in the activation `Scope` are interrupted on sleep. Process memory is never durable authority.
 

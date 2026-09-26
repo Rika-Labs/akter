@@ -12,6 +12,7 @@ bun run bench                                   # every scenario, Postgres 18 th
 bun run bench --backend postgres                # or pglite
 bun run bench --scenario hot-actor,state-size   # a subset
 bun run bench --profile quick                   # small counts, about two minutes; for trying changes, not baselines
+bun run bench --profile ci                      # the statement gate's scenarios on Postgres at quick counts
 bun run bench --label my-change --note "why this run exists"
 ```
 
@@ -41,6 +42,7 @@ Each call to `withRuntime` gets a fresh database and a fresh actor runtime. Case
 | `reducers`          | `reduce-sequential`, `commutative-sequential`, `rejected-sequential`, `reduce-concurrent-64`                   | Server reducers on one warm `ReducerProbe` actor, whose state is the same counter as `Probe`: a reducer that replies with the new state, a commutative reducer that replies `void`, a reducer that fails with a declared error and commits a failure receipt, and 64 callers on the one actor. A reducer is a turn with no handler, so `hot-actor` is the baseline for each case.                                                                                                                                                                                                                                                                                                                                             |
 | `capacity`          | `first-touch-<label>`, `steady-<label>` for `at-limit` and `over-limit-4x`                                     | `many-actors` with `maxResidentActors` held at 1,000 (250 in `quick`) and 64 callers on `SleepyProbe` actors: first touch and 20 seconds of uniform steady state, with as many actors as resident slots and then four times as many. Past the limit a caller gets the retryable `RunnerAtCapacity` and its handle retries until Cluster's idle sweep evicts a hibernated activation, so the over-limit cases time that wait. `extra.coldFraction` is the share of steady-state turns that started a new activation.                                                                                                                                                                                                           |
 | `multi-runner`      | `runners-1`, `runners-2`, `runners-4`, `kill-1-of-3`                                                           | `ActorTest.cluster` on Postgres only (the harness refuses PGlite). 64 callers over 256 `Probe` actors, each call going to the next runner in turn, so most turns cross from the calling runner to the owner over the in-process transport. The runners share one process and its CPU, so the numbers measure routing and ownership cost, not scale-out. `kill-1-of-3` runs 16 callers through two survivors while the third runner is killed 2 seconds in, with a 5-second `shardLockExpiration`; `extra.lockExpiredMs` is the time from the kill until the dead runner's lock on a sample actor's shard expired, `extra.takeoverMs` until a survivor held it, and `extra.resumedMs` until a command to that actor committed. |
+| `blobs`             | `set-<bytes>`, `append-<bytes>`, `read-<bytes>`, `read-16-chunks-<bytes>`, `compact-16-chunks-<bytes>`         | Actor blobs through `turn.blob` and `read.blob` on warm `Archive` actors, at 4 KiB, 64 KiB, and 1 MiB: replacing an entry, appending a chunk to a growing entry, query reads of a one-chunk and a 16-chunk entry (the reply is the length, not the bytes), and compacting 16 chunks into one, each operation on its own entry. `set` also runs at 16 and 32 KiB, beside the `state-size` rewrite band. The bytes are incompressible and generated in the handler, so no case pays for a large command payload. Each size gets a fresh runtime.                                                                                                                                                                                |
 
 `many-actors` uses the default `maxResidentActors` of 10,000, except at 100k actors, where it raises it to 100,000. With the default, each of the 90,000 callers over the limit would retry `RunnerAtCapacity` for its whole 30-second delivery timeout.
 
@@ -99,12 +101,27 @@ It lists cases that were added or removed. It refuses to compare runs from diffe
 
 The `main` and `main-repeat` files show the run-to-run noise on one cloud VM. Most cases stay within 10%, but the short `state-size` cases moved by up to 63% at p50, so rerun a flagged latency case before you trust it. A change in statements per operation is real.
 
+## Statement gate
+
+The `Statements` workflow fails a pull request to `main` whose statements per operation differ from `baselines/statements.json`. Statements per operation are the one metric that stays the same across machines, so the gate runs on an ordinary CI runner; latency and throughput stay report-only.
+
+The job runs `bun run bench --profile ci`: `hot-actor`, `cold-activation`, `query-latency`, `receipt-replay`, `events`, `outbox`, `owned-rows`, and `effect-round-trip` on Postgres at the `quick` counts, in about 75 seconds. It then compares every case with the baseline and fails when a case moves by more than 0.2 statements per operation in either direction, or when a case is added or removed. Repeat runs of one commit differ by up to 0.13, because relay passes and Cluster retries fall inside a measured window a varying number of times; one extra statement in every fourth operation adds 0.25 and fails.
+
+A fall fails too: a lower count left out of the baseline would let a later change add the statement back unnoticed. When a change to the count is intended, update the baseline in the same pull request and say why in its description:
+
+```sh
+bun run bench --profile ci --out /tmp/statements
+bun run bench:compare --statements benchmarks/baselines/statements.json /tmp/statements/<file>-ci.json          # the per-case diff
+bun run bench:compare --statements benchmarks/baselines/statements.json /tmp/statements/<file>-ci.json --update # rewrite the baseline
+```
+
+Commit before the run: `--update` refuses a run with uncommitted changes, and the baseline's `sha` names the commit it measured. The workflow uploads its result file as the `statements-<sha>` artifact, which `--update` accepts too.
+
 ## Results
 
 Every file below comes from a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, running Linux 6.1, where the client, the actor runtime, and Postgres share its CPUs. Rows that say "different VM" ran on another machine of that shape; compare latency and throughput only between files from the same machine.
 
 | File                                                   | Code                                                                                                                                                                                                      | Backend       |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | `2026-09-25-6022f56-main-postgres.json`                | `main` at `76ac433` (M0 and M1.1–1.3) plus the harness; runtime code identical to `main`                                                                                                                  | Postgres 18.6 |
 | `2026-09-25-6022f56-main-pglite.json`                  | same                                                                                                                                                                                                      | PGlite 0.5.8  |
@@ -130,6 +147,10 @@ Every file below comes from a 4-vCPU AMD EPYC cloud VM with 15.6 GiB of memory, 
 | `2026-09-25-bcd66a4-coverage-repeat-postgres.json`     | the same scenarios after merging `main` `b6a872d` (no runtime change) and moving the scale scenarios into `scenarios/scale/`, same VM; the noise reference                                                | Postgres 18.6 |
 | `2026-09-25-7db46d9-multi-runner-postgres.json`        | #49 branch at `7db46d9` on `main` `96eb5e1`; `multi-runner` only, on its own VM: compare it with its repeat only                                                                                          | Postgres 18.6 |
 | `2026-09-25-7db46d9-multi-runner-repeat-postgres.json` | the same code run again, as its noise reference                                                                                                                                                           | Postgres 18.6 |
+| `2026-09-25-cc6c43e-blobs-postgres.json`               | #61 blobs branch `feat/30-blobs` at `cc6c43e` (M1.blob on #35), `hot-actor`, `state-size`, and `blobs` scenarios                                                                                          | Postgres 18.6 |
+| `2026-09-25-cc6c43e-blobs-pglite.json`                 | same                                                                                                                                                                                                      | PGlite 0.5.8  |
+| `2026-09-25-cc6c43e-blobs-repeat-postgres.json`        | repeat of the same SHA and scenarios, as a noise reference                                                                                                                                                | Postgres 18.6 |
+| `2026-09-25-cc6c43e-blobs-repeat-pglite.json`          | same                                                                                                                                                                                                      | PGlite 0.5.8  |
 
 In `multi-runner`, the lock expired 3.4 s after the kill, before the 5-second expiration, because the dead runner last refreshed its locks up to a third of the expiration earlier. A survivor held the shard about 0.1–0.25 s later, and the sample actor served its next command 3.8 s after the kill. Throughput drops from about 570 op/s with one runner to about 500 with two or four, the cost of serializing the cross-runner hop in one process. Statements per operation stay at 7.0 with any number of runners.
 

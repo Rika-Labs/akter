@@ -35,7 +35,7 @@ Split a shard, or stop placing new keys on it, when any of these persists at nor
 - **Flat latency with stored actors:** a fixed 10,000 turns/second on one shard with 10^5, 10^7, and 10^9 stored actors. Turn p99, wake latency, and timer lateness must stay within 10% across the three.
 - **Linear scale-out:** 1, 2, 4, 8, and 16 Neki shards with turns/second per shard held constant, including during an online reshard. Measure the single `cluster_*` shard group separately.
 - **Hot-actor ceiling:** maximum durable commands/second for one actor with turn batches off and on.
-- **Round trips:** database round trips per turn, expected to be two.
+- **Round trips:** database round trips per turn, expected to be two. The `Statements` CI job holds every pull request to `main` to the statements per operation in `benchmarks/baselines/statements.json`; a pull request that changes a count updates that file and says why ([benchmarks/README.md](../../benchmarks/README.md#statement-gate)).
 - **72-hour soak:** vacuum progress, transaction-ID age, WAL bytes per turn, full-page-image ratio, replica lag, and relay lag.
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
 - **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region.
@@ -119,6 +119,23 @@ Merge results:
 One difference exceeds the noise and repeated in both merge runs: rewriting a 16–32 KiB blob every turn. At 32 KiB, p50 was 12.4 and 11.8 ms on the merge, against 4.3 to 8.0 ms across four `main` runs. Statement counts are unchanged, so any extra cost is in the runtime, not the database. Treat it as a lead to confirm with a focused repeat, not an attributed regression.
 
 The merge had no scenario for the four slices. Each has one now; `benchmarks/README.md` maps every shipped feature to its scenarios.
+
+### Actor blobs (M1.blob)
+
+Two full runs of `hot-actor`, `state-size`, and `blobs` on `feat/30-blobs` at `cc6c43e`, one machine, Postgres 18.6. Each p50 pair is run / repeat, in ms:
+
+| Entry  | `set`     | `append`  | `read` (1 chunk / 16 chunks) | `compact` 16 chunks |
+| ------ | --------- | --------- | ---------------------------- | ------------------- |
+| 4 KiB  | 4.7 / 6.1 | 2.9 / 3.0 | 0.46 / 0.42 · 0.47 / 0.42    | 3.1 / 3.1           |
+| 64 KiB | 3.6 / 7.9 | 4.5 / 5.0 | 0.62 / 1.5 · 0.66 / 0.80     | 3.5 / 3.7           |
+| 1 MiB  | 26 / 24   | 23 / 20   | 8.3 / 8.3 · 9.6 / 7.6        | 25 / 23             |
+
+- **Statements:** a blob `set`, `append`, or `compact` turn issues 11 statements, the same as a warm state-only turn: the blob statement replaces the state write. A query read issues 2. These counts are the regression gate.
+- **Chunking is nearly free to read:** a 16-chunk entry reads as fast as a one-chunk entry at every size, because `string_agg` joins the chunks in the database.
+- **Append does not rewrite earlier bytes:** at 4 KiB an append turn (2.9 ms) costs the same as a warm state turn (3.0 ms), where `set` pays for rewriting chunk 0.
+- **1 MiB entries** take about 25 ms to write and 8 ms to read on Postgres, and about 90 ms and 53 ms on PGlite. Most of it is moving the bytes, since statement counts barely change.
+
+**The DURA-17 16–32 KiB lead does not show up as a blob-specific cost.** Blob `set` p50 at 16 and 32 KiB was 4.1 and 7.2 ms in the first run, and 3.1 and 3.4 ms in the repeat. An earlier run on `f6fe7f8` gave 3.4 and 3.5 ms. In the same runs, the state-size rewrite at 32 KiB was 10.9 and 5.6 ms. So both mechanisms show the same run-to-run jump at 32 KiB. It is noise on this VM or a shared effect that isn't blob-specific, and statement counts stay flat. The one-caller `set` p50 at 4 and 64 KiB also varies by up to 2x between runs. Treat single-run latency here as noise and gate on statements.
 
 ### Bottlenecks
 

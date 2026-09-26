@@ -13,11 +13,12 @@ import {
 import { type Backend, type BackendName, pglite, postgres } from "./backend.ts"
 import { machine, runtimeVersions, source } from "./environment.ts"
 import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
+import { blobs } from "./scenarios/storage/blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
-import { ownedRows } from "./scenarios/owned-rows.ts"
+import { ownedRows } from "./scenarios/storage/owned-rows.ts"
 import { multiRunner } from "./scenarios/multi-runner.ts"
 import { outbox } from "./scenarios/outbox.ts"
 import { queryLatency } from "./scenarios/query-latency.ts"
@@ -42,8 +43,25 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   ownedRows,
   effectRoundTrip,
   multiRunner,
+  blobs,
   reducers,
   capacity,
+]
+
+/**
+ * Scenarios whose statements per operation the CI gate checks against the
+ * committed baseline. The rest measure memory or scale, which statement
+ * counts don't describe, and take too long for every pull request.
+ */
+const STATEMENT_GATE: ReadonlyArray<string> = [
+  "hot-actor",
+  "cold-activation",
+  "query-latency",
+  "receipt-replay",
+  "events",
+  "outbox",
+  "owned-rows",
+  "effect-round-trip",
 ]
 
 const RESULT_SCHEMA = 2
@@ -69,15 +87,20 @@ const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
 
-  const profile = yield* Schema.decodeUnknownEffect(Schema.Literals(["quick", "full"]))(
+  const profile = yield* Schema.decodeUnknownEffect(Schema.Literals(["quick", "ci", "full"]))(
     flag("profile") ?? "full",
   ).pipe(Effect.orDie)
 
   const requested = yield* Schema.decodeUnknownEffect(
     Schema.Literals(["all", "postgres", "pglite"]),
-  )(flag("backend") ?? "all").pipe(Effect.orDie)
+  )(flag("backend") ?? (profile === "ci" ? "postgres" : "all")).pipe(Effect.orDie)
 
-  const only = flag("scenario")?.split(",")
+  if (profile === "ci" && requested !== "postgres")
+    return yield* Effect.die(
+      new Error("--profile ci counts statements, which only the postgres backend records"),
+    )
+
+  const only = flag("scenario")?.split(",") ?? (profile === "ci" ? STATEMENT_GATE : undefined)
 
   const unknown = only?.filter((name) => !SCENARIOS.some((scenario) => scenario.name === name))
 
@@ -130,7 +153,7 @@ const program = Effect.gen(function* () {
 
           const cases = yield* scenario.run({
             backend,
-            profile,
+            profile: profile === "ci" ? "quick" : profile,
             withRuntime: withRuntime(backend),
           })
 
@@ -143,7 +166,7 @@ const program = Effect.gen(function* () {
           code.shortSha,
           ...(label === undefined ? [] : [label]),
           backend.name,
-          ...(profile === "quick" ? ["quick"] : []),
+          ...(profile === "full" ? [] : [profile]),
         ].join("-")
 
         const output = path.join(directory, `${file}.json`)
