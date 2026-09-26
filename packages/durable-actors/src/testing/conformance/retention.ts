@@ -193,7 +193,9 @@ const cursors = (entries: ReadonlyArray<typeof Entry.Type>) => entries.map(({ cu
 
 /**
  * Runs `effect` in a runtime of its own on a fresh database, for a case whose
- * pause points must not catch a turn the shared runtime's relay delivers.
+ * pause points must not catch a turn the shared runtime's relay delivers. The
+ * shared runtime stops meanwhile: two in-process runtimes at once can starve
+ * Cluster's runner health checks.
  */
 const isolated = <A, E>(
   environment: ConformanceEnvironment,
@@ -201,6 +203,7 @@ const isolated = <A, E>(
 ) =>
   Effect.runPromise(
     Effect.gen(function* () {
+      yield* Effect.acquireRelease(environment.stop, () => environment.restart)
       const database = yield* environment.freshDatabase
 
       const runtime = yield* Effect.acquireRelease(
