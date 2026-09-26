@@ -12,7 +12,7 @@ export class ModerationApi extends Context.Service<
       options: { readonly idempotencyKey: string },
     ) => Effect.Effect<boolean>
   }
->()("chat/room/ModerationApi") {
+>()("@durable-actors/chat/room/moderation/ModerationApi") {
   /** Flags any message that mentions spam. */
   static readonly layer = Layer.succeed(ModerationApi, {
     check: (body) => Effect.succeed(body.toLowerCase().includes("spam")),

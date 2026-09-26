@@ -173,7 +173,7 @@ Process death, in [`crash/retention.test.ts`](../../packages/durable-actors/src/
 
 Migration, in `pglite.test.ts`: `applies 0010_retention to a database that already ran 0009_blobs`.
 
-The chat example's own test ([`examples/chat/src/room/room.test.ts`](../../examples/chat/src/room/room.test.ts)) runs the M1 exit test on PGlite (`test`) and on a fresh Postgres database (`test:integration`): a post with its row, blob, event, moderation and idle timer; `a declared failure commits nothing but its receipt`; `delivers an intent exactly once across a crash after the receiver commits`; `routes a moderation result once, even if the executor succeeds twice`; `replays MessagePosted in order after a cursor, and errors on a retention gap`; receipt pruning with the pruned id refused; and tenant scoping of rows.
+The chat example's own test ([`examples/chat/src/room/layer.test.ts`](../../examples/chat/src/room/room.test.ts)) runs the M1 exit test on PGlite (`test`) and on a fresh Postgres database (`test:integration`): a post with its row, blob, event, moderation and idle timer; `a declared failure commits nothing but its receipt`; `delivers an intent exactly once across a crash after the receiver commits`; `routes a moderation result once, even if the executor succeeds twice`; `replays MessagePosted in order after a cursor, and errors on a retention gap`; receipt pruning with the pruned id refused; and tenant scoping of rows.
 
 EXECUTED_PLACEHOLDER
 

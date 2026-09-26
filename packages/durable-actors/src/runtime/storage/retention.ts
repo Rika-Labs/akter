@@ -63,6 +63,7 @@ export const sweep = Effect.fnUntraced(function* (
             AND r.actor_type = d.actor_type AND r.actor_id = d.actor_id AND r.command_id = d.command_id
           RETURNING 1)
         SELECT count(*)::integer AS count FROM gone`
+
       receipts += pruned!.count
 
       if (pruned!.count === 0) break
@@ -85,6 +86,7 @@ export const sweep = Effect.fnUntraced(function* (
             AND e.actor_type = u.actor_type AND e.actor_id = u.actor_id AND e.sequence <= u.last
           RETURNING 1)
         SELECT count(*)::integer AS count FROM gone`
+
       events += pruned!.count
 
       if (pruned!.count === 0) break

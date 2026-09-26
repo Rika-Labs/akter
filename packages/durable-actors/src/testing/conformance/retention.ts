@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Fiber, Layer, Option, Schema, Scope } from "effect"
+import { Cause, Clock, Effect, Exit, Fiber, Layer, Option, Schema, Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Intent, RetentionGap, UnknownCursor } from "../../index.ts"
 import { ActorError, CommandExpired, Timeout } from "../../errors/actor.ts"
@@ -54,7 +54,7 @@ const Entry = Schema.Struct({ cursor: Schema.String, body: Schema.String })
 const History = Actor.query("History", {
   input: Schema.Struct({
     after: Schema.optional(Schema.String),
-    limit: Schema.optional(Schema.Number),
+    limit: Schema.optional(Schema.Finite),
   }),
   output: Schema.Array(Entry),
   errors: [UnknownCursor, RetentionGap],
@@ -175,20 +175,22 @@ const cursors = (entries: ReadonlyArray<typeof Entry.Type>) => entries.map(({ cu
  * Runs `effect` in a runtime of its own on a fresh database, so the cases that
  * move the framework clock days ahead never age another case's rows.
  */
-const isolated = async <A, E>(
+const isolated = <A, E>(
   environment: ConformanceEnvironment,
   effect: Effect.Effect<A, E, ConformanceServices | Scope.Scope>,
-) => {
-  const runtime = environment.build({
-    database: await Effect.runPromise(environment.freshDatabase),
-  })
+) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const database = yield* environment.freshDatabase
 
-  try {
-    return await runtime.runPromise(Effect.scoped(effect))
-  } finally {
-    await runtime.dispose()
-  }
-}
+      const runtime = yield* Effect.acquireRelease(
+        Effect.sync(() => environment.build({ database })),
+        (built) => Effect.promise(() => built.dispose()),
+      )
+
+      return yield* Effect.promise(() => runtime.runPromise(Effect.scoped(effect)))
+    }).pipe(Effect.scoped),
+  )
 
 const eventSequence = Effect.fnUntraced(function* (id: string) {
   const sql = yield* SqlClient.SqlClient
@@ -276,9 +278,11 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
 
                     // The restarted clock has no advance; real time passes the id's expiry.
                     yield* Effect.sleep("1100 millis")
+
                     const failure = yield* journal
                       .Add(5)
                       .pipe(Actor.commandId(saved.id), Effect.flip)
+
                     expect(failure.reason).toBeInstanceOf(CommandExpired)
                     expect(yield* journal.Total()).toBe(5)
                   }),
@@ -504,9 +508,11 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
 
           // The retry finds no receipt yet, passes its expiry check, and waits to be delivered.
           const delivering = yield* test.pauseNext("beforeDelivery")
+
           const retry = yield* journal
             .Add(1)
             .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
+
           yield* delivering.reached
 
           yield* committing.release
@@ -541,16 +547,17 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           yield* locker.query("BEGIN")
           yield* locker.query("LOCK TABLE actor_state IN ACCESS EXCLUSIVE MODE")
 
-          const started = Date.now()
+          const started = yield* Clock.currentTimeMillis
           const failure = yield* journal.Total().pipe(Effect.flip)
           expect(failure.reason).toBeInstanceOf(Timeout)
-          expect(Date.now() - started < 10_000).toBe(true)
+          expect((yield* Clock.currentTimeMillis) - started < 10_000).toBe(true)
 
           // The runtime cancelled its statement rather than leaving it queued on the lock.
           const waiting = yield* locker.query(
             `SELECT count(*)::int AS waiting FROM pg_stat_activity
              WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
           )
+
           expect(waiting).toEqual([{ waiting: 0 }])
           yield* locker.query("ROLLBACK")
           expect(yield* journal.Total()).toBe(1)

@@ -157,7 +157,7 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       yield* moderated(room, 1)
 
       // Both attempts carried the same effect id as the provider's idempotency key.
-      expect([...provider.calls].filter(([key]) => !before.has(key)).map(([, n]) => n)).toEqual([2])
+      expect([...provider.calls].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([2])
       expect(yield* test.receiptsFor(room.ref, "Moderated")).toBe(1)
       expect(yield* room.Recent({ limit: 10 })).toEqual([])
     }),

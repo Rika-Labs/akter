@@ -22,6 +22,7 @@ export const RoomCommands = Room.toLayer(
       if (turn.state.closed) return yield* RoomClosed.make({})
 
       const id = turn.commandId
+
       const author = Option.match(turn.principal, {
         onNone: () => "anonymous",
         onSome: ({ subject }) => subject,
@@ -33,7 +34,7 @@ export const RoomCommands = Room.toLayer(
         id,
         author,
         body,
-        sentAt: new Date(DateTime.toEpochMillis(yield* DateTime.now)),
+        sentAt: DateTime.toDate(yield* DateTime.now),
         attachment: file === undefined ? null : id,
       })
 

@@ -59,6 +59,7 @@ describe("retention cleanup process death with Postgres", () => {
             Stream.take(2),
             Stream.runCollect,
           )
+
           yield* child.kill({ killSignal: "SIGKILL" })
           expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
           const id = Array.from(lines)[0]!.slice("ID ".length)
