@@ -103,8 +103,9 @@ export interface EffectClaim {
 
 /**
  * Claims due intents and due effects in one autocommit statement. `now` is
- * the outbox clock: the database's statement time plus the test offset, so a
- * pass costs one round trip whatever it claims.
+ * the outbox clock: the database's statement start time plus the test
+ * offset, which is never earlier than a row committed before the claim was
+ * sent. A pass therefore costs one round trip whatever it claims.
  *
  * `SKIP LOCKED` passes over rows another runner is claiming, and each claim
  * moves the row's `due_at_ms` past its lease, so no runner scans it again
@@ -202,13 +203,13 @@ export const claimDue = ({
     results.push(sql`SELECT * FROM effect_claimed`)
   }
 
-  if (parts.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedEffect>)
+  if (results.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedEffect>)
 
   return sql<ClaimedEffect>`WITH ${sql.csv(parts)}
     ${sql.join(" UNION ALL ", false)(results)}`
 }
 
-/** The outbox clock inside a statement: the database's statement time plus the test offset. */
+/** The outbox clock inside a statement: its start time on the database plus the test offset. */
 const outboxNow = (sql: SqlClient.SqlClient, offsetMillis: number) =>
   sql`(floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint + ${offsetMillis}::bigint)`
 
