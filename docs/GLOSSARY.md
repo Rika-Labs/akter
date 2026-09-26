@@ -35,7 +35,8 @@
 - **Keyed state:** schema-defined actor state loaded and written inside fenced turns.
 - **Activation-local value:** a value such as a `Ref` created in a layer's build Effect; discarded on hibernation.
 - **Owned table:** Drizzle table scoped by `tenant_id` and `actor_id`.
-- **Connection:** typed WebSocket member with optional resumable connection state.
+- **Connection:** typed session member (`Actor.connection`) with an optional per-connection `session` that survives parking; its socket is held by a runner's transport (in-process in M2, WebSocket in M3).
+- **Holder:** the runner whose transport holds a connection's socket, identified by runner address and an epoch minted when the transport starts.
 - **Caller:** `User`, `System`, or `Anonymous` attribution carried to an actor operation.
 - **Principal:** authenticated application subject, available as an option inside actor contexts.
 - **ActorError:** the single framework error whose `reason` identifies availability, capacity, timeout, conflict, creation, authorization, input, or transport failure.
