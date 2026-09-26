@@ -1,5 +1,5 @@
 {
-  "name": "durable-actors",
+  "name": "@durable-actors/core",
   "private": true,
   "type": "module",
   "exports": {

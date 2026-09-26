@@ -16,6 +16,6 @@ This is the accepted API design, not a claim that every interface is implemented
 - [Versioning](versioning.md)
 - [Post-foundation API sketches](post-foundation-sketches.md) — illustrative proposals, not implemented interfaces
 
-The framework is one `durable-actors` distribution with four entries: `.`, `/runtime`, `/client`, and `/testing`. The root owns declarations and served composition; runtime construction is `Actors.layer` from `/runtime`; browsers use `/client`; tests use `ActorTest` from `/testing`.
+The framework is one `@durable-actors/core` distribution with four entries: `.`, `/runtime`, `/client`, and `/testing`. The root owns declarations and served composition; runtime construction is `Actors.layer` from `/runtime`; browsers use `/client`; tests use `ActorTest` from `/testing`.
 
 The intended `ActorTest.layer({ as })` runs the real turn, serialization, and storage path. A bound actor exposes inspection, raw-row seeding, a System-caller handle, turn and effect controls, and fault injection. `ActorTest.simulate({ seed, faults }, program)` runs deterministic simulation with injected faults. PGlite is the proposed fast default subject to Bun/DDL compatibility gates; real Postgres is required for lock-sensitive conformance cases.

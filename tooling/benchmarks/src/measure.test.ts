@@ -1,4 +1,4 @@
-import { ActorError, Timeout } from "durable-actors"
+import { ActorError, Timeout } from "@durable-actors/core"
 import { Cause, Effect } from "effect"
 import { describe, expect, it } from "vitest"
 import { errorKind, load, shuffled, summarize } from "./measure.ts"

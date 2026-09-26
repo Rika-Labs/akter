@@ -5,7 +5,7 @@
 **Owner role:** API/Effect.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-The Effect-native server API is one package, `durable-actors`. Its root entry exports `Actor`, `Actors`, `Intent`, errors, identity (`ActorRef`, `Caller`, `User`, `System`, `Anonymous`, `Principal`, `CurrentCaller`, `Tenant`), and the `Policy`, `Handle`, `Intents`, and context types. `Fleet`, `Actor.serve`, and `Actor.auth` are target APIs and are not exported yet. Runtime construction is imported separately as `Actors.layer` from `durable-actors/runtime`.
+The Effect-native server API is one package, `@durable-actors/core`. Its root entry exports `Actor`, `Actors`, `Intent`, errors, identity (`ActorRef`, `Caller`, `User`, `System`, `Anonymous`, `Principal`, `CurrentCaller`, `Tenant`), and the `Policy`, `Handle`, `Intents`, and context types. `Fleet`, `Actor.serve`, and `Actor.auth` are target APIs and are not exported yet. Runtime construction is imported separately as `Actors.layer` from `@durable-actors/core/runtime`.
 
 ## Implemented foundation subset
 
@@ -44,7 +44,7 @@ See the runnable [counter](../../examples/counter/src/main.ts), the [protocol](.
 
 ```ts
 import { Effect, Result, Schema } from "effect"
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 
 export const CounterId = Schema.String.pipe(Schema.brand("CounterId"))
 export class Overflow extends Schema.TaggedError<Overflow>()("Overflow", { max: Schema.Int }) {}

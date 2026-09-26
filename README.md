@@ -24,7 +24,7 @@ Define an actor, implement its commands, and get a typed handle. Small values li
 
 ```ts
 import { Effect, Result, Schema } from "effect"
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 
 export const CounterState = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -62,7 +62,7 @@ const program = Effect.gen(function* () {
 
 Omit `key` for a framework-minted ID and `Counter.create()`. Use an ID schema for `Counter.get(id)`, or `key: Actor.singleton` for `Counter.get()`. Outside a turn every call is request/reply; inside a turn, `Counter.intents(id)` records durable intents that commit with the turn. Acquiring a handle writes nothing; the first command establishes durable state.
 
-In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `durable-actors/runtime`. See the [server API](docs/api/01-server-api.md) for the full design.
+In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `@durable-actors/core/runtime`. See the [server API](docs/api/01-server-api.md) for the full design.
 
 ## Why Effect for actors?
 
@@ -118,12 +118,12 @@ The command/receipt recovery subset has completed fault tests; hibernation, prov
 
 ## One package, four entries
 
-| Entry                    | Responsibility                                                                         |
-| ------------------------ | -------------------------------------------------------------------------------------- |
-| `durable-actors`         | Actor contracts, members, policies, identity, errors, handles, and served composition. |
-| `durable-actors/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.     |
-| `durable-actors/client`  | A browser-safe Promise client derived from the same contracts, not a second runtime.   |
-| `durable-actors/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                      |
+| Entry                          | Responsibility                                                                         |
+| ------------------------------ | -------------------------------------------------------------------------------------- |
+| `@durable-actors/core`         | Actor contracts, members, policies, identity, errors, handles, and served composition. |
+| `@durable-actors/core/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.     |
+| `@durable-actors/core/client`  | A browser-safe Promise client derived from the same contracts, not a second runtime.   |
+| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                      |
 
 The same design targets **embedded** use inside an Effect application, **served** use through `Actor.serve`, and **hosted** operation behind managed ingress. Only the embedded Postgres foundation subset is implemented. Serving is optional; embedded callers do not need an HTTP hop.
 

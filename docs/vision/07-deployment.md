@@ -11,7 +11,7 @@ The programming model and correctness contracts remain the same in three deploym
 
 ## Ways to run
 
-- **Embedded:** provide `Actors.layer` from `durable-actors/runtime` inside an Effect application and call actor handles directly. The control-plane actors in `packages/deployments` run this way inside `apps/api`.
+- **Embedded:** provide `Actors.layer` from `@durable-actors/core/runtime` inside an Effect application and call actor handles directly. The control-plane actors in `packages/deployments` run this way inside `apps/api`.
 - **Served:** run `Actor.serve` in its own process. It exposes HTTP, WebSocket, SSE, and OpenAPI for browsers, other languages, and customer-operated runners.
 - **Hosted:** run the same framework on our runners behind `apps/edge`, with Neki as the Postgres service.
 

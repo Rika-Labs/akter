@@ -22,11 +22,11 @@ const paths = (findings: ReadonlyArray<Finding>) => findings.map((finding) => fi
 const rules = (findings: ReadonlyArray<Finding>) => findings.map((finding) => finding.rule)
 
 describe("package names", () => {
-  it("requires @durable-actors/<basename> and lets only the framework go unscoped", () => {
+  it("requires @durable-actors/<basename> and names the framework @durable-actors/core", () => {
     const findings = analyze({
       files: [
         cleanManifest("packages/deployments", "@durable-actors/deployments"),
-        cleanManifest("packages/durable-actors", "durable-actors"),
+        cleanManifest("packages/durable-actors", "@durable-actors/core"),
         file("packages/deployments/src/index.ts"),
         file("packages/durable-actors/src/index.ts"),
       ],
@@ -36,10 +36,11 @@ describe("package names", () => {
     expect(findings).toEqual([])
   })
 
-  it("flags a scoped framework name and a stale @project name", () => {
+  it("flags an unscoped or directory-named framework and a stale @project name", () => {
     const findings = analyze({
       files: [
         cleanManifest("packages/durable-actors", "@durable-actors/durable-actors"),
+        cleanManifest("packages/durable-actors", "durable-actors"),
         cleanManifest("packages/accounts", "@project/auth"),
         file("packages/durable-actors/src/index.ts"),
         file("packages/accounts/src/index.ts"),
@@ -48,7 +49,8 @@ describe("package names", () => {
     })
 
     expect(findings.map((finding) => finding.message)).toEqual([
-      "package name '@durable-actors/durable-actors' must be 'durable-actors'",
+      "package name '@durable-actors/durable-actors' must be '@durable-actors/core'",
+      "package name 'durable-actors' must be '@durable-actors/core'",
       "package name '@project/auth' must be '@durable-actors/accounts'",
     ])
   })
@@ -64,7 +66,7 @@ describe("dependency direction", () => {
           dependencies: { "@durable-actors/api": "workspace:*" },
         }),
         manifest("packages/durable-actors", {
-          name: "durable-actors",
+          name: "@durable-actors/core",
           exports: { ".": "./src/index.ts" },
           dependencies: { "@durable-actors/postgres": "workspace:*" },
         }),
@@ -72,7 +74,7 @@ describe("dependency direction", () => {
           name: "@durable-actors/api",
           exports: { ".": "./src/index.ts" },
           dependencies: {
-            "durable-actors": "workspace:*",
+            "@durable-actors/core": "workspace:*",
             "@durable-actors/postgres": "workspace:*",
           },
         }),
@@ -96,7 +98,7 @@ describe("index.ts discipline", () => {
     const findings = analyze({
       files: [
         manifest("packages/durable-actors", {
-          name: "durable-actors",
+          name: "@durable-actors/core",
           exports: {
             ".": "./src/index.ts",
             "./runtime": "./src/runtime/index.ts",
