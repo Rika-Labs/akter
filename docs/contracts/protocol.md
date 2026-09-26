@@ -14,3 +14,11 @@ The runtime MUST decode caller identity per request and serialize it into the en
 Commands MUST map committed outputs and declared failures through receipts. Framework failures MUST use the [single error envelope](error-model.md). Queries read committed rows without waking an activation. Event streams MUST carry cursors. Connections declared by `Actor.connection` MUST carry typed frames and restore parked connection state.
 
 The Effect handle, Promise client from `durable-actors/client`, HTTP, WebSocket, and SSE adapters MUST preserve these semantics rather than define independent lifecycle states. Public spans MUST use `durable-actors.<Actor>/<Command>`.
+
+## Served mapping (proposed, [ADR 0027](../decisions/0027-served-protocol.md))
+
+- Each public member has one route under the server's base path: `POST /actors/{Actor}/{id}/{Member}` for commands, reducers, queries, and workflow starts; `GET …/events?event=…&after=…` for event feeds over SSE; `POST …/{Stream}` for streams over SSE; and a WebSocket upgrade at `…/{Connection}`. Singletons omit `{id}`. Internal members have no route and answer like unknown ones.
+- A command carries its v1 id in `Idempotency-Key`. A command without one is rejected before any turn, and the server never mints an id for a caller. Clients mint ids against the database clock, learned from `GET /protocol` and the `durable-now` response header, or obtained from `POST /command-ids`.
+- Tenant and caller come only from the configured auth provider, never from the path, a header the client controls, or a frame.
+- Queries may carry `durable-min-version`, and command responses carry `durable-version`, the read-your-writes token; both are inert until read-your-writes replicas ship.
+- WebSocket messages are JSON with a `t` discriminator. Member frames travel only inside `frame`, so framework control frames (`hello`, `open`, `resync`, `resyncReplayed`, `resyncDone`, `reauthenticate`, `reauthenticated`, `end`) can never be confused with them. SSE feed messages carry the event cursor as their `id`, and `Last-Event-ID` resumes after it.
