@@ -255,9 +255,6 @@
       },
     },
   },
-  "patchedDependencies": {
-    "effect@4.0.0-rc.116": "patches/effect@4.0.0-rc.116.patch",
-  },
   "catalog": {
     "@alchemy.run/better-auth": "2.0.0-beta.79",
     "@distilled.cloud/core": "1.0.0-rc.12",

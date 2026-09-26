@@ -2,14 +2,17 @@ import { Clock, Effect, Layer, Schema } from "effect"
 import {
   Entity,
   MessageStorage,
+  RunnerAddress,
   RunnerHealth,
   Runners,
   RunnerStorage,
   Sharding,
   ShardingConfig,
+  ShardId,
 } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { describe, expect, it } from "vitest"
+import { keepAcquiredShards } from "./locks.ts"
 
 const Echo = Entity.make("Echo", [Rpc.make("Ping", { success: Schema.String })])
 
@@ -19,7 +22,7 @@ const Echo = Entity.make("Echo", [Rpc.make("Ping", { success: Schema.String })])
 const slowRefresh = Layer.effect(
   RunnerStorage.RunnerStorage,
   Effect.map(RunnerStorage.makeMemory, (storage) =>
-    RunnerStorage.RunnerStorage.of({
+    keepAcquiredShards({
       ...storage,
       acquire: (address, shardIds) =>
         storage.acquire(address, shardIds).pipe(Effect.delay("100 millis")),
@@ -41,7 +44,7 @@ const EchoLive = Echo.toLayer(Effect.succeed({ Ping: () => Effect.succeed("pong"
   Layer.provide(ShardingConfig.layer({ shardsPerGroup: 1 })),
 )
 
-describe("runtime sharding", () => {
+describe("shard locks", () => {
   it(
     "keeps a shard acquired while its first lock refresh is in flight",
     () =>
@@ -52,10 +55,42 @@ describe("runtime sharding", () => {
         const started = yield* Clock.currentTimeMillis
 
         expect(yield* client("first").Ping()).toBe("pong")
-        // Without the fix, Cluster drops the shard when the refresh answers and
+        // Unwrapped, Cluster drops the shard when the refresh answers and
         // reacquires it only on the next 10-second entity poll.
         expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000)
       }).pipe(Effect.scoped, Effect.runPromise),
     15_000,
   )
+
+  // Lock storage that has lost every lock: an acquire succeeds, then no refresh finds it.
+  const lostLocks = Effect.map(RunnerStorage.makeMemory, (storage) =>
+    keepAcquiredShards({ ...storage, refresh: () => Effect.succeed([]) }),
+  )
+
+  const address = RunnerAddress.make("localhost", 34431)
+  const shard = ShardId.make("default", 1)
+
+  it("reports a shard lost once a refresh asks about it", () =>
+    Effect.gen(function* () {
+      const storage = yield* lostLocks
+      yield* storage.acquire(address, [shard])
+
+      expect(yield* storage.refresh(address, [])).toEqual([shard])
+      expect(yield* storage.refresh(address, [shard])).toEqual([])
+      expect(yield* storage.refresh(address, [])).toEqual([])
+    }).pipe(Effect.runPromise))
+
+  it("stops reporting a shard once it is released", () =>
+    Effect.gen(function* () {
+      const storage = yield* lostLocks
+      yield* storage.acquire(address, [shard])
+      yield* storage.release(address, shard)
+
+      expect(yield* storage.refresh(address, [])).toEqual([])
+
+      yield* storage.acquire(address, [shard])
+      yield* storage.releaseAll(address)
+
+      expect(yield* storage.refresh(address, [])).toEqual([])
+    }).pipe(Effect.runPromise))
 })
