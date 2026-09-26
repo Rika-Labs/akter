@@ -1,10 +1,10 @@
 import { Cause, Clock, Effect, FiberSet, Queue, Random, Result, Schema, Semaphore } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { TurnHooks } from "./hooks.ts"
-import { BUCKETS, CallerJson, outboxTime } from "./outbox.ts"
+import { BUCKETS, CallerJson, OutboxClock, outboxTime } from "./outbox.ts"
 
 /**
  * A drain whose deliveries keep staging due work after this many rounds, each
@@ -38,6 +38,7 @@ export interface LocalExecutor {
 }
 
 interface ClaimedRow {
+  readonly kind: "intent" | "effect"
   readonly routing_key: string
   readonly intent_id: string
   readonly attempts: number
@@ -61,9 +62,9 @@ interface ClaimedEffect extends ClaimedRow {
 }
 
 const claimedColumns = (sql: SqlClient.SqlClient) =>
-  sql`o.routing_key::text AS routing_key, o.intent_id, o.attempts, o.last_error, o.ambiguous,
-    o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.target_id, o.command, o.payload,
-    o.caller, o.due_at_ms::text AS claimed_until`
+  sql`o.kind, o.routing_key::text AS routing_key, o.intent_id, o.attempts, o.last_error,
+    o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.target_id, o.command,
+    o.payload, o.caller, o.due_at_ms::text AS claimed_until`
 
 /**
  * The due-work probe: one `(bucket, kind, due_at_ms)` index range per bucket,
@@ -73,7 +74,7 @@ const claimedColumns = (sql: SqlClient.SqlClient) =>
 const candidates = (
   sql: SqlClient.SqlClient,
   kind: "intent" | "effect",
-  now: number,
+  now: Statement.Fragment,
   limit: number,
   only: ReturnType<typeof sql.literal> = sql.literal(""),
 ) =>
@@ -86,102 +87,142 @@ const candidates = (
       ORDER BY actor_outbox.due_at_ms LIMIT ${limit}
     ) o`
 
-/**
- * Claims up to `limit` due intents. `SKIP LOCKED` passes over rows another
- * runner is claiming, and the claim moves each row's `due_at_ms` past the
- * lease, so no runner scans it again until the lease ends. A row whose settle
- * dies therefore waits `max(lease, backoff(attempts))` instead of sorting
- * ahead of newer work.
- */
-export const claimIntents = ({
-  sql,
-  now,
-  limit,
-  leaseMs,
-  maxBackoffMs,
-}: {
-  readonly sql: SqlClient.SqlClient
-  readonly now: number
+/** Intents to claim in one statement: up to `limit` free delivery slots. */
+export interface IntentClaim {
   readonly limit: number
   readonly leaseMs: number
   readonly maxBackoffMs: number
-}) =>
-  sql<ClaimedRow>`WITH candidates AS (
-      ${candidates(sql, "intent", now, 2 * limit)}
-      ORDER BY o.due_at_ms LIMIT ${2 * limit}
-    ),
-    claimed AS (
-      SELECT o.routing_key, o.intent_id FROM actor_outbox o
-      JOIN candidates USING (routing_key, intent_id)
-      WHERE o.kind = 'intent' AND o.due_at_ms <= ${now}
-      ORDER BY o.due_at_ms LIMIT ${limit}
-      FOR UPDATE OF o SKIP LOCKED
-    )
-    UPDATE actor_outbox o SET attempts = o.attempts + 1,
-      due_at_ms = ${now} + greatest(${leaseMs}::bigint,
-        least(1000 * power(2, least(o.attempts, 20)), ${maxBackoffMs}::bigint))::bigint
-    FROM claimed c
-    WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
-    RETURNING ${claimedColumns(sql)}, (SELECT count(*) FROM candidates)::int AS candidates`
+}
 
-/**
- * Claims up to `permits` due effects that this runner has executors for, as
- * the next attempt of each. An effect with no executor here is never
- * claimed here; it stays due for a runner that has one.
- */
-export const claimEffects = ({
-  sql,
-  now,
-  permits,
-  leaseMs,
-  executors,
-}: {
-  readonly sql: SqlClient.SqlClient
-  readonly now: number
+/** Effects to claim in one statement: up to `permits`, only for local executors. */
+export interface EffectClaim {
   readonly permits: number
   readonly leaseMs: number
   readonly executors: ReadonlyArray<LocalExecutor>
-}) =>
-  sql<ClaimedEffect>`WITH mine (actor_type, command, max_attempts) AS (
-      VALUES ${sql.csv(
-        executors.map(
-          ({ actor, effect, registered }) =>
-            sql`(${actor}::text, ${effect}::text, ${registered.attempts}::int)`,
-        ),
-      )}
-    ),
-    candidates AS (
-      ${candidates(
-        sql,
-        "effect",
-        now,
-        2 * permits,
-        // Filtered inside each bucket's probe, so due rows no runner here can
-        // execute never fill the per-bucket limit ahead of rows it can.
-        sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
-      )}
-      ORDER BY o.due_at_ms LIMIT ${2 * permits}
-    ),
-    claimed AS (
-      SELECT o.routing_key, o.intent_id, o.attempts AS previous, m.max_attempts FROM actor_outbox o
-      JOIN candidates USING (routing_key, intent_id)
-      JOIN mine m ON m.actor_type = o.actor_type AND m.command = o.command
-      WHERE o.kind = 'effect' AND o.due_at_ms <= ${now}
-      ORDER BY o.due_at_ms LIMIT ${permits}
-      FOR UPDATE OF o SKIP LOCKED
-    )
-    -- RETURNING sees the updated row, so exhaustion is judged on the attempts before this claim.
-    UPDATE actor_outbox o SET
-      due_at_ms = ${now} + ${leaseMs}::bigint,
-      attempts = CASE WHEN o.attempts < c.max_attempts THEN o.attempts + 1 ELSE o.attempts END,
-      ambiguous = CASE WHEN o.attempts < c.max_attempts THEN true ELSE o.ambiguous END,
-      last_error = CASE WHEN o.attempts < c.max_attempts
-        THEN 'Attempt ' || (o.attempts + 1) || ' ended without reporting an outcome'
-        ELSE o.last_error END
-    FROM claimed c
-    WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
-    RETURNING ${claimedColumns(sql)}, (SELECT count(*) FROM candidates)::int AS candidates,
-      c.previous >= c.max_attempts AS exhausted`
+}
+
+/**
+ * Claims due intents and due effects in one autocommit statement. `now` is
+ * the outbox clock: the database's statement time plus the test offset, so a
+ * pass costs one round trip whatever it claims.
+ *
+ * `SKIP LOCKED` passes over rows another runner is claiming, and each claim
+ * moves the row's `due_at_ms` past its lease, so no runner scans it again
+ * until the lease ends. An intent whose settle dies therefore waits
+ * `max(lease, backoff(attempts))` instead of sorting ahead of newer work. An
+ * effect with no executor on this runner is never claimed here; it stays due
+ * for a runner that has one. The two kinds never share a row, so the two
+ * updates are disjoint.
+ */
+export const claimDue = ({
+  sql,
+  now,
+  intents,
+  effects,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly now: Statement.Fragment
+  readonly intents?: IntentClaim | undefined
+  readonly effects?: EffectClaim | undefined
+}) => {
+  const parts: Array<Statement.Fragment> = []
+  const results: Array<Statement.Fragment> = []
+
+  if (intents !== undefined) {
+    const { limit, leaseMs, maxBackoffMs } = intents
+    parts.push(sql`intent_candidates AS (
+        ${candidates(sql, "intent", now, 2 * limit)}
+        ORDER BY o.due_at_ms LIMIT ${2 * limit}
+      ),
+      intent_locked AS (
+        SELECT o.routing_key, o.intent_id FROM actor_outbox o
+        JOIN intent_candidates USING (routing_key, intent_id)
+        WHERE o.kind = 'intent' AND o.due_at_ms <= ${now}
+        ORDER BY o.due_at_ms LIMIT ${limit}
+        FOR UPDATE OF o SKIP LOCKED
+      ),
+      intent_claimed AS (
+        UPDATE actor_outbox o SET attempts = o.attempts + 1,
+          due_at_ms = ${now} + greatest(${leaseMs}::bigint,
+            least(1000 * power(2, least(o.attempts, 20)), ${maxBackoffMs}::bigint))::bigint
+        FROM intent_locked c
+        WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
+        RETURNING ${claimedColumns(sql)},
+          (SELECT count(*) FROM intent_candidates)::int AS candidates, false AS exhausted
+      )`)
+    results.push(sql`SELECT * FROM intent_claimed`)
+  }
+
+  if (effects !== undefined && effects.executors.length > 0) {
+    const { permits, leaseMs, executors } = effects
+    parts.push(sql`mine (actor_type, command, max_attempts) AS (
+        VALUES ${sql.csv(
+          executors.map(
+            ({ actor, effect, registered }) =>
+              sql`(${actor}::text, ${effect}::text, ${registered.attempts}::int)`,
+          ),
+        )}
+      ),
+      effect_candidates AS (
+        ${candidates(
+          sql,
+          "effect",
+          now,
+          2 * permits,
+          // Filtered inside each bucket's probe, so due rows no runner here can
+          // execute never fill the per-bucket limit ahead of rows it can.
+          sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
+        )}
+        ORDER BY o.due_at_ms LIMIT ${2 * permits}
+      ),
+      effect_locked AS (
+        SELECT o.routing_key, o.intent_id, o.attempts AS previous, m.max_attempts
+        FROM actor_outbox o
+        JOIN effect_candidates USING (routing_key, intent_id)
+        JOIN mine m ON m.actor_type = o.actor_type AND m.command = o.command
+        WHERE o.kind = 'effect' AND o.due_at_ms <= ${now}
+        ORDER BY o.due_at_ms LIMIT ${permits}
+        FOR UPDATE OF o SKIP LOCKED
+      ),
+      -- RETURNING sees the updated row, so exhaustion is judged on the attempts before this claim.
+      effect_claimed AS (
+        UPDATE actor_outbox o SET
+          due_at_ms = ${now} + ${leaseMs}::bigint,
+          attempts = CASE WHEN o.attempts < c.max_attempts THEN o.attempts + 1 ELSE o.attempts END,
+          ambiguous = CASE WHEN o.attempts < c.max_attempts THEN true ELSE o.ambiguous END,
+          last_error = CASE WHEN o.attempts < c.max_attempts
+            THEN 'Attempt ' || (o.attempts + 1) || ' ended without reporting an outcome'
+            ELSE o.last_error END
+        FROM effect_locked c
+        WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
+        RETURNING ${claimedColumns(sql)},
+          (SELECT count(*) FROM effect_candidates)::int AS candidates,
+          c.previous >= c.max_attempts AS exhausted
+      )`)
+    results.push(sql`SELECT * FROM effect_claimed`)
+  }
+
+  if (parts.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedEffect>)
+
+  return sql<ClaimedEffect>`WITH ${sql.csv(parts)}
+    ${sql.join(" UNION ALL ", false)(results)}`
+}
+
+/** The outbox clock inside a statement: the database's statement time plus the test offset. */
+const outboxNow = (sql: SqlClient.SqlClient, offsetMillis: number) =>
+  sql`(floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint + ${offsetMillis}::bigint)`
+
+/** The intent half of `claimDue` at a fixed `now`, as a statement to inspect. */
+export const claimIntents = ({
+  sql,
+  now,
+  ...intents
+}: IntentClaim & { readonly sql: SqlClient.SqlClient; readonly now: number }) =>
+  claimDue({
+    sql,
+    now: sql`${now}::bigint`,
+    intents,
+  }) as Statement.Statement<ClaimedEffect>
 
 const logFailure =
   (message: string) =>
@@ -234,8 +275,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
         Schema.decodeEffect(Request)({
           ref:
             target === "receiver"
-              ? { tenant: row.tenant_id, actor: row.target_type, id: row.target_id }
-              : { tenant: row.tenant_id, actor: row.actor_type, id: row.actor_id },
+              ? {
+                  tenant: row.tenant_id,
+                  actor: row.target_type,
+                  id: row.target_id,
+                }
+              : {
+                  tenant: row.tenant_id,
+                  actor: row.actor_type,
+                  id: row.actor_id,
+                },
           caller,
           command: row.command,
           commandId: row.intent_id,
@@ -347,7 +396,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const exhaust = (attempts: number, cause: string, ambiguous: boolean) =>
       sql.withTransaction(
         Effect.gen(function* () {
-          const letter = { effectId: row.intent_id, attempts, cause, ambiguous }
+          const letter = {
+            effectId: row.intent_id,
+            attempts,
+            cause,
+            ambiguous,
+          }
 
           if (
             !(yield* settleTo(
@@ -490,68 +544,65 @@ export const outboxRelay = Effect.fnUntraced(function* (
       Effect.gen(function* () {
         if (stopping) return { claimed: 0, backlog: false }
 
-        let claimed = 0
-
         const slots = Math.min(
           settings.deliveryConcurrency - (yield* FiberSet.size(deliveries)),
           settings.passLimit,
         )
 
-        if (slots > 0) {
-          const rows = yield* claimIntents({
-            sql,
-            now: yield* outboxTime,
-            limit: slots,
-            leaseMs: settings.claimLeaseMs(),
-            maxBackoffMs: settings.maxBackoffMs,
-          })
-
-          more.intents = rows.length > 0 && rows[0]!.candidates > rows.length
-          claimed += rows.length
-
-          for (const row of rows)
-            yield* FiberSet.run(
-              deliveries,
-              deliverIntent(row).pipe(
-                logFailure("Outbox relay crashed settling a row"),
-                Effect.ensuring(freed("intents")),
-              ),
-            )
-        }
-
         const local = executors()
         const permits = settings.executorConcurrency - (yield* FiberSet.size(attempts))
+        const claimedAt = yield* Clock.currentTimeNanos
+        const clock = yield* OutboxClock
 
-        if (permits > 0 && local.length > 0) {
-          const claimedAt = yield* Clock.currentTimeNanos
+        const rows = yield* claimDue({
+          sql,
+          now: outboxNow(sql, clock.offsetMillis()),
+          intents:
+            slots > 0
+              ? {
+                  limit: slots,
+                  leaseMs: settings.claimLeaseMs(),
+                  maxBackoffMs: settings.maxBackoffMs,
+                }
+              : undefined,
+          effects:
+            permits > 0
+              ? { permits, leaseMs: settings.executorLeaseMs, executors: local }
+              : undefined,
+        })
 
-          const rows = yield* claimEffects({
-            sql,
-            now: yield* outboxTime,
-            permits,
-            leaseMs: settings.executorLeaseMs,
-            executors: local,
-          })
+        const intents = rows.filter((row) => row.kind === "intent")
+        const effects = rows.filter((row) => row.kind === "effect")
 
-          more.effects = rows.length > 0 && rows[0]!.candidates > rows.length
-          claimed += rows.length
+        if (slots > 0) more.intents = intents.length > 0 && intents[0]!.candidates > intents.length
 
-          for (const row of rows) {
-            const registered = local.find(
-              ({ actor, effect }) => actor === row.actor_type && effect === row.command,
-            )!.registered
+        if (permits > 0 && local.length > 0)
+          more.effects = effects.length > 0 && effects[0]!.candidates > effects.length
 
-            yield* FiberSet.run(
-              attempts,
-              runAttempt(row, registered, claimedAt).pipe(
-                logFailure("Effect attempt crashed before it settled"),
-                Effect.ensuring(freed("effects")),
-              ),
-            )
-          }
+        for (const row of intents)
+          yield* FiberSet.run(
+            deliveries,
+            deliverIntent(row).pipe(
+              logFailure("Outbox relay crashed settling a row"),
+              Effect.ensuring(freed("intents")),
+            ),
+          )
+
+        for (const row of effects) {
+          const registered = local.find(
+            ({ actor, effect }) => actor === row.actor_type && effect === row.command,
+          )!.registered
+
+          yield* FiberSet.run(
+            attempts,
+            runAttempt(row, registered, claimedAt).pipe(
+              logFailure("Effect attempt crashed before it settled"),
+              Effect.ensuring(freed("effects")),
+            ),
+          )
         }
 
-        return { claimed, backlog: more.intents || more.effects }
+        return { claimed: rows.length, backlog: more.intents || more.effects }
       }),
     )
     .pipe(Effect.provideContext(services))
