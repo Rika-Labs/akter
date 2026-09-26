@@ -925,7 +925,10 @@ const make = <
 
             const replay = Effect.fnUntraced(function* <E extends Event>(
               event: E,
-              options?: { readonly after?: string | undefined; readonly limit?: number | undefined },
+              options?: {
+                readonly after?: string | undefined
+                readonly limit?: number | undefined
+              },
             ) {
               if (events.get(event.identifier) !== event)
                 return yield* Effect.die(new Error(`Undeclared event: ${event.identifier}`))

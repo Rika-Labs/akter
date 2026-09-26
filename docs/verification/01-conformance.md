@@ -150,6 +150,33 @@ Declarations, in [`definition.test.ts`](../../packages/durable-actors/src/actor/
 
 **Security review (contract 10), 2026-09-26:** a fresh-machine review of #61 at `912c471` covered `actor_blobs` tenant and actor isolation on every read, write, and compact; the fiber guard and capability escape; size and DoS; and SQL construction, with exploit cases on PGlite and Postgres. Isolation and SQL construction: no issue found. Fixed: an entry of 16 MiB or more could be written but not read, and its read closed a pooled Postgres connection and put the turn into a retry loop (high; now an 8 MiB entry cap enforced on `set` and `append`); 1,024-character names could exceed the btree key size (low; now 512 UTF-8 bytes); a guard defect swallowed by `race` let the turn commit without the write (low; the turn now fails). Open, tracked as a follow-up: no per-actor quota on blob entry count or total bytes, and no statement timeout on query reads (medium).
 
+### M1.9 retention, replay pages, emit budget, and blob quota
+
+The cases live in [`conformance/retention.ts`](../../packages/durable-actors/src/testing/conformance/retention.ts) and cover **Finite retry horizon and safe cleanup** below, the failure-matrix rows "External identity expires before delivery or retry" and "Cleanup races retry / crashes before completion", and invariant **R5** with automatic pruning ([ADR 0038](../decisions/0038-retention-cleanup-and-receipt-horizon.md)). The cases that move the clock days ahead run in a runtime of their own on a fresh database. Shared (PGlite and Postgres):
+
+- `prunes receipts past keepReceipts and still rejects the expired id after pruning and restart` — past the id's expiry but inside `keepReceipts` the receipt stays and the retry already fails `CommandExpired`; past `keepReceipts` a sweep deletes both receipts, the retry still fails `CommandExpired`, and the handler ran twice in total.
+- `rejects a pruned expired id after restart without running its handler` — one runtime commits, moves three days on and prunes the receipt; a restarted runtime with an unadvanced clock refuses the same id once it expires in real time, with no new handler run (R5 across restart).
+- `prunes receipts past keepReceipts without breaking outbox dedup` — the relay crashes after the receiver commits and before deleting the sender's row, and its redelivery pauses there ten days later; a sweep keeps the receipt because the row still exists, the redelivery replays it with one handler run, and only once the row is gone does the next sweep delete the receipt.
+- `prunes only an actor's oldest events, never resets the sequence, and reports the gap` — events past `keepEvents` go, an actor type with a 90-day horizon keeps its events in the same sweep, replay from before the pruned prefix fails `RetentionGap`, replay after it resumes, and the next event takes the next sequence.
+- `prunes events as a prefix even when a later event carries an older timestamp` — a clock step back gives event 3 the oldest timestamp; the sweep deletes events 1–3, never 3 alone.
+- `sweeps in batches that each leave a whole prefix` — 2,500 old events go in three batches of 1,000; the retained event and the sequence are intact.
+- `pages event replay by limit and continues after the last cursor` — the default page is 1,000 entries, a full page resumes after its last cursor, and a limit of 0, 10,001, or 1.5 is a defect.
+- `fails a turn whose emits exceed the per-turn byte budget and commits none of them` — two 500 kB events commit; three are a defect with no receipt, no events, and an unchanged sequence.
+- `refuses blob writes past policy.maxBlobBytes and leaves the entry whole` — `append` and `set` past a 1,024-byte quota are defects, a replacing `set` counts only the new bytes, and a refused `set` whose defect the handler catches leaves both chunks of the entry.
+
+Postgres only (independent connections):
+
+- `rejects a retry admitted before expiry when cleanup pruned the receipt before its turn` — the first attempt pauses before commit; a retry with the same id passes admission and pauses before delivery; the first attempt commits, the clock moves three days on, a sweep prunes its receipt, and the retry's turn fails `CommandExpired`. With the turn's horizon check disabled this case runs the handler twice.
+- `cancels a query read past commandTimeout on the server` — an exclusive lock on `actor_state` blocks a query's read; the query fails `Timeout` at its actor's 2-second `commandTimeout`, and no backend is left waiting on the lock.
+
+Process death, in [`crash/retention.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/retention.test.ts): `leaves whole batches after a SIGKILL inside a sweep, and a fresh process finishes it` — a process seeds seven receipts and twelve events, moves 40 days on, and is killed after five committed batches of two rows; every receipt is gone and events 3–12 remain under an unchanged sequence of 12. A fresh process finishes the sweep, the next event is 13, and the pruned id fails `CommandExpired` without running its handler.
+
+Migration, in `pglite.test.ts`: `applies 0010_retention to a database that already ran 0009_blobs`.
+
+The chat example's own test ([`examples/chat/src/room/room.test.ts`](../../examples/chat/src/room/room.test.ts)) runs the M1 exit test on PGlite (`test`) and on a fresh Postgres database (`test:integration`): a post with its row, blob, event, moderation and idle timer; `a declared failure commits nothing but its receipt`; `delivers an intent exactly once across a crash after the receiver commits`; `routes a moderation result once, even if the executor succeeds twice`; `replays MessagePosted in order after a cursor, and errors on a retention gap`; receipt pruning with the pruned id refused; and tenant scoping of rows.
+
+EXECUTED_PLACEHOLDER
+
 ### Backend-specific cases
 
 - PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.

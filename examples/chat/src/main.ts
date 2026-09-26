@@ -32,7 +32,9 @@ const program = Effect.gen(function* () {
   yield* room.Post({ body: "hello" })
   yield* room.React(1)
   const history = yield* room.History({})
-  yield* Console.log(history.map(({ cursor, message }) => `${cursor} ${message.author}: ${message.body}`))
+  yield* Console.log(
+    history.map(({ cursor, message }) => `${cursor} ${message.author}: ${message.body}`),
+  )
 })
 
 Layer.effectDiscard(program).pipe(

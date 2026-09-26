@@ -232,7 +232,9 @@ export const layer = (options: Options) => {
 
             // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
             const deliver = Effect.suspend(() =>
-              client.Execute(external ? { ...request, external } : request).pipe(Effect.forkIn(scope)),
+              client
+                .Execute(external ? { ...request, external } : request)
+                .pipe(Effect.forkIn(scope)),
             ).pipe(
               Effect.flatMap(Fiber.join),
               Effect.catchCause((cause) => {

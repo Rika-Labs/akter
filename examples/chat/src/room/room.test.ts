@@ -1,5 +1,12 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor, ActorError, type ActorRef, CommandExpired, RetentionGap, User } from "durable-actors"
+import {
+  Actor,
+  ActorError,
+  type ActorRef,
+  CommandExpired,
+  RetentionGap,
+  User,
+} from "durable-actors"
 import { ActorTest } from "durable-actors/testing"
 import { Config, Crypto, Effect, Layer, ManagedRuntime, Option, Redacted, Schema } from "effect"
 import { Pool } from "pg"
@@ -80,9 +87,9 @@ it("posts a message with its row, blob, event, moderation, and idle timer", () =
 
       expect(yield* room.Recent({ limit: 10 })).toEqual([{ id, author: "ada", body: "hello" }])
       expect(Option.getOrThrow(yield* room.Attachment(id))).toEqual(bytes)
-      expect((yield* room.History({})).map(({ cursor, message }) => [cursor, message.body])).toEqual([
-        ["1", "hello"],
-      ])
+      expect(
+        (yield* room.History({})).map(({ cursor, message }) => [cursor, message.body]),
+      ).toEqual([["1", "hello"]])
       expect(yield* room.React(2)).toMatchObject({ reactions: 2, closed: false })
       expect(yield* test.inspect(room.ref)).toMatchObject({
         rows: { chat_messages: 1 },

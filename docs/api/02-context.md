@@ -88,7 +88,7 @@ A query that replays declares these in its `errors`, or handles them itself.
 
 `read.cursor` is the last event committed when the query read `state`, and every `read.events` call in that query stops at it. Two replays of different classes in one query therefore line up, and a reader that takes `state` with `read.cursor` and then follows events after that cursor misses and repeats nothing. That is how a reader resynchronizes after `RetentionGap`.
 
-Replay is not limited to a page size yet, and emits have no size budget of their own; both are follow-ups next to `keepEvents`. A stored event that no longer decodes under its current class makes the query a defect, so change an event's schema only in ways that still decode its stored events.
+Replay is paged: `read.events(E, { after, limit })` returns at most `limit` entries (default 1,000, at most 10,000; any other value is a defect). A full page means more may follow, so the reader continues after the last entry's cursor; a shorter page reached `read.cursor`. The events one turn emits may total at most 1,048,576 encoded bytes; the emit that crosses it is a deterministic defect, and the turn commits none of its events. A stored event that no longer decodes under its current class makes the query a defect, so change an event's schema only in ways that still decode its stored events.
 
 ## Activation-local values
 

@@ -73,7 +73,10 @@ export const Recent = Actor.query("Recent", {
 
 /** One page of posted messages after an exclusive cursor, with each message's cursor. */
 export const History = Actor.query("History", {
-  input: Schema.Struct({ after: Schema.optional(Schema.String), limit: Schema.optional(Schema.Int) }),
+  input: Schema.Struct({
+    after: Schema.optional(Schema.String),
+    limit: Schema.optional(Schema.Int),
+  }),
   output: Schema.Array(Schema.Struct({ cursor: Schema.String, message: MessagePosted })),
   errors: [UnknownCursor, RetentionGap],
 })

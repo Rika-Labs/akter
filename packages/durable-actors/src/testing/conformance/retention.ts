@@ -4,7 +4,11 @@ import { Actor, Intent, RetentionGap, UnknownCursor } from "../../index.ts"
 import { ActorError, CommandExpired, Timeout } from "../../errors/actor.ts"
 import { databaseTime } from "../../runtime/turn/admission.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase, ConformanceEnvironment, ConformanceServices } from "../conformance.ts"
+import type {
+  ConformanceCase,
+  ConformanceEnvironment,
+  ConformanceServices,
+} from "../conformance.ts"
 
 export interface RetentionFixture {
   /** `Add` handler runs, including runs whose turn later rolled back. */
@@ -31,9 +35,13 @@ const Forward = Actor.command("Forward", { input: Schema.String })
 
 const Receive = Actor.command("Receive", { input: Schema.String })
 
-const Put = Actor.command("Put", { input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }) })
+const Put = Actor.command("Put", {
+  input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
+})
 
-const Grow = Actor.command("Grow", { input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }) })
+const Grow = Actor.command("Grow", {
+  input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
+})
 
 /** Replaces an entry and swallows the defect, so the turn commits whatever the write left. */
 const PutCaught = Actor.command("PutCaught", {
@@ -44,7 +52,10 @@ const PutCaught = Actor.command("PutCaught", {
 const Entry = Schema.Struct({ cursor: Schema.String, body: Schema.String })
 
 const History = Actor.query("History", {
-  input: Schema.Struct({ after: Schema.optional(Schema.String), limit: Schema.optional(Schema.Number) }),
+  input: Schema.Struct({
+    after: Schema.optional(Schema.String),
+    limit: Schema.optional(Schema.Number),
+  }),
   output: Schema.Array(Entry),
   errors: [UnknownCursor, RetentionGap],
 })
@@ -168,7 +179,9 @@ const isolated = async <A, E>(
   environment: ConformanceEnvironment,
   effect: Effect.Effect<A, E, ConformanceServices | Scope.Scope>,
 ) => {
-  const runtime = environment.build({ database: await Effect.runPromise(environment.freshDatabase) })
+  const runtime = environment.build({
+    database: await Effect.runPromise(environment.freshDatabase),
+  })
 
   try {
     return await runtime.runPromise(Effect.scoped(effect))
@@ -210,7 +223,10 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* test.advance("2 days")
           expect(yield* test.cleanup).toMatchObject({ receipts: 2 })
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ receipts: 0, state: { total: 7 } })
+          expect(yield* test.inspect(journal.ref)).toMatchObject({
+            receipts: 0,
+            state: { total: 7 },
+          })
           expect((yield* add.pipe(Effect.flip)).reason).toBeInstanceOf(CommandExpired)
           expect(fixture.retention.adds - before).toBe(2)
           expect(yield* journal.Total()).toBe(7)
@@ -260,7 +276,9 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
 
                     // The restarted clock has no advance; real time passes the id's expiry.
                     yield* Effect.sleep("1100 millis")
-                    const failure = yield* journal.Add(5).pipe(Actor.commandId(saved.id), Effect.flip)
+                    const failure = yield* journal
+                      .Add(5)
+                      .pipe(Actor.commandId(saved.id), Effect.flip)
                     expect(failure.reason).toBeInstanceOf(CommandExpired)
                     expect(yield* journal.Total()).toBe(5)
                   }),
@@ -330,7 +348,9 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(chronicle.ref)).toMatchObject({ events: 1 })
           expect(yield* eventSequence("events")).toBe("3")
 
-          expect(yield* journal.History({}).pipe(Effect.flip)).toEqual(RetentionGap.make({ cursor: "0" }))
+          expect(yield* journal.History({}).pipe(Effect.flip)).toEqual(
+            RetentionGap.make({ cursor: "0" }),
+          )
           expect(yield* journal.History({ after: "1" }).pipe(Effect.flip)).toEqual(
             RetentionGap.make({ cursor: "1" }),
           )
@@ -379,7 +399,9 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           yield* journal.Note("fresh")
 
           expect(yield* test.cleanup).toMatchObject({ events: 2_500 })
-          expect(yield* journal.History({ after: "2500" })).toEqual([{ cursor: "2501", body: "fresh" }])
+          expect(yield* journal.History({ after: "2500" })).toEqual([
+            { cursor: "2501", body: "fresh" },
+          ])
           expect(yield* eventSequence("batched")).toBe("2501")
         }),
       ),
