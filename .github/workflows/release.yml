@@ -46,6 +46,5 @@ jobs:
           bun .github/src/pack.ts --out "$RUNNER_TEMP/package"
       - name: Publish with provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ steps.release.outputs.tag }}
         run: npm publish "$RUNNER_TEMP/package" --provenance --access public --tag "$DIST_TAG"
