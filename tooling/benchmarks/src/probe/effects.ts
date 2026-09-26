@@ -7,7 +7,12 @@ export class Echo extends Actor.effect<Echo>()("Echo", {
   success: Schema.String,
 }) {}
 
+/** Holds an executor slot for `millis` before it returns; the benchmark's slow provider. */
+export class Stall extends Actor.effect<Stall>()("Stall", { input: { millis: Schema.Int } }) {}
+
 const Perform = Actor.command("Perform", { input: Schema.String })
+
+const Hold = Actor.command("Hold", { input: Schema.Int })
 
 const Delivered = Actor.command("Delivered", { input: Schema.String })
 
@@ -17,10 +22,10 @@ export const EffectProbe = Actor.make("EffectProbe", {
   state: Actor.state({
     delivered: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  effects: [Echo],
-  api: { Perform },
+  effects: [Echo, Stall],
+  api: { Perform, Hold },
   internal: { Delivered },
-  policy: { effects: { Echo: { onSuccess: Delivered } } },
+  policy: { effects: { Echo: { onSuccess: Delivered }, Stall: { retry: { times: 0 } } } },
 })
 
 /** Round trips waiting for their `Delivered` turn to commit, by key. */
@@ -61,11 +66,19 @@ export const EffectProbeLive = Layer.mergeAll(
       Perform: Effect.fnUntraced(function* (key: string) {
         yield* (yield* EffectProbe.Turn).perform(Echo.make({ key }))
       }),
+      Hold: Effect.fnUntraced(function* (millis: number) {
+        yield* (yield* EffectProbe.Turn).perform(Stall.make({ millis }))
+      }),
       Delivered: Effect.fnUntraced(function* () {
         const turn = yield* EffectProbe.Turn
         yield* turn.state.set({ delivered: turn.state.delivered + 1 })
       }),
     }),
   ),
-  EffectProbe.toEffectLayer(Effect.succeed({ Echo: ({ key }) => Effect.succeed(key) })),
+  EffectProbe.toEffectLayer(
+    Effect.succeed({
+      Echo: ({ key }) => Effect.succeed(key),
+      Stall: ({ millis }) => Effect.sleep(millis),
+    }),
+  ),
 )

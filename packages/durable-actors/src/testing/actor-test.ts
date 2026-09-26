@@ -158,12 +158,15 @@ export class ActorTest extends Context.Service<
         const member = Option.getOrUndefined(yield* Effect.serviceOption(ClusterMember))
         const tenant = member?.tenant ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie))
         const faults = new Map<TurnPoint, Array<Effect.Effect<void>>>()
+        // Hooks the caller installed still see every point no fault is queued for.
+        const outer = yield* TurnHooks
 
         let clockOffset = 0
 
         const hooks = Layer.mergeAll(
           Layer.succeed(TurnHooks, {
-            at: (point) => Effect.suspend(() => faults.get(point)?.shift() ?? Effect.void),
+            at: (point, request) =>
+              Effect.suspend(() => faults.get(point)?.shift() ?? outer.at(point, request)),
           }),
           Layer.succeed(OutboxClock, { offsetMillis: () => clockOffset }),
         )
