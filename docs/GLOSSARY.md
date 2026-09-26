@@ -32,6 +32,7 @@
 - **Internal command:** a command in the `internal` section, callable only by System callers.
 - **Workflow:** durable orchestration declared as an actor member with `Actor.workflow`.
 - **WorkflowRun:** handle returned by a workflow start, exposing identity, result, polling, and interruption.
+- **Version marker:** a named integer declared in `Actor.workflow`'s `versions`, recorded when an execution starts and read with `wf.version(name)`, so in-flight executions keep their branch across deploys.
 - **Keyed state:** schema-defined actor state loaded and written inside fenced turns.
 - **Activation-local value:** a value such as a `Ref` created in a layer's build Effect; discarded on hibernation.
 - **Owned table:** Drizzle table scoped by `tenant_id` and `actor_id`.

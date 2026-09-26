@@ -12,7 +12,7 @@
 
 ## Context
 
-`turn.emit` appends an event in the emitting turn's transaction, with a gap-free, never-reissued cursor per actor (M1.5, [contract 05](../contracts/05-messaging.md)). Today the only readers are the owner's queries (`read.events`), workflow `waitFor` on the owner's own events ([ADR 0022](0022-workflow-engine-storage-and-version-markers.md)), and live streams and connections ([ADR 0023](0023-connections-parking-and-streams.md)). Nothing lets a different actor react to those events. An application that needs one has two options, and both are wrong:
+`turn.emit` appends an event in the emitting turn's transaction, with a gap-free, never-reissued cursor per actor (M1.5, [contract 05](../contracts/05-messaging.md)). Today the only readers are the owner's queries (`read.events`), workflow waits on the owner's own events (`Ship.wait`) ([ADR 0022](0022-workflow-engine-storage-and-version-markers.md)), and live streams and connections ([ADR 0023](0023-connections-parking-and-streams.md)). Nothing lets a different actor react to those events. An application that needs one has two options, and both are wrong:
 
 - **The publisher fans out by hand.** It stages one intent per interested actor in its own turn. The publisher then has to know its subscribers, and its commit grows with their number. The `subscriptions` baseline below measures that growth.
 - **The subscriber polls.** It runs a timer that queries the source. That costs a turn per poll per pair, and it still misses history once pruning starts.
@@ -235,7 +235,7 @@ A rolled-back or declared-failure turn emits no events, so it writes neither.
   - **The subscriber-side cursor.** Admission reads `actor_subscription_cursors` in the same round trip as the generation fence and the receipt. If `applied ≥ cursor`, the delivery is acknowledged as `AlreadyApplied` without running the handler. Otherwise the handler runs, and the commit statement sets `applied = cursor`, again with no extra round trip. The cursor row never expires. Deduplication therefore survives receipt pruning, and a stale runner's out-of-order redelivery can't run an older event after a newer one.
 - **Declared failures advance the cursor.** The event was handled with a typed outcome, as for an intent. The failure receipt commits with `applied = cursor`.
 - **Defects and retryable failures don't.** A deterministic defect, `ActorUnavailable`, `RunnerAtCapacity`, or a timeout leaves the row claimed. It is redelivered with backoff, `max(claimLease, min(1 s × 2^(attempts − 1), relay.maxBackoff))`, which is ADR 0021's intent rule.
-- **Settle outcomes.** A delivery answers the relay with `Applied`, `AlreadyApplied`, `Unsubscribed` (dynamic, no cursor row: the relay deletes the source row), or `NotCreated`. `NotCreated` means a routed subscriber whose `createdBy` policy refuses creation; the relay advances past the event and counts it in `durable-actors.subscription.skipped`. Each outcome except a retryable failure advances `delivered`.
+- **Settle outcomes.** A delivery answers the relay with `Applied`, `AlreadyApplied`, `Unsubscribed` (dynamic, no cursor row: the relay deletes the source row), or `NotCreated`. `NotCreated` means a routed subscriber whose `createdBy` policy refuses creation. Today that rejection commits no receipt, so without a rule the delivery would retry forever. The rule is that the relay advances past the event and counts it in `durable-actors.subscription.skipped`, and routed events for a subscriber that doesn't exist are dropped. A subscriber that must see them lists the handler in `createdBy`, so the delivery creates it. A dynamic subscriber always exists, because it subscribed in a committed turn. Each outcome except a retryable failure advances `delivered`.
 - **Derived ids are internal.** They can't be admitted from outside: an external caller presenting one reaches an `internal` command and is a deterministic defect ([contract 10](../contracts/10-security.md)). The external retry horizon doesn't apply, because a delivery is trusted recovery of committed work ([contract 04](../contracts/04-receipts.md)).
 
 ### 5. Ordering per publisher
@@ -267,10 +267,11 @@ A rolled-back or declared-failure turn emits no events, so it writes neither.
 - **Sources may restrict their subscribers.** Within a tenant, any actor type in the deployment may subscribe to any event a source lists in `events`. The framework is trusted application infrastructure ([contract 10](../contracts/10-security.md)), and the `authorize` hook governs external callers, not System deliveries. A source may narrow this with `policy.subscribers: [CustomerSummary, Dashboard]`. `Actor.make` then fails for a subscriber declaration it excludes. The check is static, because every subscription, dynamic ones included, is declared on its subscriber.
 - **Handlers are internal.** They are absent from handles, HTTP, OpenAPI, and the Promise client. A non-System caller reaching one is a deterministic defect.
 - **Revocation doesn't stop a subscription.** It is accepted durable work between two actors ([ADR 0004](0004-receipt-access-revocation-and-expiry.md)). An application stops one with `turn.unsubscribe`, or by removing the declaration.
+- **Contract 07's revocation bound doesn't apply to actor-to-actor subscriptions.** That bound governs sessions held for an external principal: connections, streams, and client event feeds. A subscription has no external principal. It is created by a committed turn or by a declaration, and each delivery is trusted internal work. A client that reads a subscriber's projection does so through that subscriber's own queries, connections, or feeds, and those are reauthorized under contract 07 as usual.
 
-### 9. Composition with workflow `waitFor`
+### 9. Composition with workflow waits
 
-`waitFor` stays owner-only ([contract 05](../contracts/05-messaging.md), [ADR 0022](0022-workflow-engine-storage-and-version-markers.md)). A workflow that waits for a foreign event gets it through its owner. The owner subscribes, and its handler emits an owner event that the workflow waits for:
+A workflow wait (`Ship.wait(name, Event)`, ADR 0022 decision 5) stays owner-only ([contract 05](../contracts/05-messaging.md), [ADR 0022](0022-workflow-engine-storage-and-version-markers.md)). A workflow that waits for a foreign event gets it through its owner. The owner subscribes, and its handler emits an owner event that the workflow waits for:
 
 ```ts
 const PaymentUpdates = Actor.subscription("PaymentUpdates", {
@@ -293,13 +294,13 @@ OnPayment: Effect.fn(function* (delivery) {
   yield* turn.unsubscribe(PaymentUpdates, delivery.source.id)
 })
 
-// In the Ship workflow body:
+// A typed wait step on the Ship workflow, used in its body:
+export const AwaitPayment = Ship.wait("payment-seen", PaymentSeen)
 const paid =
-  yield *
-  wf.waitFor(PaymentSeen, { where: (e) => e.paymentId === order.paymentId, timeout: "1 day" })
+  yield * AwaitPayment({ where: (e) => e.paymentId === order.paymentId, timeout: "1 day" })
 ```
 
-The delivery is a turn on the owner, so its `emit` takes ADR 0022's emit-path wait lookup. A wait sees owner events from the execution's cursor, so a delivery that lands before the body reaches `waitFor` still resolves it. No new race exists, and the engine needs nothing new.
+The delivery is a turn on the owner, so its `emit` takes ADR 0022's emit-path wait lookup. A wait sees owner events from the execution's cursor, so a delivery that lands before the body reaches the wait still resolves it. No new race exists, and the engine needs nothing new.
 
 ### 10. Composition with connections and waking parked subscribers
 
@@ -493,13 +494,13 @@ Actor.make("Payment", { …, policy: { subscribers: [Shipment, Ledger] } }) // a
 
 **Benchmark:** none. This is a declaration check.
 
-### Q9. Composition with workflow `waitFor`
+### Q9. Composition with workflow waits
 
-**Default:** `waitFor` stays owner-only. Foreign events arrive through the owner's subscription handler re-emitting an owner event (section 9). The alternative is to let `waitFor` name a foreign source. That would put a cross-shard read on the resume path, and it would duplicate subscriptions inside the engine.
+**Default:** workflow waits stay owner-only. Foreign events arrive through the owner's subscription handler re-emitting an owner event (section 9). The alternative is to let `Ship.wait` name a foreign source. That would put a cross-shard read on the resume path, and it would duplicate subscriptions inside the engine.
 
 **Example:** section 9.
 
-**Conformance:** `resolves an owner wait from a subscription delivery that re-emits`, `resolves when the delivery lands before the body reaches waitFor`, `subscribes in the workflow's start turn and delivers after the start commits`.
+**Conformance:** `resolves an owner wait from a subscription delivery that re-emits`, `resolves when the delivery lands before the body reaches the wait`, `subscribes in the workflow's start turn and delivers after the start commits`.
 
 **Failure rows:** the existing **Event races workflow wait registration**, run with the event arriving through a delivery.
 

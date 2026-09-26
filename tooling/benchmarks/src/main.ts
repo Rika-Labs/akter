@@ -80,9 +80,12 @@ const describeCase = (scenario: string, result: CaseResult) => {
   const statements =
     result.statementsPerOperation === null ? "" : ` stmts/op=${result.statementsPerOperation}`
 
+  const cpu =
+    result.cpu.clientMsPerOperation === null ? "" : ` cpu/op=${result.cpu.clientMsPerOperation} ms`
+
   const errors = result.errors === 0 ? "" : ` errors=${JSON.stringify(result.errorKinds)}`
 
-  return `  ${scenario}/${result.name}: ${result.throughput} op/s p50=${latency.p50} p95=${latency.p95} p99=${latency.p99} ms${statements}${errors}`
+  return `  ${scenario}/${result.name}: ${result.throughput} op/s p50=${latency.p50} p95=${latency.p95} p99=${latency.p99} ms${statements}${cpu}${errors}`
 }
 
 const program = Effect.gen(function* () {
