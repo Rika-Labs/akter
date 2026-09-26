@@ -359,7 +359,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 **Default:** at relay time. The publisher's commit adds at most one keyed `feed` row, through a CTE in the append statement. Expansion and delivery run on any runner, per subscription row.
 
-**Alternative:** commit-time fan-out, with one outbox row per subscriber in the publisher's turn. It is simpler and has one hop less latency. But its cost grows with subscribers: the baseline above shows 104 ms p50 at 1,024 subscribers on PGlite. It holds the publisher's row lock for that long, and it multiplies the publisher's WAL.
+**Alternative:** commit-time fan-out, with one outbox row per subscriber in the publisher's turn. It is simpler and has one hop less latency. But its cost grows with subscribers: the baseline above shows 115 ms p50 at 1,024 subscribers on Postgres, against 2.5 ms at one. It holds the publisher's row lock for that long, and it multiplies the publisher's WAL.
 
 **Example:** none; this is internal.
 
