@@ -204,6 +204,15 @@ export const migrations = {
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
   }),
+  // Claims and backoff move `due_at_ms`, so `scheduled_at_ms` keeps the time a
+  // row first became due. `kind` follows `bucket` in the due index so intent
+  // scans never read effect rows waiting for an executor, and the reverse.
+  "0011_relay": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_outbox ADD COLUMN scheduled_at_ms bigint`
+    yield* sql`CREATE INDEX actor_outbox_due_kind ON actor_outbox (bucket, kind, due_at_ms)`
+    yield* sql`DROP INDEX actor_outbox_due`
+  }),
 }
 
 export const migrate = Migrator.make({})({

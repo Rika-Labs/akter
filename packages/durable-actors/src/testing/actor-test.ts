@@ -61,6 +61,8 @@ export interface TestOptions {
   readonly authorize?: Options["authorize"]
   readonly retryWindowMs?: number
   readonly maxResidentActors?: number
+  readonly relay?: Options["relay"]
+  readonly executors?: Options["executors"]
 }
 
 export interface Inspection {
@@ -392,6 +394,8 @@ export class ActorTest extends Context.Service<
           authorize: options.authorize ?? (() => Effect.succeed(true)),
           retryWindowMs: options.retryWindowMs,
           maxResidentActors: options.maxResidentActors,
+          relay: options.relay,
+          executors: options.executors,
         })
 
         return Layer.mergeAll(

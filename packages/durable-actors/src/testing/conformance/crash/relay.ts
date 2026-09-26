@@ -5,6 +5,7 @@ import { Actor } from "../../../index.ts"
 import { Actors, Database } from "../../../runtime/index.ts"
 import { decompress } from "../../../runtime/storage/codec.ts"
 import { TurnHooks } from "../../../runtime/turn/hooks.ts"
+import { OutboxClock } from "../../../runtime/turn/outbox.ts"
 
 const Add = Actor.command("Add", { input: Schema.Finite })
 
@@ -53,9 +54,16 @@ const runtime = Layer.unwrap(
           : Effect.void,
     })
 
+    // The recovering process runs past the killed relay's claim lease.
+    const clock = Layer.succeed(OutboxClock, {
+      offsetMillis: () => (mode === "recover" ? 60_000 : 0),
+    })
+
     return live.pipe(
       Layer.provideMerge(
-        Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(Layer.provide(hooks)),
+        Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(
+          Layer.provide(Layer.mergeAll(hooks, clock)),
+        ),
       ),
       Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
     )

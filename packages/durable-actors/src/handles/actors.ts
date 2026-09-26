@@ -82,6 +82,8 @@ export interface EffectFailure {
 export interface RegisteredEffect {
   /** Total attempts before the effect is dead-lettered. */
   readonly attempts: number
+  /** The wait after failed attempt `n` is `min(baseMs × 2^(n − 1), maxMs)`. */
+  readonly backoff: { readonly baseMs: number; readonly maxMs: number }
   /** Runs one attempt; succeeds with the `onSuccess` route, if declared. */
   readonly execute: (
     payload: string,

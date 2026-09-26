@@ -15,11 +15,12 @@ describe("effect executor process death with Postgres", () => {
   afterAll(() => runtime.dispose())
 
   // At each point: the provider calls and outbox row the killed process leaves,
-  // and the provider calls after a fresh process recovers the effect.
+  // and the provider calls after a fresh process recovers the effect. `attempts`
+  // counts claims, so the route the relay claimed before the kill shows 1.
   for (const [point, calls, row, recovered] of [
     ["beforeExecute", 0, ["effect", 1], 1],
     ["afterExecute", 1, ["effect", 1], 2],
-    ["beforeCommit", 1, ["intent", 0], 1],
+    ["beforeCommit", 1, ["intent", 1], 1],
   ] as const) {
     it(
       `recovers a SIGKILL ${point} and routes onSuccess once per effect id`,

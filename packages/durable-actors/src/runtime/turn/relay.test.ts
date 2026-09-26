@@ -9,9 +9,19 @@ import { migrate } from "../database/migrations.ts"
 import { Database } from "../layer.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson } from "./outbox.ts"
-import { outboxRelay, PASS_LIMIT } from "./relay.ts"
+import { outboxRelay, type RelaySettings } from "./relay.ts"
 
-const ROWS = PASS_LIMIT + 44
+const ROWS = 300
+
+const settings: RelaySettings = {
+  pollMs: 1000,
+  passLimit: 256,
+  deliveryConcurrency: 16,
+  claimLeaseMs: () => 37_000,
+  maxBackoffMs: 256_000,
+  executorConcurrency: 64,
+  executorLeaseMs: 60_000,
+}
 
 // Every row is due at epoch 0 and belongs to one sender, so one bucket holds the backlog.
 const seed = Effect.gen(function* () {
@@ -34,8 +44,16 @@ const pending = Effect.gen(function* () {
   return (yield* sql<{ count: number }>`SELECT count(*)::int AS count FROM actor_outbox`)[0]!.count
 })
 
-// The poll timeout runs on TestClock and never fires, so every pass after the first comes from
-// the backlog path alone.
+// Rows still due now; a claimed row is not due until its lease ends.
+const due = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+
+  return (yield* sql<{ count: number }>`SELECT count(*)::int AS count FROM actor_outbox
+    WHERE due_at_ms <= (extract(epoch FROM clock_timestamp()) * 1000)::bigint`)[0]!.count
+})
+
+// The poll timeout runs on TestClock and never fires, so every claim after the first comes from
+// a freed delivery slot while the backlog lasts.
 const runRelay = () =>
   Effect.gen(function* () {
     yield* seed
@@ -48,7 +66,8 @@ const runRelay = () =>
 
           return Outcome.cases.Success.make({ value: "{}" })
         }),
-      () => undefined,
+      () => [],
+      settings,
     )
 
     const fiber = yield* relay.run.pipe(Effect.forkChild)
@@ -64,7 +83,12 @@ const runRelay = () =>
 
     yield* Fiber.interrupt(fiber)
 
-    return { delivered: delivered.length, pending: yield* pending }
+    return {
+      delivered: delivered.length,
+      distinct: new Set(delivered.map(({ commandId }) => commandId)).size,
+      pending: yield* pending,
+      due: yield* due,
+    }
   })
 
 const relayLayer = (options: { readonly failDelete: boolean }) =>
@@ -83,25 +107,33 @@ const relayLayer = (options: { readonly failDelete: boolean }) =>
 const measureRelay = (options: { readonly failDelete: boolean }) =>
   Effect.acquireUseRelease(
     Effect.sync(() => ManagedRuntime.make(relayLayer(options))),
-    (runtime) => Effect.promise(() => runtime.runPromise(runRelay())),
+    (runtime) => Effect.promise(() => runtime.runPromise(Effect.scoped(runRelay()))),
     (runtime) => Effect.promise(() => runtime.dispose()),
   )
 
 describe("outbox relay loop", () => {
-  it("runs the next pass at once after a full pass that settled every row", () =>
+  it("claims again as each delivery slot frees while more rows are due", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        expect(yield* measureRelay({ failDelete: false })).toEqual({ delivered: ROWS, pending: 0 })
+        expect(yield* measureRelay({ failDelete: false })).toEqual({
+          delivered: ROWS,
+          distinct: ROWS,
+          pending: 0,
+          due: 0,
+        })
       }),
     ))
 
-  it("waits for the poll instead of spinning when rows die before they settle", () =>
+  it("keeps rows whose settle died out of claims until their lease ends", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        // One full pass delivers the first rows, none settle, and the loop waits: no second pass.
+        // Every row is delivered once and dies before its delete; none is due again, so none
+        // is redelivered and the rows behind them are still reached.
         expect(yield* measureRelay({ failDelete: true })).toEqual({
-          delivered: PASS_LIMIT,
+          delivered: ROWS,
+          distinct: ROWS,
           pending: ROWS,
+          due: 0,
         })
       }),
     ))
