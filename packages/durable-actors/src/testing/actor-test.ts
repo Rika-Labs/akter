@@ -33,7 +33,8 @@ import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.
 import { compress, decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
 import { VERSION_KEY } from "../state/migration.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
-import { OutboxClock, outboxTime } from "../runtime/turn/outbox.ts"
+import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
+import type { Swept } from "../runtime/storage/retention.ts"
 import { type ClusterOptions, clusterLayer } from "./cluster.ts"
 
 /**
@@ -123,12 +124,18 @@ export class ActorTest extends Context.Service<
     }>
     readonly invalidate: (ref: ActorRef) => Effect.Effect<void>
     /**
-     * Moves the outbox clock forward by `duration`, then delivers every intent
-     * and timer that is due, including intents those deliveries stage.
+     * Moves the framework clock forward by `duration`, then delivers every
+     * intent and timer that is due, including intents those deliveries stage.
+     * Command-id expiry, event timestamps, and retention follow the same clock.
      */
     readonly advance: (duration: Duration.Input) => Effect.Effect<void>
-    /** The outbox clock: database time plus every `advance` so far; `Intent.at` is due against it. */
+    /** The framework clock: database time plus every `advance` so far; `Intent.at` is due against it. */
     readonly now: Effect.Effect<DateTime.Utc>
+    /**
+     * Runs one retention sweep now, as the runtime does every minute, and
+     * returns how many receipts and events it deleted.
+     */
+    readonly cleanup: Effect.Effect<Swept>
     /** Committed receipts of `command` on the actor `ref`. */
     readonly receiptsFor: (ref: ActorRef, command: string) => Effect.Effect<number>
     /**
@@ -165,7 +172,7 @@ export class ActorTest extends Context.Service<
           Layer.succeed(TurnHooks, {
             at: (point) => Effect.suspend(() => faults.get(point)?.shift() ?? Effect.void),
           }),
-          Layer.succeed(OutboxClock, { offsetMillis: () => clockOffset }),
+          Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
         )
 
         const addFault = (point: TurnPoint, fault: Effect.Effect<void>) =>
@@ -356,12 +363,13 @@ export class ActorTest extends Context.Service<
                 clockOffset += millis
                 yield* internalActors.drainOutbox
               }),
-              now: outboxTime.pipe(
+              now: databaseTime.pipe(
                 Effect.map((millis) => DateTime.makeUnsafe(millis)),
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.provideService(OutboxClock, { offsetMillis: () => clockOffset }),
+                Effect.provideService(FrameworkClock, { offsetMillis: () => clockOffset }),
                 Effect.orDie,
               ),
+              cleanup: internalActors.cleanup,
               receiptsFor: Effect.fnUntraced(function* (ref: ActorRef, command: string) {
                 const routing = yield* storedRoutingKey(ref)
 

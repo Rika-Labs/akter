@@ -19,3 +19,14 @@ export const TurnHooks = Context.Reference<{
 }>("durable-actors/TurnHooks", {
   defaultValue: () => ({ at: () => Effect.void }),
 })
+
+/**
+ * Test controls for retention cleanup: rows per batch statement, and a point
+ * after each committed batch where a test can pause or crash the sweep.
+ */
+export const CleanupHooks = Context.Reference<{
+  readonly batchSize: number
+  readonly afterBatch: Effect.Effect<void>
+}>("durable-actors/CleanupHooks", {
+  defaultValue: () => ({ batchSize: 1000, afterBatch: Effect.void }),
+})

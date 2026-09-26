@@ -29,6 +29,13 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
   const { ref } = scope
   const routingKey = routingKeyOf({ ref, placement: scope.placement })
 
+  const owner = sql`routing_key = ${routingKey} AND tenant_id = ${ref.tenant}
+    AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+
+  const overQuota = Effect.die(
+    new Error(`One actor's blobs hold at most ${scope.maxBytes} bytes (policy.maxBlobBytes)`),
+  )
+
   const access: BlobAccess = (blob: AnyBlob) => {
     // Checked per call, like owned rows, so a misuse is a defect of the turn.
     const entry = Effect.fnUntraced(function* (name: string) {
@@ -53,9 +60,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
           ),
         )
 
-      return sql`routing_key = ${routingKey} AND tenant_id = ${ref.tenant}
-        AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
-        AND blob = ${blob.name} AND name = ${name}`
+      return sql`${owner} AND blob = ${blob.name} AND name = ${name}`
     })
 
     // A copy taken once, so later changes to the caller's buffer never reach the row.
@@ -110,12 +115,22 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
             const where = yield* entry(name)
             const copied = yield* copy(bytes)
 
-            // Chunk 0 always heads an entry, so a set overwrites it and drops the rest.
-            yield* sql`WITH dropped AS (DELETE FROM actor_blobs WHERE ${where} AND chunk > 0)
+            // Chunk 0 always heads an entry, so a set overwrites it and drops the
+            // rest. The entry's old bytes don't count against the quota, and past
+            // it the statement changes nothing, so a caught defect leaves the entry whole.
+            const written = yield* sql`WITH used AS (
+                SELECT COALESCE(sum(octet_length(bytes)) FILTER (WHERE NOT (${where})), 0) AS other
+                FROM actor_blobs WHERE ${owner}),
+              fits AS (SELECT 1 FROM used WHERE other + ${copied.byteLength} <= ${scope.maxBytes}),
+              dropped AS (
+                DELETE FROM actor_blobs WHERE ${where} AND chunk > 0 AND EXISTS (SELECT 1 FROM fits))
               INSERT INTO actor_blobs (routing_key, tenant_id, actor_type, actor_id, blob, name, chunk, bytes)
-              VALUES (${values(name, sql.literal("0"), copied)})
+              SELECT ${values(name, sql.literal("0"), copied)} FROM fits
               ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, blob, name, chunk)
-              DO UPDATE SET bytes = EXCLUDED.bytes`
+              DO UPDATE SET bytes = EXCLUDED.bytes
+              RETURNING chunk`
+
+            if (written.length === 0) return yield* overQuota
           }),
         ),
       append: (name, bytes) =>
@@ -128,12 +143,20 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
             // chunk is free and the size read here still holds at insert.
             const inserted =
               yield* sql`INSERT INTO actor_blobs (routing_key, tenant_id, actor_type, actor_id, blob, name, chunk, bytes)
-              SELECT ${values(name, sql.literal("COALESCE(max(chunk) + 1, 0)"), copied)}
-              FROM actor_blobs WHERE ${where}
-              HAVING COALESCE(sum(octet_length(bytes)), 0) + ${copied.byteLength} <= ${MAX_ENTRY_BYTES}
+              SELECT ${values(name, sql.literal("COALESCE(max(chunk) FILTER (WHERE entry) + 1, 0)"), copied)}
+              FROM (SELECT chunk, bytes, (${where}) AS entry FROM actor_blobs WHERE ${owner}) AS owned
+              HAVING COALESCE(sum(octet_length(bytes)) FILTER (WHERE entry), 0) + ${copied.byteLength} <= ${MAX_ENTRY_BYTES}
+                AND COALESCE(sum(octet_length(bytes)), 0) + ${copied.byteLength} <= ${scope.maxBytes}
               RETURNING chunk`
 
-            if (inserted.length === 0) return yield* oversized
+            if (inserted.length === 0) {
+              const [entrySize] = yield* sql<{ bytes: number }>`
+                SELECT COALESCE(sum(octet_length(bytes)), 0)::float8 AS bytes FROM actor_blobs WHERE ${where}`
+
+              return yield* entrySize!.bytes + copied.byteLength > MAX_ENTRY_BYTES
+                ? oversized
+                : overQuota
+            }
           }),
         ),
       compact: (name) =>

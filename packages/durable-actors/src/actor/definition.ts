@@ -44,7 +44,7 @@ import {
 } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
 import { type AnyBlob, isBlob } from "../members/blob.ts"
-import type { EventClass } from "../members/event.ts"
+import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
 import type {
   AnyCommand,
   AnyMember,
@@ -217,6 +217,12 @@ export type Executors<Effects extends AnyEffect, R> = {
     effect: Extract<Effects, { readonly tag: Tag }>["Type"],
   ) => Effect.Effect<Extract<Effects, { readonly tag: Tag }>["success"]["Type"], unknown, R>
 }
+
+/**
+ * Encoded bytes of every event one turn may emit. The turn appends them in
+ * one statement inside its transaction, so the budget bounds that statement.
+ */
+const MAX_EMIT_BYTES = 1_048_576
 
 /** Retries after an effect's first failed attempt when its policy names none. */
 const DEFAULT_EFFECT_RETRIES = 3
@@ -629,6 +635,7 @@ const make = <
             const turn = Symbol()
             const dirty = new Set<string>()
             const emitted: Array<EmittedEvent> = []
+            let emittedBytes = 0
 
             const loaded = yield* decodeStored(rows)
             let current = loaded.state
@@ -660,10 +667,18 @@ const make = <
               if (declared === undefined || !Schema.is(declared)(event))
                 return yield* Effect.die(new Error(`Undeclared event: ${event._tag}`))
 
-              emitted.push({
-                tag: declared.identifier,
-                value: yield* Schema.encodeEffect(eventCodec(declared))(event).pipe(Effect.orDie),
-              })
+              const value = yield* Schema.encodeEffect(eventCodec(declared))(event).pipe(
+                Effect.orDie,
+              )
+
+              emittedBytes += new TextEncoder().encode(value).byteLength
+
+              if (emittedBytes > MAX_EMIT_BYTES)
+                return yield* Effect.die(
+                  new Error(`Events emitted in one turn exceed ${MAX_EMIT_BYTES} bytes`),
+                )
+
+              emitted.push({ tag: declared.identifier, value })
             })
 
             const view = { set }
@@ -692,7 +707,13 @@ const make = <
             )
 
             const blob = yield* actors.blobs(
-              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
+              {
+                ref: request.ref,
+                placement,
+                blobs,
+                guard: escaped("Blob"),
+                maxBytes: policy.blobMaxBytes,
+              },
               true,
             )
 
@@ -904,15 +925,22 @@ const make = <
 
             const replay = Effect.fnUntraced(function* <E extends Event>(
               event: E,
-              options?: { readonly after?: string | undefined },
+              options?: { readonly after?: string | undefined; readonly limit?: number | undefined },
             ) {
               if (events.get(event.identifier) !== event)
                 return yield* Effect.die(new Error(`Undeclared event: ${event.identifier}`))
 
+              const limit = options?.limit ?? DEFAULT_REPLAY_LIMIT
+
+              if (!Number.isInteger(limit) || limit < 1 || limit > MAX_REPLAY_LIMIT)
+                return yield* Effect.die(
+                  new Error(`read.events limit must be an integer from 1 to ${MAX_REPLAY_LIMIT}`),
+                )
+
               const codec = eventCodec(event)
 
               return yield* Effect.forEach(
-                yield* readEvents(event.identifier, options?.after),
+                yield* readEvents(event.identifier, options?.after, limit),
                 Effect.fnUntraced(function* (stored) {
                   const entry: EventEntry<E["Type"]> = {
                     cursor: stored.cursor,
@@ -951,7 +979,13 @@ const make = <
             )
 
             const blob = yield* actors.blobs(
-              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
+              {
+                ref: request.ref,
+                placement,
+                blobs,
+                guard: escaped("Blob"),
+                maxBytes: policy.blobMaxBytes,
+              },
               false,
             )
 
@@ -1009,6 +1043,7 @@ const make = <
       yield* actors.registerQueries({
         name,
         placement,
+        timeoutMs: policy.executionMs,
         tables,
         blobs,
         queries: registered,
