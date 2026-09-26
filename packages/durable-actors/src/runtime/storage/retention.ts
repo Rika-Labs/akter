@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { databaseTime } from "../turn/admission.ts"
 import { CleanupHooks } from "../turn/hooks.ts"
 
@@ -7,7 +7,21 @@ export interface RetentionPolicy {
   readonly actorType: string
   readonly keepReceiptsMs: number
   readonly keepEventsMs: number
+  readonly deliveryMs: number
 }
+
+/**
+ * How long after its id expires a receipt stays. An id expires one retry
+ * window after it is issued (a timer's after its due time), so this keeps
+ * receipts `keepReceipts` from issue; it is never less than the delivery
+ * timeout, so a command admitted just before expiry can still run and find
+ * the receipt of an attempt that committed meanwhile.
+ */
+export const receiptMarginMs = (horizon: {
+  readonly keepReceiptsMs: number
+  readonly deliveryMs: number
+  readonly retryWindowMs: number
+}) => Math.max(horizon.keepReceiptsMs - horizon.retryWindowMs, horizon.deliveryMs)
 
 export interface Swept {
   readonly receipts: number
@@ -16,7 +30,7 @@ export interface Swept {
 
 /**
  * Deletes receipts and events past each actor type's horizon, in batches that
- * each commit on their own, so an interrupted sweep leaves only whole batches
+ * each commit in their own transaction, so an interrupted sweep leaves only whole batches
  * behind and the next sweep continues from there.
  *
  * A receipt goes only once its command id has expired, so external admission
@@ -43,13 +57,20 @@ export const sweep = Effect.fnUntraced(function* (
 
   for (const policy of policies) {
     const now = yield* databaseTime
-    // An id expires one retry window after it is issued (a timer's after its
-    // due time), so the receipt's age is at least its expiry minus that window.
-    const receiptCutoff = now - Math.max(policy.keepReceiptsMs - retryWindowMs, 0)
+    const receiptCutoff = now - receiptMarginMs({ ...policy, retryWindowMs })
     const eventCutoff = now - policy.keepEventsMs
 
+    // Sweeps of one actor type take turns, so two runners, or a sweep and
+    // `ActorTest.cleanup`, never lock overlapping event prefixes in opposite orders.
+    const batch = <A>(statement: Effect.Effect<A, SqlError.SqlError>) =>
+      sql.withTransaction(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${`durable-actors/retention/${policy.actorType}`}))`.pipe(
+          Effect.andThen(statement),
+        ),
+      )
+
     for (;;) {
-      const [pruned] = yield* sql<{ count: number }>`
+      const [pruned] = yield* batch(sql<{ count: number }>`
         WITH doomed AS (
           SELECT r.routing_key, r.tenant_id, r.actor_type, r.actor_id, r.command_id
           FROM actor_receipts r
@@ -62,7 +83,7 @@ export const sweep = Effect.fnUntraced(function* (
           WHERE r.routing_key = d.routing_key AND r.tenant_id = d.tenant_id
             AND r.actor_type = d.actor_type AND r.actor_id = d.actor_id AND r.command_id = d.command_id
           RETURNING 1)
-        SELECT count(*)::integer AS count FROM gone`
+        SELECT count(*)::integer AS count FROM gone`)
 
       receipts += pruned!.count
 
@@ -72,7 +93,7 @@ export const sweep = Effect.fnUntraced(function* (
     }
 
     for (;;) {
-      const [pruned] = yield* sql<{ count: number }>`
+      const [pruned] = yield* batch(sql<{ count: number }>`
         WITH picked AS (
           SELECT routing_key, tenant_id, actor_type, actor_id, sequence FROM actor_events
           WHERE actor_type = ${policy.actorType} AND emitted_at_ms <= ${eventCutoff}
@@ -85,7 +106,7 @@ export const sweep = Effect.fnUntraced(function* (
           WHERE e.routing_key = u.routing_key AND e.tenant_id = u.tenant_id
             AND e.actor_type = u.actor_type AND e.actor_id = u.actor_id AND e.sequence <= u.last
           RETURNING 1)
-        SELECT count(*)::integer AS count FROM gone`
+        SELECT count(*)::integer AS count FROM gone`)
 
       events += pruned!.count
 

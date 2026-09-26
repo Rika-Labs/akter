@@ -21,5 +21,5 @@ export const Event = { make }
 /** Entries one `read.events` call returns when the reader names no `limit`. */
 export const DEFAULT_REPLAY_LIMIT = 1_000
 
-/** The largest page a reader may ask for, which bounds one query's memory. */
+/** The largest page a reader may ask for; it bounds rows per page, not their bytes. */
 export const MAX_REPLAY_LIMIT = 10_000

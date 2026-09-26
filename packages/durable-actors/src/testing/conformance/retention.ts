@@ -80,6 +80,16 @@ const Journal = Actor.make("Journal", {
 })
 
 /** The same events under a longer horizon, so one sweep applies each type's own policy. */
+const Tally = Actor.command("Tally", { input: Schema.Int, output: Schema.Int })
+
+/** Keeps receipts for less than the retry window, so only the delivery-timeout grace holds them. */
+const Brief = Actor.make("Brief", {
+  key: Schema.String,
+  state: Actor.state({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  api: { Tally },
+  policy: { keepReceipts: "1 second" },
+})
+
 const Chronicle = Actor.make("Chronicle", {
   key: Schema.String,
   events: [Noted],
@@ -151,6 +161,16 @@ export const retentionLayer = (fixture: RetentionFixture) =>
         }),
         Total: Effect.fnUntraced(function* () {
           return (yield* Journal.Read).state.total
+        }),
+      }),
+    ),
+    Brief.toLayer(
+      Effect.succeed({
+        Tally: Effect.fnUntraced(function* (amount: number) {
+          const turn = yield* Brief.Turn
+          yield* turn.state.set({ total: turn.state.total + amount })
+
+          return turn.state.total
         }),
       }),
     ),
@@ -317,8 +337,14 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           // The row can still be redelivered, so its receipt stays.
           yield* test.cleanup
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
+
+          // This delivery dies too; the next one comes after another sweep and
+          // replays the receipt that sweep kept.
+          yield* Fiber.interrupt(draining)
           yield* pause.release
-          yield* Fiber.join(draining)
+          yield* test.cleanup
+          expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
+          yield* test.advance(0)
 
           expect(fixture.retention.receives - before).toBe(1)
           expect(yield* receiver.Total()).toBe(1)
@@ -327,6 +353,35 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           // Once the row is gone, nothing can redeliver the id.
           yield* test.cleanup
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(0)
+        }),
+      ),
+  },
+  {
+    name: "completes a command admitted before expiry when keepReceipts is shorter than the retry window",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const brief = yield* Brief.get("short-horizon")
+          const pause = yield* test.pauseNext("beforeHandler")
+          yield* test.crashNext("beforeCommit")
+          const now = yield* databaseTime
+          const id = `v1.${now - 59_500}.${now + 500}.2d1f6a3e-7b9c-4e21-8f0a-5c6d7e8f9a01`
+
+          const waiter = yield* brief
+            .Tally(9)
+            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
+
+          // The retried turn starts past expiry, inside the delivery-timeout grace.
+          yield* pause.reached
+          yield* Effect.sleep("550 millis")
+          yield* pause.release
+          expect((yield* Fiber.join(waiter)).reason).toBeInstanceOf(CommandExpired)
+          expect(yield* test.inspect(brief.ref)).toMatchObject({ state: { total: 9 }, receipts: 1 })
+
+          // A sweep keeps the receipt through the grace.
+          yield* test.cleanup
+          expect(yield* test.inspect(brief.ref)).toMatchObject({ receipts: 1 })
         }),
       ),
   },

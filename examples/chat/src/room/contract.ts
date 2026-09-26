@@ -65,7 +65,7 @@ export const Post = Actor.command("Post", {
 export const Archive = Actor.command("Archive")
 
 export const Recent = Actor.query("Recent", {
-  input: Schema.Struct({ limit: Schema.Int }),
+  input: Schema.Struct({ limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) }),
   output: Schema.Array(
     Schema.Struct({ id: Schema.String, author: Schema.String, body: Schema.String }),
   ),
@@ -75,7 +75,7 @@ export const Recent = Actor.query("Recent", {
 export const History = Actor.query("History", {
   input: Schema.Struct({
     after: Schema.optional(Schema.String),
-    limit: Schema.optional(Schema.Int),
+    limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1000 }))),
   }),
   output: Schema.Array(Schema.Struct({ cursor: Schema.String, message: MessagePosted })),
   errors: [UnknownCursor, RetentionGap],

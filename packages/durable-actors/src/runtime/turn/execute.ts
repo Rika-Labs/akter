@@ -12,6 +12,7 @@ import { commandTimes } from "../../identity/command.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
+import { receiptMarginMs } from "../storage/retention.ts"
 import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, writeOutbox } from "./outbox.ts"
@@ -113,7 +114,11 @@ export const executeTurn = Effect.fnUntraced(function* (
       request.external === true &&
       Number(admission.now) + (yield* FrameworkClock).offsetMillis() >=
         commandTimes(request.commandId).expiresAt +
-          Math.max(policy.keepReceiptsMs - (yield* OutboxRuntime).retryWindowMs, 0)
+          receiptMarginMs({
+            keepReceiptsMs: policy.keepReceiptsMs,
+            deliveryMs: policy.deliveryMs,
+            retryWindowMs: (yield* OutboxRuntime).retryWindowMs,
+          })
     )
       return yield* ActorError.make({
         reason: CommandExpired.make({ commandId: request.commandId }),

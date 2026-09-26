@@ -49,7 +49,7 @@ import { commandEntity, registerActor } from "./entity/register.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
-import { TurnHooks } from "./turn/hooks.ts"
+import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
@@ -331,6 +331,7 @@ export const layer = (options: Options) => {
             actorType: name,
             keepReceiptsMs: policy.keepReceiptsMs,
             keepEventsMs: policy.keepEventsMs,
+            deliveryMs: policy.deliveryMs,
           })),
           retryWindowMs,
         ),
@@ -338,19 +339,20 @@ export const layer = (options: Options) => {
 
       // Horizons are days long, so a sweep a minute keeps up; each batch is
       // its own short transaction, so turns never wait on a whole sweep.
-      yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
-        Effect.andThen(
-          cleanup.pipe(
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.interrupt
-                : Effect.logWarning("Retention cleanup failed", cause),
+      if ((yield* CleanupHooks).periodic)
+        yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
+          Effect.andThen(
+            cleanup.pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.interrupt
+                  : Effect.logWarning("Retention cleanup failed", cause),
+              ),
             ),
           ),
-        ),
-        Effect.forever,
-        Effect.forkIn(scope),
-      )
+          Effect.forever,
+          Effect.forkIn(scope),
+        )
       const outbox = { retryWindowMs, wake: relay.wake }
 
       const internalActors = InternalActors.of({

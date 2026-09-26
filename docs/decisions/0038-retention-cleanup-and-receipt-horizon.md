@@ -15,7 +15,7 @@
 
 ### The horizons
 
-`keepReceipts` (default 7 days) is measured from the command id's issue time; a timer's receipt counts from its due time. The receipt table stores only the expiry, and every id expires exactly one retry window after its issue (a timer's intent id one window after its due time), so a receipt is prunable when `expires_at_ms <= now − max(keepReceipts − retryWindow, 0)`. A receipt therefore never goes before its id expires, whatever `keepReceipts` says. `keepEvents` (default 30 days) is measured from each event's emit time.
+`keepReceipts` (default 7 days) is measured from the command id's issue time; a timer's receipt counts from its due time. The receipt table stores only the expiry, and every id expires exactly one retry window after its issue (a timer's intent id one window after its due time), so a receipt is prunable when `expires_at_ms <= now − max(keepReceipts − retryWindow, deliveryTimeout)`. A receipt therefore never goes sooner than `deliveryTimeout` after its id expires, whatever `keepReceipts` says; that grace keeps the admission rule below from refusing a command admitted just before expiry when `keepReceipts` is shorter than the retry window. `keepEvents` (default 30 days) is measured from each event's emit time.
 
 Both are per actor type and apply to every tenant. Neither is a guarantee to retain data longer: an operator who needs a longer audit trail raises the horizon.
 
@@ -27,13 +27,13 @@ Both are per actor type and apply to every tenant. Neither is a guarantee to ret
 
 ### How it deletes
 
-Every runtime sweeps once a minute. For each registered actor type, a sweep deletes receipts in batches of 1,000 rows (`FOR UPDATE SKIP LOCKED`, so concurrent runners do not wait on each other), then events in batches. An event batch picks up to 1,000 events past the horizon and deletes, per actor, every event up to the newest one it picked, so what remains of each stream is always a suffix even if a clock step gave a later event an older timestamp. Each batch is one autocommit statement, so an interrupted sweep leaves only whole batches and the next sweep resumes. The sweep yields between batches, so a turn waiting for PGlite's single connection runs between them.
+Every runtime sweeps once a minute (`ActorTest` runtimes only when a test calls `cleanup`). For each registered actor type, a sweep deletes receipts in batches of 1,000 rows (`FOR UPDATE SKIP LOCKED`, so concurrent runners do not wait on each other), then events in batches. An event batch picks up to 1,000 events past the horizon and deletes, per actor, every event up to the newest one it picked, so what remains of each stream is always a suffix even if a clock step gave a later event an older timestamp. Each batch is one transaction that first takes a per-actor-type advisory lock, so two runners, or a periodic and an explicit sweep, take turns instead of locking overlapping event prefixes in opposite orders (the first full benchmark run deadlocked without it). An interrupted sweep leaves only whole batches and the next sweep resumes. The sweep yields between batches, so a turn waiting for PGlite's single connection runs between them.
 
 Migration `0010_retention` adds `actor_receipts (actor_type, expires_at_ms)`, `actor_events (actor_type, emitted_at_ms)`, and `actor_outbox (intent_id)`, so each batch is an index range read and the outbox check an index probe.
 
 ### Admission after pruning
 
-External admission already rejects an expired id from the id alone, so a missing receipt never makes an expired id new. One window remains: a retry that passed its expiry check while an earlier attempt with the same id was still in flight, and whose turn runs only after that attempt committed and cleanup pruned its receipt. For that case an externally admitted turn that finds no receipt refuses the command with `CommandExpired` once the database clock has passed `expiresAt + max(keepReceipts − retryWindow, 0)`, the earliest moment its receipt could have been pruned. Before that moment an admitted command still runs past its expiry, as ADR 0007 requires; internal deliveries are never refused. The check reads the clock in the admission statement, so it adds no statement.
+External admission already rejects an expired id from the id alone, so a missing receipt never makes an expired id new. One window remains: a retry that passed its expiry check while an earlier attempt with the same id was still in flight, and whose turn runs only after that attempt committed and cleanup pruned its receipt. For that case an externally admitted turn that finds no receipt refuses the command with `CommandExpired` once the database clock has passed `expiresAt + max(keepReceipts − retryWindow, deliveryTimeout)`, the earliest moment its receipt could have been pruned. Before that moment an admitted command still runs past its expiry, as ADR 0007 requires; internal deliveries are never refused. The check reads the clock in the admission statement, so it adds no statement.
 
 ### Test clock
 
@@ -54,7 +54,7 @@ Queries read on the pool outside a transaction, so no `statement_timeout` applie
 
 `conformance/retention.ts` runs on PGlite and Postgres: receipt pruning with restart, the outbox-dedup case with a crashed and paused relay, prefix pruning with a skewed timestamp and in batches, and paged replay, the emit budget and the blob quota. On Postgres only: the retry admitted before expiry whose receipt is pruned before its turn (it runs the handler twice without the admission rule), and the query cancelled on the server. `conformance/crash/retention.test.ts` kills a process inside a sweep and checks that a fresh process finishes it. The `retention` benchmark records sweep throughput and turn latency during a sweep.
 
-If P4 ([ADR 0020](0020-two-round-trip-turn-pipeline.md)) moves query reads onto a multiplexed connection, interruption no longer cancels them, and the query deadline needs `statement_timeout` instead. Restore and clock rollback across pruned history remain unsupported, as ADR 0007 states.
+Each process applies its own policy values, so a rolling deploy that lowers `keepReceipts` can briefly let a new process prune a receipt an old process's turn still relies on; [retention](../operations/retention.md) says how to lower it safely, and version skew stays an M4 item. If P4 ([ADR 0020](0020-two-round-trip-turn-pipeline.md)) moves query reads onto a multiplexed connection, interruption no longer cancels them, and the query deadline needs `statement_timeout` instead. Restore and clock rollback across pruned history remain unsupported, as ADR 0007 states.
 
 ## Revisit when
 

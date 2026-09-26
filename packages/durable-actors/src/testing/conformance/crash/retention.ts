@@ -60,6 +60,7 @@ const runtime = Layer.unwrap(
             ? Console.log("READY").pipe(Effect.andThen(Effect.never))
             : Effect.void,
         ),
+        periodic: false,
       }),
     )
 

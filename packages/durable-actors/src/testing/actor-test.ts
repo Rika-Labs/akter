@@ -32,7 +32,7 @@ import { type Actors, InternalActors, type Outcome, type Request } from "../hand
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
 import { compress, decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
 import { VERSION_KEY } from "../state/migration.ts"
-import { RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
+import { CleanupHooks, RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
 import { type ClusterOptions, clusterLayer } from "./cluster.ts"
@@ -181,6 +181,13 @@ export class ActorTest extends Context.Service<
             at: (point) => Effect.suspend(() => faults.get(point)?.shift() ?? Effect.void),
           }),
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
+          // Tests sweep with `cleanup` when they choose, never on a timer
+          // that could fire between a case's `advance` and its assertions.
+          Layer.succeed(CleanupHooks, {
+            batchSize: 1000,
+            afterBatch: Effect.void,
+            periodic: false,
+          }),
         )
 
         const addFault = (point: TurnPoint, fault: Effect.Effect<void>) =>
@@ -412,6 +419,9 @@ export class ActorTest extends Context.Service<
           test.pipe(Layer.provide(runtime)),
           Layer.succeed(CurrentCaller, options.as ?? Anonymous.make({})),
           Layer.succeed(Tenant, tenant),
+          // Test code reads the same advanced clock as the runtime, so an id it
+          // builds from database time is live in the runtime's eyes too.
+          Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
         ).pipe(
           Layer.provide(hooks),
           Layer.provideMerge(
