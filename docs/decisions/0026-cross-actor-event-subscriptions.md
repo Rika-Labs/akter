@@ -266,7 +266,7 @@ The claim index leads with `subscriber_type` after `bucket`. That way a runner t
 **At commit (the publisher's turn).** The event-append statement gains one CTE, so the turn keeps its round trips and statement count ([ADR 0020](0020-two-round-trip-turn-pipeline.md), T2 baseline). The CTE:
 
 1. For routed subscriptions registered on this runner that name one of the emitted tags, it inserts the missing source-side rows with `delivered` set to this turn's first sequence minus 1 (`ON CONFLICT DO NOTHING`), and adds them to the tag summary. The routed list is a bound parameter, and empty for most actor types.
-2. It upserts one outbox row of kind `feed` on the source, keyed `$feed` and due now. It does so if `actor_subscription_tags` has a row for any emitted tag, or if step 1 inserted one. `ON CONFLICT` keeps the earlier `due_at_ms`. The probe is a primary-key lookup per emitted tag, so it costs the same with no subscriptions or with 10^5.
+2. It upserts one outbox row of kind `feed` on the source, keyed `$feed` and due now. It does so if `actor_subscription_tags` has a row for any emitted tag, or if step 1 inserted one. `ON CONFLICT` sets `due_at_ms = least(due_at_ms, now)` and `attempts = 0`, so a commit that lands while a runner holds the feed row's lease both leaves it due and breaks that runner's fence. The probe is a primary-key lookup per emitted tag, so it costs the same with no subscriptions or with 10^5.
 
 A rolled-back or declared-failure turn emits no events, so it writes neither.
 
@@ -277,7 +277,7 @@ A rolled-back or declared-failure turn emits no events, so it writes neither.
   - it sets `due_at_ms = now` only where `due_at_ms IS NULL` and a matching event exists after `delivered`. A claimed row, or a row waiting out a retry backoff, keeps its `due_at_ms`, so commits can't cut a poison row's backoff short;
   - it gives a lease instead of "now" to the rows the runner has free subscription-delivery slots for, so it claims them in the same statement.
 
-  A source with many subscriptions is paged 1,000 rows at a time. Finally the runner deletes the `feed` row, fenced on the lease it holds. A commit that re-marked the feed during expansion leaves it due, so it is expanded again.
+  A source with many subscriptions is paged 1,000 rows at a time. Finally the runner deletes the `feed` row, fenced on the `attempts` value its claim wrote (always at least 1). A commit after the expansion read `H` has reset `attempts` to 0, so the delete matches nothing and the row stays due and is expanded again; that expansion may overlap the first one, which is safe because `marked` only grows and `due_at_ms` is only set where it is `NULL`.
 
 - **Delivery.** A runner claims due subscription rows with `FOR UPDATE SKIP LOCKED` and a lease, exactly as ADR 0021 claims intents. The claim scans only `actor_subscriptions_due`, and only for subscriber types registered on the runner, so caught-up subscriptions cost nothing ([ADR 0006](0006-scale-rules-placement-and-query-tiers.md) due-work rule). For each claimed row the runner:
   1. reads, in one statement (the M1.5 replay shape), up to `relay.subscriptionBatch` (default 16) matching events after `delivered`, the oldest retained sequence, and the head `H`;
@@ -476,7 +476,7 @@ This section states the interface agreed with ADR 0023's owner (DURA-27). ADR 00
 - `claims a source's subscriptions on several runners` (harness)
 - `leaves the publisher's statement count unchanged` (T2 gate)
 
-**Failure rows:** **Commit races subscription settle**; **Relay dies after claiming a feed row, before expansion** (the feed is expanded after the lease ends).
+**Failure rows:** **Commit races subscription settle**; **Relay dies after claiming a feed row, before expansion** (the feed is expanded after the lease ends); **Publisher commits while a runner is expanding its feed row** (the reset `attempts` defeats the fenced delete, so the feed is expanded again).
 
 **Benchmark:** `subscriptions/publish-with-<n>-subscribers` for n = 1, 16, 256, and 1,024, against this branch's `intent-fanout-<n>` baseline. The publisher's p50 must stay flat across n, within 10% of `events/append-1`.
 
