@@ -6,7 +6,7 @@ import {
   publishManifest,
   tarballProblems,
   undeclaredImports,
-} from "./release.ts"
+} from "./release/manifest.ts"
 
 const args = process.argv.slice(2)
 

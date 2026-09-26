@@ -4,7 +4,7 @@ import {
   tarballProblems,
   undeclaredImports,
   type FrameworkManifest,
-} from "./release.ts"
+} from "./manifest.ts"
 
 const manifest: FrameworkManifest = {
   name: "@durable-actors/core",
