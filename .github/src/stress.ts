@@ -47,7 +47,13 @@ export function tallyFlakes(runs: ReadonlyArray<StressRun>): ReadonlyArray<Flake
     .toSorted((a, b) => b.failed.length - a.failed.length || a.name.localeCompare(b.name))
 }
 
-export function stressSummary(runs: number, flakes: ReadonlyArray<Flake>) {
+export function stressSummary({
+  runs,
+  flakes,
+}: {
+  readonly runs: number
+  readonly flakes: ReadonlyArray<Flake>
+}) {
   if (flakes.length === 0) return `No case failed in ${runs} runs under CPU load.\n`
 
   const rows = flakes.map(

@@ -43,8 +43,10 @@ describe("stress tally", () => {
   })
 
   it("summarizes a clean stress run and a flaky one", () => {
-    expect(stressSummary(10, [])).toBe("No case failed in 10 runs under CPU load.\n")
-    expect(stressSummary(10, [{ name: "x | y", failed: ["3"] }])).toContain(
+    expect(stressSummary({ runs: 10, flakes: [] })).toBe(
+      "No case failed in 10 runs under CPU load.\n",
+    )
+    expect(stressSummary({ runs: 10, flakes: [{ name: "x | y", failed: ["3"] }] })).toContain(
       "| x \\| y | 1/10 | 3 |",
     )
   })
