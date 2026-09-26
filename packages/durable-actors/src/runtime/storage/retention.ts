@@ -28,6 +28,9 @@ export interface Swept {
  * newest one it picked, so a retained event always has every later one after
  * it. `event_sequence` lives on the generation row and is never touched, so
  * no cursor is reissued.
+ *
+ * The sweep yields after each batch, so a turn waiting for PGlite's one
+ * connection runs between batches instead of after the whole sweep.
  */
 export const sweep = Effect.fnUntraced(function* (
   policies: Iterable<RetentionPolicy>,
@@ -64,6 +67,7 @@ export const sweep = Effect.fnUntraced(function* (
 
       if (pruned!.count === 0) break
       yield* hooks.afterBatch
+      yield* Effect.yieldNow
     }
 
     for (;;) {
@@ -85,6 +89,7 @@ export const sweep = Effect.fnUntraced(function* (
 
       if (pruned!.count === 0) break
       yield* hooks.afterBatch
+      yield* Effect.yieldNow
     }
   }
 

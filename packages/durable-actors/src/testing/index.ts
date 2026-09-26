@@ -1,4 +1,4 @@
-export { ActorTest } from "./actor-test.ts"
+export { ActorTest, cleanup } from "./actor-test.ts"
 
 export { ActorCluster } from "./cluster.ts"
 

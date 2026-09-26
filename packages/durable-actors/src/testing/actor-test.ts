@@ -101,6 +101,14 @@ export const executeForTest = (request: Request): Effect.Effect<Outcome, ActorEr
     return yield* actors.execute(request)
   })
 
+/**
+ * Runs one retention sweep in the current runtime now, as its background loop
+ * does every minute; for benchmarks and tests that use the production layer.
+ */
+export const cleanup: Effect.Effect<Swept, never, InternalActors> = Effect.gen(function* () {
+  return yield* (yield* InternalActors).cleanup
+})
+
 export class ActorTest extends Context.Service<
   ActorTest,
   {
