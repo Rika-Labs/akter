@@ -100,6 +100,11 @@ export class RunnerWiring extends Context.Service<
   }
 >()("durable-actors/runtime/layer/RunnerWiring") {}
 
+// Cluster entity ids name the tenant and actor id together.
+const encodeEntityId = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+)
+
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
 
@@ -166,11 +171,7 @@ export const layer = (options: Options) => {
           )
       })
 
-      const entityId = (ref: ActorRef) =>
-        Schema.encodeEffect(Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])))([
-          ref.tenant,
-          ref.id,
-        ]).pipe(Effect.orDie)
+      const entityId = (ref: ActorRef) => encodeEntityId([ref.tenant, ref.id]).pipe(Effect.orDie)
 
       const publicActors = Actors.of({
         mintCommandId: Effect.gen(function* () {

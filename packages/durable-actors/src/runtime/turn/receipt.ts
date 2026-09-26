@@ -3,15 +3,23 @@ import { ActorError, CommandConflict, Unauthorized } from "../../errors/actor.ts
 import { Outcome, type Request } from "../../handles/actors.ts"
 import { callerKey } from "../../identity/caller.ts"
 
-export const OutcomeJson = Schema.fromJsonString(Outcome)
+const OutcomeJson = Schema.fromJsonString(Outcome)
+
+const encodeOutcomeJson = Schema.encodeEffect(OutcomeJson)
+
+export const encodeOutcome = (outcome: Outcome) => encodeOutcomeJson(outcome)
+
+const decodeOutcome = Schema.decodeEffect(OutcomeJson)
+
+const utf8 = new TextEncoder()
 
 /** SHA-256 over Postgres's JSONB text normalization of a payload, as stored in receipts. */
 export const hashCanonical = Effect.fnUntraced(function* (canonical: string) {
   const bytes = yield* (yield* Crypto.Crypto)
-    .digest("SHA-256", new TextEncoder().encode(canonical))
+    .digest("SHA-256", utf8.encode(canonical))
     .pipe(Effect.orDie)
 
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("hex")
 })
 
 export interface StoredReceipt {
@@ -37,5 +45,5 @@ export const checkReceipt = Effect.fnUntraced(function* (
     })
   }
 
-  return yield* Schema.decodeEffect(OutcomeJson)(receipt.outcome).pipe(Effect.orDie)
+  return yield* decodeOutcome(receipt.outcome).pipe(Effect.orDie)
 })

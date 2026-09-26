@@ -93,13 +93,19 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
               command: payload.command,
               commandId: payload.commandId,
             }),
-            Effect.withSpan(`durable-actors.${payload.ref.actor}/${payload.command}`, {
-              attributes: {
-                "actor.tenant": payload.ref.tenant,
-                "actor.id": payload.ref.id,
-                "command.id": payload.commandId,
+            // The span's call site is always this file, so a captured stack
+            // trace would cost an Error per turn and name nothing useful.
+            Effect.withSpan(
+              `durable-actors.${payload.ref.actor}/${payload.command}`,
+              {
+                attributes: {
+                  "actor.tenant": payload.ref.tenant,
+                  "actor.id": payload.ref.id,
+                  "command.id": payload.commandId,
+                },
               },
-            }),
+              { captureStackTrace: false },
+            ),
           )
 
           const hooks = yield* TurnHooks
