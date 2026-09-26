@@ -235,6 +235,7 @@ Postgres only (independent connections):
 
 These cases are in-process. They exercise Cluster's lock expiry, shard movement, and the generation fence against real Postgres, but not real process death or network partitions; the multi-process drills (T7) cover those. The simulated rival case `orders events gap-free when a rival activation races the owner for one actor` in `conformance/events.ts` stays as a fast single-runner check.
 
+
 ### Property tests (T3)
 
 Properties draw generated inputs from `effect/unstable/arbitrary` through [`testing/property.ts`](../../packages/durable-actors/src/testing/property.ts). Each property runs a fixed number of cases from the seed `56`, so a pull-request run is deterministic; a failure reports its seed, the shrunk counterexample, and the Effect replay tuple. `PROPERTY_SEED=<seed>` reproduces a run, `PROPERTY_SEED=random` draws a new seed, and `PROPERTY_RUNS` overrides the case count. The [nightly properties workflow](../../.github/workflows/properties.yml) runs both suites with `PROPERTY_SEED=random`. A property fails unless every requested case ran.
@@ -257,6 +258,20 @@ Shared properties in [`conformance/properties.ts`](../../packages/durable-actors
 - `property: keyed timers replace and cancel exactly as a model predicts` (1,000 cases): up to six keyed and unkeyed schedules, cancels, and cancels in a turn that fails. The pending outbox count and the delivered bodies after `test.advance` match the model, where a key keeps only its latest timer.
 
 These properties are bounded by the listed case and operation counts and run on one runner. They add generated coverage to the hand-written cases; they are not evidence for multi-process behavior.
+
+
+
+### Runner start-up and nightly stress (T4)
+
+Every first command on a fresh Postgres runner could stall for about 10 s. Effect Cluster (rc.116, unchanged on effect-smol `main`) compares a shard-lock refresh's answer against the shards held *when the answer arrives*. The runner's first refresh starts with no shards; if the first acquire commits while it is in flight, the answer lacks the new shard, so the runner releases it and reacquires it only on the next 10 s entity poll. It caused the known CI flakes: `isolates durable state between fresh layer builds` ("No healthy runners available"), the `beforeExecute`, `afterExecute` and `beforeCommit` effect SIGKILL cases (a crash child that hit its own 10 s timeout before its crash point, reported as "Unknown Error: 1"), and the `RunnerAtCapacity` timing that needed a warm-up actor. Under CPU load the stall hit 8 of 90 crash-child starts before the fix and 0 of 120 after.
+
+[`patches/effect@4.0.0-rc.116.patch`](../../patches/effect@4.0.0-rc.116.patch) releases only shards the refresh asked about. Remove it with the Effect upgrade that fixes the race upstream.
+
+- `keeps a shard acquired while its first lock refresh is in flight` in [`runtime/layer.test.ts`](../../packages/durable-actors/src/runtime/layer.test.ts) — lock storage whose first refresh reads before the first acquire commits and answers after it. The first call must answer within 5 s; unpatched it waits about 9 s for the entity poll.
+- The crash suites now fail with "the child exited before reaching its crash point" when a child dies on its own, instead of an opaque exit code.
+
+The `Stress` workflow ([`.github/workflows/stress.yml`](../../.github/workflows/stress.yml)) runs nightly and on `workflow_dispatch`. It runs `test` and `test:integration` 10 times (the `runs` input) with one `stress-ng` CPU worker per core, and lists every failing case by name with the runs it failed in, in the job summary and as annotations.
+
 
 The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
 
