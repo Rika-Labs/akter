@@ -48,6 +48,8 @@ jobs:
       # Timing-sensitive cases flake under load long before they do on an idle
       # runner, so every run shares the machine with one busy worker per core.
       - name: Run the conformance suites under CPU load
+        # Leaves room in the job budget for the report and the artifact upload.
+        timeout-minutes: 130
         env:
           RUNS: ${{ inputs.runs || '10' }}
           TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
@@ -59,9 +61,10 @@ jobs:
           trap 'kill %1' EXIT
           for run in $(seq 1 "$RUNS"); do
             for suite in test test:integration; do
-              # Vitest resolves the report path from the repository root.
               status=0
-              bun run "$suite" --reporter=default --reporter=json \
+              # A hung run is cut off and reported instead of eating the budget.
+              # Vitest resolves the report path from the repository root.
+              timeout --kill-after=30s 20m bun run "$suite" --reporter=default --reporter=json \
                 --outputFile.json="stress/${suite/:/-}-$run.json" \
                 > "../../stress/${suite/:/-}-$run.log" 2>&1 || status=$?
               echo "run $run $suite exited $status"
