@@ -14,7 +14,9 @@ import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, writeOutbox } from "./outbox.ts"
-import { checkReceipt, hashCanonical, OutcomeJson, type StoredReceipt } from "./receipt.ts"
+import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
+
+const isSystem = Schema.is(System)
 
 /**
  * What one activation remembers between turns. `generation` is the
@@ -101,7 +103,7 @@ export const executeTurn = Effect.fnUntraced(function* (
       return { outcome, generation: current, state: cache.state, wake: false }
     }
 
-    if (command.internal && !Schema.is(System)(request.caller))
+    if (command.internal && !isSystem(request.caller))
       return yield* Effect.die(new Error("Internal commands require a System caller"))
 
     if (
@@ -160,7 +162,7 @@ export const executeTurn = Effect.fnUntraced(function* (
 
     if (creates) yield* sql`UPDATE actor_generations SET created = true WHERE ${actorRow}`
     const wake = yield* writeOutbox(routingKey, request.ref, result.outbox)
-    const encoded = yield* Schema.encodeEffect(OutcomeJson)(result.outcome).pipe(Effect.orDie)
+    const encoded = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
     yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
       VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${request.commandId}, ${request.command}, ${hash}, ${callerKey(request.caller)}, ${encoded}, ${commandTimes(request.commandId).expiresAt})`
     yield* hooks.at("beforeCommit", request)
