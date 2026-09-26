@@ -152,7 +152,7 @@ Declarations, in [`definition.test.ts`](../../packages/durable-actors/src/actor/
 
 ### M1.9 retention, replay pages, emit budget, and blob quota
 
-The cases live in [`conformance/retention.ts`](../../packages/durable-actors/src/testing/conformance/retention.ts) and cover **Finite retry horizon and safe cleanup** below, the failure-matrix rows "External identity expires before delivery or retry" and "Cleanup races retry / crashes before completion", and invariant **R5** with automatic pruning ([ADR 0038](../decisions/0038-retention-cleanup-and-receipt-horizon.md)). The cases that move the clock days ahead run in a runtime of their own on a fresh database. Shared (PGlite and Postgres):
+The cases live in [`conformance/retention.ts`](../../packages/durable-actors/src/testing/conformance/retention.ts) and cover **Finite retry horizon and safe cleanup** below, the failure-matrix rows "External identity expires before delivery or retry" and "Cleanup races retry / crashes before completion", and invariant **R5** with automatic pruning ([ADR 0038](../decisions/0038-retention-cleanup-and-receipt-horizon.md)). Shared (PGlite and Postgres):
 
 - `prunes receipts past keepReceipts and still rejects the expired id after pruning and restart` — past the id's expiry but inside `keepReceipts` the receipt stays and the retry already fails `CommandExpired`; past `keepReceipts` a sweep deletes both receipts, the retry still fails `CommandExpired`, and the handler ran twice in total.
 - `rejects a pruned expired id after restart without running its handler` — one runtime commits, moves three days on and prunes the receipt; a restarted runtime with an unadvanced clock refuses the same id once it expires in real time, with no new handler run (R5 across restart).

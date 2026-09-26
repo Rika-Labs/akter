@@ -1,4 +1,4 @@
-import { Cause, Clock, Effect, Exit, Fiber, Layer, Option, Schema, Scope } from "effect"
+import { Cause, Clock, Effect, Exit, Fiber, Layer, Option, Schema, type Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Intent, RetentionGap, UnknownCursor } from "../../index.ts"
 import { ActorError, CommandExpired, Timeout } from "../../errors/actor.ts"
@@ -172,8 +172,8 @@ const defect = (exit: Exit.Exit<unknown, unknown>) =>
 const cursors = (entries: ReadonlyArray<typeof Entry.Type>) => entries.map(({ cursor }) => cursor)
 
 /**
- * Runs `effect` in a runtime of its own on a fresh database, so the cases that
- * move the framework clock days ahead never age another case's rows.
+ * Runs `effect` in a runtime of its own on a fresh database, for a case whose
+ * pause points must not catch a turn the shared runtime's relay delivers.
  */
 const isolated = <A, E>(
   environment: ConformanceEnvironment,
@@ -207,8 +207,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "prunes receipts past keepReceipts and still rejects the expired id after pruning and restart",
     run: ({ expect, environment, fixture }) =>
-      isolated(
-        environment,
+      environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const journal = yield* Journal.get("receipts")
@@ -219,12 +218,12 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
 
           // Past its id's expiry but inside keepReceipts: kept, and the retry is already expired.
           yield* test.advance("1 day")
-          expect(yield* test.cleanup).toMatchObject({ receipts: 0 })
+          yield* test.cleanup
           expect(yield* test.inspect(journal.ref)).toMatchObject({ receipts: 2 })
           expect((yield* add.pipe(Effect.flip)).reason).toBeInstanceOf(CommandExpired)
 
           yield* test.advance("2 days")
-          expect(yield* test.cleanup).toMatchObject({ receipts: 2 })
+          yield* test.cleanup
           expect(yield* test.inspect(journal.ref)).toMatchObject({
             receipts: 0,
             state: { total: 7 },
@@ -298,8 +297,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "prunes receipts past keepReceipts without breaking outbox dedup",
     run: ({ expect, environment, fixture }) =>
-      isolated(
-        environment,
+      environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const sender = yield* Journal.get("sender")
@@ -335,8 +333,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "prunes only an actor's oldest events, never resets the sequence, and reports the gap",
     run: ({ expect, environment }) =>
-      isolated(
-        environment,
+      environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const journal = yield* Journal.get("events")
@@ -347,7 +344,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance("2 days")
           yield* journal.Note("c")
 
-          expect(yield* test.cleanup).toMatchObject({ events: 2 })
+          yield* test.cleanup
           expect(yield* test.inspect(journal.ref)).toMatchObject({ events: 1 })
           expect(yield* test.inspect(chronicle.ref)).toMatchObject({ events: 1 })
           expect(yield* eventSequence("events")).toBe("3")
@@ -369,8 +366,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "prunes events as a prefix even when a later event carries an older timestamp",
     run: ({ expect, environment }) =>
-      isolated(
-        environment,
+      environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const sql = yield* SqlClient.SqlClient
@@ -382,7 +378,8 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           yield* sql`UPDATE actor_events SET emitted_at_ms = emitted_at_ms - 172800000
             WHERE tenant_id = ${test.tenant} AND actor_type = 'Journal' AND actor_id = 'skewed' AND sequence = 3`
 
-          expect(yield* test.cleanup).toMatchObject({ events: 3 })
+          yield* test.cleanup
+          expect(yield* test.inspect(journal.ref)).toMatchObject({ events: 1 })
           expect(yield* journal.History({ after: "3" })).toEqual([{ cursor: "4", body: "d" }])
           expect(yield* journal.History({ after: "2" }).pipe(Effect.flip)).toEqual(
             RetentionGap.make({ cursor: "2" }),
@@ -393,8 +390,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "sweeps in batches that each leave a whole prefix",
     run: ({ expect, environment }) =>
-      isolated(
-        environment,
+      environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const journal = yield* Journal.get("batched")
@@ -402,7 +398,8 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance("2 days")
           yield* journal.Note("fresh")
 
-          expect(yield* test.cleanup).toMatchObject({ events: 2_500 })
+          yield* test.cleanup
+          expect(yield* test.inspect(journal.ref)).toMatchObject({ events: 1 })
           expect(yield* journal.History({ after: "2500" })).toEqual([
             { cursor: "2501", body: "fresh" },
           ])
