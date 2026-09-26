@@ -15,12 +15,14 @@ export const databaseTime = Effect.gen(function* () {
   return Number(rows[0]!.now)
 })
 
+const decodeCommandId = Schema.decodeEffect(CommandId)
+
 export const checkIdentity = Effect.fnUntraced(function* (
   id: string,
   windowMs: number,
   now: number,
 ) {
-  yield* Schema.decodeEffect(CommandId)(id).pipe(
+  yield* decodeCommandId(id).pipe(
     Effect.mapError(() => ActorError.make({ reason: InvalidCommandId.make({ commandId: id }) })),
   )
   const { issuedAt, expiresAt } = commandTimes(id)

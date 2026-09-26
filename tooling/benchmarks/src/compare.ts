@@ -7,6 +7,9 @@ const Case = Schema.Struct({
   errors: Schema.Finite,
   statementsPerOperation: Schema.optional(Schema.NullOr(Schema.Finite)),
   latencyMs: Schema.Struct({ p50: Schema.Finite, p95: Schema.Finite, p99: Schema.Finite }),
+  cpu: Schema.optional(
+    Schema.Struct({ clientMsPerOperation: Schema.optional(Schema.NullOr(Schema.Finite)) }),
+  ),
 })
 
 const Result = Schema.Struct({
@@ -27,12 +30,13 @@ export type Result = typeof Result.Type
 
 export interface Change {
   readonly key: string
-  readonly metric: "throughput" | "p50" | "p95" | "p99" | "statements" | "errors"
+  readonly metric: "throughput" | "p50" | "p95" | "p99" | "cpu" | "statements" | "errors"
   readonly before: number
   readonly after: number
   /**
    * How much worse the metric got, positive when worse: a fraction for
-   * throughput and latency, an absolute count for statements per operation.
+   * throughput, latency, and CPU per operation, an absolute count for
+   * statements per operation.
    */
   readonly worse: number
   readonly regression: boolean
@@ -52,6 +56,8 @@ const STATEMENT_THRESHOLD = 0.5
  * Pairs cases by scenario and case name. Latency is worse when it rises and
  * throughput when it falls; either beyond `threshold` (a fraction) is a
  * regression, as are more statements per operation and any new error.
+ * Client CPU per operation, when both runs report it, is a regression when it
+ * rises beyond `threshold`.
  */
 export const compare = (input: {
   readonly before: Result
@@ -104,6 +110,21 @@ export const compare = (input: {
 
     for (const [metric, from, to, worse] of metrics)
       changes.push({ key, metric, before: from, after: to, worse, regression: worse > threshold })
+
+    const cpuBefore = prior.cpu?.clientMsPerOperation ?? null
+    const cpuAfter = next.cpu?.clientMsPerOperation ?? null
+
+    if (cpuBefore !== null && cpuAfter !== null) {
+      const worse = relative(cpuBefore, cpuAfter)
+      changes.push({
+        key,
+        metric: "cpu",
+        before: cpuBefore,
+        after: cpuAfter,
+        worse,
+        regression: worse > threshold,
+      })
+    }
 
     const statementsBefore = prior.statementsPerOperation ?? null
     const statementsAfter = next.statementsPerOperation ?? null

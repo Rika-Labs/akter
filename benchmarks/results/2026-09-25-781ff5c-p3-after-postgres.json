@@ -1,0 +1,911 @@
+{
+  "schema": 2,
+  "label": "p3-after",
+  "note": "P3 after",
+  "profile": "full",
+  "startedAt": "2026-09-25T21:19:04.647Z",
+  "finishedAt": "2026-09-25T21:20:37.783Z",
+  "git": {
+    "sha": "781ff5c02bfc59d82e8cf9831df0b0f1e66d988f",
+    "shortSha": "781ff5c",
+    "branch": "HEAD",
+    "mainBase": "96eb5e1d3950229cbe9414e16390cb7f971dd46f",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.3.14",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "AMD EPYC",
+    "logicalCpus": 4,
+    "memoryGiB": 15.6,
+    "os": "Linux 6.1.158+",
+    "hostname": "cox.local",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "hot-actor",
+      "description": "Warm command turns on one actor: sequential latency, then 8 and 64 concurrent callers competing for its single turn slot.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 7692,
+          "throughput": 390,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 2.562,
+            "min": 1.533,
+            "p50": 2.239,
+            "p90": 4.01,
+            "p95": 4.436,
+            "p99": 5.529,
+            "max": 16.587
+          },
+          "statementsPerOperation": 7.01,
+          "statements": [
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now",
+              "calls": 6008,
+              "meanMs": 0.003
+            },
+            {
+              "query": "INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms) VALUES ($1, $2,",
+              "calls": 3000,
+              "meanMs": 0.034
+            },
+            {
+              "query": "INSERT INTO actor_state (routing_key, tenant_id, actor_type, actor_id, key, value) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (routing_key, tenant_id, actor_ty",
+              "calls": 3000,
+              "meanMs": 0.023
+            },
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now, $1::jsonb::text AS canonical, r.caller_key, r.command, r.payload_hash, r.outcome FROM (",
+              "calls": 3000,
+              "meanMs": 0.013
+            },
+            {
+              "query": "SELECT g.generation::text AS generation, g.created, $1::jsonb::text AS canonical, r.caller_key, r.command, r.payload_hash, r.outcome FROM actor_generations g LE",
+              "calls": 3000,
+              "meanMs": 0.018
+            },
+            {
+              "query": "INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id) SELECT $1, $2, $3, $4 FROM (SELECT set_config('lock_timeout', $5, true), set_config",
+              "calls": 3000,
+              "meanMs": 0.017
+            },
+            {
+              "query": "SELECT o.routing_key::text AS routing_key, o.intent_id, o.kind, o.attempts, o.last_error, o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.t",
+              "calls": 8,
+              "meanMs": 0.107
+            },
+            {
+              "query": "SAVEPOINT $1",
+              "calls": 1,
+              "meanMs": 0.001
+            },
+            {
+              "query": "BEGIN",
+              "calls": 1,
+              "meanMs": 0.001
+            },
+            {
+              "query": "COMMIT",
+              "calls": 1,
+              "meanMs": 0.001
+            }
+          ],
+          "activity": {
+            "samples": 298,
+            "connections": {
+              "idle:Client/ClientRead": 9.42,
+              "idle in transaction:Client/ClientRead": 0.39,
+              "active": 0.06,
+              "idle in transaction": 0.06,
+              "idle": 0.04,
+              "active:IO/WalSync": 0.02,
+              "active:Client/ClientRead": 0.01
+            }
+          },
+          "cpu": {
+            "client": 94.2,
+            "server": 23.2,
+            "clientMsPerOperation": 2.416,
+            "serverMsPerOperation": 0.594
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-8",
+          "parameters": {
+            "actors": 1,
+            "workers": 8
+          },
+          "operations": 4645,
+          "elapsedMs": 10013,
+          "throughput": 463.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 4645,
+            "mean": 17.23,
+            "min": 10.511,
+            "p50": 16.653,
+            "p90": 19.976,
+            "p95": 21.503,
+            "p99": 28.468,
+            "max": 36.437
+          },
+          "statementsPerOperation": 7.01,
+          "statements": null,
+          "activity": {
+            "samples": 387,
+            "connections": {
+              "idle:Client/ClientRead": 8.83,
+              "idle in transaction:Client/ClientRead": 0.54,
+              "active": 0.09,
+              "idle": 0.07,
+              "idle in transaction": 0.05,
+              "active:IO/WalSync": 0.04,
+              "active:Client/ClientRead": 0.02,
+              "active:IO/WalWrite": 0.01,
+              "idle in transaction:IO/WalWrite": 0.01,
+              "idle in transaction:IO/WalSync": 0
+            }
+          },
+          "cpu": {
+            "client": 107.6,
+            "server": 28.8,
+            "clientMsPerOperation": 2.318,
+            "serverMsPerOperation": 0.621
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "actors": 1,
+            "workers": 64
+          },
+          "operations": 4751,
+          "elapsedMs": 10100,
+          "throughput": 470.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 4751,
+            "mean": 135.368,
+            "min": 24.071,
+            "p50": 133.448,
+            "p90": 147.613,
+            "p95": 152.194,
+            "p99": 173.854,
+            "max": 189.75
+          },
+          "statementsPerOperation": 7.01,
+          "statements": null,
+          "activity": {
+            "samples": 391,
+            "connections": {
+              "idle:Client/ClientRead": 8.71,
+              "idle in transaction:Client/ClientRead": 0.6,
+              "active": 0.1,
+              "idle in transaction": 0.08,
+              "idle": 0.05,
+              "active:IO/WalSync": 0.03,
+              "active:Client/ClientRead": 0.01,
+              "idle in transaction:IO/WalSync": 0,
+              "active:IO/WalWrite": 0
+            }
+          },
+          "cpu": {
+            "client": 103.2,
+            "server": 29.1,
+            "clientMsPerOperation": 2.193,
+            "serverMsPerOperation": 0.62
+          },
+          "extra": null
+        }
+      ]
+    },
+    {
+      "name": "state-size",
+      "description": "State growing toward the default maxStateBytes (65,536): rewrite the blob every turn, hold it while touching a counter, and wake an actor that stores it.",
+      "cases": [
+        {
+          "name": "rewrite-256",
+          "parameters": {
+            "stateBytes": 256,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 1398,
+          "throughput": 357.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 2.793,
+            "min": 1.724,
+            "p50": 2.365,
+            "p90": 4.335,
+            "p95": 4.972,
+            "p99": 6.752,
+            "max": 9.116
+          },
+          "statementsPerOperation": 8,
+          "statements": null,
+          "activity": {
+            "samples": 55,
+            "connections": {
+              "idle:Client/ClientRead": 9.38,
+              "idle in transaction:Client/ClientRead": 0.42,
+              "active": 0.07,
+              "idle in transaction": 0.07,
+              "active:IO/WalSync": 0.05
+            }
+          },
+          "cpu": {
+            "client": 77,
+            "server": 24.1,
+            "clientMsPerOperation": 2.152,
+            "serverMsPerOperation": 0.675
+          },
+          "extra": {
+            "compressedBytes": 262,
+            "zstdCompressP50Ms": 0.006,
+            "zstdDecompressP50Ms": 0.002
+          }
+        },
+        {
+          "name": "hold-256",
+          "parameters": {
+            "stateBytes": 256,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 1327,
+          "throughput": 376.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 2.65,
+            "min": 1.634,
+            "p50": 2.268,
+            "p90": 4.196,
+            "p95": 4.798,
+            "p99": 5.709,
+            "max": 13.514
+          },
+          "statementsPerOperation": 7.01,
+          "statements": null,
+          "activity": {
+            "samples": 52,
+            "connections": {
+              "idle:Client/ClientRead": 9.35,
+              "idle in transaction:Client/ClientRead": 0.33,
+              "active": 0.12,
+              "idle in transaction": 0.08,
+              "idle": 0.06,
+              "active:IO/WalSync": 0.02,
+              "active:Client/ClientRead": 0.02,
+              "idle in transaction:IO/WalWrite": 0.02,
+              "active:IO/WalWrite": 0.02
+            }
+          },
+          "cpu": {
+            "client": 84.6,
+            "server": 24.2,
+            "clientMsPerOperation": 2.245,
+            "serverMsPerOperation": 0.641
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-256",
+          "parameters": {
+            "stateBytes": 256,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 389,
+          "throughput": 257.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 3.882,
+            "min": 1.977,
+            "p50": 2.915,
+            "p90": 5.905,
+            "p95": 8.005,
+            "p99": 12.372,
+            "max": 23.921
+          },
+          "statementsPerOperation": 9.02,
+          "statements": null,
+          "activity": {
+            "samples": 15,
+            "connections": {
+              "idle:Client/ClientRead": 2.33,
+              "idle in transaction:Client/ClientRead": 0.4,
+              "idle in transaction": 0.07,
+              "active:IO/WalSync": 0.07,
+              "idle": 0.07,
+              "active": 0.07
+            }
+          },
+          "cpu": {
+            "client": 88.2,
+            "server": 36.7,
+            "clientMsPerOperation": 3.431,
+            "serverMsPerOperation": 1.426
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "rewrite-4096",
+          "parameters": {
+            "stateBytes": 4096,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 1368,
+          "throughput": 365.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 2.732,
+            "min": 1.666,
+            "p50": 2.256,
+            "p90": 4.09,
+            "p95": 5.105,
+            "p99": 8.492,
+            "max": 13.373
+          },
+          "statementsPerOperation": 8,
+          "statements": null,
+          "activity": {
+            "samples": 53,
+            "connections": {
+              "idle:Client/ClientRead": 9.43,
+              "idle in transaction:Client/ClientRead": 0.28,
+              "idle in transaction": 0.11,
+              "idle": 0.11,
+              "active": 0.04,
+              "active:Client/ClientRead": 0.02
+            }
+          },
+          "cpu": {
+            "client": 91.4,
+            "server": 26.3,
+            "clientMsPerOperation": 2.5,
+            "serverMsPerOperation": 0.721
+          },
+          "extra": {
+            "compressedBytes": 3130,
+            "zstdCompressP50Ms": 0.014,
+            "zstdDecompressP50Ms": 0.01
+          }
+        },
+        {
+          "name": "hold-4096",
+          "parameters": {
+            "stateBytes": 4096,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 1275,
+          "throughput": 392.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 2.547,
+            "min": 1.599,
+            "p50": 2.191,
+            "p90": 3.986,
+            "p95": 4.566,
+            "p99": 5.505,
+            "max": 9.201
+          },
+          "statementsPerOperation": 7,
+          "statements": null,
+          "activity": {
+            "samples": 50,
+            "connections": {
+              "idle:Client/ClientRead": 9.36,
+              "idle in transaction:Client/ClientRead": 0.36,
+              "idle in transaction": 0.14,
+              "active": 0.1,
+              "active:IO/WalSync": 0.02,
+              "idle": 0.02
+            }
+          },
+          "cpu": {
+            "client": 77.2,
+            "server": 24.2,
+            "clientMsPerOperation": 1.969,
+            "serverMsPerOperation": 0.618
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-4096",
+          "parameters": {
+            "stateBytes": 4096,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 422,
+          "throughput": 237.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 4.21,
+            "min": 1.997,
+            "p50": 3.073,
+            "p90": 7.134,
+            "p95": 9.546,
+            "p99": 15.007,
+            "max": 15.626
+          },
+          "statementsPerOperation": 9.02,
+          "statements": null,
+          "activity": {
+            "samples": 16,
+            "connections": {
+              "idle:Client/ClientRead": 3.69,
+              "idle in transaction:Client/ClientRead": 0.44,
+              "active": 0.13,
+              "active:IO/WalSync": 0.06,
+              "idle in transaction": 0.06
+            }
+          },
+          "cpu": {
+            "client": 99,
+            "server": 35.7,
+            "clientMsPerOperation": 4.175,
+            "serverMsPerOperation": 1.506
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "rewrite-16384",
+          "parameters": {
+            "stateBytes": 16384,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 2008,
+          "throughput": 248.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 4.013,
+            "min": 2.262,
+            "p50": 3.294,
+            "p90": 6.058,
+            "p95": 7.641,
+            "p99": 13.858,
+            "max": 16.838
+          },
+          "statementsPerOperation": 8.01,
+          "statements": null,
+          "activity": {
+            "samples": 77,
+            "connections": {
+              "idle:Client/ClientRead": 9.31,
+              "idle in transaction:Client/ClientRead": 0.43,
+              "active": 0.13,
+              "active:IO/WalSync": 0.08,
+              "idle": 0.03,
+              "active:IO/DataFileExtend": 0.01,
+              "active:Client/ClientRead": 0.01
+            }
+          },
+          "cpu": {
+            "client": 98.6,
+            "server": 25,
+            "clientMsPerOperation": 3.961,
+            "serverMsPerOperation": 1.004
+          },
+          "extra": {
+            "compressedBytes": 12317,
+            "zstdCompressP50Ms": 0.033,
+            "zstdDecompressP50Ms": 0.033
+          }
+        },
+        {
+          "name": "hold-16384",
+          "parameters": {
+            "stateBytes": 16384,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 1251,
+          "throughput": 399.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 2.5,
+            "min": 1.628,
+            "p50": 2.147,
+            "p90": 3.926,
+            "p95": 4.345,
+            "p99": 5.296,
+            "max": 7.713
+          },
+          "statementsPerOperation": 7.01,
+          "statements": null,
+          "activity": {
+            "samples": 49,
+            "connections": {
+              "idle:Client/ClientRead": 9.49,
+              "idle in transaction:Client/ClientRead": 0.33,
+              "active": 0.06,
+              "idle in transaction": 0.06,
+              "active:IO/WalSync": 0.04,
+              "idle": 0.02
+            }
+          },
+          "cpu": {
+            "client": 86.6,
+            "server": 24.2,
+            "clientMsPerOperation": 2.169,
+            "serverMsPerOperation": 0.606
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-16384",
+          "parameters": {
+            "stateBytes": 16384,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 497,
+          "throughput": 201.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 4.965,
+            "min": 2.297,
+            "p50": 4.057,
+            "p90": 8.364,
+            "p95": 9.141,
+            "p99": 12.896,
+            "max": 23.005
+          },
+          "statementsPerOperation": 9.05,
+          "statements": null,
+          "activity": {
+            "samples": 19,
+            "connections": {
+              "idle:Client/ClientRead": 1.37,
+              "idle in transaction:Client/ClientRead": 0.53,
+              "active": 0.11,
+              "active:IO/WalSync": 0.11
+            }
+          },
+          "cpu": {
+            "client": 97.8,
+            "server": 27.6,
+            "clientMsPerOperation": 4.859,
+            "serverMsPerOperation": 1.371
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "rewrite-32768",
+          "parameters": {
+            "stateBytes": 32768,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 4645,
+          "throughput": 107.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 9.283,
+            "min": 4.589,
+            "p50": 8.808,
+            "p90": 11.706,
+            "p95": 13.84,
+            "p99": 23.631,
+            "max": 37.149
+          },
+          "statementsPerOperation": 8.02,
+          "statements": null,
+          "activity": {
+            "samples": 171,
+            "connections": {
+              "idle:Client/ClientRead": 9.36,
+              "idle in transaction:Client/ClientRead": 0.4,
+              "active": 0.15,
+              "active:IO/DataFileExtend": 0.03,
+              "idle in transaction": 0.02,
+              "active:IO/WalSync": 0.01,
+              "idle": 0.01,
+              "active:Client/ClientRead": 0.01
+            }
+          },
+          "cpu": {
+            "client": 101,
+            "server": 28,
+            "clientMsPerOperation": 9.384,
+            "serverMsPerOperation": 2.601
+          },
+          "extra": {
+            "compressedBytes": 24566,
+            "zstdCompressP50Ms": 0.057,
+            "zstdDecompressP50Ms": 0.067
+          }
+        },
+        {
+          "name": "hold-32768",
+          "parameters": {
+            "stateBytes": 32768,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 1382,
+          "throughput": 361.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 2.761,
+            "min": 1.489,
+            "p50": 2.132,
+            "p90": 4.644,
+            "p95": 5.525,
+            "p99": 8.377,
+            "max": 9.619
+          },
+          "statementsPerOperation": 7,
+          "statements": null,
+          "activity": {
+            "samples": 53,
+            "connections": {
+              "idle:Client/ClientRead": 9.4,
+              "idle in transaction:Client/ClientRead": 0.32,
+              "active:Client/ClientRead": 0.09,
+              "idle in transaction": 0.08,
+              "active:IO/WalSync": 0.04,
+              "active": 0.04,
+              "active:IO/WalWrite": 0.02,
+              "idle": 0.02
+            }
+          },
+          "cpu": {
+            "client": 84.2,
+            "server": 25.2,
+            "clientMsPerOperation": 2.329,
+            "serverMsPerOperation": 0.697
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-32768",
+          "parameters": {
+            "stateBytes": 32768,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 679,
+          "throughput": 147.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 6.784,
+            "min": 2.994,
+            "p50": 5.603,
+            "p90": 9.658,
+            "p95": 10.49,
+            "p99": 24.59,
+            "max": 34.51
+          },
+          "statementsPerOperation": 9.05,
+          "statements": null,
+          "activity": {
+            "samples": 25,
+            "connections": {
+              "idle:Client/ClientRead": 1.44,
+              "idle in transaction:Client/ClientRead": 0.4,
+              "active": 0.24,
+              "idle in transaction": 0.12,
+              "idle": 0.04
+            }
+          },
+          "cpu": {
+            "client": 107.7,
+            "server": 22.2,
+            "clientMsPerOperation": 7.321,
+            "serverMsPerOperation": 1.51
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "rewrite-61440",
+          "parameters": {
+            "stateBytes": 61440,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 5822,
+          "throughput": 85.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 11.638,
+            "min": 5.216,
+            "p50": 11.37,
+            "p90": 14.785,
+            "p95": 21.53,
+            "p99": 27.073,
+            "max": 34.488
+          },
+          "statementsPerOperation": 8.03,
+          "statements": null,
+          "activity": {
+            "samples": 209,
+            "connections": {
+              "idle:Client/ClientRead": 9.24,
+              "idle in transaction:Client/ClientRead": 0.5,
+              "active": 0.16,
+              "active:IO/WalSync": 0.04,
+              "active:IO/DataFileExtend": 0.04,
+              "idle in transaction": 0.02,
+              "idle": 0
+            }
+          },
+          "cpu": {
+            "client": 106.8,
+            "server": 25.5,
+            "clientMsPerOperation": 12.436,
+            "serverMsPerOperation": 2.972
+          },
+          "extra": {
+            "compressedBytes": 46010,
+            "zstdCompressP50Ms": 0.083,
+            "zstdDecompressP50Ms": 0.098
+          }
+        },
+        {
+          "name": "hold-61440",
+          "parameters": {
+            "stateBytes": 61440,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 1958,
+          "throughput": 255.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 3.91,
+            "min": 1.623,
+            "p50": 2.553,
+            "p90": 8.345,
+            "p95": 9.543,
+            "p99": 11.932,
+            "max": 14.462
+          },
+          "statementsPerOperation": 7.01,
+          "statements": null,
+          "activity": {
+            "samples": 74,
+            "connections": {
+              "idle:Client/ClientRead": 9.38,
+              "idle in transaction:Client/ClientRead": 0.42,
+              "idle in transaction": 0.09,
+              "active": 0.08,
+              "active:IO/WalSync": 0.03
+            }
+          },
+          "cpu": {
+            "client": 87.8,
+            "server": 22.6,
+            "clientMsPerOperation": 3.438,
+            "serverMsPerOperation": 0.885
+          },
+          "extra": null
+        },
+        {
+          "name": "wake-61440",
+          "parameters": {
+            "stateBytes": 61440,
+            "workers": 1,
+            "hibernateAfterMs": 250
+          },
+          "operations": 100,
+          "elapsedMs": 547,
+          "throughput": 183,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 5.46,
+            "min": 2.497,
+            "p50": 4.8,
+            "p90": 8.84,
+            "p95": 10.982,
+            "p99": 12.053,
+            "max": 14.658
+          },
+          "statementsPerOperation": 9,
+          "statements": null,
+          "activity": {
+            "samples": 21,
+            "connections": {
+              "idle:Client/ClientRead": 1.38,
+              "idle in transaction:Client/ClientRead": 0.38,
+              "active": 0.14,
+              "idle in transaction": 0.05,
+              "active:IO/WalSync": 0.05
+            }
+          },
+          "cpu": {
+            "client": 89.5,
+            "server": 26.8,
+            "clientMsPerOperation": 4.895,
+            "serverMsPerOperation": 1.466
+          },
+          "extra": {
+            "reactivatedFraction": 1
+          }
+        }
+      ]
+    }
+  ]
+}
