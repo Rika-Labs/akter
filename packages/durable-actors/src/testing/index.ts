@@ -21,6 +21,6 @@ export type {
   ConformanceServices,
 } from "./conformance.ts"
 
-export { TurnHooks } from "../runtime/turn/hooks.ts"
+export { CleanupHooks, TurnHooks } from "../runtime/turn/hooks.ts"
 
 export type { TurnPoint } from "../runtime/turn/hooks.ts"

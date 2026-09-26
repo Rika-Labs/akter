@@ -69,13 +69,19 @@ export const sweep = Effect.fnUntraced(function* (
         ),
       )
 
+    // Each batch starts at the newest age the last one took, so it never walks
+    // the index entries of rows earlier batches deleted and vacuum hasn't removed.
+    let from = "0"
+
     for (;;) {
-      const [pruned] = yield* batch(sql<{ count: number }>`
+      const [pruned] = yield* batch(sql<{ count: number; last: string | null }>`
         WITH doomed AS (
-          SELECT r.routing_key, r.tenant_id, r.actor_type, r.actor_id, r.command_id
+          SELECT r.routing_key, r.tenant_id, r.actor_type, r.actor_id, r.command_id, r.expires_at_ms
           FROM actor_receipts r
-          WHERE r.actor_type = ${policy.actorType} AND r.expires_at_ms <= ${receiptCutoff}
+          WHERE r.actor_type = ${policy.actorType} AND r.expires_at_ms >= ${from}::bigint
+            AND r.expires_at_ms <= ${receiptCutoff}
             AND NOT EXISTS (SELECT 1 FROM actor_outbox o WHERE o.intent_id = r.command_id)
+          ORDER BY r.expires_at_ms
           LIMIT ${hooks.batchSize}
           FOR UPDATE SKIP LOCKED),
         gone AS (
@@ -83,20 +89,26 @@ export const sweep = Effect.fnUntraced(function* (
           WHERE r.routing_key = d.routing_key AND r.tenant_id = d.tenant_id
             AND r.actor_type = d.actor_type AND r.actor_id = d.actor_id AND r.command_id = d.command_id
           RETURNING 1)
-        SELECT count(*)::integer AS count FROM gone`)
+        SELECT count(*)::integer AS count, (SELECT max(expires_at_ms)::text FROM doomed) AS last
+        FROM gone`)
 
       receipts += pruned!.count
 
       if (pruned!.count === 0) break
+      from = pruned!.last ?? from
       yield* hooks.afterBatch
       yield* Effect.yieldNow
     }
 
+    from = "0"
+
     for (;;) {
-      const [pruned] = yield* batch(sql<{ count: number }>`
+      const [pruned] = yield* batch(sql<{ count: number; last: string | null }>`
         WITH picked AS (
-          SELECT routing_key, tenant_id, actor_type, actor_id, sequence FROM actor_events
-          WHERE actor_type = ${policy.actorType} AND emitted_at_ms <= ${eventCutoff}
+          SELECT routing_key, tenant_id, actor_type, actor_id, sequence, emitted_at_ms FROM actor_events
+          WHERE actor_type = ${policy.actorType} AND emitted_at_ms >= ${from}::bigint
+            AND emitted_at_ms <= ${eventCutoff}
+          ORDER BY emitted_at_ms
           LIMIT ${hooks.batchSize}),
         upto AS (
           SELECT routing_key, tenant_id, actor_type, actor_id, max(sequence) AS last
@@ -106,11 +118,13 @@ export const sweep = Effect.fnUntraced(function* (
           WHERE e.routing_key = u.routing_key AND e.tenant_id = u.tenant_id
             AND e.actor_type = u.actor_type AND e.actor_id = u.actor_id AND e.sequence <= u.last
           RETURNING 1)
-        SELECT count(*)::integer AS count FROM gone`)
+        SELECT count(*)::integer AS count, (SELECT max(emitted_at_ms)::text FROM picked) AS last
+        FROM gone`)
 
       events += pruned!.count
 
       if (pruned!.count === 0) break
+      from = pruned!.last ?? from
       yield* hooks.afterBatch
       yield* Effect.yieldNow
     }

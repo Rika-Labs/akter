@@ -14,7 +14,8 @@ const perSecond = (count: number, elapsedMs: number) =>
 /**
  * Seeds `rows` receipts and `rows` events past every horizon, spread over
  * `ACTORS` RetentionProbe actors whose generation rows real turns created.
- * The rows go in with SQL: a million turns would take the whole run.
+ * The rows go in with SQL: a million turns would take the whole run. Ages
+ * rise with each actor's sequence, as they would have when the rows were written.
  */
 const seed = Effect.fnUntraced(function* (rows: number) {
   const sql = yield* SqlClient.SqlClient
@@ -31,13 +32,13 @@ const seed = Effect.fnUntraced(function* (rows: number) {
   yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id,
       command, payload_hash, caller_key, outcome, expires_at_ms)
     SELECT g.routing_key, g.tenant_id, g.actor_type, g.actor_id, 'v1.0.1.seed-' || s,
-      'Emit', 'seed', '["Anonymous"]', '{"_tag":"Success","value":"{}"}', 1
+      'Emit', 'seed', '["Anonymous"]', '{"_tag":"Success","value":"{}"}', s
     FROM actor_generations g, generate_series(1, ${perActor}) AS s
     WHERE g.actor_type = 'RetentionProbe'`
 
   yield* sql`INSERT INTO actor_events (routing_key, tenant_id, actor_type, actor_id, sequence,
       event, command_id, value, emitted_at_ms)
-    SELECT g.routing_key, g.tenant_id, g.actor_type, g.actor_id, s, 'Ticked', 'seed', '\\x00'::bytea, 1
+    SELECT g.routing_key, g.tenant_id, g.actor_type, g.actor_id, s, 'Ticked', 'seed', '\\x00'::bytea, s
     FROM actor_generations g, generate_series(1, ${perActor}) AS s
     WHERE g.actor_type = 'RetentionProbe'`
 
