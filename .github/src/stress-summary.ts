@@ -25,10 +25,11 @@ try {
       )
 
       const flakes = tallyFlakes(reports)
-      const summary = stressSummary(runs, flakes)
+      const summary = stressSummary({ runs, flakes })
       yield* Console.log(summary)
 
       const summaryPath = yield* Config.option(Config.String("GITHUB_STEP_SUMMARY"))
+
       if (Option.isSome(summaryPath))
         yield* fs.writeFileString(summaryPath.value, `## Stress\n\n${summary}`, { flag: "a" })
 
