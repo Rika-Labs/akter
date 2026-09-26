@@ -31,10 +31,12 @@
 - **Internal command:** a command in the `internal` section, callable only by System callers.
 - **Workflow:** durable orchestration declared as an actor member with `Actor.workflow`.
 - **WorkflowRun:** handle returned by a workflow start, exposing identity, result, polling, and interruption.
+- **Version marker:** a named integer declared in `Actor.workflow`'s `versions`, recorded when an execution starts and read with `wf.version(name)`, so in-flight executions keep their branch across deploys.
 - **Keyed state:** schema-defined actor state loaded and written inside fenced turns.
 - **Activation-local value:** a value such as a `Ref` created in a layer's build Effect; discarded on hibernation.
 - **Owned table:** Drizzle table scoped by `tenant_id` and `actor_id`.
-- **Connection:** typed WebSocket member with optional resumable connection state.
+- **Connection:** typed session member (`Actor.connection`) with an optional per-connection `session` that survives parking; its socket is held by a runner's transport (in-process in M2, WebSocket in M3).
+- **Holder:** the runner whose transport holds a connection's socket, identified by runner address and an epoch minted when the transport starts.
 - **Caller:** `User`, `System`, or `Anonymous` attribution carried to an actor operation.
 - **Principal:** authenticated application subject, available as an option inside actor contexts.
 - **ActorError:** the single framework error whose `reason` identifies availability, capacity, timeout, conflict, creation, authorization, input, or transport failure.

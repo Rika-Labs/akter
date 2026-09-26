@@ -31,8 +31,16 @@ export interface CaseResult {
   readonly statementsPerOperation: number | null
   readonly statements: ReadonlyArray<StatementCount> | null
   readonly activity: Activity | null
-  /** CPU use as a percentage of one core over the measured window. */
-  readonly cpu: { readonly client: number; readonly server: number | null }
+  /**
+   * CPU use as a percentage of one core over the measured window, and CPU
+   * milliseconds per attempted operation.
+   */
+  readonly cpu: {
+    readonly client: number
+    readonly server: number | null
+    readonly clientMsPerOperation: number | null
+    readonly serverMsPerOperation: number | null
+  }
   readonly extra: Readonly<Record<string, number | string>> | null
 }
 
@@ -169,6 +177,14 @@ export const measure = Effect.fnUntraced(function* <E, R>(
   const succeeded = result.samples.length
   const attempted = succeeded + result.errors
 
+  const clientSeconds = (client.user + client.system) / 1e6
+
+  const serverSeconds =
+    serverBefore === undefined || serverAfter === undefined ? undefined : serverAfter - serverBefore
+
+  const perOperation = (seconds: number | undefined) =>
+    seconds === undefined || attempted === 0 ? null : Math.round((seconds * 1e6) / attempted) / 1000
+
   return {
     name: options.name,
     parameters: options.parameters,
@@ -185,11 +201,10 @@ export const measure = Effect.fnUntraced(function* <E, R>(
     statements: options.listStatements === true ? (statements?.top ?? null) : null,
     activity: activity ?? null,
     cpu: {
-      client: percent((client.user + client.system) / 1e6, wallMs),
-      server:
-        serverBefore === undefined || serverAfter === undefined
-          ? null
-          : percent(serverAfter - serverBefore, wallMs),
+      client: percent(clientSeconds, wallMs),
+      server: serverSeconds === undefined ? null : percent(serverSeconds, wallMs),
+      clientMsPerOperation: perOperation(clientSeconds),
+      serverMsPerOperation: perOperation(serverSeconds),
     },
     extra: options.extra ?? null,
   } satisfies CaseResult
