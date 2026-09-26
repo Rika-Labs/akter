@@ -62,6 +62,8 @@ export function publishManifest({
   manifest: FrameworkManifest
   catalog: Readonly<Record<string, string>>
 }) {
+  if (manifest.private === true) throw new Error("framework manifest is private")
+
   const { types, exports, ...publishConfig } = manifest.publishConfig
 
   const {
@@ -166,7 +168,7 @@ export function tarballProblems({
     if (/^(catalog|workspace):/.test(specifier))
       problems.push(`dependency ${name} is unresolved (${specifier})`)
 
-  if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(manifest.version))
+  if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(manifest.version))
     problems.push(`version ${manifest.version} is not a semantic version`)
 
   return problems

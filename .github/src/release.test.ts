@@ -62,6 +62,12 @@ it("refuses workspace dependencies and catalog entries the root doesn't define",
   expect(() => publishManifest({ manifest, catalog: {} })).toThrow("effect has no version")
 })
 
+it("refuses a private framework manifest before packing", () => {
+  expect(() => publishManifest({ manifest: { ...manifest, private: true }, catalog: {} })).toThrow(
+    "framework manifest is private",
+  )
+})
+
 it("accepts a complete tarball and names every missing, leaked, or unresolved entry", () => {
   const packed = publishManifest({ manifest, catalog: { effect: "4.0.0-rc.116" } })
 
@@ -109,4 +115,13 @@ it("names bare imports that are neither builtins nor declared dependencies or pe
       manifest: packed,
     }),
   ).toEqual(["@effect/platform-bun", "pg"])
+})
+
+it("accepts valid SemVer build metadata", () => {
+  const packed = publishManifest({
+    manifest: { ...manifest, version: "1.2.3-alpha.1+build.5" },
+    catalog: { effect: "4.0.0-rc.116" },
+  })
+
+  expect(tarballProblems({ files: complete, manifest: packed })).toEqual([])
 })
