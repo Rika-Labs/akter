@@ -30,30 +30,31 @@ M0's embedded Postgres foundation is complete. M1 is in progress, and M2–M6 ar
 
 Delivery runs in waves of parallel slices. Each slice is one pull request or a short stack. A milestone's slices can span several waves, and later milestones' design ADRs start early.
 
-| Wave | Slices                                                                                                                                                                                                                                                                                                    |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | Close M1: blobs, retention and `examples/chat`, the M1 benchmark pass, the quickstart (CR.2), and the Apache-2.0 `0.1.0-alpha` publish of `@durable-actors/core` (CR.1)                                                                                                                                   |
-| 2    | M2 design ADRs (0020–0023), the multi-runner harness, singleton failover, the statement-count gate, property tests, CI reliability, benchmark coverage, residency, runtime CPU, and the package rename (CR.1)                                                                                             |
-| 3    | Multi-runner relay, workflow engine, two-round-trip pipeline, deterministic simulation, `turn.mint`, the docs site (CR.3), SQL inspection views (CR.4), the served-protocol ADR (M3.1) and HTTP serving (M3.2), and the ADRs for effect control (0024), `turn.mint` (0025) and event subscriptions (0026) |
-| 4    | Cron, workflow compatibility, connections, effect cancellation and per-actor caps, the progress-frames ADR (0030), turn batches, runner-kill and relay-crash drills, the Promise client (M3.4), cross-actor event subscriptions (M3.7), and `examples/orders` (CR.8)                                      |
-| 5    | Commutative merging, executor progress frames, the M2 exit example, observability (M4.3), M4's hosting ADR                                                                                                                                                                                                |
-| 6    | The rest of M3: WebSocket and SSE, client feeds and optimistic reducers, examples, the `durable dev` inspector (CR.5), `@durable-actors/react` (CR.6), and published performance targets with a Rivet comparison (CR.12)                                                                                  |
-| 7    | M4                                                                                                                                                                                                                                                                                                        |
-| 8    | M5                                                                                                                                                                                                                                                                                                        |
-| 9    | M6                                                                                                                                                                                                                                                                                                        |
+| Wave | Slices                                                                                                                                                                                                                                                                              |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Close M1: blobs, retention and `examples/chat`, the M1 benchmark pass, the licence and the rename to `@durable-actors/core` (CR.1a), the quickstart (CR.2), and the `0.1.0-alpha` publish (CR.1b)                                                                                   |
+| 2    | M2 design ADRs (0020–0023), the multi-runner harness, singleton failover, the statement-count gate, property tests, CI reliability, benchmark coverage, residency, runtime CPU, and the docs site (CR.3), which is docs only                                                        |
+| 3    | Multi-runner relay, workflow engine, two-round-trip pipeline, deterministic simulation, `turn.mint`, SQL inspection views (CR.4), the served-protocol ADR (M3.1) and HTTP serving (M3.2), and the ADRs for effect control (0024), `turn.mint` (0025) and event subscriptions (0026) |
+| 4    | Cron, workflow compatibility, connections, effect cancellation and per-actor caps, the progress-frames ADR (0030), turn batches, runner-kill and relay-crash drills, the Promise client (M3.4), cross-actor event subscriptions (M3.7), and `examples/orders` (CR.8)                |
+| 5    | Commutative merging, executor progress frames, the M2 exit example, observability (M4.3), M4's hosting ADR                                                                                                                                                                          |
+| 6    | The rest of M3: WebSocket and SSE, client feeds and optimistic reducers, examples, the `durable dev` inspector (CR.5), `@durable-actors/react` (CR.6), and published performance targets with a Rivet comparison (CR.12)                                                            |
+| 7    | M4                                                                                                                                                                                                                                                                                  |
+| 8    | M5                                                                                                                                                                                                                                                                                  |
+| 9    | M6                                                                                                                                                                                                                                                                                  |
 
 Scale runs, the 72-hour soak, and Neki runs happen on dedicated hardware, outside the waves, in [#66](https://github.com/Rika-Labs/durable-actors/issues/66). No milestone waits on them.
 
 ## Developer experience and adoption
 
-From the plan to compete with Rivet. Each slice lives in the milestone of its wave.
+From the plan to compete with Rivet. Each slice lives in the milestone of its wave. "CR" numbers are that plan's unit names; the table follows the waves. Deferred without a slot: CR.10 (deploy templates and a Postgres provider and pooler gate), CR.14 (tooling for coding assistants), CR.15 (a serverless design) and CR.16 (a hosted-offer decision). CR.13's Effect guide is part of CR.3.
 
 | Slice | What it adds                                                                                                                                                                                                                                 | Milestone   | Wave |
 | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---- |
-| CR.1  | Apache-2.0 licence, `@durable-actors/core`, and a `0.1.0-alpha` publish at M1 close ([#90](https://github.com/Rika-Labs/durable-actors/issues/90))                                                                                           | [M1](M1.md) | 1–2  |
+| CR.1a | Apache-2.0 licence and the rename to `@durable-actors/core`, ADR 0029 ([#90](https://github.com/Rika-Labs/durable-actors/issues/90))                                                                                                         | [M1](M1.md) | 1    |
+| CR.1b | Publish `0.1.0-alpha` at M1 close ([#99](https://github.com/Rika-Labs/durable-actors/issues/99))                                                                                                                                             | [M1](M1.md) | 1    |
 | CR.7  | M3.1, M3.2 and M3.4 moved ahead of the rest of M2 ([#91](https://github.com/Rika-Labs/durable-actors/issues/91), [#92](https://github.com/Rika-Labs/durable-actors/issues/92), [#93](https://github.com/Rika-Labs/durable-actors/issues/93)) | [M3](M3.md) | 3–4  |
 | CR.2  | Quickstart: `create-durable-actors` on file-backed PGlite ([#86](https://github.com/Rika-Labs/durable-actors/issues/86))                                                                                                                     | [M1](M1.md) | 1    |
-| CR.3  | Docs site with guides, `llms.txt`, and a comparison page ([#87](https://github.com/Rika-Labs/durable-actors/issues/87))                                                                                                                      | [M2](M2.md) | 3    |
+| CR.3  | Docs site with guides, `llms.txt`, and a comparison page ([#87](https://github.com/Rika-Labs/durable-actors/issues/87))                                                                                                                      | [M2](M2.md) | 2    |
 | CR.4  | Read-only SQL views over runtime tables, ADR 0028 ([#88](https://github.com/Rika-Labs/durable-actors/issues/88))                                                                                                                             | [M2](M2.md) | 3    |
 | CR.11 | Observability (M4.3) moved to wave 5                                                                                                                                                                                                         | [M4](M4.md) | 5    |
 | CR.5  | `durable dev` and a local inspector                                                                                                                                                                                                          | [M3](M3.md) | 6    |
@@ -84,7 +85,7 @@ These run across milestones. Each milestone document lists the slices it owns.
 
 ## Reserved numbers
 
-Migrations and ADRs are reserved up front so parallel slices don't collide.
+Migrations and ADRs are reserved up front so parallel slices don't collide. Only migrations must follow wave order, because the migrator depends on it; ADR numbers are reservations and may merge out of order.
 
 Migrations follow the wave order, because the Effect migrator skips any id at or below the latest one applied. An "if needed" number that goes unused just leaves a gap, which the migrator allows. A slice that needs a migration it wasn't assigned takes the next number above the highest merged migration. It then renumbers every unmerged reservation above it and updates their issues.
 
@@ -99,13 +100,13 @@ Within a wave, migrations merge in number order. If a higher number is ready fir
 | `0013_inspection_views`           | CR.4 SQL inspection views                         | 3    |
 | `0014_connections`                | M2.10 connections                                 | 4    |
 | `0015_effect_control` (if needed) | M2.13 effect cancellation and per-actor caps      | 4    |
-| `0016_subscriptions`              | M3.7 cross-actor event subscriptions              | 6    |
+| `0016_subscriptions`              | M3.7 cross-actor event subscriptions              | 4    |
 | `0017_rls`                        | M4.5 row-level security                           | 7    |
 | `0018_commit_version`             | M4.9 read-your-writes                             | 7    |
 | `0019_content_blobs`              | M4.13 tenant-scoped content-addressed blobs       | 7    |
 | `0020_adoption`                   | M6.1 existing-schema adoption                     | 9    |
 
-M2.5 (cron) needs no migration ([ADR 0021](https://github.com/Rika-Labs/durable-actors/pull/71)). M2.15 (`turn.mint`), M4.7 (payload evolution), M4.11 (parent placement), and M4.14 (PGlite in production) get a number from their ADR only if they need one.
+M2.5 (cron) needs no migration ([ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md)). M2.15 (`turn.mint`), M4.7 (payload evolution), M4.11 (parent placement), and M4.14 (PGlite in production) get a number from their ADR only if they need one.
 
 ADRs 0018 and 0019 belong to the benchmark harness (#38) and runner capacity (#44). The ADRs below are reserved, and unplanned ADRs take 0040 and up.
 
@@ -120,7 +121,7 @@ ADRs 0018 and 0019 belong to the benchmark harness (#38) and runner capacity (#4
 | 0026 | Cross-actor event subscriptions                      | M2.16 |
 | 0027 | Served protocol                                      | M3.1  |
 | 0028 | SQL inspection views over runtime tables             | CR.4  |
-| 0029 | Licence, package name, and release policy            | CR.1  |
+| 0029 | Licence, package name, and release policy            | CR.1a |
 | 0030 | Executor progress frames                             | M2.17 |
 | 0031 | Hosted ingress, tenant directory, and region design  | M4.1  |
 | 0032 | Event and effect payload evolution                   | M4.7  |
