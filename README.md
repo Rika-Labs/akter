@@ -8,7 +8,7 @@ _An Effect-native actor framework with durable identity, transactional turns, an
 
 </div>
 
-**M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The package remains private. Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
+**M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
 
 Run the example against a **disposable Postgres database**; startup creates the framework tables:
 
@@ -17,6 +17,24 @@ DATABASE_URL=postgres://user:password@localhost:5432/counter bun run --filter @d
 ```
 
 Each run commits one increment and retries the same command Effect. `committed` and `replayed` match; restarting the program increments the persisted counter once more. [Runtime wiring](examples/counter/src/main.ts) uses explicit application authorization, not an HTTP authentication endpoint.
+
+## Install
+
+> **Alpha, single runner.** `0.1.0-alpha.0` is the first published build. Run one runtime process per database: multi-runner operation is not supported yet. APIs and stored formats may change between alphas without a migration path, so don't point it at data you need to keep.
+
+The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests). Effect is a regular dependency pinned to the release candidate the framework is tested against.
+
+```sh
+bun add @durable-actors/core@alpha
+```
+
+```ts
+import { Actor } from "@durable-actors/core"
+import { Actors, Database } from "@durable-actors/core/runtime"
+import { ActorTest } from "@durable-actors/core/testing"
+```
+
+Changes are listed in the [changelog](packages/durable-actors/CHANGELOG.md). The code is licensed under [Apache-2.0](LICENSE).
 
 ## The API
 

@@ -88,6 +88,10 @@ jobs:
           else
             bun run check:ci 2>&1 | tee evidence/check.log
           fi
+      - name: Pack the framework and check the tarball
+        run: |
+          set -euo pipefail
+          bun .github/src/pack.ts 2>&1 | tee evidence/pack.log
       - uses: actions/upload-artifact@v7.0.1
         if: always() && steps.verify.outcome != 'skipped'
         with:

@@ -1,8 +1,14 @@
 # Automation contracts
 
-Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<issue>-slug`; Dependabot gets a narrow author+branch exception. Titles remain plain language. No workflow force-pushes, deploys, publishes or auto-merges.
+Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<issue>-slug`; Dependabot gets a narrow author+branch exception. Titles remain plain language. No workflow force-pushes, deploys or auto-merges, and only `Release` publishes, from a maintainer's tag.
 
 `Verify` runs PR code without long-lived repository secrets or persisted checkout credentials on Blacksmith. `Trusted policy` and `Evidence gate` execute only main code. The gate checks successful current-head-SHA run/artifact metadata through Distilled and refuses a PR-modified verification workflow. It never extracts or executes PR artifacts. A policy workflow change therefore requires a separately approved rollout. Configure branch rules to require `verify`, `branch`, and `Current SHA evidence`; those settings were not applied. A review-complete label is informational, never proof or merge permission. Artifact metadata establishes executed CI provenance, not correctness of arbitrary PR tests; independent review remains required.
+
+## Framework tarball and release
+
+`Verify` also runs `bun .github/src/pack.ts` on every run. It builds `@durable-actors/core`, stages the tarball with the `publishConfig` entries applied and `catalog:` versions resolved, runs `npm pack --dry-run`, and fails when a required file or export target is missing, when sources, tests or the crash fixtures would ship, or when a dependency is unresolved. The output lands in `evidence/pack.log`.
+
+`Release` runs on a pushed `v<version>` tag, or by manual dispatch with that tag selected as the ref; CR.1b (#99) owns the first publish. It checks that the tag matches `packages/durable-actors/package.json` and that the tagged commit is on main, packs with the same script, and runs `npm publish --provenance` with `NODE_AUTH_TOKEN` from the `NPM_TOKEN` repository secret. A prerelease version publishes to the dist-tag named by its first prerelease identifier (`0.1.0-alpha.0` goes to `alpha`), and anything else goes to `latest`. It runs on a GitHub-hosted runner because npm provenance does not accept self-hosted runners, and provenance requires the repository to be public. The workspace `prepublishOnly` script refuses a local `npm publish`.
 
 ## Turborepo remote cache
 

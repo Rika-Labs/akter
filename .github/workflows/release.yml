@@ -1,0 +1,48 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 26.7.0
+          registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Check the tag names a released commit on main
+        id: release
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version packages/durable-actors/package.json)"
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "Tag $GITHUB_REF_NAME does not match version $version"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_SHA is not on main"; exit 1; }
+          if [[ "$version" == *-* ]]; then tag="${version#*-}"; tag="${tag%%.*}"; else tag=latest; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Build, stage and check the tarball
+        run: |
+          bun run prepare
+          bun .github/src/pack.ts --out "$RUNNER_TEMP/package"
+      - name: Publish with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DIST_TAG: ${{ steps.release.outputs.tag }}
+        run: npm publish "$RUNNER_TEMP/package" --provenance --access public --tag "$DIST_TAG"
