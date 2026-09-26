@@ -26,6 +26,7 @@ import { CLAIM_LEASE, ExplainOutput, planNodes } from "./outbox.ts"
 /** One executor attempt as the fake provider saw it; times are this process's clock. */
 interface Attempt {
   readonly key: string
+  readonly effectId: string
   readonly attempt: number
   readonly runner: number
   readonly startedAt: number
@@ -219,6 +220,7 @@ const runnerEffects = (fixture: RelayFixture, runner: number) => {
 
       const attempt: Attempt = {
         key,
+        effectId: exec.effectId,
         attempt: exec.attempt,
         runner,
         startedAt: yield* Clock.currentTimeMillis,
@@ -767,6 +769,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "10 seconds",
             "attempt 1's interruption",
           )
+
+          // Interrupted by the lost renewal, well before its own one-lease deadline.
+          const [lost] = fixture.attempts
+          expect(lost!.endedAt! - lost!.startedAt < 2900).toBe(true)
           expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([
             [1, owner],
             [2, other],
@@ -818,6 +824,12 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           let index = 0
 
           // An actor runner 0 owns, so its commit wakes the runner without the executor.
+          let effectClaims = 0
+          fixture.hook = (point, request) =>
+            Effect.sync(() => {
+              if (point === "afterClaim" && request.command === "RelayCall") effectClaims++
+            })
+
           while ((yield* cluster.owner(yield* refOf(`elsewhere-${index}`))) !== 0) index++
           const id = `elsewhere-${index}`
           yield* perform(0, id)
@@ -828,6 +840,8 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([[1, 1]])
+          // One claim of the effect in all: runner 0 never claimed and released it.
+          expect(effectClaims).toBe(1)
           expect(yield* receipts(0, "Called")).toBe(1)
         }),
       ),
@@ -908,7 +922,9 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
         environment,
         fixture,
         1,
-        { relay: { deliveryConcurrency: 8 } },
+        // A lease shorter than the backlog's delivery time: an over-claimed row's lease
+        // would end before its delivery started, and a second claim would count it twice.
+        { relay: { deliveryConcurrency: 8, claimLease: "3 seconds" } },
         Effect.gen(function* () {
           const ids = Array.from({ length: 64 }, (_, index) => `slow-${index}`)
           const claimedAt = new Map<string, number>()
@@ -1068,12 +1084,13 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const [first] = fixture.attempts
           const ran = first!.endedAt! - first!.startedAt
 
-          // Interrupted at one lease, before any other runner could claim the row.
+          // Interrupted at one lease, while the database lease still held the row.
+          const [held] = yield* outboxRows(other)
           expect(ran >= 2900 && ran < 4000).toBe(true)
           expect(fixture.attempts.length).toBe(1)
-          expect(yield* outboxRows(other)).toMatchObject([
-            { kind: "effect", attempts: 1, ambiguous: true },
-          ])
+          expect(held).toMatchObject({ kind: "effect", attempts: 1, ambiguous: true })
+          // The runner and the database share this host's clock; 100 ms covers the reads.
+          expect(first!.endedAt! <= Number(held!.due) + 100).toBe(true)
 
           fixture.hook = () => Effect.void
           yield* advance(other, "4 seconds")
@@ -1383,6 +1400,73 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
           // The kind-leading range never reaches the 10,000 due effect rows.
           expect(due.every((node) => node["Actual Rows"] === 0)).toBe(true)
           expect(due.every((node) => (node["Rows Removed by Filter"] ?? 0) === 0)).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "claims a runner's own effects past due effect rows it cannot execute in the same bucket",
+    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture)
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const caller = yield* RelayCaller.get("starved")
+          yield* caller.Perform({ key: "starved-1", effect: "RelayCall" })
+          yield* test.advance(0)
+
+          const [placed] = yield* sql<{ bucket: number }>`
+            SELECT (routing_key >> 56)::int AS bucket FROM actor_generations
+            WHERE tenant_id = ${test.tenant} AND actor_type = 'RelayCaller' AND actor_id = 'starved'`
+
+          // More orphaned rows in the caller's bucket than any claim's per-bucket probe takes.
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            SELECT (${placed!.bucket}::bigint << 56) | i, 'orphan', 'Orphan', i::text
+            FROM generate_series(1, 200) AS i`
+          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+              scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
+              payload, caller, kind)
+            SELECT (${placed!.bucket}::bigint << 56) | i, 'orphan-' || i, ${placed!.bucket}, 0, 0,
+              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'effect'
+            FROM generate_series(1, 200) AS i`
+
+          yield* Effect.gen(function* () {
+            yield* caller.Perform({ key: "starved-2", effect: "RelayCall" })
+            yield* test.advance(0)
+            expect(fixture.attempts.map(({ key }) => key)).toEqual(["starved-1", "starved-2"])
+            expect(yield* test.receiptsFor(caller.ref, "Called")).toBe(2)
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                yield* sql`DELETE FROM actor_outbox WHERE tenant_id = 'orphan'`
+                yield* sql`DELETE FROM actor_generations WHERE tenant_id = 'orphan'`
+              }).pipe(Effect.orDie),
+            ),
+          )
+        }),
+      ),
+  },
+  {
+    name: "drains a due backlog far larger than the delivery slots in one advance",
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture)
+          const test = yield* ActorTest
+          const ids = Array.from({ length: 2000 }, (_, index) => `backlog-${index}`)
+
+          yield* Effect.forEach(
+            Array.from({ length: 40 }, (_, index) => ids.slice(index * 50, (index + 1) * 50)),
+            (chunk) =>
+              Relayer.get("backlog").pipe(
+                Effect.flatMap((relayer) => relayer.Stage({ ids: chunk, afterMs: 60_000 })),
+              ),
+            { discard: true },
+          )
+
+          yield* test.advance("1 minute")
+          expect(takenOnce(fixture, ids)).toBe(true)
         }),
       ),
   },

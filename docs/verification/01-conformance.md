@@ -239,7 +239,9 @@ These cases are in-process. They exercise Cluster's lock expiry, shard movement,
 
 The cases live in [`conformance/relay.ts`](../../packages/durable-actors/src/testing/conformance/relay.ts) and are registered with `describeConformance`. Multi-runner cases build `ActorTest.cluster` on a fresh Postgres database with a 3-second `shardLockExpiration`; the fixture's `afterClaim` counter is a `TurnHooks` service around the cluster, so it sees every runner's claims. A `Relayer` stages `Take` intents to 32 `RelayMailbox` actors, and a `RelayCaller` performs `RelayCall` (`retry: { times: 1 }`, routed to `Called` and `CallFailed`), `RelayCallOnce` (`retry: { times: 0 }`), and `RelayTimed` (`timeout: "100 millis"`, `retry: { times: 3, backoff: { base: "10 millis", max: "40 millis" } }`). Cases that need to control which runner claims set `relay.poll` to an hour, so only the committing runner's wake and `advance` claim rows. Executor-lease cases use `executors.lease: "3 seconds"`.
 
-EXECUTED_PLACEHOLDER
+**Executed 2026-09-26 (M2.4, branch `feat/96-multi-runner-relay` merged with `main` at `9b51535`):** Bun 1.3.14, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. The whole `packages/durable-actors/src` suite passed (290 tests before the review follow-ups added two shared cases), including every PGlite and Postgres conformance case, the SIGKILL recoveries, and `relay.test.ts`. The relay cases passed three further repeat runs on Postgres. Local results do not substitute for the CI evidence artifact of the pushed revision.
+
+The effect claim filters each bucket's probe on this runner's executors, where [ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md)'s SQL joins them after the per-bucket limit; with the ADR's form, due rows that no runner can execute fill the limit and starve a runner's own effects in that bucket. It also judges exhaustion on the attempts before the claim, because `RETURNING` sees the updated row. A freed slot claims again while the last claim saw more due candidates than it took, rather than only when the candidates filled their oversample, which would leave a tail of due rows waiting for the poll.
 
 Shared (PGlite and Postgres):
 
@@ -248,6 +250,8 @@ Shared (PGlite and Postgres):
 - `backs off a row whose settle dies by max(claim lease, backoff(attempts)) up to maxBackoff` — failure-matrix row **Relay settle dies on the same row repeatedly** on one runner: the first dead settle waits the 37-second lease, and a row at 12 attempts waits `maxBackoff` (256 s).
 - `dead-letters an already exhausted row with its recorded outcome` — a trigger refuses the dead-letter insert once after `RelayCallOnce`'s typed failure; the next claim fences without counting, and the dead letter has `attempts: 1` and `ambiguous: false`, with one provider call.
 - `claims intents without reading due effect rows that no runner can execute` — **Due-work scans**: `EXPLAIN (ANALYZE, BUFFERS)` of the intent claim, rolled back, beside 10,000 due effect rows of an actor type no runner has; no sequential scan, and every `actor_outbox_due_kind` probe returns and filters no rows.
+- `claims a runner's own effects past due effect rows it cannot execute in the same bucket` — 200 due effect rows of an actor type with no executor, in the caller's bucket, do not hold back the caller's effect.
+- `drains a due backlog far larger than the delivery slots in one advance` — 2,000 due intents drain in one `advance`; the loop guard counts only rounds that claimed every row then due.
 - `rejects relay, executor, and per-effect timings out of range` — `executors.lease` under 3 seconds and a zero `deliveryConcurrency` throw at `Actors.layer`; a zero or 2^31 ms `timeout`, a zero backoff base, and `max < base` throw at `Actor.make`.
 
 Postgres only (independent connections, on the harness):

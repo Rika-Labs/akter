@@ -6,7 +6,10 @@ import { ActorRef, principal } from "../../identity/caller.ts"
 import { TurnHooks } from "./hooks.ts"
 import { BUCKETS, CallerJson, outboxTime } from "./outbox.ts"
 
-/** A drain that keeps finding due work after this many rounds is a delivery loop. */
+/**
+ * A drain whose deliveries keep staging due work after this many rounds, each
+ * of which claimed every row then due, is a delivery loop.
+ */
 const DRAIN_ROUNDS = 100
 
 /** The relay and executor pool settings of one runner, resolved from `Actors.layer`. */
@@ -72,13 +75,14 @@ const candidates = (
   kind: "intent" | "effect",
   now: number,
   limit: number,
+  only: ReturnType<typeof sql.literal> = sql.literal(""),
 ) =>
   sql`SELECT o.routing_key, o.intent_id, o.actor_type, o.command
     FROM generate_series(${BUCKETS.first}::int, ${BUCKETS.last}::int) AS b(bucket)
     CROSS JOIN LATERAL (
       SELECT routing_key, intent_id, due_at_ms, actor_type, command FROM actor_outbox
       WHERE actor_outbox.bucket = b.bucket AND actor_outbox.kind = ${kind}
-        AND actor_outbox.due_at_ms <= ${now}
+        AND actor_outbox.due_at_ms <= ${now} ${only}
       ORDER BY actor_outbox.due_at_ms LIMIT ${limit}
     ) o`
 
@@ -147,8 +151,15 @@ export const claimEffects = ({
       )}
     ),
     candidates AS (
-      ${candidates(sql, "effect", now, 2 * permits)}
-      JOIN mine USING (actor_type, command)
+      ${candidates(
+        sql,
+        "effect",
+        now,
+        2 * permits,
+        // Filtered inside each bucket's probe, so due rows no runner here can
+        // execute never fill the per-bucket limit ahead of rows it can.
+        sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
+      )}
       ORDER BY o.due_at_ms LIMIT ${2 * permits}
     ),
     claimed AS (
@@ -477,7 +488,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const pass = lock
     .withPermit(
       Effect.gen(function* () {
-        if (stopping) return 0
+        if (stopping) return { claimed: 0, backlog: false }
 
         let claimed = 0
 
@@ -540,7 +551,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           }
         }
 
-        return claimed
+        return { claimed, backlog: more.intents || more.effects }
       }),
     )
     .pipe(Effect.provideContext(services))
@@ -567,21 +578,26 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const drain = Effect.gen(function* () {
     for (let rounds = 0; rounds < DRAIN_ROUNDS;) {
       yield* idle
-      const claimed = yield* pass
+      const { claimed, backlog } = yield* pass
 
       if (claimed === 0 && (yield* inFlight) === 0) return
 
-      if (claimed > 0) rounds++
+      // A backlog larger than the free slots takes many rounds; only rounds
+      // that drained every due row count toward the loop guard.
+      if (claimed > 0 && !backlog) rounds++
     }
 
     return yield* Effect.die(new Error("Outbox did not settle; intents keep producing due work"))
   }).pipe(Effect.orDie)
 
   // Shutdown stops claims; unstarted intents release in their interrupt handler.
+  // Taking the lock lets a pass in progress hand its rows to fibers first, so they are interrupted and released.
   yield* Effect.addFinalizer(() =>
-    Effect.sync(() => {
-      stopping = true
-    }),
+    lock.withPermit(
+      Effect.sync(() => {
+        stopping = true
+      }),
+    ),
   )
 
   return {
