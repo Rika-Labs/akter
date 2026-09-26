@@ -5,7 +5,7 @@
 **Owner role:** runtime/reliability.  
 **Change policy:** retention changes require restore and external-effect review.
 
-Every command MUST have a stable command id minted by the Effect handle or Promise client before delivery. Delivery retries MUST reuse it; `turn()` MUST NOT mint it.
+Every command MUST have a stable command id minted by the Effect handle or Promise client before delivery. Delivery retries MUST reuse it; `turn()` MUST NOT mint it. An actor id minted by `turn.mint` ([ADR 0025](../decisions/0025-turn-mint.md), proposed) is not a command id; it is derived from the command id, so a rerun of the same command mints the same actor ids.
 
 Receipts MUST be keyed by tenant, actor identity, and command id and MUST bind the command name and payload hash. Within the external retry horizon and subject to receipt-access authorization, the same id and payload MUST replay the committed output or declared failure without running the handler. Within that horizon, an authorized retry with the same id but a different command or payload MUST fail with `ActorError` whose reason is `CommandConflict`.
 

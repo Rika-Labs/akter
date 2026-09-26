@@ -22,6 +22,7 @@ Support means the shared `durable-actors/testing` conformance suite passes and t
 | `routing_key` placement            | rows keyed; verified                     | rows keyed; verified                                   | gated; unverified                | `EXPLAIN (NEKI_PLAN)` single-shard checks                               |
 | Multi-region home placement        | not applicable                           | not applicable                                         | hosted design pending            | home-region routing, cross-region relay, and tenant move                |
 | Direct commands and pipelining     | direct: verified; pipelining: unverified | direct incl. SIGKILL: verified; pipelining: unverified | gated; unverified                | caller retry after owner loss; pipelined visibility checks              |
+| `turn.mint` child actors           | target; unverified                       | target; unverified                                     | gated; unverified                | ADR 0025 cases in `conformance/mint.ts`                                 |
 | Reducers (optimistic, commutative) | target; unverified                       | target; unverified                                     | gated; unverified                | merge-law property tests; client convergence                            |
 | Migrations and restore             | target; unverified                       | target; unverified                                     | gated; unverified                | migration and restore rehearsal                                         |
 
