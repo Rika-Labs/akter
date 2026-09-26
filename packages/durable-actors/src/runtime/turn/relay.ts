@@ -374,29 +374,31 @@ export const outboxRelay = Effect.fnUntraced(function* (
       while (true) {
         yield* Effect.sleep(settings.executorLeaseMs / 3)
         const sent = yield* Clock.currentTimeNanos
-        yield* hooks.at("beforeRenew", request)
 
-        const renewed = yield* sql`UPDATE actor_outbox
-            SET due_at_ms = ${(yield* outboxTime) + settings.executorLeaseMs}
-            WHERE ${attemptRow(attempt)} RETURNING 1`.pipe(Effect.uninterruptible, Effect.result)
+        // A renewal that fails is retried at the next interval; the deadline
+        // interrupts the attempt if none gets through in time.
+        const renewed = yield* Effect.gen(function* () {
+          yield* hooks.at("beforeRenew", request)
 
-        if (Result.isFailure(renewed)) {
-          yield* Effect.logWarning("Effect lease renewal failed", renewed.failure).pipe(annotate)
-          continue
-        }
+          return yield* sql`UPDATE actor_outbox
+              SET due_at_ms = ${(yield* outboxTime) + settings.executorLeaseMs}
+              WHERE ${attemptRow(attempt)} RETURNING 1`.pipe(Effect.uninterruptible)
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("Effect lease renewal failed", cause).pipe(
+                  annotate,
+                  Effect.as(undefined),
+                ),
+          ),
+        )
 
-        if (renewed.success.length === 0) return "lost" as const
+        if (renewed === undefined) continue
+        if (renewed.length === 0) return "lost" as const
         confirmed = sent
       }
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.interrupt
-          : Effect.logWarning("Effect lease renewal failed", cause).pipe(
-              Effect.andThen(Effect.never),
-            ),
-      ),
-    )
+    })
 
     const deadline = Effect.gen(function* () {
       while (true) {
