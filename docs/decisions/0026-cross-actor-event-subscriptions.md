@@ -1,6 +1,6 @@
 # ADR 0026: Cross-actor event subscriptions
 
-**Status:** proposed (2026-09-26). It amends [contract 04](../contracts/04-receipts.md), [contract 05](../contracts/05-messaging.md), [contract 07](../contracts/07-realtime.md), [contract 10](../contracts/10-security.md), and [retention](../operations/retention.md). It builds on the outbox ([ADR 0011](0011-direct-commands-outbox-and-performance.md)) and the multi-runner relay ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)). The amendments listed under [Amendments](#amendments) land in the same change.
+**Status:** accepted (2026-09-26, Dallen, with every recommended default; proposed 2026-09-26). It amends [contract 04](../contracts/04-receipts.md), [contract 05](../contracts/05-messaging.md), [contract 07](../contracts/07-realtime.md), [contract 10](../contracts/10-security.md), and [retention](../operations/retention.md). It builds on the outbox ([ADR 0011](0011-direct-commands-outbox-and-performance.md)) and the multi-runner relay ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)). The amendments listed under [Amendments](#amendments) land in the same change.
 
 **Responsibility:** decide how one actor follows another actor's committed events and is woken durably when a new one commits, even while it sleeps, so that the build unit ([#94](https://github.com/Rika-Labs/durable-actors/issues/94), migration `0016_subscriptions`) has no open design questions.
 
@@ -406,13 +406,13 @@ This section states the interface agreed with ADR 0023's owner (DURA-27). ADR 00
 - **A `RetentionGap` or `Rejected` delivery is a turn too**, so it can broadcast a resync hint.
 - **Broadcast stays best-effort.** Whether a broadcast wakes a parked actor is ADR 0023's decision. Subscriptions are the durable way to wake an actor on another actor's change, and they don't depend on that decision.
 
-## Open questions and recommended defaults
+## Decided questions
 
-Each question has a recommended default that this ADR already uses. The PR asks Dallen to decide each one; "accept all defaults" accepts the ADR as written. Every question lists its conformance cases and failure-matrix rows for the build, and the `subscriptions` benchmark case that measures it.
+**Resolution (2026-09-26).** Dallen accepted every recommended default below, so the ADR stands as written and each default is a decision. The rejected alternatives stay listed for the record. Every question lists its conformance cases and failure-matrix rows for the build, and the `subscriptions` benchmark case that measures it.
 
 ### Q1. Declaration API
 
-**Default:** a `subscriptions: [...]` section of `Actor.subscription` members on the subscriber, with the handler an `internal` command taking `Actor.Delivery({ source, events })` that only subscription deliveries can reach. `route` makes a subscription routed; without it, the subscription is dynamic. `policy.subscribers` names subscriber types as strings, so a source never imports its subscribers.
+**Decision:** a `subscriptions: [...]` section of `Actor.subscription` members on the subscriber, with the handler an `internal` command taking `Actor.Delivery({ source, events })` that only subscription deliveries can reach. `route` makes a subscription routed; without it, the subscription is dynamic. `policy.subscribers` names subscriber types as strings, so a source never imports its subscribers.
 
 **Alternatives:**
 
@@ -430,7 +430,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 ### Q2. Dynamic subscribe and unsubscribe
 
-**Default:** `turn.subscribe(S, id, { from })` and `turn.unsubscribe(S, id)` on `X.Turn`. Each is staged as an outbox `control` row with a strictly increasing epoch from the subscriber's cursor row, which is kept as a tombstone after unsubscribing. The epoch fences registration, every delivery, the derived id, and the source row's delete. `from` defaults to `"now"`. Unsubscribing takes effect when the subscriber's turn commits.
+**Decision:** `turn.subscribe(S, id, { from })` and `turn.unsubscribe(S, id)` on `X.Turn`. Each is staged as an outbox `control` row with a strictly increasing epoch from the subscriber's cursor row, which is kept as a tombstone after unsubscribing. The epoch fences registration, every delivery, the derived id, and the source row's delete. `from` defaults to `"now"`. Unsubscribing takes effect when the subscriber's turn commits.
 
 **Alternative:** a request/reply `subscribe` call to the source. It is forbidden inside a turn, and it would wake the source.
 
@@ -460,7 +460,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 ### Q3. Where fan-out happens
 
-**Default:** at relay time. The publisher's commit adds at most one keyed `feed` row, through a CTE in the append statement. Expansion and delivery run on any runner, per subscription row.
+**Decision:** at relay time. The publisher's commit adds at most one keyed `feed` row, through a CTE in the append statement. Expansion and delivery run on any runner, per subscription row.
 
 **Alternative:** commit-time fan-out, with one outbox row per subscriber in the publisher's turn. It is simpler and has one hop less latency. But its cost grows with subscribers: the baseline above shows 83 ms p50 at 1,024 subscribers on Postgres, against 2.5 ms at one. It holds the publisher's row lock for that long, and it multiplies the publisher's WAL.
 
@@ -482,7 +482,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 ### Q4. Cursors and delivery guarantees
 
-**Default:** at-least-once transport with exactly-once effect per `(subscription, epoch, source, cursor)`. The derived command id and its receipt deduplicate first. The subscriber-side `applied` cursor, which never expires, deduplicates after receipt pruning and against stale runners. Declared failures advance the cursor.
+**Decision:** at-least-once transport with exactly-once effect per `(subscription, epoch, source, cursor)`. The derived command id and its receipt deduplicate first. The subscriber-side `applied` cursor, which never expires, deduplicates after receipt pruning and against stale runners. Declared failures advance the cursor.
 
 **Alternative:** receipts alone. That needs cleanup to keep delivery receipts for as long as the source-side row might redeliver, which can't be checked, because the two rows are on different shards.
 
@@ -505,7 +505,7 @@ Each question has a recommended default that this ADR already uses. The PR asks 
 
 ### Q5. Ordering
 
-**Default:** source-cursor order within one subscription row, across the subscription's event classes, with one delivery in flight. A routed row serves every subscriber its source routes to, so a blocked routed subscriber holds back that source's later events for the others. Nothing else is ordered. The alternative for routed rows is to split a row per route result after its first delivery. That trades the source's order across subscribers for isolation, and it costs a source-side row per `(source, subscriber)` pair.
+**Decision:** source-cursor order within one subscription row, across the subscription's event classes, with one delivery in flight. A routed row serves every subscriber its source routes to, so a blocked routed subscriber holds back that source's later events for the others. Nothing else is ordered. The alternative for routed rows is to split a row per route result after its first delivery. That trades the source's order across subscribers for isolation, and it costs a source-side row per `(source, subscriber)` pair.
 
 **Alternative:** ordering per subscriber across sources, which needs a global sequence. [ADR 0006](0006-scale-rules-placement-and-query-tiers.md) prohibits one.
 
@@ -533,7 +533,7 @@ RecordOrder: Effect.fn(function* (d) {
 
 ### Q6. Poison deliveries
 
-**Default:** retry with capped backoff and never skip automatically. Operator skip is an M4 capability. Alternatives are a per-subscription `onDefect: "skip"`, or a dead-letter route like effects'. Both silently break ordering for the events after the skipped one. A skip is a decision a person makes.
+**Decision:** retry with capped backoff and never skip automatically. Operator skip is an M4 capability. Alternatives are a per-subscription `onDefect: "skip"`, or a dead-letter route like effects'. Both silently break ordering for the events after the skipped one. A skip is a decision a person makes.
 
 **Example:**
 
@@ -550,7 +550,7 @@ durable subscriptions skip <row> --through <cursor> --reason "bad payload from v
 
 ### Q7. Retention and `keepEvents`
 
-**Default:** subscriptions hold back pruning for up to `policy.holdEventsForSubscribers` (`"7 days"`) past `keepEvents`, and then the subscriber gets a `RetentionGap`. An id-routed row has no recipient for a gap, so it records and counts it instead (section 7). The alternatives are an unbounded hold, where one dead subscriber grows a source's history forever, and no hold, where a routine outage turns into gaps.
+**Decision:** subscriptions hold back pruning for up to `policy.holdEventsForSubscribers` (`"7 days"`) past `keepEvents`, and then the subscriber gets a `RetentionGap`. An id-routed row has no recipient for a gap, so it records and counts it instead (section 7). The alternatives are an unbounded hold, where one dead subscriber grows a source's history forever, and no hold, where a routine outage turns into gaps.
 
 **Example:**
 
@@ -572,7 +572,7 @@ Actor.make("Order", { …, policy: { keepEvents: "30 days", holdEventsForSubscri
 
 ### Q8. Authorization and tenancy
 
-**Default:**
+**Decision:**
 
 - Same-tenant only: impossible to express otherwise, and checked again at startup and at each delivery.
 - Open within a tenant for declared events, with `policy.subscribers` as a static allow-list on the source.
@@ -603,7 +603,7 @@ Actor.make("Payment", { …, policy: { subscribers: ["Shipment", "Ledger"] } }) 
 
 ### Q9. Composition with workflow waits
 
-**Default:** workflow waits stay owner-only. Foreign events arrive through the owner's subscription handler re-emitting an owner event (section 9). The alternative is to let `Ship.wait` name a foreign source. That would put a cross-shard read on the resume path, and it would duplicate subscriptions inside the engine.
+**Decision:** workflow waits stay owner-only. Foreign events arrive through the owner's subscription handler re-emitting an owner event (section 9). The alternative is to let `Ship.wait` name a foreign source. That would put a cross-shard read on the resume path, and it would duplicate subscriptions inside the engine.
 
 **Example:** section 9.
 
@@ -615,7 +615,7 @@ Actor.make("Payment", { …, policy: { subscribers: ["Shipment", "Ledger"] } }) 
 
 ### Q10. Composition with connections, and waking parked subscribers
 
-**Default:** a delivery is an ordinary command turn that wakes the subscriber, and its handler broadcasts with `turn.broadcast`. ADR 0023 stamps frames with the subscriber's cursor. This is agreed with DURA-27.
+**Decision:** a delivery is an ordinary command turn that wakes the subscriber, and its handler broadcasts with `turn.broadcast`. ADR 0023 stamps frames with the subscriber's cursor. This is agreed with DURA-27.
 
 **Example:**
 
@@ -637,7 +637,7 @@ RecordOrder: Effect.fn(function* (d) {
 
 ### Q11. Migration number and build order
 
-**Default:** `0016_subscriptions`, built in wave 4 as #94 (still M3.7, moved from wave 6 to wave 4 by DURA-22's #97). The build depends on M2.4's `0011_relay` (claims, the kind index, `scheduled_at_ms`) and M1.9's `0010_retention` (pruning bounds). It doesn't depend on workflows or connections. The migrator skips ids at or below the latest one applied, so `0016` must land after `0012`–`0015`, or the reservations are renumbered under the roadmap's rule.
+**Decision:** `0016_subscriptions`, built in wave 4 as #94 (still M3.7, moved from wave 6 to wave 4 by DURA-22's #97). The build depends on M2.4's `0011_relay` (claims, the kind index, `scheduled_at_ms`) and M1.9's `0010_retention` (pruning bounds). It doesn't depend on workflows or connections. The migrator skips ids at or below the latest one applied, so `0016` must land after `0012`–`0015`, or the reservations are renumbered under the roadmap's rule.
 
 ## Behaviour changes against existing contracts
 
