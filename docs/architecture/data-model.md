@@ -26,4 +26,4 @@ Receipts retain original logical-caller attribution for result access without ad
 
 State schemas evolve through the ordered migrations declared in `Actor.state(fields, { migrations })` during decode. Relational schemas evolve through drizzle-kit. Runtime records are not ordinary application mutation surfaces and have explicit retention and restore dependencies.
 
-Workflow identity is `[deployment, tenant, actor, id, workflow, key]`. Singleton names and cron ownership are also deployment-scoped.
+Workflow identity is `[deployment, tenant, actor, id, workflow, key]`; in [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) the deployment is the database the row lives in, and the stored execution id encodes the rest. Singleton names and cron ownership are also deployment-scoped.
