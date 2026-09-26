@@ -3,9 +3,11 @@ import { Schema } from "effect"
 /** The part of Vitest's JSON reporter output a stress run reads. */
 export const VitestReport = Schema.fromJsonString(
   Schema.Struct({
+    success: Schema.Boolean,
     testResults: Schema.Array(
       Schema.Struct({
         name: Schema.String,
+        status: Schema.String,
         assertionResults: Schema.Array(
           Schema.Struct({ fullName: Schema.String, status: Schema.String }),
         ),
@@ -37,9 +39,20 @@ export function tallyFlakes(runs: ReadonlyArray<StressRun>): ReadonlyArray<Flake
       continue
     }
 
-    for (const file of report.testResults)
-      for (const test of file.assertionResults)
-        if (test.status === "failed") record(`${file.name} > ${test.fullName}`, run)
+    const before = [...failed.values()].flat().length
+
+    for (const file of report.testResults) {
+      const cases = file.assertionResults.filter((test) => test.status === "failed")
+
+      for (const test of cases) record(`${file.name} > ${test.fullName}`, run)
+
+      // A file that fails outside its cases, e.g. at import, names no case.
+      if (file.status === "failed" && cases.length === 0) record(`${file.name} (file failed)`, run)
+    }
+
+    // Vitest also fails a run for errors outside any file, e.g. an unhandled rejection.
+    if (!report.success && [...failed.values()].flat().length === before)
+      record("(run failed without a failing case: see its log)", run)
   }
 
   return [...failed]

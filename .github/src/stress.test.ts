@@ -4,9 +4,11 @@ import { stressSummary, tallyFlakes, type StressRun } from "./stress.ts"
 const run = (name: string, results: ReadonlyArray<[string, string]>): StressRun => ({
   run: name,
   report: {
+    success: results.every(([, status]) => status !== "failed"),
     testResults: [
       {
         name: "suite.test.ts",
+        status: results.some(([, status]) => status === "failed") ? "failed" : "passed",
         assertionResults: results.map(([fullName, status]) => ({ fullName, status })),
       },
     ],
@@ -39,6 +41,36 @@ describe("stress tally", () => {
   it("counts a run without a report as a failure", () => {
     expect(tallyFlakes([{ run: "4", report: undefined }])).toEqual([
       { name: "(no report: the run died before Vitest finished)", failed: ["4"] },
+    ])
+  })
+
+  it("counts a file that failed outside its cases and a run that failed outside any file", () => {
+    expect(
+      tallyFlakes([
+        {
+          run: "5",
+          report: {
+            success: false,
+            testResults: [{ name: "broken.test.ts", status: "failed", assertionResults: [] }],
+          },
+        },
+        {
+          run: "6",
+          report: {
+            success: false,
+            testResults: [
+              {
+                name: "suite.test.ts",
+                status: "passed",
+                assertionResults: [{ fullName: "a", status: "passed" }],
+              },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([
+      { name: "(run failed without a failing case: see its log)", failed: ["6"] },
+      { name: "broken.test.ts (file failed)", failed: ["5"] },
     ])
   })
 
