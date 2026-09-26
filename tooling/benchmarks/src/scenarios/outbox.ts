@@ -104,8 +104,9 @@ export const outbox: Scenario = {
             const waits = yield* Effect.forEach(ids, expect)
             const sender = yield* Sender.get("backlog")
             const started = yield* databaseNow
-            // Far enough ahead that every row is staged before any falls due.
-            const dueAt = started + (quick ? 5_000 : 30_000)
+            // Far enough ahead that every row is staged before any falls due, even
+            // on a shared CI runner where the first turn waits for shard assignment.
+            const dueAt = started + (quick ? 15_000 : 30_000)
 
             yield* Effect.forEach(
               Array.from({ length: backlog / batch }, (_, index) =>
@@ -118,7 +119,9 @@ export const outbox: Scenario = {
             const staged = (yield* databaseNow) - started
 
             if (staged >= dueAt - started)
-              return yield* Effect.die(new Error("Backlog was still staging when it fell due"))
+              return yield* Effect.die(
+                new Error(`Backlog was still staging when it fell due (${staged} ms)`),
+              )
 
             yield* Effect.sleep(dueAt - (yield* databaseNow))
 

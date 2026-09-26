@@ -3,10 +3,10 @@ import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Cause, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
 import { pgTable, text } from "drizzle-orm/pg-core"
-import { SqlClient } from "effect/unstable/sql"
+import { Migrator, SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { Actor, NotCreated } from "../../index.ts"
-import { migrate } from "./migrations.ts"
+import { migrate, migrations } from "./migrations.ts"
 import { Database } from "../index.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
 import { describeConformance, type ConformanceBackend } from "../../testing/conformance.ts"
@@ -110,6 +110,38 @@ describe("PGlite migrations", () => {
         ])
       }).pipe(Effect.scoped),
     ))
+  it("applies 0009_blobs to a database that already ran 0008_effects", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    // A deployment migrated before blobs existed: every id through 0008.
+    const throughEffects = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0009")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughEffects
+          expect(yield* sql`SELECT max(migration_id)::int AS latest FROM actor_migrations`).toEqual(
+            [{ latest: 8 }],
+          )
+          expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
+            { blobs: null },
+          ])
+          expect(yield* migrate).toEqual([[9, "blobs"]])
+          expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
+            { blobs: "actor_blobs" },
+          ])
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
   it("rolls back partial foundation DDL and safely reruns the migration", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
@@ -134,6 +166,7 @@ describe("PGlite migrations", () => {
             { migration_id: 5 },
             { migration_id: 6 },
             { migration_id: 8 },
+            { migration_id: 9 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

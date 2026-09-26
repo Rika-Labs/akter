@@ -4,6 +4,7 @@ import {
   DateTime,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Option,
   Result,
@@ -42,6 +43,7 @@ import {
   type System,
 } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
+import { type AnyBlob, isBlob } from "../members/blob.ts"
 import type { EventClass } from "../members/event.ts"
 import type {
   AnyCommand,
@@ -65,9 +67,45 @@ import {
 
 type StateFields = Readonly<Record<string, ValueSchema>>
 
-const StoredVersion = Schema.fromJsonString(
-  Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+// Encoders and decoders are built once: building one per call recompiles its
+// schema, which costs more than the value it encodes.
+const decodeStoredVersion = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
 )
+
+const utf8 = new TextEncoder()
+
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json))
+
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
+
+const decodeJsonObject = Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))
+
+const valueCodec = (schema: ValueSchema): Schema.Codec<{ readonly value: unknown }, string> =>
+  Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: schema })))
+
+/** A member's payload, result, and declared-error codecs. */
+const memberCodecs = (member: AnyMember) => {
+  const input = valueCodec(member.input)
+  const output = valueCodec(member.output)
+  const errorSchema = Schema.Union(member.errors)
+
+  const error: Schema.Codec<DeclaredError["Type"], string> = Schema.fromJsonString(
+    Schema.toCodecJson(errorSchema),
+  )
+
+  return {
+    encodeInput: Schema.encodeEffect(input),
+    decodeInput: Schema.decodeEffect(input),
+    encodeOutput: Schema.encodeEffect(output),
+    decodeOutput: Schema.decodeEffect(output),
+    isError: Schema.is(errorSchema),
+    encodeError: Schema.encodeEffect(error),
+    decodeError: Schema.decodeEffect(error),
+  }
+}
+
+type MemberCodecs = ReturnType<typeof memberCodecs>
 
 const upcastStep = (step: StateMigration, stored: Schema.Json) =>
   Schema.decodeEffect(Schema.toCodecJson(Schema.Struct(step.from)))(stored).pipe(
@@ -247,6 +285,7 @@ interface Definition<
   Events extends ReadonlyArray<EventClass>,
   Tables extends ReadonlyArray<AnyOwnedTable>,
   Effects extends ReadonlyArray<AnyEffect>,
+  Blobs extends ReadonlyArray<AnyBlob>,
 > {
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
@@ -256,6 +295,8 @@ interface Definition<
   readonly events?: Events
   /** `Actor.table` tables whose rows this actor type owns. */
   readonly tables?: Tables
+  /** `Actor.blob` binary storage this actor type's turns write and its queries read. */
+  readonly blobs?: Blobs
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
   /** `Actor.effect` classes this actor's turns may `perform`. */
@@ -273,9 +314,10 @@ const make = <
   const T extends ReadonlyArray<AnyOwnedTable> = [],
   const Effects extends ReadonlyArray<AnyEffect> = readonly [],
   const P extends Policy<CommandsOf<Api> | Values<Internal>, Effects[number]> = {},
+  const B extends ReadonlyArray<AnyBlob> = [],
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal, Events, T, Effects> & {
+  definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B> & {
     readonly key?: K
     readonly policy?: P
   },
@@ -311,6 +353,16 @@ const make = <
     if (effects.has(declared.tag)) throw new Error(`Duplicate effect: ${declared.tag}`)
     effects.set(declared.tag, declared)
   }
+
+  const effectEncoders = new Map(
+    [...effects.values()].map(
+      (declared) =>
+        [
+          declared.tag,
+          Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.toCodecJson(declared))),
+        ] as const,
+    ),
+  )
 
   const effectPolicies: Readonly<Record<string, EffectPolicy<AnyEffect, AnyCommand> | undefined>> =
     definition.policy?.effects ?? {}
@@ -358,7 +410,27 @@ const make = <
     events.set(event.identifier, event)
   }
 
-  const eventCodec = (event: EventClass) => Schema.fromJsonString(Schema.toCodecJson(event))
+  const eventCodecs = new Map(
+    [...events.values()].map((event) => {
+      const codec = Schema.fromJsonString(Schema.toCodecJson(event))
+
+      return [
+        event,
+        { encode: Schema.encodeEffect(codec), decode: Schema.decodeEffect(codec) },
+      ] as const
+    }),
+  )
+
+  const blobs: ReadonlyArray<AnyBlob> = definition.blobs ?? []
+  const blobNames = new Set<string>()
+
+  for (const blob of blobs) {
+    if (!isBlob(blob)) throw new Error("blobs takes Actor.blob values")
+
+    if (blobNames.has(blob.name)) throw new Error(`Blob ${blob.name} is listed twice`)
+    blobNames.add(blob.name)
+  }
+
   const migrations = definition.state?.migrations ?? []
   ActorStates.validateChain(fields, migrations)
   const version = migrations.length
@@ -372,12 +444,8 @@ const make = <
     let storedVersion = rows.length === 0 ? version : 0
 
     for (const [key, value] of rows)
-      if (key === VERSION_KEY)
-        storedVersion = yield* Schema.decodeEffect(StoredVersion)(value).pipe(Effect.orDie)
-      else
-        stored[key] = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(value).pipe(
-          Effect.orDie,
-        )
+      if (key === VERSION_KEY) storedVersion = yield* decodeStoredVersion(value).pipe(Effect.orDie)
+      else stored[key] = yield* decodeJson(value).pipe(Effect.orDie)
 
     if (storedVersion > version)
       return yield* Effect.die(new Error(`Stored state version ${storedVersion} is unknown`))
@@ -387,15 +455,18 @@ const make = <
     for (const step of migrations.slice(storedVersion)) current = yield* upcastStep(step, current)
 
     return {
-      state: yield* Schema.decodeEffect(Schema.toCodecJson(stateSchema))(current).pipe(
-        Effect.orDie,
-      ),
+      state: yield* decodeStateJson(current).pipe(Effect.orDie),
       upcast: storedVersion < version && rows.length > 0,
     }
   })
 
   const stateSchema = Schema.Struct(fields)
+  const decodeStateJson = Schema.decodeEffect(Schema.toCodecJson(stateSchema))
   const stateCodec = Schema.fromJsonString(Schema.toCodecJson(stateSchema))
+  const encodeState = Schema.encodeEffect(stateCodec)
+  const decodeState = Schema.decodeEffect(stateCodec)
+  const codecs = new Map(all.map((member) => [member.tag, memberCodecs(member)]))
+  const decodeCaller = Schema.decodeEffect(Caller)
 
   const fieldEquivalences = Object.fromEntries(
     Object.entries(fields).map(([key, field]) => [key, Schema.toEquivalence(field)]),
@@ -406,6 +477,8 @@ const make = <
   const idSchema: KeySchema = Schema.isSchema(key)
     ? key
     : Schema.String.check(Schema.isUUID(7)).pipe(Schema.brand(name))
+
+  const decodeId = Schema.decodeEffect(idSchema)
 
   type Creating = P extends { readonly createdBy: infer C extends AnyCommand } ? C["tag"] : never
 
@@ -421,16 +494,18 @@ const make = <
 
   type Owned = T[number]
 
+  type Blobs = B[number]
+
   class Turn extends Context.Service<
     Turn,
-    CommandContext<State, Event, Owned> & PerformContext<Effects[number]>
+    CommandContext<State, Event, Owned, Blobs> & PerformContext<Effects[number]>
   >()(`durable-actors/Turn/${name}`) {}
 
   class Executor extends Context.Service<Executor, ExecutorContext>()(
     `durable-actors/Executor/${name}`,
   ) {}
 
-  class Read extends Context.Service<Read, QueryContext<State, Event, Owned>>()(
+  class Read extends Context.Service<Read, QueryContext<State, Event, Owned, Blobs>>()(
     `durable-actors/Read/${name}`,
   ) {}
 
@@ -444,27 +519,17 @@ const make = <
     const actors = yield* Actors
     const internalActors = yield* InternalActors
 
-    const caller = yield* Schema.decodeEffect(Caller)(as ?? (yield* CurrentCaller)).pipe(
-      Effect.orDie,
-    )
+    const caller = yield* decodeCaller(as ?? (yield* CurrentCaller)).pipe(Effect.orDie)
 
     const ref = ActorRef.make({
       actor: name,
       tenant: tenant ?? (yield* Tenant),
-      id: isSingleton ? "singleton" : yield* Schema.decodeEffect(idSchema)(id).pipe(Effect.orDie),
+      id: isSingleton ? "singleton" : yield* decodeId(id).pipe(Effect.orDie),
     })
 
     const methods = Object.fromEntries(
       (includeInternal ? all : Object.values(api)).map((member) => {
-        const inputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: member.input })),
-        )
-
-        const outputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: member.output })),
-        )
-
-        const errorCodec = Schema.fromJsonString(Schema.toCodecJson(Schema.Union(member.errors)))
+        const { encodeInput, decodeOutput, decodeError } = codecs.get(member.tag)!
 
         return [
           member.tag,
@@ -484,9 +549,7 @@ const make = <
             return Effect.gen(function* () {
               yield* outsideTurn
 
-              const payload = yield* Schema.encodeEffect(inputCodec)({ value: input }).pipe(
-                Effect.orDie,
-              )
+              const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
               // Queries are reads: no command id, receipt, or retry identity.
               const outcome =
@@ -507,13 +570,10 @@ const make = <
               if (Outcome.guards.Defect(outcome)) return yield* Effect.die(outcome.cause)
 
               if (Outcome.guards.Failure(outcome)) {
-                return yield* yield* Schema.decodeEffect(errorCodec)(outcome.value).pipe(
-                  Effect.orDie,
-                )
+                return yield* yield* decodeError(outcome.value).pipe(Effect.orDie)
               }
 
-              return (yield* Schema.decodeEffect(outputCodec)(outcome.value).pipe(Effect.orDie))
-                .value
+              return (yield* decodeOutput(outcome.value).pipe(Effect.orDie)).value
             })
           },
         ]
@@ -528,24 +588,16 @@ const make = <
     current: typeof stateSchema.Type,
     dirty: ReadonlySet<string>,
   ) {
-    const json = yield* Schema.encodeEffect(stateCodec)(current).pipe(Effect.orDie)
+    const json = yield* encodeState(current).pipe(Effect.orDie)
 
-    if (new TextEncoder().encode(json).byteLength > policy.stateMaxBytes)
+    if (utf8.encode(json).byteLength > policy.stateMaxBytes)
       return yield* Effect.die(new Error("State exceeds policy.maxStateBytes"))
 
-    const encoded = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))(json).pipe(
-      Effect.orDie,
-    )
-
+    const encoded = yield* decodeJsonObject(json).pipe(Effect.orDie)
     const writes: Array<readonly [string, string]> = []
 
     for (const key of dirty)
-      writes.push([
-        key,
-        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(encoded[key] ?? null).pipe(
-          Effect.orDie,
-        ),
-      ])
+      writes.push([key, yield* encodeJson(encoded[key] ?? null).pipe(Effect.orDie)])
 
     if (dirty.size > 0 && version > 0) writes.push([VERSION_KEY, String(version)])
 
@@ -554,14 +606,12 @@ const make = <
 
   // A declared failure commits only its receipt: no state rows.
   const declaredFailure = Effect.fnUntraced(function* (
-    errorSchema: ValueSchema,
+    { isError, encodeError }: MemberCodecs,
     error: DeclaredError["Type"],
   ) {
-    if (!Schema.is(errorSchema)(error)) return yield* Effect.die(error)
+    if (!isError(error)) return yield* Effect.die(error)
 
-    const value = yield* Schema.encodeEffect(
-      Schema.fromJsonString(Schema.toCodecJson(errorSchema)),
-    )(error).pipe(Effect.orDie)
+    const value = yield* encodeError(error).pipe(Effect.orDie)
 
     return yield* Effect.fail<BusinessResult>({
       outcome: Outcome.cases.Failure.make({ value }),
@@ -591,15 +641,7 @@ const make = <
         if (handle === undefined)
           return yield* Effect.die(new Error(`Missing handler ${member.tag}`))
 
-        const inputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: member.input })),
-        )
-
-        const outputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: member.output })),
-        )
-
-        const errorSchema = Schema.Union(member.errors)
+        const memberCodec = codecs.get(member.tag)!
 
         commands.set(member.tag, {
           internal: internalMembers.has(member),
@@ -628,8 +670,8 @@ const make = <
                 dirty.add(key)
               }
 
-              current = yield* Schema.decodeEffect(stateCodec)(
-                yield* Schema.encodeEffect(stateCodec)({ ...current, ...patch }).pipe(Effect.orDie),
+              current = yield* decodeState(
+                yield* encodeState({ ...current, ...patch }).pipe(Effect.orDie),
               ).pipe(Effect.orDie)
             })
 
@@ -644,22 +686,37 @@ const make = <
 
               emitted.push({
                 tag: declared.identifier,
-                value: yield* Schema.encodeEffect(eventCodec(declared))(event).pipe(Effect.orDie),
+                value: yield* eventCodecs.get(declared)!.encode(event).pipe(Effect.orDie),
               })
             })
 
             const view = { set }
 
+            // A forked fiber inherits InsideTurn, so the turn's own fiber is checked too.
+            const owner = Fiber.getCurrent()
+            // Set on a use from another fiber of this turn, so a swallowed defect still fails the turn.
+            let misused: string | undefined
+
+            const escaped = (capability: string) =>
+              Effect.gen(function* () {
+                if (!open || (yield* InsideTurn) !== turn)
+                  return yield* Effect.die(new Error(`${capability} capability escaped its turn`))
+
+                // The turn's one connection takes no concurrent statements.
+                if (Fiber.getCurrent() !== owner) {
+                  misused = `${capability} capability used from a fiber other than its turn's; timeout, race, and concurrent combinators run on other fibers`
+
+                  return yield* Effect.die(new Error(misused))
+                }
+              })
+
             const access = yield* actors.tables(
-              {
-                ref: request.ref,
-                placement,
-                tables,
-                guard: Effect.gen(function* () {
-                  if (!open || (yield* InsideTurn) !== turn)
-                    return yield* Effect.die(new Error("Table capability escaped its turn"))
-                }),
-              },
+              { ref: request.ref, placement, tables, guard: escaped("Table") },
+              true,
+            )
+
+            const blob = yield* actors.blobs(
+              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
               true,
             )
 
@@ -677,20 +734,19 @@ const make = <
               if (!open || (yield* InsideTurn) !== turn)
                 return yield* Effect.die(new Error("Effect capability escaped its turn"))
 
-              const declared = effects.get(instance._tag)
+              const declared = effectEncoders.get(instance._tag)
 
               if (declared === undefined)
                 return yield* Effect.die(new Error(`Undeclared effect: ${instance._tag}`))
 
               outbox.perform({
-                effect: declared.tag,
-                payload: yield* Schema.encodeUnknownEffect(
-                  Schema.fromJsonString(Schema.toCodecJson(declared)),
-                )(instance).pipe(Effect.orDie),
+                effect: instance._tag,
+                payload: yield* declared(instance).pipe(Effect.orDie),
               })
             })
 
-            const context: CommandContext<State, Event, Owned> & PerformContext<Effects[number]> = {
+            const context: CommandContext<State, Event, Owned, Blobs> &
+              PerformContext<Effects[number]> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -700,19 +756,18 @@ const make = <
               emit,
               rows: access.rows as CommandContext<State, Event, Owned>["rows"],
               group: access.group,
+              blob: blob as CommandContext<State, Event, Owned, Blobs>["blob"],
               perform,
             }
 
             return yield* Effect.gen(function* () {
-              const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(
-                Effect.orDie,
-              )
+              const input = yield* memberCodec.decodeInput(request.payload).pipe(Effect.orDie)
 
               const output = yield* handle(input.value)
 
-              const value = yield* Schema.encodeEffect(outputCodec)({ value: output }).pipe(
-                Effect.orDie,
-              )
+              if (misused !== undefined) return yield* Effect.die(new Error(misused))
+
+              const value = yield* memberCodec.encodeOutput({ value: output }).pipe(Effect.orDie)
 
               return {
                 outcome: Outcome.cases.Success.make({ value }),
@@ -723,53 +778,49 @@ const make = <
                 outbox: outbox.close(),
               }
             }).pipe(
-              Effect.catch((error) => declaredFailure(errorSchema, error)),
+              Effect.catch((error) => declaredFailure(memberCodec, error)),
               Effect.ensuring(
                 Effect.sync(() => {
                   open = false
                   outbox.close()
                 }),
               ),
-              Effect.provideService(Turn, context),
-              Effect.provideService(InTurn, outbox.marker),
-              Effect.provideContext(services),
-              Effect.provideService(InsideTurn, turn),
+              // One merged context instead of four nested provides, each of
+              // which copies the whole fiber context.
+              Effect.provideContext(
+                Context.merge(Context.make(InsideTurn, turn), services).pipe(
+                  Context.add(InTurn, outbox.marker),
+                  Context.add(Turn, context),
+                ),
+              ),
             )
           }),
         })
       }
 
       for (const reducer of reducers) {
-        const inputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: reducer.input })),
-        )
-
-        const outputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: reducer.output })),
-        )
-
-        const errorSchema = Schema.Union(reducer.errors)
+        const reducerCodec = codecs.get(reducer.tag)!
 
         commands.set(reducer.tag, {
           internal: false,
           run: Effect.fnUntraced(function* (request, rows) {
             const loaded = yield* decodeStored(rows)
 
-            const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(Effect.orDie)
+            const input = yield* reducerCodec.decodeInput(request.payload).pipe(Effect.orDie)
 
             // `reduce` gets its own copy, so mutating it in place cannot hide a change.
-            const given = yield* Schema.decodeEffect(stateCodec)(
-              yield* Schema.encodeEffect(stateCodec)(loaded.state).pipe(Effect.orDie),
+            const given = yield* decodeState(
+              yield* encodeState(loaded.state).pipe(Effect.orDie),
             ).pipe(Effect.orDie)
 
             const reduced = reducer.reduce(given, input.value)
 
             if (Result.isFailure(reduced))
-              return yield* declaredFailure(errorSchema, reduced.failure)
+              return yield* declaredFailure(reducerCodec, reduced.failure)
 
             // Round-tripping validates the returned state against the actor's schema.
-            const next = yield* Schema.decodeEffect(stateCodec)(
-              yield* Schema.encodeEffect(stateCodec)(reduced.success).pipe(Effect.orDie),
+            const next = yield* decodeState(
+              yield* encodeState(reduced.success).pipe(Effect.orDie),
             ).pipe(Effect.orDie)
 
             // Only changed keys are written, unless an upcast rewrites every key.
@@ -779,9 +830,9 @@ const make = <
               ),
             )
 
-            const value = yield* Schema.encodeEffect(outputCodec)({
-              value: reducer.commutative === undefined ? next : undefined,
-            }).pipe(Effect.orDie)
+            const value = yield* reducerCodec
+              .encodeOutput({ value: reducer.commutative === undefined ? next : undefined })
+              .pipe(Effect.orDie)
 
             return {
               outcome: Outcome.cases.Success.make({ value }),
@@ -801,6 +852,7 @@ const make = <
         placement,
         policy,
         tables,
+        blobs,
       })
     })
 
@@ -847,16 +899,7 @@ const make = <
         if (handle === undefined)
           return yield* Effect.die(new Error(`Missing query handler ${member.tag}`))
 
-        const inputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: member.input })),
-        )
-
-        const outputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: member.output })),
-        )
-
-        const errorSchema = Schema.Union(member.errors)
-        const errorCodec = Schema.fromJsonString(Schema.toCodecJson(errorSchema))
+        const { decodeInput, encodeOutput, isError, encodeError } = codecs.get(member.tag)!
 
         registered.set(member.tag, {
           run: Effect.fnUntraced(function* (request, rows, cursor, readEvents) {
@@ -871,16 +914,14 @@ const make = <
               if (events.get(event.identifier) !== event)
                 return yield* Effect.die(new Error(`Undeclared event: ${event.identifier}`))
 
-              const codec = eventCodec(event)
+              const { decode } = eventCodecs.get(event)!
 
               return yield* Effect.forEach(
                 yield* readEvents(event.identifier, options?.after),
                 Effect.fnUntraced(function* (stored) {
                   const entry: EventEntry<E["Type"]> = {
                     cursor: stored.cursor,
-                    event: (yield* Schema.decodeEffect(codec)(stored.value).pipe(
-                      Effect.orDie,
-                    )) as E["Type"],
+                    event: (yield* decode(stored.value).pipe(Effect.orDie)) as E["Type"],
                     commandId: stored.commandId,
                     timestamp: DateTime.makeUnsafe(stored.timestampMs),
                   }
@@ -890,20 +931,34 @@ const make = <
               )
             })
 
+            // A forked fiber inherits InsideTurn, so the query's own fiber is checked too.
+            const owner = Fiber.getCurrent()
+
+            const escaped = (capability: string) =>
+              Effect.gen(function* () {
+                if (!open || (yield* InsideTurn) !== query)
+                  return yield* Effect.die(new Error(`${capability} capability escaped its query`))
+
+                // The query's one connection takes no concurrent statements.
+                if (Fiber.getCurrent() !== owner)
+                  return yield* Effect.die(
+                    new Error(
+                      `${capability} capability used from a fiber other than its query's; timeout, race, and concurrent combinators run on other fibers`,
+                    ),
+                  )
+              })
+
             const access = yield* actors.tables(
-              {
-                ref: request.ref,
-                placement,
-                tables,
-                guard: Effect.gen(function* () {
-                  if (!open || (yield* InsideTurn) !== query)
-                    return yield* Effect.die(new Error("Table capability escaped its query"))
-                }),
-              },
+              { ref: request.ref, placement, tables, guard: escaped("Table") },
               false,
             )
 
-            const context: QueryContext<State, Event, Owned> = {
+            const blob = yield* actors.blobs(
+              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
+              false,
+            )
+
+            const context: QueryContext<State, Event, Owned, Blobs> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -913,26 +968,23 @@ const make = <
               events: replay,
               rows: access.rows as QueryContext<State, Event, Owned>["rows"],
               group: access.group,
+              blob,
             }
 
             return yield* Effect.gen(function* () {
-              const input = yield* Schema.decodeEffect(inputCodec)(request.payload).pipe(
-                Effect.orDie,
-              )
+              const input = yield* decodeInput(request.payload).pipe(Effect.orDie)
 
               const output = yield* handle(input.value)
 
-              const value = yield* Schema.encodeEffect(outputCodec)({ value: output }).pipe(
-                Effect.orDie,
-              )
+              const value = yield* encodeOutput({ value: output }).pipe(Effect.orDie)
 
               return Outcome.cases.Success.make({ value })
             }).pipe(
               Effect.catch(
                 Effect.fnUntraced(function* (error) {
-                  if (!Schema.is(errorSchema)(error)) return yield* Effect.die(error)
+                  if (!isError(error)) return yield* Effect.die(error)
 
-                  const value = yield* Schema.encodeEffect(errorCodec)(error).pipe(Effect.orDie)
+                  const value = yield* encodeError(error).pipe(Effect.orDie)
 
                   return Outcome.cases.Failure.make({ value })
                 }),
@@ -957,6 +1009,7 @@ const make = <
         name,
         placement,
         tables,
+        blobs,
         queries: registered,
       })
     })
@@ -1106,22 +1159,18 @@ const make = <
       actor: name,
       // Intents stay within the sending turn's tenant.
       tenant: staging.sender.tenant,
-      id: isSingleton ? "singleton" : yield* Schema.decodeEffect(idSchema)(id).pipe(Effect.orDie),
+      id: isSingleton ? "singleton" : yield* decodeId(id).pipe(Effect.orDie),
     })
 
     const methods = Object.fromEntries(
       members.map((member) => {
-        const inputCodec = Schema.fromJsonString(
-          Schema.toCodecJson(Schema.Struct({ value: member.input })),
-        )
+        const { encodeInput } = codecs.get(member.tag)!
 
         return [
           member.tag,
           (input: typeof member.input.Type) =>
             Effect.gen(function* () {
-              const payload = yield* Schema.encodeEffect(inputCodec)({ value: input }).pipe(
-                Effect.orDie,
-              )
+              const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
               yield* stage(marker, { target, command: member.tag, payload })
             }),

@@ -4,8 +4,8 @@ import { SqlClient } from "effect/unstable/sql"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { migrate } from "../../../runtime/database/migrations.ts"
-import { Database } from "../../../runtime/index.ts"
+import { migrate } from "../../../../runtime/database/migrations.ts"
+import { Database } from "../../../../runtime/index.ts"
 
 describe("process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
@@ -58,6 +58,7 @@ describe("process death with Postgres", () => {
                 { migration_id: 5 },
                 { migration_id: 6 },
                 { migration_id: 8 },
+                { migration_id: 9 },
               ])
               expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
                 { receipts: 0 },

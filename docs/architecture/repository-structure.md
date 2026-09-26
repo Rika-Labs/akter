@@ -70,7 +70,7 @@ packages/durable-actors/src/
     cron/         scheduler
     serialization/ codec, registry
   testing/        "./testing"  ActorTest, BoundActor, turns, effects, faults, cluster, clock, workflows, server, scripts, pglite
-    conformance/  describe, postgres, neki, pglite
+    conformance/  describe, postgres, neki, pglite, crash/ (turns/, delivery/: real SIGKILL fixtures and cases)
 ```
 
 ## Naming contract

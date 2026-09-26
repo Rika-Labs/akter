@@ -7,7 +7,7 @@
 
 Benchmarks MUST measure command p50/p95/p99, hot-actor throughput, transaction duration, database round trips and pool waits, receipt/event/outbox growth, mailbox age, hibernation and wake latency, parked-connection memory, event replay lag, workflow resume latency, Neki relay lag, and recovery after runner death.
 
-Capacity tests MUST include `State.maxBytes`, the 16 KiB connection-state limit, cluster principal-header size, mailbox capacity, event retention, and reconnect waves. Singleton tests MUST show one active `run` and one cron tick across runner counts.
+Capacity tests MUST include `State.maxBytes`, the 16 KiB connection-state limit, memory per parked connection at its holder, wake-on-frame latency, broadcast fan-out to 10^4 connections across runners, reauthorization calls per second at `policy.reauthorizeEvery`, cluster principal-header size, mailbox capacity, event retention, and reconnect waves. Singleton tests MUST show one active `run` and one cron tick across runner counts.
 
 Every result MUST record runtime and backend versions, deployment mode, topology, database settings, indexes, dataset size, tenant/key skew, hardware, concurrency, durability settings, and injected failures. PGlite results MUST NOT be generalized to lock contention or multi-process Postgres/Neki behavior.
 
@@ -35,8 +35,9 @@ Split a shard, or stop placing new keys on it, when any of these persists at nor
 - **Flat latency with stored actors:** a fixed 10,000 turns/second on one shard with 10^5, 10^7, and 10^9 stored actors. Turn p99, wake latency, and timer lateness must stay within 10% across the three.
 - **Linear scale-out:** 1, 2, 4, 8, and 16 Neki shards with turns/second per shard held constant, including during an online reshard. Measure the single `cluster_*` shard group separately.
 - **Hot-actor ceiling:** maximum durable commands/second for one actor with turn batches off and on.
-- **Round trips:** database round trips per turn, expected to be two.
+- **Round trips:** database round trips per turn, expected to be two. The `Statements` CI job holds every pull request to `main` to the statements per operation in `benchmarks/baselines/statements.json`; a pull request that changes a count updates that file and says why ([benchmarks/README.md](../../benchmarks/README.md#statement-gate)).
 - **72-hour soak:** vacuum progress, transaction-ID age, WAL bytes per turn, full-page-image ratio, replica lag, and relay lag.
+- **Workflows** (ADR 0022; M2.7's `workflow` scenario): statements and milliseconds per recorded activity step, resume latency after a runner kill, sleep lateness against the due time, and recovery resume turns per running execution. The emit-path wait lookup must not change the statement count for actor types without waits.
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
 - **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region.
 
@@ -120,12 +121,29 @@ One difference exceeds the noise and repeated in both merge runs: rewriting a 16
 
 The merge had no scenario for the four slices. Each has one now; `benchmarks/README.md` maps every shipped feature to its scenarios.
 
+### Actor blobs (M1.blob)
+
+Two full runs of `hot-actor`, `state-size`, and `blobs` on `feat/30-blobs` at `cc6c43e`, one machine, Postgres 18.6. Each p50 pair is run / repeat, in ms:
+
+| Entry  | `set`     | `append`  | `read` (1 chunk / 16 chunks) | `compact` 16 chunks |
+| ------ | --------- | --------- | ---------------------------- | ------------------- |
+| 4 KiB  | 4.7 / 6.1 | 2.9 / 3.0 | 0.46 / 0.42 · 0.47 / 0.42    | 3.1 / 3.1           |
+| 64 KiB | 3.6 / 7.9 | 4.5 / 5.0 | 0.62 / 1.5 · 0.66 / 0.80     | 3.5 / 3.7           |
+| 1 MiB  | 26 / 24   | 23 / 20   | 8.3 / 8.3 · 9.6 / 7.6        | 25 / 23             |
+
+- **Statements:** a blob `set`, `append`, or `compact` turn issues 11 statements, the same as a warm state-only turn: the blob statement replaces the state write. A query read issues 2. These counts are the regression gate.
+- **Chunking is nearly free to read:** a 16-chunk entry reads as fast as a one-chunk entry at every size, because `string_agg` joins the chunks in the database.
+- **Append does not rewrite earlier bytes:** at 4 KiB an append turn (2.9 ms) costs the same as a warm state turn (3.0 ms), where `set` pays for rewriting chunk 0.
+- **1 MiB entries** take about 25 ms to write and 8 ms to read on Postgres, and about 90 ms and 53 ms on PGlite. Most of it is moving the bytes, since statement counts barely change.
+
+**The DURA-17 16–32 KiB lead does not show up as a blob-specific cost.** Blob `set` p50 at 16 and 32 KiB was 4.1 and 7.2 ms in the first run, and 3.1 and 3.4 ms in the repeat. An earlier run on `f6fe7f8` gave 3.4 and 3.5 ms. In the same runs, the state-size rewrite at 32 KiB was 10.9 and 5.6 ms. So both mechanisms show the same run-to-run jump at 32 KiB. It is noise on this VM or a shared effect that isn't blob-specific, and statement counts stay flat. The one-caller `set` p50 at 4 and 64 KiB also varies by up to 2x between runs. Treat single-run latency here as noise and gate on statements.
+
 ### Bottlenecks
 
 1. **The runtime process, not the database.** A warm turn takes 3.1 ms end to end, but Postgres spends 0.13 ms executing its statements, per `pg_stat_statements`, not counting `COMMIT` and its WAL flush.
    - **One caller:** the benchmark process, which holds the client, the actor runtime, and the driver, uses about 92% of a core at 290 turns/second. That is about 3.2 ms of CPU per turn, and Postgres uses 22%.
    - **Under load:** the process uses 135–185% while Postgres uses 20–45%. About half of the pooled connections sit `idle in transaction` waiting on the client (`Client/ClientRead`) during a turn.
-   - **Profile:** a CPU profile of the hot-actor case, not committed, spends its time in Effect's fiber run loop, the Postgres driver's socket writes, and schema encoding. It spends almost none in zstd or SQL.
+   - **Profile:** a CPU profile of the hot-actor case spends its time in Effect's fiber run loop, the Postgres driver's socket writes, and schema encoding. It spends almost none in zstd or SQL. The committed profiles are under [`benchmarks/profiles/`](../../benchmarks/profiles/); see [Runtime CPU per turn](#runtime-cpu-per-turn-60).
    - **Consequence:** more connections or a larger database won't raise throughput until the runtime does less work per turn or runs in several processes.
 2. **Round trips.** A warm turn issues 11 statements that `pg_stat_statements` counts per call, plus `BEGIN`, a `SAVEPOINT` around the handler, and `COMMIT`: 14 sequential round trips, where ADR 0005 expects two pipelined ones.
    - **Before the transaction:** three `clock_timestamp()` reads for command-id checks, two `$1::jsonb::text` canonicalizations of the same payload, and one receipt lookup.
@@ -157,6 +175,29 @@ The merge had no scenario for the four slices. Each has one now; `benchmarks/REA
    - **Hot actor:** limited by its one-turn-at-a-time serialization and by runtime CPU. 64 callers gain about 30% over one.
    - **zstd:** at most 0.11 ms at 60 KiB.
    - **Large stored state:** holding a 60 KiB state while changing a counter costs about the same as holding a 256 B state. A hibernated actor wakes with a 60 KiB state in about the same time as with a small one.
+
+### Runtime CPU per turn (#60)
+
+The runtime rebuilt schema codecs on every turn: every `Schema.decodeEffect(Schema.fromJsonString(...))` built inside a handler, a state write, a receipt, or a handle call compiled a new parser. It now builds each actor type's member, state, event, and effect codecs once, and the receipt, command-id, and entity-id codecs once per process. A turn also provides its context in one merge instead of four nested provides, each of which copied the fiber's context, and the turn span no longer captures a stack trace, which always pointed at the runtime's own file. No statement, receipt, span name, or span attribute changed; the one visible difference is that a pretty-printed defect cause shows the turn span's frame without the `register.ts` file and line.
+
+Two sessions on one 4-vCPU VM measure it, each alternating the baseline with the change so both sides see the same machine load. The baseline, `a28605e`, is `main` plus the CPU-per-operation column and the profiler, with runtime code identical to `main`.
+
+- **Final code:** `p3-before-hot-{1,2,3}` and `p3-final-hot-{1,2,3}` ran `hot-actor` on Postgres 18.6 as before, final, before, final, before, final. `5093945` holds the final runtime code except that it measured state size with `Buffer.byteLength`; the branch now uses a shared `TextEncoder`, as `main` did, so the browser-safe `actor/` module stays free of Node globals. Later commits otherwise add only results and docs.
+- **First cut:** `p3-before`, `p3-after`, and their `-repeat` files ran `hot-actor` and `state-size` on Postgres as before, after, before, after, then once each on PGlite. `781ff5c` differs from the final code only in splitting encoded state with plain `JSON.parse` instead of the schema decoder, which lint rejects. The files name commits from before this branch was rebased onto `main` `1046deb`, which changed only docs and results.
+
+Client CPU milliseconds per operation in the final-code session, mean of three runs each:
+
+| Case                      | Before | After | Change |
+| ------------------------- | -----: | ----: | -----: |
+| `hot-actor/sequential`    |   2.58 |  2.39 |    −7% |
+| `hot-actor/concurrent-8`  |   2.60 |  2.27 |   −13% |
+| `hot-actor/concurrent-64` |   2.54 |  2.16 |   −15% |
+
+Every final run was below every baseline run in all three cases. Throughput rose 6% for one caller (369 to 391 op/s), 10% for 8 callers, and 9% for 64. The first-cut session agrees: −10%, −12%, and −12% on the means of two runs each. Statements per operation stayed at 7.01 for `hot-actor`, and every `state-size` case stayed within 0.02 of its baseline (`rewrite-*` 8.00–8.03, `hold-*` 7.00–7.01, `wake-*` 9.00–9.05). On PGlite, one pair of runs showed CPU per turn 3–14% lower across the three `hot-actor` cases. In the profiles (`benchmarks/profiles/*-p3-{before,after}-postgres-hot-actor.md`), self time in Effect's schema modules fell from 1,670 to 1,071 ms over 5,000 turns, and CPU per turn under the profiler fell from 3.77 to 3.45 ms.
+
+Most of what remains isn't in the runtime's own code: about 40% is Effect's fiber run loop and context handling, and about 35% is native, largely the socket write each statement makes (`writeBuffered`, 18–19%). A bare `SELECT 1` costs about 70 µs of client CPU through `@effect/sql-pg` on this machine, so the 10 round trips of a warm turn cost close to 1 ms before any actor work. Fewer round trips (P4) cut that directly; the runtime cannot without changing statements.
+
+**The 16–32 KiB rewrite lead did not reproduce.** On `main` as of this branch, `rewrite-32768` on Postgres took 4.7 and 3.5 ms p50 in the two first-cut baseline runs, against 12.4 ms in the committed M1-merge Postgres run that raised the lead. The change's two runs took 8.8 and 3.7 ms. With two runs a side, one slow run in four whose repeat on the same code was fast reads as run-to-run noise in a 500-turn case, not a runtime regression; a longer `state-size` case would settle it. CPU per turn for state rewrites grows with the blob, from about 2.5 ms at 4 KiB to 10–14 ms at 60 KiB, because each `set` round-trips the whole state through its schema and each commit encodes and compresses it.
 
 ### Runner capacity and pool size (#39, #42)
 

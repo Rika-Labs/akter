@@ -2,9 +2,9 @@ import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor } from "../../../index.ts"
-import { Actors, Database } from "../../../runtime/index.ts"
-import { TurnHooks } from "../../../runtime/turn/hooks.ts"
+import { Actor } from "../../../../index.ts"
+import { Actors, Database } from "../../../../runtime/index.ts"
+import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
 
 const entries = Actor.table(pgTable("crash_entries", { id: text("id").primaryKey() }))
 
