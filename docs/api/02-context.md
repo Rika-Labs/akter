@@ -27,15 +27,19 @@ const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(funct
 
 ## Phases
 
-| Service        | Phase                                | Provides                                                                                                                                                   |
-| -------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `X.Turn`       | command handler (public or internal) | `id`, `ref`, `caller`, `principal`, `commandId`, `isNew`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `perform`, `broadcast`, `terminate` |
-| `X.Read`       | query and stream handlers            | `id`, `ref`, `caller`, `principal`, committed `state` and its event `cursor`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`            |
-| `X.Connection` | connection handler                   | `X.Read` capabilities plus connection `id`, `state` (16 KiB), `resumed`, and `broadcast`                                                                   |
-| `X.Workflow`   | workflow body                        | owner `id` and `ref`, `principal`, `executionId`, `key`, and owner-event `waitFor(Event, { where, timeout })`                                              |
-| `X.Executor`   | effect executor                      | `effectId`, `attempt`, `principal`, and owner `ref`; no database capability                                                                                |
+| Service        | Phase                                | Provides                                                                                                                                                                               |
+| -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `X.Turn`       | command handler (public or internal) | `id`, `ref`, `caller`, `principal`, `commandId`, `isNew`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `perform`, `broadcast`, `subscribe`, `unsubscribe`, `terminate` |
+| `X.Read`       | query and stream handlers            | `id`, `ref`, `caller`, `principal`, committed `state` and its event `cursor`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`                                        |
+| `X.Connection` | connection handler                   | `X.Read` capabilities plus connection `id`, `state` (16 KiB), `resumed`, and `broadcast`                                                                                               |
+| `X.Workflow`   | workflow body                        | owner `id` and `ref`, `principal`, `executionId`, `key`, and owner-event `waitFor(Event, { where, timeout })`                                                                          |
+| `X.Executor`   | effect executor                      | `effectId`, `attempt`, `principal`, and owner `ref`; no database capability                                                                                                            |
 
 Only command handlers and workflow bodies may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker, which command turns provide and `X.toLayer` removes from handler requirements (workflow bodies are target API). A command handler that acquires a handle with `X.get` does not compile. Request/reply handles (`X.get`) are available outside turns: in applications, workflow bodies, and effect executors. Executors report results by returning a value; the framework delivers it to the effect's `onSuccess` route ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)). `turn.perform(effect)` is implemented on `X.Turn`, and `X.Executor` is provided to executors in `X.toEffectLayer`. An effect layer whose executors or build Effect require `SqlClient`, `PgClient`, or `PgliteClient` does not compile, and the runtime removes those clients from the context an executor runs in. A client obtained outside Effect's context (for example a driver pool created in the build) is not detected. `X.Executor.attempt` starts at 1, and a later attempt may follow one whose outcome is unknown, so executors pass `effectId` to the provider as an idempotency key. Workflow activities and durable sleep use Effect's `Activity` and `DurableClock`.
+
+## Subscriptions
+
+`turn.subscribe(S, sourceId, { from? })` and `turn.unsubscribe(S, sourceId)` (target API, [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md)) start and stop following one source instance through a dynamic `Actor.subscription` (one without `route`). They stage like intents and take effect only if the turn commits. `from` is `"now"` (default), `"start"`, or a cursor to resume after. After `unsubscribe` commits, no further delivery for that source runs the handler. Routed subscriptions are not passed to either.
 
 ## Owned rows
 

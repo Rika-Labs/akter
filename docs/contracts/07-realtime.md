@@ -5,7 +5,7 @@
 **Owner role:** realtime/runtime.  
 **Change policy:** every transport must test snapshot/live race, loss, replay, and revocation.
 
-Durable event subscriptions MUST use an event cursor and MUST preserve actor-stream order across replay and live delivery. Retention gaps MUST be explicit; clients MUST NOT be told that a feed is continuous when events can have been skipped.
+Durable event subscriptions MUST use an event cursor and MUST preserve actor-stream order across replay and live delivery. Retention gaps MUST be explicit; clients MUST NOT be told that a feed is continuous when events can have been skipped. The same rules bind actor-to-actor subscriptions ([ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md)): per-source cursor order, and a `RetentionGap` delivery to the subscriber's handler instead of a silent skip.
 
 `X.Read` and `X.Connection` MUST expose committed state only. Committed state changes MUST publish only after commit, and browser handles MUST receive them to reconcile optimistic reducers. Workflow bodies and effect executors do not receive direct actor-state access.
 
