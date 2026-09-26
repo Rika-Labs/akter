@@ -237,10 +237,7 @@ const effectMillis = (path: string, duration: Duration.Input) => {
   return Math.floor(millis)
 }
 
-const effectTiming = (
-  tag: string,
-  policy: EffectPolicy<AnyEffect, AnyCommand> | undefined,
-): { readonly timeoutMs: number; readonly backoff: RegisteredEffect["backoff"] } => {
+const effectTiming = (tag: string, policy: EffectPolicy<AnyEffect, AnyCommand> | undefined) => {
   const backoff = policy?.retry?.backoff
 
   const timing = {
@@ -255,7 +252,7 @@ const effectTiming = (
             baseMs: effectMillis(`policy.effects.${tag}.retry.backoff.base`, backoff.base),
             maxMs: effectMillis(`policy.effects.${tag}.retry.backoff.max`, backoff.max),
           },
-  }
+  } satisfies { readonly timeoutMs: number; readonly backoff: RegisteredEffect["backoff"] }
 
   if (timing.backoff.maxMs < timing.backoff.baseMs)
     throw new Error(`policy.effects.${tag}.retry.backoff.max must be at least its base`)

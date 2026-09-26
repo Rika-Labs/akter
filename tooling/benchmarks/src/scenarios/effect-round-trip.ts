@@ -49,7 +49,11 @@ export const effectRoundTrip: Scenario = {
           ),
         )
 
-      const window = quick ? 3000 : 10_000
+      // Full profile only: renewals of the stalled attempts land in its window a varying number
+      // of times, so its statement count can't be gated.
+      if (quick) return results
+
+      const window = 10_000
 
       results.push(
         yield* context.withRuntime({}, (instruments) =>

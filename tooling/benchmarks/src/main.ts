@@ -165,7 +165,7 @@ const program = Effect.gen(function* () {
               backend,
               profile: profile === "ci" ? "quick" : profile,
               runners,
-              withRuntime: withRuntime(backend, runners),
+              withRuntime: withRuntime({ backend, runners }),
             })
 
             for (const result of measured) {

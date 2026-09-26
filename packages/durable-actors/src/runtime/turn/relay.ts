@@ -235,8 +235,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
   const deliverIntent = Effect.fnUntraced(function* (row: ClaimedRow) {
     const routingKey = BigInt(row.routing_key)
+
     const claim = sql`routing_key = ${routingKey} AND intent_id = ${row.intent_id}
       AND kind = 'intent' AND due_at_ms = ${BigInt(row.claimed_until)}`
+
     let started = false
 
     const retryLater = (reason: string, cause: unknown) =>
@@ -395,6 +397,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         )
 
         if (renewed === undefined) continue
+
         if (renewed.length === 0) return "lost" as const
         confirmed = sent
       }
@@ -477,6 +480,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         if (stopping) return 0
 
         let claimed = 0
+
         const slots = Math.min(
           settings.deliveryConcurrency - (yield* FiberSet.size(deliveries)),
           settings.passLimit,
@@ -566,6 +570,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const claimed = yield* pass
 
       if (claimed === 0 && (yield* inFlight) === 0) return
+
       if (claimed > 0) rounds++
     }
 

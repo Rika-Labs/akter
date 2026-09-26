@@ -88,7 +88,13 @@ export const DEFAULT_POOL = 10
 const SHARD_LOCK_EXPIRATION = "30 seconds"
 
 export const withRuntime =
-  (backend: Backend, runners: number): ScenarioContext["withRuntime"] =>
+  ({
+    backend,
+    runners,
+  }: {
+    readonly backend: Backend
+    readonly runners: number
+  }): ScenarioContext["withRuntime"] =>
   (options, body) =>
     Effect.scoped(
       Effect.gen(function* () {

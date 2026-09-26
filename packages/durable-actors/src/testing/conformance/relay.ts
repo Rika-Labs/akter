@@ -1,7 +1,19 @@
-import { DateTime, Deferred, Duration, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import {
+  Clock,
+  DateTime,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Schedule,
+  Schema,
+} from "effect"
+import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, Intent, User } from "../../index.ts"
 import type { Request } from "../../handles/actors.ts"
+import type { EffectPolicy } from "../../members/effect.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { layer as runtimeLayer } from "../../runtime/layer.ts"
 import { TurnHooks } from "../../runtime/turn/hooks.ts"
@@ -9,7 +21,7 @@ import { claimIntents } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
-import { CLAIM_LEASE } from "./outbox.ts"
+import { CLAIM_LEASE, ExplainOutput, planNodes } from "./outbox.ts"
 
 /** One executor attempt as the fake provider saw it; times are this process's clock. */
 interface Attempt {
@@ -181,13 +193,13 @@ export const relayLayer = (fixture: RelayFixture) =>
         Perform: Effect.fnUntraced(function* ({ key, effect }) {
           const turn = yield* RelayCaller.Turn
 
-          yield* turn.perform(
-            effect === "RelayCall"
-              ? RelayCall.make({ key })
-              : effect === "RelayCallOnce"
-                ? RelayCallOnce.make({ key })
-                : RelayTimed.make({ key }),
-          )
+          const performed = {
+            RelayCall: () => RelayCall.make({ key }),
+            RelayCallOnce: () => RelayCallOnce.make({ key }),
+            RelayTimed: () => RelayTimed.make({ key }),
+          }
+
+          yield* turn.perform(performed[effect]())
         }),
         Called: Effect.fnUntraced(function* (value: string) {
           const turn = yield* RelayCaller.Turn
@@ -200,7 +212,7 @@ export const relayLayer = (fixture: RelayFixture) =>
   )
 
 /** The executors of `runner`; a case can leave a runner without them. */
-export const relayEffects = (fixture: RelayFixture, runner: number) => {
+const runnerEffects = (fixture: RelayFixture, runner: number) => {
   const execute = (key: string) =>
     Effect.gen(function* () {
       const exec = yield* RelayCaller.Executor
@@ -209,7 +221,7 @@ export const relayEffects = (fixture: RelayFixture, runner: number) => {
         key,
         attempt: exec.attempt,
         runner,
-        startedAt: Date.now(),
+        startedAt: yield* Clock.currentTimeMillis,
         endedAt: undefined,
         interrupted: false,
       }
@@ -218,8 +230,8 @@ export const relayEffects = (fixture: RelayFixture, runner: number) => {
 
       return yield* Effect.suspend(() => fixture.provider(attempt)).pipe(
         Effect.onExit((exit) =>
-          Effect.sync(() => {
-            attempt.endedAt = Date.now()
+          Effect.map(Clock.currentTimeMillis, (now) => {
+            attempt.endedAt = now
             attempt.interrupted = Exit.hasInterrupts(exit)
           }),
         ),
@@ -234,6 +246,9 @@ export const relayEffects = (fixture: RelayFixture, runner: number) => {
     }),
   )
 }
+
+/** The executors of the conformance environment's single runtime. */
+export const relayEffects = (fixture: RelayFixture) => runnerEffects(fixture, 0)
 
 const EXPIRATION_SECONDS = 3
 
@@ -273,7 +288,7 @@ const withCluster = <A, E>(
           runnerActors: (runner) =>
             (settings.withoutExecutors ?? []).includes(runner)
               ? Layer.empty
-              : (relayEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>),
+              : (runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>),
           as: User.make({ subject: "alice" }),
           relay: settings.relay,
           executors: settings.executors,
@@ -330,7 +345,7 @@ const refOf = (id: string) => on(0, RelayCaller.get(id).pipe(Effect.map((caller)
 /** Runs a query on `runner`'s database pool. */
 const query = <A>(
   runner: number,
-  statement: (sql: SqlClient.SqlClient) => Effect.Effect<A, unknown>,
+  statement: (sql: SqlClient.SqlClient) => Effect.Effect<A, SqlError.SqlError>,
 ) =>
   on(
     runner,
@@ -556,7 +571,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           expect(rows.every((row) => row.attempts === 1)).toBe(true)
           expect(rows.every((row) => Number(row.due) - Number(row.now) > 30_000)).toBe(true)
 
-          const sent = Date.now()
+          const sent = yield* Clock.currentTimeMillis
           yield* stage(1, ["fresh"])
           yield* eventually(
             Effect.sync(() => fixture.taken.get("fresh") === 1),
@@ -564,7 +579,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "the fresh intent",
           )
           // Within one poll, jitter included.
-          expect(Date.now() - sent <= 1100).toBe(true)
+          expect((yield* Clock.currentTimeMillis) - sent <= 1100).toBe(true)
 
           // A row that keeps dying backs off past the lease, capped at maxBackoff.
           yield* query(
@@ -574,9 +589,11 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
                 due_at_ms = floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
               WHERE payload LIKE '%"dead-0"%'`,
           )
+
           const deadZero = outboxRows(1).pipe(
             Effect.map((rows) => rows.find((row) => row.payload.includes('"dead-0"'))!),
           )
+
           // The redelivery replays the receipt and its settle dies again.
           yield* eventually(
             deadZero.pipe(Effect.map((row) => row.attempts === 10)),
@@ -645,20 +662,17 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           let next = 0
 
-          const deliver = Effect.suspend(() => {
+          const deliver = Effect.gen(function* () {
             const id = `timed-${next++}`
-            const started = Date.now()
-
-            return stage(0, [id]).pipe(
-              Effect.andThen(
-                eventually(
-                  Effect.sync(() => fixture.taken.get(id) === 1),
-                  "10 seconds",
-                  `delivery of ${id}`,
-                ),
-              ),
-              Effect.andThen(Effect.sync(() => Date.now() - started)),
+            const started = yield* Clock.currentTimeMillis
+            yield* stage(0, [id])
+            yield* eventually(
+              Effect.sync(() => fixture.taken.get(id) === 1),
+              "10 seconds",
+              `delivery of ${id}`,
             )
+
+            return (yield* Clock.currentTimeMillis) - started
           })
 
           const baseline = yield* Effect.replicateEffect(deliver, 30)
@@ -864,6 +878,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
               sql<{ attempts: number; wait: string }>`SELECT attempts, wait::text AS wait
                 FROM relay_waits ORDER BY attempts`,
           )
+
           expect(waits.map(({ attempts }) => attempts)).toEqual([1, 2, 3, 4])
 
           for (const [index, backoff] of [10, 20, 40].entries()) {
@@ -899,10 +914,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const claimedAt = new Map<string, number>()
           const startedAt = new Map<string, number>()
           fixture.hook = (point, request) =>
-            Effect.sync(() => {
-              if (point === "afterClaim") claimedAt.set(request.payload, Date.now())
+            Effect.map(Clock.currentTimeMillis, (now) => {
+              if (point === "afterClaim") claimedAt.set(request.payload, now)
 
-              if (point === "beforeDelivery") startedAt.set(request.payload, Date.now())
+              if (point === "beforeDelivery") startedAt.set(request.payload, now)
             })
           fixture.onTake = () => Effect.sleep("1 second")
 
@@ -1136,46 +1151,53 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
 export const relayConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "releases claimed but unstarted rows on graceful shutdown",
-    run: async ({ expect, environment, fixture: { relay: fixture } }) => {
-      const claimedAt = await environment.run(
+    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+      Effect.runPromise(
         Effect.gen(function* () {
-          yield* reset(fixture)
-          const test = yield* ActorTest
-          const sender = yield* Relayer.get("shutdown")
-          yield* sender.Stage({ ids: ["shutdown"], afterMs: 60_000 })
-          const pause = yield* test.pauseNext("afterClaim")
-          yield* test.advance("1 minute").pipe(Effect.forkDetach)
-          yield* pause.reached
+          const claimedAt = yield* Effect.promise(() =>
+            environment.run(
+              Effect.gen(function* () {
+                yield* reset(fixture)
+                const test = yield* ActorTest
+                const sender = yield* Relayer.get("shutdown")
+                yield* sender.Stage({ ids: ["shutdown"], afterMs: 60_000 })
+                const pause = yield* test.pauseNext("afterClaim")
+                yield* test.advance("1 minute").pipe(Effect.forkDetach)
+                yield* pause.reached
 
-          return DateTime.toEpochMillis(yield* test.now)
-        }),
-      )
+                return DateTime.toEpochMillis(yield* test.now)
+              }),
+            ),
+          )
 
-      // A graceful stop interrupts the paused delivery before it reached the receiver.
-      await Effect.runPromise(environment.restart)
+          // A graceful stop interrupts the paused delivery before it reached the receiver.
+          yield* environment.restart
 
-      await environment.run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          const test = yield* ActorTest
+          yield* Effect.promise(() =>
+            environment.run(
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                const test = yield* ActorTest
 
-          const row = sql<{ attempts: number; due: string }>`
+                const row = sql<{ attempts: number; due: string }>`
             SELECT attempts, due_at_ms::text AS due FROM actor_outbox
             WHERE payload LIKE '%"shutdown"%'`
 
-          // Released at shutdown, with its claim counted, instead of held for the lease.
-          const [released] = yield* row
-          expect(released!.attempts).toBe(1)
-          expect(Number(released!.due) - claimedAt < 5000).toBe(true)
+                // Released at shutdown, with its claim counted, instead of held for the lease.
+                const [released] = yield* row
+                expect(released!.attempts).toBe(1)
+                expect(Number(released!.due) - claimedAt < 5000).toBe(true)
 
-          // The restarted runtime's outbox clock starts at database time again.
-          const wait = Number(released!.due) - DateTime.toEpochMillis(yield* test.now)
-          yield* test.advance(Math.max(0, wait))
-          expect(fixture.taken.get("shutdown")).toBe(1)
-          expect(yield* row).toEqual([])
+                // The restarted runtime's outbox clock starts at database time again.
+                const wait = Number(released!.due) - DateTime.toEpochMillis(yield* test.now)
+                yield* test.advance(Math.max(0, wait))
+                expect(fixture.taken.get("shutdown")).toBe(1)
+                expect(yield* row).toEqual([])
+              }),
+            ),
+          )
         }),
-      )
-    },
+      ),
   },
   {
     name: "keeps scheduled_at_ms across claims while due_at_ms moves",
@@ -1349,17 +1371,11 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(explained).toBeInstanceOf(Explained)
 
-          type Node = { readonly [key: string]: unknown; readonly Plans?: ReadonlyArray<Node> }
+          const [output] = yield* Schema.decodeUnknownEffect(ExplainOutput)(
+            Schema.is(Explained)(explained) ? explained.plan : undefined,
+          ).pipe(Effect.orDie)
 
-          const nodes: Array<Node> = []
-
-          const walk = (node: Node): void => {
-            nodes.push(node)
-
-            for (const child of node.Plans ?? []) walk(child)
-          }
-
-          walk((explained as Explained & { plan: ReadonlyArray<{ Plan: Node }> }).plan[0]!.Plan)
+          const nodes = planNodes(output.Plan)
           const due = nodes.filter((node) => node["Index Name"] === "actor_outbox_due_kind")
 
           expect(nodes.some((node) => node["Node Type"] === "Seq Scan")).toBe(false)
@@ -1372,57 +1388,66 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rejects relay, executor, and per-effect timings out of range",
-    run: async ({ expect }) => {
-      const rejects = (build: () => unknown) => {
-        try {
-          build()
+    run: ({ expect }) =>
+      Effect.runPromise(
+        Effect.sync(() => {
+          const rejects = (build: () => void) => {
+            try {
+              build()
 
-          return undefined
-        } catch (error) {
-          return String(error)
-        }
-      }
+              return undefined
+            } catch (error) {
+              return String(error)
+            }
+          }
 
-      const authorize = () => Effect.succeed(true)
+          const authorize = () => Effect.succeed(true)
 
-      expect(
-        rejects(() => runtimeLayer({ authorize, executors: { lease: "2 seconds" } })),
-      ).toContain("executors.lease must be at least 3 seconds")
-      expect(
-        rejects(() => runtimeLayer({ authorize, relay: { deliveryConcurrency: 0 } })),
-      ).not.toBe(undefined)
-      expect(
-        rejects(() =>
-          runtimeLayer({ authorize, executors: { lease: "3 seconds", concurrency: 1 } }),
-        ),
-      ).toBe(undefined)
+          expect(
+            rejects(() => {
+              runtimeLayer({ authorize, executors: { lease: "2 seconds" } })
+            }),
+          ).toContain("executors.lease must be at least 3 seconds")
+          expect(
+            rejects(() => {
+              runtimeLayer({ authorize, relay: { deliveryConcurrency: 0 } })
+            }),
+          ).not.toBe(undefined)
+          expect(
+            rejects(() => {
+              runtimeLayer({ authorize, executors: { lease: "3 seconds", concurrency: 1 } })
+            }),
+          ).toBe(undefined)
 
-      class Probe extends Actor.effect<Probe>()("Probe", {}) {}
+          class Probe extends Actor.effect<Probe>()("Probe", {}) {}
 
-      const make = (policy: object) =>
-        rejects(() =>
-          Actor.make("TimingProbe", {
-            key: Schema.String,
-            effects: [Probe],
-            api: {},
-            policy: { effects: { Probe: policy } } as never,
-          }),
-        )
+          const make = (policy: EffectPolicy<typeof Probe, never>) =>
+            rejects(() => {
+              Actor.make("TimingProbe", {
+                key: Schema.String,
+                effects: [Probe],
+                api: {},
+                policy: { effects: { Probe: policy } },
+              })
+            })
 
-      expect(make({ timeout: "0 millis" })).toContain("policy.effects.Probe.timeout")
-      expect(make({ timeout: Duration.millis(2 ** 31) })).toContain("policy.effects.Probe.timeout")
-      expect(
-        make({ retry: { times: 1, backoff: { base: "2 seconds", max: "1 second" } } }),
-      ).toContain("must be at least its base")
-      expect(
-        make({ retry: { times: 1, backoff: { base: "0 millis", max: "1 second" } } }),
-      ).toContain("policy.effects.Probe.retry.backoff.base")
-      expect(
-        make({
-          timeout: "5 seconds",
-          retry: { times: 2, backoff: { base: "10 millis", max: "1 minute" } },
+          expect(make({ timeout: "0 millis" })).toContain("policy.effects.Probe.timeout")
+          expect(make({ timeout: Duration.millis(2 ** 31) })).toContain(
+            "policy.effects.Probe.timeout",
+          )
+          expect(
+            make({ retry: { times: 1, backoff: { base: "2 seconds", max: "1 second" } } }),
+          ).toContain("must be at least its base")
+          expect(
+            make({ retry: { times: 1, backoff: { base: "0 millis", max: "1 second" } } }),
+          ).toContain("policy.effects.Probe.retry.backoff.base")
+          expect(
+            make({
+              timeout: "5 seconds",
+              retry: { times: 2, backoff: { base: "10 millis", max: "1 minute" } },
+            }),
+          ).toBe(undefined)
         }),
-      ).toBe(undefined)
-    },
+      ),
   },
 ]

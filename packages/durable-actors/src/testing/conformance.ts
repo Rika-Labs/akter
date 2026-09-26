@@ -1263,7 +1263,7 @@ export const describeConformance = (options: {
     effectsLayer(fixture.effects),
     blobsLayer(fixture.blobs),
     relayLayer(fixture.relay),
-    relayEffects(fixture.relay, 0),
+    relayEffects(fixture.relay),
   )
 
   let store: ConformanceStore | undefined

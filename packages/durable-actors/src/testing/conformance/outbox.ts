@@ -178,30 +178,33 @@ const inboxLog = Effect.fnUntraced(function* (to: string) {
 const receivedBodies = (to: string) =>
   inboxLog(to).pipe(Effect.map((log) => log.map(({ body }) => body)))
 
-interface PlanNode {
+export interface PlanNode {
   readonly "Node Type": string
   readonly "Relation Name"?: string | undefined
   readonly "Index Name"?: string | undefined
   readonly "Actual Rows": number
   readonly "Shared Hit Blocks": number
   readonly "Shared Read Blocks": number
+  readonly "Rows Removed by Filter"?: number | undefined
   readonly Plans?: ReadonlyArray<PlanNode> | undefined
 }
 
-const PlanNode: Schema.Codec<PlanNode> = Schema.Struct({
+export const PlanNode: Schema.Codec<PlanNode> = Schema.Struct({
   "Node Type": Schema.String,
   "Relation Name": Schema.optional(Schema.String),
   "Index Name": Schema.optional(Schema.String),
   "Actual Rows": Schema.Finite,
   "Shared Hit Blocks": Schema.Finite,
   "Shared Read Blocks": Schema.Finite,
+  "Rows Removed by Filter": Schema.optional(Schema.Finite),
   Plans: Schema.optional(Schema.Array(Schema.suspend(() => PlanNode))),
 })
 
-const ExplainOutput = Schema.Tuple([Schema.Struct({ Plan: PlanNode })])
+export const ExplainOutput = Schema.Tuple([Schema.Struct({ Plan: PlanNode })])
 
 const explainScan = Effect.fnUntraced(function* (now: number) {
   const sql = yield* SqlClient.SqlClient
+
   const [text, parameters] = claimIntents({
     sql,
     now,
@@ -222,7 +225,7 @@ const explainScan = Effect.fnUntraced(function* (now: number) {
   return output.Plan
 })
 
-const planNodes = (node: PlanNode): ReadonlyArray<PlanNode> => [
+export const planNodes = (node: PlanNode): ReadonlyArray<PlanNode> => [
   node,
   ...(node.Plans ?? []).flatMap(planNodes),
 ]
@@ -575,6 +578,7 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
                 "actor_outbox_due_kind",
               ])
             }
+
             // The planner may skip the per-bucket probe when no intent is due at all, so the
             // bound is absolute: at most three index levels for each of the 256 bucket probes.
             expect(large.blocks <= 3 * 256).toBe(true)
