@@ -21,7 +21,7 @@ class Banned extends Schema.TaggedError<Banned>()("Banned", { name: Schema.Strin
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
-export const Live = Actor.connection("Live", {
+const Live = Actor.connection("Live", {
   params: Schema.Struct({ name: Schema.String }),
   server: Schema.Union([Said, Hello]),
   client: Say,
@@ -31,7 +31,7 @@ export const Live = Actor.connection("Live", {
 
 const Post = Actor.command("Post", { input: Schema.String, errors: [Refused] })
 
-export const Room = Actor.make("LiveRoom", {
+const Room = Actor.make("LiveRoom", {
   key: Schema.String,
   state: Actor.state({ posts: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   events: [Said],
