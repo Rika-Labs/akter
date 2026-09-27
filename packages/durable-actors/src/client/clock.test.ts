@@ -28,6 +28,30 @@ describe("DatabaseClock", () => {
     expect(clock.now()).toBe(local)
   })
 
+  it("keeps a bounded set of samples under sustained traffic, retaining the fastest", () => {
+    let local = 1_000_000
+    const clock = new DatabaseClock(() => local)
+
+    clock.observe(local - 2, local, local + 7_000 - 1)
+
+    for (let index = 0; index < 1_000; index += 1) {
+      local += 10
+      clock.observe(local - 50, local, local + 9_000 - 25)
+    }
+
+    expect(clock.now()).toBe(local + 7_000)
+  })
+
+  it("keeps most of a short retry window ahead of the issue time", () => {
+    const local = 1_000_000
+    const clock = new DatabaseClock(() => local)
+    clock.observe(local - 10, local, local - 5)
+
+    const span = lifetime(clock.mint(1_000, UUID))
+
+    expect(span).toEqual({ issuedAt: local - 250, expiresAt: local + 750 })
+  })
+
   it("is fresh only while a sample from the last minute remains", () => {
     let local = 1_000_000
     const clock = new DatabaseClock(() => local)
