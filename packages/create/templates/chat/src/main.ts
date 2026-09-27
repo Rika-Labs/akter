@@ -25,8 +25,18 @@ const program = Effect.gen(function* () {
 
   yield* room.Post({ body: "hello" })
 
-  for (const { cursor, message } of yield* room.History({}))
-    yield* Console.log(`${cursor} ${message.author}: ${message.body}`)
+  let after: string | undefined
+
+  while (true) {
+    const page = yield* room.History({ after })
+
+    if (page.length === 0) return
+
+    for (const { cursor, message } of page)
+      yield* Console.log(`${cursor} ${message.author}: ${message.body}`)
+
+    after = page[page.length - 1]?.cursor
+  }
 })
 
 Layer.effectDiscard(program).pipe(

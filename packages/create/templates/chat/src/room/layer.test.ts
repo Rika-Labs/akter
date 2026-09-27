@@ -88,6 +88,38 @@ test("a post retried after its commit is not posted twice", async () => {
   await runtime.dispose()
 })
 
+test("recent messages keep posting order across crashed and retried posts", async () => {
+  const runtime = harness()
+
+  await runtime.runPromise(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const room = yield* Room.get(RoomId.make("order"))
+
+      yield* room.Post({ body: "first" })
+
+      yield* test.crashNext("beforeCommit")
+      yield* room.Post({ body: "second" })
+
+      yield* test.crashNext("afterCommit")
+      const third = room.Post({ body: "third" })
+      yield* third
+      yield* third
+
+      expect((yield* room.Recent({ limit: 3 })).map(({ body }) => body)).toEqual([
+        "third",
+        "second",
+        "first",
+      ])
+      expect(yield* test.inspect(room.ref)).toMatchObject({
+        state: { posted: 3 },
+        rows: { chat_messages: 3 },
+      })
+    }),
+  )
+  await runtime.dispose()
+})
+
 test("a closed room rejects posts and keeps nothing from them", async () => {
   const runtime = harness()
 
@@ -116,7 +148,11 @@ test("messages survive a restart", async () => {
   await first.dispose()
 
   const second = app()
-  const history = await second.runPromise(Effect.flatMap(room, (handle) => handle.History({})))
-  expect(history.map(({ message }) => message.body)).toEqual(["kept"])
+  const recent = await second.runPromise(
+    Effect.flatMap(room, (handle) =>
+      handle.Post({ body: "next" }).pipe(Effect.andThen(handle.Recent({ limit: 2 }))),
+    ),
+  )
+  expect(recent.map(({ body }) => body)).toEqual(["next", "kept"])
   await second.dispose()
 })
