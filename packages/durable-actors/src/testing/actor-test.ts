@@ -358,9 +358,8 @@ export class ActorTest extends Context.Service<
                     new Error("advance needs a finite, non-negative duration"),
                   )
 
-                // Work already due or running finishes at the current time, so a jump
-                // can't expire the lease of an attempt that is still in flight.
-                yield* internalActors.drainOutbox
+                // Running attempts keep renewing through the jump, so their leases move with it.
+                yield* internalActors.extendOutboxLeases(millis)
                 clockOffset += millis
                 yield* internalActors.drainOutbox
               }),

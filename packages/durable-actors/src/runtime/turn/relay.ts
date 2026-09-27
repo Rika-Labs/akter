@@ -266,6 +266,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
   // claims again instead of waiting for the poll.
   const more = { intents: false, effects: false }
   let stopping = false
+  // Attempts this runner is executing, keyed by effect id, with the attempt that holds each lease.
+  const running = new Map<string, { readonly routingKey: bigint; readonly attempt: number }>()
 
   const backoffMs = (attempts: number) =>
     Math.min(1000 * 2 ** Math.max(attempts - 1, 0), settings.maxBackoffMs)
@@ -485,6 +487,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
       }
     })
 
+    running.set(row.intent_id, { routingKey, attempt })
+
     // Racing stops and awaits the renewal fiber before any settling write, so
     // a late renewal can't overwrite a failure's backoff with a fresh lease.
     const outcome = yield* registered
@@ -494,7 +498,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
         principal: principal(request.caller),
         ref,
       })
-      .pipe(Effect.result, Effect.raceFirst(renewals), Effect.raceFirst(deadline))
+      .pipe(
+        Effect.result,
+        Effect.raceFirst(renewals),
+        Effect.raceFirst(deadline),
+        Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))),
+      )
 
     if (outcome === "lost")
       return yield* Effect.logWarning("Effect attempt lost its lease").pipe(
@@ -667,9 +676,22 @@ export const outboxRelay = Effect.fnUntraced(function* (
     ),
   )
 
+  // Moves this runner's running attempts' leases with a jump of the outbox clock,
+  // as the renewals during that time would have.
+  const extendLeases = (millis: number) =>
+    Effect.forEach(
+      [...running],
+      ([intentId, { routingKey, attempt }]) =>
+        sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
+          WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
+            AND kind = 'effect' AND attempts = ${attempt}`,
+      { discard: true },
+    ).pipe(Effect.orDie)
+
   return {
     run,
     drain,
+    extendLeases,
     wake: Queue.offer(signals, undefined).pipe(Effect.asVoid),
   }
 })

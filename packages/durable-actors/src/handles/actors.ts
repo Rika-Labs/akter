@@ -149,6 +149,8 @@ export class InternalActors extends Context.Service<
     readonly deliver: (request: Request) => Effect.Effect<Outcome, ActorError>
     /** Runs relay passes until no due intent remains; used by `ActorTest.advance`. */
     readonly drainOutbox: Effect.Effect<void>
+    /** Moves the leases of this runner's running effect attempts forward; used by `ActorTest.advance`. */
+    readonly extendOutboxLeases: (millis: number) => Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>

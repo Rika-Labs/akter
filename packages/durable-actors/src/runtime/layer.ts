@@ -509,6 +509,7 @@ export const layer = (options: Options) => {
         execute: (request) => dispatch(request, true),
         deliver: (request) => dispatch(request, false),
         drainOutbox: relay.drain,
+        extendOutboxLeases: relay.extendLeases,
         shardId: (ref) =>
           entityId(ref).pipe(
             Effect.flatMap((id) => commandEntity(ref.actor).getShardId(EntityId.make(id))),
