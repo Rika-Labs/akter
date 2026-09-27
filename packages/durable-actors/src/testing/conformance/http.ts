@@ -896,8 +896,10 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const { path, method, operation } of operations) {
             const headers = operation.parameters.filter((parameter) => parameter.in === "header")
+
             const isCommand =
               path.startsWith("/actors/") && !path.endsWith("/Count") && !path.endsWith("/Peek")
+
             expect(headers.map((parameter) => parameter.name)).toEqual(
               isCommand ? ["idempotency-key"] : [],
             )
