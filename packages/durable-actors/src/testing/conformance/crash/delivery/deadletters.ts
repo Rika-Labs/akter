@@ -6,7 +6,7 @@ import { Actor } from "../../../../index.ts"
 import { Actors, Database } from "../../../../runtime/index.ts"
 import { decompress } from "../../../../runtime/storage/codec.ts"
 import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
-import { OutboxClock } from "../../../../runtime/turn/outbox.ts"
+import { FrameworkClock } from "../../../../runtime/turn/admission.ts"
 
 class ProviderDown extends Schema.TaggedError<ProviderDown>()("ProviderDown", {}) {}
 
@@ -82,7 +82,7 @@ const runtime = Layer.unwrap(
     })
 
     // The recovering process runs past the crashed attempt's backoff.
-    const clock = Layer.succeed(OutboxClock, {
+    const clock = Layer.succeed(FrameworkClock, {
       offsetMillis: () => (mode === "recover" ? 120_000 : 0),
     })
 

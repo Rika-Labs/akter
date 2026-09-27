@@ -6,6 +6,12 @@ const Positive = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_
 
 const milliseconds = (duration: Duration.Input) => Positive.make(Duration.toMillis(duration))
 
+/** Retention horizons may exceed the 32-bit timeouts: up to about ten years. */
+const horizon = (duration: Duration.Input) =>
+  Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 315_576_000_000 })).make(
+    Duration.toMillis(duration),
+  )
+
 /** Serializable actor policies; each key has exactly one meaning and one default. */
 export interface Policy<
   Command extends AnyCommand = AnyCommand,
@@ -25,6 +31,24 @@ export interface Policy<
   readonly mailboxCapacity?: number
   /** The only command that may create the actor; other commands fail `NotCreated` until it commits. */
   readonly createdBy?: Command
+  /**
+   * How long a receipt is kept after its command id is issued; a timer's
+   * receipt counts from its due time. A receipt is never pruned before its id
+   * expires, nor while an intent or effect with its id is still pending.
+   * Default 7 days.
+   */
+  readonly keepReceipts?: Duration.Input
+  /**
+   * How long an event is kept after it is emitted. Pruning removes only an
+   * actor's oldest events, and replay after a pruned cursor fails
+   * `RetentionGap`. Default 30 days.
+   */
+  readonly keepEvents?: Duration.Input
+  /**
+   * Maximum bytes across all of one actor's blob entries; a write past it is
+   * a defect of the turn. Default 67,108,864 (64 MiB).
+   */
+  readonly maxBlobBytes?: number
   /** Per declared effect, keyed by tag: `retry`, `onSuccess`, and `onDeadLetter`. */
   readonly effects?: EffectPolicies<Effects, Command>
   /**
@@ -45,6 +69,9 @@ export interface TurnPolicy {
   readonly idleMs: number
   readonly mailboxCapacity: number | "unbounded"
   readonly createdBy: string | undefined
+  readonly keepReceiptsMs: number
+  readonly keepEventsMs: number
+  readonly blobMaxBytes: number
   readonly connections: "park" | "keepAwake"
   readonly reauthorizeMs: number
 }
@@ -69,6 +96,9 @@ export const resolvePolicy = (policy: {
         ? "unbounded"
         : Positive.make(declared.mailboxCapacity),
     createdBy: declared?.createdBy?.tag,
+    keepReceiptsMs: horizon(declared?.keepReceipts ?? "7 days"),
+    keepEventsMs: horizon(declared?.keepEvents ?? "30 days"),
+    blobMaxBytes: Positive.make(declared?.maxBlobBytes ?? 67_108_864),
     connections: declared?.connections ?? "park",
     reauthorizeMs: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 3_600_000 })).make(
       Duration.toMillis(declared?.reauthorizeEvery ?? "60 seconds"),

@@ -24,7 +24,7 @@ If documents conflict, stop and create an ADR before coding. Do not resolve a co
 
 ## Settled framework surface
 
-The framework is one `durable-actors` distribution with root, `/runtime`, `/client`, and `/testing` entries. `Actor.make` is the only actor constructor, `Actors.layer` constructs the runtime, `Actor.serve` exposes HTTP, WebSocket, SSE, and OpenAPI, and `ActorTest` exercises the real turn path.
+The framework is one `@durable-actors/core` distribution with root, `/runtime`, `/client`, and `/testing` entries. `Actor.make` is the only actor constructor, `Actors.layer` constructs the runtime, `Actor.serve` exposes HTTP, WebSocket, SSE, and OpenAPI, and `ActorTest` exercises the real turn path.
 
 Actors run embedded, served, or hosted. One database serves each deployment region; tenants are rows and placement is selected by shard group. See [Public APIs](api/README.md), [Repository structure](architecture/repository-structure.md), and the [Glossary](GLOSSARY.md).
 

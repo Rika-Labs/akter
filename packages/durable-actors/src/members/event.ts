@@ -17,3 +17,9 @@ export type EventClass = ValueSchema & {
 const make = <Self = never>() => Schema.TaggedClass<Self>()
 
 export const Event = { make }
+
+/** Entries one `read.events` call returns when the reader names no `limit`. */
+export const DEFAULT_REPLAY_LIMIT = 1_000
+
+/** The largest page a reader may ask for; it bounds rows per page, not their bytes. */
+export const MAX_REPLAY_LIMIT = 10_000

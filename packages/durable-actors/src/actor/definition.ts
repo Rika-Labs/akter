@@ -1,3 +1,5 @@
+import type { Unify } from "effect"
+import type { NodeInspectSymbol } from "effect/Inspectable"
 import {
   Cause,
   Context,
@@ -24,6 +26,7 @@ import type {
   BroadcastContext,
   BroadcastOptions,
   ConnectionContext,
+  ConnectionInfo,
   FrameOf,
 } from "../contexts/connection.ts"
 import type { AnyConnection } from "../members/connection.ts"
@@ -36,6 +39,7 @@ import {
   InternalActors,
   Outcome,
   type Broadcast,
+  type ConnectionLister,
   type ConnectionResult,
   type RegisteredCommand,
   type RegisteredConnection,
@@ -55,7 +59,7 @@ import {
 } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
 import { type AnyBlob, isBlob } from "../members/blob.ts"
-import type { EventClass } from "../members/event.ts"
+import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
 import type {
   AnyCommand,
   AnyMember,
@@ -210,7 +214,7 @@ type ReducerKeys<Members extends MemberRecord> = {
 }[keyof Members]
 
 /** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
-type QueryReason = "ActorUnavailable" | "Unauthorized"
+type QueryReason = "ActorUnavailable" | "Unauthorized" | "Timeout"
 
 type Reasons<
   M extends AnyMember,
@@ -288,6 +292,12 @@ export type Executors<Effects extends AnyEffect, R> = {
     effect: Extract<Effects, { readonly tag: Tag }>["Type"],
   ) => Effect.Effect<Extract<Effects, { readonly tag: Tag }>["success"]["Type"], unknown, R>
 }
+
+/**
+ * Encoded bytes of every event one turn may emit. The turn appends them in
+ * one statement inside its transaction, so the budget bounds that statement.
+ */
+const MAX_EMIT_BYTES = 1_048_576
 
 /** Retries after an effect's first failed attempt when its policy names none. */
 const DEFAULT_EFFECT_RETRIES = 3
@@ -736,6 +746,175 @@ const make = <
       })
     })
 
+  type SessionOf = Exclude<Connections["session"], undefined>["Type"]
+
+  // Builds one connection member's handlers: each phase is a short call that
+  // reads committed state and returns the frames and session it produced.
+  const connectionHandler = <R>(
+    member: AnyConnection,
+    entry: ConnectionHandlers<AnyConnection, R>,
+    services: Context.Context<R>,
+  ): RegisteredConnection => {
+    const codec = connectionCodecs.get(member.tag)!
+    const memberCodec = codecs.get(member.tag)!
+
+    return {
+      stampCursor: member.stampCursor,
+      hasResync: entry.resync !== undefined,
+      run: Effect.fnUntraced(function* (input, phase) {
+        let open = true
+        const { state } = yield* decodeStored(input.state)
+        let session: unknown =
+          input.session === undefined || codec.decodeSession === undefined
+            ? undefined
+            : (yield* codec.decodeSession(input.session).pipe(Effect.orDie)).value
+        let changed = false
+        let close = false
+        const sends: Array<{ readonly frame: string; readonly event?: string | undefined }> = []
+        const broadcasts: Array<Broadcast> = []
+
+        const guard = (capability: string) =>
+          open
+            ? Effect.void
+            : Effect.die(new Error(`${capability} capability escaped its connection handler`))
+
+        const set = Effect.fnUntraced(function* (patch: Partial<SessionOf>) {
+          yield* guard("Session")
+
+          if (codec.encodeSession === undefined || codec.decodeSession === undefined)
+            return yield* Effect.die(new Error(`Connection ${member.tag} declares no session`))
+
+          if (phase._tag === "Resync")
+            return yield* Effect.die(new Error("A resync handler cannot change the session"))
+
+          const next = { ...(typeof session === "object" && session !== null ? session : {}), ...patch }
+          const encoded = yield* codec.encodeSession({ value: next }).pipe(Effect.orDie)
+          session = (yield* codec.decodeSession(encoded).pipe(Effect.orDie)).value
+          changed = true
+        })
+
+
+
+        const context: ConnectionContext<State, Event, Connections["server"]["Type"], SessionOf> = {
+          id: input.ref.id,
+          ref: input.ref,
+          connectionId: input.connectionId,
+          member: input.member,
+          caller: input.caller,
+          principal: principal(input.caller),
+          state: Object.freeze(state) as Readonly<State>,
+          cursor: input.cursor,
+          resumed: input.resumed,
+          session: {
+            get: Effect.sync(() => Option.fromUndefinedOr(session as SessionOf | undefined)),
+            set,
+          },
+          send: Effect.fnUntraced(function* (frame: unknown) {
+            yield* guard("Send")
+            sends.push(yield* encodeFrame(member.tag, frame))
+          }),
+          broadcast: (frame, options) =>
+            broadcastsTo(broadcasts, guard)(member, frame, options),
+          connections: (options) =>
+            Effect.gen(function* () {
+              yield* guard("Connections")
+
+              return yield* Effect.forEach(yield* input.connections(member.tag), (open) =>
+                Effect.gen(function* () {
+                  if (options?.session !== true || open.session === undefined || codec.decodeSession === undefined)
+                    return { connectionId: open.connectionId, caller: open.caller }
+
+                  return {
+                    connectionId: open.connectionId,
+                    caller: open.caller,
+                    session: (yield* codec.decodeSession(open.session).pipe(Effect.orDie)).value as SessionOf,
+                  }
+                }),
+              )
+            }),
+          close: Effect.suspend(() => {
+            close = true
+
+            return guard("Close")
+          }),
+          events: Effect.fnUntraced(function* <E extends Event>(
+            event: E,
+            options?: { readonly after?: string | undefined; readonly limit?: number },
+          ) {
+            yield* guard("Events")
+
+            if (events.get(event.identifier) !== event)
+              return yield* Effect.die(new Error(`Undeclared event: ${event.identifier}`))
+
+            const limit = options?.limit ?? DEFAULT_REPLAY_LIMIT
+
+            if (!Number.isInteger(limit) || limit < 1 || limit > MAX_REPLAY_LIMIT)
+              return yield* Effect.die(
+                new Error(`events limit must be an integer from 1 to ${MAX_REPLAY_LIMIT}`),
+              )
+
+            const { decode } = eventCodecs.get(event)!
+
+            return yield* Effect.forEach(
+              yield* input.events(event.identifier, options?.after, limit),
+              Effect.fnUntraced(function* (stored) {
+                const entry: EventEntry<E["Type"]> = {
+                  cursor: stored.cursor,
+                  event: (yield* decode(stored.value).pipe(Effect.orDie)) as E["Type"],
+                  commandId: stored.commandId,
+                  timestamp: DateTime.makeUnsafe(stored.timestampMs),
+                }
+
+                return entry
+              }),
+            )
+          }),
+        }
+
+        const program: Effect.Effect<void, unknown, R> = Effect.gen(function* () {
+          switch (phase._tag) {
+            case "Open":
+              return yield* entry.open(
+                (yield* memberCodec.decodeInput(phase.params).pipe(Effect.orDie)).value,
+              )
+            case "Frame":
+              return yield* entry.frame(
+                (yield* codec.decodeClient(phase.frame).pipe(Effect.orDie)).value,
+              )
+            case "Close":
+              return yield* entry.close?.(phase.reason as SessionEnded["cause"]) ?? Effect.void
+            case "Resync":
+              return yield* entry.resync?.({ after: phase.after }) ?? Effect.void
+          }
+        })
+
+        return yield* program.pipe(
+          Effect.catch((error) =>
+            phase._tag === "Open" && memberCodec.isError(error)
+              ? Effect.flatMap(memberCodec.encodeError(error).pipe(Effect.orDie), (failure) =>
+                  Effect.fail({ failure }),
+                )
+              : Effect.die(error),
+          ),
+          Effect.flatMap(() =>
+            Effect.gen(function* () {
+              const encoded =
+                !changed || codec.encodeSession === undefined
+                  ? input.session
+                  : yield* codec.encodeSession({ value: session }).pipe(Effect.orDie)
+
+              const result: ConnectionResult = { session: encoded, changed, sends, broadcasts, close }
+
+              return result
+            }),
+          ),
+          Effect.ensuring(Effect.sync(() => (open = false))),
+          Effect.provideContext(Context.add(services, Connection, context)),
+        )
+      }),
+    }
+  }
+
   const register = <R>(handlers: Handlers<All, R>, services: Context.Context<R>) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
@@ -781,6 +960,7 @@ const make = <
             const turn = Symbol()
             const dirty = new Set<string>()
             const emitted: Array<EmittedEvent> = []
+            let emittedBytes = 0
 
             const loaded = yield* decodeStored(rows)
             let current = loaded.state
@@ -812,10 +992,16 @@ const make = <
               if (declared === undefined || !Schema.is(declared)(event))
                 return yield* Effect.die(new Error(`Undeclared event: ${event._tag}`))
 
-              emitted.push({
-                tag: declared.identifier,
-                value: yield* eventCodecs.get(declared)!.encode(event).pipe(Effect.orDie),
-              })
+              const value = yield* eventCodecs.get(declared)!.encode(event).pipe(Effect.orDie)
+
+              emittedBytes += new TextEncoder().encode(value).byteLength
+
+              if (emittedBytes > MAX_EMIT_BYTES)
+                return yield* Effect.die(
+                  new Error(`Events emitted in one turn exceed ${MAX_EMIT_BYTES} bytes`),
+                )
+
+              emitted.push({ tag: declared.identifier, value })
             })
 
             const view = { set }
@@ -844,7 +1030,13 @@ const make = <
             )
 
             const blob = yield* actors.blobs(
-              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
+              {
+                ref: request.ref,
+                placement,
+                blobs,
+                guard: escaped("Blob"),
+                maxBytes: policy.blobMaxBytes,
+              },
               true,
             )
 
@@ -888,7 +1080,7 @@ const make = <
               blob: blob as CommandContext<State, Event, Owned, Blobs>["blob"],
               perform,
               broadcast: broadcastsTo(broadcasts, escaped),
-              connections: (member: AnyConnection) =>
+              connections: (member: AnyConnection): Effect.Effect<ReadonlyArray<ConnectionInfo>> =>
                 Effect.gen(function* () {
                   yield* escaped("Connections")
 
@@ -1051,15 +1243,25 @@ const make = <
 
             const replay = Effect.fnUntraced(function* <E extends Event>(
               event: E,
-              options?: { readonly after?: string | undefined },
+              options?: {
+                readonly after?: string | undefined
+                readonly limit?: number | undefined
+              },
             ) {
               if (events.get(event.identifier) !== event)
                 return yield* Effect.die(new Error(`Undeclared event: ${event.identifier}`))
 
+              const limit = options?.limit ?? DEFAULT_REPLAY_LIMIT
+
+              if (!Number.isInteger(limit) || limit < 1 || limit > MAX_REPLAY_LIMIT)
+                return yield* Effect.die(
+                  new Error(`read.events limit must be an integer from 1 to ${MAX_REPLAY_LIMIT}`),
+                )
+
               const { decode } = eventCodecs.get(event)!
 
               return yield* Effect.forEach(
-                yield* readEvents(event.identifier, options?.after),
+                yield* readEvents(event.identifier, options?.after, limit),
                 Effect.fnUntraced(function* (stored) {
                   const entry: EventEntry<E["Type"]> = {
                     cursor: stored.cursor,
@@ -1096,7 +1298,13 @@ const make = <
             )
 
             const blob = yield* actors.blobs(
-              { ref: request.ref, placement, blobs, guard: escaped("Blob") },
+              {
+                ref: request.ref,
+                placement,
+                blobs,
+                guard: escaped("Blob"),
+                maxBytes: policy.blobMaxBytes,
+              },
               false,
             )
 
@@ -1150,6 +1358,7 @@ const make = <
       yield* actors.registerQueries({
         name,
         placement,
+        timeoutMs: policy.executionMs,
         tables,
         blobs,
         queries: registered,
@@ -1335,6 +1544,7 @@ const make = <
     api: definition.api as Api,
     Turn,
     Read,
+    Connection,
     Executor,
     toLayer,
     toQueryLayer,
@@ -1362,4 +1572,19 @@ const make = <
   return actor as typeof actor & DefinitionWithInternal<Handle<All, Creating, BoundedMailbox>>
 }
 
-export const Definition = { make, singleton }
+/**
+ * `Actor.make`'s type. An interface keeps its name in declaration files, so
+ * entries reference it instead of expanding `make`'s inferred type.
+ */
+export interface Make extends MakeFunction {}
+
+type MakeFunction = typeof make
+
+export const Definition = { make: make as Make, singleton }
+
+/**
+ * `make`'s local `Context.Service` classes inherit members keyed by these
+ * unique symbols, and a declaration file can name a unique symbol only
+ * through a module that exports it.
+ */
+export type { NodeInspectSymbol, Unify }

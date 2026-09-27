@@ -132,9 +132,43 @@ describe("PGlite migrations", () => {
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
             { blobs: null },
           ])
-          expect(yield* migrate).toEqual([[9, "blobs"]])
+          expect(yield* migrate).toEqual([
+            [9, "blobs"],
+            [10, "retention"],
+          ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
             { blobs: "actor_blobs" },
+          ])
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("applies 0010_retention to a database that already ran 0009_blobs", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughBlobs = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0010")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughBlobs
+          expect(yield* migrate).toEqual([[10, "retention"]])
+          expect(
+            yield* sql`SELECT indexname FROM pg_indexes
+              WHERE indexname IN ('actor_receipts_expiry', 'actor_events_emitted', 'actor_outbox_intent')
+              ORDER BY indexname`,
+          ).toEqual([
+            { indexname: "actor_events_emitted" },
+            { indexname: "actor_outbox_intent" },
+            { indexname: "actor_receipts_expiry" },
           ])
           expect(yield* migrate).toEqual([])
         }),
@@ -167,6 +201,7 @@ describe("PGlite migrations", () => {
             { migration_id: 6 },
             { migration_id: 8 },
             { migration_id: 9 },
+            { migration_id: 10 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

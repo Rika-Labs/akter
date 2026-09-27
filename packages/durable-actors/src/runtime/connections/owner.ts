@@ -392,8 +392,9 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
   }
 
   const events =
-    (activation: Activation, sql: SqlClient.SqlClient) => (tag: string, after: string | undefined) =>
-      replayEvents(activation.ref, activation.key, tag, after, BigInt(activation.head)).pipe(
+    (activation: Activation, sql: SqlClient.SqlClient) =>
+    (tag: string, after: string | undefined, limit: number) =>
+      replayEvents(activation.ref, activation.key, tag, after, BigInt(activation.head), limit).pipe(
         Effect.catchIf(SqlError.isSqlError, Effect.die),
         Effect.provideService(SqlClient.SqlClient, sql),
       )

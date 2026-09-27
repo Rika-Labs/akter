@@ -61,7 +61,7 @@ export interface ConnectionContext<State, Event extends EventClass, Server, Sess
   readonly close: Effect.Effect<void>
   readonly events: <E extends Event>(
     event: E,
-    options?: { readonly after?: string | undefined },
+    options?: { readonly after?: string | undefined; readonly limit?: number },
   ) => Effect.Effect<ReadonlyArray<EventEntry<E["Type"]>>, UnknownCursor | RetentionGap>
 }
 

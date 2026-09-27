@@ -7,7 +7,7 @@ import {
   Unauthorized,
 } from "../../errors/actor.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
-import { OutboxClock } from "../turn/outbox.ts"
+import { FrameworkClock } from "../turn/admission.ts"
 import type { Deliver, Delivered } from "./protocol.ts"
 import type { Transport } from "./transport.ts"
 
@@ -168,7 +168,7 @@ const ended = (cause: SessionEnded["cause"], resync: boolean, retryAfterMs?: num
 export const makeHolder = Effect.fnUntraced(function* (options: HolderOptions) {
   const sql = yield* SqlClient.SqlClient
   const crypto = yield* Crypto.Crypto
-  const clock = yield* OutboxClock
+  const clock = yield* FrameworkClock
   const scope = yield* Effect.scope
   const actors = new Map<string, HeldActor>()
   const held = new Map<string, Held>()
