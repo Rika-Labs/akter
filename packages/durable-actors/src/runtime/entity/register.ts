@@ -207,6 +207,7 @@ export const registerActor = Effect.fnUntraced(function* (
               owned.cache,
               owned.key,
               registration.policy,
+              registration.mintable,
               owner.hasConnections ? owner.list(owned) : undefined,
             )
 

@@ -48,6 +48,7 @@ import {
   type FoundationFixture,
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
+import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import {
   retentionConformance,
   retentionFixture,
@@ -1254,6 +1255,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   ...propertiesConformance,
+  ...mintConformance,
 ]
 
 interface ConformanceStore {
@@ -1294,6 +1296,7 @@ export const describeConformance = (options: {
     retentionLayer(fixture.retention),
     propertiesLayer,
     connectionsLayer,
+    mintLayer,
   )
 
   let store: ConformanceStore | undefined

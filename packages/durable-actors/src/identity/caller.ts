@@ -16,10 +16,19 @@ export const User = Schema.TaggedStruct("User", { subject: Schema.NonEmptyString
 
 export const Anonymous = Schema.TaggedStruct("Anonymous", {})
 
+/** Where a minted actor id came from: the minting command and its position in that turn. */
+export const MintProof = Schema.Struct({
+  commandId: Schema.String,
+  ordinal: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+})
+
+export type MintProof = typeof MintProof.Type
+
 export const System = Schema.TaggedStruct("System", {
   source: Schema.Literals(["actor", "timer", "cron", "workflow", "effect"]),
   ref: Schema.optional(ActorRef),
   onBehalfOf: Schema.optional(Principal),
+  mint: Schema.optional(MintProof),
 })
 
 export const Caller = Schema.Union([User, Anonymous, System]).pipe(Schema.toTaggedUnion("_tag"))
@@ -46,11 +55,15 @@ export const callerKey = (caller: Caller): string =>
     Caller.match(caller, {
       User: ({ subject }) => ["User", subject],
       Anonymous: () => ["Anonymous"],
-      System: ({ source, ref, onBehalfOf }) => [
-        "System",
-        source,
-        ref === undefined ? null : [ref.tenant, ref.actor, ref.id],
-        onBehalfOf?.subject ?? null,
-      ],
+      System: ({ source, ref, onBehalfOf, mint }) => {
+        const key = [
+          "System",
+          source,
+          ref === undefined ? null : [ref.tenant, ref.actor, ref.id],
+          onBehalfOf?.subject ?? null,
+        ]
+
+        return mint === undefined ? key : [...key, [mint.commandId, mint.ordinal]]
+      },
     }),
   )

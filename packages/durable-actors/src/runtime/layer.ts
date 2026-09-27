@@ -41,7 +41,8 @@ import {
   type Registration,
   type Request,
 } from "../handles/actors.ts"
-import type { ActorRef, Caller } from "../identity/caller.ts"
+import { type ActorRef, type Caller, System } from "../identity/caller.ts"
+import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
@@ -326,6 +327,13 @@ export const layer = (options: Options) => {
           let rejectedAtCapacity = false
 
           return yield* Effect.gen(function* () {
+            // Only the relay presents a mint proof, as the delivery of the
+            // parent's committed creating intent.
+            if (external && Schema.is(System)(request.caller) && request.caller.mint !== undefined)
+              return yield* ActorError.make({
+                reason: Unauthorized.make({ code: "access_denied" }),
+              })
+
             if (external) yield* allow(request, "command")
 
             // Postgres rejects some malformed ids and payloads outright; they
@@ -512,6 +520,8 @@ export const layer = (options: Options) => {
 
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+        mintChildId: (input) =>
+          deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),
         retryWindowMs,
         databaseNow,
         mintCommandId: Effect.gen(function* () {

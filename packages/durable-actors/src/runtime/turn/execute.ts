@@ -1,6 +1,6 @@
 import { Effect, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { ActorError, CommandExpired, NotCreated } from "../../errors/actor.ts"
+import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
   type BusinessResult,
   type ConnectionLister,
@@ -10,13 +10,14 @@ import {
 } from "../../handles/actors.ts"
 import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
+import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
-import { OutboxRuntime, writeOutbox } from "./outbox.ts"
+import { CallerJson, OutboxRuntime, writeOutbox } from "./outbox.ts"
 import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
 
 const isSystem = Schema.is(System)
@@ -51,6 +52,39 @@ interface Admission {
 }
 
 /**
+ * True when `request` is a minted actor's creating intent: its caller carries
+ * the parent's mint proof for the actor's id, and the parent's committed
+ * outbox still holds that exact intent with the same payload.
+ */
+const committedMintIntent = Effect.fnUntraced(function* (request: Request) {
+  const { caller, ref } = request
+
+  if (!isSystem(caller) || caller.ref === undefined || !(yield* provesMint(caller, ref)))
+    return false
+
+  const sql = yield* SqlClient.SqlClient
+
+  const rows = yield* sql<{ caller: string }>`SELECT caller FROM actor_outbox
+    WHERE intent_id = ${request.commandId} AND kind = 'intent' AND tenant_id = ${ref.tenant}
+      AND actor_type = ${caller.ref.actor} AND actor_id = ${caller.ref.id}
+      AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}
+      AND payload::jsonb = ${request.payload}::jsonb`
+
+  if (rows.length === 0) return false
+
+  const committed = yield* Schema.decodeEffect(CallerJson)(rows[0]!.caller).pipe(Effect.orDie)
+
+  return (
+    isSystem(committed) &&
+    committed.ref?.tenant === caller.ref.tenant &&
+    committed.ref.actor === caller.ref.actor &&
+    committed.ref.id === caller.ref.id &&
+    committed.mint?.commandId === caller.mint?.commandId &&
+    committed.mint?.ordinal === caller.mint?.ordinal
+  )
+})
+
+/**
  * One command turn inside one framework transaction: an admission statement
  * (generation fence plus receipt lookup), the handler in memory, and a commit
  * statement writing dirty state, events, the creation marker, and the receipt.
@@ -61,6 +95,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   cache: ActivationCache,
   routingKey: bigint,
   policy: TurnPolicy,
+  mintable: boolean,
   connections?: ConnectionLister,
 ) {
   const sql = yield* SqlClient.SqlClient
@@ -143,6 +178,19 @@ export const executeTurn = Effect.fnUntraced(function* (
       policy.createdBy !== request.command
     )
       return yield* ActorError.make({ reason: NotCreated.make({}) })
+
+    // A minted actor is created only by the relay delivering the creating
+    // intent its parent's turn staged and committed: the proof binds the id to
+    // the parent's command, and the parent's outbox row, which stays until its
+    // delivery commits, proves that command committed the intent.
+    if (
+      mintable &&
+      policy.createdBy === request.command &&
+      !admission.created &&
+      isMintedId(id) &&
+      (request.external === true || !(yield* committedMintIntent(request)))
+    )
+      return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
 
     const committed =
       cache.state ??
