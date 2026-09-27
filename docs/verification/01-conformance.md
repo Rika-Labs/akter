@@ -260,7 +260,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 - `rejects non-JSON and oversized bodies and credentials before any turn` — 415, 413 for body and credentials, 400 with value-free schema issues, 400 `decode` for invalid UTF-8, and 400 `unsupported_protocol`.
 - `answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version`.
 
-These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency.
+These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency over HTTP/1.1 keep-alive for commands and queries with `Actor.auth.none`, 64 concurrent command callers, and commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload; HTTP/2 is not measured, since the harness serves through `Bun.serve` over plain HTTP/1.1.
 
 ### Property tests (T3)
 
