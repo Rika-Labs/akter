@@ -24,11 +24,15 @@ export class ShardLease extends Context.Service<
  * refreshes at least every third of the expiration. A failed read counts as
  * lost.
  */
-export const tableShardLease = (
-  sql: SqlClient.SqlClient,
-  address: RunnerAddress.RunnerAddress,
-  expiration: Duration.Duration,
-) => {
+export const tableShardLease = ({
+  sql,
+  address,
+  expiration,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly address: RunnerAddress.RunnerAddress
+  readonly expiration: Duration.Duration
+}) => {
   const fresh = Duration.toMillis(expiration) / 2 / 1000
   const holder = PrimaryKey.value(address)
 

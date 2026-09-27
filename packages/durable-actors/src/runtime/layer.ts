@@ -676,13 +676,13 @@ export const layer = (options: Options) => {
         Option.isSome(address)
           ? Layer.succeed(
               ShardLease,
-              tableShardLease(
+              tableShardLease({
                 sql,
-                address.value,
-                Duration.fromInputUnsafe(
+                address: address.value,
+                expiration: Duration.fromInputUnsafe(
                   config.shardLockExpiration ?? ShardingConfig.defaults.shardLockExpiration,
                 ),
-              ),
+              }),
             )
           : Layer.empty
 

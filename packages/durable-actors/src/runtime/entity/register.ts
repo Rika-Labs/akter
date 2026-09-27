@@ -4,6 +4,7 @@ import {
   Entity,
   EntityId as ClusterEntityId,
   Sharding,
+  ShardId,
 } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { SqlError } from "effect/unstable/sql"
@@ -72,6 +73,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
   // an activation that is already resident can have a full mailbox. A handler
   // rebuilt after a defect can overlap its predecessor, hence the count.
   const resident = new Map<string, number>()
+
   const lease = registration.singleton
     ? Option.getOrUndefined(yield* Effect.serviceOption(ShardLease))
     : undefined
@@ -106,7 +108,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
       const shard =
         lease === undefined
           ? undefined
-          : String(yield* entity.getShardId(ClusterEntityId.make(entityId)))
+          : ShardId.toString(yield* entity.getShardId(ClusterEntityId.make(entityId)))
 
       // A singleton starts only on the runner holding its shard's lease, and
       // its background work stops as soon as the lease lapses.
