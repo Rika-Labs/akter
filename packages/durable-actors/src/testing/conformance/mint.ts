@@ -215,6 +215,10 @@ const note = (id: string) => Note.get(id as Parameters<typeof Note.get>[0])
 const expected = (parent: ActorRef, commandId: string, ordinal: number, child = "MintTask") =>
   deriveMintId({ parent, commandId, ordinal, child })
 
+/** The System caller a parent's creating intent carries, rebuilt outside any turn. */
+const proven = (parent: ActorRef, commandId: string, ordinal = 0) =>
+  System.make({ source: "actor", ref: parent, mint: { commandId, ordinal } })
+
 const created = Effect.fnUntraced(function* (actor: string, id: string) {
   const test = yield* ActorTest
 
@@ -371,7 +375,22 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           const planner = yield* Planner.get("rollback")
           const before = runs.length
 
-          expect(yield* planner.PlanThenRefuse().pipe(Effect.flip)).toBeInstanceOf(Refused)
+          const refusedId = yield* (yield* Actors).mintCommandId
+
+          expect(
+            yield* planner.PlanThenRefuse().pipe(Actor.commandId(refusedId), Effect.flip),
+          ).toBeInstanceOf(Refused)
+
+          const rolledBack = yield* expected(planner.ref, refusedId, 0)
+
+          expect(
+            yield* (yield* task(rolledBack))
+              .Open("rolled back")
+              .pipe(
+                Effect.provideService(CurrentCaller, proven(planner.ref, refusedId)),
+                Effect.flip,
+              ),
+          ).toMatchObject({ reason: Unauthorized.make({ code: "access_denied" }) })
 
           const died = yield* planner.PlanThenDie().pipe(Effect.exit)
           expect(Exit.isFailure(died) && Cause.pretty(died.cause)).toContain("Planner defect")
@@ -391,6 +410,41 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           for (const [id] of runs.slice(before)) expect(yield* created("MintTask", id!)).toBe(0)
+        }),
+      ),
+  },
+  {
+    name: "refuses a proven creating call while its parent's turn has not committed",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const planner = yield* Planner.get("uncommitted")
+          const commandId = yield* (yield* Actors).mintCommandId
+          const id = yield* expected(planner.ref, commandId, 0)
+          const pause = yield* test.pauseNext("beforeCommit")
+          const parent = yield* planner.Plan(1).pipe(Actor.commandId(commandId), Effect.forkChild)
+
+          yield* pause.reached
+
+          expect(
+            yield* (yield* task(id))
+              .Open("early")
+              .pipe(
+                Effect.provideService(CurrentCaller, proven(planner.ref, commandId)),
+                Effect.flip,
+              ),
+          ).toMatchObject({ reason: Unauthorized.make({ code: "access_denied" }) })
+          expect(yield* created("MintTask", id)).toBe(0)
+
+          yield* pause.release
+          expect(yield* Fiber.join(parent)).toEqual([id])
+          yield* test.advance(0)
+
+          expect(yield* created("MintTask", id)).toBe(1)
+          expect(yield* (yield* task(id)).Title()).toBe("task 0")
+          expect(yield* test.inspect(planner.ref)).toMatchObject({ outbox: 0 })
         }),
       ),
   },
@@ -439,6 +493,26 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
 
           const impostor = yield* task(id).pipe(Effect.provideService(CurrentCaller, forged))
           expect(yield* impostor.Open("impostor").pipe(Effect.flip)).toMatchObject(denied)
+
+          const uncommitted = yield* (yield* Actors).mintCommandId
+
+          expect(
+            yield* (yield* task(yield* expected(planner.ref, uncommitted, 0)))
+              .Open("never planned")
+              .pipe(
+                Effect.provideService(CurrentCaller, proven(planner.ref, uncommitted)),
+                Effect.flip,
+              ),
+          ).toMatchObject(denied)
+
+          expect(
+            yield* child
+              .Open("proven early")
+              .pipe(
+                Effect.provideService(CurrentCaller, proven(planner.ref, commandId)),
+                Effect.flip,
+              ),
+          ).toMatchObject(denied)
           expect(yield* created("MintTask", id)).toBe(0)
           yield* test.advance("1 hour")
           expect(yield* child.Title()).toBe("later")

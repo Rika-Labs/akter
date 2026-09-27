@@ -50,6 +50,27 @@ interface Admission {
 }
 
 /**
+ * True when `request` is a minted actor's creating intent: its caller carries
+ * the parent's mint proof for the actor's id, and the parent's committed
+ * outbox still holds that exact intent.
+ */
+const committedMintIntent = Effect.fnUntraced(function* (request: Request) {
+  const { caller, ref } = request
+
+  if (!isSystem(caller) || caller.ref === undefined || !(yield* provesMint(caller, ref)))
+    return false
+
+  const sql = yield* SqlClient.SqlClient
+
+  const rows = yield* sql`SELECT 1 FROM actor_outbox
+    WHERE intent_id = ${request.commandId} AND kind = 'intent' AND tenant_id = ${ref.tenant}
+      AND actor_type = ${caller.ref.actor} AND actor_id = ${caller.ref.id}
+      AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}`
+
+  return rows.length > 0
+})
+
+/**
  * One command turn inside one framework transaction: an admission statement
  * (generation fence plus receipt lookup), the handler in memory, and a commit
  * statement writing dirty state, events, the creation marker, and the receipt.
@@ -136,13 +157,16 @@ export const executeTurn = Effect.fnUntraced(function* (
     )
       return yield* ActorError.make({ reason: NotCreated.make({}) })
 
-    // A minted actor is created only by the creating intent its parent's turn staged.
+    // A minted actor is created only by the creating intent its parent's turn
+    // staged and committed: the proof binds the id to the parent's command, and
+    // the parent's outbox row, which stays until its delivery commits, proves
+    // that command committed the intent.
     if (
       mintable &&
       policy.createdBy === request.command &&
       !admission.created &&
       isMintedId(id) &&
-      !(yield* provesMint(request.caller, request.ref))
+      !(yield* committedMintIntent(request))
     )
       return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
 
