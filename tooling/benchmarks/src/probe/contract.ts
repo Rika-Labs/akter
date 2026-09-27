@@ -1,4 +1,4 @@
-import { Actor, RetentionGap, UnknownCursor } from "durable-actors"
+import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
 export const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })

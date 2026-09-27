@@ -9,8 +9,8 @@
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/counter/src"
   },
   "dependencies": {
+    "@durable-actors/core": "workspace:*",
     "@effect/platform-bun": "catalog:",
-    "durable-actors": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

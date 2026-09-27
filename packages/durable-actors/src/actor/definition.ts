@@ -1,3 +1,5 @@
+import type { Unify } from "effect"
+import type { NodeInspectSymbol } from "effect/Inspectable"
 import {
   Cause,
   Context,
@@ -1314,4 +1316,19 @@ const make = <
     (K extends undefined ? ([Creating] extends [never] ? unknown : Mintable<Id>) : unknown)
 }
 
-export const Definition = { make, singleton }
+/**
+ * `Actor.make`'s type. An interface keeps its name in declaration files, so
+ * entries reference it instead of expanding `make`'s inferred type.
+ */
+export interface Make extends MakeFunction {}
+
+type MakeFunction = typeof make
+
+export const Definition = { make: make as Make, singleton }
+
+/**
+ * `make`'s local `Context.Service` classes inherit members keyed by these
+ * unique symbols, and a declaration file can name a unique symbol only
+ * through a module that exports it.
+ */
+export type { NodeInspectSymbol, Unify }

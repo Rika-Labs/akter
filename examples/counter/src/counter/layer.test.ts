@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { ActorTest } from "durable-actors/testing"
+import { ActorTest } from "@durable-actors/core/testing"
 import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"

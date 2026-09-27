@@ -1,4 +1,4 @@
-import { Database } from "durable-actors/runtime"
+import { Database } from "@durable-actors/core/runtime"
 import { Context, Effect, Fiber, Layer, Redacted, Schedule, type Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 

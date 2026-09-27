@@ -10,7 +10,7 @@
     "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
   },
   "dependencies": {
-    "durable-actors": "workspace:*",
+    "@durable-actors/core": "workspace:*",
     "effect": "catalog:"
   }
 }
