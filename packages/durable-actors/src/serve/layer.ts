@@ -211,23 +211,19 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           : stamped
       }
 
-      const serverScheme = (request: HttpServerRequest.HttpServerRequest) => {
-        if (URL.canParse(request.originalUrl)) return new URL(request.originalUrl).protocol
-
-        const forwarded = Headers.get(request.headers, "x-forwarded-proto")
-
-        return Option.isSome(forwarded) && forwarded.value === "https" ? "https:" : "http:"
-      }
-
       const isSameOrigin = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
         const host = Headers.get(request.headers, "host")
 
         if (Option.isNone(host)) return false
 
+        if (!URL.canParse(request.originalUrl)) return false
+
         try {
           const parsed = new URL(origin)
 
-          return parsed.host === host.value && parsed.protocol === serverScheme(request)
+          return (
+            parsed.host === host.value && parsed.protocol === new URL(request.originalUrl).protocol
+          )
         } catch {
           return false
         }
