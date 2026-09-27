@@ -36,6 +36,8 @@ interface Row {
   readonly holder: string
   readonly holderEpoch: string
   readonly caller: Caller
+  /** The event cursor the connection opened at. */
+  readonly baseline: string
   session: string | undefined
   frameSeq: number
   /** Broadcasts committed while the connection is still opening, sent after its open frames. */
@@ -312,7 +314,9 @@ export const activationOwner = ({
         caller: string
         session: Uint8Array | null
         frame_seq: string
-      }>`SELECT connection_id, member, holder, holder_epoch, caller, session, frame_seq::text AS frame_seq
+        opened_through: string
+      }>`SELECT connection_id, member, holder, holder_epoch, caller, session, frame_seq::text AS frame_seq,
+          opened_through::text AS opened_through
         FROM actor_connections WHERE ${actor}`
 
       const rows = new Map<string, Row>()
@@ -324,6 +328,7 @@ export const activationOwner = ({
           holder: row.holder,
           holderEpoch: row.holder_epoch,
           caller: yield* decodeCaller(row.caller).pipe(Effect.orDie),
+          baseline: row.opened_through,
           session: row.session === null ? undefined : decompress(row.session),
           frameSeq: Number(row.frame_seq),
         })
@@ -595,7 +600,7 @@ export const activationOwner = ({
           return {
             _tag: "Opened" as const,
             ...identity(activation),
-            baseline: activation.through,
+            baseline: existing.baseline,
             recovered: true,
           }
 
@@ -616,16 +621,17 @@ export const activationOwner = ({
             return yield* ActorError.make({ reason: NotCreated.make({}) })
         }
 
+        const baseline = activation.through
+
         const row = {
           connectionId: request.connectionId,
           member: request.member,
           holder: request.holder,
           holderEpoch: request.holderEpoch,
           caller: request.caller,
+          baseline,
           session: undefined,
         }
-
-        const baseline = activation.through
         activation.rows!.set(request.connectionId, { ...row, frameSeq: 0, buffered: [] })
 
         const result = yield* run(
@@ -657,11 +663,11 @@ export const activationOwner = ({
 
         const inserted = yield* sql<{ connection_id: string }>`
           INSERT INTO actor_connections (routing_key, connection_id, bucket, tenant_id, actor_type, actor_id,
-            member, holder, holder_epoch, caller, session, opened_at_ms)
+            member, holder, holder_epoch, caller, session, opened_at_ms, opened_through)
           SELECT routing_key, ${request.connectionId}, (routing_key >> 56)::integer, tenant_id, actor_type, actor_id,
             ${request.member}, ${request.holder}, ${request.holderEpoch}, ${caller},
             ${result.session === undefined ? null : compress(result.session)},
-            floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
+            floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint, ${baseline}::bigint
           FROM actor_generations WHERE ${actor} AND generation = ${activation.cache.generation!}
           RETURNING connection_id`
 

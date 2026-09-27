@@ -394,6 +394,7 @@ export const migrations = {
         session bytea,
         frame_seq bigint NOT NULL DEFAULT 0,
         opened_at_ms bigint NOT NULL,
+        opened_through bigint NOT NULL,
         PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, connection_id),
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`

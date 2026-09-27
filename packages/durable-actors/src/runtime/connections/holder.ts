@@ -333,7 +333,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     })
 
   // Asks one connection's client to resync in place from its last proven cursor.
-  const resync = (actor: HeldActor, connection: Held, at: number, fromStart = false) =>
+  const resync = (actor: HeldActor, connection: Held, at: number, from?: string) =>
     Effect.gen(function* () {
       connection.resyncs = connection.resyncs.filter((time) => at - time < RESYNC_WINDOW_MS)
       connection.resyncs.push(at)
@@ -349,7 +349,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const previous = connection.resync
 
       const after =
-        previous?.after ?? (fromStart || actor.through === "0" ? undefined : actor.through)
+        previous?.after ?? ((from ?? actor.through) === "0" ? undefined : (from ?? actor.through))
 
       connection.resync = {
         after,
@@ -891,7 +891,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       connection.open = true
 
       // Its opening frames and any broadcasts the lost owner never flushed may be gone.
-      if (answer.recovered === true) yield* resync(actor, connection, yield* now, true)
+      if (answer.recovered === true) yield* resync(actor, connection, yield* now, answer.baseline)
       connection.loop = yield* inboundLoop(connection).pipe(Effect.forkIn(scope))
     }
 
