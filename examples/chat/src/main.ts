@@ -1,4 +1,5 @@
-// Chat over HTTP. Post with an Idempotency-Key minted from POST /command-ids and retry with the same key:
+// Chat over HTTP. `bun run client alice "hi"` posts through the Promise client in src/client.ts.
+// Without it, post with an Idempotency-Key minted from POST /command-ids and retry with the same key:
 //   curl -X POST localhost:3000/command-ids -H 'authorization: Bearer alice'
 //   curl -X POST localhost:3000/actors/Chat/lobby/Post -H 'authorization: Bearer alice' \
 //     -H 'idempotency-key: <commandId>' -H 'content-type: application/json' -d '{"text":"hi"}'
