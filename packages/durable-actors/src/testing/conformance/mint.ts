@@ -87,6 +87,8 @@ const SoloPlan = Actor.command("SoloPlan", { output: Schema.String })
 
 const SoloPlanner = Actor.make("MintSoloPlanner", { key: Actor.singleton, api: { SoloPlan } })
 
+const Former = Actor.make("MintFormerChild", { state: childState, api: { Open, Title } })
+
 const Job = Actor.make("MintNamedJob", {
   key: Schema.String,
   state: childState,
@@ -210,6 +212,16 @@ export const mintLayer = Layer.mergeAll(
       }),
       Title: Effect.fnUntraced(function* () {
         return (yield* Job.Turn).state.title
+      }),
+    }),
+  ),
+  Former.toLayer(
+    Effect.succeed({
+      Open: Effect.fnUntraced(function* (title: string) {
+        yield* (yield* Former.Turn).state.set({ title })
+      }),
+      Title: Effect.fnUntraced(function* () {
+        return (yield* Former.Turn).state.title
       }),
     }),
   ),
@@ -571,6 +583,19 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           const job = yield* Job.get(id)
           yield* job.Open("named")
           expect(yield* job.Title()).toBe("named")
+        }),
+      ),
+  },
+  {
+    name: "reaches a minted id on an unkeyed actor that no longer declares policy.createdBy",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const planner = yield* Planner.get("former")
+          const id = yield* expected(planner.ref, "former", 0, "MintFormerChild")
+          const child = yield* Former.get(id as Parameters<typeof Former.get>[0])
+          yield* child.Open("kept")
+          expect(yield* child.Title()).toBe("kept")
         }),
       ),
   },

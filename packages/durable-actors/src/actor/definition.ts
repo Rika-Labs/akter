@@ -534,7 +534,7 @@ const make = <
 
   const idSchema: KeySchema = Schema.isSchema(key)
     ? key
-    : mintable
+    : key === undefined
       ? Schema.String.check(
           Schema.makeFilter((id: string) => isUUIDv7(id) || isMintedId(id), {
             expected: "a UUID v7 or a minted UUID v8",
