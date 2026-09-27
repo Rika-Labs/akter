@@ -1,4 +1,4 @@
-export { ActorTest } from "./actor-test.ts"
+export { ActorTest, cleanup } from "./actor-test.ts"
 
 export { ActorCluster } from "./cluster.ts"
 
@@ -21,6 +21,6 @@ export type {
   ConformanceServices,
 } from "./conformance.ts"
 
-export { TurnHooks } from "../runtime/turn/hooks.ts"
+export { CleanupHooks, TurnHooks } from "../runtime/turn/hooks.ts"
 
 export type { TurnPoint } from "../runtime/turn/hooks.ts"

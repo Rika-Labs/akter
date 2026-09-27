@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { EmittedEvent, Request } from "../../handles/actors.ts"
+import { FrameworkClock } from "../turn/admission.ts"
 import { compress } from "../storage/codec.ts"
 
 /**
@@ -17,6 +18,7 @@ export const appendEvents = Effect.fnUntraced(function* (
   if (events.length === 0) return
   const sql = yield* SqlClient.SqlClient
   const { tenant, actor, id } = request.ref
+  const clock = yield* FrameworkClock
 
   const [reserved] = yield* sql<{ last: string; now: string }>`
     UPDATE actor_generations SET event_sequence = event_sequence + ${events.length}
@@ -35,7 +37,7 @@ export const appendEvents = Effect.fnUntraced(function* (
       event: event.tag,
       command_id: request.commandId,
       value: compress(event.value),
-      emitted_at_ms: BigInt(reserved!.now),
+      emitted_at_ms: BigInt(reserved!.now) + BigInt(clock.offsetMillis()),
     })),
   )}`
 })
