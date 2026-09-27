@@ -134,7 +134,7 @@ Unless a row exercises denial or expiry, external receipt replay assumes the ori
 | Progress message lost between executor and owner | Nothing durable changes; the effect's outcome and route are unchanged; the client sees a `seq` gap and later frames. |
 | Executor runner dies while reporting progress | Frames stop; the next attempt reports under `attempt + 1` from `seq` 1; the activation drops the dead attempt's late frames once the new attempt's arrive or its lease passes. |
 | Owner dies with progress in flight | In-flight frames are lost; holders resync as for any owner death; later frames reach the new owner, which checks the effect row before delivering. |
-| Progress arrives after the effect settled or was cancelled | Dropped by the activation that committed the route or cancel, or by the effect check on a new activation; no progress follows the route's broadcast. |
+| Progress arrives after the effect settled or was cancelled | Dropped by the activation that committed the route or cancel, or by the effect check on a new activation; no progress follows the route's broadcast; without a route, `ProgressClosed` or the 5-second effect recheck stops it. |
 | Progress floods a slow client | Coalesced per effect at the holder, then dropped at the buffer limits; the session is never closed because of progress. |
 | Effect check cannot reach the database | The frame is dropped and the check retried after 1 second; no turn fails and no session closes. |
 | Executor sends an invalid or oversized progress frame | Dropped with a warning and counted; the attempt's outcome is unchanged. |
