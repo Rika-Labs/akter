@@ -7,7 +7,7 @@ const MAX_SAMPLE_RTT_MS = 5_000
 /** The least lead an id's issue time keeps behind the estimated database clock. */
 const MIN_LEAD_MS = 1_000
 
-/** The most samples kept; the slowest older one is dropped past this. */
+/** The most samples kept; the slowest is dropped past this. */
 const MAX_SAMPLES = 16
 
 interface Sample {
@@ -40,7 +40,9 @@ export class DatabaseClock {
     const sample = { offset: serverNow - (sentAt + receivedAt) / 2, rtt, at: receivedAt }
     const kept = this.samples.filter((older) => receivedAt - older.at < SAMPLE_WINDOW_MS)
 
-    if (kept.length >= MAX_SAMPLES) {
+    kept.push(sample)
+
+    if (kept.length > MAX_SAMPLES) {
       const slowest = kept.reduce(
         (worst, older, index) => (older.rtt > kept[worst]!.rtt ? index : worst),
         0,
@@ -49,7 +51,6 @@ export class DatabaseClock {
       kept.splice(slowest, 1)
     }
 
-    kept.push(sample)
     this.samples = kept
   }
 
@@ -80,8 +81,9 @@ export class DatabaseClock {
 
   /** A v1 command id issued behind the estimated database clock, with the deployment's window. */
   mint(retryWindowMs: number, uuid: string): string {
-    // The lead never takes more than a quarter of a short window.
-    const lead = Math.min(Math.max(MIN_LEAD_MS, this.best()?.rtt ?? 0), retryWindowMs / 4)
+    const rtt = this.best()?.rtt ?? 0
+    // A short window caps the lead at a quarter of it, but never below the sample's error.
+    const lead = Math.max(rtt / 2, Math.min(Math.max(MIN_LEAD_MS, rtt), retryWindowMs / 4))
     const issuedAt = Math.floor(this.now() - lead)
 
     return `v1.${issuedAt}.${issuedAt + retryWindowMs}.${uuid}`

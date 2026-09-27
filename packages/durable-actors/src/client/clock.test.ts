@@ -42,6 +42,33 @@ describe("DatabaseClock", () => {
     expect(clock.now()).toBe(local + 7_000)
   })
 
+  it("keeps faster samples when a burst of slower responses arrives", () => {
+    let local = 1_000_000
+    const clock = new DatabaseClock(() => local)
+
+    for (let index = 0; index < 16; index += 1) {
+      local += 10
+      clock.observe(local - 2, local, local + 7_000 - 1)
+    }
+
+    for (let index = 0; index < 16; index += 1) {
+      local += 10
+      clock.observe(local - 3_000, local, local + 9_000)
+    }
+
+    expect(clock.now()).toBe(local + 7_000)
+  })
+
+  it("never leads a short window by less than half the sample's round trip", () => {
+    const local = 1_000_000
+    const clock = new DatabaseClock(() => local)
+    clock.observe(local - 800, local, local - 400)
+
+    const span = lifetime(clock.mint(1_000, UUID))
+
+    expect(span).toEqual({ issuedAt: local - 400, expiresAt: local + 600 })
+  })
+
   it("keeps most of a short retry window ahead of the issue time", () => {
     const local = 1_000_000
     const clock = new DatabaseClock(() => local)

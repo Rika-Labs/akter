@@ -1,6 +1,11 @@
 import { Crypto, Deferred, Effect, Fiber, Schema } from "effect"
 import { DatabaseClock, monotonic } from "../../client/clock.ts"
-import { ActorError, RunnerAtCapacity, withRetryAfter } from "../../errors/actor.ts"
+import {
+  ActorError,
+  InvalidCommandId,
+  RunnerAtCapacity,
+  withRetryAfter,
+} from "../../errors/actor.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
 import { InternalActors } from "../../handles/actors.ts"
 import type { ConformanceCase } from "../conformance.ts"
@@ -250,8 +255,11 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
 
           // A protocol answer with the wrong window makes the client mint an id the server refuses.
           let protocols = 0
+          let refuse: Schema.Json | undefined
 
           const wire = recording((sent) => {
+            if (refuse !== undefined && sent.path.endsWith("/Post")) return json(400, refuse)
+
             if (sent.path !== "/protocol") return undefined
             protocols += 1
 
@@ -281,6 +289,23 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           expect(protocols).toBe(2)
           const keys = keysOf(wire.commands("Post"))
           expect(keys[1]).not.toBe(keys[0])
+
+          // An id that already committed is never reported as unadmitted.
+          const committed = keys[1]!
+
+          refuse = yield* actorErrorBody(
+            ActorError.make({
+              reason: InvalidCommandId.make({ commandId: committed, code: "window" }),
+            }),
+          )
+
+          const replayed = yield* settle(() => room.Post({ text: "b" }, { commandId: committed }))
+
+          expect(reasonOf(replayed)).toMatchObject({
+            tag: "InvalidCommandId",
+            code: "window",
+            neverAdmitted: false,
+          })
         }),
       ),
   },

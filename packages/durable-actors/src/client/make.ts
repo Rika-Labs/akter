@@ -514,7 +514,12 @@ export const clientOf =
 
           const reply = yield* send({ method: "POST", path, body: payload, headers })
 
-          if (isOk(reply)) return yield* decodeSuccess((json) => decode(json))(reply)
+          if (isOk(reply)) {
+            if (commandId !== undefined && origin.minted.has(commandId))
+              origin.minted.set(commandId, true)
+
+            return yield* decodeSuccess((json) => decode(json))(reply)
+          }
 
           const attempted: Attempted = {
             failure: admitted(decodeFailure(declaredDecoder(member))(reply)),
