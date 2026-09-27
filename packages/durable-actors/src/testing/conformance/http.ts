@@ -1166,4 +1166,25 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
+  {
+    name: "fails Actor.serve at startup when openapi.path collides with a protocol route",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const internal = Layer.succeed(InternalActors, yield* InternalActors)
+
+          for (const path of ["/protocol", "/command-ids", "/actors/Room"] as const) {
+            const exit = yield* HttpRouter.toHttpEffect(
+              Actor.serve({ actors: [HttpRoom], auth: tokens, openapi: { path } }).pipe(
+                Layer.provide(internal),
+              ),
+            ).pipe(Effect.exit)
+
+            expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+              `openapi.path ${path} collides with a protocol route`,
+            )
+          }
+        }),
+      ),
+  },
 ]

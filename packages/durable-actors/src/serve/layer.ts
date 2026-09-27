@@ -148,6 +148,19 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           )
       }
 
+      const openapiPath = options.openapi?.path
+
+      if (
+        openapiPath !== undefined &&
+        (openapiPath === "/protocol" ||
+          openapiPath === "/command-ids" ||
+          openapiPath === "/actors" ||
+          openapiPath.startsWith("/actors/"))
+      )
+        return yield* Effect.die(
+          new Error(`Actor.serve: openapi.path ${openapiPath} collides with a protocol route`),
+        )
+
       const actors = yield* InternalActors
 
       if (actors.retryWindowMs < MIN_RETRY_WINDOW_MS)
