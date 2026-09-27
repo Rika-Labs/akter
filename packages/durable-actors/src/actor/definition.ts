@@ -1583,7 +1583,10 @@ const make = <
     Read,
     Executor,
     Workflow,
-    run,
+    run: run as <W extends Extract<Values<Api>, AnyWorkflow>>(
+      member: W,
+      executionId: string,
+    ) => Effect.Effect<WorkflowRun<W>, InvalidExecutionId, Actors>,
     toLayer,
     toQueryLayer,
     toEffectLayer,

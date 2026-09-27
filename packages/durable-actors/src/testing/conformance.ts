@@ -75,6 +75,12 @@ import {
   effectsLayer,
   type EffectsFixture,
 } from "./conformance/effects.ts"
+import {
+  workflowsConformance,
+  workflowsFixture,
+  type WorkflowsFixture,
+  workflowsLive,
+} from "./conformance/workflows.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -163,6 +169,7 @@ export interface ConformanceFixture {
   readonly blobs: BlobsFixture
   readonly relay: RelayFixture
   readonly retention: RetentionFixture
+  readonly workflows: WorkflowsFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -284,6 +291,7 @@ const makeFixture = (): ConformanceFixture => ({
   blobs: blobsFixture(),
   relay: relayFixture(),
   retention: retentionFixture(),
+  workflows: workflowsFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -315,6 +323,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...relayClusterConformance,
   ...blobsConformance,
   ...retentionConformance,
+  ...workflowsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1277,6 +1286,7 @@ export const describeConformance = (options: {
     relayEffects(fixture.relay),
     retentionLayer(fixture.retention),
     propertiesLayer,
+    workflowsLive(fixture.workflows),
   )
 
   let store: ConformanceStore | undefined

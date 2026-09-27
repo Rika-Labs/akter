@@ -24,6 +24,13 @@ export interface StepRegistry {
   readonly steps: Map<string, StepEntry>
 }
 
+// A method signature, so a workflow with a specific input is still an `AnyWorkflow`.
+interface KeyFunction<Input extends ValueSchema> {
+  key(input: Input["Type"]): string
+}
+
+type KeyOf<Input extends ValueSchema> = KeyFunction<Input>["key"]
+
 export interface Workflow<
   Tag extends string,
   Input extends ValueSchema,
@@ -31,7 +38,7 @@ export interface Workflow<
   Errors extends ReadonlyArray<DeclaredError>,
 > extends Member<"workflow", Tag, Input, Output, Errors> {
   /** The execution key; the start's command id when omitted. */
-  readonly key: ((input: Input["Type"]) => string) | undefined
+  readonly key: KeyOf<Input> | undefined
   readonly versions: Readonly<Record<string, VersionRange>>
   readonly registry: StepRegistry
   /** An activity: `run(input, execute)` records `execute`'s exit once per execution. */
