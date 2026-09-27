@@ -142,11 +142,19 @@ export interface Registration {
   readonly singleton: boolean
   /** Unkeyed with `policy.createdBy`: its UUIDv8 ids come only from `turn.mint`. */
   readonly mintable: boolean
+  /** The deployment's default tenant: the ambient `Tenant` when the actor's layer is built. */
+  readonly tenant: string
   readonly placement: "tenant" | "actor"
   readonly policy: TurnPolicy
   readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly blobs: ReadonlyArray<AnyBlob>
-  readonly commands: ReadonlyMap<string, RegisteredCommand>
+  /**
+   * Resolves one activation's commands in the activation's scope. A singleton
+   * runs its build here, so fibers it forks live as long as the activation.
+   */
+  readonly activate: (
+    ref: ActorRef,
+  ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
 }
 
 /** Runtime-only capabilities; package entry points export only Actors. */
