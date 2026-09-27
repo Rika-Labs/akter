@@ -610,6 +610,42 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "interrupts at once an attempt its own runner cancels between its claim and its call",
+    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture)
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          fixture.provider = () => Effect.never
+          const paused = yield* test.pauseNext("beforeExecute")
+          yield* perform("claimed", "Job", ["claimed"], { keyed: true })
+          yield* paused.reached
+          const cancelledAt = yield* Clock.currentTimeMillis
+          yield* cancel("claimed", ["claimed"])
+          yield* paused.release
+          yield* eventually(
+            Effect.sync(() => fixture.attempts[0]?.interrupted === true),
+            "5 seconds",
+            "the interruption",
+          )
+
+          // The commit's local signal came before the renewal loop started.
+          expect(fixture.attempts[0]!.endedAt! - cancelledAt < 5000).toBe(true)
+          yield* eventually(
+            stateOf("claimed").pipe(Effect.map((state) => (state.cancelled ?? []).length === 1)),
+            "5 seconds",
+            "the cancellation report",
+          )
+          expect(fixture.attempts.length).toBe(1)
+          expect((yield* stateOf("claimed")).cancelled).toMatchObject([
+            { label: "claimed", outcome: "Unknown", ambiguous: true },
+          ])
+          expect(yield* effectRows(sql)).toEqual([])
+        }),
+      ),
+  },
+  {
     name: "dead-letters an ambiguous cancellation as ambiguous and drops a failed one without onCancelled",
     run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
       environment.run(

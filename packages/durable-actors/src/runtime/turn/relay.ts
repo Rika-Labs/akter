@@ -602,6 +602,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     row: ClaimedEffect,
     registered: RegisteredEffect,
     claimedAt: bigint,
+    claimSignal: Deferred.Deferred<void>,
   ) {
     const routingKey = BigInt(row.routing_key)
 
@@ -749,11 +750,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
         annotate,
       )
 
+    // Taken before the claim read the row, so a cancellation committed on this
+    // runner since then is already signalled; each check takes the next signal
+    // before it reads the row.
+    let signal = claimSignal
+
     const renewals = Effect.gen(function* () {
       while (true) {
-        yield* Deferred.await(cancelChecks).pipe(
+        yield* Deferred.await(signal).pipe(
           Effect.timeoutOrElse({ duration: renewEveryMs, orElse: () => Effect.void }),
         )
+        signal = cancelChecks
         const sent = yield* Clock.currentTimeNanos
 
         // A renewal that fails is retried at the next interval; the deadline
@@ -948,10 +955,15 @@ export const outboxRelay = Effect.fnUntraced(function* (
   })
 
   // A settled attempt of a capped effect frees a slot for the oldest waiting row of its actor.
-  const settleAttempt = (row: ClaimedEffect, registered: RegisteredEffect, claimedAt: bigint) =>
+  const settleAttempt = (
+    row: ClaimedEffect,
+    registered: RegisteredEffect,
+    claimedAt: bigint,
+    claimSignal: Deferred.Deferred<void>,
+  ) =>
     registered.perActor === undefined
-      ? runAttempt(row, registered, claimedAt)
-      : runAttempt(row, registered, claimedAt).pipe(
+      ? runAttempt(row, registered, claimedAt, claimSignal)
+      : runAttempt(row, registered, claimedAt, claimSignal).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
               const woke = yield* wakeWaiting(sql, groupOf(row), yield* databaseTime)
@@ -989,6 +1001,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const capped = all.filter(({ registered }) => registered.perActor !== undefined)
           const permits = settings.executorConcurrency - (yield* FiberSet.size(attempts))
           const claimedAt = yield* Clock.currentTimeNanos
+          const claimSignal = cancelChecks
           const clock = yield* FrameworkClock
 
           const rows = yield* claimDue({
@@ -1084,7 +1097,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
             yield* FiberSet.run(
               attempts,
-              settleAttempt(row, registered, claimedAt).pipe(
+              settleAttempt(row, registered, claimedAt, claimSignal).pipe(
                 Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))),
                 logFailure("Effect attempt crashed before it settled"),
                 Effect.ensuring(freed("effects")),
