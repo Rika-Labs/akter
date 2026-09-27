@@ -57,7 +57,14 @@ jobs:
           core="${version%%+*}"
           if [[ "$core" == *-* ]]; then tag="${core#*-}"; tag="${tag%%.*}"; else tag=latest; fi
           [[ "$tag" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Prerelease id of $version is not a dist-tag name"; exit 1; }
-          echo "Publishing $version from $commit to dist-tag $tag"
+          name="$(jq -r .name packages/durable-actors/package.json)"
+          if [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then
+            echo "$name@$version is already on npm (a hand-published bootstrap or a rerun); publishing is skipped"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Publishing $version from $commit to dist-tag $tag"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Build, stage and check the tarball
         run: |
@@ -66,6 +73,7 @@ jobs:
       - name: Install the tarball into a clean project and run it
         run: bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package"
       - name: Publish through npm trusted publishing
+        if: steps.release.outputs.published == 'false'
         env:
           DIST_TAG: ${{ steps.release.outputs.tag }}
         run: npm publish "$RUNNER_TEMP/package" --provenance --access public --tag "$DIST_TAG"

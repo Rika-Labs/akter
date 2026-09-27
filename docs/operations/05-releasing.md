@@ -37,7 +37,7 @@ bun .github/src/release/smoke.ts --package .local/package
 3. Publish from the staged directory, not from `packages/durable-actors` (whose `prepublishOnly` refuses a local publish): `cd .local/package && npm publish --access public --tag alpha`. npm asks for the 2FA code. This first version has no provenance.
 4. On npmjs.com open `@durable-actors/core` → Settings → Trusted Publisher, choose GitHub Actions, and enter organization `Rika-Labs`, repository `durable-actors`, workflow filename `release.yml`, environment `npm`. Every field must match exactly.
 5. Optionally, under Publishing access, choose "Require two-factor authentication and disallow tokens", so only the trusted publisher (and interactive 2FA publishes) can release. Revoke any npm automation token created for this package.
-6. Tag the bootstrapped commit `v0.1.0-alpha.0` so the tag history matches npm.
+6. Tag the bootstrapped commit `v0.1.0-alpha.0` so the tag history matches npm. The tag starts `Release`, which runs its checks, stages and smoke-tests the tarball, sees the version already on npm, and skips `npm publish`.
 
 ## Releasing with the workflow
 
