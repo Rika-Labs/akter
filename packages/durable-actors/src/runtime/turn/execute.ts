@@ -11,6 +11,7 @@ import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
+import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
@@ -95,6 +96,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   policy: TurnPolicy,
   mintable: boolean,
   waited: ReadonlySet<string> = new Set(),
+  cron: ReadonlyArray<CronEntry> = [],
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
@@ -133,6 +135,14 @@ export const executeTurn = Effect.fnUntraced(function* (
       current = (yield* sql<{ generation: string }>`
         UPDATE actor_generations SET generation = generation + 1 WHERE ${actorRow}
         RETURNING generation::text AS generation`)[0]!.generation
+      // The first turn a generation commits schedules every entry not yet
+      // ticking; a turn that rolls back, as a NotCreated rejection does, writes none.
+      yield* writeTicks(
+        routingKey,
+        request.ref,
+        cron,
+        Number(admission.now) + (yield* FrameworkClock).offsetMillis(),
+      )
     } else if (cache.generation !== current) {
       return yield* Effect.die(RetryTurn.make({ message: "Stale actor generation" }))
     }

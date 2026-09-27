@@ -22,6 +22,7 @@ import { SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
+import { bootstrapTicks } from "../cron/schedule.ts"
 import { routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { executeTurn, emptyActivationCache } from "../turn/execute.ts"
@@ -211,6 +212,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
             registration.policy,
             registration.mintable,
             waited,
+            registration.cron,
           ).pipe(
             Effect.catchDefect(
               Effect.fnUntraced(function* (cause) {
@@ -288,6 +290,16 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
   // keeper, on whichever runner Cluster runs it, keeps the default tenant's
   // instance resident and so moves it, and its background loop, to a survivor.
   if (registration.singleton) {
+    const ref = ActorRef.make({
+      tenant: registration.tenant,
+      actor: registration.name,
+      id: "singleton",
+    })
+
+    yield* bootstrapTicks(routingKeyOf(ref), ref, registration.cron).pipe(
+      Effect.provideContext(services),
+      Effect.orDie,
+    )
     const address = yield* encodeEntityId([registration.tenant, "singleton"]).pipe(Effect.orDie)
     const client = (yield* sharding.makeClient(entity))(address)
 

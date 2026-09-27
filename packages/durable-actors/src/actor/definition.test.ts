@@ -565,4 +565,46 @@ describe("actor declarations", () => {
       Actor.make("Fake", { blobs: [{ name: "files" }], api: { Put } }),
     ).toThrow("Actor.blob")
   })
+  it("parses cron schedules and rejects bad expressions, duplicates, and targets", () => {
+    const Tick = Actor.command("Tick")
+    const Tock = Actor.command("Tock")
+    const Set = Actor.command("Set", { input: Schema.Finite })
+    const Foreign = Actor.command("Foreign")
+
+    expect(() =>
+      Actor.make("Spaced", { api: { Tick, Tock }, policy: { cron: { " 0  8 * * * ": Tick } } }),
+    ).not.toThrow()
+    expect(() =>
+      Actor.make("Unparsable", { api: { Tick }, policy: { cron: { "61 * * * *": Tick } } }),
+    ).toThrow("does not parse")
+    expect(() =>
+      Actor.make("Equal", {
+        api: { Tick, Tock },
+        policy: { cron: { "0 8 * * *": Tick, "0  8 * * *": Tock } },
+      }),
+    ).toThrow("repeats the schedule")
+    expect(() =>
+      Actor.make("Equivalent", {
+        api: { Tick, Tock },
+        policy: { cron: { "0 8 * * 1-5": Tick, "0 8 * * 1,2,3,4,5": Tock } },
+      }),
+    ).toThrow("repeats the schedule")
+    expect(() =>
+      // @ts-expect-error a cron target must be a command of this actor
+      Actor.make("Foreigner", { api: { Tick }, policy: { cron: { "0 8 * * *": Foreign } } }),
+    ).toThrow("command of this actor")
+    expect(() =>
+      Actor.make("WithInput", {
+        api: { Set },
+        // @ts-expect-error a cron target takes no input
+        policy: { cron: { "0 8 * * *": Set } },
+      }),
+    ).toThrow("without input")
+    expect(() =>
+      Actor.make("BadSkip", {
+        api: { Tick },
+        policy: { cron: { "0 8 * * *": Tick }, cronSkipIfOlderThan: -1 },
+      }),
+    ).toThrow()
+  })
 })

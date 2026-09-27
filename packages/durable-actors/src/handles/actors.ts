@@ -5,6 +5,7 @@ import { ActorRef, Caller } from "../identity/caller.ts"
 import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
+import type { CronEntry } from "../runtime/cron/schedule.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
 import type { StagedOutbox } from "./intents.ts"
 import type { AnyBlob } from "../members/blob.ts"
@@ -169,6 +170,8 @@ export interface Registration {
   ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
+  /** `policy.cron` entries; each is one keyed tick row per actor. */
+  readonly cron: ReadonlyArray<CronEntry>
 }
 
 /** A workflow member bound to its body when the actor's layer was built. */

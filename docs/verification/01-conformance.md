@@ -323,7 +323,7 @@ Postgres only (independent connections):
 - `builds a singleton when it activates, so a failing build fails its commands, not startup` in [`pglite.test.ts`](../../packages/durable-actors/src/runtime/database/pglite.test.ts) — single-runner. Runtime startup runs no singleton build; the first command builds a healthy singleton once, and a singleton whose build dies answers each command with that defect without rebuilding, while the runtime keeps serving other actors.
 - `keeps a singleton whose hibernateAfter is shorter than a second resident` in [`pglite.test.ts`](../../packages/durable-actors/src/runtime/database/pglite.test.ts) — single-runner. A singleton with `hibernateAfter: "200 millis"` stays one activation across Cluster's idle sweep, because the keeper wakes it at half its idle time when that is under a second.
 
-The `singleton-failover` benchmark times lock expiry, takeover, loop start, and the first committed tick separately; see [benchmarks](../../benchmarks/README.md). The cases are in-process, like M2.1; cron ticks (the other half of the gate) are M2.5.
+The `singleton-failover` benchmark times lock expiry, takeover, loop start, and the first committed tick separately; see [benchmarks](../../benchmarks/README.md). The cases are in-process, like M2.1; cron ticks (the other half of the gate) are listed under [cron (M2.5)](#cron-m25).
 
 ### Served HTTP (M3.2)
 
@@ -425,6 +425,32 @@ Postgres only (independent connections, on the harness):
 
 These cases are in-process runners on one Postgres; real process death stays with the SIGKILL cases and the T7 drills.
 
+### Cron (M2.5)
+
+The cases live in [`conformance/cron.ts`](../../packages/durable-actors/src/testing/conformance/cron.ts). The shared cases run on PGlite and Postgres, each with its own runtime and `ActorTest.advance` moving the framework clock; `CronHeartbeat` declares `* * * * *` and `0 0 1 1 *` with a 10-minute `cronSkipIfOlderThan`, and its handlers record each run's command id and caller. The singleton fixture `CronBeacon` joins only the cases that name it, so its minutely tick never takes another case's fault injection. Declaration checks are in [`definition.test.ts`](../../packages/durable-actors/src/actor/definition.test.ts): whitespace normalization, an unparsable expression, equal and equivalent schedules, a foreign target, a target with input (also a type error), and an invalid skip window.
+
+Shared (PGlite and Postgres):
+
+- `writes one tick per cron entry on the first committed turn, including a declared failure` — one `$cron:` row per entry, due at the entry's next UTC time, written by a turn that failed with a declared error after committing its receipt.
+- `writes no tick for a turn rejected NotCreated` — a rejected command commits no generation and writes no tick.
+- `fires a due tick once as System cron and rewrites its row to the next scheduled time` — the handler runs once with `System({ source: "cron", ref })` and the row's intent id as its command id; the row is rewritten with a fresh intent id, zero attempts, and the next minute.
+- `fires once after downtime inside the skip window and skips a tick older than it` — failure-matrix row **Deployment down longer than `cronSkipIfOlderThan`**.
+- `rewrites a tick once after a crash between its receipt and the rewrite` — row **Cron tick crashes after its receipt, before the rewrite**: the claim holds the row until its lease ends, and the redelivery replays the receipt and writes one next tick.
+- `fires a claimed tick once even after the actor stopped, and its handler rechecks state` — a tick paused at `afterClaim` while a command stops the actor still fires once, and its handler reads `stopped` and changes nothing else.
+- `rejects application intents that stage or cancel a $cron: key`.
+- `restores a missing entry's tick on the actor's next activation`.
+- `releases a tick whose entry left the policy and deletes it past the skip window` — row **Runner without the actor type claims a cron tick**, the missing-entry half.
+- `writes a singleton's ticks in the default tenant at startup`.
+- `claims $cron: ticks only for actor types registered on the claiming runner` — the claim filter, the other half of the same row.
+
+Postgres only (three in-process runners, independent connections):
+
+- `keeps one singleton tick row and fires one logical tick per scheduled time on three runners` — the cron half of gate **Singleton uniqueness**, invariant **G1** with cron, and row **Runners race to bootstrap singleton cron**: all three runners write the bootstrap tick, one row survives, and three scheduled times give three receipts with three distinct command ids.
+- `fires a tick once when the runner delivering it is killed at afterClaim` and `… at beforeOutboxDelete` — the cron half of **Singleton runner dies**: the dead runner's claim holds the row until the lease ends, then a survivor delivers or replays it and rewrites it once.
+- `keeps a singleton's ticks firing after its runner is killed`.
+
+The `cron` benchmark measures tick lateness and the relay claim with 10^5 minutely ticks falling due at one minute boundary on 1, 2, and 4 runners; see [benchmarks](../../benchmarks/README.md). Time zones, fixed intervals, and daylight-saving evidence from [M2](../milestones/M2.md) are not implemented.
+
 ### Property tests (T3)
 
 Properties draw generated inputs from `effect/unstable/arbitrary` through [`testing/property.ts`](../../packages/durable-actors/src/testing/property.ts). Each property runs a fixed number of cases from the seed `56`, so a pull-request run is deterministic; a failure reports its seed, the shrunk counterexample, and the Effect replay tuple. `PROPERTY_SEED=<seed>` reproduces a run, `PROPERTY_SEED=random` draws a new seed, and `PROPERTY_RUNS` overrides the case count. The [nightly properties workflow](../../.github/workflows/properties.yml) runs both suites with `PROPERTY_SEED=random`. A property fails unless every requested case ran.
@@ -514,7 +540,7 @@ The ledger records 18 gate rows below. The foundation evidence above exercises t
 | Subscription delivery              | A committed source event takes effect once per subscription and source cursor, in cursor order, across relay kills before and after the subscriber commits, stale-runner redelivery, and receipt pruning; a rolled-back source turn delivers nothing; pruned history arrives as `RetentionGap`; the publisher's commit is constant in subscriber count ([ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md)).                                                                                                                                                                                               |
 | State migration chain              | Seeded old state upcasts and commits current state; invalid chains fail at `Actor.make`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Connection park                    | Activation hibernates with sockets open at their holder; the next open or frame wakes it on its current owner, outside the command mailbox, and restores the session with `resumed === true`; a command, intent, timer, or subscription delivery that wakes the actor on one runner broadcasts to connections parked on another; a graceful owner move keeps sockets open, and an ungraceful one keeps them open with an in-place `Resync` that loses no event; holder death deletes rows within one sweep; the full case list is in [ADR 0023](../decisions/0023-connections-parking-and-streams.md#evidence-required). |
-| Singleton uniqueness               | Two runners produce one logical cron tick (one receipt per scheduled time) and one background loop; runner kill moves residency after safe acquisition. Record expiry and resume times separately against the gated recovery target. Loop and residency half executable on Postgres: see [singleton uniqueness and failover](#singleton-uniqueness-and-failover-m22); the cron half is M2.5.                                                                                                                                                                                                                             |
+| Singleton uniqueness               | Two runners produce one logical cron tick (one receipt per scheduled time) and one background loop; runner kill moves residency after safe acquisition. Record expiry and resume times separately against the gated recovery target. Loop and residency half executable on Postgres: see [singleton uniqueness and failover](#singleton-uniqueness-and-failover-m22); cron half executable on Postgres: see [cron](#cron-m25).                                                                                                                                                                                           |
 
 Each gate MUST link to executable cases or an explicit unsupported result. See [failure matrix](02-failure-matrix.md) and [invariants](invariants.md).
 

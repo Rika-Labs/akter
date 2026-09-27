@@ -1,4 +1,5 @@
 import { Context, DateTime, Duration, Effect, Schema } from "effect"
+import { CRON_PREFIX } from "../runtime/cron/key.ts"
 import {
   type ActorRef,
   type Caller,
@@ -184,6 +185,12 @@ const IntentSettings = Context.Reference<IntentOptions>("durable-actors/IntentSe
   defaultValue: () => ({}),
 })
 
+// `policy.cron` ticks own these keys; an intent may neither replace nor cancel one.
+const unreserved = (key: string) =>
+  key.startsWith(CRON_PREFIX)
+    ? Effect.die(new Error(`Intent key "${key}" is reserved for cron`))
+    : Effect.void
+
 const replaceKey = (staging: Staging, key: string) => {
   staging.intents = staging.intents.filter((intent) => intent.key !== key)
   staging.replaced.add(key)
@@ -222,7 +229,11 @@ export const stage = Effect.fnUntraced(function* (
       ? System.make({ ...attribution, mint: minted.proof })
       : System.make(attribution)
 
-  if (key !== undefined) replaceKey(staging, key)
+  if (key !== undefined) {
+    yield* unreserved(key)
+    replaceKey(staging, key)
+  }
+
   staging.intents.push({ ...intent, due, key, caller })
 })
 
@@ -265,6 +276,7 @@ export const Intent = {
   cancel: (key: string): Effect.Effect<void, never, InTurn> =>
     Effect.gen(function* () {
       const { staging } = yield* currentStaging()
+      yield* unreserved(key)
       replaceKey(staging, key)
     }),
 }

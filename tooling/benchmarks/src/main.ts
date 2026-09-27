@@ -35,6 +35,7 @@ import { stateSize } from "./scenarios/state-size.ts"
 import { subscriptions } from "./scenarios/subscriptions.ts"
 import { workflows } from "./scenarios/workflows.ts"
 import { mint } from "./scenarios/mint.ts"
+import { cron } from "./scenarios/cron.ts"
 
 /** Every scenario, in run order. A new slice adds its scenario here. */
 const SCENARIOS: ReadonlyArray<Scenario> = [
@@ -60,6 +61,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   subscriptions,
   workflows,
   mint,
+  cron,
 ]
 
 /**

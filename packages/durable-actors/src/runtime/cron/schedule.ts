@@ -1,0 +1,261 @@
+import { Crypto, Cron, Effect, Result, Schema, SchemaAST } from "effect"
+import { SqlClient, type Statement } from "effect/unstable/sql"
+import { type ActorRef, System } from "../../identity/caller.ts"
+import type { AnyCommand } from "../../members/command.ts"
+import { CRON_PREFIX } from "./key.ts"
+import { databaseTime } from "../turn/admission.ts"
+import { bucketOf, CallerJson, OutboxRuntime } from "../turn/outbox.ts"
+
+export { CRON_PREFIX }
+
+/** One `policy.cron` entry: its tick's timer key, parsed schedule, and zero-input target. */
+export interface CronEntry {
+  readonly key: string
+  readonly schedule: Cron.Cron
+  readonly command: string
+  /** Encodes the target's empty input, as an intent carries it. */
+  readonly payload: Effect.Effect<string>
+}
+
+/** An actor type's cron entries and how late a tick may still fire. */
+export interface CronSchedule {
+  readonly entries: ReadonlyArray<CronEntry>
+  readonly skipMs: number
+}
+
+const emptyPayload = (command: AnyCommand) =>
+  Schema.encodeEffect(
+    Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.input }))),
+  )({ value: undefined }).pipe(Effect.orDie)
+
+/**
+ * Parses `policy.cron`. Expressions are Effect `Cron.parse` five- or six-field
+ * strings evaluated in UTC; whitespace is normalized, so the timer key is the
+ * same however an expression is spaced. Two expressions with the same
+ * schedule, an unparsable expression, or a target that is not a zero-input
+ * command of this actor throw.
+ */
+export const resolveCron = ({
+  declared,
+  commands,
+}: {
+  readonly declared: Readonly<Record<string, AnyCommand>> | undefined
+  readonly commands: ReadonlyArray<AnyCommand>
+}): ReadonlyArray<CronEntry> => {
+  const entries: Array<CronEntry> = []
+
+  for (const [expression, command] of Object.entries(declared ?? {})) {
+    const canonical = expression.trim().split(/\s+/).join(" ")
+    const parsed = Cron.parse(canonical, "UTC")
+
+    if (Result.isFailure(parsed))
+      throw new Error(`policy.cron "${expression}" does not parse: ${parsed.failure.message}`)
+
+    if (!commands.includes(command))
+      throw new Error(`policy.cron "${expression}" must name a command of this actor`)
+
+    if (!SchemaAST.isVoid(command.input.ast))
+      throw new Error(`policy.cron "${expression}" must name a command without input`)
+
+    const duplicate = entries.find((entry) => Cron.Equivalence(entry.schedule, parsed.success))
+
+    if (duplicate !== undefined)
+      throw new Error(
+        `policy.cron "${expression}" repeats the schedule of "${duplicate.key.slice(CRON_PREFIX.length)}"`,
+      )
+
+    entries.push({
+      key: `${CRON_PREFIX}${canonical}`,
+      schedule: parsed.success,
+      command: command.tag,
+      payload: emptyPayload(command),
+    })
+  }
+
+  return entries
+}
+
+/** The first tick of `entry` strictly after `afterMs`. */
+const nextTick = (entry: CronEntry, afterMs: number) => Cron.next(entry.schedule, afterMs).getTime()
+
+const tickId = (now: number, dueAt: number) =>
+  Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto
+    const { retryWindowMs } = yield* OutboxRuntime
+    const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+
+    return `v1.${now}.${Math.max(dueAt, now) + retryWindowMs}.${uuid}`
+  })
+
+/**
+ * Writes the first tick of every entry `ref` has no pending tick for. The
+ * timer-key unique index makes concurrent writers, and entries that already
+ * tick, no-ops.
+ */
+export const writeTicks = Effect.fnUntraced(function* (
+  routingKey: bigint,
+  ref: ActorRef,
+  entries: ReadonlyArray<CronEntry>,
+  now: number,
+) {
+  if (entries.length === 0) return
+
+  const sql = yield* SqlClient.SqlClient
+
+  const caller = yield* Schema.encodeEffect(CallerJson)(System.make({ source: "cron", ref })).pipe(
+    Effect.orDie,
+  )
+
+  const rows = []
+
+  for (const entry of entries) {
+    const dueAt = nextTick(entry, now)
+
+    rows.push({
+      routing_key: routingKey,
+      intent_id: yield* tickId(now, dueAt),
+      kind: "intent",
+      bucket: bucketOf(routingKey),
+      due_at_ms: dueAt,
+      scheduled_at_ms: dueAt,
+      tenant_id: ref.tenant,
+      actor_type: ref.actor,
+      actor_id: ref.id,
+      timer_key: entry.key,
+      target_type: ref.actor,
+      target_id: ref.id,
+      command: entry.command,
+      payload: yield* entry.payload,
+      caller,
+    })
+  }
+
+  yield* sql`INSERT INTO actor_outbox ${sql.insert(rows)} ON CONFLICT DO NOTHING`
+})
+
+/**
+ * Writes a singleton's missing ticks in its default tenant at startup. Every
+ * runner does this; the generation and timer-key unique indexes keep one row
+ * per entry however many start at once.
+ */
+export const bootstrapTicks = Effect.fnUntraced(function* (
+  routingKey: bigint,
+  ref: ActorRef,
+  entries: ReadonlyArray<CronEntry>,
+) {
+  if (entries.length === 0) return
+
+  const sql = yield* SqlClient.SqlClient
+
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+        VALUES (${routingKey}, ${ref.tenant}, ${ref.actor}, ${ref.id}) ON CONFLICT DO NOTHING`
+      yield* writeTicks(routingKey, ref, entries, yield* databaseTime)
+    }),
+  )
+})
+
+/** The claimed tick row the relay settles. */
+export interface ClaimedTick {
+  readonly tenant_id: string
+  readonly actor_type: string
+  readonly actor_id: string
+  readonly intent_id: string
+  readonly timer_key: string | null
+  readonly scheduled_at: string | null
+  readonly claimed_until: string
+}
+
+/**
+ * Settles claimed `$cron:` rows for one relay. A tick is delivered like any
+ * intent unless it is older than its type's skip window, and after its
+ * receipt commits the row is rewritten, in place and under the same claim, to
+ * the first tick after now with a fresh id. A tick whose entry this runner
+ * does not declare is deleted once it is past the skip window and otherwise
+ * released with backoff, so a runner that still declares it can fire it.
+ */
+export const cronTicks = ({
+  sql,
+  crypto,
+  schedules,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly crypto: Crypto.Crypto
+  readonly schedules: () => ReadonlyMap<string, CronSchedule>
+}) => {
+  const entryOf = (row: ClaimedTick) =>
+    schedules()
+      .get(row.actor_type)
+      ?.entries.find((entry) => entry.key === row.timer_key)
+
+  const rewrite = Effect.fnUntraced(function* (
+    row: ClaimedTick,
+    entry: CronEntry,
+    claim: Statement.Fragment,
+  ) {
+    const now = yield* databaseTime
+    const dueAt = nextTick(entry, now)
+
+    const id = yield* tickId(now, dueAt).pipe(Effect.provideService(Crypto.Crypto, crypto))
+    const payload = yield* entry.payload
+    yield* sql`UPDATE actor_outbox SET intent_id = ${id},
+        command = ${entry.command}, payload = ${payload}, due_at_ms = ${dueAt},
+        scheduled_at_ms = ${dueAt}, attempts = 0, last_error = NULL, ambiguous = false
+      WHERE ${claim}`
+  })
+
+  return {
+    isTick: (row: ClaimedTick) => row.timer_key?.startsWith(CRON_PREFIX) === true,
+    /**
+     * Settles a tick that must not fire and returns true, or returns false for
+     * one the relay should deliver now.
+     */
+    settleUnfired: Effect.fnUntraced(function* (
+      row: ClaimedTick,
+      claim: Statement.Fragment,
+      backoffMs: number,
+    ) {
+      const schedule = schedules().get(row.actor_type)
+      const entry = entryOf(row)
+      const now = yield* databaseTime
+      const scheduledAt = Number(row.scheduled_at ?? row.claimed_until)
+      const stale = schedule !== undefined && now - scheduledAt > schedule.skipMs
+
+      const annotations = {
+        actor: row.actor_type,
+        id: row.actor_id,
+        tenant: row.tenant_id,
+        timerKey: row.timer_key,
+        commandId: row.intent_id,
+      }
+
+      if (entry === undefined) {
+        if (stale) {
+          yield* Effect.logInfo("Cron tick removed").pipe(Effect.annotateLogs(annotations))
+          yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
+        } else yield* sql`UPDATE actor_outbox SET due_at_ms = ${now + backoffMs} WHERE ${claim}`
+
+        return true
+      }
+
+      if (!stale) return false
+
+      yield* Effect.logInfo("Cron tick skipped").pipe(
+        Effect.annotateLogs({ ...annotations, lateMs: now - scheduledAt }),
+      )
+      yield* rewrite(row, entry, claim)
+
+      return true
+    }),
+    /** Replaces a delivered tick's row with the entry's next tick. */
+    settleFired: (row: ClaimedTick, claim: Statement.Fragment) =>
+      Effect.suspend(() => {
+        const entry = entryOf(row)
+
+        return entry === undefined
+          ? sql`DELETE FROM actor_outbox WHERE ${claim}`.pipe(Effect.asVoid)
+          : rewrite(row, entry, claim)
+      }),
+  }
+}

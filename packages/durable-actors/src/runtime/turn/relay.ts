@@ -1,6 +1,7 @@
 import {
   Cause,
   Clock,
+  Crypto,
   Effect,
   FiberSet,
   Option,
@@ -15,6 +16,8 @@ import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { progressPool } from "../effects/progress.ts"
+import { CRON_PREFIX } from "../cron/key.ts"
+import { type CronSchedule, cronTicks } from "../cron/schedule.ts"
 import { TurnHooks } from "./hooks.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
@@ -68,6 +71,8 @@ interface ClaimedRow {
   readonly caller: string
   /** The claim's `due_at_ms`, which every settling write of an intent names. */
   readonly claimed_until: string
+  readonly timer_key: string | null
+  readonly scheduled_at: string | null
   readonly candidates: number
 }
 
@@ -78,7 +83,8 @@ interface ClaimedEffect extends ClaimedRow {
 const claimedColumns = (sql: SqlClient.SqlClient) =>
   sql`o.kind, o.routing_key::text AS routing_key, o.intent_id, o.attempts, o.last_error,
     o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.target_id, o.command,
-    o.payload, o.caller, o.due_at_ms::text AS claimed_until`
+    o.payload, o.caller, o.due_at_ms::text AS claimed_until, o.timer_key,
+    o.scheduled_at_ms::text AS scheduled_at`
 
 /**
  * The due-work probe: one `(bucket, kind, due_at_ms)` index range per bucket,
@@ -90,7 +96,7 @@ const candidates = (
   kind: "intent" | "effect",
   now: Statement.Fragment,
   limit: number,
-  only: ReturnType<typeof sql.literal> = sql.literal(""),
+  only: Statement.Fragment = sql.literal(""),
 ) =>
   sql`SELECT o.routing_key, o.intent_id, o.actor_type, o.command
     FROM generate_series(${BUCKETS.first}::int, ${BUCKETS.last}::int) AS b(bucket)
@@ -108,6 +114,8 @@ export interface IntentClaim {
   readonly maxBackoffMs: number
   /** Due candidates probed before locking; defaults to twice `limit`. */
   readonly probe?: number | undefined
+  /** Actor types registered here; `$cron:` ticks of any other type are left for their runners. */
+  readonly cronActors?: ReadonlyArray<string> | undefined
 }
 
 /** Effects to claim in one statement: up to `permits`, only for local executors. */
@@ -150,9 +158,16 @@ export const claimDue = ({
   const results: Array<Statement.Fragment> = []
 
   if (intents !== undefined) {
-    const { limit, leaseMs, maxBackoffMs, probe = 2 * limit } = intents
+    const { limit, leaseMs, maxBackoffMs, probe = 2 * limit, cronActors = [] } = intents
+    const local = cronActors.length === 0 ? sql`` : sql` OR actor_type IN ${sql.in(cronActors)}`
     parts.push(sql`intent_candidates AS (
-        ${candidates(sql, "intent", now, probe)}
+        ${candidates(
+          sql,
+          "intent",
+          now,
+          probe,
+          sql`AND (timer_key IS NULL OR left(timer_key, 6) <> ${CRON_PREFIX}${local})`,
+        )}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
       intent_locked AS (
@@ -235,7 +250,7 @@ const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
   const found = sql.literal(`${kind}_candidates`)
 
   return sql`SELECT ${`skipped-${kind}`}::text, NULL, NULL, 0, NULL, false, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, (SELECT count(*) FROM ${found})::int, false
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, (SELECT count(*) FROM ${found})::int, false
     WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
 
@@ -303,6 +318,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   deliver: (request: Request) => Effect.Effect<Outcome, ActorError>,
   executors: () => ReadonlyArray<LocalExecutor>,
   settings: RelaySettings,
+  schedules: () => ReadonlyMap<string, CronSchedule> = () => new Map(),
 ) {
   const sql = yield* SqlClient.SqlClient
   const services = yield* Effect.context<SqlClient.SqlClient>()
@@ -312,6 +328,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const attempts = yield* FiberSet.make<unknown, unknown>()
   const hooks = yield* TurnHooks
   const progress = yield* progressPool()
+  const ticks = cronTicks({ sql, crypto: yield* Crypto.Crypto, schedules })
 
   // Set when a claim saw more due candidates than it took: a freed slot then
   // claims again instead of waiting for the poll.
@@ -388,6 +405,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
       if (Result.isFailure(decoded)) return yield* retryLater("UnreadableRow", decoded.failure)
 
       const request = decoded.success
+      const tick = ticks.isTick(row)
+
+      if (tick && (yield* ticks.settleUnfired(row, claim, backoffMs(row.attempts)))) return
       yield* hooks.at("afterClaim", request)
 
       const delivered = yield* deliver(request).pipe(Effect.result)
@@ -400,7 +420,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
         return yield* retryLater("Defect", delivered.success.cause)
 
       yield* hooks.at("beforeOutboxDelete", request)
-      yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
+
+      if (tick) yield* ticks.settleFired(row, claim)
+      else yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
     }).pipe(
       // An interrupted delivery (shutdown) makes its row due at once; a receiver
       // that already committed it replays the receipt on redelivery.
@@ -694,6 +716,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
                     leaseMs: settings.claimLeaseMs(),
                     maxBackoffMs: settings.maxBackoffMs,
                     probe: 2 * slots * widen.intents,
+                    cronActors: [...schedules().keys()],
                   }
                 : undefined,
             effects:

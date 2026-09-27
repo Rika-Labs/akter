@@ -95,3 +95,15 @@ export const Sender = Actor.make("Sender", {
   key: Schema.NonEmptyString,
   api: { Send, SendAt, SendMany },
 })
+
+export const Open = Actor.command("Open")
+
+export const Tick = Actor.command("Tick")
+
+/** An actor with one minutely cron entry; `Open` creates it and writes its first tick. */
+export const CronProbe = Actor.make("CronProbe", {
+  key: Schema.NonEmptyString,
+  state,
+  api: { Open, Tick },
+  policy: { cron: { "* * * * *": Tick } },
+})

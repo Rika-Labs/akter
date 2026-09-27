@@ -419,6 +419,13 @@ export const layer = (options: Options) => {
             })),
           ),
         { ...relaySettings, claimLeaseMs: () => claimLeaseMs ?? leaseForTurns() },
+        () =>
+          new Map(
+            Array.from(registrations.values(), ({ name, cron, policy }) => [
+              name,
+              { entries: cron, skipMs: policy.cronSkipMs },
+            ]),
+          ),
       )
 
       yield* relay.run.pipe(Effect.forkIn(scope))
