@@ -119,14 +119,14 @@ Workflow executions are not in version 1; they arrive as new views after `0012_w
 
 ## Cost
 
-Benchmark `inspection-views` (`bun run bench --scenario inspection-views`), 2026-09-27 at `6badc85`, one 8-vCPU, 31 GiB Linux VM running client and database: 100,000 actors over 100 tenants seeded directly into the runtime tables, each with one receipt, one event, and one day-away timer, and a dead letter for every hundredth actor. One sequential caller, 500 queries per case after 20 warm-up queries. Postgres 18.6 figures are two runs (`benchmarks/results/2026-09-27-6badc85-cr4-inspection-views-postgres.json` and `-repeat-postgres.json`); PGlite 0.5.8 is one run.
+Benchmark `inspection-views` (`bun run bench --scenario inspection-views`), 2026-09-27 at `583d074`, one 8-vCPU, 31 GiB Linux VM running client and database: 100,000 actors over 100 tenants seeded directly into the runtime tables with hashed routing keys, each with one receipt, one event, and one day-away timer, and a dead letter for every hundredth actor. One sequential caller, 500 queries per case after 20 warm-up queries. Each backend has two runs: Postgres 18.6 in `benchmarks/results/2026-09-27-583d074-cr4-inspection-views-postgres.json` and `-repeat-postgres.json`, PGlite 0.5.8 in `-pglite.json` and `-repeat-pglite.json`. The earlier `6badc85` results seeded arithmetic routing keys and are kept for comparison; figures agree within noise.
 
-| Query                                                  | Postgres p50 / p95 / p99 (ms)                   | PGlite p50 / p95 / p99 (ms) |
-| ------------------------------------------------------ | ----------------------------------------------- | --------------------------- |
-| `actors` by tenant, type, and id (table scan)          | 5.36 / 6.27 / 9.85 and 5.22 / 5.94 / 6.78       | 6.23 / 6.92 / 8.13          |
-| `receipts` by `routing_key` and identity (primary key) | 0.064 / 0.107 / 0.242 and 0.065 / 0.344 / 0.489 | 0.433 / 0.487 / 0.563       |
-| a tenant's newest 20 `dead_letters` (1,000-row table)  | 0.132 / 0.197 / 0.600 and 0.159 / 0.203 / 0.416 | 0.434 / 0.520 / 1.071       |
-| count of a tenant's `receipts` (table scan)            | 4.73 / 6.65 / 11.0 and 4.70 / 5.37 / 6.15       | 5.79 / 6.51 / 6.82          |
-| 20 soonest `timers` across tenants (table scan, top-N) | 23.1 / 26.8 / 29.5 and 23.1 / 26.5 / 28.1       | 58.4 / 66.2 / 77.9          |
+| Query                                                  | Postgres p50 / p95 / p99 (ms)                   | PGlite p50 / p95 / p99 (ms)                     |
+| ------------------------------------------------------ | ----------------------------------------------- | ----------------------------------------------- |
+| `actors` by tenant, type, and id (table scan)          | 5.29 / 6.15 / 8.21 and 5.55 / 6.87 / 8.37       | 8.01 / 9.97 / 11.1 and 6.30 / 7.56 / 8.45       |
+| `receipts` by `routing_key` and identity (primary key) | 0.063 / 0.197 / 0.370 and 0.068 / 0.275 / 0.479 | 0.452 / 0.544 / 0.807 and 0.449 / 0.522 / 0.560 |
+| a tenant's newest 20 `dead_letters` (1,000-row table)  | 0.139 / 0.243 / 0.789 and 0.134 / 0.227 / 0.603 | 0.430 / 0.496 / 1.18 and 0.426 / 0.507 / 1.15   |
+| count of a tenant's `receipts` (table scan)            | 4.85 / 5.69 / 6.97 and 4.85 / 6.39 / 6.95       | 6.00 / 6.90 / 7.51 and 5.70 / 6.10 / 8.35       |
+| 20 soonest `timers` across tenants (table scan, top-N) | 24.8 / 32.4 / 35.3 and 25.3 / 30.6 / 34.2       | 60.0 / 70.0 / 72.0 and 58.9 / 68.9 / 75.7       |
 
 Keyed lookups stay sub-millisecond; anything filtered by tenant or identity alone scans its table and grows linearly with it. The views add nothing to the turn path: no index, trigger, or write, so the statement gate's counts are unchanged.
