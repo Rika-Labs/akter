@@ -96,7 +96,7 @@ Replay is paged: `read.events(E, { after, limit })` returns at most `limit` entr
 
 ## Connections and streams
 
-These are target API from [ADR 0023](../decisions/0023-connections-parking-and-streams.md) and are not implemented.
+Connection members are implemented (M2.10) through the in-process holder transport; `Actor.stream` and `read.follow` below are still target API from [ADR 0023](../decisions/0023-connections-parking-and-streams.md) and are not implemented, and `conn.connections` does not yet take a page `cursor` (it returns the first 1,000). Connections are not served over HTTP until the WebSocket wire in M3.
 
 A runtime's transport holds each socket; the actor never does. A connection member's handlers are `open(params)`, `frame(frame)`, and optional `close(reason)` and `resync({ after })`, each a short Effect with `X.Connection`. Handlers of one connection run one at a time in frame order, outside the command mailbox, and read the state the activation last committed.
 

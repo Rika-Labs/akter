@@ -50,6 +50,8 @@ const OWNER_CHECK_MS = 1_000
 
 const LIVENESS_MS = 10_000
 
+const MAX_INBOUND_FRAMES = 1_024
+
 const COMMAND_SKEW_MS = 1_000
 
 const utf8 = new TextEncoder()
@@ -163,7 +165,8 @@ interface Held {
         readonly after: string | undefined
         replayed: boolean
         sent: boolean
-        readonly deadline: number
+        deadline: number
+        deferredBytes: number
         readonly deferred: Array<ClientMessage>
         readonly replayedEvents: Set<string>
       }
@@ -209,6 +212,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
   const held = new Map<string, Held>()
   let heldBytes = 0
   let lastLiveness = 0
+  let livenessFailedSince: number | undefined = undefined
   let checkingLiveness = false
 
   const now = Effect.map(Clock.currentTimeMillis, (millis) => millis + clock.offsetMillis())
@@ -253,7 +257,9 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       AND holder_epoch = ${options.transport().epoch}`.pipe(Effect.ignore)
 
   const release = (connection: Held) => {
-    heldBytes -= connection.outBytes + connection.inBytes
+    heldBytes -= connection.outBytes + connection.inBytes + (connection.resync?.deferredBytes ?? 0)
+
+    if (connection.resync !== undefined) connection.resync.deferredBytes = 0
     connection.outBytes = 0
     connection.inBytes = 0
     connection.inbound.length = 0
@@ -271,6 +277,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       connection.ended = true
       connection.open = false
       release(connection)
+
+      // A revoked client gets nothing more from the actor, including frames already queued.
+      if (Predicate.isTagged(error.reason, "Unauthorized"))
+        yield* Effect.ignore(Queue.clear(connection.outbound))
       yield* Queue.fail(connection.outbound, error)
       yield* Queue.offer(connection.wake, undefined)
 
@@ -332,8 +342,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           after,
           replayed: false,
           sent: false,
-          deadline: at + RESYNC_DEADLINE_MS,
+          // The client's deadline starts once the new owner has answered the resync.
+          deadline: Number.POSITIVE_INFINITY,
           deferred: previous?.deferred ?? [],
+          deferredBytes: previous?.deferredBytes ?? 0,
           replayedEvents: previous?.replayedEvents ?? new Set(),
         }
         yield* push(
@@ -422,9 +434,17 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
                 // Live frames wait until the resync's replay is acknowledged, so replay always comes first.
                 if (pending !== undefined && frame.replay !== true) {
-                  if (pending.deferred.length >= MAX_OUTBOUND_FRAMES)
+                  const bytes = utf8.encode(out.frame).byteLength
+
+                  if (
+                    pending.deferred.length + connection.outFrames >= MAX_OUTBOUND_FRAMES ||
+                    pending.deferredBytes + connection.outBytes + bytes > MAX_OUTBOUND_BYTES ||
+                    heldBytes + bytes > MAX_HELD_BYTES
+                  )
                     return end(connection, ended("SlowConsumer", true), true)
                   pending.deferred.push(out)
+                  pending.deferredBytes += bytes
+                  heldBytes += bytes
 
                   return Effect.void
                 }
@@ -511,7 +531,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           const answer = yield* retrying(
             connection,
             connection.type.channel.resync({ ...address(connection), after: pending.after }),
-            Math.max(0, Math.min(pending.deadline, authorizedUntil(connection)) - (yield* now)),
+            Math.max(0, authorizedUntil(connection) - (yield* now)),
           ).pipe(Effect.exit)
 
           if (connection.ended) return
@@ -529,6 +549,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           }
 
           yield* observe(actorOf(connection.ref), answer.value)
+          pending.deadline = (yield* now) + RESYNC_DEADLINE_MS
 
           if (connection.type.hasResync(connection.member)) {
             pending.replayed = true
@@ -628,11 +649,19 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         ) c`
 
       lastLiveness = at
+      livenessFailedSince = undefined
       const present = new Set(rows.map((row) => row.connection_id))
 
       for (const connection of checked)
         if (!present.has(connection.id)) yield* end(connection, ended("ServerClosed", true), false)
-    }).pipe(Effect.catchCause((cause) => Effect.logWarning("Holder liveness check failed", cause)))
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.andThen(
+          Effect.sync(() => (livenessFailedSince ??= at)),
+          Effect.logWarning("Holder liveness check failed", cause),
+        ),
+      ),
+    )
 
   // Reauthorization, resync deadlines, and owner liveness, checked on one clock.
   const tick = Effect.gen(function* () {
@@ -641,6 +670,13 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     for (const connection of held.values()) {
       if (!connection.open) continue
       const every = connection.type.reauthorizeMs
+
+      // A holder that cannot confirm its rows for a whole bound stops serving them.
+      if (livenessFailedSince !== undefined && at - livenessFailedSince >= every) {
+        yield* end(connection, ended("ActorUnavailable", true), false)
+
+        continue
+      }
 
       if (at >= connection.lastAuthorized + every) {
         yield* end(
@@ -796,6 +832,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
     yield* observe(actor, answer)
 
+    if (BigInt(answer.baseline) > BigInt(actor.through)) actor.through = answer.baseline
+
     // An open handler that closed the connection leaves it already ended with `ServerClosed`.
     if (!connection.ended) {
       connection.open = true
@@ -816,7 +854,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           if (bytes > MAX_INBOUND_BYTES)
             return yield* Effect.die(new Error("Connection frame exceeds 64 KiB"))
 
-          if (heldBytes + bytes > MAX_HELD_BYTES)
+          if (heldBytes + bytes > MAX_HELD_BYTES || connection.inbound.length >= MAX_INBOUND_FRAMES)
             return yield* end(connection, ended("SlowConsumer", true), true)
 
           connection.inbound.push({ frame, issuedAt: (yield* now) - COMMAND_SKEW_MS })
@@ -831,6 +869,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         if (pending === undefined || (type.hasResync(connection.member) && !pending.replayed))
           return
         connection.resync = undefined
+        heldBytes -= pending.deferredBytes
+        pending.deferredBytes = 0
 
         for (const message of pending.deferred)
           if (

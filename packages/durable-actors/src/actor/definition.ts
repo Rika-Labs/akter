@@ -989,6 +989,8 @@ const make = <
             }),
           ),
           Effect.ensuring(Effect.sync(() => (open = false))),
+          Effect.provideService(CurrentCaller, input.caller),
+          Effect.provideService(Tenant, input.ref.tenant),
           Effect.provideContext(Context.add(services, Connection, context)),
           Effect.provideService(CurrentConnectionCommands, commandIds),
         )

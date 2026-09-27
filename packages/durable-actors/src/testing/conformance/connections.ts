@@ -2,7 +2,7 @@ import { Cause, Effect, Exit, Layer, Option, Predicate, Schedule, Schema, Stream
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, User } from "../../index.ts"
 import { type ActorError, SessionEnded, Unauthorized } from "../../errors/actor.ts"
-import type { ActorRef } from "../../identity/caller.ts"
+import { type ActorRef, CurrentCaller, System, Tenant } from "../../identity/caller.ts"
 import { ActorTest, type TestConnection, type TestMessage } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -71,6 +71,20 @@ export const connectionsLayer = Room.toLayer(
 
         if (frame.text === "whoami")
           return yield* conn.send(Hello.make({ name: session.name, resumed: conn.resumed, frames }))
+
+        if (frame.text === "caller") {
+          const caller = yield* CurrentCaller
+          const subject = Predicate.isTagged(caller, "User") ? caller.subject : ""
+          const tenant = yield* Tenant
+
+          return yield* conn.send(
+            Hello.make({
+              name: `${tenant}/${caller._tag}/${subject}`,
+              resumed: conn.resumed,
+              frames,
+            }),
+          )
+        }
 
         if (frame.text === "flood") {
           for (let index = 0; index < FLOOD; index++)
@@ -202,6 +216,27 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             }),
             Effect.timeout("5 seconds"),
             Effect.orDie,
+          )
+        }),
+      ),
+  },
+  {
+    name: "runs a frame handler in the actor's tenant as the caller stored at open",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-caller")
+          yield* next(connection)
+
+          yield* connection
+            .send(Say.make({ text: "caller" }))
+            .pipe(
+              Effect.provideService(CurrentCaller, System.make({ source: "actor" })),
+              Effect.provideService(Tenant, "elsewhere"),
+            )
+          const [answer] = yield* next(connection)
+          expect(frameOf(answer)).toEqual(
+            Hello.make({ name: `${room.ref.tenant}/User/alice`, resumed: false, frames: 1 }),
           )
         }),
       ),

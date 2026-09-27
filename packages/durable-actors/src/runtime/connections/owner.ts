@@ -305,6 +305,7 @@ export const activationOwner = ({
         })
 
       activation.rows = rows
+      yield* setKeepAwake(activation)
 
       // Every holder learns this owner before any of its broadcasts, so it can resync if this owner dies.
       yield* activation.flush.withPermit(
@@ -353,8 +354,9 @@ export const activationOwner = ({
     activation.flush.withPermit(
       Effect.gen(function* () {
         if (activation.rows === undefined || (broadcasts.length === 0 && own === undefined)) {
-          activation.head = head
-          activation.through = head
+          if (BigInt(head) > BigInt(activation.head)) activation.head = head
+
+          if (BigInt(head) > BigInt(activation.through)) activation.through = head
 
           return
         }
@@ -378,6 +380,25 @@ export const activationOwner = ({
               { ...last, to: [...last.to, ...item.to] },
             ])
           else perChannel.set(channel, [...items, item])
+        }
+
+        const self = own === undefined ? undefined : activation.rows.get(own.connectionId)
+
+        if (own !== undefined && self !== undefined) {
+          const stamp = registration.connections.get(own.member)?.stampCursor ?? true
+
+          for (const frame of own.frames)
+            add(
+              self,
+              HolderItem.cases.Frame.make({
+                member: own.member,
+                to: [own.connectionId],
+                frame: frame.frame,
+                event: frame.event,
+                stamp,
+                replay: own.replay === true,
+              }),
+            )
         }
 
         for (const broadcast of broadcasts) {
@@ -406,36 +427,19 @@ export const activationOwner = ({
                 )
         }
 
-        const self = own === undefined ? undefined : activation.rows.get(own.connectionId)
-
-        if (own !== undefined && self !== undefined) {
-          const stamp = registration.connections.get(own.member)?.stampCursor ?? true
-
-          for (const frame of own.frames)
-            add(
-              self,
-              HolderItem.cases.Frame.make({
-                member: own.member,
-                to: [own.connectionId],
-                frame: frame.frame,
-                event: frame.event,
-                stamp,
-                replay: own.replay === true,
-              }),
-            )
-        }
+        // A flush that read an older head than a concurrent one never moves the cursor back.
+        const advanced = BigInt(head) > BigInt(activation.through)
 
         for (const [channel, items] of perChannel)
           yield* send(
             activation,
             channel,
-            head === activation.through
-              ? items
-              : [...items, HolderItem.cases.Flushed.make({ through: head })],
+            advanced ? [...items, HolderItem.cases.Flushed.make({ through: head })] : items,
           )
 
-        activation.head = head
-        activation.through = head
+        if (BigInt(head) > BigInt(activation.head)) activation.head = head
+
+        if (advanced) activation.through = head
       }),
     )
 
