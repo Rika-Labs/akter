@@ -1,0 +1,435 @@
+{
+  "schema": 2,
+  "label": "m1.9-retention",
+  "note": "M1.9 retention: sweep throughput over 10^6 receipts and events, turn tail during a sweep, replay pages; events rerun for paged whole-stream replay; benchmark runtimes never sweep on a timer",
+  "profile": "full",
+  "startedAt": "2026-09-27T00:13:42.856Z",
+  "finishedAt": "2026-09-27T00:22:31.534Z",
+  "git": {
+    "sha": "f0288931a3d71b9fef58e797dc3823ffc3b8984d",
+    "shortSha": "f028893",
+    "branch": "feat/17-retention",
+    "mainBase": "9b5153500d5037c2d2ebe2ede9bbb6ab6d0c395f",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "9270115325bbce6dbff6bdb97c7b9a18d1209cd8",
+        "parents": [
+          "b5f2e16c4f96c79d9c5b27fe0df621897555f240",
+          "9b5153500d5037c2d2ebe2ede9bbb6ab6d0c395f"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "events",
+      "description": "Turns emitting 0, 1, and 10 events; replay of the newest 10 events and of a whole stream; 64 concurrent tailing readers over 100 actors.",
+      "cases": [
+        {
+          "name": "append-0",
+          "parameters": {
+            "eventsPerTurn": 0,
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 6466,
+          "throughput": 309.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 3.23,
+            "min": 2.758,
+            "p50": 3.086,
+            "p90": 3.47,
+            "p95": 3.672,
+            "p99": 5.652,
+            "max": 13.88
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 129,
+            "server": null,
+            "clientMsPerOperation": 4.171,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "append-1",
+          "parameters": {
+            "eventsPerTurn": 1,
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 7771,
+          "throughput": 257.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 3.883,
+            "min": 3.236,
+            "p50": 3.756,
+            "p90": 4.087,
+            "p95": 4.311,
+            "p99": 7.134,
+            "max": 14.619
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 111.5,
+            "server": null,
+            "clientMsPerOperation": 4.332,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "append-10",
+          "parameters": {
+            "eventsPerTurn": 10,
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 8881,
+          "throughput": 225.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 4.438,
+            "min": 3.645,
+            "p50": 4.244,
+            "p90": 4.755,
+            "p95": 5,
+            "p99": 8.894,
+            "max": 68.462
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 112,
+            "server": null,
+            "clientMsPerOperation": 4.974,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "replay-tail-10-of-10000",
+          "parameters": {
+            "streamEvents": 10000,
+            "replayedEvents": 10,
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 4543,
+          "throughput": 660.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 1.512,
+            "min": 1.317,
+            "p50": 1.489,
+            "p90": 1.647,
+            "p95": 1.753,
+            "p99": 2.06,
+            "max": 2.678
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 110.5,
+            "server": null,
+            "clientMsPerOperation": 1.673,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "replay-all-10000",
+          "parameters": {
+            "streamEvents": 10000,
+            "replayedEvents": 10000,
+            "workers": 1
+          },
+          "operations": 100,
+          "elapsedMs": 10168,
+          "throughput": 9.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 101.672,
+            "min": 85.736,
+            "p50": 94.373,
+            "p90": 127.346,
+            "p95": 140.596,
+            "p99": 155.825,
+            "max": 161.459
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 109.1,
+            "server": null,
+            "clientMsPerOperation": 110.966,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "eventsPerSecond": 98348
+          }
+        },
+        {
+          "name": "replay-tail-10-concurrent-64",
+          "parameters": {
+            "actors": 100,
+            "streamEvents": 100,
+            "replayedEvents": 10,
+            "workers": 64
+          },
+          "operations": 7219,
+          "elapsedMs": 10140,
+          "throughput": 711.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 7219,
+            "mean": 89.6,
+            "min": 37.564,
+            "p50": 87.528,
+            "p90": 98.536,
+            "p95": 99.761,
+            "p99": 110.085,
+            "max": 168.855
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 109.3,
+            "server": null,
+            "clientMsPerOperation": 1.535,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "eventsPerSecond": 7119
+          }
+        }
+      ]
+    },
+    {
+      "name": "retention",
+      "description": "One cleanup sweep over 10^6 (quick: 10^5) old receipts and events; warm turns while a sweep runs against an idle run; one replay page of 100 and 1,000 events.",
+      "cases": [
+        {
+          "name": "sweep-1000000",
+          "parameters": {
+            "receipts": 1000000,
+            "events": 1000000,
+            "actors": 1000,
+            "workers": 1
+          },
+          "operations": 1,
+          "elapsedMs": 177606,
+          "throughput": 0,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1,
+            "mean": 177606.207,
+            "min": 177606.207,
+            "p50": 177606.207,
+            "p90": 177606.207,
+            "p95": 177606.207,
+            "p99": 177606.207,
+            "max": 177606.207
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 100.6,
+            "server": null,
+            "clientMsPerOperation": 178645.887,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "receiptsSwept": 1000000,
+            "eventsSwept": 1000000,
+            "rowsPerSecond": 11261
+          }
+        },
+        {
+          "name": "turn-idle",
+          "parameters": {
+            "backlog": 1000000,
+            "workers": 1
+          },
+          "operations": 1391,
+          "elapsedMs": 5000,
+          "throughput": 278.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1391,
+            "mean": 3.592,
+            "min": 2.989,
+            "p50": 3.349,
+            "p90": 3.805,
+            "p95": 3.997,
+            "p99": 9.99,
+            "max": 65.819
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 114,
+            "server": null,
+            "clientMsPerOperation": 4.097,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "turn-during-sweep",
+          "parameters": {
+            "backlog": 1000000,
+            "workers": 1
+          },
+          "operations": 360,
+          "elapsedMs": 5012,
+          "throughput": 71.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 360,
+            "mean": 13.918,
+            "min": 11.72,
+            "p50": 12.724,
+            "p90": 16.082,
+            "p95": 18.375,
+            "p99": 32.098,
+            "max": 70.96
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 107.6,
+            "server": null,
+            "clientMsPerOperation": 14.98,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "p99RatioToIdle": 3.21,
+            "sweepOutlastedWindow": 1,
+            "sweepMs": 185063
+          }
+        },
+        {
+          "name": "replay-page-100-of-10000",
+          "parameters": {
+            "streamEvents": 10000,
+            "pageEvents": 100,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 4965,
+          "throughput": 201.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 4.962,
+            "min": 2.685,
+            "p50": 4.952,
+            "p90": 6.551,
+            "p95": 6.885,
+            "p99": 7.683,
+            "max": 9.34
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 108.4,
+            "server": null,
+            "clientMsPerOperation": 5.381,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "replay-page-1000-of-10000",
+          "parameters": {
+            "streamEvents": 10000,
+            "pageEvents": 1000,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 14030,
+          "throughput": 71.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 14.027,
+            "min": 10.192,
+            "p50": 13.231,
+            "p90": 15.732,
+            "p95": 18.99,
+            "p99": 34.677,
+            "max": 68.371
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 107.4,
+            "server": null,
+            "clientMsPerOperation": 15.071,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}

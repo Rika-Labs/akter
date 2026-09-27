@@ -24,7 +24,8 @@ interface ReplayRow {
  * `head` had committed by then, so a later read sees each of them unless it
  * was pruned; the oldest retained event and the matching rows come from one
  * statement, and because pruning only removes a prefix, an oldest event past
- * the cursor's successor means history is missing.
+ * the cursor's successor means history is missing. A page stops after
+ * `limit` matching events.
  */
 export const replayEvents = Effect.fnUntraced(function* (
   ref: ActorRef,
@@ -32,6 +33,7 @@ export const replayEvents = Effect.fnUntraced(function* (
   tag: string,
   after: string | undefined,
   head: bigint,
+  limit: number,
 ) {
   const cursor = after ?? "0"
 
@@ -51,7 +53,8 @@ export const replayEvents = Effect.fnUntraced(function* (
     FROM (VALUES (1)) AS one (x)
     LEFT JOIN actor_events e ON ${owner("e")} AND e.sequence > ${position}
       AND e.sequence <= ${head} AND e.event = ${tag}
-    ORDER BY e.sequence`
+    ORDER BY e.sequence
+    LIMIT ${limit}`
 
   const oldest = rows[0]?.oldest
 
