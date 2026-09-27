@@ -53,6 +53,7 @@ import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
+import { reportShardsAcquiredDuringRefresh } from "./storage/shard-refresh.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -544,7 +545,9 @@ export const layer = (options: Options) => {
             : Layer.effect(
                 RunnerStorage.RunnerStorage,
                 SqlRunnerStorage.make({}).pipe(
-                  Effect.map(wiring?.storage ?? ((storage) => storage)),
+                  Effect.map((storage) =>
+                    reportShardsAcquiredDuringRefresh(wiring?.storage(storage) ?? storage),
+                  ),
                 ),
               ).pipe(Layer.orDie),
           RunnerHealth.layerNoop,
