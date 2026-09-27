@@ -88,7 +88,9 @@ export const workflowRun = <W extends AnyWorkflow>(options: {
   const result = poll.pipe(
     Effect.map(
       Option.filter(
-        (found): found is EffectWorkflow.Complete<W["output"]["Type"], W["errors"][number]["Type"]> =>
+        (
+          found,
+        ): found is EffectWorkflow.Complete<W["output"]["Type"], W["errors"][number]["Type"]> =>
           found instanceof EffectWorkflow.Complete,
       ),
     ),

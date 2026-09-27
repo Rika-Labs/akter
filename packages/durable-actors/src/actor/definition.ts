@@ -42,14 +42,7 @@ import {
 } from "../handles/actors.ts"
 import { currentStaging, emptyOutbox, InTurn, openOutbox, stage } from "../handles/intents.ts"
 
-import {
-  ActorRef,
-  Caller,
-  CurrentCaller,
-  Tenant,
-  principal,
-  System,
-} from "../identity/caller.ts"
+import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
 import { checkKey, decodeExecutionId, encodeExecutionId } from "../identity/execution.ts"
 import { type AnyWorkflow, exitCodec, isWorkflow } from "../members/workflow.ts"
@@ -711,7 +704,9 @@ const make = <
 
                 if (!Outcome.guards.Success(outcome))
                   return yield* Effect.die(
-                    Outcome.guards.Defect(outcome) ? outcome.cause : new Error("Workflow start failed"),
+                    Outcome.guards.Defect(outcome)
+                      ? outcome.cause
+                      : new Error("Workflow start failed"),
                   )
 
                 const { value: executionId } = yield* Schema.decodeEffect(ExecutionIdOutput)(
@@ -1070,11 +1065,13 @@ const make = <
         const body = (
           workflowHandlers as Record<
             string,
-            ((input: never) => Effect.Effect<unknown, Cause.YieldableError, RW | Workflow>) | undefined
+            | ((input: never) => Effect.Effect<unknown, Cause.YieldableError, RW | Workflow>)
+            | undefined
           >
         )[member.tag]
 
-        if (body === undefined) return yield* Effect.die(new Error(`Missing workflow ${member.tag}`))
+        if (body === undefined)
+          return yield* Effect.die(new Error(`Missing workflow ${member.tag}`))
 
         const memberCodec = codecs.get(member.tag)!
         const exits = workflowExits.get(member.tag)!
@@ -1139,10 +1136,7 @@ const make = <
   ): Layer.Layer<
     never,
     never,
-    | Exclude<R, Turn | InTurn>
-    | Exclude<RW, Workflow>
-    | Exclude<RB, Scope.Scope>
-    | InternalActors
+    Exclude<R, Turn | InTurn> | Exclude<RW, Workflow> | Exclude<RB, Scope.Scope> | InternalActors
   > =>
     Layer.effectDiscard(
       Effect.gen(function* () {
@@ -1159,10 +1153,7 @@ const make = <
     ) as Layer.Layer<
       never,
       never,
-      | Exclude<R, Turn | InTurn>
-      | Exclude<RW, Workflow>
-      | Exclude<RB, Scope.Scope>
-      | InternalActors
+      Exclude<R, Turn | InTurn> | Exclude<RW, Workflow> | Exclude<RB, Scope.Scope> | InternalActors
     >
 
   const registerQueries = <R>(handlers: QueryHandlers<Api, R>, services: Context.Context<R>) =>
@@ -1555,8 +1546,7 @@ const make = <
 
     const id = isSingleton ? "singleton" : execution.id
 
-    if (!isSingleton && Result.isFailure(Schema.decodeResult(idSchema)(id)))
-      return yield* invalid
+    if (!isSingleton && Result.isFailure(Schema.decodeResult(idSchema)(id))) return yield* invalid
 
     return runOf(
       member,

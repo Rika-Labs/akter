@@ -119,7 +119,8 @@ const STEP_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const engine = Effect.gen(function* () {
   const steps = yield* CurrentWorkflow
 
-  if (steps === undefined) return yield* Effect.die(new Error("Workflow step outside a workflow body"))
+  if (steps === undefined)
+    return yield* Effect.die(new Error("Workflow step outside a workflow body"))
 
   return steps
 })
@@ -160,9 +161,15 @@ export const exitCodec = <S extends ValueSchema, E extends ReadonlyArray<Declare
   const decode = (recorded: RecordedExit): Effect.Effect<Recorded> =>
     RecordedExit.match(recorded, {
       Success: ({ value: encoded }) =>
-        Schema.decodeEffect(value)(encoded).pipe(Effect.orDie, Effect.map((ok): Recorded => Exit.succeed(ok))),
+        Schema.decodeEffect(value)(encoded).pipe(
+          Effect.orDie,
+          Effect.map((ok): Recorded => Exit.succeed(ok)),
+        ),
       Failure: ({ error: encoded }) =>
-        Schema.decodeEffect(error)(encoded).pipe(Effect.orDie, Effect.map((failed): Recorded => Exit.fail(failed))),
+        Schema.decodeEffect(error)(encoded).pipe(
+          Effect.orDie,
+          Effect.map((failed): Recorded => Exit.fail(failed)),
+        ),
       Die: ({ message }): Effect.Effect<Recorded> => Effect.succeed(Exit.die(new Error(message))),
     })
 
@@ -198,10 +205,16 @@ const make = <
       range.current < 1 ||
       range.min > range.current
     )
-      throw new Error(`Workflow ${tag} version ${name} needs integers 0 <= min <= current, current >= 1`)
+      throw new Error(
+        `Workflow ${tag} version ${name} needs integers 0 <= min <= current, current >= 1`,
+      )
 
   const registry: StepRegistry = { steps: new Map() }
-  const identity = (name: string, kind: StepIdentity["kind"]): StepIdentity => ({ workflow: tag, name, kind })
+  const identity = (name: string, kind: StepIdentity["kind"]): StepIdentity => ({
+    workflow: tag,
+    name,
+    kind,
+  })
 
   const register = (entry: StepEntry) => {
     if (!STEP_NAME.test(entry.name)) throw new Error(`Invalid step name: ${entry.name}`)

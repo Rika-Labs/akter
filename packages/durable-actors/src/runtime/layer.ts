@@ -454,9 +454,14 @@ export const layer = (options: Options) => {
 
           for (const table of registration.tables) checked.add(table)
 
-          if (registration.workflows.size > 0 && registration.policy.keepWorkflowsMs < retryWindowMs)
+          if (
+            registration.workflows.size > 0 &&
+            registration.policy.keepWorkflowsMs < retryWindowMs
+          )
             return yield* Effect.die(
-              new Error(`Actor ${registration.name} keepWorkflows is shorter than the retry window`),
+              new Error(
+                `Actor ${registration.name} keepWorkflows is shorter than the retry window`,
+              ),
             )
           yield* recordManifests(registration).pipe(Effect.provideContext(services), Effect.orDie)
 
