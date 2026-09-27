@@ -60,10 +60,7 @@ import {
   effectsLayer,
   type EffectsFixture,
 } from "./conformance/effects.ts"
-import {
-  inspectionViewsConformance,
-  inspectionViewsLayer,
-} from "./conformance/inspection-views.ts"
+import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
