@@ -1384,6 +1384,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
 
           const locked = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
+
           // Three rows locked where one free slot probes two candidates.
           const holder = yield* query(0, (sql) =>
             sql.withTransaction(
@@ -1395,6 +1396,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
               }),
             ),
           ).pipe(Effect.forkChild)
+
           yield* Deferred.await(locked)
 
           yield* advance(0, "2 minutes")
