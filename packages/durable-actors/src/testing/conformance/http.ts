@@ -9,6 +9,7 @@ import {
   Fiber,
   Layer,
   Option,
+  Result,
   Schedule,
   Schema,
   type Scope,
@@ -89,6 +90,33 @@ export const HttpLobby = Actor.make("HttpLobby", {
 
 export const HttpTicket = Actor.make("HttpTicket", { state: count, api: { Join } })
 
+export class TooMany extends Schema.TaggedError<TooMany>()("TooMany", { count: Schema.Int }) {}
+
+const Add = Actor.reducer("Add", {
+  state: count,
+  input: Schema.Struct({ by: Schema.Int }),
+  errors: [TooMany],
+  reduce: (state, { by }) =>
+    state.count + by > 10
+      ? Result.fail(TooMany.make({ count: state.count }))
+      : Result.succeed({ count: state.count + by }),
+})
+
+const Bump = Actor.reducer("Bump", {
+  state: count,
+  reduce: (state) => Result.succeed({ count: state.count + 1 }),
+  commutative: { combine: () => undefined },
+})
+
+const Snapshot = Actor.query("Snapshot", { output: Schema.Struct({ count: Schema.Int }) })
+
+/** Reducers only, so a client can run every command optimistically. */
+export const HttpTally = Actor.make("HttpTally", {
+  key: Schema.String,
+  state: count,
+  api: { Add, Bump, Snapshot },
+})
+
 /** Handler runs, so a replay can be shown not to rerun the handler. */
 export const runs = { count: 0 }
 
@@ -156,6 +184,14 @@ export const httpLayer = Layer.mergeAll(
       }),
     }),
   ),
+  HttpTally.toLayer(Effect.succeed({})),
+  HttpTally.toQueryLayer(
+    Effect.succeed({
+      Snapshot: Effect.fnUntraced(function* () {
+        return { count: (yield* HttpTally.Read).state.count }
+      }),
+    }),
+  ),
   HttpTicket.toLayer(
     Effect.succeed({
       Join: Effect.fnUntraced(function* () {
@@ -205,7 +241,7 @@ const systemCaller: AuthProvider = {
     }),
 }
 
-const served = [HttpRoom, HttpLobby, HttpTicket]
+const served = [HttpRoom, HttpLobby, HttpTicket, HttpTally]
 
 const encodeFull = (value: Full) => Schema.encodeEffect(Full)(value).pipe(Effect.orDie)
 
@@ -901,6 +937,9 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               "HttpRoom.Peek",
               "HttpRoom.Post",
               "HttpRoom.Whoami",
+              "HttpTally.Add",
+              "HttpTally.Bump",
+              "HttpTally.Snapshot",
               "HttpTicket.Join",
               "durable.commandIds",
               "durable.protocol",
@@ -911,7 +950,10 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             const headers = operation.parameters.filter((parameter) => parameter.in === "header")
 
             const isCommand =
-              path.startsWith("/actors/") && !path.endsWith("/Count") && !path.endsWith("/Peek")
+              path.startsWith("/actors/") &&
+              !path.endsWith("/Count") &&
+              !path.endsWith("/Peek") &&
+              !path.endsWith("/Snapshot")
 
             expect(headers.map((parameter) => parameter.name)).toEqual(
               isCommand ? ["idempotency-key"] : [],
@@ -932,7 +974,11 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               method: Option.getOrThrow(Option.liftPredicate(method.toUpperCase(), isMethod)),
               token,
               key: isCommand ? yield* server.mint() : undefined,
-              body: path.endsWith("/Post") ? { text: "doc" } : undefined,
+              body: path.endsWith("/Post")
+                ? { text: "doc" }
+                : path.endsWith("/Add")
+                  ? { by: 1 }
+                  : undefined,
             })
 
             expect([concrete, reply.status < 300]).toEqual([concrete, true])
