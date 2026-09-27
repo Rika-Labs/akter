@@ -59,8 +59,13 @@ export const SendAt = Actor.command("SendAt", {
   input: Schema.Struct({ ids: Schema.Array(Schema.String), atMs: Schema.Int }),
 })
 
+/** Stages `count` intents due at `atMs`, generating their ids in the handler so the payload stays small. */
+export const SendMany = Actor.command("SendMany", {
+  input: Schema.Struct({ offset: Schema.Int, count: Schema.Int, atMs: Schema.Int }),
+})
+
 /** Stages intents to `Sink` actors, one per id, keyed by the id's sink. */
 export const Sender = Actor.make("Sender", {
   key: Schema.NonEmptyString,
-  api: { Send, SendAt },
+  api: { Send, SendAt, SendMany },
 })
