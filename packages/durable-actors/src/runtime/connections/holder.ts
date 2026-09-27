@@ -830,6 +830,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     actor.connections.set(connection.id, connection)
     held.set(connection.id, connection)
 
+    const issuedAt = (yield* now) - COMMAND_SKEW_MS
+
     const openCall = type.channel.open({
       ...address(connection),
       member: request.member,
@@ -838,8 +840,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       commands: {
         secret: connection.secret,
         seq: 0,
-        issuedAt: (yield* now) - COMMAND_SKEW_MS,
-        expiresAt: (yield* now) - COMMAND_SKEW_MS + type.retryWindowMs,
+        issuedAt,
+        expiresAt: issuedAt + type.retryWindowMs,
       },
     })
 

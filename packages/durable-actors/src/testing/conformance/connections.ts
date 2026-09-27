@@ -4,6 +4,7 @@ import { Actor, User } from "../../index.ts"
 import { ActorError, ActorUnavailable, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import { type ActorRef, CurrentCaller, System, Tenant } from "../../identity/caller.ts"
 import { connectionHolder, type HeldActorType } from "../../runtime/connections/holder.ts"
+import { FrameworkClock } from "../../runtime/turn/admission.ts"
 import { ActorTest, type TestConnection, type TestMessage } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -476,7 +477,9 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           const owner = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" }
           const resyncs: Array<string | undefined> = []
+          const windows: Array<number> = []
           let opens = 0
+          let ticks = 0
 
           const type: HeldActorType = {
             deliveryMs: 1_000,
@@ -488,23 +491,27 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             hasMember: () => true,
             routingKey: () => 0n,
             channel: {
-              open: () =>
-                Effect.suspend(() =>
-                  ++opens === 1
-                    ? Effect.succeed({ _tag: "Opened" as const, ...owner, baseline: "9" })
-                    : opens === 2
-                      ? Effect.fail(
-                          ActorError.make({
-                            reason: ActorUnavailable.make({ cause: new Error("Reply lost") }),
-                          }),
-                        )
-                      : Effect.succeed({
-                          _tag: "Opened" as const,
-                          ...owner,
-                          baseline: "5",
-                          recovered: true,
-                        }),
-                ),
+              open: (request) =>
+                Effect.suspend(() => {
+                  windows.push(request.commands.expiresAt - request.commands.issuedAt)
+
+                  if (++opens === 1)
+                    return Effect.succeed({ _tag: "Opened" as const, ...owner, baseline: "9" })
+
+                  if (opens === 2)
+                    return Effect.fail(
+                      ActorError.make({
+                        reason: ActorUnavailable.make({ cause: new Error("Reply lost") }),
+                      }),
+                    )
+
+                  return Effect.succeed({
+                    _tag: "Opened" as const,
+                    ...owner,
+                    baseline: "5",
+                    recovered: true,
+                  })
+                }),
               frame: () => Effect.die(new Error("No frame is sent")),
               close: () => Effect.void,
               resync: (request) =>
@@ -525,7 +532,10 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             }),
             actorType: () => type,
             authorize: () => Effect.succeed(true),
-          })
+          }).pipe(
+            // Every clock read advances, so values read separately never share a millisecond.
+            Effect.provideService(FrameworkClock, { offsetMillis: () => ticks++ }),
+          )
 
           const openHeld = holder.open({
             ref: { tenant: room.ref.tenant, actor: "Recovered", id: "recovered" },
@@ -546,6 +556,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(opens).toBe(3)
+          expect(windows).toEqual([60_000, 60_000, 60_000])
           const [resync] = replay
 
           expect(resync?._tag).toBe("Resync")
