@@ -218,6 +218,8 @@ The declaration test `types effects, executors, and routes against the executor'
 
 These cases cover a single runner. Executors on separate processes, effect cancellation, and per-actor concurrency caps are not implemented. [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md) (proposed) lists the cases M2.13 must add in `conformance/effect-control.ts`; they are required tests, not recorded results.
 
+`turn.mint` is not implemented. [ADR 0025](../decisions/0025-turn-mint.md) (proposed) lists the cases M2.15 must add in `conformance/mint.ts`, including fixed derivation vectors; they are required tests, not recorded results.
+
 ### Multi-runner harness (M2.1)
 
 The cases live in [`conformance/multi-runner.ts`](../../packages/durable-actors/src/testing/conformance/multi-runner.ts) and are registered with `describeConformance`. They need independent connections, so they run on Postgres and are reported skipped on PGlite. Each case builds `ActorTest.cluster` ([testing API](../api/01-server-api.md)) on a fresh database with a `shardLockExpiration` of 3 seconds. The runners are separate Cluster runners in one process, each with its own connection pool, SQL shard locks (not advisory locks), and address; they call each other over an in-process transport that serializes every message. The fixture `Tally` actor adds to a count and emits one `Tallied` event per turn. `cluster.test.ts` checks that `ActorTest.cluster` refuses PGlite.
@@ -287,6 +289,18 @@ Shared properties in [`conformance/properties.ts`](../../packages/durable-actors
 - `property: keyed timers replace and cancel exactly as a model predicts` (1,000 cases): up to six keyed and unkeyed schedules, cancels, and cancels in a turn that fails. The pending outbox count and the delivered bodies after `test.advance` match the model, where a key keeps only its latest timer.
 
 These properties are bounded by the listed case and operation counts and run on one runner. They add generated coverage to the hand-written cases; they are not evidence for multi-process behavior.
+
+### Runner start-up and nightly stress (T4)
+
+Every first command on a fresh Postgres runner could stall for about 10 s. Effect Cluster (rc.116, unchanged on effect-smol `main`) compares a shard-lock refresh's answer against the shards held _when the answer arrives_. The runner's first refresh starts with no shards; if the first acquire commits while it is in flight, the answer lacks the new shard, so the runner releases it and reacquires it only on the next 10 s entity poll. It explains the known CI flakes that timed out on a fresh runner: `isolates durable state between fresh layer builds` (its "No healthy runners available" warning comes from Cluster's runner-assignment loop and is incidental), and the `beforeExecute`, `afterExecute` and `beforeCommit` effect SIGKILL cases (a crash child that hit its own 10 s timeout before its crash point, reported as "Unknown Error: 1"). The capacity cases keep their warm-up actor; whether it is still needed is unverified. Under CPU load the stall hit 8 of 90 crash-child starts before the fix and 0 of 120 after.
+
+The runtime wraps Cluster's runner storage (SQL, and memory on PGlite) with `keepAcquiredShards` in [`runtime/topology/locks.ts`](../../packages/durable-actors/src/runtime/topology/locks.ts): a shard it acquired is reported held by that runner's refreshes until one asks about it, which checks the lock for real, or until it is released. The fix lives in framework code rather than a patch of the installed `effect`, so an application that depends on `durable-actors` gets it with no patch of its own. Remove the wrapper with the Effect upgrade that fixes the race upstream.
+
+- `keeps a shard acquired while its first lock refresh is in flight` in [`runtime/topology/locks.test.ts`](../../packages/durable-actors/src/runtime/topology/locks.test.ts) — lock storage whose first refresh reads before the first acquire commits and answers after it. The first call must answer within 5 s; unwrapped it waits about 9 s for the entity poll.
+- `reports a shard lost once a refresh asks about it` and `stops reporting a shard once it is released` in the same file — storage that has lost every lock. Real lock loss is still reported on the first refresh that asks about the shard, and a released shard is never reported. `reports a shard only to the runner that acquired it` — another runner's refresh never reports the shard, and its `releaseAll` leaves the acquiring runner's tracking alone. `stops reporting shards released while a refresh is in flight` — a `releaseAll` during a pending refresh removes the runner's shards from that refresh's answer.
+- The crash suites now fail with "the child exited before reaching its crash point" when a child dies on its own, instead of an opaque exit code.
+
+The `Stress` workflow ([`.github/workflows/stress.yml`](../../.github/workflows/stress.yml)) runs nightly and on `workflow_dispatch`. It runs `test` and `test:integration` 10 times (the `runs` input, 1 to 25) with one `stress-ng` CPU worker per core, and lists every failing case by name with the runs it failed in, in the job summary and as annotations.
 
 The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
 

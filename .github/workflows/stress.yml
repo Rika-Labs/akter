@@ -1,0 +1,100 @@
+name: Stress
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Suite runs under CPU load
+        default: "10"
+permissions:
+  contents: read
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  stress:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 150
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: project
+          POSTGRES_PASSWORD: project
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U project -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Restore Bun package cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: sudo apt-get update -q && sudo apt-get install -yq stress-ng
+      # Timing-sensitive cases flake under load long before they do on an idle
+      # runner, so every run shares the machine with one busy worker per core.
+      - name: Run the conformance suites under CPU load
+        # Leaves room in the job budget for the report and the artifact upload.
+        timeout-minutes: 130
+        env:
+          RUNS: ${{ inputs.runs || '10' }}
+          TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
+        working-directory: packages/durable-actors
+        run: |
+          set -u
+          case "$RUNS" in
+            ''|*[!0-9]*|????*)
+              echo "RUNS must be an integer from 1 to 25" >&2
+              exit 2
+              ;;
+          esac
+          RUNS=$((10#$RUNS))
+          if [ "$RUNS" -lt 1 ] || [ "$RUNS" -gt 25 ]; then
+            echo "RUNS must be an integer from 1 to 25" >&2
+            exit 2
+          fi
+          mkdir -p ../../stress
+          stress-ng --cpu "$(nproc)" --timeout 0 --quiet &
+          trap 'kill %1' EXIT
+          failed=0
+          for run in $(seq 1 "$RUNS"); do
+            for suite in test test:integration; do
+              status=0
+              # A hung run is cut off and reported instead of eating the budget.
+              # Vitest resolves the report path from the repository root.
+              timeout --kill-after=30s 20m bun run "$suite" --reporter=default --reporter=json \
+                --outputFile.json="stress/${suite/:/-}-$run.json" \
+                > "../../stress/${suite/:/-}-$run.log" 2>&1 || status=$?
+              echo "$status" > "../../stress/${suite/:/-}-$run.status"
+              echo "run $run $suite exited $status"
+              if [ "$status" -ne 0 ]; then failed=1; fi
+            done
+          done
+          exit "$failed"
+      - name: Report failing cases by name
+        if: always()
+        env:
+          STRESS_DIR: stress
+          STRESS_RUNS: ${{ inputs.runs || '10' }}
+          STRESS_SUITES: test test-integration
+        run: bun .github/src/stress-summary.ts
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: stress-${{ github.run_id }}
+          path: stress/
+          retention-days: 14
