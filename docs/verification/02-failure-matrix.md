@@ -100,7 +100,7 @@ These are required tests, not recorded passing results. The rows "Intent turn ro
 
 ## Served-protocol rows
 
-Proposed by [ADR 0027](../decisions/0027-served-protocol.md). M3.2 runs the HTTP rows in `conformance/http.ts`, M3.4 repeats them through the Promise client in `conformance/client.ts`, and M3.3 runs the session rows in `conformance/transports.ts`.
+Proposed by [ADR 0027](../decisions/0027-served-protocol.md). M3.2 runs the HTTP rows in `conformance/http.ts`, M3.4 repeats them through the Promise client in `conformance/client.ts`, and M3.3 runs the session rows in `conformance/transports.ts`. The four HTTP rows pass on PGlite and Postgres as of M3.2 (see the [ledger](01-conformance.md#served-http-m32)).
 
 | Fault point                              | Required result                                                                                                                                                                                                  |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

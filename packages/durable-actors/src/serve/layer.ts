@@ -1,0 +1,467 @@
+import { Cause, Effect, Exit, Fiber, Match, Option, Schema, SchemaAST, Stream } from "effect"
+import {
+  Headers,
+  HttpRouter,
+  type HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http"
+import { type ServedDefinition, type ServedMember, servedDefinitions } from "../actor/served.ts"
+import { ActorError, Unauthorized } from "../errors/actor.ts"
+import { InternalActors, Outcome, Request } from "../handles/actors.ts"
+import { ActorRef, Anonymous, User } from "../identity/caller.ts"
+import { build, document, memberPath } from "./api.ts"
+import { type AuthProvider, type Authenticated, withinLimits } from "./auth.ts"
+import { databaseClock } from "./clock.ts"
+import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
+
+export interface ServeOptions<R> {
+  /** Actor definitions to serve; their layers are provided as usual. */
+  readonly actors: ReadonlyArray<{ readonly name: string }>
+  /** Authenticates every request this layer answers. Required: `Actor.auth.none` is the explicit public opt-out. */
+  readonly auth: AuthProvider<R>
+  /** Prefix for every route, such as `"/api"`. */
+  readonly basePath?: `/${string}`
+  /** Serves the OpenAPI 3.1 document at `path`; off unless given. */
+  readonly openapi?: {
+    readonly path: `/${string}`
+    readonly title?: string
+    readonly version?: string
+  }
+  /** Browser origins allowed besides the server's own. Requests without `Origin` are always served. */
+  readonly origins?: ReadonlyArray<string>
+  readonly limits?: {
+    /** Default 1 MiB. */
+    readonly requestBytes?: number
+    /** Default 8 KiB. */
+    readonly credentialBytes?: number
+  }
+}
+
+const NAME = /^[A-Za-z][A-Za-z0-9_]*$/
+
+const RESERVED_MEMBERS: ReadonlySet<string> = new Set(["events"])
+
+const ALLOWED_HEADERS = [
+  "authorization",
+  "content-type",
+  "idempotency-key",
+  "durable-protocol",
+  "durable-min-version",
+  "last-event-id",
+  "traceparent",
+  "tracestate",
+].join(", ")
+
+const EXPOSED_HEADERS = ["x-request-id", "durable-now", "durable-version", "retry-after"].join(", ")
+
+const JSON_TYPE = /^application\/json[ ]*(;.*)?$/i
+
+// A quoted value is the idempotency-key draft's structured-field string.
+const QUOTED = /^"(.*)"$/
+
+const decodeBody = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
+
+const decodeSuccess = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ value: Schema.optionalKey(Schema.Json) })),
+)
+
+const decodeDeclared = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
+
+const utf8 = new TextEncoder()
+
+const bytes = (value: string) => utf8.encode(value).byteLength
+
+const traceId = Effect.currentSpan.pipe(
+  Effect.map((span) => span.traceId),
+  Effect.orElseSucceed(() => "0".repeat(32)),
+)
+
+const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>) {
+  const trace = yield* traceId
+
+  yield* Effect.logError("Actor.serve request failed", cause)
+
+  return HttpServerResponse.jsonUnsafe(Defect.make({ traceId: trace }), { status: 500 })
+})
+
+const pathId = Effect.fnUntraced(function* (definition: ServedDefinition) {
+  if (definition.key === "singleton") return yield* definition.decodeId("").pipe(Effect.orDie)
+
+  const raw = (yield* HttpRouter.params).id ?? ""
+
+  if (raw === "." || raw === "..") return yield* invalidInput("unservable_id")
+
+  return yield* definition.decodeId(raw).pipe(Effect.mapError((error) => undecodable(error)))
+})
+
+const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
+
+const resolve = (actor: { readonly name: string }): ServedDefinition => {
+  const definition = servedDefinitions.get(actor)
+
+  if (definition === undefined)
+    throw new Error(`Actor.serve: ${actor.name} is not an Actor.make definition`)
+
+  if (!NAME.test(definition.name))
+    throw new Error(`Actor.serve: actor name ${definition.name} is not [A-Za-z][A-Za-z0-9_]*`)
+
+  for (const member of definition.members) {
+    if (!NAME.test(member.tag) || RESERVED_MEMBERS.has(member.tag))
+      throw new Error(`Actor.serve: ${definition.name}.${member.tag} can't be served`)
+  }
+
+  return definition
+}
+
+/**
+ * Serves `actors`' public commands, reducers, and queries over HTTP by adding
+ * routes to the `HttpRouter`, plus `/protocol`, `/command-ids`, and, when
+ * configured, the OpenAPI document.
+ */
+export const serve = <R = never>(options: ServeOptions<R>) =>
+  HttpRouter.use(
+    Effect.fnUntraced(function* (router) {
+      const basePath = options.basePath ?? ""
+      const definitions = options.actors.map(resolve)
+      const names = new Set<string>()
+
+      for (const definition of definitions) {
+        if (names.has(definition.name))
+          return yield* Effect.die(new Error(`Actor.serve: ${definition.name} is listed twice`))
+        names.add(definition.name)
+      }
+
+      const actors = yield* InternalActors
+
+      for (const definition of definitions) {
+        const registered = actors.registered(definition.name)
+
+        const missing = definition.members.some((member) =>
+          member.kind === "query" ? !registered.queries : !registered.commands,
+        )
+
+        if (missing)
+          return yield* Effect.die(
+            new Error(`Actor.serve: provide ${definition.name}'s command and query layers`),
+          )
+      }
+
+      const clock = yield* databaseClock
+      const context = yield* Effect.context<R>()
+      const scope = yield* Effect.scope
+      const origins = new Set(options.origins ?? [])
+      const requestBytes = options.limits?.requestBytes ?? 1024 * 1024
+      const credentialBytes = options.limits?.credentialBytes ?? 8 * 1024
+      const api = build({ definitions, basePath })
+
+      const withProtocol = (
+        request: HttpServerRequest.HttpServerRequest,
+        response: HttpServerResponse.HttpServerResponse,
+      ) => {
+        const origin = Headers.get(request.headers, "origin")
+
+        const stamped = HttpServerResponse.setHeaders(response, {
+          "durable-protocol": String(PROTOCOL),
+          "durable-now": String(clock.now()),
+        })
+
+        return Option.isSome(origin) && origins.has(origin.value)
+          ? HttpServerResponse.setHeaders(stamped, {
+              "access-control-allow-origin": origin.value,
+              "access-control-expose-headers": EXPOSED_HEADERS,
+              vary: "Origin",
+            })
+          : stamped
+      }
+
+      const isSameOrigin = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
+        const host = Headers.get(request.headers, "host")
+
+        if (Option.isNone(host)) return false
+
+        try {
+          return new URL(origin).host === host.value
+        } catch {
+          return false
+        }
+      }
+
+      // Every route: origin before authentication, then the protocol version.
+      const guard = (request: HttpServerRequest.HttpServerRequest) =>
+        Effect.gen(function* () {
+          const origin = Headers.get(request.headers, "origin")
+
+          if (
+            Option.isSome(origin) &&
+            !origins.has(origin.value) &&
+            !isSameOrigin(request, origin.value)
+          )
+            return yield* invalidInput("origin_not_allowed")
+
+          const protocol = Headers.get(request.headers, "durable-protocol")
+
+          if (Option.isSome(protocol) && protocol.value.trim() !== String(PROTOCOL))
+            return yield* invalidInput("unsupported_protocol")
+        })
+
+      const respond =
+        (
+          handler: (
+            request: HttpServerRequest.HttpServerRequest,
+          ) => Effect.Effect<
+            HttpServerResponse.HttpServerResponse,
+            ActorError,
+            HttpRouter.RouteContext
+          >,
+          headers?: (request: HttpServerRequest.HttpServerRequest) => Record<string, string>,
+        ) =>
+        (request: HttpServerRequest.HttpServerRequest) =>
+          guard(request).pipe(
+            Effect.andThen(handler(request)),
+            Effect.catch((error) => actorErrorResponse(error)),
+            Effect.catchCause(defectResponse),
+            Effect.map((response) =>
+              withProtocol(
+                request,
+                headers === undefined
+                  ? response
+                  : HttpServerResponse.setHeaders(response, headers(request)),
+              ),
+            ),
+          )
+
+      const authenticate = (request: HttpServerRequest.HttpServerRequest) =>
+        Effect.gen(function* () {
+          const authorization = Headers.get(request.headers, "authorization")
+          const cookie = Headers.get(request.headers, "cookie")
+
+          if (
+            (Option.isSome(authorization) && bytes(authorization.value) > credentialBytes) ||
+            (options.auth.cookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes)
+          )
+            return yield* invalidInput("too_large")
+
+          const authenticated: Authenticated = yield* options.auth
+            .authenticate({
+              headers: request.headers,
+              cookies: options.auth.cookies ? request.cookies : {},
+            })
+            .pipe(
+              Effect.provideContext(context),
+              Effect.mapError((reason) => ActorError.make({ reason })),
+            )
+
+          if (!isPrincipal(authenticated.caller))
+            return yield* Effect.die(
+              new Error("Actor.serve: an auth provider returned a System caller"),
+            )
+
+          if (!withinLimits(authenticated)) {
+            yield* Effect.logWarning("Actor.serve: auth provider result exceeds principal limits")
+
+            return yield* ActorError.make({
+              reason: Unauthorized.make({ code: "invalid_credentials" }),
+            })
+          }
+
+          return authenticated
+        })
+
+      const readBody = (request: HttpServerRequest.HttpServerRequest) =>
+        Effect.gen(function* () {
+          const type = Headers.get(request.headers, "content-type")
+
+          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
+            return yield* invalidInput("unsupported_media_type")
+
+          const length = Headers.get(request.headers, "content-length")
+
+          if (Option.isSome(length) && Number(length.value) > requestBytes)
+            return yield* invalidInput("too_large")
+
+          if (Option.isSome(length) && Number(length.value) === 0) return undefined
+
+          // A request without framing headers may carry no body stream at all.
+          const unframed =
+            Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
+
+          const chunks = yield* request.stream.pipe(
+            Stream.catch(() => (unframed ? Stream.empty : Stream.fail(invalidInput("decode")))),
+            Stream.runFoldEffect(
+              () => ({ size: 0, chunks: [] as Array<Uint8Array> }),
+              (acc, chunk) => {
+                const size = acc.size + chunk.byteLength
+
+                if (size > requestBytes) return Effect.fail(invalidInput("too_large"))
+                acc.chunks.push(chunk)
+
+                return Effect.succeed({ size, chunks: acc.chunks })
+              },
+            ),
+          )
+
+          if (chunks.size === 0) return undefined
+
+          if (Option.isNone(type)) return yield* invalidInput("unsupported_media_type")
+
+          const body = new Uint8Array(chunks.size)
+          let offset = 0
+
+          for (const chunk of chunks.chunks) {
+            body.set(chunk, offset)
+            offset += chunk.byteLength
+          }
+
+          const value = yield* decodeBody(new TextDecoder().decode(body)).pipe(
+            Effect.mapError((error) => undecodable(error)),
+          )
+
+          return value
+        })
+
+      const commandId = (request: HttpServerRequest.HttpServerRequest) => {
+        const header = Headers.get(request.headers, "idempotency-key")
+
+        if (Option.isNone(header)) return undefined
+
+        const value = header.value.trim()
+
+        return QUOTED.exec(value)?.[1] ?? value
+      }
+
+      const success = Effect.fnUntraced(function* (member: ServedMember, value: string) {
+        if (SchemaAST.isVoid(member.output.ast)) return HttpServerResponse.empty({ status: 204 })
+        const decoded = yield* decodeSuccess(value).pipe(Effect.orDie)
+
+        return decoded.value === undefined
+          ? HttpServerResponse.empty({ status: 204 })
+          : HttpServerResponse.jsonUnsafe(decoded.value, { status: 200 })
+      })
+
+      const outcomeResponse = (member: ServedMember, outcome: Outcome) =>
+        Match.value(outcome).pipe(
+          Match.tagsExhaustive({
+            Success: (success_) => success(member, success_.value),
+            Failure: (failure) =>
+              Effect.gen(function* () {
+                const status = yield* member.failureStatus(failure.value)
+                const body = yield* decodeDeclared(failure.value)
+
+                return HttpServerResponse.jsonUnsafe(body, { status })
+              }).pipe(Effect.orDie),
+            Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
+          }),
+        )
+
+      const memberHandler = (definition: ServedDefinition, member: ServedMember) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+
+          const authenticated = yield* authenticate(request)
+          const isQuery = member.kind === "query"
+          const key = isQuery ? "" : commandId(request)
+
+          if (key === undefined) return yield* invalidInput("missing_command_id")
+
+          const body = yield* readBody(request)
+
+          const payload = yield* member
+            .payload(body)
+            .pipe(Effect.mapError((error) => undecodable(error)))
+
+          const call = Request.make({
+            ref: ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id }),
+            caller: authenticated.caller,
+            command: member.tag,
+            commandId: key,
+            payload,
+          })
+
+          if (isQuery) return yield* outcomeResponse(member, yield* actors.query(call))
+
+          // Accepted work continues if the client disconnects: the turn runs
+          // in the layer's scope, and only the wait is interrupted.
+          const fiber = yield* actors.execute(call).pipe(Effect.exit, Effect.forkIn(scope))
+          const exit = yield* Fiber.join(fiber)
+
+          if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
+
+          return yield* outcomeResponse(member, exit.value)
+        })
+
+      const requestId =
+        (member: ServedMember) =>
+        (request: HttpServerRequest.HttpServerRequest): Record<string, string> => {
+          if (member.kind === "query") return {}
+
+          const key = commandId(request)
+
+          return key === undefined ? {} : { "x-request-id": key }
+        }
+
+      for (const definition of definitions)
+        for (const member of definition.members)
+          yield* router.add(
+            "POST",
+            `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
+            respond(memberHandler(definition, member), requestId(member)),
+          )
+
+      yield* router.add(
+        "GET",
+        `${basePath}/protocol` as HttpRouter.PathInput,
+        respond(() =>
+          Effect.succeed(
+            HttpServerResponse.jsonUnsafe({
+              protocol: PROTOCOL,
+              retryWindowMs: actors.retryWindowMs,
+              now: clock.now(),
+            }),
+          ),
+        ),
+      )
+
+      yield* router.add(
+        "POST",
+        `${basePath}/command-ids` as HttpRouter.PathInput,
+        respond((request) =>
+          Effect.gen(function* () {
+            yield* authenticate(request)
+
+            return HttpServerResponse.jsonUnsafe({ commandId: yield* actors.mintCommandId })
+          }),
+        ),
+      )
+
+      const preflight = HttpServerResponse.empty({
+        status: 204,
+        headers: {
+          "access-control-allow-methods": "GET, POST",
+          "access-control-allow-headers": ALLOWED_HEADERS,
+          "access-control-max-age": "600",
+        },
+      })
+
+      const fallback = respond((request) =>
+        request.method === "OPTIONS" ? Effect.succeed(preflight) : invalidInput("unknown_route"),
+      )
+
+      yield* router.add("*", `${basePath}/actors/*` as HttpRouter.PathInput, fallback)
+      yield* router.add("OPTIONS", `${basePath}/*` as HttpRouter.PathInput, fallback)
+
+      if (options.openapi !== undefined) {
+        const spec = document({
+          api,
+          auth: options.auth,
+          title: options.openapi.title ?? "durable-actors",
+          version: options.openapi.version ?? "1",
+        })
+
+        yield* router.add(
+          "GET",
+          `${basePath}${options.openapi.path}` as HttpRouter.PathInput,
+          respond(() => Effect.succeed(HttpServerResponse.jsonUnsafe(spec))),
+        )
+      }
+    }),
+  )

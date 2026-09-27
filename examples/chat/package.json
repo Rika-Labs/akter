@@ -3,10 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
   },
   "dependencies": {
+    "@effect/platform-bun": "catalog:",
     "durable-actors": "workspace:*",
     "effect": "catalog:"
   }

@@ -62,6 +62,8 @@ export interface Options {
     readonly caller: Caller
     readonly ref: ActorRef
     readonly command: string
+    /** `command` for commands and reducers, `query` for queries. */
+    readonly kind: "command" | "query"
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
@@ -133,8 +135,11 @@ export const layer = (options: Options) => {
       // group reads may only touch these, never other Actor.table values.
       const checked = new Set<AnyOwnedTable>()
 
-      const allow = Effect.fnUntraced(function* (request: Request) {
-        if (!(yield* options.authorize(request)))
+      const allow = Effect.fnUntraced(function* (
+        request: Request,
+        kind: "command" | "query" = "command",
+      ) {
+        if (!(yield* options.authorize({ ...request, kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
@@ -320,11 +325,30 @@ export const layer = (options: Options) => {
       yield* relay.run.pipe(Effect.forkIn(scope))
       const outbox = { retryWindowMs, wake: relay.wake }
 
+      const databaseNow = databaseTime.pipe(
+        Effect.provideContext(services),
+        Effect.catchIf(SqlError.isSqlError, (cause) =>
+          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+        ),
+      )
+
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+        retryWindowMs,
+        databaseNow,
+        mintCommandId: Effect.gen(function* () {
+          const now = yield* databaseNow
+          const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+
+          return `v1.${now}.${now + retryWindowMs}.${uuid}`
+        }),
         tables: (scope, write) =>
           bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
         blobs: (scope, write) => bindBlobs(scope, write).pipe(Effect.provideContext(services)),
+        registered: (actor) => ({
+          commands: registrations.has(actor),
+          queries: queryRegistrations.has(actor),
+        }),
         declaredBlobs: (actor) =>
           (registrations.get(actor) ?? queryRegistrations.get(actor))?.blobs.map(
             (blob) => blob.name,
@@ -394,7 +418,7 @@ export const layer = (options: Options) => {
                 reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
               })
 
-            yield* allow(request)
+            yield* allow(request, "query")
             const sql = yield* SqlClient.SqlClient
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
@@ -431,7 +455,7 @@ export const layer = (options: Options) => {
 
             // Access can be revoked while the handler runs; like a command's
             // outcome, a query result is released only to a caller still allowed.
-            yield* allow(request)
+            yield* allow(request, "query")
 
             return outcome
           },

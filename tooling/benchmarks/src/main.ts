@@ -18,6 +18,7 @@ import { coldActivation } from "./scenarios/cold-activation.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
+import { http } from "./scenarios/http.ts"
 import { ownedRows } from "./scenarios/storage/owned-rows.ts"
 import { multiRunner } from "./scenarios/multi-runner.ts"
 import { outbox } from "./scenarios/outbox.ts"
@@ -46,6 +47,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   blobs,
   reducers,
   capacity,
+  http,
 ]
 
 /**

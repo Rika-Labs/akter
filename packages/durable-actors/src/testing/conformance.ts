@@ -16,6 +16,7 @@ import { Actor, Actors, CurrentCaller, User } from "../index.ts"
 import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
+import type { InternalActors } from "../handles/actors.ts"
 import { ActorTest } from "./actor-test.ts"
 import { admissionConformance, admissionLayer, payloadHash } from "./conformance/admission.ts"
 import { capacityConformance } from "./conformance/capacity.ts"
@@ -47,6 +48,7 @@ import {
   type FoundationFixture,
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
+import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import {
   outboxConformance,
@@ -100,7 +102,12 @@ export interface ConformanceConnection {
 }
 
 /** Services every `environment.run` effect may require; Scope is provided. */
-export type ConformanceServices = Actors | ActorTest | SqlClient.SqlClient | Crypto.Crypto
+export type ConformanceServices =
+  | Actors
+  | InternalActors
+  | ActorTest
+  | SqlClient.SqlClient
+  | Crypto.Crypto
 
 export type ConformanceRuntime = ManagedRuntime.ManagedRuntime<ConformanceServices, never>
 
@@ -284,6 +291,7 @@ const makeFixture = (): ConformanceFixture => ({
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
   ...admissionConformance,
+  ...httpConformance,
   ...capacityConformance,
   ...heapConformance,
   ...eventsConformance,
@@ -909,12 +917,15 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
               reason: CommandExpired.make({ commandId: id }),
             })
           expect(yield* checkIdentity(id, 5000, 999).pipe(Effect.flip)).toMatchObject({
-            reason: InvalidCommandId.make({ commandId: id }),
+            reason: InvalidCommandId.make({ commandId: id, code: "future" }),
           })
           expect(
             yield* checkIdentity(id.replace("6000", "7000"), 5000, 1000).pipe(Effect.flip),
           ).toMatchObject({
-            reason: InvalidCommandId.make({ commandId: id.replace("6000", "7000") }),
+            reason: InvalidCommandId.make({
+              commandId: id.replace("6000", "7000"),
+              code: "window",
+            }),
           })
           const counter = yield* Counter.get("expiry-first")
           const before = fixture.executions
@@ -1243,6 +1254,7 @@ export const describeConformance = (options: {
     CounterReads(fixture),
     foundationLayer(fixture.foundation),
     admissionLayer,
+    httpLayer,
     eventsLayer(fixture.events),
     eventsQueryLayer(fixture.events),
     reducerLayer,

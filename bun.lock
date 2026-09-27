@@ -77,6 +77,7 @@
     "examples/chat": {
       "name": "@durable-actors/chat",
       "dependencies": {
+        "@effect/platform-bun": "catalog:",
         "durable-actors": "workspace:*",
         "effect": "catalog:",
       },

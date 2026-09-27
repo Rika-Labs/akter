@@ -65,6 +65,7 @@ Every feature ships with a scenario. A pull request that adds a durable mechanis
 | Retained heap per actor                        | #45          | `retained-heap`                              |
 | Multi-runner harness (`ActorTest.cluster`)     | #76          | `multi-runner`                               |
 | Blobs                                          | #61          | `blobs`, which lands with #61                |
+| Served HTTP (`Actor.serve`)                    | #92          | `http`                                       |
 
 ### Adding a scenario
 
