@@ -15,11 +15,13 @@ import {
   gate,
   HttpLobby,
   HttpRoom,
+  HttpTally,
   HttpTicket,
   receipts,
   runs,
   serveHttp,
   tenantOf,
+  TooMany,
 } from "./http.ts"
 
 const baseFetch = globalThis.fetch.bind(globalThis)
@@ -94,6 +96,146 @@ const json = (status: number, body: Schema.Json) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
 export const clientConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "client applies a reducer at once and converges on each committed reply, reapplying later pending inputs",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+
+          const options = {
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+          }
+
+          const tallies = HttpTally.client(options)
+          const tally = tallies.get("converge")
+          const seen: Array<unknown> = []
+          tally.state.subscribe((state) => seen.push(state))
+
+          expect(tallies.get("converge")).toBe(tally)
+          expect(tally.state.current).toBe(undefined)
+
+          // Unknown committed state stays unknown until the first reply.
+          const unseen = tally.Add({ by: 1 })
+          expect(tally.state.current).toBe(undefined)
+          expect(tally.state.pending).toEqual([{ member: "Add", input: { by: 1 } }])
+          expect(yield* Effect.promise(() => unseen)).toEqual({ count: 1 })
+          expect(tally.state.current).toEqual({ count: 1 })
+
+          // Another writer commits; the handle's next reply brings its change in.
+          yield* Effect.promise(() => HttpTally.client(options).get("converge").Add({ by: 4 }))
+
+          const input = { by: 2 }
+          const first = tally.Add(input)
+          input.by = 7
+          const second = tally.Add({ by: 3 })
+
+          expect(tally.state.current).toEqual({ count: 6 })
+          expect(tally.state.pending.map((pending) => pending.input)).toEqual([
+            { by: 2 },
+            { by: 3 },
+          ])
+
+          expect(yield* Effect.promise(() => first)).toEqual({ count: 7 })
+          expect(tally.state.current).toEqual({ count: 10 })
+          expect(tally.state.pending.length).toBe(1)
+          expect(yield* Effect.promise(() => second)).toEqual({ count: 10 })
+          expect(tally.state.current).toEqual({ count: 10 })
+          expect(tally.state.pending).toEqual([])
+          expect(yield* Effect.promise(() => tally.Snapshot())).toEqual({ count: 10 })
+          expect(seen).toEqual([
+            undefined,
+            { count: 1 },
+            { count: 3 },
+            { count: 6 },
+            { count: 10 },
+            { count: 10 },
+          ])
+        }),
+      ),
+  },
+  {
+    name: "client rolls back an optimistic reducer the server rejects and keeps later pending inputs",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+
+          const options = {
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+          }
+
+          const tally = HttpTally.client(options).get("rejected")
+
+          tally.state.reconcile(yield* Effect.promise(() => tally.Snapshot()))
+          expect(tally.state.current).toEqual({ count: 0 })
+
+          // Committed elsewhere, so the handle's copy of committed state is stale.
+          yield* Effect.promise(() => HttpTally.client(options).get("rejected").Add({ by: 8 }))
+
+          const rejected = tally.Add({ by: 5 })
+          const after = tally.Add({ by: 1 })
+
+          expect(tally.state.current).toEqual({ count: 6 })
+
+          const outcome = yield* settle(() => rejected)
+
+          expect(outcome.ok).toBe(false)
+          expect(outcome.ok ? undefined : outcome.error).toBeInstanceOf(TooMany)
+          expect(tally.state.current).toEqual({ count: 1 })
+          expect(tally.state.pending).toEqual([{ member: "Add", input: { by: 1 } }])
+
+          expect(yield* Effect.promise(() => after)).toEqual({ count: 9 })
+          expect(tally.state.current).toEqual({ count: 9 })
+          expect(tally.state.pending).toEqual([])
+          expect(yield* Effect.promise(() => tally.Snapshot())).toEqual({ count: 9 })
+        }),
+      ),
+  },
+  {
+    name: "client applies a commutative reducer to committed state on its void receipt, once across a lost response",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          let dropped = false
+
+          const wire = recording((sent) => {
+            if (dropped || !sent.path.endsWith("/Bump")) return undefined
+            dropped = true
+
+            return "drop"
+          })
+
+          const tally = HttpTally.client({
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+            fetch: wire.fetch,
+          }).get("commutative")
+
+          tally.state.reconcile({ count: 0 })
+
+          const bumps = [tally.Bump(), tally.Bump(), tally.Bump()]
+
+          expect(tally.state.current).toEqual({ count: 3 })
+          expect(yield* Effect.promise(() => Promise.all(bumps))).toEqual([
+            undefined,
+            undefined,
+            undefined,
+          ])
+          expect(tally.state.current).toEqual({ count: 3 })
+          expect(tally.state.pending).toEqual([])
+          expect(wire.commands("Bump").length).toBe(4)
+          expect(new Set(keysOf(wire.commands("Bump"))).size).toBe(3)
+          expect(yield* Effect.promise(() => tally.Snapshot())).toEqual({ count: 3 })
+        }),
+      ),
+  },
   {
     name: "client retries with the body it first sent, even if the caller mutates the input",
     run: ({ expect, environment }) =>

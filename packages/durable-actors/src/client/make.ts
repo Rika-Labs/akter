@@ -10,7 +10,7 @@ import {
   Schema,
   SchemaAST,
 } from "effect"
-import type { ServedDefinition, ServedMember } from "../actor/served.ts"
+import type { ServedDefinition, ServedMember, StateValue } from "../actor/served.ts"
 import {
   ActorError,
   InvalidCommandId,
@@ -21,6 +21,7 @@ import {
 } from "../errors/actor.ts"
 import type { AnyMember, MemberRecord } from "../members/command.ts"
 import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
+import { Optimistic, type PendingInput } from "./optimistic.ts"
 import {
   decodeFailure,
   decodeSuccess,
@@ -70,23 +71,46 @@ type Call<M extends AnyMember> = M["input"]["Type"] extends void
       options?: M["kind"] extends "query" ? QueryOptions : CommandOptions,
     ) => Promise<M["output"]["Type"]>
 
-/** One actor over HTTP: each public member as a Promise-returning method. */
-export type ClientHandle<Members extends MemberRecord, Id = string> = {
-  readonly [K in keyof Members]: Call<Members[K]>
-} & { readonly ref: { readonly actor: string; readonly id: Id } }
+/**
+ * A handle's view of its actor's state: the committed state it last learned,
+ * from a reducer's reply or `reconcile`, with its pending reducer inputs applied.
+ */
+export interface ClientState<State> {
+  /** Committed state plus pending inputs; undefined until committed state is known. */
+  readonly current: State | undefined
+  /** Reducer inputs applied ahead of their receipts, in call order. */
+  readonly pending: ReadonlyArray<PendingInput>
+  /** Calls `listener` with `current` after each change; returns the unsubscribe. */
+  readonly subscribe: (listener: (state: State | undefined) => void) => () => void
+  /** Replaces the committed state, e.g. with one a query read, and reapplies pending inputs. */
+  readonly reconcile: (committed: State) => void
+}
 
-export type ActorClient<Members extends MemberRecord, Kind extends ServedDefinition["key"], Id> = {
+/** One actor over HTTP: each public member as a Promise-returning method. */
+export type ClientHandle<Members extends MemberRecord, Id = string, State = unknown> = {
+  readonly [K in keyof Members]: Call<Members[K]>
+} & {
+  readonly ref: { readonly actor: string; readonly id: Id }
+  readonly state: ClientState<State>
+}
+
+export type ActorClient<
+  Members extends MemberRecord,
+  Kind extends ServedDefinition["key"],
+  Id,
+  State = unknown,
+> = {
   /** A fresh command id, for a caller that saves it before sending the command. */
   readonly commandId: () => Promise<string>
 } & (Kind extends "singleton"
-  ? { readonly get: () => ClientHandle<Members> }
+  ? { readonly get: () => ClientHandle<Members, string, State> }
   : Kind extends "minted"
     ? {
-        readonly get: (id: Id) => ClientHandle<Members, Id>
+        readonly get: (id: Id) => ClientHandle<Members, Id, State>
         /** A handle to a new actor whose UUIDv7 id is minted here; it exists once a command reaches it. */
-        readonly create: () => ClientHandle<Members, Id>
+        readonly create: () => ClientHandle<Members, Id, State>
       }
-    : { readonly get: (id: Id) => ClientHandle<Members, Id> })
+    : { readonly get: (id: Id) => ClientHandle<Members, Id, State> })
 
 const DEFAULT_TIMEOUT_MS = 60_000
 
@@ -95,6 +119,8 @@ const MAX_BACKOFF_MS = 2_000
 const MINTED_LIMIT = 1_024
 
 const ORIGIN_LIMIT = 64
+
+const HANDLE_LIMIT = 1_024
 
 /** State every client of one base URL shares: the database clock, the retry window, and the token. */
 interface Origin {
@@ -320,6 +346,9 @@ const declaredDecoder = (member: ServedMember) => {
   return decode
 }
 
+const decodeInputCopy = (member: ServedMember) =>
+  Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.toCodecJson(member.input)))
+
 const isVoidInput = (member: ServedMember) =>
   SchemaAST.isVoid(member.input.ast) || SchemaAST.isUndefined(member.input.ast)
 
@@ -509,93 +538,188 @@ export const clientOf =
       return Effect.runPromise(Effect.raceFirst(bounded, aborted))
     }
 
-    const method =
-      (member: ServedMember, segment: Effect.Effect<string, ActorError>) =>
-      (...args: ReadonlyArray<unknown>) => {
-        const isVoid = isVoidInput(member)
-        const call: CommandOptions = (isVoid ? args[0] : args[1]) ?? {}
-        const isQuery = member.kind === "query"
-        let commandId = isQuery ? undefined : call.commandId
+    /** Encodes one call's input now and returns what sends it, with a decoded copy of that input. */
+    const prepare = (
+      member: ServedMember,
+      segment: Effect.Effect<string, ActorError>,
+      args: ReadonlyArray<unknown>,
+    ) => {
+      const isVoid = isVoidInput(member)
+      const call: CommandOptions = (isVoid ? args[0] : args[1]) ?? {}
+      const isQuery = member.kind === "query"
+      let commandId = isQuery ? undefined : call.commandId
 
-        // Encoded once at call time, so every attempt under one id sends the same bytes.
-        const body = Effect.runSyncExit(
-          Schema.encodeUnknownEffect(Schema.toCodecJson(member.input))(
-            isVoid ? undefined : args[0],
-          ).pipe(
-            Effect.flatMap((json) =>
-              json === undefined ? Effect.succeedNone : Effect.asSome(encodeJson(json)),
-            ),
-            Effect.mapError(invalid),
+      // Encoded once at call time, so every attempt under one id sends the same bytes.
+      const body = Effect.runSyncExit(
+        Schema.encodeUnknownEffect(Schema.toCodecJson(member.input))(
+          isVoid ? undefined : args[0],
+        ).pipe(
+          Effect.flatMap((json) =>
+            json === undefined ? Effect.succeedNone : Effect.asSome(encodeJson(json)),
           ),
-        )
+          Effect.mapError(invalid),
+        ),
+      )
 
-        const decode = outputDecoder(member)
+      const decode = outputDecoder(member)
 
-        const admitted = (failure: Failure) => {
-          const use = commandId === undefined ? undefined : origin.minted.get(commandId)
+      const admitted = (failure: Failure) => {
+        const use = commandId === undefined ? undefined : origin.minted.get(commandId)
 
-          if (use === undefined) return failure
+        if (use === undefined) return failure
 
-          if (!refusedBeforeTurn(failure)) use.admitted = true
+        if (!refusedBeforeTurn(failure)) use.admitted = true
 
-          if (!isFramework(failure) || !isInvalidCommandId(failure.reason)) return failure
+        if (!isFramework(failure) || !isInvalidCommandId(failure.reason)) return failure
 
-          return ActorError.make({
-            reason: InvalidCommandId.make({
-              commandId: failure.reason.commandId,
-              code: failure.reason.code,
-              neverAdmitted: !use.admitted && use.inFlight === 0,
-            }),
-          })
-        }
-
-        const attempt = Effect.gen(function* () {
-          const path = `/actors/${definition.name}${yield* segment}/${member.tag}`
-          const payload = Option.getOrUndefined(yield* body)
-
-          if (!isQuery && commandId === undefined) commandId = yield* mint
-
-          const headers: Record<string, string> = {}
-
-          if (payload !== undefined) headers["content-type"] = "application/json"
-
-          if (commandId !== undefined) headers["idempotency-key"] = commandId
-
-          const token = origin.token.value
-
-          if (isQuery && token !== undefined) headers["durable-min-version"] = token
-
-          const use = commandId === undefined ? undefined : origin.minted.get(commandId)
-
-          const reply = yield* tracked(use, send({ method: "POST", path, body: payload, headers }))
-
-          if (isOk(reply)) {
-            if (use !== undefined) use.admitted = true
-
-            return yield* decodeSuccess(decode)(reply)
-          }
-
-          const attempted: Attempted = {
-            failure: admitted(decodeFailure(declaredDecoder(member))(reply)),
-            reply,
-          }
-
-          return yield* Effect.fail(attempted)
-        }).pipe(
-          Effect.mapError((error): Attempted =>
-            "failure" in error ? error : { failure: admitted(error), reply: undefined },
-          ),
-        )
-
-        return withRetries(attempt, call, () => commandId)
+        return ActorError.make({
+          reason: InvalidCommandId.make({
+            commandId: failure.reason.commandId,
+            code: failure.reason.code,
+            neverAdmitted: !use.admitted && use.inFlight === 0,
+          }),
+        })
       }
 
-    const handle = (id: string, segment: Effect.Effect<string, ActorError>) => ({
-      ...Object.fromEntries(
-        definition.members.map((member) => [member.tag, method(member, segment)]),
-      ),
-      ref: { actor: definition.name, id },
-    })
+      const attempt = Effect.gen(function* () {
+        const path = `/actors/${definition.name}${yield* segment}/${member.tag}`
+        const payload = Option.getOrUndefined(yield* body)
+
+        if (!isQuery && commandId === undefined) commandId = yield* mint
+
+        const headers: Record<string, string> = {}
+
+        if (payload !== undefined) headers["content-type"] = "application/json"
+
+        if (commandId !== undefined) headers["idempotency-key"] = commandId
+
+        const token = origin.token.value
+
+        if (isQuery && token !== undefined) headers["durable-min-version"] = token
+
+        const use = commandId === undefined ? undefined : origin.minted.get(commandId)
+
+        const reply = yield* tracked(use, send({ method: "POST", path, body: payload, headers }))
+
+        if (isOk(reply)) {
+          if (use !== undefined) use.admitted = true
+
+          return yield* decodeSuccess(decode)(reply)
+        }
+
+        const attempted: Attempted = {
+          failure: admitted(decodeFailure(declaredDecoder(member))(reply)),
+          reply,
+        }
+
+        return yield* Effect.fail(attempted)
+      }).pipe(
+        Effect.mapError((error): Attempted =>
+          "failure" in error ? error : { failure: admitted(error), reply: undefined },
+        ),
+      )
+
+      const input = Exit.isSuccess(body)
+        ? Option.getOrUndefined(
+            Exit.getSuccess(
+              Effect.runSyncExit(
+                Option.match(body.value, {
+                  onNone: () => Effect.void,
+                  onSome: (json) => decodeInputCopy(member)(json),
+                }),
+              ),
+            ),
+          )
+        : undefined
+
+      return {
+        input: Exit.isSuccess(body) ? Option.some(input) : Option.none(),
+        send: () => withRetries(attempt, call, () => commandId),
+      }
+    }
+
+    const method =
+      (member: ServedMember, segment: Effect.Effect<string, ActorError>, store: Optimistic) =>
+      (...args: ReadonlyArray<unknown>) => {
+        const { input, send } = prepare(member, segment, args)
+        const reducer = member.reducer
+
+        if (reducer === undefined || Option.isNone(input)) return send()
+
+        const entry = { member: member.tag, input: input.value, reducer }
+        store.add(entry)
+
+        // One at a time, so each reply is the committed state before every later pending input.
+        const settled = store.queue.then(send)
+        store.queue = settled.then(
+          () => undefined,
+          () => undefined,
+        )
+
+        // Registered before the caller's own callbacks, so the view has settled when they run.
+        void settled.then(
+          (value) => {
+            store.confirm(
+              entry,
+              reducer.commutative || !Predicate.isObject(value) ? undefined : value,
+            )
+          },
+          () => {
+            store.drop(entry)
+          },
+        )
+
+        return settled
+      }
+
+    const handles = new Map<string, object>()
+    const stores = new Map<string, Optimistic>()
+
+    const handle = (id: string, segment: Effect.Effect<string, ActorError>) => {
+      const existing = handles.get(id)
+      const existingStore = stores.get(id)
+
+      if (existing !== undefined && existingStore !== undefined) {
+        handles.delete(id)
+        handles.set(id, existing)
+
+        return existing
+      }
+
+      const store = new Optimistic()
+
+      const created = {
+        ...Object.fromEntries(
+          definition.members.map((member) => [member.tag, method(member, segment, store)]),
+        ),
+        ref: { actor: definition.name, id },
+        state: {
+          get current() {
+            return store.state
+          },
+          get pending() {
+            return store.pending
+          },
+          subscribe: (listener: (state: StateValue | undefined) => void) =>
+            store.subscribe(listener),
+          reconcile: (committed: StateValue) => store.reconcile(committed),
+        },
+      }
+
+      handles.set(id, created)
+      stores.set(id, store)
+
+      // Past the limit, the least recently used handle with nothing pending and no listener goes.
+      if (handles.size > HANDLE_LIMIT)
+        for (const key of handles.keys())
+          if (stores.get(key)?.isIdle === true) {
+            handles.delete(key)
+            stores.delete(key)
+            break
+          }
+
+      return created
+    }
 
     const keyed = (id: string) =>
       handle(
