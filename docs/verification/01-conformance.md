@@ -363,6 +363,29 @@ Real SIGKILL on Postgres, in the pattern of `crash/turns/main.test.ts`: a child 
 
 **Executed 2026-09-27 (T4b, branch `test/63-sigkill-coverage` merged with `main` at `2186292`, which includes the T4 shard-refresh fix):** Bun 1.4.2, Node 26.7.0 for oxlint, and disposable Postgres 18.6. `bun run check` passed 57/57 tasks, with `durable-actors` tests at 149 passed and 22 cases skipped on PGlite. `bun run --filter durable-actors test:integration` passed 149 Postgres tests, 24 of them in `crash/` (`crash/turns/` and `crash/delivery/`): migration rollback and 23 real SIGKILL recoveries — eleven new here (four reducer, two owned-row declared-failure, two blob declared-failure, three dead-letter) and the twelve existing command, owned-row, blob, relay, and effect cases. The statement-count gate matched `benchmarks/baselines/statements.json`. Local results do not substitute for the CI evidence artifact of the pushed revision.
 
+### Connections and parking (M2.10)
+
+The cases live in [`conformance/connections.ts`](../../packages/durable-actors/src/testing/conformance/connections.ts). Connections open through `ActorTest.connect`, which the runner's in-process holder holds; the owner keeps each session in `actor_connections` (migration `0014_connections`) under the actor's generation fence. `Actor.stream` and `read.follow` are the second M2.10 pull request and have no cases yet.
+
+Shared (PGlite and Postgres):
+
+- `connection opens, answers frames in order, stores its session, and leaves no row once closed` — frames are handled in order, the session and `frame_seq` are stored on the row, and closing deletes it.
+- `a declared open failure rejects the connection and stores nothing` — `connect` fails with the declared error and no row is written.
+- `a parked connection survives hibernation and its next frame wakes the actor with the stored session` — gate **Connection park** and failure-matrix row **Parked connection wakes**: the frame acquires a newer generation, restores the session, and sees `resumed === true`.
+- `hibernating before the owner sends anything seals the holder, so the next frame resyncs nothing` — three hibernations right after open; each next message is an application frame, never `Resync`.
+- `a turn's broadcast wakes a parked actor, flushes only after commit, and carries cursor stamps` — row **Trigger wakes a parked actor that broadcasts**: a refused turn's broadcast never reaches the connection; a committed one does, stamped with the flushed-through cursor, and the next turn's stamp is later.
+- `a denied reauthorization ends the session with access_denied and never wakes the actor` — row **Live or parked session loses authorization**: the holder's periodic check denies, the session ends with `Unauthorized` `access_denied`, the generation does not move, and the row is deleted.
+- `a session with no successful reauthorization by its bound ends with reauthorization_unavailable` — a check that keeps failing ends the session at `reauthorizeEvery`.
+- `a connection that falls 1,024 frames behind ends with SlowConsumer and resync` — row **Outbound buffer overflows or broadcast gap**.
+
+Postgres only (on the harness, two runners, 3-second shard locks):
+
+- `an ungraceful owner death resyncs a held connection in place from its flushed-through cursor` — row **Owner runner dies ungracefully with open connections**: runner 0 holds the connection to an actor runner 1 owns; after `cluster.kill(1)` the socket stays open, the holder sends `Resync` with the last flushed-through cursor, the new owner's `resync` replays the events after it, and `ResyncReplayed` follows.
+
+Not yet covered by an executable case: cross-runner wake of a parked actor by an intent, timer, or subscription delivery (ADR 0023 Q3 beyond commands), an owner killed between commit and flush with events past the cursor (C4), the three-resyncs-in-five-minutes close, and the 16 KiB session limit.
+
+**Executed 2026-09-27 (M2.10 part 1, branch `feat/53-connections` merged with `main` at `0ba95fc`):** Bun 1.4.2 and disposable Postgres 18.6. The connection cases pass on PGlite and Postgres; see the pull request for the full `bun run check` and `test:integration` counts. `benchmarks/results/2026-09-27-8fa18f1-connections-*.json` hold the `connections` scenario.
+
 ## Faithful test boundary
 
 `ActorTest` MUST exercise the real turn, Cluster entity, SQL tables, serialization, receipts, and outbox. There is no handler-only fake-context runtime. Only the database, transport, clock, executor implementations, and caller are substituted. Use production `SqlMessageStorage` on the test transaction connection, not in-memory message storage whose writes could survive a rolled-back turn. On PGlite, Cluster runner bookkeeping additionally moves to memory because `SqlRunnerStorage` would reserve the sole connection; message storage, migrations, and receipts stay in SQL and this substitution is only valid under `SingleRunner`.

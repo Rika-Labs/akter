@@ -91,6 +91,31 @@ export const RoomCommands = Room.toLayer(
       yield* Room.Turn
       yield* Effect.logWarning("moderation dead-lettered", dead.effectId)
     }),
+
+    // The connection parks between frames: the room hibernates while members stay connected.
+    Presence: {
+      open: Effect.fnUntraced(function* () {
+        const conn = yield* Room.Connection
+
+        const user = Option.match(conn.principal, {
+          onNone: () => "anonymous",
+          onSome: ({ subject }) => subject,
+        })
+
+        yield* conn.session.set({ user })
+      }),
+      frame: Effect.fnUntraced(function* ({ typing }: { readonly typing: boolean }) {
+        const conn = yield* Room.Connection
+        const session = yield* conn.session.get
+
+        const user = Option.match(session, {
+          onNone: () => "anonymous",
+          onSome: (stored) => stored.user,
+        })
+
+        yield* conn.broadcast({ user, typing }, { except: [conn.connectionId] })
+      }),
+    },
   }),
 )
 

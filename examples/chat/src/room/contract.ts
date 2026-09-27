@@ -57,6 +57,13 @@ export const React = Actor.reducer("React", {
   reduce: (state, n) => Result.succeed({ ...state, reactions: state.reactions + n }),
 })
 
+/** Who is typing. Frames reach connected clients only; nothing is stored. */
+export const Presence = Actor.connection("Presence", {
+  client: Schema.Struct({ typing: Schema.Boolean }),
+  server: Schema.Struct({ user: Schema.String, typing: Schema.Boolean }),
+  session: Schema.Struct({ user: Schema.String }),
+})
+
 export const Post = Actor.command("Post", {
   input: Schema.Struct({ body: Schema.String, file: Schema.optional(Schema.Uint8Array) }),
   output: Schema.String,
@@ -107,7 +114,7 @@ export const Room = Actor.make("Room", {
   blobs: [Attachments],
   events: [MessagePosted, RoomArchived],
   effects: [ModerateMessage],
-  api: { Post, Archive, Recent, History, Attachment, React },
+  api: { Post, Archive, Recent, History, Attachment, React, Presence },
   internal: { IdleCheck, Moderated, ModerationFailed },
   policy: {
     keepReceipts: "7 days",
