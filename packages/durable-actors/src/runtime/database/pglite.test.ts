@@ -137,6 +137,7 @@ describe("PGlite migrations", () => {
             [9, "blobs"],
             [10, "retention"],
             [11, "relay"],
+            [12, "workflows"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
             { blobs: "actor_blobs" },
@@ -165,6 +166,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [10, "retention"],
             [11, "relay"],
+            [12, "workflows"],
           ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
@@ -201,7 +203,10 @@ describe("PGlite migrations", () => {
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
               actor_type, actor_id, target_type, target_id, command, payload, caller)
             VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
-          expect(yield* migrate).toEqual([[11, "relay"]])
+          expect(yield* migrate).toEqual([
+            [11, "relay"],
+            [12, "workflows"],
+          ])
           expect(
             yield* sql`SELECT intent_id, due_at_ms::int AS due, scheduled_at_ms FROM actor_outbox`,
           ).toEqual([{ intent_id: "pending", due: 42, scheduled_at_ms: null }])
@@ -241,6 +246,7 @@ describe("PGlite migrations", () => {
             { migration_id: 9 },
             { migration_id: 10 },
             { migration_id: 11 },
+            { migration_id: 12 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

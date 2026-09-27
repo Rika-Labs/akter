@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { Counter, Snapshot } from "./contract.ts"
+import { Compute, Counter, Pause, Snapshot } from "./contract.ts"
 
 export const CounterLive = Layer.mergeAll(
   Counter.toLayer(
@@ -16,6 +16,11 @@ export const CounterLive = Layer.mergeAll(
         yield* (yield* Snapshot.intents(id)).Record(turn.state.count)
 
         return id
+      }),
+      Double: Effect.fnUntraced(function* ({ value }: { readonly value: number }) {
+        yield* Pause("1 minute")
+
+        return yield* Compute.run(value, (input) => Effect.succeed(input * 2))
       }),
     }),
   ),
