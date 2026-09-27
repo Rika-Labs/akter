@@ -294,7 +294,7 @@ export const migrator = (
 
   const registered = Object.keys(record).map((key) => Number(key.split("_")[0]))
 
-  return Effect.gen(function* () {
+  const refuseSkipped = Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
     const [table] = yield* sql<{
@@ -316,9 +316,14 @@ export const migrator = (
         message: `Migrations ${skipped.join(", ")} were never applied but migration ${latest} was; they would be skipped. Restore this database from before migration ${latest} or recreate it.`,
       })
     }
-
-    return yield* run
   })
+
+  // A concurrent runner with fewer migrations can commit a higher id between
+  // the first check and the migration lock, so the result is checked again.
+  return refuseSkipped.pipe(
+    Effect.andThen(run),
+    Effect.tap(() => refuseSkipped),
+  )
 }
 
 export const migrate = migrator(migrations)

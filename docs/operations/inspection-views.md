@@ -31,19 +31,21 @@ Adding a column at the end keeps a view's version. Any other change adds a new v
 
 Every view except `durable.views` starts with the actor's ownership columns: `tenant_id`, `actor_type`, `actor_id`, `routing_key` (`bigint`, an opaque shard key that every runtime index leads with), and `placement` (`'tenant'` or `'actor'`, the actor type's placement). Each `*_ms` column is milliseconds since the Unix epoch and has a `timestamptz` twin without the suffix.
 
-| View           | Further columns                                                                                                                                                              |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `actors`       | `generation` (`bigint`, activations that took authority), `created` (`boolean`, the creation command committed), `last_event_sequence` (`bigint`)                            |
-| `state`        | `key` (`text`), `value` (`bytea`, zstd-compressed JSON), `value_bytes` (`integer`)                                                                                           |
-| `receipts`     | `command_id`, `command`, `caller_key` (JSON array, below), `outcome_tag` (`'Success'` or `'Failure'`), `outcome` (JSON), `expires_at_ms`, `expires_at`                       |
-| `events`       | `sequence` (`bigint`), `event` (tag), `command_id`, `value` (`bytea`, zstd-compressed JSON), `value_bytes`, `emitted_at_ms`, `emitted_at`                                    |
-| `outbox`       | `intent_id`, `timer_key` (null for plain intents), `target_type`, `target_id`, `command`, `payload` (JSON), `caller` (JSON), `attempts`, `last_error`, `due_at_ms`, `due_at` |
-| `timers`       | `timer_key`, `intent_id`, `target_type`, `target_id`, `command`, `payload`, `caller`, `attempts`, `due_at_ms`, `due_at`                                                      |
-| `effects`      | `effect_id`, `effect` (effect name), `payload`, `caller`, `attempts`, `last_error`, `ambiguous` (last attempt's outcome unknown), `due_at_ms`, `due_at`                      |
-| `dead_letters` | `effect_id`, `effect`, `payload`, `attempts`, `cause`, `ambiguous`, `dead_at_ms`, `dead_at`                                                                                  |
-| `views`        | `view_name`, `version`                                                                                                                                                       |
+| View           | Further columns                                                                                                                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `actors`       | `generation` (`bigint`, activations that took authority), `created` (`boolean`, the creation command committed), `last_event_sequence` (`bigint`)                                          |
+| `state`        | `key` (`text`), `value` (`bytea`, zstd-compressed JSON), `value_bytes` (`integer`)                                                                                                         |
+| `receipts`     | `command_id`, `command`, `caller_key` (JSON array, below), `outcome_tag` (`'Success'` or `'Failure'`), `outcome` (JSON `text`), `expires_at_ms`, `expires_at`                              |
+| `events`       | `sequence` (`bigint`), `event` (tag), `command_id`, `value` (`bytea`, zstd-compressed JSON), `value_bytes`, `emitted_at_ms`, `emitted_at`                                                  |
+| `outbox`       | `intent_id`, `timer_key` (null for plain intents), `target_type`, `target_id`, `command`, `payload` (JSON `text`), `caller` (JSON `text`), `attempts`, `last_error`, `due_at_ms`, `due_at` |
+| `timers`       | `timer_key`, `intent_id`, `target_type`, `target_id`, `command`, `payload`, `caller`, `attempts`, `due_at_ms`, `due_at`                                                                    |
+| `effects`      | `effect_id`, `effect` (effect name), `payload`, `caller`, `attempts`, `last_error`, `ambiguous` (last attempt's outcome unknown), `due_at_ms`, `due_at`                                    |
+| `dead_letters` | `effect_id`, `effect`, `payload`, `attempts`, `cause`, `ambiguous`, `dead_at_ms`, `dead_at`                                                                                                |
+| `views`        | `view_name`, `version`                                                                                                                                                                     |
 
 A receipt's `caller_key` is the caller's replay identity, not the tagged caller object that `outbox`, `timers`, and `effects` show as `caller`: `["User", subject]`, `["Anonymous"]`, or `["System", source, [tenant, actor_type, actor_id] or null, on-behalf-of subject or null]`. Read the subject of a user command with `caller_key::jsonb ->> 1` where `caller_key::jsonb ->> 0 = 'User'`.
+
+The JSON columns (`caller_key`, `outcome`, `payload`, `caller`) are `text` holding JSON, as in the runtime tables; cast them to `jsonb` before using JSON operators, for example `outcome::jsonb -> 'value'` or `caller::jsonb ->> '_tag'`.
 
 While a relay attempt holds a row, its `due_at` is the end of that attempt's lease, not the original due time. A settled effect leaves `effects` and appears in `outbox` as an intent to its `onSuccess` or `onDeadLetter` route (and, when exhausted, in `dead_letters`).
 
@@ -109,8 +111,8 @@ SELECT tenant_id, actor_type, actor_id, timer_key, due_at FROM durable.timers
 WHERE timer_key LIKE '$cron:%' ORDER BY due_at_ms LIMIT 20;
 
 -- Largest stored state.
-SELECT actor_type, actor_id, sum(value_bytes) AS bytes FROM durable.state
-GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 20;
+SELECT tenant_id, actor_type, actor_id, sum(value_bytes) AS bytes FROM durable.state
+GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 20;
 ```
 
 Workflow executions are not in version 1; they arrive as new views after `0012_workflows`.

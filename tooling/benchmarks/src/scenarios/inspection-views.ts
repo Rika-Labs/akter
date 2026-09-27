@@ -20,7 +20,7 @@ const seed = Effect.fnUntraced(function* (actors: number) {
     VALUES ('Inspected', 'actor', 1) ON CONFLICT DO NOTHING`
   yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id,
       generation, created, event_sequence)
-    SELECT (i::bigint * 2654435761) % 9223372036854775807, 't' || (i % ${TENANTS}),
+    SELECT hashtextextended('t' || (i % ${TENANTS}) || '/' || i, 0), 't' || (i % ${TENANTS}),
       'Inspected', i::text, 1, true, 1
     FROM generate_series(1, ${actors}::int) AS i`
   yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id,

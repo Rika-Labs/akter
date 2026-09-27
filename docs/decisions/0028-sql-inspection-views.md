@@ -21,7 +21,7 @@ These facts from the shipped code shape the answer:
 - The outbox holds intents, keyed timers (`timer_key IS NOT NULL`), and effects (`kind = 'effect'`) in one table. A settled effect becomes an intent to its route in the same row.
 - There is no separate cron table: cron entries are keyed timers with `timer_key = '$cron:<expression>'` (ADR 0021), and each tick leaves a receipt.
 - Workflow tables arrive with `0012_workflows` (ADR 0022), which is not on `main` yet.
-- The Effect migrator applies ids in order and skips any id at or below the latest applied, so `0013` applies on a database that has no `0010`–`0012`. The framework refuses to start a database where a registered id below the latest applied one is missing, so a database that applied `0013` first fails loudly instead of skipping `0010`–`0012` without a word. That is why this migration merges after them.
+- The Effect migrator applies ids in order and skips any id at or below the latest applied, so `0013` applies on a database that has no `0010`–`0012`. The framework refuses to start a database where a registered id below the latest applied one is missing, checked both before and after the migrator runs, so a database that applied `0013` first fails loudly instead of skipping `0010`–`0012` without a word. That is why this migration merges after them.
 - RLS is optional and per table (contract 10); M4.5 will add the framework's policies.
 
 ## Decision
