@@ -8,6 +8,8 @@ export const VitestReport = Schema.fromJsonString(
       Schema.Struct({
         name: Schema.String,
         status: Schema.String,
+        /** The file's own error, e.g. at import or in a hook, or "" when it has none. */
+        message: Schema.String,
         assertionResults: Schema.Array(
           Schema.Struct({ fullName: Schema.String, status: Schema.String }),
         ),
@@ -20,6 +22,10 @@ export interface StressRun {
   readonly run: string
   /** Undefined when the run died before Vitest wrote its report. */
   readonly report: typeof VitestReport.Type | undefined
+  /** The suite's exit status, or undefined when it was not recorded. */
+  readonly status: number | undefined
+  /** Vitest reports unhandled errors only in its log, never in the JSON report. */
+  readonly unhandledErrors: boolean
 }
 
 export interface Flake {
@@ -33,25 +39,29 @@ export function tallyFlakes(runs: ReadonlyArray<StressRun>): ReadonlyArray<Flake
 
   const record = (name: string, run: string) => failed.set(name, [...(failed.get(name) ?? []), run])
 
-  for (const { run, report } of runs) {
+  for (const { run, report, status, unhandledErrors } of runs) {
+    const before = [...failed.values()].flat().length
+
+    if (unhandledErrors) record("(unhandled errors: see its log)", run)
+
     if (report === undefined) {
       record("(no report: the run died before Vitest finished)", run)
       continue
     }
-
-    const before = [...failed.values()].flat().length
 
     for (const file of report.testResults) {
       const cases = file.assertionResults.filter((test) => test.status === "failed")
 
       for (const test of cases) record(`${file.name} > ${test.fullName}`, run)
 
-      // A file that fails outside its cases, e.g. at import, names no case.
-      if (file.status === "failed" && cases.length === 0) record(`${file.name} (file failed)`, run)
+      // A file can fail outside its cases, e.g. at import or in a hook, as well as in them.
+      if (file.status === "failed" && (cases.length === 0 || file.message !== ""))
+        record(`${file.name} (file failed)`, run)
     }
 
-    // Vitest also fails a run for errors outside any file, e.g. an unhandled rejection.
-    if (!report.success && [...failed.values()].flat().length === before)
+    const nothingRecorded = [...failed.values()].flat().length === before
+
+    if (nothingRecorded && (!report.success || (status !== undefined && status !== 0)))
       record("(run failed without a failing case: see its log)", run)
   }
 
