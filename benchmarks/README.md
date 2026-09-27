@@ -73,6 +73,7 @@ Every feature ships with a scenario. A pull request that adds a durable mechanis
 | Blobs                                          | #61          | `blobs`, which lands with #61                        |
 | Retention, replay pages, emit budget           | #17          | `retention`, `events`                                |
 | `turn.mint`                                    | #69          | `mint`                                               |
+| Served HTTP (`Actor.serve`)                    | #92          | `http`                                               |
 
 ### Adding a scenario
 

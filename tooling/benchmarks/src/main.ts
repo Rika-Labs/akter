@@ -19,6 +19,7 @@ import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
 import { retention } from "./scenarios/retention.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
+import { http } from "./scenarios/http.ts"
 import { ownedRows } from "./scenarios/storage/owned-rows.ts"
 import { multiRunner } from "./scenarios/multi-runner.ts"
 import { outbox } from "./scenarios/outbox.ts"
@@ -50,6 +51,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   reducers,
   capacity,
   retention,
+  http,
   subscriptions,
   mint,
 ]
