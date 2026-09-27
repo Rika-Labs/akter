@@ -138,7 +138,9 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
           const malformed = "v1.1000.6000.\u0000"
           expect(
             yield* adder.Echo("text").pipe(Actor.commandId(malformed), Effect.flip),
-          ).toMatchObject({ reason: InvalidCommandId.make({ commandId: malformed }) })
+          ).toMatchObject({
+            reason: InvalidCommandId.make({ commandId: malformed, code: "malformed" }),
+          })
           const expired = "v1.1000.61000.17b3670b-3f17-4a9b-aade-037e1dd1bba8"
           expect(
             yield* adder.Echo("\u0000").pipe(Actor.commandId(expired), Effect.flip),

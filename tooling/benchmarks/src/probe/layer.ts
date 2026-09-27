@@ -30,6 +30,12 @@ const ProbeCommands = Probe.toLayer(
 
       return blob.length
     }),
+    Weigh: Effect.fnUntraced(function* (payload: string) {
+      const turn = yield* Probe.Turn
+      yield* turn.state.set({ count: turn.state.count + 1 })
+
+      return payload.length
+    }),
   }),
 )
 
