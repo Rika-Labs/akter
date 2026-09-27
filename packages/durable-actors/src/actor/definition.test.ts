@@ -504,6 +504,15 @@ describe("actor declarations", () => {
       }),
     ).toThrow("retry.times")
 
+    for (const progressEvery of ["49 millis", "60000.5 millis", "61 seconds"] as const)
+      expect(() =>
+        Actor.make("BadProgressEvery", {
+          effects: [Moderate],
+          api: { Post },
+          policy: { effects: { Moderate: { progressEvery } } },
+        }),
+      ).toThrow("progressEvery")
+
     Room.toEffectLayer(Effect.succeed({ Moderate: () => Effect.succeed({ flagged: true }) }))
     // @ts-expect-error an executor must return its effect's success type
     Room.toEffectLayer(Effect.succeed({ Moderate: () => Effect.succeed("flagged") }))
