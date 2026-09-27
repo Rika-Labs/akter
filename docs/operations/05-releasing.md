@@ -1,7 +1,7 @@
 # Releasing
 
-**Responsibility:** publish `@durable-actors/core` to npm and bootstrap the npm trusted publisher.  
-**Authority:** operational.  
+**Responsibility:** publish `@durable-actors/core` to npm and bootstrap the npm trusted publisher.
+**Authority:** operational.
 **Owner role:** API and release.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 

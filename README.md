@@ -20,7 +20,7 @@ Each run commits one increment and retries the same command Effect. `committed` 
 
 ## Install
 
-> **Alpha, single runner.** `0.1.0-alpha.0` is the first published build. Run one runtime process per database: multi-runner operation is not supported yet. APIs and stored formats may change between alphas without a migration path, so don't point it at data you need to keep.
+> **Alpha, single runner.** `0.1.0-alpha.0` is the first alpha release candidate; follow [the release procedure](docs/operations/05-releasing.md) for its publication status. Run one runtime process per database: multi-runner operation is not supported yet. APIs and stored formats may change between alphas without a migration path, so don't point it at data you need to keep.
 
 The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests). Effect, Drizzle and the Effect SQL drivers are peer dependencies pinned to the exact release candidates the framework is tested against, so install those versions beside it:
 
