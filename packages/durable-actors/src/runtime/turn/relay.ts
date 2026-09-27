@@ -302,8 +302,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const claim = sql`routing_key = ${routingKey} AND intent_id = ${row.intent_id}
       AND kind = 'intent' AND due_at_ms = ${BigInt(row.claimed_until)}`
 
-    let started = false
-
     const retryLater = (reason: string, cause: unknown) =>
       Effect.gen(function* () {
         // Intents have no retry limit; this warning and `attempts` are the operator signal.
@@ -329,7 +327,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       const request = decoded.success
       yield* hooks.at("afterClaim", request)
-      started = true
 
       const delivered = yield* deliver(request).pipe(Effect.result)
 
@@ -343,13 +340,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
       yield* hooks.at("beforeOutboxDelete", request)
       yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
     }).pipe(
-      // A row claimed but never handed to its receiver goes back at once on shutdown.
+      // An interrupted delivery (shutdown) makes its row due at once; a receiver
+      // that already committed it replays the receipt on redelivery.
       Effect.onInterrupt(() =>
-        started
-          ? Effect.void
-          : Effect.gen(function* () {
-              yield* sql`UPDATE actor_outbox SET due_at_ms = ${yield* outboxTime} WHERE ${claim}`
-            }).pipe(Effect.ignore),
+        Effect.gen(function* () {
+          yield* sql`UPDATE actor_outbox SET due_at_ms = ${yield* outboxTime} WHERE ${claim}`
+        }).pipe(Effect.ignore),
       ),
     )
   })
@@ -560,79 +556,83 @@ export const outboxRelay = Effect.fnUntraced(function* (
     return (yield* FiberSet.size(deliveries)) + (yield* FiberSet.size(attempts))
   })
 
+  // Uninterruptible so every row a claim returns reaches a fiber that can release it.
   const pass = lock
     .withPermit(
-      Effect.gen(function* () {
-        if (stopping) return { claimed: 0, backlog: false, quiet: true }
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          if (stopping) return { claimed: 0, backlog: false, quiet: true }
 
-        // Work runs only on fibers a pass starts, so none running now means
-        // nothing can stage rows after this claim reads.
-        const quiet = (yield* inFlight) === 0
+          // Work runs only on fibers a pass starts, so none running now means
+          // nothing can stage rows after this claim reads.
+          const quiet = (yield* inFlight) === 0
 
-        const slots = Math.min(
-          settings.deliveryConcurrency - (yield* FiberSet.size(deliveries)),
-          settings.passLimit,
-        )
-
-        const local = executors()
-        const permits = settings.executorConcurrency - (yield* FiberSet.size(attempts))
-        const claimedAt = yield* Clock.currentTimeNanos
-        const clock = yield* OutboxClock
-
-        const rows = yield* claimDue({
-          sql,
-          now: outboxNow(sql, clock.offsetMillis()),
-          intents:
-            slots > 0
-              ? {
-                  limit: slots,
-                  leaseMs: settings.claimLeaseMs(),
-                  maxBackoffMs: settings.maxBackoffMs,
-                }
-              : undefined,
-          effects:
-            permits > 0
-              ? { permits, leaseMs: settings.executorLeaseMs, executors: local }
-              : undefined,
-        })
-
-        const intents = rows.filter((row) => row.kind === "intent")
-        const effects = rows.filter((row) => row.kind === "effect")
-
-        if (slots > 0) more.intents = intents.length > 0 && intents[0]!.candidates > intents.length
-
-        if (permits > 0 && local.length > 0)
-          more.effects = effects.length > 0 && effects[0]!.candidates > effects.length
-
-        for (const row of intents)
-          yield* FiberSet.run(
-            deliveries,
-            deliverIntent(row).pipe(
-              logFailure("Outbox relay crashed settling a row"),
-              Effect.ensuring(freed("intents")),
-            ),
+          const slots = Math.min(
+            settings.deliveryConcurrency - (yield* FiberSet.size(deliveries)),
+            settings.passLimit,
           )
 
-        for (const row of effects) {
-          const registered = local.find(
-            ({ actor, effect }) => actor === row.actor_type && effect === row.command,
-          )!.registered
+          const local = executors()
+          const permits = settings.executorConcurrency - (yield* FiberSet.size(attempts))
+          const claimedAt = yield* Clock.currentTimeNanos
+          const clock = yield* OutboxClock
 
-          yield* FiberSet.run(
-            attempts,
-            runAttempt(row, registered, claimedAt).pipe(
-              logFailure("Effect attempt crashed before it settled"),
-              Effect.ensuring(freed("effects")),
-            ),
-          )
-        }
+          const rows = yield* claimDue({
+            sql,
+            now: outboxNow(sql, clock.offsetMillis()),
+            intents:
+              slots > 0
+                ? {
+                    limit: slots,
+                    leaseMs: settings.claimLeaseMs(),
+                    maxBackoffMs: settings.maxBackoffMs,
+                  }
+                : undefined,
+            effects:
+              permits > 0
+                ? { permits, leaseMs: settings.executorLeaseMs, executors: local }
+                : undefined,
+          })
 
-        return {
-          claimed: rows.length,
-          backlog: more.intents || more.effects,
-          quiet,
-        }
-      }),
+          const intents = rows.filter((row) => row.kind === "intent")
+          const effects = rows.filter((row) => row.kind === "effect")
+
+          if (slots > 0)
+            more.intents = intents.length > 0 && intents[0]!.candidates > intents.length
+
+          if (permits > 0 && local.length > 0)
+            more.effects = effects.length > 0 && effects[0]!.candidates > effects.length
+
+          for (const row of intents)
+            yield* FiberSet.run(
+              deliveries,
+              deliverIntent(row).pipe(
+                logFailure("Outbox relay crashed settling a row"),
+                Effect.ensuring(freed("intents")),
+              ),
+            )
+
+          for (const row of effects) {
+            const registered = local.find(
+              ({ actor, effect }) => actor === row.actor_type && effect === row.command,
+            )!.registered
+
+            yield* FiberSet.run(
+              attempts,
+              runAttempt(row, registered, claimedAt).pipe(
+                logFailure("Effect attempt crashed before it settled"),
+                Effect.ensuring(freed("effects")),
+              ),
+            )
+          }
+
+          return {
+            claimed: rows.length,
+            backlog: more.intents || more.effects,
+            quiet,
+          }
+        }),
+      ),
     )
     .pipe(Effect.provideContext(services))
 
@@ -666,7 +666,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     return yield* Effect.die(new Error("Outbox did not settle; intents keep producing due work"))
   }).pipe(Effect.orDie)
 
-  // Shutdown stops claims; unstarted intents release in their interrupt handler.
+  // Shutdown stops claims; interrupted deliveries release their rows in their interrupt handler.
   // Taking the lock lets a pass in progress hand its rows to fibers first, so they are interrupted and released.
   yield* Effect.addFinalizer(() =>
     lock.withPermit(

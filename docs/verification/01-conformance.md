@@ -248,6 +248,7 @@ The effect claim filters each bucket's probe on this runner's executors, where [
 Shared (PGlite and Postgres):
 
 - `releases claimed but unstarted rows on graceful shutdown` — a delivery paused at `afterClaim` is interrupted by a graceful stop; the row is due at once (not after the lease) with one claim counted, and the restarted runtime delivers it once.
+- `releases a claimed row whose delivery had not reached a receiver on graceful shutdown` — the same with the delivery paused at `beforeDelivery`, after the claim's `afterClaim`; the row is due at once and delivered once after restart. Any interrupted delivery releases its row; a receiver that already committed replays its receipt on redelivery.
 - `keeps scheduled_at_ms across claims while due_at_ms moves` — a claim and a failed delivery move `due_at_ms`; `scheduled_at_ms` keeps the `Intent.at` time.
 - `backs off a row whose settle dies by max(claim lease, backoff(attempts)) up to maxBackoff` — failure-matrix row **Relay settle dies on the same row repeatedly** on one runner: the first dead settle waits the 37-second lease, and a row at 12 attempts waits `maxBackoff` (256 s).
 - `dead-letters an already exhausted row with its recorded outcome` — a trigger refuses the dead-letter insert once after `RelayCallOnce`'s typed failure; the next claim fences without counting, and the dead letter has `attempts: 1` and `ambiguous: false`, with one provider call.

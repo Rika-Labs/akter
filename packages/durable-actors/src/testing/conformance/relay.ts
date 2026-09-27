@@ -1199,58 +1199,67 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
 ]
 
+const releasesOnShutdown = (
+  point: "afterClaim" | "beforeDelivery",
+  name: string,
+): ConformanceCase => ({
+  name,
+  run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const claimedAt = yield* Effect.promise(() =>
+          environment.run(
+            Effect.gen(function* () {
+              yield* reset(fixture)
+              const test = yield* ActorTest
+              const sender = yield* Relayer.get("shutdown")
+              yield* sender.Stage({ ids: ["shutdown"], afterMs: 60_000 })
+              const pause = yield* test.pauseNext(point)
+              yield* test.advance("1 minute").pipe(Effect.forkDetach)
+              yield* pause.reached
+
+              return DateTime.toEpochMillis(yield* test.now)
+            }),
+          ),
+        )
+
+        // A graceful stop interrupts the paused delivery before any receiver committed it.
+        yield* environment.restart
+
+        yield* Effect.promise(() =>
+          environment.run(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              const test = yield* ActorTest
+
+              const row = sql<{ attempts: number; due: string }>`
+          SELECT attempts, due_at_ms::text AS due FROM actor_outbox
+          WHERE payload LIKE '%"shutdown"%'`
+
+              // Released at shutdown, with its claim counted, instead of held for the lease.
+              const [released] = yield* row
+              expect(released!.attempts).toBe(1)
+              expect(Number(released!.due) - claimedAt < 5000).toBe(true)
+
+              // The restarted runtime's outbox clock starts at database time again.
+              const wait = Number(released!.due) - DateTime.toEpochMillis(yield* test.now)
+              yield* test.advance(Math.max(0, wait))
+              expect(fixture.taken.get("shutdown")).toBe(1)
+              expect(yield* row).toEqual([])
+            }),
+          ),
+        )
+      }),
+    ),
+})
+
 /** Single-runner cases on the conformance environment, shared by PGlite and Postgres. */
 export const relayConformance: ReadonlyArray<ConformanceCase> = [
-  {
-    name: "releases claimed but unstarted rows on graceful shutdown",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const claimedAt = yield* Effect.promise(() =>
-            environment.run(
-              Effect.gen(function* () {
-                yield* reset(fixture)
-                const test = yield* ActorTest
-                const sender = yield* Relayer.get("shutdown")
-                yield* sender.Stage({ ids: ["shutdown"], afterMs: 60_000 })
-                const pause = yield* test.pauseNext("afterClaim")
-                yield* test.advance("1 minute").pipe(Effect.forkDetach)
-                yield* pause.reached
-
-                return DateTime.toEpochMillis(yield* test.now)
-              }),
-            ),
-          )
-
-          // A graceful stop interrupts the paused delivery before it reached the receiver.
-          yield* environment.restart
-
-          yield* Effect.promise(() =>
-            environment.run(
-              Effect.gen(function* () {
-                const sql = yield* SqlClient.SqlClient
-                const test = yield* ActorTest
-
-                const row = sql<{ attempts: number; due: string }>`
-            SELECT attempts, due_at_ms::text AS due FROM actor_outbox
-            WHERE payload LIKE '%"shutdown"%'`
-
-                // Released at shutdown, with its claim counted, instead of held for the lease.
-                const [released] = yield* row
-                expect(released!.attempts).toBe(1)
-                expect(Number(released!.due) - claimedAt < 5000).toBe(true)
-
-                // The restarted runtime's outbox clock starts at database time again.
-                const wait = Number(released!.due) - DateTime.toEpochMillis(yield* test.now)
-                yield* test.advance(Math.max(0, wait))
-                expect(fixture.taken.get("shutdown")).toBe(1)
-                expect(yield* row).toEqual([])
-              }),
-            ),
-          )
-        }),
-      ),
-  },
+  releasesOnShutdown("afterClaim", "releases claimed but unstarted rows on graceful shutdown"),
+  releasesOnShutdown(
+    "beforeDelivery",
+    "releases a claimed row whose delivery had not reached a receiver on graceful shutdown",
+  ),
   {
     name: "keeps scheduled_at_ms across claims while due_at_ms moves",
     run: ({ expect, environment, fixture: { relay: fixture } }) =>
