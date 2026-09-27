@@ -9,6 +9,7 @@ import {
   ManagedRuntime,
   Option,
   Path,
+  Random,
   Schema,
 } from "effect"
 
@@ -140,7 +141,7 @@ const program = Effect.gen(function* () {
           ...process.env,
           DATABASE_URL: yield* database(
             postgres,
-            `quickstart_${template}_${yield* Clock.currentTimeMillis}`,
+            `quickstart_${template}_${yield* Clock.currentTimeMillis}_${(yield* Random.nextIntBetween(0, 2 ** 31)).toString(36)}`,
           ),
         },
       ])
