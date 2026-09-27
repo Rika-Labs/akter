@@ -95,6 +95,40 @@ const json = (status: number, body: Schema.Json) =>
 
 export const clientConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "client mints through /command-ids when a slow /protocol leaves no clock sample",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          const wire = recording()
+
+          const slow = (input: RequestInfo | URL, init?: RequestInit) =>
+            urlOf(input).pathname === "/protocol"
+              ? new Promise<void>((resolve) => setTimeout(resolve, 5_100)).then(() =>
+                  wire.fetch(input, init),
+                )
+              : wire.fetch(input, init)
+
+          const rooms = HttpRoom.client({
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+            fetch: slow,
+          })
+
+          expect(yield* settle(() => rooms.get("slow-clock").Post({ text: "a" }))).toEqual({
+            ok: true,
+            value: 1,
+          })
+          expect(wire.sent.map((request) => request.path)).toEqual([
+            "/protocol",
+            "/command-ids",
+            "/actors/HttpRoom/slow-clock/Post",
+          ])
+        }),
+      ),
+  },
+  {
     name: "client retries a dropped response with the same command id and returns the committed receipt",
     run: ({ expect, environment }) =>
       environment.run(
@@ -263,9 +297,13 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
             if (sent.path !== "/protocol") return undefined
             protocols += 1
 
-            return protocols === 1
-              ? json(200, { protocol: 1, retryWindowMs: 1_000, now: Math.round(monotonic()) })
-              : undefined
+            if (protocols !== 1) return undefined
+
+            const now = Math.round(monotonic())
+            const reply = json(200, { protocol: 1, retryWindowMs: 1_000, now })
+            reply.headers.set("durable-now", String(now))
+
+            return reply
           })
 
           const room = HttpRoom.client({

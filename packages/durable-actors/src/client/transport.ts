@@ -13,6 +13,8 @@ export interface Reply {
   readonly status: number
   readonly headers: Headers
   readonly text: string
+  /** The local monotonic time its request was sent. */
+  readonly sentAt: number
 }
 
 /** What a call rejects with: a declared application error or a typed framework failure. */
@@ -33,13 +35,19 @@ const isUnavailable = Schema.is(Schema.TaggedStruct("ActorUnavailable", {}))
 
 const decodeReason = Schema.decodeUnknownOption(Schema.toCodecJson(Reason))
 
-/** An HTTP `retry-after` header as milliseconds: delay seconds, or a date measured from the response's `date`, else from `now`. */
+/**
+ * An HTTP `retry-after` header as milliseconds: delay seconds, or a date
+ * measured from the response's `date` less the `elapsed` time since its
+ * request was sent, else from `now`.
+ */
 export const retryAfterHeader = ({
   headers,
   now,
+  elapsed = 0,
 }: {
   readonly headers: Headers
   readonly now?: number
+  readonly elapsed?: number
 }): number | undefined => {
   const value = headers.get("retry-after")?.trim()
 
@@ -49,7 +57,7 @@ export const retryAfterHeader = ({
 
   const at = Date.parse(value)
   const date = Date.parse(headers.get("date") ?? "")
-  const sent = Number.isNaN(date) ? now : date
+  const sent = Number.isNaN(date) ? now : date + Math.max(0, elapsed)
 
   return Number.isNaN(at) || sent === undefined ? undefined : Math.max(0, at - sent)
 }

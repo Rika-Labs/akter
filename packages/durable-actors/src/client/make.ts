@@ -222,7 +222,13 @@ const retryDelay = (retry: Retry, clock: DatabaseClock) => (attempted: Attempted
     const now = yield* Clock.currentTimeMillis
 
     const header = Option.fromUndefinedOr(
-      reply === undefined ? undefined : retryAfterHeader({ headers: reply.headers, now }),
+      reply === undefined
+        ? undefined
+        : retryAfterHeader({
+            headers: reply.headers,
+            now,
+            elapsed: clock.localNow() - reply.sentAt,
+          }),
     )
 
     return yield* Match.value(failure.reason).pipe(
@@ -373,7 +379,7 @@ export const clientOf =
           clock.observe(sentAt, clock.localNow(), Number(now))
         origin.token.observe(response.headers.get("durable-version"))
 
-        const reply: Reply = { status: response.status, headers: response.headers, text }
+        const reply: Reply = { status: response.status, headers: response.headers, text, sentAt }
 
         return reply
       })
@@ -400,12 +406,6 @@ export const clientOf =
       )
     })
 
-    const mintLocal = Effect.gen(function* () {
-      const window = yield* retryWindow
-
-      return clock.mint(window, yield* uuid(4))
-    })
-
     const mintServer = send({
       method: "POST",
       path: "/command-ids",
@@ -419,6 +419,15 @@ export const clientOf =
       ),
       Effect.map((minted) => minted.commandId),
     )
+
+    // Without a usable clock sample, e.g. after a slow `/protocol`, the server mints instead.
+    const mintLocal = Effect.gen(function* () {
+      const window = yield* retryWindow
+
+      if (!clock.isFresh) return yield* mintServer
+
+      return clock.mint(window, yield* uuid(4))
+    })
 
     const mint = (options.commandIds === "server" ? mintServer : mintLocal).pipe(
       Effect.tap((commandId) =>

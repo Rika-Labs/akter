@@ -18,6 +18,16 @@ describe("retryAfterHeader", () => {
     ).toBe(5_000)
   })
 
+  it("discounts the time since the request was sent from a response's date", () => {
+    const headers = new Headers({
+      "retry-after": "Wed, 21 Oct 2026 07:28:10 GMT",
+      date: "Wed, 21 Oct 2026 07:28:00 GMT",
+    })
+
+    expect(retryAfterHeader({ headers, elapsed: 9_000 })).toBe(1_000)
+    expect(retryAfterHeader({ headers, elapsed: 20_000 })).toBe(0)
+  })
+
   it("measures an HTTP date without a response date from now", () => {
     const now = Date.parse("Wed, 21 Oct 2026 07:28:00 GMT")
     const at = new Headers({ "retry-after": "Wed, 21 Oct 2026 07:29:00 GMT" })
