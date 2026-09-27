@@ -90,6 +90,12 @@ import {
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import {
+  progressConformance,
+  progressFixture,
+  progressLayer,
+  type ProgressFixture,
+} from "./conformance/progress.ts"
+import {
   workflowsConformance,
   workflowsFixture,
   type WorkflowsFixture,
@@ -185,6 +191,7 @@ export interface ConformanceFixture {
   readonly outbox: OutboxFixture
   readonly tables: TablesFixture
   readonly effects: EffectsFixture
+  readonly progress: ProgressFixture
   readonly blobs: BlobsFixture
   readonly relay: RelayFixture
   readonly effectControl: EffectControlFixture
@@ -310,6 +317,7 @@ const makeFixture = (): ConformanceFixture => ({
   outbox: outboxFixture(),
   tables: tablesFixture(),
   effects: effectsFixture(),
+  progress: progressFixture(),
   blobs: blobsFixture(),
   relay: relayFixture(),
   effectControl: effectControlFixture(),
@@ -344,6 +352,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...outboxConformance,
   ...tablesConformance,
   ...effectsConformance,
+  ...progressConformance,
   ...multiRunnerConformance,
   ...relayConformance,
   ...relayClusterConformance,
@@ -1316,6 +1325,7 @@ export const describeConformance = (options: {
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
+    progressLayer(fixture.progress),
     blobsLayer(fixture.blobs),
     inspectionViewsLayer,
     relayLayer(fixture.relay),

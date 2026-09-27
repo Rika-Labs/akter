@@ -16,6 +16,7 @@ import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
+import { progressPool } from "../effects/progress.ts"
 import { TurnHooks } from "./hooks.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
@@ -489,6 +490,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const deliveries = yield* FiberSet.make<unknown, unknown>()
   const attempts = yield* FiberSet.make<unknown, unknown>()
   const hooks = yield* TurnHooks
+  const progress = yield* progressPool()
+  // Effects whose row a settle in the current attempt removed or routed.
+  const ended = new Set<string>()
 
   // Set when a claim saw more due candidates than it took: a freed slot then
   // claims again instead of waiting for the poll.
@@ -498,8 +502,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
   // leaves free capacity although it found more candidates than it took.
   const widen = { intents: 1, effects: 1 }
   let stopping = false
+
   // Attempts this runner is executing, keyed by effect id, with the attempt that holds each lease.
-  const running = new Map<string, { readonly routingKey: bigint; readonly attempt: number }>()
+  const running = new Map<
+    string,
+    {
+      readonly routingKey: bigint
+      readonly attempt: number
+      readonly lease: { until: number }
+    }
+  >()
 
   const backoffMs = (attempts: number) =>
     Math.min(1000 * 2 ** Math.max(attempts - 1, 0), settings.maxBackoffMs)
@@ -646,6 +658,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
         if (route !== undefined && settled.length > 0) yield* Queue.offer(signals, undefined)
 
+        if (settled.length > 0) ended.add(row.intent_id)
+
         return settled.length > 0
       })
 
@@ -767,6 +781,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const attempt = row.attempts
     const request = yield* requestOf(row, "sender").pipe(Effect.orDie)
     const ref = ActorRef.make(request.ref)
+    const lease = running.get(row.intent_id)?.lease ?? { until: Number(row.claimed_until) }
     const leaseNanos = BigInt(settings.executorLeaseMs) * 1_000_000n
     // Measured on this runner from when the last claim or renewal was sent, so
     // the database's lease can only end later than this one.
@@ -801,10 +816,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
           yield* hooks.at("beforeRenew", request)
 
           // Never shortens a deadline, so a renewal can't undo a test clock's lease shift.
-          return yield* sql<{ cancelled: boolean }>`UPDATE actor_outbox
+          return yield* sql<{ cancelled: boolean; due_at_ms: string }>`UPDATE actor_outbox
               SET due_at_ms = greatest(due_at_ms, ${(yield* databaseTime) + settings.executorLeaseMs})
               WHERE ${attemptRow(attempt)}
-              RETURNING cancelled_at_ms IS NOT NULL AS cancelled`.pipe(Effect.uninterruptible)
+              RETURNING cancelled_at_ms IS NOT NULL AS cancelled, due_at_ms::text AS due_at_ms`.pipe(
+            Effect.uninterruptible,
+          )
         }).pipe(
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
@@ -820,6 +837,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
         if (renewed.length === 0) return "lost" as const
         confirmed = sent
+        lease.until = Number(renewed[0]!.due_at_ms)
 
         if (renewed[0]!.cancelled) return "cancelled" as const
       }
@@ -834,165 +852,183 @@ export const outboxRelay = Effect.fnUntraced(function* (
       }
     })
 
-    // Racing stops and awaits the renewal fiber before any settling write, so
-    // a late renewal can't overwrite a failure's backoff with a fresh lease.
-    const outcome = yield* registered
-      .execute(row.payload, {
-        effectId: row.intent_id,
-        attempt,
-        principal: principal(request.caller),
-        ref,
-      })
-      .pipe(Effect.result, Effect.raceFirst(renewals), Effect.raceFirst(deadline))
+    const slot = yield* progress.open({
+      ref,
+      effectId: row.intent_id,
+      effect: row.command,
+      attempt,
+      everyMs: registered.progressEveryMs,
+      leaseUntil: () => lease.until,
+    })
 
-    if (outcome === "lost")
-      return yield* Effect.logWarning("Effect attempt lost its lease").pipe(
-        Effect.annotateLogs({ attempt }),
-        annotate,
-      )
+    return yield* Effect.gen(function* () {
+      // Racing stops and awaits the renewal fiber before any settling write, so
+      // a late renewal can't overwrite a failure's backoff with a fresh lease.
+      const outcome = yield* registered
+        .execute(row.payload, {
+          effectId: row.intent_id,
+          attempt,
+          principal: principal(request.caller),
+          ref,
+          reporting: slot.active,
+          report: slot.offer,
+        })
+        .pipe(
+          Effect.result,
+          Effect.raceFirst(renewals),
+          Effect.raceFirst(deadline),
+          Effect.ensuring(slot.close),
+        )
 
-    if (outcome === "deadline")
-      return yield* Effect.logWarning("Effect attempt outlived its lease; interrupted").pipe(
-        Effect.annotateLogs({ attempt }),
-        annotate,
-      )
+      if (outcome === "lost")
+        return yield* Effect.logWarning("Effect attempt lost its lease").pipe(
+          Effect.annotateLogs({ attempt }),
+          annotate,
+        )
 
-    // Interrupting a started call does not undo it, so its outcome is unknown.
-    if (outcome === "cancelled") {
-      yield* Effect.logInfo("Effect attempt interrupted by its cancellation").pipe(
-        Effect.annotateLogs({ attempt }),
-        annotate,
-      )
+      if (outcome === "deadline")
+        return yield* Effect.logWarning("Effect attempt outlived its lease; interrupted").pipe(
+          Effect.annotateLogs({ attempt }),
+          annotate,
+        )
 
-      return yield* settleCancelled(attempt, "Unknown", cancelledCause(attempt))
-    }
+      // Interrupting a started call does not undo it, so its outcome is unknown.
+      if (outcome === "cancelled") {
+        yield* Effect.logInfo("Effect attempt interrupted by its cancellation").pipe(
+          Effect.annotateLogs({ attempt }),
+          annotate,
+        )
 
-    // A success no settle matched: the effect already ended without it.
-    const recordLate = (routes: {
-      readonly cancelled?: { readonly command: string } | undefined
-    }) =>
-      Effect.gen(function* () {
-        const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
-        WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
+        return yield* settleCancelled(attempt, "Unknown", cancelledCause(attempt))
+      }
 
-        if (late.length > 0)
-          return yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
-            Effect.annotateLogs({ attempt }),
-            annotate,
-          )
+      // A success no settle matched: the effect already ended without it.
+      const recordLate = (routes: {
+        readonly cancelled?: { readonly command: string } | undefined
+      }) =>
+        Effect.gen(function* () {
+          const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
+          WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
 
-        // A cancellation already reported without this result: keep an
-        // ambiguous record of it instead of routing a second outcome.
-        const reported = routes.cancelled?.command
-
-        if (registered.routesCancelled && reported !== undefined) {
-          const recorded = yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id,
-            tenant_id, actor_type, actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
-          SELECT ${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
-            ${row.actor_id}, ${row.command}, ${row.payload}, ${attempt},
-            'Succeeded after it was cancelled', true, ${yield* databaseTime}
-          WHERE EXISTS (
-            SELECT 1 FROM actor_outbox WHERE ${sql`routing_key = ${routingKey}`}
-              AND intent_id = ${row.intent_id} AND kind = 'intent' AND command = ${reported}
-            UNION ALL
-            SELECT 1 FROM actor_receipts WHERE routing_key = ${routingKey}
-              AND tenant_id = ${row.tenant_id} AND actor_type = ${row.actor_type}
-              AND actor_id = ${row.actor_id} AND command_id = ${row.intent_id}
-              AND command = ${reported}
-          )
-          ON CONFLICT (routing_key, effect_id) DO UPDATE SET ambiguous = true
-          RETURNING 1`
-
-          if (recorded.length > 0)
-            yield* Effect.logWarning("Effect succeeded after its cancellation settled").pipe(
+          if (late.length > 0)
+            return yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
               Effect.annotateLogs({ attempt }),
               annotate,
             )
-        }
-      })
 
-    const rejected = Result.isSuccess(outcome) ? outcome.success.rejected : undefined
+          // A cancellation already reported without this result: keep an
+          // ambiguous record of it instead of routing a second outcome.
+          const reported = routes.cancelled?.command
 
-    // A result onSuccess rejects still reaches onCancelled if the effect was cancelled.
-    if (rejected !== undefined && registered.routesCancelled && Result.isSuccess(outcome)) {
-      yield* hooks.at("afterExecute", request)
+          if (registered.routesCancelled && reported !== undefined) {
+            const recorded = yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id,
+              tenant_id, actor_type, actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
+            SELECT ${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
+              ${row.actor_id}, ${row.command}, ${row.payload}, ${attempt},
+              'Succeeded after it was cancelled', true, ${yield* databaseTime}
+            WHERE EXISTS (
+              SELECT 1 FROM actor_outbox WHERE ${sql`routing_key = ${routingKey}`}
+                AND intent_id = ${row.intent_id} AND kind = 'intent' AND command = ${reported}
+              UNION ALL
+              SELECT 1 FROM actor_receipts WHERE routing_key = ${routingKey}
+                AND tenant_id = ${row.tenant_id} AND actor_type = ${row.actor_type}
+                AND actor_id = ${row.actor_id} AND command_id = ${row.intent_id}
+                AND command = ${reported}
+            )
+            ON CONFLICT (routing_key, effect_id) DO UPDATE SET ambiguous = true
+            RETURNING 1`
 
+            if (recorded.length > 0)
+              yield* Effect.logWarning("Effect succeeded after its cancellation settled").pipe(
+                Effect.annotateLogs({ attempt }),
+                annotate,
+              )
+          }
+        })
+
+      const rejected = Result.isSuccess(outcome) ? outcome.success.rejected : undefined
+
+      // A result onSuccess rejects still reaches onCancelled if the effect was cancelled.
+      if (rejected !== undefined && registered.routesCancelled && Result.isSuccess(outcome)) {
+        yield* hooks.at("afterExecute", request)
+
+        if (
+          yield* settleTo(
+            outcome.success.cancelled,
+            sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
+          )
+        )
+          return
+      }
+
+      if (Result.isSuccess(outcome) && rejected === undefined) {
+        yield* hooks.at("afterExecute", request)
+        const routes = outcome.success
+
+        // The first success of any attempt wins; the row stops being an effect.
+        if (yield* settleTo(routes.success, sql`${effectRow} AND cancelled_at_ms IS NULL`)) return
+
+        // Cancelled meanwhile: the result is reported as the cancellation's outcome.
+        if (
+          yield* settleTo(
+            registered.routesCancelled ? routes.cancelled : routes.success,
+            sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
+          )
+        )
+          return
+
+        return yield* recordLate(routes)
+      }
+
+      const failure = Result.isFailure(outcome) ? outcome.failure : rejected
+
+      if (failure === undefined) return
+
+      const { cause, ambiguous, final } = failure
+      const last = final === true || attempt >= registered.attempts
+      const { baseMs, maxMs } = registered.backoff
+
+      // The outcome is recorded first, so a failed dead-letter transaction is
+      // retried with this attempt's cause rather than the claim's.
+      const recorded = yield* sql<{
+        cancelled: boolean
+        maybe_applied: boolean
+      }>`UPDATE actor_outbox
+        SET last_error = ${cause}, ambiguous = ${ambiguous}, running = false,
+          due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
+        WHERE ${attemptRow(attempt)}
+        RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`
+
+      if (recorded.length === 0 && rejected !== undefined && Result.isSuccess(outcome))
+        return yield* recordLate(outcome.success)
+
+      // A cancellation that committed after the check above still takes the known result.
       if (
-        yield* settleTo(
+        recorded[0]?.cancelled === true &&
+        rejected !== undefined &&
+        registered.routesCancelled &&
+        Result.isSuccess(outcome) &&
+        (yield* settleTo(
           outcome.success.cancelled,
-          sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
-        )
-      )
-        return
-    }
-
-    if (Result.isSuccess(outcome) && rejected === undefined) {
-      yield* hooks.at("afterExecute", request)
-      const routes = outcome.success
-
-      // The first success of any attempt wins; the row stops being an effect.
-      if (yield* settleTo(routes.success, sql`${effectRow} AND cancelled_at_ms IS NULL`)) return
-
-      // Cancelled meanwhile: the result is reported as the cancellation's outcome.
-      if (
-        yield* settleTo(
-          registered.routesCancelled ? routes.cancelled : routes.success,
-          sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
-        )
+          sql`${attemptRow(attempt)} AND cancelled_at_ms IS NOT NULL`,
+        ))
       )
         return
 
-      return yield* recordLate(routes)
-    }
+      if (recorded[0]?.cancelled === true)
+        return yield* settleCancelled(
+          attempt,
+          ambiguous || recorded[0].maybe_applied ? "Unknown" : "Failed",
+          cause,
+        )
 
-    const failure = Result.isFailure(outcome) ? outcome.failure : rejected
+      if (last) return yield* exhaustUnlessCancelled(attempt, cause, ambiguous)
 
-    if (failure === undefined) return
-
-    const { cause, ambiguous, final } = failure
-    const last = final === true || attempt >= registered.attempts
-    const { baseMs, maxMs } = registered.backoff
-
-    // The outcome is recorded first, so a failed dead-letter transaction is
-    // retried with this attempt's cause rather than the claim's.
-    const recorded = yield* sql<{
-      cancelled: boolean
-      maybe_applied: boolean
-    }>`UPDATE actor_outbox
-      SET last_error = ${cause}, ambiguous = ${ambiguous}, running = false,
-        due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
-      WHERE ${attemptRow(attempt)}
-      RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`
-
-    if (recorded.length === 0 && rejected !== undefined && Result.isSuccess(outcome))
-      return yield* recordLate(outcome.success)
-
-    // A cancellation that committed after the check above still takes the known result.
-    if (
-      recorded[0]?.cancelled === true &&
-      rejected !== undefined &&
-      registered.routesCancelled &&
-      Result.isSuccess(outcome) &&
-      (yield* settleTo(
-        outcome.success.cancelled,
-        sql`${attemptRow(attempt)} AND cancelled_at_ms IS NOT NULL`,
-      ))
-    )
-      return
-
-    if (recorded[0]?.cancelled === true)
-      return yield* settleCancelled(
-        attempt,
-        ambiguous || recorded[0].maybe_applied ? "Unknown" : "Failed",
-        cause,
+      yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
+        Effect.annotateLogs({ attempt, ambiguous }),
+        annotate,
       )
-
-    if (last) return yield* exhaustUnlessCancelled(attempt, cause, ambiguous)
-
-    yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
-      Effect.annotateLogs({ attempt, ambiguous }),
-      annotate,
-    )
+    }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })
 
   // A settled attempt of a capped effect frees a slot for the oldest waiting row of its actor.
@@ -1001,10 +1037,31 @@ export const outboxRelay = Effect.fnUntraced(function* (
     registered: RegisteredEffect,
     claimedAt: bigint,
     claimSignal: Deferred.Deferred<void>,
-  ) =>
-    registered.perActor === undefined
-      ? runAttempt(row, registered, claimedAt, claimSignal)
-      : runAttempt(row, registered, claimedAt, claimSignal).pipe(
+  ) => {
+    // A committed terminal settle closes the effect's progress; a retryable one leaves it open.
+    const attempt = runAttempt(row, registered, claimedAt, claimSignal).pipe(
+      Effect.tap(() =>
+        ended.delete(row.intent_id)
+          ? requestOf(row, "sender").pipe(
+              Effect.flatMap((request) =>
+                progress.closed({
+                  ref: ActorRef.make(request.ref),
+                  effectId: row.intent_id,
+                  effect: row.command,
+                  attempt: row.attempts,
+                  everyMs: registered.progressEveryMs,
+                }),
+              ),
+              Effect.ignore,
+            )
+          : Effect.void,
+      ),
+      Effect.ensuring(Effect.sync(() => ended.delete(row.intent_id))),
+    )
+
+    return registered.perActor === undefined
+      ? attempt
+      : attempt.pipe(
           Effect.ensuring(
             Effect.gen(function* () {
               const woke = yield* wakeWaiting(sql, groupOf(row), yield* databaseTime)
@@ -1013,6 +1070,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
             }).pipe(Effect.ignore),
           ),
         )
+  }
 
   const freed = (kind: "intents" | "effects") =>
     Effect.suspend(() => (more[kind] ? Queue.offer(signals, undefined) : Effect.void))
@@ -1157,6 +1215,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
             running.set(row.intent_id, {
               routingKey: BigInt(row.routing_key),
               attempt: row.attempts,
+              lease: { until: Number(row.claimed_until) },
             })
 
             yield* FiberSet.run(
@@ -1228,10 +1287,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
       .withPermit(
         Effect.forEach(
           [...running],
-          ([intentId, { routingKey, attempt }]) =>
+          ([intentId, { routingKey, attempt, lease }]) =>
             sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
             WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
-              AND kind = 'effect' AND attempts = ${attempt}`,
+              AND kind = 'effect' AND attempts = ${attempt}`.pipe(
+              Effect.tap(
+                Effect.sync(() => {
+                  lease.until += millis
+                }),
+              ),
+            ),
           { discard: true },
         ).pipe(Effect.andThen(jump)),
       )
