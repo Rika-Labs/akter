@@ -32,6 +32,7 @@ describe("migrations with Postgres", () => {
             Effect.sync(() => new Pool({ connectionString: database.href })),
             (pool) => Effect.promise(() => pool.end()),
           )
+
           yield* Effect.acquireRelease(
             Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
             () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
@@ -42,6 +43,7 @@ describe("migrations with Postgres", () => {
             Effect.sync(() => new Pool({ connectionString: database.href })),
             (db) => Effect.promise(() => db.end()),
           )
+
           const older = yield* Effect.acquireRelease(
             Effect.promise(() => pool.connect()),
             (client) => Effect.sync(() => client.release()),
@@ -50,9 +52,11 @@ describe("migrations with Postgres", () => {
           const through9 = Object.fromEntries(
             Object.entries(migrations).filter(([id]) => id < "0010"),
           )
+
           const client = yield* Layer.build(
             Database.postgres({ url: Redacted.make(database.href) }),
           )
+
           const migrate = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
             Effect.provide(effect, client)
 
