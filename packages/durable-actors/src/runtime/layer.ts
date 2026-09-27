@@ -47,7 +47,7 @@ import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { replayEvents } from "./events/replay.ts"
-import { checkIdentity, databaseTime, readAdmission } from "./turn/admission.ts"
+import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
@@ -326,6 +326,9 @@ export const layer = (options: Options) => {
 
       yield* relay.run.pipe(Effect.forkIn(scope))
 
+      const frameworkClock = yield* FrameworkClock
+      const cleanupHooks = yield* CleanupHooks
+
       const cleanup = Effect.suspend(() =>
         sweep(
           Array.from(registrations.values(), ({ name, policy }) => ({
@@ -336,11 +339,15 @@ export const layer = (options: Options) => {
           })),
           retryWindowMs,
         ),
-      ).pipe(Effect.provideContext(services))
+      ).pipe(
+        Effect.provideContext(services),
+        Effect.provideService(FrameworkClock, frameworkClock),
+        Effect.provideService(CleanupHooks, cleanupHooks),
+      )
 
       // Horizons are days long, so a sweep a minute keeps up; each batch is
       // its own short transaction, so turns never wait on a whole sweep.
-      if ((yield* CleanupHooks).periodic)
+      if (cleanupHooks.periodic)
         yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
           Effect.andThen(
             cleanup.pipe(
