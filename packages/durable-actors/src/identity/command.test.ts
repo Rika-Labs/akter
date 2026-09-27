@@ -1,5 +1,7 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
+import { Arbitrary } from "effect/unstable/arbitrary"
 import { describe, expect, it } from "vitest"
+import { checkProperty } from "../testing/property.ts"
 import { CommandId, commandTimes } from "./command.ts"
 import { Anonymous, callerKey, User } from "./caller.ts"
 
@@ -24,6 +26,126 @@ describe("command identity", () => {
     expect(callerKey(User.make({ subject: "Anonymous" }))).not.toBe(callerKey(Anonymous.make({})))
     expect(callerKey(User.make({ subject: "alice" }))).not.toBe(
       callerKey(User.make({ subject: "bob" })),
+    )
+  })
+})
+
+const Nibble = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 15 }))
+
+const Millis = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 999_999_999_999_999 }))
+
+const uuid = Arbitrary.map(
+  Arbitrary.all([
+    Arbitrary.array(Arbitrary.schema(Nibble), { minLength: 30, maxLength: 30 }),
+    Arbitrary.schema(Schema.Literals(["8", "9", "a", "b"])),
+  ]),
+  ([nibbles, variant]) => {
+    const hex = nibbles.map((n) => n.toString(16)).join("")
+
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(12, 15)}-${variant}${hex.slice(15, 18)}-${hex.slice(18, 30)}`
+  },
+)
+
+const Mutation = Schema.Literals([
+  "version",
+  "leadingZero",
+  "negative",
+  "extra",
+  "missing",
+  "uppercase",
+  "uuidVersion",
+  "nul",
+  "whitespace",
+])
+
+const mutate = (id: string, mutation: typeof Mutation.Type): string => {
+  const [version, issuedAt, expiresAt, rest] = id.split(".") as [string, string, string, string]
+
+  switch (mutation) {
+    case "version":
+      return `v2.${issuedAt}.${expiresAt}.${rest}`
+    case "leadingZero":
+      return `${version}.0${issuedAt}.${expiresAt}.${rest}`
+    case "negative":
+      return `${version}.-${issuedAt}.${expiresAt}.${rest}`
+    case "extra":
+      return `${id}.1`
+    case "missing":
+      return `${version}.${issuedAt}.${rest}`
+    case "uppercase":
+      return `${version}.${issuedAt}.${expiresAt}.${rest.toUpperCase().replace(/^[0-9-]*$/, "G")}`
+    case "uuidVersion":
+      return `${version}.${issuedAt}.${expiresAt}.${rest.slice(0, 14)}5${rest.slice(15)}`
+    case "nul":
+      return `${id}\u0000`
+    case "whitespace":
+      return ` ${id}`
+  }
+}
+
+// Subjects chosen so that naive concatenation of tag and subject would collide.
+const Subject = Schema.Literals(["alice", "User", "Anonymous", '["User","alice"]', "a,b"])
+
+const SmallRef = Schema.Struct({
+  tenant: Schema.Literals(["t", "t,a"]),
+  actor: Schema.Literals(["a", "Counter"]),
+  id: Schema.Literals(["1", "alice"]),
+})
+
+const SmallCaller = Schema.Union([
+  Schema.TaggedStruct("User", { subject: Subject }),
+  Schema.TaggedStruct("Anonymous", {}),
+  Schema.TaggedStruct("System", {
+    source: Schema.Literals(["actor", "timer"]),
+    ref: Schema.optionalKey(SmallRef),
+    onBehalfOf: Schema.optionalKey(Schema.Struct({ subject: Subject })),
+  }),
+])
+
+const sameCaller = Schema.toEquivalence(SmallCaller)
+
+describe("command identity properties", () => {
+  it("formats and parses every canonical id and rejects every non-canonical variant", () =>
+    Effect.runPromise(
+      checkProperty({
+        name: "command id parse and format",
+        arbitrary: Arbitrary.all([
+          Arbitrary.schema(Millis),
+          Arbitrary.schema(Millis),
+          uuid,
+          Arbitrary.schema(Mutation),
+        ]),
+        property: ([issuedAt, expiresAt, id, mutation]) => {
+          const commandId = `v1.${issuedAt}.${expiresAt}.${id}`
+          const mutated = mutate(commandId, mutation)
+
+          return (
+            Schema.is(CommandId)(commandId) &&
+            commandTimes(commandId).issuedAt === issuedAt &&
+            commandTimes(commandId).expiresAt === expiresAt &&
+            `v1.${commandTimes(commandId).issuedAt}.${commandTimes(commandId).expiresAt}.${id}` ===
+              commandId &&
+            !Schema.is(CommandId)(mutated)
+          )
+        },
+      }).pipe(Effect.map((runs) => expect(runs).toBe(1_000))),
+    ))
+
+  it("keys two callers the same exactly when they are the same logical caller", () => {
+    const caller = Arbitrary.schema(SmallCaller)
+
+    return Effect.runPromise(
+      checkProperty({
+        name: "caller key injectivity",
+        arbitrary: Arbitrary.all([caller, caller]),
+        property: ([a, b]) => {
+          const key = callerKey(a)
+
+          return (
+            key === callerKey(structuredClone(a)) && (key === callerKey(b)) === sameCaller(a, b)
+          )
+        },
+      }).pipe(Effect.map((runs) => expect(runs).toBe(1_000))),
     )
   })
 })
