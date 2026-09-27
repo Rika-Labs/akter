@@ -21,6 +21,7 @@ import {
 } from "effect/unstable/http"
 import { load } from "../measure.ts"
 import { Probe } from "../probe/contract.ts"
+import { ReducerProbe } from "../probe/reducers.ts"
 import { type ActorServices, type CaseResult, measure, type Scenario } from "../scenario.ts"
 
 const ProtocolInfo = Schema.Struct({ retryWindowMs: Schema.Int, now: Schema.Int })
@@ -43,6 +44,11 @@ interface Served {
   readonly client: Caller
   /** The Promise client over a connection that loses every hundredth command response after the server sent it. */
   readonly lossy: Caller
+  /** A reducer through the Promise client; `visible` gets the nanoseconds until `state.current` showed it. */
+  readonly reduce: (
+    id: string,
+    visible: Array<bigint>,
+  ) => Effect.Effect<unknown, Cause.UnknownError>
 }
 
 interface Auth {
@@ -152,7 +158,7 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
     HttpClient.filterStatusOk,
   )
 
-  const app = Actor.serve({ actors: [Probe], auth: auth.provider }).pipe(
+  const app = Actor.serve({ actors: [Probe, ReducerProbe], auth: auth.provider }).pipe(
     Layer.provide(Layer.succeedContext(services)),
   )
 
@@ -201,6 +207,7 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
 
   const probes = Probe.client({ baseUrl: url })
   const lossy = Probe.client({ baseUrl: url, fetch: losing() })
+  const reducers = ReducerProbe.client({ baseUrl: url })
 
   return {
     url,
@@ -219,6 +226,24 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
       command: (id, amount) => Effect.tryPromise(() => lossy.get(id).Add(amount)),
       query: (id) => Effect.tryPromise(() => lossy.get(id).Peek()),
     },
+    reduce: (id, visible) =>
+      Effect.gen(function* () {
+        const handle = reducers.get(id)
+        const before = handle.state.current?.count
+        const started = yield* Clock.currentTimeNanos
+        const reply = handle.Add(1)
+        const shown = handle.state.current?.count
+        const elapsed = (yield* Clock.currentTimeNanos) - started
+
+        if (before !== undefined) {
+          if (shown !== before + 1)
+            return yield* Effect.die(new Error("Optimistic state not shown"))
+
+          visible.push(elapsed)
+        }
+
+        return yield* Effect.tryPromise(() => reply)
+      }),
   } satisfies Served
 })
 
@@ -341,6 +366,48 @@ export const http: Scenario = {
               return {
                 ...result,
                 extra: { ...result.extra, duplicateTurns: Number(count) - warmup - operations },
+              }
+            }),
+          ),
+        ),
+      )
+
+      results.push(
+        yield* context.withRuntime({}, (instruments) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const served = yield* serve()
+              const warmup: Array<bigint> = []
+              yield* load({
+                workers: 1,
+                operations: 100,
+                operation: () => served.reduce("reduced", warmup),
+              })
+
+              const visible: Array<bigint> = []
+
+              const result = yield* measure({
+                name: "client-reducer-sequential",
+                parameters: { actors: 1, workers: 1, auth: "none", via: "client" },
+                instruments,
+                workers: 1,
+                operations: quick ? 300 : 3000,
+                operation: () => served.reduce("reduced", visible),
+              })
+
+              const sorted = visible.map((ns) => Number(ns) / 1e6).sort((a, b) => a - b)
+
+              const at = (q: number) =>
+                sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!
+
+              // Read from `state.current` as the call returns, before the round trip.
+              return {
+                ...result,
+                extra: {
+                  ...result.extra,
+                  optimisticVisibleP50Ms: Math.round(at(0.5) * 1000) / 1000,
+                  optimisticVisibleP99Ms: Math.round(at(0.99) * 1000) / 1000,
+                },
               }
             }),
           ),
