@@ -1,3 +1,4 @@
+import type { NodeInspectSymbol, Unify } from "../../actor/definition.ts"
 import {
   Cause,
   Context,
@@ -39,9 +40,9 @@ import { actorErrorBody } from "../../serve/wire.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
-class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
+export class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
 
-class Closed extends Schema.TaggedError<Closed>()(
+export class Closed extends Schema.TaggedError<Closed>()(
   "Closed",
   { reason: Schema.String },
   { httpApiStatus: 423 },
@@ -69,7 +70,7 @@ const count = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
-const HttpRoom = Actor.make("HttpRoom", {
+export const HttpRoom = Actor.make("HttpRoom", {
   key: Schema.String,
   state: count,
   api: { Post, Whoami, Hold, Crash, Count, Peek },
@@ -78,18 +79,24 @@ const HttpRoom = Actor.make("HttpRoom", {
 
 const Join = Actor.command("Join", { output: Schema.Int })
 
-const HttpLobby = Actor.make("HttpLobby", { key: Actor.singleton, state: count, api: { Join } })
+const Leave = Actor.command("Leave")
 
-const HttpTicket = Actor.make("HttpTicket", { state: count, api: { Join } })
+export const HttpLobby = Actor.make("HttpLobby", {
+  key: Actor.singleton,
+  state: count,
+  api: { Join, Leave },
+})
+
+export const HttpTicket = Actor.make("HttpTicket", { state: count, api: { Join } })
 
 /** Handler runs, so a replay can be shown not to rerun the handler. */
-const runs = { count: 0 }
+export const runs = { count: 0 }
 
 interface Gate {
   hold: Effect.Effect<void>
 }
 
-const gate: Gate = { hold: Effect.void }
+export const gate: Gate = { hold: Effect.void }
 
 export const httpLayer = Layer.mergeAll(
   HttpRoom.toLayer(
@@ -142,6 +149,10 @@ export const httpLayer = Layer.mergeAll(
         yield* turn.state.set({ count: turn.state.count + 1 })
 
         return turn.state.count
+      }),
+      Leave: Effect.fnUntraced(function* () {
+        const turn = yield* HttpLobby.Turn
+        yield* turn.state.set({ count: turn.state.count - 1 })
       }),
     }),
   ),
@@ -324,7 +335,7 @@ const isDefectBody = Schema.is(Schema.TaggedStruct("Defect", { traceId: Schema.S
 
 const envelope = (reason: Reason) => actorErrorBody(ActorError.make({ reason }))
 
-const receipts = Effect.fnUntraced(function* (tenant: string, actor: string, id: string) {
+export const receipts = Effect.fnUntraced(function* (tenant: string, actor: string, id: string) {
   return (yield* (yield* ActorTest).inspect(ActorRef.make({ tenant, actor, id }))).receipts
 })
 
@@ -335,7 +346,7 @@ const rows = Effect.fnUntraced(function* (table: string) {
   return row!.n
 })
 
-const tenantOf = Effect.gen(function* () {
+export const tenantOf = Effect.gen(function* () {
   const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
 
   return `http-${uuid.slice(0, 8)}`
@@ -883,6 +894,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           expect(operations.map(({ operation }) => operation.operationId).sort()).toEqual(
             [
               "HttpLobby.Join",
+              "HttpLobby.Leave",
               "HttpRoom.Count",
               "HttpRoom.Crash",
               "HttpRoom.Hold",
@@ -1227,3 +1239,6 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** A declaration file names the unique symbols these actors inherit only through a module that exports them. */
+export type { NodeInspectSymbol, Unify }

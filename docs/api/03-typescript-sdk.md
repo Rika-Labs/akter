@@ -19,4 +19,41 @@ Expired command identities are rejected even after receipt cleanup. Automatic re
 
 Declared application errors are thrown as their schema-defined classes. Framework failures use `ActorError` with a typed `reason`, `isRetryable`, and `retryAfter`. `InvalidInput` and `TransportError` belong only to the HTTP/Promise boundary, not typed in-process Effect handles. Each Effect method narrows its framework failures through `ActorError.Of<Reasons>` rather than adding every possible reason.
 
+## Implemented subset (M3.4)
+
+Commands and queries over HTTP are implemented. Feeds, streams, connections, and optimistic reducers are M3.5; until then a reducer is called like a command and answered with its committed reply.
+
+```ts
+import { ActorError } from "@durable-actors/core/client"
+import { Room, RoomId } from "./room/contract.ts" // definitions and schemas only
+
+const rooms = Room.client({
+  baseUrl: "/api", // absolute, or relative to the page
+  headers: () => ({ authorization: `Bearer ${token()}` }), // called for every attempt
+  timeoutInMs: 10_000, // per call, retries included; default 60,000
+  fetch, // optional; defaults to the global fetch
+  commandIds: "client", // or "server" to take each id from POST /command-ids
+})
+
+const lobby = rooms.get(RoomId.make("lobby"))
+const id = await rooms.commandId()
+const messageId = await lobby.Post({ body: "hi" }, { commandId: id, signal })
+const page = await lobby.History({})
+```
+
+`X.client` returns `get(id)` for keyed actors, `get()` for singletons, and `get(id)` plus `create()` for minted ones, where `create()` mints a UUIDv7 locally. Each handle method takes its input (omitted when the member has none) and `{ signal, timeoutInMs }`, plus `commandId` for commands. Routes, key encoding, input and output codecs, and the declared-error decoder come from the definition. The entry imports no runtime, SQL, Cluster, Bun, or Node module; a test walks its import graph and builds it for the browser.
+
+A `headers` provider that throws or rejects fails the call with its own error, unchanged and not retried. Retries of an id stop a second before it expires, or a quarter of its window before when the window is shorter than four seconds; until the client holds a database-clock sample from the last minute, that deadline is not applied.
+
+A void member resolves `undefined` from its `204`, and an output the server wrote as `null` for `undefined` decodes back to `undefined`. Clients of one `baseUrl` share its clock samples, retry window, and `durable-version` token; the state of the 64 most recently used base URLs is kept, and a client keeps the state it was created with. `Actor.serve` does not issue `durable-version` yet, so until it does queries send no `durable-min-version` against it and the token gives no read-your-writes guarantee. The clock uses the lowest-latency sample of the last minute (at most 16 are kept) and ignores round trips over 5 seconds and every 504; with no sample from the last minute, the client reads `/protocol` again before minting, takes the id from `/command-ids` when that read leaves no sample either, and a `window` refusal makes it re-read the retry window. A minted id is issued at least a second, or one round trip, behind the estimated database clock, capped at a quarter of the retry window but never below half the round trip. Retries stop a second before the id expires. A `retry-after` header gives delay seconds or an HTTP date; a date is measured from the response's `date` less the time since the request was sent, or from the local clock without one. Without a `retryAfter`, the delay backs off from 100 ms to at most 2 seconds.
+
+A call rejects with:
+
+- the declared error's class, for a declared failure, replayed identically on retry;
+- `ActorError` with the served reason (`CommandExpired`, `CommandConflict`, `InvalidCommandId`, `Unauthorized`, `NotCreated`, `MailboxFull`, `RunnerAtCapacity`, `ActorUnavailable`, `Timeout`, `InvalidInput`) and its `isRetryable` and `retryAfter`;
+- `ActorError` with `Timeout` when `timeoutInMs` or `signal` stops the wait. A command's `Timeout` carries its command id: the outcome is unknown and a retry with that id is safe. A query's, or a command's stopped before any id existed, has no `commandId`;
+- `ActorError` with `TransportError` for a response the server didn't describe: `network` for a failed fetch, `status` for a status without an envelope (retried for 408, 429, and 5xx), `decode` for a success body the output schema rejects, and `defect` for the server's opaque 500, which carries nothing but its status.
+
+`InvalidCommandId` from the client carries `neverAdmitted: true` only when the client minted the id itself, every attempt with it was answered with that refusal, and no other call with the id is still waiting, so no turn can have run under it. Only then is resending under a new id a retry rather than a second operation.
+
 Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or branch with `Effect.catchReasons`. On Effect `4.0.0-rc.116`, omitting `orElse` retains the full `ActorError` in `E`; branching is not automatically exhaustive error-channel elimination. See the [error contract](../contracts/error-model.md). OpenAPI is the intended input for external client and tool generators.
