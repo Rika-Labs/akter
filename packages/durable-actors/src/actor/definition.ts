@@ -415,7 +415,7 @@ const make = <
   for (const [key, member] of [...Object.entries(api), ...Object.entries(internal)]) {
     if (key !== member.tag) throw new Error(`Command key ${key} must equal its tag ${member.tag}`)
 
-    if (tags.has(member.tag) || member.tag === "ref")
+    if (tags.has(member.tag) || member.tag === "ref" || member.tag.startsWith("$"))
       throw new Error(`Duplicate or reserved command: ${member.tag}`)
     tags.add(member.tag)
   }

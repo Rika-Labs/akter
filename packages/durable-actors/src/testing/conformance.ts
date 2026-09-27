@@ -185,6 +185,8 @@ export interface ConformanceFixture {
   holdHandler: Effect.Effect<void>
   duringQuery: Effect.Effect<unknown, import("../errors/actor.ts").ActorError>
   allowed: boolean
+  /** Commands the test authorization refuses while `allowed` holds. */
+  readonly denied: Set<string>
 }
 
 export interface ConformanceContext {
@@ -307,6 +309,7 @@ const makeFixture = (): ConformanceFixture => ({
   holdHandler: Effect.void,
   duringQuery: Effect.void,
   allowed: true,
+  denied: new Set(),
 })
 
 /**
@@ -1325,7 +1328,8 @@ export const describeConformance = (options: {
             ActorTest.layer({
               database,
               as: User.make({ subject: "alice" }),
-              authorize: () => Effect.sync(() => fixture.allowed),
+              authorize: (request) =>
+                Effect.sync(() => fixture.allowed && !fixture.denied.has(request.command)),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
             }),
           ),

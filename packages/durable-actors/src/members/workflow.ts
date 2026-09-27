@@ -346,7 +346,16 @@ const make = <
           if (effects.length === 0)
             return yield* Effect.die(new Error(`Race ${name} needs at least one effect`))
 
-          const run = Effect.raceAll(effects).pipe(Effect.exit, Effect.flatMap(codec.encode))
+          // Only a winner or a declared failure is recorded; a suspension,
+          // defect, or interruption leaves the race to run again on replay.
+          const run = Effect.raceAll(effects).pipe(
+            Effect.exit,
+            Effect.flatMap((exit) =>
+              Exit.isFailure(exit) && (Cause.hasDies(exit.cause) || Cause.hasInterrupts(exit.cause))
+                ? Effect.failCause(exit.cause).pipe(Effect.orDie)
+                : codec.encode(exit),
+            ),
+          )
 
           return yield* steps.race(self, run).pipe(Effect.flatMap(codec.decode), Effect.flatten)
         }),

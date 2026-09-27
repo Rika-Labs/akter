@@ -83,6 +83,11 @@ describe("actor declarations", () => {
     expect(() =>
       Actor.make("Reserved", { api: { Increment }, state: Actor.state({ set: Schema.Finite }) }),
     ).toThrow("reserved")
+    const Start = Actor.command("$workflow/start")
+    expect(() => Actor.make("Prefixed", { api: { "$workflow/start": Start } })).toThrow("reserved")
+    expect(() =>
+      Actor.make("Prefixed", { api: { Increment }, internal: { $own: Actor.command("$own") } }),
+    ).toThrow("reserved")
     expect(() =>
       Actor.make("Invalid", { api: { Increment }, policy: { maxStateBytes: 1.5 } }),
     ).toThrow()

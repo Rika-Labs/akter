@@ -10,7 +10,7 @@ import {
   Schema,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, InvalidExecutionId, User } from "../../index.ts"
+import { Actor, InvalidExecutionId, Unauthorized, User } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -49,6 +49,15 @@ const CoolOff = Ship.sleep("cool-off")
 
 const AwaitPaid = Ship.wait("paid", Paid)
 
+const Grace = Ship.sleep("grace")
+
+const FirstSignal = Ship.race("first-signal", { success: Schema.String })
+
+const Quote = Actor.workflow("Quote", {
+  input: { n: Schema.Int },
+  output: Schema.String,
+})
+
 const Pay = Actor.command("Pay", {
   input: Schema.Struct({ orderId: Schema.String, amount: Schema.Int }),
 })
@@ -69,7 +78,7 @@ const Begin = Actor.command("Begin", {
 const Shipper = Actor.make("Shipper", {
   key: Schema.String,
   events: [Paid],
-  api: { Ship, Pay, Begin },
+  api: { Ship, Quote, Pay, Begin },
 })
 
 const bump = (fixture: WorkflowsFixture, key: string) =>
@@ -108,6 +117,9 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
 
           yield* turn.emit(Paid.make(input))
         }),
+        Quote: Effect.fnUntraced(function* (input: { readonly n: number }) {
+          return `q-${input.n}`
+        }),
         Ship: Effect.fnUntraced(function* (input: {
           readonly orderId: string
           readonly sku: string
@@ -142,6 +154,22 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
           const label = yield* wf.version("label")
 
           if (input.sku.startsWith("sleep")) yield* CoolOff("10 seconds")
+
+          if (input.sku.startsWith("race"))
+            return `${reservation}:${yield* FirstSignal.run([
+              AwaitPaid({
+                where: (event) => event.orderId === input.orderId,
+                timeout: "1 minute",
+              }).pipe(
+                Effect.map(
+                  Option.match({
+                    onNone: () => "unpaid",
+                    onSome: (event) => `paid-${event.amount}`,
+                  }),
+                ),
+              ),
+              Grace("10 seconds").pipe(Effect.as("grace")),
+            ])}`
 
           if (input.sku.startsWith("wait")) {
             const paid = yield* AwaitPaid({
@@ -225,6 +253,18 @@ const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: string) =>
       orElse: () => Effect.die(new Error(`Timed out waiting for ${what}`)),
     }),
     Effect.asVoid,
+  )
+
+const suspendedRow = (executionId: string) =>
+  eventually(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const rows = yield* sql<{ status: string }>`SELECT status FROM actor_workflow_executions
+        WHERE execution_id = ${executionId}`
+
+      return rows[0]?.status === "suspended"
+    }).pipe(Effect.orDie),
+    "the execution to suspend",
   )
 
 export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
@@ -331,6 +371,92 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             FROM actor_workflow_step WHERE execution_id = ${run.executionId}`
 
           expect(steps[0]!.count).toBe(0)
+        }),
+      ),
+  },
+  {
+    name: "workflows: a race whose branches all suspend resumes and records the event winner",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const shipper = yield* Shipper.get("race-event")
+          const run = yield* shipper.Ship({ orderId: "r1", sku: "race" })
+          yield* suspendedRow(run.executionId)
+          yield* shipper.Pay({ orderId: "r1", amount: 5 })
+          expect(yield* run.result).toBe("r-race:paid-5")
+          expect(fixture.workflows.runs.get("reserve:r1")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "workflows: a race whose branches all suspend resumes and records the clock winner",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const test = yield* ActorTest
+          const shipper = yield* Shipper.get("race-clock")
+          const run = yield* shipper.Ship({ orderId: "r2", sku: "race" })
+          yield* suspendedRow(run.executionId)
+          yield* test.advance("11 seconds")
+          expect(yield* run.result).toBe("r-race:grace")
+          const again = yield* Shipper.run(Ship, run.executionId)
+          expect(yield* again.result).toBe("r-race:grace")
+        }),
+      ),
+  },
+  {
+    name: "workflows: rerunning one keyless start effect attaches to its execution",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const shipper = yield* Shipper.get("keyless")
+          const start = shipper.Quote({ n: 1 })
+          const first = yield* start
+          const retried = yield* start
+          expect(retried.executionId).toBe(first.executionId)
+          expect(yield* retried.result).toBe("q-1")
+          const fresh = yield* shipper.Quote({ n: 1 })
+          expect(fresh.executionId).not.toBe(first.executionId)
+        }),
+      ),
+  },
+  {
+    name: "workflows: interrupt is authorized as the execution's workflow member",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const shipper = yield* Shipper.get("interrupt-authz")
+          const run = yield* shipper.Ship({ orderId: "a1", sku: "wait" })
+          yield* suspendedRow(run.executionId)
+          fixture.denied.add("Ship")
+          expect(yield* run.interrupt.pipe(Effect.flip)).toMatchObject({
+            reason: Unauthorized.make({ code: "access_denied" }),
+          })
+          fixture.denied.delete("Ship")
+          yield* run.interrupt
+          const exit = yield* run.result.pipe(Effect.exit)
+          expect(Exit.isFailure(exit) && Exit.hasInterrupts(exit)).toBe(true)
+        }).pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Ship")))),
+      ),
+  },
+  {
+    name: "workflows: a resume whose reply is lost after commit still wakes the execution on redelivery",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const test = yield* ActorTest
+          const shipper = yield* Shipper.get("resume-replay")
+          const run = yield* shipper.Ship({ orderId: "rr1", sku: "sleep-rr" })
+          yield* suspendedRow(run.executionId)
+          yield* test.crashNext("afterCommit")
+          yield* test.advance("11 seconds")
+          expect(yield* run.result).toBe("r-sleep-rr:v2")
+          expect(fixture.workflows.runs.get("reserve:rr1")).toBe(1)
+          expect(yield* test.receiptsFor(shipper.ref, "$workflow/resume")).toBe(1)
         }),
       ),
   },
