@@ -11,6 +11,7 @@ This is the accepted API design, not a claim that every interface is implemented
 - [Context capabilities](02-context.md)
 - [TypeScript SDK](03-typescript-sdk.md)
 - [Drizzle integration](04-drizzle.md)
+- [Generating clients](05-generated-clients.md)
 - [Generated contracts](generated-contracts.md)
 - [Naming](naming.md)
 - [Versioning](versioning.md)

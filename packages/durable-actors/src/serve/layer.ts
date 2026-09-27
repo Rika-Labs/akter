@@ -9,7 +9,7 @@ import { type ServedDefinition, type ServedMember, servedDefinitions } from "../
 import { ActorError, Unauthorized } from "../errors/actor.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
-import { build, document, memberPath } from "./api.ts"
+import { build, document, memberPath, PROTOCOL_OPERATIONS } from "./api.ts"
 import { type AuthProvider, type Authenticated, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
@@ -127,7 +127,7 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
 export const serve = <R = never>(options: ServeOptions<R>) =>
   HttpRouter.use(
     Effect.fnUntraced(function* (router) {
-      const basePath = options.basePath ?? ""
+      const basePath = options.basePath === "/" ? "" : (options.basePath ?? "")
       const definitions = options.actors.map(resolve)
       const names = new Set<string>()
 
@@ -135,6 +135,17 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         if (names.has(definition.name))
           return yield* Effect.die(new Error(`Actor.serve: ${definition.name} is listed twice`))
         names.add(definition.name)
+
+        const collision = definition.members.find((member) =>
+          PROTOCOL_OPERATIONS.has(`${definition.name}.${member.tag}`),
+        )
+
+        if (collision !== undefined)
+          return yield* Effect.die(
+            new Error(
+              `Actor.serve: ${definition.name}.${collision.tag} collides with a protocol operation id`,
+            ),
+          )
       }
 
       const actors = yield* InternalActors
@@ -349,9 +360,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         if (SchemaAST.isVoid(member.output.ast)) return HttpServerResponse.empty({ status: 204 })
         const decoded = yield* decodeSuccess(value).pipe(Effect.orDie)
 
-        return decoded.value === undefined
-          ? HttpServerResponse.empty({ status: 204 })
-          : HttpServerResponse.jsonUnsafe(decoded.value, { status: 200 })
+        return HttpServerResponse.jsonUnsafe(decoded.value ?? null, { status: 200 })
       })
 
       const outcomeResponse = (member: ServedMember, outcome: Outcome) =>

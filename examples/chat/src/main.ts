@@ -6,27 +6,13 @@
 //     -H 'content-type: application/json' -d '{}'
 //   curl localhost:3000/openapi.json
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Actor, Unauthorized, User } from "durable-actors"
+import { User } from "durable-actors"
 import { Actors, Database } from "durable-actors/runtime"
-import { Config, Effect, Layer, Option, Redacted, Schema } from "effect"
-import { Headers, HttpRouter } from "effect/unstable/http"
-import { Room } from "./room/contract.ts"
+import { Config, Effect, Layer, Redacted, Schema } from "effect"
+import { HttpRouter } from "effect/unstable/http"
 import { RoomLive } from "./room/layer.ts"
 import { ModerationApi } from "./room/moderation.ts"
-
-// A stand-in for a real identity provider: the bearer token is the user's name. Use Actor.auth.jwt in production.
-const demoAuth = Actor.auth.make((request) =>
-  Option.match(Headers.get(request.headers, "authorization"), {
-    onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
-    onSome: (header) => {
-      const match = /^Bearer ([a-z0-9-]{1,64})$/.exec(header)
-
-      return match === null
-        ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
-        : Effect.succeed({ tenant: "chat-demo", caller: User.make({ subject: match[1]! }) })
-    },
-  }),
-)
+import { routes } from "./server.ts"
 
 const runtime = Layer.unwrap(
   Effect.gen(function* () {
@@ -44,12 +30,6 @@ const runtime = Layer.unwrap(
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
-
-const routes = Actor.serve({
-  actors: [Room],
-  auth: demoAuth,
-  openapi: { path: "/openapi.json", title: "Chat" },
-})
 
 HttpRouter.serve(routes).pipe(
   Layer.provide(runtime),

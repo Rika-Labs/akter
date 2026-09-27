@@ -63,6 +63,8 @@ const Secret = Actor.command("Secret")
 
 const Count = Actor.query("Count", { output: Schema.Int })
 
+const Peek = Actor.query("Peek", { output: Schema.UndefinedOr(Schema.Int) })
+
 const count = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
@@ -70,7 +72,7 @@ const count = Actor.state({
 const HttpRoom = Actor.make("HttpRoom", {
   key: Schema.String,
   state: count,
-  api: { Post, Whoami, Hold, Crash, Count },
+  api: { Post, Whoami, Hold, Crash, Count, Peek },
   internal: { Secret },
 })
 
@@ -125,6 +127,11 @@ export const httpLayer = Layer.mergeAll(
     Effect.succeed({
       Count: Effect.fnUntraced(function* () {
         return (yield* HttpRoom.Read).state.count
+      }),
+      Peek: Effect.fnUntraced(function* () {
+        const { count } = (yield* HttpRoom.Read).state
+
+        return count === 0 ? undefined : count
       }),
     }),
   ),
@@ -878,6 +885,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               "HttpRoom.Count",
               "HttpRoom.Crash",
               "HttpRoom.Hold",
+              "HttpRoom.Peek",
               "HttpRoom.Post",
               "HttpRoom.Whoami",
               "HttpTicket.Join",
@@ -888,7 +896,8 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const { path, method, operation } of operations) {
             const headers = operation.parameters.filter((parameter) => parameter.in === "header")
-            const isCommand = path.startsWith("/actors/") && !path.endsWith("/Count")
+            const isCommand =
+              path.startsWith("/actors/") && !path.endsWith("/Count") && !path.endsWith("/Peek")
             expect(headers.map((parameter) => parameter.name)).toEqual(
               isCommand ? ["idempotency-key"] : [],
             )
@@ -1102,6 +1111,56 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           expect(reply).toMatchObject({ status: 200, body: `${tenant}/alice` })
+        }),
+      ),
+  },
+  {
+    name: "serves routes at the root for basePath /, and answers an undefined query output with 200 null",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp({ basePath: "/" })
+          const token = `${yield* tenantOf}:alice`
+
+          expect((yield* server.send("/protocol", { method: "GET" })).status).toBe(200)
+          expect(yield* server.send("/actors/HttpRoom/peek/Peek", { token })).toMatchObject({
+            status: 200,
+            text: "null",
+          })
+
+          yield* server.send("/actors/HttpRoom/peek/Post", {
+            token,
+            key: yield* server.mint(),
+            body: { text: "a" },
+          })
+
+          expect(yield* server.send("/actors/HttpRoom/peek/Peek", { token })).toMatchObject({
+            status: 200,
+            body: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "fails Actor.serve at startup when a member's operation id collides with a protocol route",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const Durable = Actor.make("durable", {
+            key: Actor.singleton,
+            state: count,
+            api: { protocol: Actor.query("protocol", { output: Schema.Int }) },
+          })
+
+          const exit = yield* HttpRouter.toHttpEffect(
+            Actor.serve({ actors: [Durable], auth: tokens }).pipe(
+              Layer.provide(Layer.succeed(InternalActors, yield* InternalActors)),
+            ),
+          ).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+            "collides with a protocol operation id",
+          )
         }),
       ),
   },

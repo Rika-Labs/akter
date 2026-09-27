@@ -292,6 +292,10 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 - `rejects non-JSON and oversized bodies and credentials before any turn` — 415, 413 for body and credentials, 400 with value-free schema issues, 400 `decode` for invalid UTF-8, and 400 `unsupported_protocol`.
 - `answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version`.
 - `fails Actor.serve at startup when retryWindowMs is below 60 seconds, and admits ids minted at exactly 60 seconds`.
+- `serves routes at the root for basePath /, and answers an undefined query output with 200 null`.
+- `fails Actor.serve at startup when a member's operation id collides with a protocol route`.
+
+`rejects a declared error that claims a framework status or tag` (`serve/wire.test.ts`) covers 400, 404, and 409. `serves the OpenAPI document recorded in the snapshot` (`examples/chat/src/server.test.ts`) snapshots the chat example's document, so a schema change shows up in review.
 
 `waits at least retryAfter before retrying RunnerAtCapacity in process` (`runtime/retry.test.ts`) checks that in-process retries of `RunnerAtCapacity` and `ActorUnavailable` start from each error's own `retryAfter`; the existing `conformance/capacity.ts` cases still pass.
 
