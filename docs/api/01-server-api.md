@@ -255,3 +255,5 @@ Applications run actors in three forms:
 - **hosted:** run the same layers on managed runners with Neki.
 
 `Actor.serve` requires authentication; `Actor.auth.none` is the explicit public opt-out. Authentication sets `CurrentCaller` at the edge. The API uses runtime schemas at every transport and persistence boundary and preserves the command identity across retries.
+
+Target API from [ADR 0027](../decisions/0027-served-protocol.md): `Actor.serve({ actors, auth, basePath?, openapi?, origins?, limits? })` takes actor definitions (their layers are provided as usual) and returns a layer of `HttpRouter` routes. `auth` is `Actor.auth.jwt({ issuer, audience, jwks, tenant, algorithms?, subject?, clockTolerance? })`, `Actor.auth.make(authenticate)`, or `Actor.auth.none`; a provider returns a `User` or `Anonymous` caller, the tenant, and the credential's expiry, never a `System` caller. `Actor.make` gains `feeds`, the events an actor type serves as SSE feeds. `openapi: { path }` serves an OpenAPI 3.1 document derived from the same `HttpApi` as the routes.
