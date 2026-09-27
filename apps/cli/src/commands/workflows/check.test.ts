@@ -108,6 +108,17 @@ describe("durable workflows check", () => {
       const bare = yield* Effect.exit(actorsOf({ module: { Shop: Current.Shop }, entry: "./a.ts" }))
       expect(Exit.isFailure(bare) && String(bare.cause)).toContain("must export an `actors` array")
 
+      const fake = yield* Effect.exit(
+        actorsOf({
+          module: { actors: [{ name: "Shop", api: { Order: { kind: "workflow" } } }] },
+          entry: "./a.ts",
+        }),
+      )
+      expect(Exit.isFailure(fake) && Schema.is(UsageError)(Cause.squash(fake.cause))).toBe(true)
+      expect(Exit.isFailure(fake) && String(fake.cause)).toContain(
+        "Shop.Order is not an Actor.workflow definition",
+      )
+
       const [loaded] = yield* actorsOf({ module: { actors: [Current.Shop] }, entry: "./a.ts" })
       expect(loaded?.name).toBe("Shop")
       expect(loaded?.api["Order"]).toBe(Current.Shop.api.Order)

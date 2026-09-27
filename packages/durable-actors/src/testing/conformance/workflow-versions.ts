@@ -29,6 +29,9 @@ interface Variant {
   /** A step the body never reaches. */
   readonly extra?: string
   readonly id?: typeof Schema.String | typeof Schema.NonEmptyString
+  readonly labelled?: typeof Schema.String | typeof Schema.NonEmptyString
+  /** A second sleep after the label step. */
+  readonly rest?: boolean
 }
 
 /** One deployment of the `Versioned` actor type: reserve, sleep, then label. */
@@ -49,7 +52,11 @@ const deployment = (variant: Variant) => {
   const label = variant.label === undefined ? "label" : variant.label
 
   const Label =
-    label === null ? undefined : Order.step(label, { input: Schema.String, success: Schema.String })
+    label === null
+      ? undefined
+      : Order.step(label, { input: Schema.String, success: variant.labelled ?? Schema.String })
+
+  const Rest = variant.rest === true ? Order.sleep("rest") : undefined
 
   if (variant.extra !== undefined)
     Order.step(variant.extra, { input: Schema.String, success: Schema.String })
@@ -68,6 +75,8 @@ const deployment = (variant: Variant) => {
           Label === undefined
             ? reserved
             : yield* Label.run(reserved, (value) => Effect.succeed(`${value}:${label}`))
+
+        if (Rest !== undefined) yield* Rest("1 minute")
 
         return `${labelled}:v${fraud}`
       }),
@@ -107,6 +116,10 @@ const Marked = deployment({ versions: { fraud: { current: 1, min: 0 } } })
 const MarkedNext = deployment({ versions: { fraud: { current: 2, min: 1 } } })
 
 const MarkedLater = deployment({ versions: { fraud: { current: 3, min: 2 } } })
+
+const Rested = deployment({ rest: true })
+
+const RestedRelabelled = deployment({ rest: true, labelled: Schema.NonEmptyString })
 
 const Probe = Actor.command("Probe")
 
@@ -375,21 +388,35 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
       environment.run(
         Effect.gen(function* () {
           const database = yield* environment.freshDatabase
-          yield* deploy(
+          const open = yield* deploy(
             database,
             Base.layer,
             Effect.gen(function* () {
-              yield* sleeping(Base, "o")
+              const executionId = yield* sleeping(Base, "o")
               const sql = yield* SqlClient.SqlClient
               yield* sql`DELETE FROM actor_workflow_manifests WHERE actor_type = 'Versioned'`.pipe(
                 Effect.orDie,
               )
+
+              return executionId
             }),
           )
 
           expect(yield* refusal(database, Audited.layer)).toContain(
             `start manifest missing  1 open execution`,
           )
+          // The deployment whose manifest hash the execution records is its start manifest.
+          expect(
+            yield* deploy(
+              database,
+              Base.layer,
+              Effect.gen(function* () {
+                expect(yield* checkWorkflows([Base.Versioned])).toEqual([])
+
+                return yield* finish(Base, open)
+              }),
+            ),
+          ).toBe("r-o:label:v0")
         }),
       ),
   },
@@ -415,6 +442,99 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
               expect(yield* finish(BaseAgain, open)).toBe("r-o:label:v0")
             }),
           )
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
+    name: "workflow versions: an unchanged startup still checks executions an older runner started since",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+          yield* deploy(database, Base.layer, Effect.void)
+          yield* deploy(database, Removed.layer, Effect.void)
+
+          // As if a runner of the Base deployment still serves and started it.
+          yield* deploy(
+            database,
+            Removed.layer,
+            Effect.gen(function* () {
+              const executionId = yield* sleeping(Removed, "o")
+              const sql = yield* SqlClient.SqlClient
+              const { manifest, hash } = yield* manifestOf("Versioned", Base.Order)
+
+              yield* sql`INSERT INTO actor_workflow_manifests
+                (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
+                VALUES ('Versioned', 'Order', ${hash}, ${toJson(manifest)}::jsonb, 0)
+                ON CONFLICT DO NOTHING`.pipe(Effect.orDie)
+              yield* sql`UPDATE actor_workflow_executions SET manifest_hash = ${hash}
+                WHERE execution_id = ${executionId}`.pipe(Effect.orDie)
+            }),
+          )
+
+          expect(yield* refusal(database, Removed.layer)).toContain(
+            `Versioned/Order  step "label" removed  1 open execution`,
+          )
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
+    name: "workflow versions: a step a newer deployment settles under its changed result schema doesn't strand the execution",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+          const open = yield* deploy(database, Rested.layer, sleeping(Rested, "o"))
+
+          yield* deploy(
+            database,
+            RestedRelabelled.layer,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* ActorTest.use((test) => test.advance("2 minutes"))
+
+              yield* sql<{ manifest_hash: string }>`SELECT x.manifest_hash
+                FROM actor_workflow_executions x JOIN actor_workflow_step s
+                  ON s.routing_key = x.routing_key AND s.execution_id = x.execution_id
+                WHERE x.execution_id = ${open} AND s.step = 'label' AND s.exit IS NOT NULL`.pipe(
+                Effect.repeat({
+                  schedule: Schedule.spaced("25 millis"),
+                  until: (rows) => rows.length > 0,
+                }),
+                Effect.timeoutOrElse({
+                  duration: "30 seconds",
+                  orElse: () => Effect.die(new Error("Timed out waiting for the label step")),
+                }),
+                Effect.orDie,
+              )
+              yield* suspended(open)
+            }),
+          )
+
+          expect(
+            yield* deploy(
+              database,
+              RestedRelabelled.layer,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+
+                const [row] = yield* sql<{ manifest_hash: string }>`SELECT manifest_hash
+                  FROM actor_workflow_executions WHERE execution_id = ${open}`.pipe(Effect.orDie)
+
+                expect(row?.manifest_hash).toBe(yield* hashOf(RestedRelabelled))
+                expect(yield* checkWorkflows([RestedRelabelled.Versioned])).toEqual([])
+                // A rollback would decode the label it settled under the old schema.
+                expect(
+                  (yield* checkWorkflows([Rested.Versioned])).map(({ problem }) => problem),
+                ).toEqual([`step "label" result schema changed`])
+                yield* ActorTest.use((test) => test.advance("2 minutes"))
+
+                return yield* finish(RestedRelabelled, open)
+              }),
+            ),
+          ).toBe("r-o:label:v0")
         }),
       ),
   },

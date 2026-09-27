@@ -53,6 +53,29 @@ const Entry = Schema.Struct({
 
 const decodeEntry = Schema.decodeUnknownEffect(Entry)
 
+const AnySchema = Schema.declare(Schema.isSchema)
+
+/** The fields of a workflow member the check reads. */
+const WorkflowShape = Schema.Struct({
+  kind: Schema.Literal("workflow"),
+  tag: Schema.String,
+  input: AnySchema,
+  output: AnySchema,
+  errors: Schema.Array(AnySchema),
+  versions: Schema.Record(
+    Schema.String,
+    Schema.Struct({ current: Schema.Number, min: Schema.Number }),
+  ),
+  registry: Schema.Struct({
+    steps: Schema.declare((u): u is ReadonlyMap<unknown, unknown> => u instanceof Map),
+  }),
+})
+
+const isWorkflowShape = Schema.is(WorkflowShape)
+
+const isWorkflowKind = (member: unknown) =>
+  typeof member === "object" && member !== null && "kind" in member && member.kind === "workflow"
+
 /** Imports the entry module at `entry`; a missing or broken module is a usage error. */
 export const loadEntry = (entry: string) =>
   Effect.tryPromise({
@@ -66,10 +89,21 @@ export const loadEntry = (entry: string) =>
 /** The actors a loaded entry module exports. */
 export const actorsOf = ({ module, entry }: { readonly module: object; readonly entry: string }) =>
   decodeEntry(module).pipe(
-    Effect.map(({ actors }) => actors),
     Effect.mapError(() =>
       UsageError.make({ message: `${entry} must export an \`actors\` array of actor definitions` }),
     ),
+    Effect.flatMap(({ actors }) => {
+      for (const actor of actors)
+        for (const [name, member] of Object.entries(actor.api))
+          if (isWorkflowKind(member) && !isWorkflowShape(member))
+            return Effect.fail(
+              UsageError.make({
+                message: `${entry}: ${actor.name}.${name} is not an Actor.workflow definition`,
+              }),
+            )
+
+      return Effect.succeed(actors)
+    }),
   )
 
 /** What the check prints and the exit code it ends with. */

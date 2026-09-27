@@ -224,18 +224,21 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
     actor_type: string
     workflow: string
     manifest_hash: string
+    manifest: string | null
     step: string
     kind: string
     version: number | null
     open: number
     oldest: string
-  }>`SELECT x.actor_type, x.workflow, x.manifest_hash, s.step, s.kind,
+  }>`SELECT x.actor_type, x.workflow, x.manifest_hash, m.manifest::text AS manifest, s.step, s.kind,
       CASE WHEN s.kind = 'version' THEN s.version END AS version,
       count(DISTINCT x.execution_id)::integer AS open, min(x.started_at_ms)::text AS oldest
     FROM actor_workflow_executions x
     JOIN actor_workflow_step s ON s.routing_key = x.routing_key AND s.execution_id = x.execution_id
+    LEFT JOIN actor_workflow_manifests m ON m.actor_type = x.actor_type AND m.workflow = x.workflow
+      AND m.manifest_hash = x.manifest_hash
     WHERE x.status <> 'finished' AND ${scope} AND (s.kind = 'version' OR s.exit IS NOT NULL)
-    GROUP BY x.actor_type, x.workflow, x.manifest_hash, s.step, s.kind,
+    GROUP BY x.actor_type, x.workflow, x.manifest_hash, m.manifest::text, s.step, s.kind,
       CASE WHEN s.kind = 'version' THEN s.version END`
 
   for (const row of recorded) {
@@ -262,7 +265,18 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
     }
 
     const step = workflow.steps.get(row.step)
-    const stored = manifests.get(toJson([row.actor_type, row.workflow, row.manifest_hash]))
+    const key = toJson([row.actor_type, row.workflow, row.manifest_hash])
+
+    // An execution that started after the groups were read brings its manifest here.
+    if (!manifests.has(key))
+      manifests.set(
+        key,
+        row.manifest === null
+          ? undefined
+          : yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie),
+      )
+
+    const stored = manifests.get(key)
 
     // A start manifest already reports a missing step for every execution under it.
     if (step === undefined || step.kind !== row.kind) {
@@ -333,8 +347,8 @@ export const formatIncompatibility = (incompatibility: Incompatibility) =>
 
 /**
  * The startup check for one actor type. It skips the comparison when each
- * workflow's manifest is already the most recently accepted one and no
- * accepted workflow is gone; otherwise it compares, and a passing deployment
+ * workflow's manifest is already the most recently accepted one, no accepted
+ * workflow is gone and no open execution started under another manifest; otherwise it compares, and a passing deployment
  * becomes the most recently accepted one, so a rollback is compared again.
  * `retained`: the actor type has workflows or workflow rows retention sweeps.
  */
@@ -385,7 +399,17 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
           ),
         )
 
-      if (unchanged) return { checked: false, incompatibilities: [], retained: true }
+      // A runner of an older deployment may have started executions since.
+      const foreign =
+        unchanged &&
+        (yield* sql`SELECT 1 FROM actor_workflow_executions x
+          WHERE x.actor_type = ${actor.name} AND x.status <> 'finished'
+            AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(${toJson(rows)}::jsonb)
+              AS d (workflow text, manifest_hash text)
+              WHERE d.workflow = x.workflow AND d.manifest_hash = x.manifest_hash)
+          LIMIT 1`).length > 0
+
+      if (unchanged && !foreign) return { checked: false, incompatibilities: [], retained: true }
 
       const incompatibilities = yield* findIncompatibilities([actor], { everyActorType: false })
 
@@ -413,7 +437,7 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
 
 /**
  * The deploy check `durable workflows check` runs: every actor type in the
- * database against `actors`, in a read-only transaction.
+ * database against `actors`, in one read-only snapshot.
  */
 export const checkWorkflows = (
   actors: ReadonlyArray<{ readonly name: string; readonly api: object }>,
@@ -422,7 +446,7 @@ export const checkWorkflows = (
     const sql = yield* SqlClient.SqlClient
 
     return yield* sql.withTransaction(
-      sql`SET TRANSACTION READ ONLY`.pipe(
+      sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.pipe(
         Effect.andThen(findIncompatibilities(actors.map(declaredOf), { everyActorType: true })),
       ),
     )

@@ -564,6 +564,24 @@ export const activationEngine = (options: {
           return "abandoned" as const
         }
 
+        const own = yield* manifestOf(ref.actor, workflow.member)
+
+        // Once this runner's result schemas apply to the steps still to
+        // settle, its manifest becomes the execution's start manifest.
+        if (
+          execution.manifest_hash !== own.hash &&
+          (startManifests.get(execution.manifest_hash)?.changed.length ?? 0) > 0
+        ) {
+          yield* fenced(sql`
+            WITH m AS (INSERT INTO actor_workflow_manifests
+                (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
+              VALUES (${ref.actor}, ${workflow.member.tag}, ${own.hash}, ${toJson(own.manifest)}::jsonb, 0)
+              ON CONFLICT DO NOTHING)
+            UPDATE actor_workflow_executions SET manifest_hash = ${own.hash}
+            WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
+              AND manifest_hash = ${execution.manifest_hash}`)
+        }
+
         const eventCursor = { value: BigInt(execution.event_cursor) }
         const entry = live.get(executionId)!
 
