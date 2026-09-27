@@ -10,6 +10,9 @@ import { Cancelled, DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
 import { blob } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
+import { make as authMake, none as authNone } from "./serve/auth.ts"
+import { jwt } from "./serve/jwt.ts"
+import { serve } from "./serve/layer.ts"
 
 export const Actor = {
   make: Definition.make,
@@ -25,6 +28,10 @@ export const Actor = {
   blob,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
+  /** Serves actor definitions over HTTP as routes on the application's `HttpRouter`. */
+  serve,
+  /** Authentication providers for `Actor.serve`; one per served layer. */
+  auth: { none: authNone, make: authMake, jwt },
   /** Provided by the runtime only inside command turns; `X.intents` requires it. */
   InTurn,
   as:

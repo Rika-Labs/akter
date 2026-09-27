@@ -5,6 +5,9 @@ export const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int 
 
 export const Fill = Actor.command("Fill", { input: Schema.String, output: Schema.Int })
 
+/** Counts a payload without storing it, so its size is limited by the request, not by state. */
+export const Weigh = Actor.command("Weigh", { input: Schema.String, output: Schema.Int })
+
 export const Peek = Actor.query("Peek", { output: Schema.Int })
 
 const state = Actor.state({
@@ -16,7 +19,7 @@ const state = Actor.state({
 export const Probe = Actor.make("Probe", {
   key: Schema.NonEmptyString,
   state,
-  api: { Add, Fill, Peek },
+  api: { Add, Fill, Weigh, Peek },
 })
 
 /** Hibernates quickly so a later turn measures a cold activation. */
@@ -25,6 +28,14 @@ export const SleepyProbe = Actor.make("SleepyProbe", {
   state,
   api: { Add, Fill, Peek },
   policy: { hibernateAfter: "250 millis" },
+})
+
+/** Stays resident for the whole run, so its activations can be counted in the heap. */
+export const ResidentProbe = Actor.make("ResidentProbe", {
+  key: Schema.NonEmptyString,
+  state,
+  api: { Add },
+  policy: { hibernateAfter: "1 hour" },
 })
 
 export class Ticked extends Actor.Event<Ticked>()("Ticked", { n: Schema.Int }) {}

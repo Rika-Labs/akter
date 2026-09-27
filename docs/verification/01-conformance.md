@@ -269,6 +269,42 @@ Postgres only (independent connections):
 
 These cases are in-process. They exercise Cluster's lock expiry, shard movement, and the generation fence against real Postgres, but not real process death or network partitions; the multi-process drills (T7) cover those. The simulated rival case `orders events gap-free when a rival activation races the owner for one actor` in `conformance/events.ts` stays as a fast single-runner check.
 
+### Served HTTP (M3.2)
+
+The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/testing/conformance/http.ts) and are registered with `describeConformance`, so the same named cases run on PGlite and Postgres. Each case serves fixture actors (keyed `HttpRoom`, singleton `HttpLobby`, minted `HttpTicket`) through `Actor.serve` on a real `Bun.serve` listener on loopback and calls it with `fetch`; the fixture provider reads `Bearer <tenant>:<subject>`. Unit tests beside the server ([`serve/wire.test.ts`](../../packages/durable-actors/src/serve/wire.test.ts), [`serve/jwt.test.ts`](../../packages/durable-actors/src/serve/jwt.test.ts)) cover `MailboxFull`, `RunnerAtCapacity`, and `Timeout` envelopes, reserved declared-error statuses, and JWT signature, issuer, audience, algorithm, and expiry checks.
+
+- `gives concurrent requests with different tokens different principals` — gate **Per-call caller over HTTP**: 16 concurrent requests, one per subject, each see their own tenant and subject.
+- `fails missing, invalid, and expired credentials with their codes before any turn and never as Anonymous` — 401 with `www-authenticate: Bearer` for commands, queries, and `/command-ids`; no handler runs.
+- `serves every caller as Anonymous in the default tenant under Actor.auth.none, ignoring credentials`.
+- `takes the tenant only from the provider, and refuses a provider that returns a System caller` — tenant-looking query strings and headers are ignored; a `System` caller is an opaque 500 and runs nothing.
+- `serves a 512-byte subject and rejects 513 bytes and an encoded caller over 1 KiB` — gate **Cluster header size** at the served edge. `serializes a 512-byte subject through a cross-runner command` (`conformance/multi-runner.ts`, two runners on real Postgres) carries that largest subject through Cluster to an actor owned by the other runner and back from its turn.
+- `replays a committed output when a response is dropped and the same Idempotency-Key is retried` — row **Command response lost over HTTP**: one receipt, the handler runs once, and a quoted key is the same id.
+- `replays a declared failure with the same tag, fields, and status` — default 422 and a declared `httpApiStatus` 423.
+- `returns 409 CommandConflict for a reused id with different input, without running the handler`.
+- `returns 410 CommandExpired for an expired id even after its receipt is pruned` — no receipt, no reminted id.
+- `rejects a command without Idempotency-Key, and a malformed, future, or wrong-window id, before any turn` — row **Proxy injects its own request id** (an `x-request-id` request header is never a command id) and row **Client clock ahead of the database clock** (`future`), plus `malformed`, `version`, and `window`.
+- `mints ids from the database clock at /command-ids without writing, and admits them` — `/protocol` reports the protocol, retry window, and database time; minting writes no receipt.
+- `carries no ActorUnavailable cause over HTTP, and computes isRetryable and retryAfter on the wire` — 503, jittered `retryAfter` around 250 ms, `retry-after: 1`.
+- `answers a defect with an opaque 500 and writes no receipt` — `{ _tag: "Defect", traceId }` only.
+- `answers an internal member exactly like an unknown one, and omits it from OpenAPI` — 404 `unknown_route`.
+- `routes keyed, singleton, and minted actors, and treats special characters in ids as one segment`.
+- `keeps running a command whose HTTP client disconnected, and replays it on retry` — row **HTTP client disconnects mid-command**: the aborted command commits once.
+- `documents every served route and serves every documented one; the document is deterministic` — OpenAPI 3.1 with `<Actor>.<Member>` operation ids, `Idempotency-Key` on commands only, and two builds byte-identical.
+- `refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin` — 403 before authentication; CORS headers and preflight for a listed origin.
+- `rejects non-JSON and oversized bodies and credentials before any turn` — 415, 413 for body and credentials, 400 with value-free schema issues, 400 `decode` for invalid UTF-8, and 400 `unsupported_protocol`.
+- `answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version`.
+- `fails Actor.serve at startup when retryWindowMs is below 60 seconds, and admits ids minted at exactly 60 seconds`.
+- `serves routes at the root for basePath /, and answers an undefined query output with 200 null`.
+- `ignores a trailing slash on basePath`.
+- `fails Actor.serve at startup when a member's operation id collides with a protocol route`.
+- `fails Actor.serve at startup when openapi.path collides with a protocol route`.
+
+`rejects a declared error that claims a framework status or tag` (`serve/wire.test.ts`) covers 400, 404, and 409. `serves the OpenAPI document recorded in the snapshot` (`examples/chat/src/server.test.ts`) snapshots the chat example's document, so a schema change shows up in review.
+
+`waits at least retryAfter before retrying RunnerAtCapacity in process` (`runtime/retry.test.ts`) checks that in-process retries of `RunnerAtCapacity` and `ActorUnavailable` start from each error's own `retryAfter`; the existing `conformance/capacity.ts` cases still pass.
+
+These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency over HTTP/1.1 keep-alive for commands and queries with `Actor.auth.none`, 64 concurrent command callers, and commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload; HTTP/2 is not measured, since the harness serves through `Bun.serve` over plain HTTP/1.1.
+
 ### Multi-runner relay (M2.4)
 
 The cases live in [`conformance/relay.ts`](../../packages/durable-actors/src/testing/conformance/relay.ts) and are registered with `describeConformance`. Multi-runner cases build `ActorTest.cluster` on a fresh Postgres database with a 3-second `shardLockExpiration`; the fixture's `afterClaim` counter is a `TurnHooks` service around the cluster, so it sees every runner's claims. A `Relayer` stages `Take` intents to 32 `RelayMailbox` actors, and a `RelayCaller` performs `RelayCall` (`retry: { times: 1 }`, routed to `Called` and `CallFailed`), `RelayCallOnce` (`retry: { times: 0 }`), and `RelayTimed` (`timeout: "100 millis"`, `retry: { times: 3, backoff: { base: "10 millis", max: "40 millis" } }`). Cases that need to control which runner claims set `relay.poll` to an hour, so only the committing runner's wake and `advance` claim rows. Executor-lease cases use `executors.lease: "3 seconds"`.

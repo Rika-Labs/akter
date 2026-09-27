@@ -19,6 +19,20 @@ Before enabling multiple Railway replicas, prove that every replica advertises a
 
 Intended deployment order: provision database and secrets; run framework and actor-table migrations; start compatible runners; verify readiness; route new traffic; drain old runners. Keep database URLs redacted and set auth explicitly—`Actor.serve` requires an auth policy.
 
+## Postgres connections across runners
+
+Each runner opens its own pool through `Database.postgres`, up to `maxConnections` (default 50). A command holds one connection for its whole turn, so under load a runner uses its whole pool, and idle connections close after 10 seconds. Size the pools against the server:
+
+```text
+runners × maxConnections + reserved ≤ max_connections
+```
+
+`reserved` covers `superuser_reserved_connections` (3 by default), migrations, backups, monitoring, and operator sessions. Postgres's default `max_connections` of 100 fits one runner at the default pool with that headroom, not two. For more runners either lower `maxConnections` per runner, for example 20 each for four runners, or raise `max_connections` with the memory the server has. A pooler in front of Postgres is unverified: turns rely on transaction-scoped `set_config`, row locks, and Cluster's SQL shard locks, and no pooler mode has been tested with them.
+
+Measured on one machine (see [performance](../verification/03-performance.md#activation-residency-and-pools-across-runners-59)): under 64 callers each runner reached its pool size and no more, so peak connections were the sum of the runners' pools plus one connection outside them. With one runner and 64 callers over 10,000 actors, 50 connections lowered steady-state p99 against 25 in both runs (96 against 179 ms, and 130 against 166 ms). Those runners shared one process and CPU, so the runs show how connections add up across runners, not what latency separate runner processes would see; multi-runner operation is not yet supported (see the [support matrix](support-matrix.md)).
+
+Memory bounds the other runner limit. A resident activation holds about 20 KiB of JavaScript heap, so the default `maxResidentActors` of 10,000 is about 200 MiB per runner before the rest of the process. Raise it only with the memory you give the process.
+
 ## Readiness and bounded graceful drain
 
 The accepted behavior in [ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md) requires usable storage, compatible schemas, registered actors, operational routing, and a runner that is not draining before advertising readiness. Listening on a port is insufficient; waking every actor or finishing all workflows is unnecessary.
