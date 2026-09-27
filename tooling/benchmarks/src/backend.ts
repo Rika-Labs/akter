@@ -9,6 +9,8 @@ export interface Activity {
   readonly samples: number
   /** Mean number of client connections in each state per sample. */
   readonly connections: Readonly<Record<string, number>>
+  /** Most client connections open at once in any sample. */
+  readonly peakConnections: number
 }
 
 export interface StatementCount {
@@ -194,6 +196,7 @@ export const postgres = (external: string | undefined) =>
         Effect.gen(function* () {
           const totals = new Map<string, number>()
           let samples = 0
+          let peakConnections = 0
 
           const sampler = yield* Effect.forkChild(
             Effect.gen(function* () {
@@ -205,6 +208,10 @@ export const postgres = (external: string | undefined) =>
                 GROUP BY 1`.pipe(Effect.orDie)
 
               samples += 1
+              peakConnections = Math.max(
+                peakConnections,
+                rows.reduce((total, { count }) => total + count, 0),
+              )
 
               for (const { bucket, count } of rows)
                 totals.set(bucket, (totals.get(bucket) ?? 0) + count)
@@ -223,7 +230,7 @@ export const postgres = (external: string | undefined) =>
               ]),
           )
 
-          return [result, { samples, connections }] as const
+          return [result, { samples, connections, peakConnections }] as const
         })
 
       return {
