@@ -49,6 +49,11 @@ export interface Policy<
    * a defect of the turn. Default 67,108,864 (64 MiB).
    */
   readonly maxBlobBytes?: number
+  /**
+   * How long a finished workflow execution keeps its result for `poll` after
+   * it finishes. Must be at least the deployment's retry window. Default 7 days.
+   */
+  readonly keepWorkflows?: Duration.Input
   /** Per declared effect, keyed by tag: `retry`, `onSuccess`, and `onDeadLetter`. */
   readonly effects?: EffectPolicies<Effects, Command>
   /**
@@ -74,6 +79,7 @@ export interface TurnPolicy {
   readonly blobMaxBytes: number
   readonly connections: "park" | "keepAwake"
   readonly reauthorizeMs: number
+  readonly keepWorkflowsMs: number
 }
 
 export const resolvePolicy = (policy: {
@@ -103,5 +109,6 @@ export const resolvePolicy = (policy: {
     reauthorizeMs: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 3_600_000 })).make(
       Duration.toMillis(declared?.reauthorizeEvery ?? "60 seconds"),
     ),
+    keepWorkflowsMs: horizon(declared?.keepWorkflows ?? "7 days"),
   })
 }

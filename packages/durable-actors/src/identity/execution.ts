@@ -1,0 +1,91 @@
+import { Effect, Encoding, Result, Schema } from "effect"
+import { InvalidExecutionId, InvalidExecutionKey } from "../errors/workflow.ts"
+
+/** Longest workflow key, in UTF-8 bytes. */
+export const MAX_KEY_BYTES = 256
+
+/** Longest execution id, in bytes. */
+export const MAX_EXECUTION_ID_BYTES = 1024
+
+const utf8 = new TextEncoder()
+
+const Parts = Schema.Tuple([
+  Schema.NonEmptyString,
+  Schema.NonEmptyString,
+  Schema.NonEmptyString,
+  Schema.NonEmptyString,
+  Schema.NonEmptyString,
+])
+
+const PartsJson = Schema.fromJsonString(Parts)
+
+const decodeParts = Schema.decodeResult(PartsJson)
+
+const encodeParts = (parts: typeof Parts.Type) => JSON.stringify(parts)
+
+/** Everything an execution id names: its owner, its workflow member, and its key. */
+export interface Execution {
+  readonly tenant: string
+  readonly actor: string
+  readonly id: string
+  readonly workflow: string
+  readonly key: string
+}
+
+export const checkKey = (key: string) => {
+  const bytes = utf8.encode(key).byteLength
+
+  return bytes === 0 || bytes > MAX_KEY_BYTES
+    ? Effect.fail(InvalidExecutionKey.make({ bytes }))
+    : Effect.void
+}
+
+/**
+ * The stable id of one execution: every part that identifies it, so an id
+ * routes to its owner without a lookup. The deployment is the database, so
+ * it is not encoded.
+ */
+export const encodeExecutionId = (execution: Execution) =>
+  Effect.gen(function* () {
+    yield* checkKey(execution.key)
+    const { tenant, actor, id, workflow, key } = execution
+
+    const executionId = `w1.${Encoding.encodeBase64Url(encodeParts([tenant, actor, id, workflow, key]))}`
+
+    // Every other part is bounded by its own schema, so only a long key overflows the id.
+    if (utf8.encode(executionId).byteLength > MAX_EXECUTION_ID_BYTES)
+      return yield* InvalidExecutionKey.make({ bytes: utf8.encode(key).byteLength })
+
+    return executionId
+  })
+
+/** Decodes an execution id; a malformed or non-`w1.` id fails `InvalidExecutionId`. */
+export const decodeExecutionId = (executionId: string) =>
+  Effect.gen(function* () {
+    const invalid = InvalidExecutionId.make({ executionId })
+
+    if (
+      !executionId.startsWith("w1.") ||
+      utf8.encode(executionId).byteLength > MAX_EXECUTION_ID_BYTES
+    )
+      return yield* invalid
+
+    const json = Encoding.decodeBase64UrlString(executionId.slice(3))
+
+    if (Result.isFailure(json)) return yield* invalid
+
+    const parts = decodeParts(json.success)
+
+    if (Result.isFailure(parts)) return yield* invalid
+
+    const [tenant, actor, id, workflow, key] = parts.success
+
+    if (utf8.encode(key).byteLength > MAX_KEY_BYTES) return yield* invalid
+
+    // Only the canonical encoding is an id, so two strings never name one execution.
+    const canonical = `w1.${Encoding.encodeBase64Url(encodeParts(parts.success))}`
+
+    if (canonical !== executionId) return yield* invalid
+
+    return { tenant, actor, id, workflow, key } satisfies Execution
+  })

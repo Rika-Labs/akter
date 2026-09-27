@@ -3,19 +3,25 @@ import { SqlClient } from "effect/unstable/sql"
 import type { EmittedEvent, Request } from "../../handles/actors.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import { compress } from "../storage/codec.ts"
+import { notifyWaits } from "../workflows/engine.ts"
 
 /**
  * Appends a turn's events inside its transaction. The caller already holds the
  * actor's generation row lock, so reserving the next sequence numbers there
  * gives one gap-free order per actor even when activations race; the counter
  * lives on the generation row so pruning never lets a sequence be reused.
+ *
+ * When a workflow of this actor waits for one of the emitted classes, pending
+ * waits re-arm their executions' timers in the same transaction; the result
+ * says whether the relay should wake.
  */
 export const appendEvents = Effect.fnUntraced(function* (
   request: Request,
   routingKey: bigint,
   events: ReadonlyArray<EmittedEvent>,
+  waited: ReadonlySet<string> = new Set(),
 ) {
-  if (events.length === 0) return
+  if (events.length === 0) return false
   const sql = yield* SqlClient.SqlClient
   const { tenant, actor, id } = request.ref
   const clock = yield* FrameworkClock
@@ -40,4 +46,8 @@ export const appendEvents = Effect.fnUntraced(function* (
       emitted_at_ms: BigInt(reserved!.now) + BigInt(clock.offsetMillis()),
     })),
   )}`
+
+  const tags = [...new Set(events.map((event) => event.tag))].filter((tag) => waited.has(tag))
+
+  return tags.length === 0 ? false : yield* notifyWaits(routingKey, request.ref, tags)
 })
