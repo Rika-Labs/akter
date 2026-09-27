@@ -1,6 +1,6 @@
 import { Effect, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { ActorError, NotCreated, Unauthorized } from "../../errors/actor.ts"
+import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
   type BusinessResult,
   Outcome,
@@ -13,6 +13,8 @@ import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
+import { receiptMarginMs } from "../storage/retention.ts"
+import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, writeOutbox } from "./outbox.ts"
 import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
@@ -37,6 +39,7 @@ export const emptyActivationCache = (): ActivationCache => ({
 })
 
 interface Admission {
+  readonly now: string
   readonly generation: string
   readonly created: boolean
   readonly canonical: string
@@ -76,7 +79,8 @@ export const executeTurn = Effect.fnUntraced(function* (
       ON CONFLICT DO NOTHING`
 
     const admission = (yield* sql<Admission>`
-      SELECT g.generation::text AS generation, g.created,
+      SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
+        g.generation::text AS generation, g.created,
         ${request.payload}::jsonb::text AS canonical,
         r.caller_key, r.command, r.payload_hash, r.outcome
       FROM actor_generations g
@@ -103,6 +107,23 @@ export const executeTurn = Effect.fnUntraced(function* (
 
       return { outcome, generation: current, state: cache.state, wake: false }
     }
+
+    // Admitted work still runs past expiry, but not once cleanup may have
+    // pruned a receipt of this id that committed meanwhile: without it, an
+    // expired external id would run again.
+    if (
+      request.external === true &&
+      Number(admission.now) + (yield* FrameworkClock).offsetMillis() >=
+        commandTimes(request.commandId).expiresAt +
+          receiptMarginMs({
+            keepReceiptsMs: policy.keepReceiptsMs,
+            deliveryMs: policy.deliveryMs,
+            retryWindowMs: (yield* OutboxRuntime).retryWindowMs,
+          })
+    )
+      return yield* ActorError.make({
+        reason: CommandExpired.make({ commandId: request.commandId }),
+      })
 
     if (command.internal && !isSystem(request.caller))
       return yield* Effect.die(new Error("Internal commands require a System caller"))

@@ -5,6 +5,7 @@ import { ActorRef, Caller } from "../identity/caller.ts"
 import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
+import type { Swept } from "../runtime/storage/retention.ts"
 import type { StagedOutbox } from "./intents.ts"
 import type { AnyBlob } from "../members/blob.ts"
 import type { BlobAccess, BlobScope } from "../state/blob.ts"
@@ -24,6 +25,12 @@ export const Request = Schema.Struct({
   command: Schema.NonEmptyString,
   commandId: Schema.String,
   payload: Schema.String,
+  /**
+   * Set only by the runtime on external admission. Such a turn rejects an
+   * expired id that has no receipt, so pruning a receipt while its retry
+   * waits for the turn cannot run the command again.
+   */
+  external: Schema.optionalKey(Schema.Boolean),
 })
 
 export type Request = typeof Request.Type
@@ -55,6 +62,7 @@ export interface StoredEvent {
 export type EventReader = (
   tag: string,
   after: string | undefined,
+  limit: number,
 ) => Effect.Effect<ReadonlyArray<StoredEvent>, UnknownCursor | RetentionGap>
 
 export interface RegisteredCommand {
@@ -120,6 +128,8 @@ export interface RegisteredQuery {
 export interface QueryRegistration {
   readonly name: string
   readonly placement: "tenant" | "actor"
+  /** `commandTimeout`: a query's reads are cancelled on the server past it. */
+  readonly timeoutMs: number
   readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly blobs: ReadonlyArray<AnyBlob>
   readonly queries: ReadonlyMap<string, RegisteredQuery>
@@ -148,6 +158,8 @@ export class InternalActors extends Context.Service<
     readonly deliver: (request: Request) => Effect.Effect<Outcome, ActorError>
     /** Runs relay passes until no due intent remains; used by `ActorTest.advance`. */
     readonly drainOutbox: Effect.Effect<void>
+    /** Runs one retention sweep now; used by `ActorTest.cleanup`. */
+    readonly cleanup: Effect.Effect<Swept>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>

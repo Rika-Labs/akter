@@ -92,11 +92,12 @@ export interface QueryContext<
    * Committed events of one declared class after the exclusive `after` cursor
    * and up to `cursor`, in stream order; omitted, from the start. A cursor this
    * actor never issued fails with `UnknownCursor`, and pruned history after it
-   * with `RetentionGap`.
+   * with `RetentionGap`. One call returns at most `limit` entries (default
+   * 1,000, at most 10,000); a full page continues after its last entry's cursor.
    */
   readonly events: <E extends Event>(
     event: E,
-    options?: { readonly after?: string | undefined },
+    options?: { readonly after?: string | undefined; readonly limit?: number | undefined },
   ) => Effect.Effect<ReadonlyArray<EventEntry<E["Type"]>>, UnknownCursor | RetentionGap>
   /** This actor's committed rows of a declared table. */
   readonly rows: <T extends Tables>(table: T) => ScopedRead<T>
