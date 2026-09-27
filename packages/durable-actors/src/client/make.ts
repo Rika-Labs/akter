@@ -19,7 +19,7 @@ import {
   Unauthorized,
 } from "../errors/actor.ts"
 import type { AnyMember, MemberRecord } from "../members/command.ts"
-import { ConsistencyToken, DatabaseClock, lifetime } from "./clock.ts"
+import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
 import {
   decodeFailure,
   decodeSuccess,
@@ -88,9 +88,6 @@ export type ActorClient<Members extends MemberRecord, Kind extends ServedDefinit
     : { readonly get: (id: Id) => ClientHandle<Members, Id> })
 
 const DEFAULT_TIMEOUT_MS = 60_000
-
-/** Retries stop this long before an id expires, so no attempt races its own expiry. */
-const EXPIRY_MARGIN_MS = 1_000
 
 const MAX_BACKOFF_MS = 2_000
 
@@ -412,11 +409,11 @@ export const clientOf =
             const delay = yield* retryDelay(retry, clock)(attempted)
             retry.attempts += 1
             const id = commandId()
-            const expiresAt = id === undefined ? undefined : lifetime(id)?.expiresAt
+            const deadline = id === undefined ? undefined : retryDeadline(id)
 
             if (
               Option.isNone(delay) ||
-              (expiresAt !== undefined && clock.now() + delay.value >= expiresAt - EXPIRY_MARGIN_MS)
+              (deadline !== undefined && clock.now() + delay.value >= deadline)
             )
               return yield* attempted.failure
 

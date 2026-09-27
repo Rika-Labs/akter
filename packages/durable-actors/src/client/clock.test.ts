@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { ConsistencyToken, DatabaseClock, lifetime } from "./clock.ts"
+import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
 
 const UUID = "00000000-0000-4000-8000-000000000000"
 
@@ -113,6 +113,14 @@ describe("lifetime", () => {
     expect(lifetime(`v1.1.2.${UUID}`)).toEqual({ issuedAt: 1, expiresAt: 2 })
     expect(lifetime(`v2.1.2.${UUID}`)).toBeUndefined()
     expect(lifetime("order-1")).toBeUndefined()
+  })
+})
+
+describe("retryDeadline", () => {
+  it("stops retries a second before expiry, or a quarter of a shorter window", () => {
+    expect(retryDeadline(`v1.0.86400000.${UUID}`)).toBe(86_399_000)
+    expect(retryDeadline(`v1.1000.2000.${UUID}`)).toBe(1_750)
+    expect(retryDeadline("order-1")).toBeUndefined()
   })
 })
 

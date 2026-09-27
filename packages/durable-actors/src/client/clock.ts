@@ -101,6 +101,20 @@ export const lifetime = (commandId: string) => {
   return { issuedAt: Number(match[1]), expiresAt: Number(match[2]) }
 }
 
+const EXPIRY_MARGIN_MS = 1_000
+
+/**
+ * When retries of a v1 id stop, so no attempt races its own expiry: a second
+ * before it expires, or a quarter of its window before when that is shorter.
+ */
+export const retryDeadline = (commandId: string) => {
+  const issued = lifetime(commandId)
+
+  if (issued === undefined) return undefined
+
+  return issued.expiresAt - Math.min(EXPIRY_MARGIN_MS, (issued.expiresAt - issued.issuedAt) / 4)
+}
+
 const TOKEN = /^(0|[1-9]\d*)$/
 
 /**
