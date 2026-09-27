@@ -56,9 +56,16 @@ jobs:
         working-directory: packages/durable-actors
         run: |
           set -u
+          case "$RUNS" in
+            ''|*[!0-9]*|0)
+              echo "RUNS must be a positive integer" >&2
+              exit 2
+              ;;
+          esac
           mkdir -p ../../stress
           stress-ng --cpu "$(nproc)" --timeout 0 --quiet &
           trap 'kill %1' EXIT
+          failed=0
           for run in $(seq 1 "$RUNS"); do
             for suite in test test:integration; do
               status=0
@@ -68,8 +75,10 @@ jobs:
                 --outputFile.json="stress/${suite/:/-}-$run.json" \
                 > "../../stress/${suite/:/-}-$run.log" 2>&1 || status=$?
               echo "run $run $suite exited $status"
+              if [ "$status" -ne 0 ]; then failed=1; fi
             done
           done
+          exit "$failed"
       - name: Report failing cases by name
         if: always()
         env:
