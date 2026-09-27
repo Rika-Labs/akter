@@ -177,6 +177,13 @@ const created = Effect.fnUntraced(function* (actor: string, id: string) {
   return yield* test.receiptsFor({ tenant: test.tenant, actor, id }, "Open")
 })
 
+/** Plans one task whose creating intent is due in an hour, and returns the task's id. */
+export const planLaterTask = (parent: string) =>
+  Planner.get(parent).pipe(Effect.flatMap((planner) => planner.PlanLater()))
+
+/** The title of a created minted task. */
+export const mintedTitle = (id: string) => task(id).pipe(Effect.flatMap((child) => child.Title()))
+
 export const mintConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "mints ids from the command id and ordinal and creates each child once from its intent",
