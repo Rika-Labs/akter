@@ -453,8 +453,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
         const renewed = yield* Effect.gen(function* () {
           yield* hooks.at("beforeRenew", request)
 
+          // Never shortens a deadline, so a renewal can't undo a test clock's lease shift.
           return yield* sql`UPDATE actor_outbox
-              SET due_at_ms = ${(yield* outboxTime) + settings.executorLeaseMs}
+              SET due_at_ms = greatest(due_at_ms, ${(yield* outboxTime) + settings.executorLeaseMs})
               WHERE ${attemptRow(attempt)} RETURNING 1`.pipe(Effect.uninterruptible)
         }).pipe(
           Effect.catchCause((cause) =>
