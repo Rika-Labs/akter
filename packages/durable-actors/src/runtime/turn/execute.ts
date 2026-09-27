@@ -3,6 +3,7 @@ import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, NotCreated } from "../../errors/actor.ts"
 import {
   type BusinessResult,
+  type ConnectionLister,
   Outcome,
   type RegisteredCommand,
   type Request,
@@ -43,6 +44,7 @@ interface Admission {
   readonly command: string | null
   readonly payload_hash: string | null
   readonly outcome: string | null
+  readonly head: string
 }
 
 /**
@@ -56,6 +58,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   cache: ActivationCache,
   routingKey: bigint,
   policy: TurnPolicy,
+  connections?: ConnectionLister,
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
@@ -77,7 +80,7 @@ export const executeTurn = Effect.fnUntraced(function* (
     const admission = (yield* sql<Admission>`
       SELECT g.generation::text AS generation, g.created,
         ${request.payload}::jsonb::text AS canonical,
-        r.caller_key, r.command, r.payload_hash, r.outcome
+        r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
       FROM actor_generations g
       LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
         AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = ${request.commandId}
@@ -100,7 +103,14 @@ export const executeTurn = Effect.fnUntraced(function* (
     if (admission.outcome !== null) {
       const outcome = yield* checkReceipt(request, hash, admission as StoredReceipt)
 
-      return { outcome, generation: current, state: cache.state, wake: false }
+      return {
+        outcome,
+        generation: current,
+        state: cache.state,
+        wake: false,
+        broadcasts: [],
+        head: admission.head,
+      }
     }
 
     if (command.internal && !isSystem(request.caller))
@@ -128,7 +138,7 @@ export const executeTurn = Effect.fnUntraced(function* (
         Effect.gen(function* () {
           yield* hooks.at("beforeHandler", request)
 
-          return yield* command.run(request, [...committed])
+          return yield* command.run(request, [...committed], connections)
         }),
       )
       .pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
@@ -167,7 +177,14 @@ export const executeTurn = Effect.fnUntraced(function* (
       VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${request.commandId}, ${request.command}, ${hash}, ${callerKey(request.caller)}, ${encoded}, ${commandTimes(request.commandId).expiresAt})`
     yield* hooks.at("beforeCommit", request)
 
-    return { outcome: result.outcome, generation: current, state: next, wake }
+    return {
+      outcome: result.outcome,
+      generation: current,
+      state: next,
+      wake,
+      broadcasts: Outcome.guards.Success(result.outcome) ? (result.broadcasts ?? []) : [],
+      head: String(BigInt(admission.head) + BigInt(result.events.length)),
+    }
   })
 
   const done = yield* sql.withTransaction(transaction).pipe(
@@ -190,5 +207,5 @@ export const executeTurn = Effect.fnUntraced(function* (
 
   if (done.wake) yield* (yield* OutboxRuntime).wake
 
-  return done.outcome
+  return { outcome: done.outcome, broadcasts: done.broadcasts, head: done.head }
 })

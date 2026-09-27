@@ -1,11 +1,14 @@
 import { Cause, Deferred, Effect, Schema } from "effect"
 import { ClusterSchema, Entity, Sharding } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
-import { SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { routingKey } from "../storage/codec.ts"
-import { executeTurn, emptyActivationCache } from "../turn/execute.ts"
+import { executeTurn } from "../turn/execute.ts"
+import { makeOwner } from "../connections/owner.ts"
+import { makeConnectionEntity } from "../connections/protocol.ts"
+import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
@@ -31,8 +34,36 @@ export const commandEntity = (name: string) => {
   return entity
 }
 
-export const registerActor = Effect.fnUntraced(function* (registration: Registration) {
+const connectionEntities = new Map<string, ReturnType<typeof makeConnectionEntity>>()
+
+export const connectionEntity = (name: string) => {
+  const cached = connectionEntities.get(name)
+
+  if (cached !== undefined) return cached
+
+  const entity = makeConnectionEntity(name)
+  connectionEntities.set(name, entity)
+
+  return entity
+}
+
+const decodeEntityId = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+)
+
+export const registerActor = Effect.fnUntraced(function* (
+  registration: Registration,
+  transport: Transport,
+) {
   const sharding = yield* Sharding.Sharding
+  const owner = makeOwner(registration, transport)
+
+  const activationOf = (entityId: string) => {
+    const [tenant, id] = decodeEntityId(entityId)
+    const ref = { actor: registration.name, tenant, id }
+
+    return owner.enter(entityId, ref, routingKey({ ref, placement: registration.placement }))
+  }
   const services = yield* Effect.context<Effect.Services<ReturnType<typeof executeTurn>>>()
   const entity = commandEntity(registration.name)
   // Cluster reports a full mailbox and a full runner with the same error; only
@@ -54,7 +85,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
             else resident.set(entityId, count)
           }),
       )
-      const cache = emptyActivationCache()
+      const activation = yield* activationOf(entityId)
 
       return entity.of({
         Execute: Effect.fnUntraced(function* ({ payload }) {
@@ -63,13 +94,22 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
           if (command === undefined)
             return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
 
-          const outcome = yield* executeTurn(
-            payload,
-            command,
-            cache,
-            routingKey({ ref: payload.ref, placement: registration.placement }),
-            registration.policy,
-          ).pipe(
+          const outcome = yield* Effect.gen(function* () {
+            yield* owner.prepare(activation)
+
+            const done = yield* executeTurn(
+              payload,
+              command,
+              activation.cache,
+              activation.key,
+              registration.policy,
+              owner.hasConnections ? owner.list(activation) : undefined,
+            )
+
+            if (owner.hasConnections) yield* owner.flush(activation, done.broadcasts, done.head)
+
+            return done.outcome
+          }).pipe(
             Effect.catchDefect(
               Effect.fnUntraced(function* (cause) {
                 if (
@@ -123,14 +163,45 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
     },
   )
 
+  const connections = connectionEntity(registration.name)
+  const connectionServices = yield* Effect.context<SqlClient.SqlClient>()
+
+  const registerConnections = owner.hasConnections
+    ? sharding.registerEntity(
+        connections,
+        Effect.gen(function* () {
+          const { entityId } = yield* Entity.CurrentAddress
+          const activation = yield* activationOf(entityId)
+
+          return connections.of({
+            Open: ({ payload }) =>
+              owner.open(activation, payload).pipe(Effect.provideContext(connectionServices)),
+            Frame: ({ payload }) =>
+              owner.frame(activation, payload).pipe(Effect.provideContext(connectionServices)),
+            Close: ({ payload }) =>
+              owner.close(activation, payload).pipe(Effect.provideContext(connectionServices)),
+            Resync: ({ payload }) =>
+              owner.resync(activation, payload).pipe(Effect.provideContext(connectionServices)),
+          })
+        }),
+        { concurrency: "unbounded", maxIdleTime: registration.policy.idleMs },
+      )
+    : Effect.void
+
   if (registration.singleton) {
     const ready = yield* Deferred.make<void>()
     yield* sharding.registerSingleton(
       registration.name,
-      register.pipe(Effect.andThen(Deferred.succeed(ready, undefined))),
+      register.pipe(
+        Effect.andThen(registerConnections),
+        Effect.andThen(Deferred.succeed(ready, undefined)),
+      ),
     )
     yield* Deferred.await(ready)
-  } else yield* register
+  } else {
+    yield* register
+    yield* registerConnections
+  }
 
-  return (entityId: string) => resident.has(entityId)
+  return { isResident: (entityId: string) => resident.has(entityId), owner }
 })

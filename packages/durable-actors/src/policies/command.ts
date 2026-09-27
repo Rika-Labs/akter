@@ -27,6 +27,14 @@ export interface Policy<
   readonly createdBy?: Command
   /** Per declared effect, keyed by tag: `retry`, `onSuccess`, and `onDeadLetter`. */
   readonly effects?: EffectPolicies<Effects, Command>
+  /**
+   * Whether open connections keep the activation awake. `"park"` (default)
+   * lets it hibernate with sockets open at their holders; `"keepAwake"`
+   * counts an open connection as activity.
+   */
+  readonly connections?: "park" | "keepAwake"
+  /** Longest time a connection runs on one authorization check, 1 second to 1 hour. Default 60 seconds. */
+  readonly reauthorizeEvery?: Duration.Input
 }
 
 export interface TurnPolicy {
@@ -37,6 +45,8 @@ export interface TurnPolicy {
   readonly idleMs: number
   readonly mailboxCapacity: number | "unbounded"
   readonly createdBy: string | undefined
+  readonly connections: "park" | "keepAwake"
+  readonly reauthorizeMs: number
 }
 
 export const resolvePolicy = (policy: {
@@ -59,5 +69,9 @@ export const resolvePolicy = (policy: {
         ? "unbounded"
         : Positive.make(declared.mailboxCapacity),
     createdBy: declared?.createdBy?.tag,
+    connections: declared?.connections ?? "park",
+    reauthorizeMs: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 3_600_000 })).make(
+      Duration.toMillis(declared?.reauthorizeEvery ?? "60 seconds"),
+    ),
   })
 }

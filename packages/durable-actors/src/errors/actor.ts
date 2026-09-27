@@ -13,7 +13,7 @@ export class InvalidCommandId extends Schema.TaggedError<InvalidCommandId>()("In
 }) {}
 
 export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthorized", {
-  code: Schema.Literals(["access_denied", "receipt_access_denied"]),
+  code: Schema.Literals(["access_denied", "receipt_access_denied", "reauthorization_unavailable"]),
 }) {}
 
 export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("ActorUnavailable", {
@@ -38,6 +38,40 @@ export class RunnerAtCapacity extends Schema.TaggedError<RunnerAtCapacity>()(
   {},
 ) {}
 
+const RETRYABLE_SESSION_ENDS = new Set([
+  "SlowConsumer",
+  "HolderShutdown",
+  "HolderLost",
+  "OwnerLost",
+  "ActivationEnded",
+  "ActorUnavailable",
+])
+
+/**
+ * A connection or stream ended. `resync` tells the client that frames may have
+ * been lost, so it must replay events from its cursor after reconnecting.
+ */
+export class SessionEnded extends Schema.TaggedError<SessionEnded>()("SessionEnded", {
+  cause: Schema.Literals([
+    "ClientClosed",
+    "ServerClosed",
+    "SlowConsumer",
+    "HolderShutdown",
+    "HolderLost",
+    "OwnerLost",
+    "ActivationEnded",
+    "ActorUnavailable",
+    "Defect",
+    "Terminated",
+  ]),
+  resync: Schema.Boolean,
+  retryAfterMs: Schema.optional(Schema.Finite),
+}) {
+  get isRetryable(): boolean {
+    return RETRYABLE_SESSION_ENDS.has(this.cause)
+  }
+}
+
 export const Reason = Schema.Union([
   CommandConflict,
   CommandExpired,
@@ -48,19 +82,27 @@ export const Reason = Schema.Union([
   NotCreated,
   MailboxFull,
   RunnerAtCapacity,
+  SessionEnded,
 ])
 
 export type Reason = typeof Reason.Type
 
 export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", { reason: Reason }) {
   get isRetryable(): boolean {
+    if (Schema.is(SessionEnded)(this.reason)) return this.reason.isRetryable
+
+    if (Schema.is(Unauthorized)(this.reason))
+      return this.reason.code === "reauthorization_unavailable"
+
     return Schema.is(Schema.Union([ActorUnavailable, Timeout, MailboxFull, RunnerAtCapacity]))(
       this.reason,
     )
   }
 
   get retryAfter(): Option.Option<number> {
-    return Option.none()
+    return Schema.is(SessionEnded)(this.reason)
+      ? Option.fromUndefinedOr(this.reason.retryAfterMs)
+      : Option.none()
   }
 
   override get message(): string {

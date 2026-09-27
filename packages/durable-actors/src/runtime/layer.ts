@@ -45,7 +45,9 @@ import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
-import { commandEntity, registerActor } from "./entity/register.ts"
+import { commandEntity, connectionEntity, registerActor } from "./entity/register.ts"
+import { type Holder, type HeldActorType, makeHolder } from "./connections/holder.ts"
+import { holderShardGroups, makeTransport, type Transport } from "./connections/transport.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
@@ -63,6 +65,8 @@ export interface Options {
     readonly caller: Caller
     readonly ref: ActorRef
     readonly command: string
+    /** What is being authorized; hooks should deny kinds they do not know. */
+    readonly kind?: "command" | "query" | "open" | "stream" | "reauthorize"
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
@@ -130,17 +134,72 @@ export const layer = (options: Options) => {
 
       const database = yield* rowsDatabase
 
+      // The holder and transport refer to each other: the transport delivers
+      // to this runner's holder, which answers through the transport.
+      let holder: Holder | undefined
+      const transport: Transport = yield* makeTransport((message) =>
+        Effect.suspend(() => holder!.deliver(message)),
+      )
+
+      const connectionCall = <A>(effect: Effect.Effect<A, unknown>) =>
+        Effect.suspend(() => effect.pipe(Effect.forkIn(scope))).pipe(
+          Effect.flatMap(Fiber.join),
+          Effect.catchCause((cause) => {
+            const failure = Cause.findErrorOption(cause)
+
+            if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
+              return Effect.fail(failure.value)
+
+            return Effect.fail(
+              ActorError.make({ reason: ActorUnavailable.make({ cause: Cause.squash(cause) }) }),
+            )
+          }),
+        )
+
+      const heldTypes = new Map<string, HeldActorType>()
+
+      const heldType = (registration: Registration): HeldActorType => {
+        const entity = connectionEntity(registration.name)
+        const client = (ref: ActorRef) =>
+          Effect.gen(function* () {
+            const make = yield* sharding.makeClient(entity)
+
+            return make(yield* entityId(ref))
+          })
+
+        return {
+          deliveryMs: registration.policy.deliveryMs,
+          reauthorizeMs: registration.policy.reauthorizeMs,
+          placement: registration.placement,
+          routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
+          hasResync: (member) => registration.connections.get(member)?.hasResync ?? false,
+          channel: {
+            open: (request) => connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
+            frame: (request) => connectionCall(Effect.flatMap(client(request.ref), (c) => c.Frame(request))),
+            close: (request) => connectionCall(Effect.flatMap(client(request.ref), (c) => c.Close(request))),
+            resync: (request) =>
+              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Resync(request))),
+          },
+        }
+      }
+
+      holder = yield* makeHolder({
+        transport: () => transport,
+        actorType: (name) => heldTypes.get(name),
+        authorize: (request) => options.authorize(request),
+      })
+
       // Tables that passed the startup check for an actor type of this runtime;
       // group reads may only touch these, never other Actor.table values.
       const checked = new Set<AnyOwnedTable>()
 
-      const allow = Effect.fnUntraced(function* (request: Request) {
-        if (!(yield* options.authorize(request)))
+      const allow = Effect.fnUntraced(function* (request: Request, kind: "command" | "query") {
+        if (!(yield* options.authorize({ caller: request.caller, ref: request.ref, command: request.command, kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
       const authorize = Effect.fnUntraced(function* (request: Request) {
-        yield* allow(request)
+        yield* allow(request, "command")
         yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
       })
 
@@ -197,7 +256,7 @@ export const layer = (options: Options) => {
           let rejectedAtCapacity = false
 
           return yield* Effect.gen(function* () {
-            if (external) yield* allow(request)
+            if (external) yield* allow(request, "command")
 
             // Postgres rejects some malformed ids and payloads outright; they
             // still fail as terminal identity errors, checked as before.
@@ -341,17 +400,20 @@ export const layer = (options: Options) => {
 
           for (const table of registration.tables) checked.add(table)
 
-          const isResident = yield* registerActor(registration).pipe(
+          const { isResident } = yield* registerActor(registration, transport).pipe(
             Effect.provideContext(services),
             Effect.provideService(OutboxRuntime, outbox),
           )
 
           registrations.set(registration.name, registration)
           residency.set(registration.name, isResident)
+
+          if (registration.connections.size > 0) heldTypes.set(registration.name, heldType(registration))
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               registrations.delete(registration.name)
               residency.delete(registration.name)
+              heldTypes.delete(registration.name)
             }),
           )
         }),
@@ -395,7 +457,7 @@ export const layer = (options: Options) => {
                 reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
               })
 
-            yield* allow(request)
+            yield* allow(request, "query")
             const sql = yield* SqlClient.SqlClient
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
@@ -432,7 +494,7 @@ export const layer = (options: Options) => {
 
             // Access can be revoked while the handler runs; like a command's
             // outcome, a query result is released only to a caller still allowed.
-            yield* allow(request)
+            yield* allow(request, "query")
 
             return outcome
           },
@@ -441,6 +503,8 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
+        transport,
+        holder,
         execute: (request) => dispatch(request, true),
         deliver: (request) => dispatch(request, false),
         drainOutbox: relay.drain,
@@ -506,12 +570,13 @@ export const layer = (options: Options) => {
               ).pipe(Layer.orDie),
           RunnerHealth.layerNoop,
         ]),
-        Layer.provide(
+        Layer.provideMerge(
           ShardingConfig.layer({
             shardsPerGroup: 1,
             simulateRemoteSerialization: true,
             maxResidentEntities: maxResidentActors,
             ...wiring?.config,
+            ...holderShardGroups(wiring?.config ?? {}),
           }),
         ),
       )

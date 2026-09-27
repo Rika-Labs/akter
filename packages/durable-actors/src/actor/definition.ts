@@ -20,6 +20,14 @@ import {
   type QueryContext,
 } from "../contexts/command.ts"
 import type { ExecutorContext, PerformContext } from "../contexts/effect.ts"
+import type {
+  BroadcastContext,
+  BroadcastOptions,
+  ConnectionContext,
+  FrameOf,
+} from "../contexts/connection.ts"
+import type { AnyConnection } from "../members/connection.ts"
+import type { SessionEnded } from "../errors/actor.ts"
 import type { ActorError } from "../errors/actor.ts"
 import {
   Actors,
@@ -27,7 +35,10 @@ import {
   type EffectRoute,
   InternalActors,
   Outcome,
+  type Broadcast,
+  type ConnectionResult,
   type RegisteredCommand,
+  type RegisteredConnection,
   type RegisteredEffect,
   type RegisteredQuery,
   type EmittedEvent,
@@ -175,6 +186,25 @@ type QueryKeys<Members extends MemberRecord> = {
   [K in keyof Members]: Members[K]["kind"] extends "query" ? K : never
 }[keyof Members]
 
+type ConnectionKeys<Members extends MemberRecord> = {
+  [K in keyof Members]: Members[K]["kind"] extends "connection" ? K : never
+}[keyof Members]
+
+type ConnectionsOf<Members extends MemberRecord> = Extract<
+  Values<Members>,
+  { readonly kind: "connection" }
+> &
+  AnyConnection
+
+/** A connection member's entry in `X.toLayer`: short handlers, not one long-lived stream. */
+export type ConnectionHandlers<C extends AnyConnection, R> = {
+  readonly open: (params: C["input"]["Type"]) => Effect.Effect<void, C["errors"][number]["Type"], R>
+  readonly frame: (frame: C["client"]["Type"]) => Effect.Effect<void, never, R>
+  readonly close?: (reason: SessionEnded["cause"]) => Effect.Effect<void, never, R>
+  /** Replays what the client missed after `after` when its owner died; it cannot change the session. */
+  readonly resync?: (input: { readonly after: string | undefined }) => Effect.Effect<void, never, R>
+}
+
 type ReducerKeys<Members extends MemberRecord> = {
   [K in keyof Members]: Members[K]["kind"] extends "reducer" ? K : never
 }[keyof Members]
@@ -208,7 +238,7 @@ export type Handle<
   Creating extends string = never,
   BoundedMailbox extends boolean = false,
 > = {
-  readonly [K in keyof Members]: (
+  readonly [K in Exclude<keyof Members, ConnectionKeys<Members>>]: (
     ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
   ) => Effect.Effect<
     Members[K]["output"]["Type"],
@@ -238,6 +268,11 @@ export type Handlers<Members extends MemberRecord, R> = HandlerMap<
   R
 > & {
   readonly [K in ReducerKeys<Members>]?: never
+} & {
+  readonly [K in ConnectionKeys<Members>]: ConnectionHandlers<
+    Members[K] & AnyConnection,
+    R
+  >
 }
 
 /** One handler per query in `api`. */
@@ -342,6 +377,26 @@ const make = <
   const all = [...Object.values(api), ...Object.values(internal)]
   const members = all.filter((member): member is AnyCommand => member.kind === "command")
   const queries = all.filter((member) => member.kind === "query")
+  const connectionMembers = all.filter(
+    (member): member is AnyConnection => member.kind === "connection",
+  )
+  const connectionCodecs = new Map(
+    connectionMembers.map((member) => {
+      const server = valueCodec(member.server)
+      const client = valueCodec(member.client)
+      const session = member.session === undefined ? undefined : valueCodec(member.session)
+
+      return [
+        member.tag,
+        {
+          encodeServer: Schema.encodeEffect(server),
+          decodeClient: Schema.decodeEffect(client),
+          encodeSession: session === undefined ? undefined : Schema.encodeEffect(session),
+          decodeSession: session === undefined ? undefined : Schema.decodeEffect(session),
+        },
+      ] as const
+    }),
+  )
   const reducers = all.filter((member): member is AnyReducer => member.kind === "reducer")
   const internalMembers = new Set<AnyMember>(Object.values(internal))
   const fields: StateFields = definition.state?.fields ?? {}
@@ -498,7 +553,9 @@ const make = <
 
   class Turn extends Context.Service<
     Turn,
-    CommandContext<State, Event, Owned, Blobs> & PerformContext<Effects[number]>
+    CommandContext<State, Event, Owned, Blobs> &
+      PerformContext<Effects[number]> &
+      BroadcastContext<ConnectionsOf<Api>>
   >()(`durable-actors/Turn/${name}`) {}
 
   class Executor extends Context.Service<Executor, ExecutorContext>()(
@@ -508,6 +565,18 @@ const make = <
   class Read extends Context.Service<Read, QueryContext<State, Event, Owned, Blobs>>()(
     `durable-actors/Read/${name}`,
   ) {}
+
+  type Connections = ConnectionsOf<Api>
+
+  class Connection extends Context.Service<
+    Connection,
+    ConnectionContext<
+      State,
+      Event,
+      Connections["server"]["Type"],
+      Exclude<Connections["session"], undefined>["Type"]
+    >
+  >()(`durable-actors/Connection/${name}`) {}
 
   const getHandle = Effect.fnUntraced(function* (
     id: string,
@@ -528,7 +597,9 @@ const make = <
     })
 
     const methods = Object.fromEntries(
-      (includeInternal ? all : Object.values(api)).map((member) => {
+      (includeInternal ? all : Object.values(api))
+        .filter((member) => member.kind !== "connection")
+        .map((member) => {
         const { encodeInput, decodeOutput, decodeError } = codecs.get(member.tag)!
 
         return [
@@ -622,10 +693,65 @@ const make = <
     })
   })
 
+  const isEventEntry = (frame: unknown): frame is EventEntry<unknown> =>
+    typeof frame === "object" &&
+    frame !== null &&
+    "cursor" in frame &&
+    "event" in frame &&
+    "commandId" in frame &&
+    "timestamp" in frame &&
+    typeof frame.cursor === "string"
+
+  // Encodes a server frame; an event entry carries its own cursor for the client to deduplicate on.
+  const encodeFrame = (member: string, frame: unknown) =>
+    Effect.gen(function* () {
+      const codec = connectionCodecs.get(member)
+
+      if (codec === undefined) return yield* Effect.die(new Error(`Undeclared connection ${member}`))
+
+      if (isEventEntry(frame))
+        return {
+          frame: yield* codec.encodeServer({ value: frame.event }).pipe(Effect.orDie),
+          event: frame.cursor,
+        }
+
+      return { frame: yield* codec.encodeServer({ value: frame }).pipe(Effect.orDie) }
+    })
+
+  const broadcastsTo = (
+    broadcasts: Array<Broadcast>,
+    guard: (capability: string) => Effect.Effect<void>,
+  ) =>
+    Effect.fnUntraced(function* (member: AnyConnection, frame: unknown, options?: BroadcastOptions) {
+      yield* guard("Broadcast")
+
+      if (!connectionMembers.includes(member))
+        return yield* Effect.die(new Error(`Undeclared connection ${member.tag}`))
+
+      broadcasts.push({
+        member: member.tag,
+        ...(yield* encodeFrame(member.tag, frame)),
+        to: options?.to,
+        except: options?.except,
+      })
+    })
+
   const register = <R>(handlers: Handlers<All, R>, services: Context.Context<R>) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
       const commands = new Map<string, RegisteredCommand>()
+      const connections = new Map<string, RegisteredConnection>()
+
+      for (const member of connectionMembers) {
+        const entry = (handlers as unknown as Record<string, ConnectionHandlers<AnyConnection, R>>)[
+          member.tag
+        ]
+
+        if (entry === undefined || typeof entry.open !== "function" || typeof entry.frame !== "function")
+          return yield* Effect.die(new Error(`Missing connection handlers ${member.tag}`))
+
+        connections.set(member.tag, connectionHandler(member, entry, services))
+      }
 
       for (const member of members) {
         const handle = (
@@ -648,8 +774,10 @@ const make = <
           run: Effect.fnUntraced(function* (
             request: Request,
             rows: ReadonlyArray<readonly [string, string]>,
+            listConnections?: ConnectionLister,
           ) {
             let open = true
+            const broadcasts: Array<Broadcast> = []
             const turn = Symbol()
             const dirty = new Set<string>()
             const emitted: Array<EmittedEvent> = []
@@ -746,7 +874,8 @@ const make = <
             })
 
             const context: CommandContext<State, Event, Owned, Blobs> &
-              PerformContext<Effects[number]> = {
+              PerformContext<Effects[number]> &
+              BroadcastContext<ConnectionsOf<Api>> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -758,6 +887,18 @@ const make = <
               group: access.group,
               blob: blob as CommandContext<State, Event, Owned, Blobs>["blob"],
               perform,
+              broadcast: broadcastsTo(broadcasts, escaped),
+              connections: (member: AnyConnection) =>
+                Effect.gen(function* () {
+                  yield* escaped("Connections")
+
+                  if (listConnections === undefined) return []
+
+                  return (yield* listConnections(member.tag)).map(({ connectionId, caller }) => ({
+                    connectionId,
+                    caller,
+                  }))
+                }),
             }
 
             return yield* Effect.gen(function* () {
@@ -774,8 +915,8 @@ const make = <
                 state: yield* stateWrites(current, dirty),
                 complete: loaded.upcast,
                 events: emitted,
-
                 outbox: outbox.close(),
+                broadcasts,
               }
             }).pipe(
               Effect.catch((error) => declaredFailure(memberCodec, error)),
@@ -853,6 +994,7 @@ const make = <
         policy,
         tables,
         blobs,
+        connections,
       })
     })
 
