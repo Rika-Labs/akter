@@ -44,6 +44,8 @@ export interface RelaySettings {
   readonly executorConcurrency: number
   /** An attempt's claim; renewed every third of it while the attempt runs. */
   readonly executorLeaseMs: number
+  /** How long after its due time a relay-written command id stays retryable. */
+  readonly retryWindowMs: number
 }
 
 /** An executor this runner has, by actor type and effect tag. */
@@ -329,7 +331,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const attempts = yield* FiberSet.make<unknown, unknown>()
   const hooks = yield* TurnHooks
   const progress = yield* progressPool()
-  const ticks = cronTicks({ sql, crypto: yield* Crypto.Crypto, schedules })
+
+  const ticks = cronTicks({
+    sql,
+    crypto: yield* Crypto.Crypto,
+    schedules,
+    retryWindowMs: settings.retryWindowMs,
+  })
 
   // Set when a claim saw more due candidates than it took: a freed slot then
   // claims again instead of waiting for the poll.

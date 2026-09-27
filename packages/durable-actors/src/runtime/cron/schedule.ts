@@ -45,8 +45,7 @@ export const resolveCron = ({
   const entries: Array<CronEntry> = []
 
   for (const [expression, command] of Object.entries(declared ?? {})) {
-    const canonical = expression.trim().split(/\s+/).join(" ")
-    const parsed = Cron.parse(canonical, "UTC")
+    const parsed = Cron.parse(expression, "UTC")
 
     if (Result.isFailure(parsed))
       throw new Error(`policy.cron "${expression}" does not parse: ${parsed.failure.message}`)
@@ -57,7 +56,11 @@ export const resolveCron = ({
     if (!SchemaAST.isVoid(command.input.ast))
       throw new Error(`policy.cron "${expression}" must name a command without input`)
 
-    const duplicate = entries.find((entry) => Cron.Equivalence(entry.schedule, parsed.success))
+    const key = `${CRON_PREFIX}${canonicalOf(parsed.success)}`
+
+    const duplicate = entries.find(
+      (entry) => entry.key === key || Cron.Equivalence(entry.schedule, parsed.success),
+    )
 
     if (duplicate !== undefined)
       throw new Error(
@@ -65,7 +68,7 @@ export const resolveCron = ({
       )
 
     entries.push({
-      key: `${CRON_PREFIX}${canonical}`,
+      key,
       schedule: parsed.success,
       command: command.tag,
       payload: emptyPayload(command),
@@ -75,13 +78,32 @@ export const resolveCron = ({
   return entries
 }
 
+const field = (values: ReadonlySet<number>, size: number) =>
+  values.size === 0 || values.size === size ? "*" : [...values].join(",")
+
+/** One spelling per parsed schedule, so equivalent expressions share a timer key. */
+const canonicalOf = (cron: Cron.Cron) => {
+  const seconds = [...cron.seconds]
+
+  const fields = [
+    field(cron.minutes, 60),
+    field(cron.hours, 24),
+    cron.days.size === 0 ? "*" : [...cron.days].join(","),
+    field(cron.months, 12),
+    cron.weekdays.size === 0 ? "*" : [...cron.weekdays].join(","),
+  ]
+
+  return (
+    seconds.length === 1 && seconds[0] === 0 ? fields : [field(cron.seconds, 60), ...fields]
+  ).join(" ")
+}
+
 /** The first tick of `entry` strictly after `afterMs`. */
 const nextTick = (entry: CronEntry, afterMs: number) => Cron.next(entry.schedule, afterMs).getTime()
 
-const tickId = (now: number, dueAt: number) =>
+const tickId = (now: number, dueAt: number, retryWindowMs: number) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
-    const { retryWindowMs } = yield* OutboxRuntime
     const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
 
     return `v1.${now}.${Math.max(dueAt, now) + retryWindowMs}.${uuid}`
@@ -101,6 +123,7 @@ export const writeTicks = Effect.fnUntraced(function* (
   if (entries.length === 0) return
 
   const sql = yield* SqlClient.SqlClient
+  const { retryWindowMs } = yield* OutboxRuntime
 
   const caller = yield* Schema.encodeEffect(CallerJson)(System.make({ source: "cron", ref })).pipe(
     Effect.orDie,
@@ -113,7 +136,7 @@ export const writeTicks = Effect.fnUntraced(function* (
 
     rows.push({
       routing_key: routingKey,
-      intent_id: yield* tickId(now, dueAt),
+      intent_id: yield* tickId(now, dueAt, retryWindowMs),
       kind: "intent",
       bucket: bucketOf(routingKey),
       due_at_ms: dueAt,
@@ -184,10 +207,12 @@ export const cronTicks = ({
   sql,
   crypto,
   schedules,
+  retryWindowMs,
 }: {
   readonly sql: SqlClient.SqlClient
   readonly crypto: Crypto.Crypto
   readonly schedules: () => ReadonlyMap<string, CronSchedule>
+  readonly retryWindowMs: number
 }) => {
   const entryOf = (row: ClaimedTick) =>
     schedules()
@@ -202,7 +227,10 @@ export const cronTicks = ({
     const now = yield* databaseTime
     const dueAt = nextTick(entry, now)
 
-    const id = yield* tickId(now, dueAt).pipe(Effect.provideService(Crypto.Crypto, crypto))
+    const id = yield* tickId(now, dueAt, retryWindowMs).pipe(
+      Effect.provideService(Crypto.Crypto, crypto),
+    )
+
     const payload = yield* entry.payload
     yield* sql`UPDATE actor_outbox SET intent_id = ${id},
         command = ${entry.command}, payload = ${payload}, due_at_ms = ${dueAt},

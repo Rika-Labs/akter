@@ -176,6 +176,7 @@ export const layer = (options: Options) => {
     maxBackoffMs: millis(options.relay?.maxBackoff ?? "256 seconds"),
     executorConcurrency: Count.make(options.executors?.concurrency ?? 64),
     executorLeaseMs,
+    retryWindowMs,
   }
 
   const runtime = Layer.effectContext(

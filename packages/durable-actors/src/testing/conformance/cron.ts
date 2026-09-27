@@ -158,6 +158,8 @@ const CronLive = Layer.mergeAll(HeartbeatLive, GatedLive, SecondlyLive)
  * joins only when asked, so it cannot take another case's fault injection, and
  * the case's ticks are removed after it, since PGlite shares one database.
  */
+const RETRY_WINDOW_MS = 60_000
+
 const withRuntime = <A, E>(
   environment: ConformanceEnvironment,
   body: Effect.Effect<A, E, Layer.Success<ReturnType<typeof ActorTest.layer>>>,
@@ -170,7 +172,13 @@ const withRuntime = <A, E>(
       const context = yield* Layer.build(
         Layer.fresh(
           (options.singleton === true ? Layer.merge(CronLive, BeaconLive) : CronLive).pipe(
-            Layer.provideMerge(ActorTest.layer({ database, as: User.make({ subject: "alice" }) })),
+            Layer.provideMerge(
+              ActorTest.layer({
+                database,
+                as: User.make({ subject: "alice" }),
+                retryWindowMs: RETRY_WINDOW_MS,
+              }),
+            ),
             Layer.orDie,
           ),
         ),
@@ -220,6 +228,8 @@ const nextMinuteAfter = (row: TickRow | undefined, now: number) =>
   row !== undefined &&
   Number(row.scheduled) === Number(row.due) &&
   Number(row.scheduled) === (Math.floor(now / MINUTE) + 1) * MINUTE
+
+const expiresAt = (row: TickRow) => Number(row.intent_id.split(".")[2])
 
 const receipts = (ref: ActorRef, command: string) =>
   ActorTest.use((test) => test.receiptsFor(ref, command))
@@ -299,6 +309,9 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           expect(next!.intent_id).not.toBe(first!.intent_id)
           expect(next!.attempts).toBe(0)
           expect(nextMinuteAfter(next, yield* nowMs)).toBe(true)
+          // Both the first and the relay-written id expire one retry window after their tick.
+          expect(expiresAt(first!)).toBe(Number(first!.scheduled) + RETRY_WINDOW_MS)
+          expect(expiresAt(next!)).toBe(Number(next!.scheduled) + RETRY_WINDOW_MS)
 
           yield* test.advance("1 minute")
           expect(yield* stateOf(heartbeat.ref)).toMatchObject({ beats: 2 })
