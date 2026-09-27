@@ -330,6 +330,29 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "a held connection survives the holder's liveness check whatever its routing bucket",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, connection } = yield* connect("connections-liveness")
+          yield* next(connection)
+          const dropped = yield* connect("connections-liveness-dropped")
+          yield* next(dropped.connection)
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`DELETE FROM actor_connections WHERE tenant_id = ${dropped.room.ref.tenant}
+            AND actor_type = ${dropped.room.ref.actor} AND actor_id = ${dropped.room.ref.id}`.pipe(
+            Effect.orDie,
+          )
+          yield* test.advance("11 seconds")
+          expect(reasonOf(yield* endOf(dropped.connection))).toMatchObject({ cause: "ServerClosed" })
+
+          yield* connection.send(Say.make({ text: "whoami" }))
+          const [answer] = yield* next(connection)
+          expect(frameOf(answer)).toEqual(Hello.make({ name: "alice", resumed: false, frames: 1 }))
+        }),
+      ),
+  },
+  {
     name: "an open handler that closes its connection leaves it ended with ServerClosed",
     run: ({ expect, environment }) =>
       environment.run(

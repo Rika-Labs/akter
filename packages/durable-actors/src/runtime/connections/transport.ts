@@ -1,5 +1,5 @@
-import { Crypto, Effect, Option, Schema } from "effect"
-import { EntityId, Sharding, ShardingConfig } from "effect/unstable/cluster"
+import { Crypto, Effect, Option, Schedule, Schema } from "effect"
+import { ClusterError, EntityId, Sharding, ShardingConfig } from "effect/unstable/cluster"
 import {
   type Deliver,
   type Delivered,
@@ -88,6 +88,13 @@ export const holderTransport = Effect.fnUntraced(function* (
     return client(EntityId.make(holderEntityId({ holder: target, epoch: targetEpoch })))
       .Deliver(message)
       .pipe(
+        // Shard placement for the holder's own group can lag a moment behind registration.
+        Effect.retry({
+          while: (error) =>
+            ClusterError.EntityNotAssignedToRunner.is(error) ||
+            ClusterError.RunnerUnavailable.is(error),
+          schedule: Schedule.spaced("50 millis"),
+        }),
         Effect.timeout(ACK_TIMEOUT),
         Effect.retry({ times: 1 }),
         Effect.mapError(() =>

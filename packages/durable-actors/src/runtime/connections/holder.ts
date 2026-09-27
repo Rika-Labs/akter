@@ -19,6 +19,7 @@ import { ActorError, ActorUnavailable, SessionEnded, Unauthorized } from "../../
 import type { ActorRef, Caller } from "../../identity/caller.ts"
 import { type ConnectionCommands, connectionSecret } from "../../identity/command.ts"
 import { FrameworkClock } from "../turn/admission.ts"
+import { BUCKETS } from "../turn/outbox.ts"
 import { ClientMessage, type Deliver, type Delivered, HolderItem } from "./protocol.ts"
 import type { Transport } from "./transport.ts"
 
@@ -602,8 +603,13 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const checked = [...held.values()].filter((connection) => connection.open)
 
       const rows = yield* sql<{ connection_id: string }>`
-        SELECT connection_id FROM actor_connections
-        WHERE bucket >= 0 AND holder = ${transport.holder} AND holder_epoch = ${transport.epoch}`
+        SELECT c.connection_id
+        FROM generate_series(${BUCKETS.first}::int, ${BUCKETS.last}::int) AS b(bucket)
+        CROSS JOIN LATERAL (
+          SELECT connection_id FROM actor_connections
+          WHERE actor_connections.bucket = b.bucket AND holder = ${transport.holder}
+            AND holder_epoch = ${transport.epoch}
+        ) c`
 
       lastLiveness = at
       const present = new Set(rows.map((row) => row.connection_id))
