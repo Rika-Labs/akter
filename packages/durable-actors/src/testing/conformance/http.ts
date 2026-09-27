@@ -976,6 +976,17 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(otherScheme.status).toBe(403)
 
+          const forwarded = yield* server.send("/actors/HttpRoom/origin/Whoami", {
+            token,
+            key: yield* server.mint(),
+            headers: {
+              origin: server.url.replace(/^http:/, "https:"),
+              "x-forwarded-proto": "https",
+            },
+          })
+
+          expect(forwarded.status).toBe(403)
+
           const bare = yield* server.send("/actors/HttpRoom/origin/Whoami", {
             token,
             key: yield* server.mint(),
