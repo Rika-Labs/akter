@@ -537,7 +537,9 @@ export const layer = (options: Options) => {
 
           registrations.set(registration.name, registration)
           residency.set(registration.name, isResident)
+
           if (retained) sweepsWorkflows.add(registration.name)
+
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               registrations.delete(registration.name)

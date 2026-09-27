@@ -562,6 +562,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
 
           const executions = Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
+
             const [row] = yield* sql<{ count: number }>`SELECT count(*)::integer AS count
               FROM actor_workflow_executions WHERE actor_type = 'Versioned'`
 
