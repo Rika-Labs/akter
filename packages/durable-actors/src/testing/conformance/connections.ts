@@ -344,7 +344,9 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             Effect.orDie,
           )
           yield* test.advance("11 seconds")
-          expect(reasonOf(yield* endOf(dropped.connection))).toMatchObject({ cause: "ServerClosed" })
+          expect(reasonOf(yield* endOf(dropped.connection))).toMatchObject({
+            cause: "ServerClosed",
+          })
 
           yield* connection.send(Say.make({ text: "whoami" }))
           const [answer] = yield* next(connection)
