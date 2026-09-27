@@ -1,6 +1,7 @@
 import { checkWorkflows, formatIncompatibility } from "@durable-actors/core/runtime"
 import type { Incompatibility } from "@durable-actors/core/runtime"
 import { Effect, Schema } from "effect"
+import { pathToFileURL } from "node:url"
 
 export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
   message: Schema.String,
@@ -51,6 +52,16 @@ const Entry = Schema.Struct({
 })
 
 const decodeEntry = Schema.decodeUnknownEffect(Entry)
+
+/** Imports the entry module at `entry`; a missing or broken module is a usage error. */
+export const loadEntry = (entry: string) =>
+  Effect.tryPromise({
+    try: (): Promise<object> => import(pathToFileURL(entry).href),
+    catch: (cause) =>
+      UsageError.make({
+        message: `Cannot load ${entry}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
+  })
 
 /** The actors a loaded entry module exports. */
 export const actorsOf = ({ module, entry }: { readonly module: object; readonly entry: string }) =>

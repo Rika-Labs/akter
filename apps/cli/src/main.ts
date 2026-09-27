@@ -2,9 +2,15 @@
 import { Database } from "@durable-actors/core/runtime"
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Console, Effect, Layer, Redacted } from "effect"
-import { pathToFileURL } from "node:url"
 
-import { USAGE, UsageError, actorsOf, check, parseCheck } from "./commands/workflows/check.ts"
+import {
+  USAGE,
+  UsageError,
+  actorsOf,
+  check,
+  loadEntry,
+  parseCheck,
+} from "./commands/workflows/check.ts"
 
 const fail = (message: string) =>
   Console.error(message).pipe(
@@ -23,8 +29,7 @@ const program = Effect.gen(function* () {
     return yield* UsageError.make({ message: `Unknown command: ${[group, command].join(" ")}` })
 
   const options = yield* parseCheck(args)
-  const entry = pathToFileURL(options.entry).href
-  const module = yield* Effect.promise((): Promise<object> => import(entry))
+  const module = yield* loadEntry(options.entry)
   const actors = yield* actorsOf({ module, entry: options.entry })
 
   const services = yield* Layer.build(

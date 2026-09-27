@@ -44,8 +44,8 @@ import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import type { ActivationCache } from "../turn/execute.ts"
-import { decodeStoredManifest, missingSteps } from "./compatibility.ts"
-import { manifestOf } from "./manifest.ts"
+import { changedSteps, decodeStoredManifest, missingSteps } from "./compatibility.ts"
+import { manifestOf, toJson } from "./manifest.ts"
 
 /** A running activity re-arms its execution's timer this far ahead, so a lost runner's work resumes. */
 export const RECOVERY_MS = 30_000
@@ -148,8 +148,10 @@ const insertExecution = Effect.fnUntraced(function* (options: {
   const manifest = yield* manifestOf(ref.actor, workflow.member)
 
   // The cursor sits before the starting turn's own events, so a wait sees them.
+  // The start manifest is restored if retention pruned it while a runner of an
+  // older deployment still starts executions under it.
   const inserted = yield* sql`
-    INSERT INTO actor_workflow_executions (routing_key, execution_id, bucket, tenant_id, actor_type, actor_id,
+    WITH x AS (INSERT INTO actor_workflow_executions (routing_key, execution_id, bucket, tenant_id, actor_type, actor_id,
       workflow, workflow_key, manifest_hash, payload, caller, event_cursor, status, started_at_ms)
     SELECT ${routingKey}, ${executionId}, ${bucketOf(routingKey)}, ${ref.tenant}, ${ref.actor}, ${ref.id},
       ${workflow.member.tag}, ${options.key}, ${manifest.hash}, ${compress(options.input)},
@@ -159,7 +161,12 @@ const insertExecution = Effect.fnUntraced(function* (options: {
         AND e.command_id = ${options.startedBy}), g.event_sequence),
       'running', ${now}
     FROM actor_generations g WHERE ${owner(sql, routingKey, ref)}
-    ON CONFLICT DO NOTHING RETURNING 1`
+    ON CONFLICT DO NOTHING RETURNING 1),
+    m AS (INSERT INTO actor_workflow_manifests (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
+      SELECT ${ref.actor}, ${workflow.member.tag}, ${manifest.hash}, ${toJson(manifest.manifest)}::jsonb, 0
+      WHERE EXISTS (SELECT 1 FROM x)
+      ON CONFLICT DO NOTHING)
+    SELECT 1 FROM x`
 
   if (inserted.length === 0) return false
 
@@ -428,30 +435,58 @@ export const activationEngine = (options: {
 
     const now = databaseTime
 
-    // Whether this runner registers every step of a start manifest, by hash.
-    const startManifests = new Map<string, boolean>()
+    // Per foreign start manifest, by hash: whether this runner registers its
+    // steps and input, and the steps whose recorded results it would decode
+    // under another schema.
+    const startManifests = new Map<
+      string,
+      { readonly covered: boolean; readonly changed: ReadonlyArray<string> }
+    >()
 
-    const coversStartManifest = (workflow: RegisteredWorkflow, hash: string) =>
+    const coversStartManifest = (
+      workflow: RegisteredWorkflow,
+      hash: string,
+      recorded: ReadonlyMap<string, StepRow>,
+    ) =>
       Effect.gen(function* () {
-        if (hash === (yield* manifestOf(ref.actor, workflow.member)).hash) return true
-        const known = startManifests.get(hash)
+        const own = yield* manifestOf(ref.actor, workflow.member)
 
-        if (known !== undefined) return known
+        if (hash === own.hash) return true
+        let known = startManifests.get(hash)
 
-        const [row] = yield* sql<{ manifest: string }>`
-          SELECT manifest::text AS manifest FROM actor_workflow_manifests
-          WHERE actor_type = ${ref.actor} AND workflow = ${workflow.member.tag} AND manifest_hash = ${hash}`
+        if (known === undefined) {
+          // `newer`: accepted after this runner's own manifest, as when a
+          // newer deployment starts executions while this runner still serves.
+          const [row] = yield* sql<{ manifest: string; newer: boolean }>`
+            SELECT m.manifest::text AS manifest, m.accepted_at_ms > COALESCE((SELECT o.accepted_at_ms
+              FROM actor_workflow_manifests o WHERE o.actor_type = m.actor_type AND o.workflow = m.workflow
+                AND o.manifest_hash = ${own.hash}), -1) AS newer
+            FROM actor_workflow_manifests m
+            WHERE m.actor_type = ${ref.actor} AND m.workflow = ${workflow.member.tag}
+              AND m.manifest_hash = ${hash}`
 
-        const covered =
-          row !== undefined &&
-          missingSteps({
-            stored: yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie),
-            steps: workflow.steps,
-          }).length === 0
+          if (row === undefined) known = { covered: false, changed: [] }
+          else {
+            const stored = yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie)
 
-        startManifests.set(hash, covered)
+            const changed = changedSteps({
+              stored,
+              steps: new Map(own.manifest.steps.map((step) => [step.name, step])),
+            })
 
-        return covered
+            known = {
+              covered:
+                missingSteps({ stored, steps: workflow.steps }).length === 0 &&
+                (stored.input === undefined || stored.input === own.manifest.input) &&
+                (!row.newer || changed.length === 0),
+              changed,
+            }
+          }
+
+          startManifests.set(hash, known)
+        }
+
+        return known.covered && known.changed.every((name) => recorded.get(name)?.exit == null)
       })
 
     const runOnce = (executionId: string) =>
@@ -504,11 +539,12 @@ export const activationEngine = (options: {
           else steps.set(row.step, row)
 
         // A runner without this workflow, whose markers exclude the
-        // execution's, or that lacks a recorded step or a step of the start
-        // manifest, leaves it for a compatible runner.
+        // execution's, that lacks a recorded step or a step of the start
+        // manifest, or that would decode a recorded result or the input
+        // differently, leaves it for a compatible runner.
         const compatible =
           workflow !== undefined &&
-          (yield* coversStartManifest(workflow, execution.manifest_hash)) &&
+          (yield* coversStartManifest(workflow, execution.manifest_hash, steps)) &&
           Object.entries(workflow.member.versions).every(([name, range]) => {
             const value = markers.get(name) ?? 0
 

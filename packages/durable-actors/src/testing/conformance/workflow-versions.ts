@@ -482,6 +482,70 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     requiresIndependentConnections: true,
+    name: "workflow versions: a runner of an older deployment leaves an execution a newer deployment started with a changed result schema suspended",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          // As if a newer deployment, while this runner still serves, started it.
+          const open = yield* deploy(
+            database,
+            Base.layer,
+            Effect.gen(function* () {
+              const executionId = yield* sleeping(Base, "o")
+              const sql = yield* SqlClient.SqlClient
+              const { manifest, hash } = yield* manifestOf("Versioned", Retyped.Order)
+
+              yield* sql`INSERT INTO actor_workflow_manifests
+                (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
+                SELECT 'Versioned', 'Order', ${hash}, ${toJson(manifest)}::jsonb, max(accepted_at_ms) + 1
+                FROM actor_workflow_manifests WHERE actor_type = 'Versioned'`.pipe(Effect.orDie)
+              yield* sql`UPDATE actor_workflow_executions SET manifest_hash = ${hash}
+                WHERE execution_id = ${executionId}`.pipe(Effect.orDie)
+
+              yield* ActorTest.use((test) => test.advance("61 seconds"))
+              yield* Effect.sleep("200 millis")
+              expect(yield* status(executionId)).toBe("suspended")
+
+              return executionId
+            }),
+          )
+
+          expect(yield* deploy(database, Retyped.layer, finish(Retyped, open))).toBe("r-o:label:v0")
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
+    name: "workflow versions: a start restores its start manifest when retention pruned it under a still-serving runner",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+          const base = yield* hashOf(Base)
+
+          yield* deploy(
+            database,
+            Base.layer,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql`DELETE FROM actor_workflow_manifests WHERE actor_type = 'Versioned'`.pipe(
+                Effect.orDie,
+              )
+              yield* sleeping(Base, "o")
+              expect(yield* manifests).toEqual([{ manifest_hash: base, accepted_at_ms: "0" }])
+            }),
+          )
+
+          expect(
+            yield* deploy(database, Audited.layer, checkWorkflows([Audited.Versioned])),
+          ).toEqual([])
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
     name: "workflow versions: retention keeps a manifest while an open execution started under it or it is the latest",
     run: ({ expect, environment }) =>
       environment.run(

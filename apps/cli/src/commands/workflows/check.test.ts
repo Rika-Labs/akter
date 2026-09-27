@@ -1,11 +1,11 @@
 import { Actor, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Schedule, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { describe, expect, it } from "vitest"
 
-import { actorsOf, check, parseCheck } from "./check.ts"
+import { UsageError, actorsOf, check, loadEntry, parseCheck } from "./check.ts"
 
 const deployment = (label: string | null) => {
   const Order = Actor.workflow("Order", {
@@ -86,7 +86,7 @@ describe("durable workflows check", () => {
       Effect.runPromise,
     ))
 
-  it("parses its arguments and rejects an entry without an actors array", () =>
+  it("parses its arguments and rejects a missing entry module or one without an actors array", () =>
     Effect.gen(function* () {
       expect(
         yield* parseCheck(["--entry", "./a.ts", "--database-url", "postgres://x", "--json"]),
@@ -98,6 +98,12 @@ describe("durable workflows check", () => {
       )
       const unknown = yield* Effect.exit(parseCheck(["--verbose"]))
       expect(Exit.isFailure(unknown) && String(unknown.cause)).toContain("Unknown argument")
+
+      const absent = yield* Effect.exit(loadEntry("./does-not-exist.ts"))
+      expect(Exit.isFailure(absent) && Cause.squash(absent.cause) instanceof UsageError).toBe(true)
+      expect(Exit.isFailure(absent) && String(absent.cause)).toContain(
+        "Cannot load ./does-not-exist.ts",
+      )
 
       const bare = yield* Effect.exit(actorsOf({ module: { Shop: Current.Shop }, entry: "./a.ts" }))
       expect(Exit.isFailure(bare) && String(bare.cause)).toContain("must export an `actors` array")

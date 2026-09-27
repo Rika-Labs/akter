@@ -100,6 +100,32 @@ export const missingSteps = ({
   })
 
 /**
+ * The steps of `stored` whose recorded results `steps` would decode under a
+ * different schema. Manifests without `result` fingerprint the whole
+ * activity, input included.
+ */
+export const changedSteps = ({
+  stored,
+  steps,
+}: {
+  readonly stored: StoredManifest
+  readonly steps: ReadonlyMap<string, { readonly fingerprint: string; readonly result: string }>
+}) =>
+  stored.steps.flatMap((entry) => {
+    const step = steps.get(entry.name)
+
+    if (step === undefined) return []
+
+    return (
+      entry.result === undefined
+        ? entry.fingerprint !== step.fingerprint
+        : entry.result !== step.result
+    )
+      ? [entry.name]
+      : []
+  })
+
+/**
  * Compares `declared` with every open execution of its actor types (of every
  * actor type with `everyActorType`) and the manifests they started under.
  * An open execution blocks a deployment when its actor type or workflow is
@@ -259,12 +285,7 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
 
     if (entry === undefined) continue
 
-    // Manifests without `result` fingerprint the whole activity, input included.
-    if (
-      entry.result === undefined
-        ? entry.fingerprint !== step.fingerprint
-        : entry.result !== step.result
-    )
+    if (changedSteps({ stored: { steps: [entry] }, steps: workflow.steps }).length > 0)
       add(
         row.actor_type,
         row.workflow,
