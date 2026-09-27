@@ -76,7 +76,7 @@ class NotebookRejected extends Schema.TaggedError<NotebookRejected>()("NotebookR
 
 const Note = Schema.Struct({ id: Schema.String, body: Schema.String, rank: Schema.Int })
 
-const Misuse = Schema.Literals([
+export const Misuse = Schema.Literals([
   "ownerInsert",
   "ownerFilter",
   "ownerSet",
@@ -177,7 +177,7 @@ const Smuggled = Actor.query("Smuggled", {
 
 const Everything = Actor.query("Everything", { output: Schema.Array(Schema.String) })
 
-const Notebook = Actor.make("Notebook", {
+export const Notebook = Actor.make("Notebook", {
   key: Schema.String,
   tables: [notes],
   api: {
