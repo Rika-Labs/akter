@@ -90,7 +90,7 @@ export class ActorCluster extends Context.Service<
     /** Waits until every running runner holds exactly the shards assigned to it. */
     readonly ready: Effect.Effect<void>
   }
->()("durable-actors/testing/cluster/ActorCluster") {}
+>()("@durable-actors/core/testing/cluster/ActorCluster") {}
 
 interface Runner {
   address: RunnerAddress.RunnerAddress

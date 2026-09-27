@@ -69,6 +69,7 @@ const Escape = Actor.command("Escape", { input: Schema.String })
 
 const Steal = Actor.command("Steal")
 
+/** @internal */
 export const Outboxer = Actor.make("Outboxer", {
   key: Schema.String,
   api: { Send, SendThenRefuse, SendThenDie, Schedule, Cancel, CancelThenRefuse, Escape, Steal },

@@ -179,7 +179,7 @@ export class InternalActors extends Context.Service<
     /** The blob names a registered actor type declares, for test inspection. */
     readonly declaredBlobs: (actor: string) => ReadonlyArray<string>
   }
->()("durable-actors/handles/actors/InternalActors") {}
+>()("@durable-actors/core/handles/actors/InternalActors") {}
 
 export class Actors extends Context.Service<
   Actors,
@@ -187,4 +187,4 @@ export class Actors extends Context.Service<
     /** Mints a command id for `Actor.commandId`, so a caller can retry one operation across processes. */
     readonly mintCommandId: Effect.Effect<string>
   }
->()("durable-actors/handles/actors") {}
+>()("@durable-actors/core/handles/actors") {}

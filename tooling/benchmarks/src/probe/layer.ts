@@ -1,5 +1,5 @@
 import { DateTime, Deferred, Effect, Layer } from "effect"
-import { Intent } from "durable-actors"
+import { Intent } from "@durable-actors/core"
 import { EventProbe, Probe, RetentionProbe, Sender, Sink, SleepyProbe, Ticked } from "./contract.ts"
 import { EffectProbeLive } from "./effects.ts"
 import { ArchiveLive } from "./archive.ts"

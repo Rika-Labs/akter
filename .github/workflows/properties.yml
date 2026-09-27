@@ -47,6 +47,6 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare
       - name: Unit and PGlite suites
-        run: bun run --filter durable-actors test
+        run: bun run --filter @durable-actors/core test
       - name: Postgres suite
-        run: bun run --filter durable-actors test:integration
+        run: bun run --filter @durable-actors/core test:integration

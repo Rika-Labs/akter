@@ -1,4 +1,4 @@
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 import { Effect, Result, Schema } from "effect"
 
 export class Negative extends Schema.TaggedError<Negative>()("Negative", {
