@@ -92,7 +92,7 @@ export const RoomReads = Room.toQueryLayer(
     Recent: Effect.fnUntraced(function* ({ limit }) {
       const rows = yield* (yield* Room.Read)
         .rows(messages)
-        .all({ orderBy: { sentAt: "desc" }, limit })
+        .all({ orderBy: { sentAt: "desc", id: "desc" }, limit })
 
       return rows.map(({ id, author, body }) => ({ id, author, body }))
     }),
