@@ -1,4 +1,4 @@
-import { Cause, Effect, Queue, Result, Schema, Semaphore } from "effect"
+import { Cause, Effect, Option, Queue, Result, Schema, Semaphore } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
@@ -193,6 +193,15 @@ export const outboxRelay = Effect.fnUntraced(function* (
         WHERE ${attemptRow(row.attempts)}`
     }
 
+    const requestOf = (caller: Request["caller"]) =>
+      Request.make({
+        ref: ActorRef.make({ tenant: row.tenant_id, actor: row.actor_type, id: row.actor_id }),
+        caller,
+        command: row.command,
+        commandId: row.intent_id,
+        payload: row.payload,
+      })
+
     const exhaust = (attempts: number, cause: string, ambiguous: boolean) =>
       sql.withTransaction(
         Effect.gen(function* () {
@@ -209,6 +218,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
             VALUES (${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
               ${row.actor_id}, ${row.command}, ${row.payload}, ${attempts}, ${cause}, ${ambiguous},
               ${yield* outboxTime})`
+
+          // Only the fault hook needs the caller, so an unreadable one must not block the letter.
+          const caller = yield* Schema.decodeEffect(CallerJson)(row.caller).pipe(Effect.option)
+
+          if (Option.isSome(caller))
+            yield* hooks.at("beforeDeadLetterCommit", requestOf(caller.value))
         }),
       )
 
@@ -228,15 +243,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
     if (claimed.length === 0) return
 
     const caller = yield* Schema.decodeEffect(CallerJson)(row.caller).pipe(Effect.orDie)
-    const ref = ActorRef.make({ tenant: row.tenant_id, actor: row.actor_type, id: row.actor_id })
-
-    const request = Request.make({
-      ref,
-      caller,
-      command: row.command,
-      commandId: row.intent_id,
-      payload: row.payload,
-    })
+    const request = requestOf(caller)
+    const { ref } = request
 
     yield* hooks.at("beforeExecute", request)
 
