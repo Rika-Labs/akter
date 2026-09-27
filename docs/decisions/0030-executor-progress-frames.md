@@ -81,13 +81,14 @@ export const Live = Actor.connection("Live", {
 - `to` selects the audience among this member's open connections: `"performer"` (the default) delivers only to connections whose stored caller has the same principal as the effect's `X.Executor.principal`, which is the performing turn's principal; `"all"` delivers to every open connection of the member. An effect performed by a turn with no principal (a `System` caller with no `onBehalfOf`, such as a cron tick) reaches no connection under `"performer"`. Delivery to a connection is further bounded by that connection's own authorization for the member, which the holder enforces as for any frame (section 6).
 - Progress reaches clients in its own envelope variant, apart from member frames and control frames (section 7), so it is never mistaken for either, and adding progress to a member does not change its `server` schema.
 
-**Streams** opt in in their handler. `X.Read` gains `progress(E, options?)`, available only inside an `Actor.stream` handler:
+**Streams** opt in on the member with `progress: { effects }`, and read it in their handler. `X.Read` gains `progress(E, options?)`, available only inside an `Actor.stream` handler whose member lists `E`:
 
 ```ts
 export const Encoding = Actor.stream("Encoding", {
   input: { assetId: AssetId },
   output: Schema.Union([EncodingProgress, AssetReady]),
   errors: [NotOwner],
+  progress: { effects: [Transcode] },
 })
 
 // in Media.toLayer
@@ -109,11 +110,11 @@ Encoding: ({ assetId }) =>
 - The stream handler is the authorization and audience decision: it runs as the subscriber, and the owner reauthorizes the subscriber on its timer (ADR 0023 §8). Anything the handler emits is an ordinary stream element under contract 07's stream rules.
 - `read.progress` is not available in queries, command turns, connection handlers, or workflows; there it is a type error (it requires a stream-only service) and dies at runtime with `Progress is only available in stream handlers`.
 
-An actor with neither an opted-in connection member nor a stream handler that calls `read.progress` for `E` never receives `E`'s progress; section 3 makes the executor side skip the send entirely in that case.
+An actor with neither a connection member nor a stream member that lists `E` in `progress.effects` never receives `E`'s progress; section 3 makes the executor side skip the send entirely in that case.
 
 ### 3. Path: executor pool to the owner's connection entity, then out through the owner's channels
 
-1. **Executor side.** The runner's executor pool holds one progress slot per running attempt. `exec.progress` writes the encoded frame into that slot, replacing any frame still waiting there (latest wins), and increments the attempt's progress sequence. The pool sends the slot's frame at most once per `progressEvery` (default 250 ms) per attempt. Before sending the first frame of an effect type, the pool checks the owner actor type's definition: if no connection member lists the effect and the type has no stream members, the pool never sends and drops frames silently except for a debug counter. This check is static per actor type and costs nothing per frame.
+1. **Executor side.** The runner's executor pool holds one progress slot per running attempt. `exec.progress` writes the encoded frame into that slot, replacing any frame still waiting there (latest wins), and increments the attempt's progress sequence. The pool sends the slot's frame at most once per `progressEvery` (default 250 ms) per attempt. Before sending the first frame of an effect type, the pool checks the owner actor type's definition: if no connection or stream member lists the effect in `progress.effects`, the pool never sends and drops frames silently except for a debug counter. This check is static per actor type and costs nothing per frame.
 2. **Message.** Each send is one fire-and-forget Cluster message to the performing actor's connection entity (ADR 0023 §4), routed to the owner on whichever runner holds the shard:
 
    ```ts
@@ -146,14 +147,14 @@ An actor with neither an opted-in connection member nor a stream handler that ca
 
 ### 4. Loss, ordering, rate, and size
 
-Progress is **best-effort, lossy, and never silently mistaken for continuity**. Every loss is visible as a gap in `seq` for an attempt, and nothing durable depends on it.
+Progress is **best-effort, lossy, and never silently mistaken for continuity**. A loss followed by a delivered frame of the same attempt is visible as a gap in `seq`; the loss of an attempt's last frames is not, and a client learns the outcome only from committed state, events, or the route's frames. Nothing durable depends on progress.
 
 - **Ordering.** For one attempt on one session, delivered frames have strictly increasing `seq`. A frame from a higher attempt may follow; after it, no frame from a lower attempt is delivered by that activation. Across an owner move, a new activation starts with empty per-effect state, so it may deliver a lower attempt's frame than the old activation last delivered; `attempt` is on every frame, and clients keep the highest `(attempt, seq)` they have seen.
-- **Relation to results.** An activation never delivers a progress frame for an effect after it committed that effect's route turn or a turn that cancelled it, and a new activation never delivers one after the route intent or cancellation exists, because the effect check finds the row settled or cancelled. On one connection, therefore, no progress frame for an effect follows a broadcast made by that effect's route turn. The reverse is not promised: the route's broadcast may arrive without the last progress frames before it. An effect with no route turn is closed by `ProgressClosed` or, if that is lost, by the effect check within 5 seconds of its settle.
+- **Relation to results.** An activation never delivers a progress frame for an effect after it committed that effect's route turn or a turn that cancelled it, and a new activation never delivers one after the route intent or cancellation exists, because the effect check finds the row settled or cancelled. When it closes an effect it had forwarded progress for, the activation sends each holder it forwarded to a `ProgressEnd(effectId)` on the same ordered channel, before the route turn's own broadcasts; the holder discards any undelivered progress for that effect in its outbound buffers and drops any that follows. On one connection, therefore, no progress frame for an effect is delivered to the client after that effect's route broadcast, or after the holder learns of its cancellation or settle, however slowly the client reads. The reverse is not promised: the route's broadcast may arrive without the last progress frames before it. An effect with no route turn is closed by `ProgressClosed` or, if that is lost, by the effect check within 5 seconds of its settle.
 - **Coalescing and drops, a labelled exception to contract 07.** The rules that single frames and stream elements MUST NOT be dropped or coalesced, and that an overflowing buffer closes the session with `SlowConsumer`, do not apply to progress frames:
   - The executor pool coalesces an attempt's frames latest-wins at `progressEvery`.
   - A holder that already has an undelivered progress frame for the same `(connection, effectId)` in a connection's outbound buffer replaces it with the newer one in place.
-  - A holder never closes a session because of progress: a progress frame that would exceed the connection's 1,024-frame or 1 MiB limit, or the holder's 256 MiB budget, is dropped instead, and does not count toward those limits when member frames are admitted.
+  - A holder never closes a session because of progress: a progress frame that would exceed the connection's 1,024-frame or 1 MiB limit, or the holder's 256 MiB budget, is dropped instead. Buffered progress counts toward those limits, but a member frame that would exceed them first evicts buffered progress, oldest first, and only then applies the member-frame rules, so progress never causes `SlowConsumer` and never lets the buffer exceed its limits.
   - Each `read.progress` subscription has its own sliding buffer of 16 entries in front of the stream's 256-element window; when it is full the oldest entry is dropped. Elements a stream handler actually emits keep the stream rules.
   - The holder still assigns progress messages channel sequence numbers, so gap detection on the owner-to-holder channel is unchanged; only what the holder does with a progress frame at a full buffer differs.
 - **Rate caps.** `policy.effects[Tag].progressEvery` (default 250 ms, from 50 ms to 1 minute) bounds each attempt. Each actor accepts at most 20 progress frames per second across all its effects at the owner (a token bucket with a burst of 20); excess is dropped and counted. Each runner's executor pool sends at most 2,000 progress messages per second in total; excess is coalesced in the slots and sent later. These are fixed in M2.18 except `progressEvery`.
@@ -181,7 +182,8 @@ Progress is **best-effort, lossy, and never silently mistaken for continuity**. 
 - `Actor.effect(tag, { input?, success?, progress? })`; `ProgressOf(E)` is the frame type.
 - `X.Executor.progress(E, frame): Effect<void>`.
 - `Actor.connection(name, { ..., progress?: { effects, to?: "performer" | "all" } })`.
-- `X.Read.progress(E, { effectId? }): Stream<ProgressEntry(E)>` in stream handlers only.
+- `Actor.stream(name, { ..., progress?: { effects } })`.
+- `X.Read.progress(E, { effectId? }): Stream<ProgressEntry(E)>` in stream handlers whose member lists `E` only.
 - `policy.effects[Tag].progressEvery`.
 - In-process `ActorTest` connections yield progress as `{ progress: { effect, effectId, attempt, seq, frame } }` beside `{ frame, cursor?, event? }`, `Resync`, and `ResyncReplayed`. `ActorTest` adds `test.dropProgress(predicate)` to drop progress messages between pool and owner.
 - **WebSocket (ADR 0027).** This amends ADR 0027's statement that executor progress travels inside `frame` as a member frame: progress is not a member frame and does not use the `frame` message. A new server-to-client message `t: "progress"` with `effect`, `effectId`, `attempt`, `seq`, and `frame`, carrying no `cursor` or `event`. ADR 0027 already requires clients to ignore a `t` they don't know, so older clients are unaffected. SSE event feeds carry durable events only and get no progress.
@@ -241,7 +243,10 @@ Cases run on real Postgres with the in-process multi-runner harness and `Transpo
 - `sends nothing for actor types that do not opt in` — no `Progress` messages leave the pool, and no parked actor wakes.
 - `streams progress to an Actor.stream handler through read.progress and drops the oldest when its buffer is full`.
 - `keeps turn statement counts unchanged` — the Statements gate over `benchmarks/baselines/statements.json`.
-- `runs one effect check per effect id per activation` — statement count per activation.
+- `bounds effect checks` — at most one effect check per effect id per 5 seconds per activation, by statement count over a 30-second reporting effect.
+- `discards buffered progress at the route` — a paused client with buffered progress resumes after the route commits and receives the route's frame and no progress for the effect; the same for cancellation and a route-less settle.
+- `evicts progress before member frames overflow` — buffered progress plus member frames never exceed 1,024 frames or 1 MiB, and the session closes with `SlowConsumer` only when member frames alone exceed them.
+- `sends nothing for a stream that does not list the effect` — an actor with only a `read.follow` stream stays parked while its effect reports.
 - Declaration tests: `progress` for an undeclared or progress-less effect does not compile; a connection member listing an effect without `progress` is rejected at `Actor.make`; `read.progress` outside a stream handler does not compile.
 - M3.3: `delivers executor progress to a WebSocket client as t: "progress"`, and an older client ignores it.
 
@@ -254,7 +259,7 @@ Cases run on real Postgres with the in-process multi-runner harness and `Transpo
 | Owner dies with progress in flight                  | Frames in flight are lost; holders resync as ADR 0023 requires; the pool's next frames reach the new owner, which runs the effect check before delivering.                                                                                              |
 | Progress arrives after the effect settled           | Dropped by the activation that committed the route, or by the effect check on a new activation; no progress follows the route's broadcast. Without a route, `ProgressClosed` closes the effect; if it is lost, delayed progress stops within 5 seconds. |
 | Progress arrives after the effect was cancelled     | Dropped; `onCancelled` (or its fallback) reports once.                                                                                                                                                                                                  |
-| Progress floods a slow client                       | Coalesced per effect at the holder, then dropped at the buffer limits; the session is never closed because of progress.                                                                                                                                 |
+| Progress floods a slow client                       | Coalesced per effect at the holder, dropped or evicted by member frames at the buffer limits, and discarded at `ProgressEnd`; the session is never closed because of progress.                                                                          |
 | Effect check cannot reach the database              | The frame is dropped and the check retried after 1 second; no turn fails and no session closes.                                                                                                                                                         |
 | Executor sends an invalid or oversized frame        | Dropped with a warning and counted; the attempt's outcome is unchanged.                                                                                                                                                                                 |
 | Connection loses authorization with progress queued | Buffered progress is discarded with the rest of the outbound buffer; nothing more is forwarded.                                                                                                                                                         |
