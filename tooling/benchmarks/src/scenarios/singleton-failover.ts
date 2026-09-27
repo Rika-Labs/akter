@@ -154,7 +154,7 @@ const digest = (name: string, samples: ReadonlyArray<number>) => {
 export const singletonFailover: Scenario = {
   name: "singleton-failover",
   description:
-    "An Actor.singleton with a forked background loop on three in-process runners over one Postgres (ActorTest.cluster): the owner is killed and the lock expiry, survivor takeover, loop restart, and first committed tick of the new loop are each timed from the kill, over repeated drills on fresh clusters.",
+    "An Actor.singleton with a forked background loop on three in-process runners over one Postgres (ActorTest.cluster): the owner is killed and the first observation of its expired lock, survivor takeover, loop restart, and first committed tick of the new loop are each timed from the kill, over repeated drills on fresh clusters.",
   run: (context) =>
     Effect.gen(function* () {
       // The harness refuses PGlite: several runners need independent connections.
