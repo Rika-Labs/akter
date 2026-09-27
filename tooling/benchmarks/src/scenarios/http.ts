@@ -35,6 +35,26 @@ interface Served extends Caller {
   readonly url: string
   /** The same calls through `durable-actors/client`, which mints ids, decodes replies, and tracks tokens. */
   readonly client: Caller
+  /** The Promise client over a connection that loses every hundredth command response after the server sent it. */
+  readonly lossy: Caller
+}
+
+const baseFetch = globalThis.fetch.bind(globalThis)
+
+/** Loses every hundredth command response after the server committed and answered it. */
+const losing = () => {
+  let commands = 0
+
+  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input
+    const drop = url.endsWith("/Add") && ++commands % 100 === 0
+
+    return baseFetch(input, init).then((response) =>
+      drop
+        ? response.text().then(() => Promise.reject(new TypeError("connection reset")))
+        : response,
+    )
+  }
 }
 
 /** Serves the probe from a listening Bun server; every request crosses loopback through `fetch`. */
@@ -87,6 +107,7 @@ const serve = Effect.fnUntraced(function* () {
     })
 
   const probes = Probe.client({ baseUrl: url })
+  const lossy = Probe.client({ baseUrl: url, fetch: losing() })
 
   return {
     url,
@@ -96,6 +117,10 @@ const serve = Effect.fnUntraced(function* () {
     client: {
       command: (id, amount) => Effect.tryPromise(() => probes.get(id).Add(amount)),
       query: (id) => Effect.tryPromise(() => probes.get(id).Peek()),
+    },
+    lossy: {
+      command: (id, amount) => Effect.tryPromise(() => lossy.get(id).Add(amount)),
+      query: (id) => Effect.tryPromise(() => lossy.get(id).Peek()),
     },
   } satisfies Served
 })
@@ -190,6 +215,40 @@ export const http: Scenario = {
           ),
         )
       }
+
+      results.push(
+        yield* context.withRuntime({}, (instruments) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const served = yield* serve()
+              const warmup = 100
+              const operations = quick ? 300 : 3000
+              yield* load({
+                workers: 1,
+                operations: warmup,
+                operation: () => served.lossy.command("lossy", 1),
+              })
+
+              const result = yield* measure({
+                name: "client-command-sequential-1pct-loss",
+                parameters: { actors: 1, workers: 1, auth: "none", via: "client", loss: "1%" },
+                instruments,
+                workers: 1,
+                operations,
+                operation: () => served.lossy.command("lossy", 1),
+              })
+
+              const count = yield* served.client.query("lossy").pipe(Effect.orDie)
+
+              // Each lost response is retried with its id; a second turn would count twice.
+              return {
+                ...result,
+                extra: { ...result.extra, duplicateTurns: Number(count) - warmup - operations },
+              }
+            }),
+          ),
+        ),
+      )
 
       return results
     }),
