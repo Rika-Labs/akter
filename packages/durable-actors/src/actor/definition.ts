@@ -9,6 +9,7 @@ import {
   Fiber,
   Layer,
   Option,
+  Predicate,
   Result,
   Schema,
   Scope,
@@ -30,7 +31,7 @@ import type {
   FrameOf,
 } from "../contexts/connection.ts"
 import type { AnyConnection } from "../members/connection.ts"
-import type { SessionEnded } from "../errors/actor.ts"
+import { SessionEnded } from "../errors/actor.ts"
 import type { ActorError } from "../errors/actor.ts"
 import {
   Actors,
@@ -43,6 +44,7 @@ import {
   type ConnectionResult,
   type RegisteredCommand,
   type RegisteredConnection,
+  ConnectionPhase,
   type RegisteredEffect,
   type RegisteredQuery,
   type EmittedEvent,
@@ -91,6 +93,8 @@ const decodeStoredVersion = Schema.decodeEffect(
 const utf8 = new TextEncoder()
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json))
+
+const decodeCloseReason = Schema.decodeUnknownEffect(SessionEnded.fields.cause)
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
@@ -273,10 +277,7 @@ export type Handlers<Members extends MemberRecord, R, RC = R> = HandlerMap<
 > & {
   readonly [K in ReducerKeys<Members>]?: never
 } & {
-  readonly [K in ConnectionKeys<Members>]: ConnectionHandlers<
-    Members[K] & AnyConnection,
-    RC
-  >
+  readonly [K in ConnectionKeys<Members>]: ConnectionHandlers<Members[K] & AnyConnection, RC>
 }
 
 /** One handler per query in `api`. */
@@ -387,9 +388,11 @@ const make = <
   const all = [...Object.values(api), ...Object.values(internal)]
   const members = all.filter((member): member is AnyCommand => member.kind === "command")
   const queries = all.filter((member) => member.kind === "query")
+
   const connectionMembers = all.filter(
     (member): member is AnyConnection => member.kind === "connection",
   )
+
   const connectionCodecs = new Map(
     connectionMembers.map((member) => {
       const server = valueCodec(member.server)
@@ -407,6 +410,7 @@ const make = <
       ] as const
     }),
   )
+
   const reducers = all.filter((member): member is AnyReducer => member.kind === "reducer")
   const internalMembers = new Set<AnyMember>(Object.values(internal))
   const fields: StateFields = definition.state?.fields ?? {}
@@ -610,55 +614,55 @@ const make = <
       (includeInternal ? all : Object.values(api))
         .filter((member) => member.kind !== "connection")
         .map((member) => {
-        const { encodeInput, decodeOutput, decodeError } = codecs.get(member.tag)!
+          const { encodeInput, decodeOutput, decodeError } = codecs.get(member.tag)!
 
-        return [
-          member.tag,
-          (input: typeof member.input.Type) => {
-            const lock = Semaphore.makeUnsafe(1)
-            let identity: string | undefined
+          return [
+            member.tag,
+            (input: typeof member.input.Type) => {
+              const lock = Semaphore.makeUnsafe(1)
+              let identity: string | undefined
 
-            const identify = lock.withPermit(
-              Effect.gen(function* () {
-                if (identity === undefined)
-                  identity = (yield* CurrentCommandId) ?? (yield* actors.mintCommandId)
+              const identify = lock.withPermit(
+                Effect.gen(function* () {
+                  if (identity === undefined)
+                    identity = (yield* CurrentCommandId) ?? (yield* actors.mintCommandId)
 
-                return identity
-              }),
-            )
+                  return identity
+                }),
+              )
 
-            return Effect.gen(function* () {
-              yield* outsideTurn
+              return Effect.gen(function* () {
+                yield* outsideTurn
 
-              const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+                const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-              // Queries are reads: no command id, receipt, or retry identity.
-              const outcome =
-                member.kind === "query"
-                  ? yield* internalActors.query(
-                      Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
-                    )
-                  : yield* internalActors.execute(
-                      Request.make({
-                        ref,
-                        caller,
-                        command: member.tag,
-                        commandId: yield* identify,
-                        payload,
-                      }),
-                    )
+                // Queries are reads: no command id, receipt, or retry identity.
+                const outcome =
+                  member.kind === "query"
+                    ? yield* internalActors.query(
+                        Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
+                      )
+                    : yield* internalActors.execute(
+                        Request.make({
+                          ref,
+                          caller,
+                          command: member.tag,
+                          commandId: yield* identify,
+                          payload,
+                        }),
+                      )
 
-              if (Outcome.guards.Defect(outcome)) return yield* Effect.die(outcome.cause)
+                if (Outcome.guards.Defect(outcome)) return yield* Effect.die(outcome.cause)
 
-              if (Outcome.guards.Failure(outcome)) {
-                return yield* yield* decodeError(outcome.value).pipe(Effect.orDie)
-              }
+                if (Outcome.guards.Failure(outcome)) {
+                  return yield* yield* decodeError(outcome.value).pipe(Effect.orDie)
+                }
 
-              return (yield* decodeOutput(outcome.value).pipe(Effect.orDie)).value
-            })
-          },
-        ]
-      }),
+                return (yield* decodeOutput(outcome.value).pipe(Effect.orDie)).value
+              })
+            },
+          ]
+        }),
     )
 
     return { ...methods, ref } as Handle<All, Creating, BoundedMailbox>
@@ -703,21 +707,24 @@ const make = <
     })
   })
 
-  const isEventEntry = (frame: unknown): frame is EventEntry<unknown> =>
-    typeof frame === "object" &&
-    frame !== null &&
-    "cursor" in frame &&
-    "event" in frame &&
-    "commandId" in frame &&
-    "timestamp" in frame &&
-    typeof frame.cursor === "string"
+  type ServerFrame = Connections["server"]["Type"]
+
+  const isEventEntry = Schema.is(
+    Schema.Struct({
+      cursor: Schema.String,
+      event: Schema.Unknown,
+      commandId: Schema.String,
+      timestamp: Schema.DateTimeUtc,
+    }),
+  )
 
   // Encodes a server frame; an event entry carries its own cursor for the client to deduplicate on.
-  const encodeFrame = (member: string, frame: unknown) =>
+  const encodeFrame = (member: string, frame: FrameOf<ServerFrame>) =>
     Effect.gen(function* () {
       const codec = connectionCodecs.get(member)
 
-      if (codec === undefined) return yield* Effect.die(new Error(`Undeclared connection ${member}`))
+      if (codec === undefined)
+        return yield* Effect.die(new Error(`Undeclared connection ${member}`))
 
       if (isEventEntry(frame))
         return {
@@ -732,7 +739,11 @@ const make = <
     broadcasts: Array<Broadcast>,
     guard: (capability: string) => Effect.Effect<void>,
   ) =>
-    Effect.fnUntraced(function* (member: AnyConnection, frame: unknown, options?: BroadcastOptions) {
+    Effect.fnUntraced(function* (
+      member: AnyConnection,
+      frame: FrameOf<ServerFrame>,
+      options?: BroadcastOptions,
+    ) {
       yield* guard("Broadcast")
 
       if (!connectionMembers.includes(member))
@@ -764,10 +775,12 @@ const make = <
       run: Effect.fnUntraced(function* (input, phase) {
         let open = true
         const { state } = yield* decodeStored(input.state)
-        let session: unknown =
+
+        let session: SessionOf | undefined =
           input.session === undefined || codec.decodeSession === undefined
             ? undefined
             : (yield* codec.decodeSession(input.session).pipe(Effect.orDie)).value
+
         let changed = false
         let close = false
         const sends: Array<{ readonly frame: string; readonly event?: string | undefined }> = []
@@ -784,16 +797,15 @@ const make = <
           if (codec.encodeSession === undefined || codec.decodeSession === undefined)
             return yield* Effect.die(new Error(`Connection ${member.tag} declares no session`))
 
-          if (phase._tag === "Resync")
+          if (ConnectionPhase.guards.Resync(phase))
             return yield* Effect.die(new Error("A resync handler cannot change the session"))
 
-          const next = { ...(typeof session === "object" && session !== null ? session : {}), ...patch }
+          const next = Object.assign({}, session, patch)
+
           const encoded = yield* codec.encodeSession({ value: next }).pipe(Effect.orDie)
           session = (yield* codec.decodeSession(encoded).pipe(Effect.orDie)).value
           changed = true
         })
-
-
 
         const context: ConnectionContext<State, Event, Connections["server"]["Type"], SessionOf> = {
           id: input.ref.id,
@@ -806,28 +818,32 @@ const make = <
           cursor: input.cursor,
           resumed: input.resumed,
           session: {
-            get: Effect.sync(() => Option.fromUndefinedOr(session as SessionOf | undefined)),
+            get: Effect.sync(() => Option.fromUndefinedOr(session)),
             set,
           },
-          send: Effect.fnUntraced(function* (frame: unknown) {
+          send: Effect.fnUntraced(function* (frame: FrameOf<ServerFrame>) {
             yield* guard("Send")
             sends.push(yield* encodeFrame(member.tag, frame))
           }),
-          broadcast: (frame, options) =>
-            broadcastsTo(broadcasts, guard)(member, frame, options),
+          broadcast: (frame, options) => broadcastsTo(broadcasts, guard)(member, frame, options),
           connections: (options) =>
             Effect.gen(function* () {
               yield* guard("Connections")
 
               return yield* Effect.forEach(yield* input.connections(member.tag), (open) =>
                 Effect.gen(function* () {
-                  if (options?.session !== true || open.session === undefined || codec.decodeSession === undefined)
+                  if (
+                    options?.session !== true ||
+                    open.session === undefined ||
+                    codec.decodeSession === undefined
+                  )
                     return { connectionId: open.connectionId, caller: open.caller }
 
                   return {
                     connectionId: open.connectionId,
                     caller: open.caller,
-                    session: (yield* codec.decodeSession(open.session).pipe(Effect.orDie)).value as SessionOf,
+                    session: (yield* codec.decodeSession(open.session).pipe(Effect.orDie))
+                      .value as SessionOf,
                   }
                 }),
               )
@@ -871,31 +887,32 @@ const make = <
           }),
         }
 
-        const program: Effect.Effect<void, unknown, R> = Effect.gen(function* () {
-          switch (phase._tag) {
-            case "Open":
-              return yield* entry.open(
-                (yield* memberCodec.decodeInput(phase.params).pipe(Effect.orDie)).value,
-              )
-            case "Frame":
-              return yield* entry.frame(
-                (yield* codec.decodeClient(phase.frame).pipe(Effect.orDie)).value,
-              )
-            case "Close":
-              return yield* entry.close?.(phase.reason as SessionEnded["cause"]) ?? Effect.void
-            case "Resync":
-              return yield* entry.resync?.({ after: phase.after }) ?? Effect.void
-          }
+        const program = ConnectionPhase.match(phase, {
+          Open: ({ params }) =>
+            Effect.flatMap(memberCodec.decodeInput(params).pipe(Effect.orDie), ({ value }) =>
+              entry.open(value),
+            ).pipe(
+              Effect.catch((error) =>
+                memberCodec.isError(error)
+                  ? Effect.flatMap(memberCodec.encodeError(error).pipe(Effect.orDie), (failure) =>
+                      Effect.fail({ failure }),
+                    )
+                  : Effect.die(error),
+              ),
+            ),
+          Frame: ({ frame }) =>
+            Effect.flatMap(codec.decodeClient(frame).pipe(Effect.orDie), ({ value }) =>
+              entry.frame(value),
+            ),
+          Close: ({ reason }) =>
+            Effect.flatMap(
+              decodeCloseReason(reason).pipe(Effect.orDie),
+              (cause) => entry.close?.(cause) ?? Effect.void,
+            ),
+          Resync: ({ after }) => entry.resync?.({ after }) ?? Effect.void,
         })
 
         return yield* program.pipe(
-          Effect.catch((error) =>
-            phase._tag === "Open" && memberCodec.isError(error)
-              ? Effect.flatMap(memberCodec.encodeError(error).pipe(Effect.orDie), (failure) =>
-                  Effect.fail({ failure }),
-                )
-              : Effect.die(error),
-          ),
           Effect.flatMap(() =>
             Effect.gen(function* () {
               const encoded =
@@ -903,7 +920,13 @@ const make = <
                   ? input.session
                   : yield* codec.encodeSession({ value: session }).pipe(Effect.orDie)
 
-              const result: ConnectionResult = { session: encoded, changed, sends, broadcasts, close }
+              const result: ConnectionResult = {
+                session: encoded,
+                changed,
+                sends,
+                broadcasts,
+                close,
+              }
 
               return result
             }),
@@ -915,18 +938,22 @@ const make = <
     }
   }
 
-  const register = <R>(handlers: Handlers<All, R>, services: Context.Context<R>) =>
+  const register = <R, RC>(handlers: Handlers<All, R, RC>, services: Context.Context<R | RC>) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
       const commands = new Map<string, RegisteredCommand>()
       const connections = new Map<string, RegisteredConnection>()
 
       for (const member of connectionMembers) {
-        const entry = (handlers as unknown as Record<string, ConnectionHandlers<AnyConnection, R>>)[
-          member.tag
-        ]
+        const entry = (
+          handlers as Record<string, ConnectionHandlers<AnyConnection, RC> | undefined>
+        )[member.tag]
 
-        if (entry === undefined || typeof entry.open !== "function" || typeof entry.frame !== "function")
+        if (
+          entry === undefined ||
+          !Predicate.isFunction(entry.open) ||
+          !Predicate.isFunction(entry.frame)
+        )
           return yield* Effect.die(new Error(`Missing connection handlers ${member.tag}`))
 
         connections.set(member.tag, connectionHandler(member, entry, services))
@@ -1200,19 +1227,17 @@ const make = <
   ): Layer.Layer<
     never,
     never,
-    | Exclude<R, Turn | InTurn>
-    | Exclude<RC, Connection>
-    | Exclude<RB, Scope.Scope>
-    | InternalActors
+    Exclude<R, Turn | InTurn> | Exclude<RC, Connection> | Exclude<RB, Scope.Scope> | InternalActors
   > =>
     Layer.effectDiscard(
       Effect.gen(function* () {
         const handlers = yield* build
-        const services = yield* Effect.context<Exclude<R, Turn | InTurn> | Exclude<RC, Connection>>()
-        yield* register(
-          handlers as unknown as Handlers<All, R | RC>,
-          services as Context.Context<R | RC>,
-        )
+
+        const services = yield* Effect.context<
+          Exclude<R, Turn | InTurn> | Exclude<RC, Connection>
+        >()
+
+        yield* register(handlers, services as Context.Context<R | RC>)
       }),
     ) as Layer.Layer<
       never,

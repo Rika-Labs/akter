@@ -1,28 +1,31 @@
-import { Cause, Effect, Exit, Schema, Semaphore } from "effect"
+import { Cause, Effect, Exit, Option, Schema, Semaphore } from "effect"
 import { Entity } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable, NotCreated, SessionEnded } from "../../errors/actor.ts"
-import type {
-  Broadcast,
+import {
+  type Broadcast,
   ConnectionPhase,
-  ConnectionResult,
-  OpenConnection,
-  Registration,
+  type ConnectionResult,
+  type OpenConnection,
+  type Registration,
 } from "../../handles/actors.ts"
 import { type ActorRef, Caller } from "../../identity/caller.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { type ActivationCache, emptyActivationCache } from "../turn/execute.ts"
-import type { Deliver, HolderItem } from "./protocol.ts"
+import { type Deliver, HolderItem } from "./protocol.ts"
 import { HolderUnreachable, type Transport } from "./transport.ts"
 
 /** Encoded bytes one connection's session may hold. */
 export const MAX_SESSION_BYTES = 16_384
+
 /** Open connections one actor may have per connection member. */
 export const MAX_MEMBER_CONNECTIONS = 10_000
 
 const utf8 = new TextEncoder()
+
 const encodeCaller = Schema.encodeEffect(Schema.fromJsonString(Caller))
+
 const decodeCaller = Schema.decodeEffect(Schema.fromJsonString(Caller))
 
 interface Row {
@@ -82,7 +85,13 @@ type Address = {
  * shared with commands, the fenced `actor_connections` writes, and ordered,
  * post-commit delivery of frames to every holder.
  */
-export const makeOwner = (registration: Registration, transport: Transport) => {
+export const activationOwner = ({
+  registration,
+  transport,
+}: {
+  readonly registration: Registration
+  readonly transport: Transport
+}) => {
   const activations = new Map<string, Activation>()
   const hasConnections = registration.connections.size > 0
 
@@ -119,6 +128,7 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
           opened: new Set(),
           keptAwake: false,
         }
+
         activations.set(entityId, created)
 
         return created
@@ -158,6 +168,7 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
   const send = (activation: Activation, channel: Channel, items: ReadonlyArray<HolderItem>) =>
     Effect.gen(function* () {
       channel.seq += 1
+
       const message: Deliver = {
         epoch: channel.epoch,
         owner: transport.holder,
@@ -168,18 +179,23 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
         through: activation.through,
         items,
       }
-      const held = [...(activation.rows?.values() ?? [])]
-        .filter((row) => row.holder === channel.holder && row.holderEpoch === channel.epoch)
-        .map((row) => row.connectionId)
 
-      const answer = yield* transport.deliver(channel.holder, channel.epoch, message).pipe(Effect.exit)
+      const held = [...(activation.rows?.values() ?? [])].flatMap((row) =>
+        row.holder === channel.holder && row.holderEpoch === channel.epoch
+          ? [row.connectionId]
+          : [],
+      )
+
+      const answer = yield* transport
+        .deliver(channel.holder, channel.epoch, message)
+        .pipe(Effect.exit)
 
       if (Exit.isFailure(answer)) {
         // An unreachable holder is excluded: its rows go, and it ends those connections itself.
-        if (Cause.findErrorOption(answer.cause)._tag === "Some")
+        if (Option.isSome(Cause.findErrorOption(answer.cause)))
           return yield* dropRows(activation, held)
 
-        return yield* Effect.die(new HolderUnreachable("Holder delivery failed"))
+        return yield* Effect.die(HolderUnreachable.make({ message: "Holder delivery failed" }))
       }
 
       if (answer.value.wrongEpoch) return yield* dropRows(activation, held)
@@ -188,13 +204,15 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
     }).pipe(Effect.catchIf(SqlError.isSqlError, () => Effect.void))
 
   const seal = (activation: Activation) =>
-    activation.flush.withPermit(
-      Effect.forEach(
-        [...activation.channels.values()],
-        (channel) => send(activation, channel, [{ _tag: "Seal" }]),
-        { discard: true },
-      ),
-    ).pipe(Effect.timeout("2 seconds"), Effect.ignore)
+    activation.flush
+      .withPermit(
+        Effect.forEach(
+          [...activation.channels.values()],
+          (channel) => send(activation, channel, [HolderItem.cases.Seal.make({})]),
+          { discard: true },
+        ),
+      )
+      .pipe(Effect.timeout("2 seconds"), Effect.ignore)
 
   /** Fences this activation's generation and loads committed state, as a command turn would. */
   const acquire = (activation: Activation) =>
@@ -218,7 +236,10 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
                   SELECT generation::text AS generation, event_sequence::text AS head
                   FROM actor_generations WHERE ${actor}`
 
-          if (activation.cache.generation !== undefined && activation.cache.generation !== row!.generation) {
+          if (
+            activation.cache.generation !== undefined &&
+            activation.cache.generation !== row!.generation
+          ) {
             activation.cache.generation = undefined
             activation.cache.state = undefined
 
@@ -227,6 +248,7 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
 
           const state = yield* sql<{ key: string; value: Uint8Array }>`
             SELECT key, value FROM actor_state WHERE ${actor}`
+
           activation.cache.generation = row!.generation
           activation.cache.state = new Map(state.map(({ key, value }) => [key, decompress(value)]))
           activation.head = row!.head
@@ -285,10 +307,7 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
   /** Readies an activation that is about to run a turn: fenced, with its connection rows. */
   const prepare = (activation: Activation) =>
     hasConnections
-      ? Effect.andThen(acquire(activation), load(activation)).pipe(
-          Effect.catchIf(SqlError.isSqlError, Effect.die),
-          Effect.catch((error) => Effect.die(error)),
-        )
+      ? Effect.andThen(acquire(activation), load(activation)).pipe(Effect.orDie)
       : Effect.void
 
   const list = (activation: Activation) => (member: string) =>
@@ -296,7 +315,11 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
       [...(activation.rows?.values() ?? [])]
         .filter((row) => row.member === member)
         .slice(0, 1_000)
-        .map((row) => ({ connectionId: row.connectionId, caller: row.caller, session: row.session })),
+        .map((row) => ({
+          connectionId: row.connectionId,
+          caller: row.caller,
+          session: row.session,
+        })),
     )
 
   /** Sends committed frames to their holders in order and advances the flushed-through cursor. */
@@ -304,7 +327,11 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
     activation: Activation,
     broadcasts: ReadonlyArray<Broadcast>,
     head: string,
-    own?: { readonly connectionId: string; readonly member: string; readonly frames: ConnectionResult["sends"] },
+    own?: {
+      readonly connectionId: string
+      readonly member: string
+      readonly frames: ConnectionResult["sends"]
+    },
   ) =>
     activation.flush.withPermit(
       Effect.gen(function* () {
@@ -328,7 +355,10 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
             last.member === item.member &&
             last.event === item.event
           )
-            perChannel.set(channel, [...items.slice(0, -1), { ...last, to: [...last.to, ...item.to] }])
+            perChannel.set(channel, [
+              ...items.slice(0, -1),
+              { ...last, to: [...last.to, ...item.to] },
+            ])
           else perChannel.set(channel, [...items, item])
         }
 
@@ -343,14 +373,16 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
               (to === undefined || to.has(row.connectionId)) &&
               !except.has(row.connectionId)
             )
-              add(row, {
-                _tag: "Frame",
-                member: row.member,
-                to: [row.connectionId],
-                frame: broadcast.frame,
-                event: broadcast.event,
-                stamp,
-              })
+              add(
+                row,
+                HolderItem.cases.Frame.make({
+                  member: row.member,
+                  to: [row.connectionId],
+                  frame: broadcast.frame,
+                  event: broadcast.event,
+                  stamp,
+                }),
+              )
         }
 
         const self = own === undefined ? undefined : activation.rows.get(own.connectionId)
@@ -359,21 +391,25 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
           const stamp = registration.connections.get(own.member)?.stampCursor ?? true
 
           for (const frame of own.frames)
-            add(self, {
-              _tag: "Frame",
-              member: own.member,
-              to: [own.connectionId],
-              frame: frame.frame,
-              event: frame.event,
-              stamp,
-            })
+            add(
+              self,
+              HolderItem.cases.Frame.make({
+                member: own.member,
+                to: [own.connectionId],
+                frame: frame.frame,
+                event: frame.event,
+                stamp,
+              }),
+            )
         }
 
         for (const [channel, items] of perChannel)
           yield* send(
             activation,
             channel,
-            head === activation.through ? items : [...items, { _tag: "Flushed", through: head }],
+            head === activation.through
+              ? items
+              : [...items, HolderItem.cases.Flushed.make({ through: head })],
           )
 
         activation.head = head
@@ -410,7 +446,7 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
           connectionId: row.connectionId,
           member: row.member,
           caller: row.caller,
-          resumed: phase._tag !== "Open" && !activation.opened.has(row.connectionId),
+          resumed: !ConnectionPhase.guards.Open(phase) && !activation.opened.has(row.connectionId),
           cursor: activation.through,
           state: [...(activation.cache.state ?? new Map<string, string>())],
           session: row.session,
@@ -453,7 +489,11 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
 
   const open = (
     activation: Activation,
-    request: Address & { readonly member: string; readonly caller: Caller; readonly params: string },
+    request: Address & {
+      readonly member: string
+      readonly caller: Caller
+      readonly params: string
+    },
   ) =>
     lockOf(activation, request.connectionId).withPermit(
       Effect.gen(function* () {
@@ -482,7 +522,8 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
           const [created] = yield* sql<{ created: boolean }>`
             SELECT created FROM actor_generations WHERE ${actor}`
 
-          if (created?.created !== true) return yield* ActorError.make({ reason: NotCreated.make({}) })
+          if (created?.created !== true)
+            return yield* ActorError.make({ reason: NotCreated.make({}) })
         }
 
         const row = {
@@ -493,8 +534,14 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
           caller: request.caller,
           session: undefined,
         }
+
         const baseline = activation.through
-        const result = yield* run(activation, row, { _tag: "Open", params: request.params }).pipe(
+
+        const result = yield* run(
+          activation,
+          row,
+          ConnectionPhase.cases.Open.make({ params: request.params }),
+        ).pipe(
           Effect.catchDefect((cause) =>
             Effect.gen(function* () {
               yield* Effect.logError("Connection open defect", Cause.die(cause))
@@ -502,8 +549,9 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
               return yield* ActorError.make({ reason: ended("Defect", false) })
             }),
           ),
-          Effect.catch((error) =>
-            "failure" in error ? Effect.succeed({ failure: error.failure }) : Effect.fail(error),
+          Effect.catchIf(
+            (error) => "failure" in error,
+            (error) => Effect.succeed({ failure: error.failure }),
           ),
         )
 
@@ -514,6 +562,7 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
         )
 
         const caller = yield* encodeCaller(request.caller).pipe(Effect.orDie)
+
         const inserted = yield* sql<{ connection_id: string }>`
           INSERT INTO actor_connections (routing_key, connection_id, bucket, tenant_id, actor_type, actor_id,
             member, holder, holder_epoch, caller, session, opened_at_ms)
@@ -540,7 +589,8 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
           frames: result.sends,
         })
 
-        if (result.close) yield* closeRow(activation, request.connectionId, ended("ServerClosed", false))
+        if (result.close)
+          yield* closeRow(activation, request.connectionId, ended("ServerClosed", false))
 
         return { _tag: "Opened" as const, ...identity(activation), baseline }
       }).pipe(
@@ -560,7 +610,7 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
         Effect.gen(function* () {
           yield* dropRows(activation, [connectionId])
           yield* send(activation, channelOf(activation, row.holder, row.holderEpoch), [
-            { _tag: "End", connectionId, ended: cause },
+            HolderItem.cases.End.make({ connectionId, ended: cause }),
           ])
         }),
       )
@@ -570,12 +620,17 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
   const owned = (activation: Activation, request: Address) => {
     const row = activation.rows?.get(request.connectionId)
 
-    return row !== undefined && row.holder === request.holder && row.holderEpoch === request.holderEpoch
+    return row !== undefined &&
+      row.holder === request.holder &&
+      row.holderEpoch === request.holderEpoch
       ? row
       : undefined
   }
 
-  const frame = (activation: Activation, request: Address & { readonly seq: number; readonly frame: string }) =>
+  const frame = (
+    activation: Activation,
+    request: Address & { readonly seq: number; readonly frame: string },
+  ) =>
     lockOf(activation, request.connectionId).withPermit(
       Effect.gen(function* () {
         yield* acquire(activation)
@@ -583,19 +638,23 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
         // The owner runs frames only from the connection's stored holder.
         const row = owned(activation, request)
 
-        if (row === undefined) return { _tag: "Closed" as const, ended: ended("ServerClosed", true) }
+        if (row === undefined)
+          return { _tag: "Closed" as const, ended: ended("ServerClosed", true) }
 
         if (request.seq <= row.frameSeq) return { _tag: "Acked" as const, ...identity(activation) }
 
         return yield* Effect.gen(function* () {
-          const result = yield* run(activation, row, { _tag: "Frame", frame: request.frame }).pipe(
-            Effect.catch(() => Effect.die(new Error("A frame handler cannot fail"))),
-          )
+          const result = yield* run(
+            activation,
+            row,
+            ConnectionPhase.cases.Frame.make({ frame: request.frame }),
+          ).pipe(Effect.catch(() => Effect.die(new Error("A frame handler cannot fail"))))
+
           yield* checkSession(result)
 
           if (result.changed) {
             const sql = yield* SqlClient.SqlClient
-            const actor = yield* where(activation)
+
             const written = yield* sql<{ connection_id: string }>`
               UPDATE actor_connections c SET session = ${result.session === undefined ? null : compress(result.session)},
                 frame_seq = ${request.seq}
@@ -649,12 +708,18 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
         const row = owned(activation, request)
 
         if (row === undefined) return
-        const result = yield* run(activation, row, { _tag: "Close", reason: request.cause.cause }).pipe(
+
+        const result = yield* run(
+          activation,
+          row,
+          ConnectionPhase.cases.Close.make({ reason: request.cause.cause }),
+        ).pipe(
           Effect.catchDefect((cause) =>
             Effect.as(Effect.logError("Connection close defect", Cause.die(cause)), undefined),
           ),
-          Effect.catch(() => Effect.succeed(undefined)),
+          Effect.orElseSucceed(() => undefined),
         )
+
         yield* dropRows(activation, [request.connectionId])
         activation.opened.delete(request.connectionId)
         activation.locks.delete(request.connectionId)
@@ -668,7 +733,10 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
       ),
     )
 
-  const resync = (activation: Activation, request: Address & { readonly after?: string | undefined }) =>
+  const resync = (
+    activation: Activation,
+    request: Address & { readonly after?: string | undefined },
+  ) =>
     lockOf(activation, request.connectionId).withPermit(
       Effect.gen(function* () {
         yield* acquire(activation)
@@ -681,9 +749,12 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
           return { _tag: "Replayed" as const, ...identity(activation) }
 
         return yield* Effect.gen(function* () {
-          const result = yield* run(activation, row, { _tag: "Resync", after: request.after }).pipe(
-            Effect.catch(() => Effect.die(new Error("A resync handler cannot fail"))),
-          )
+          const result = yield* run(
+            activation,
+            row,
+            ConnectionPhase.cases.Resync.make({ after: request.after }),
+          ).pipe(Effect.catch(() => Effect.die(new Error("A resync handler cannot fail"))))
+
           yield* flush(activation, result.broadcasts, activation.head, {
             connectionId: request.connectionId,
             member: row.member,
@@ -731,4 +802,4 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
   }
 }
 
-export type Owner = ReturnType<typeof makeOwner>
+export type Owner = ReturnType<typeof activationOwner>

@@ -11,6 +11,7 @@ import {
   Redacted,
   Schema,
   Option,
+  Predicate,
   Stream,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
@@ -31,7 +32,8 @@ import {
 import type { ActorError } from "../errors/actor.ts"
 import type { ValueSchema } from "../members/command.ts"
 import type { AnyConnection } from "../members/connection.ts"
-import { type ClientMessage, OpenRejected } from "../runtime/connections/holder.ts"
+import { OpenRejected } from "../runtime/connections/holder.ts"
+import { ClientMessage } from "../runtime/connections/protocol.ts"
 import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
 import { compress, decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
@@ -446,15 +448,22 @@ export class ActorTest extends Context.Service<
                 const server = valueCodec(member.server)
                 const decodeServer = Schema.decodeEffect(server)
                 const encodeClient = Schema.encodeEffect(valueCodec(member.client))
+
                 const decodeError = Schema.decodeEffect(
                   Schema.fromJsonString(Schema.toCodecJson(Schema.Union(member.errors))),
                 )
+
                 const encoded = yield* Schema.encodeEffect(valueCodec(member.input))({
                   value: params,
                 }).pipe(Effect.orDie)
 
                 const held = yield* internalActors.holder
-                  .open({ ref, member: member.tag, caller: options.as ?? Anonymous.make({}), params: encoded })
+                  .open({
+                    ref,
+                    member: member.tag,
+                    caller: options.as ?? Anonymous.make({}),
+                    params: encoded,
+                  })
                   .pipe(
                     Effect.catchTag("OpenRejected", (rejected: OpenRejected) =>
                       Effect.flatMap(decodeError(rejected.value).pipe(Effect.orDie), (error) =>
@@ -463,17 +472,19 @@ export class ActorTest extends Context.Service<
                     ),
                   )
 
-                const messages: Stream.Stream<TestMessage<C["server"]["Type"]>, ActorError> =
-                  held.messages.pipe(
-                    Stream.mapEffect((message): Effect.Effect<TestMessage<C["server"]["Type"]>> =>
-                      message._tag === "Frame"
-                        ? Effect.map(decodeServer(message.frame).pipe(Effect.orDie), ({ value }) => ({
-                            ...message,
-                            frame: value as C["server"]["Type"],
-                          }))
-                        : Effect.succeed(message),
-                    ),
-                  )
+                const messages: Stream.Stream<
+                  TestMessage<C["server"]["Type"]>,
+                  ActorError
+                > = held.messages.pipe(
+                  Stream.mapEffect((message): Effect.Effect<TestMessage<C["server"]["Type"]>> =>
+                    ClientMessage.guards.Frame(message)
+                      ? Effect.map(decodeServer(message.frame).pipe(Effect.orDie), ({ value }) => ({
+                          ...message,
+                          frame: value as C["server"]["Type"],
+                        }))
+                      : Effect.succeed(message),
+                  ),
+                )
 
                 const connection: TestConnection<C> = {
                   connectionId: held.connectionId,
@@ -481,7 +492,14 @@ export class ActorTest extends Context.Service<
                   send: (frame) =>
                     Effect.flatMap(encodeClient({ value: frame }).pipe(Effect.orDie), held.send),
                   frames: messages.pipe(
-                    Stream.filter((message) => message._tag === "Frame"),
+                    Stream.filter(
+                      (
+                        message,
+                      ): message is Extract<
+                        TestMessage<C["server"]["Type"]>,
+                        { readonly _tag: "Frame" }
+                      > => Predicate.isTagged(message, "Frame"),
+                    ),
                     Stream.map((message) => message.frame),
                   ),
                   messages,

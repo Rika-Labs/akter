@@ -46,8 +46,8 @@ import { migrate } from "./database/migrations.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, connectionEntity, registerActor } from "./entity/register.ts"
-import { type Holder, type HeldActorType, makeHolder } from "./connections/holder.ts"
-import { holderShardGroups, makeTransport, type Transport } from "./connections/transport.ts"
+import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
+import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
 import type { Owner } from "./connections/owner.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
@@ -143,11 +143,12 @@ export const layer = (options: Options) => {
       // The holder and transport refer to each other: the transport delivers
       // to this runner's holder, which answers through the transport.
       let holder: Holder | undefined
-      const transport: Transport = yield* makeTransport((message) =>
+
+      const transport: Transport = yield* holderTransport((message) =>
         Effect.suspend(() => holder!.deliver(message)),
       )
 
-      const connectionCall = <A>(effect: Effect.Effect<A, unknown>) =>
+      const connectionCall = <A, E>(effect: Effect.Effect<A, E>) =>
         Effect.suspend(() => effect.pipe(Effect.forkIn(scope))).pipe(
           Effect.flatMap(Fiber.join),
           Effect.catchCause((cause) => {
@@ -166,6 +167,7 @@ export const layer = (options: Options) => {
 
       const heldType = (registration: Registration): HeldActorType => {
         const entity = connectionEntity(registration.name)
+
         const client = (ref: ActorRef) =>
           Effect.gen(function* () {
             const make = yield* sharding.makeClient(entity)
@@ -180,16 +182,19 @@ export const layer = (options: Options) => {
           routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
           hasResync: (member) => registration.connections.get(member)?.hasResync ?? false,
           channel: {
-            open: (request) => connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
-            frame: (request) => connectionCall(Effect.flatMap(client(request.ref), (c) => c.Frame(request))),
-            close: (request) => connectionCall(Effect.flatMap(client(request.ref), (c) => c.Close(request))),
+            open: (request) =>
+              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
+            frame: (request) =>
+              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Frame(request))),
+            close: (request) =>
+              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Close(request))),
             resync: (request) =>
               connectionCall(Effect.flatMap(client(request.ref), (c) => c.Resync(request))),
           },
         }
       }
 
-      holder = yield* makeHolder({
+      holder = yield* connectionHolder({
         transport: () => transport,
         actorType: (name) => heldTypes.get(name),
         authorize: (request) => options.authorize(request),
@@ -200,7 +205,14 @@ export const layer = (options: Options) => {
       const checked = new Set<AnyOwnedTable>()
 
       const allow = Effect.fnUntraced(function* (request: Request, kind: "command" | "query") {
-        if (!(yield* options.authorize({ caller: request.caller, ref: request.ref, command: request.command, kind })))
+        if (
+          !(yield* options.authorize({
+            caller: request.caller,
+            ref: request.ref,
+            command: request.command,
+            kind,
+          }))
+        )
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
@@ -453,7 +465,8 @@ export const layer = (options: Options) => {
           residency.set(registration.name, isResident)
           owners.set(registration.name, owner)
 
-          if (registration.connections.size > 0) heldTypes.set(registration.name, heldType(registration))
+          if (registration.connections.size > 0)
+            heldTypes.set(registration.name, heldType(registration))
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               registrations.delete(registration.name)
@@ -566,9 +579,10 @@ export const layer = (options: Options) => {
         transport,
         holder,
         hibernate: (ref) =>
-          Effect.flatMap(entityId(ref), (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void).pipe(
-            Effect.provideContext(services),
-          ),
+          Effect.flatMap(
+            entityId(ref),
+            (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void,
+          ).pipe(Effect.provideContext(services)),
         execute: (request) => dispatch(request, true),
         deliver: (request) => dispatch(request, false),
         drainOutbox: relay.drain,

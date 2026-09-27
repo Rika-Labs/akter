@@ -1,7 +1,7 @@
-import { Cause, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, Option, Predicate, Schedule, Schema, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, User } from "../../index.ts"
-import type { ActorError } from "../../errors/actor.ts"
+import { type ActorError, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest, type TestConnection, type TestMessage } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
@@ -91,6 +91,16 @@ export const connectionsLayer = Room.toLayer(
 
 type LiveMessage = TestMessage<typeof Live.server.Type>
 
+type LiveFrame = Extract<LiveMessage, { readonly _tag: "Frame" }>
+
+const isFrame = (message: LiveMessage | undefined): message is LiveFrame =>
+  Predicate.isTagged(message, "Frame")
+
+const frameOf = (message: LiveMessage | undefined) => (isFrame(message) ? message.frame : undefined)
+
+const cursorOf = (message: LiveMessage | undefined) =>
+  isFrame(message) ? message.cursor : undefined
+
 /** Reads the next `count` envelopes, control frames included. */
 const next = (connection: TestConnection<typeof Live>, count = 1) =>
   connection.messages.pipe(
@@ -138,7 +148,10 @@ const connect = (id: string, name = "alice") =>
 
 const EXPIRATION_SECONDS = 3
 
-const withCluster = <A, E>(environment: ConformanceEnvironment, body: Effect.Effect<A, E, ActorCluster>) =>
+const withCluster = <A, E>(
+  environment: ConformanceEnvironment,
+  body: Effect.Effect<A, E, ActorCluster>,
+) =>
   environment.run(
     Effect.gen(function* () {
       const database = yield* environment.freshDatabase
@@ -165,14 +178,14 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const { room, connection } = yield* connect("connections-open")
           const [hello] = yield* next(connection)
-          expect(hello).toMatchObject({ _tag: "Frame", frame: { name: "alice", resumed: false, frames: 0 } })
+          expect(frameOf(hello)).toEqual(Hello.make({ name: "alice", resumed: false, frames: 0 }))
 
           yield* connection.send(Say.make({ text: "whoami" }))
           yield* connection.send(Say.make({ text: "whoami" }))
           const answers = yield* next(connection, 2)
-          expect(answers.map((message) => message._tag === "Frame" && message.frame)).toMatchObject([
-            { _tag: "Hello", frames: 1 },
-            { _tag: "Hello", frames: 2 },
+          expect(answers.map(frameOf)).toEqual([
+            Hello.make({ name: "alice", resumed: false, frames: 1 }),
+            Hello.make({ name: "alice", resumed: false, frames: 2 }),
           ])
 
           const [row] = yield* rows(room.ref)
@@ -181,7 +194,10 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* connection.close
           yield* rows(room.ref).pipe(
-            Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (found) => found.length === 0 }),
+            Effect.repeat({
+              schedule: Schedule.spaced("20 millis"),
+              until: (found) => found.length === 0,
+            }),
             Effect.timeout("5 seconds"),
             Effect.orDie,
           )
@@ -197,7 +213,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const room = yield* Room.get("connections-banned")
           const exit = yield* test.connect(room.ref, Live, { name: "mallory" }).pipe(Effect.exit)
           expect(Exit.isFailure(exit) && Cause.findErrorOption(exit.cause)).toMatchObject(
-            Option.some({ _tag: "Banned", name: "mallory" }),
+            Option.some(Banned.make({ name: "mallory" })),
           )
           expect(yield* rows(room.ref)).toEqual([])
         }),
@@ -217,7 +233,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.hibernate(room.ref)
           yield* connection.send(Say.make({ text: "whoami" }))
           const [woken] = yield* next(connection)
-          expect(woken).toMatchObject({ _tag: "Frame", frame: { resumed: true, frames: 2, name: "alice" } })
+          expect(frameOf(woken)).toEqual(Hello.make({ name: "alice", resumed: true, frames: 2 }))
           expect(BigInt((yield* test.inspect(room.ref)).generation!) > BigInt(before!)).toBe(true)
         }),
       ),
@@ -236,16 +252,14 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* room.Post("hello")
 
           const [said] = yield* next(connection)
-          expect(said).toMatchObject({ _tag: "Frame", frame: { _tag: "Said", text: "hello" } })
-          expect(said!._tag === "Frame" && said!.cursor).toBe(connection.cursor)
+          expect(frameOf(said)).toEqual(Said.make({ text: "hello" }))
+          expect(cursorOf(said)).toBe(connection.cursor)
 
           yield* room.Post("again")
           const [again] = yield* next(connection)
-          expect(again).toMatchObject({ _tag: "Frame", frame: { text: "again" } })
+          expect(frameOf(again)).toEqual(Said.make({ text: "again" }))
           // The second turn's frame carries the watermark the first turn's flush advanced.
-          expect(
-            BigInt(again!._tag === "Frame" ? (again!.cursor ?? "0") : "0") > BigInt(connection.cursor),
-          ).toBe(true)
+          expect(BigInt(cursorOf(again) ?? "0") > BigInt(connection.cursor)).toBe(true)
         }),
       ),
   },
@@ -261,11 +275,18 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           fixture.allowed = false
           yield* test.advance("55 seconds")
-          const ended = yield* endOf(connection).pipe(Effect.ensuring(Effect.sync(() => (fixture.allowed = true))))
-          expect(reasonOf(ended)).toMatchObject({ _tag: "Unauthorized", code: "access_denied" })
+
+          const ended = yield* endOf(connection).pipe(
+            Effect.ensuring(Effect.sync(() => (fixture.allowed = true))),
+          )
+
+          expect(reasonOf(ended)).toMatchObject(Unauthorized.make({ code: "access_denied" }))
           expect((yield* test.inspect(room.ref)).generation).toBe(generation)
           yield* rows(room.ref).pipe(
-            Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (found) => found.length === 0 }),
+            Effect.repeat({
+              schedule: Schedule.spaced("20 millis"),
+              until: (found) => found.length === 0,
+            }),
             Effect.timeout("5 seconds"),
             Effect.orDie,
           )
@@ -280,10 +301,9 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const { test, connection } = yield* connect("connections-bound")
           yield* next(connection)
           yield* test.advance("61 seconds")
-          expect(reasonOf(yield* endOf(connection))).toMatchObject({
-            _tag: "Unauthorized",
-            code: "reauthorization_unavailable",
-          })
+          expect(reasonOf(yield* endOf(connection))).toMatchObject(
+            Unauthorized.make({ code: "reauthorization_unavailable" }),
+          )
         }),
       ),
   },
@@ -297,15 +317,16 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* connection.send(Say.make({ text: "flood" }))
           // The client reads nothing until its session has ended and its row is gone.
           yield* rows(room.ref).pipe(
-            Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (found) => found.length === 0 }),
+            Effect.repeat({
+              schedule: Schedule.spaced("20 millis"),
+              until: (found) => found.length === 0,
+            }),
             Effect.timeout("10 seconds"),
             Effect.orDie,
           )
-          expect(reasonOf(yield* endOf(connection))).toMatchObject({
-            _tag: "SessionEnded",
-            cause: "SlowConsumer",
-            resync: true,
-          })
+          const slow = reasonOf(yield* endOf(connection))
+          expect(Schema.is(SessionEnded)(slow)).toBe(true)
+          expect(slow).toMatchObject({ cause: "SlowConsumer", resync: true })
         }),
       ),
   },
@@ -322,43 +343,51 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           // The holder is runner 0; find an actor that runner 1 owns.
           let ref: ActorRef | undefined
+
           for (let index = 0; ref === undefined && index < 200; index++) {
             const candidate = (yield* cluster.on(0)(Room.get(`connections-crash-${index}`))).ref
+
             if ((yield* cluster.owner(candidate)) === 1) ref = candidate
           }
 
-          if (ref === undefined) return yield* Effect.die(new Error("Runner 1 owns no probed actor"))
+          if (ref === undefined)
+            return yield* Effect.die(new Error("Runner 1 owns no probed actor"))
           const target = ref
 
           const connection = yield* cluster.on(0)(
             ActorTest.use((test) => test.connect(target, Live, { name: "alice" })),
           )
+
           yield* next(connection)
-          yield* cluster.on(0)(Room.get(target.id).pipe(Effect.flatMap((room) => room.Post("before"))))
+          yield* cluster.on(0)(
+            Room.get(target.id).pipe(Effect.flatMap((room) => room.Post("before"))),
+          )
           const [before] = yield* next(connection)
-          expect(before).toMatchObject({ _tag: "Frame", frame: { text: "before" } })
+          expect(frameOf(before)).toEqual(Said.make({ text: "before" }))
 
           yield* cluster.kill(1)
 
           const [resync] = yield* next(connection)
-          expect(resync).toMatchObject({ _tag: "Resync", reason: "OwnerLost" })
-          const after = resync!._tag === "Resync" ? resync!.after : undefined
+          const lost = Predicate.isTagged(resync, "Resync") ? resync : undefined
+          expect(lost?.reason).toBe("OwnerLost")
+          const after = lost?.after
           expect(after === undefined).toBe(false)
 
           // The new owner replays events after the cursor, then the holder reports the replay done.
           const replay = yield* connection.messages.pipe(
-            Stream.takeUntil((message) => message._tag === "ResyncReplayed"),
+            Stream.takeUntil((message) => Predicate.isTagged(message, "ResyncReplayed")),
             Stream.runCollect,
             Effect.timeout("60 seconds"),
             Effect.orDie,
           )
-          expect([...replay].at(-1)).toMatchObject({ _tag: "ResyncReplayed" })
-          expect([...replay].filter((message) => message._tag === "Frame")).toEqual([])
+
+          expect([...replay].at(-1)?._tag).toBe("ResyncReplayed")
+          expect([...replay].filter(isFrame)).toEqual([])
 
           yield* connection.resyncDone
           yield* connection.send(Say.make({ text: "whoami" }))
           const [resumed] = yield* next(connection)
-          expect(resumed).toMatchObject({ _tag: "Frame", frame: { _tag: "Hello", resumed: true, frames: 1 } })
+          expect(frameOf(resumed)).toEqual(Hello.make({ name: "alice", resumed: true, frames: 1 }))
           expect(yield* cluster.owner(target)).toBe(0)
         }),
       ),

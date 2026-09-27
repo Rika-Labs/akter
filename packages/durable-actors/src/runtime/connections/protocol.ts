@@ -20,6 +20,23 @@ export const HolderItem = Schema.TaggedUnion({
 
 export type HolderItem = typeof HolderItem.Type
 
+/** What a client of an open connection receives. */
+export const ClientMessage = Schema.TaggedUnion({
+  Frame: {
+    frame: Schema.String,
+    cursor: Schema.optional(Schema.String),
+    event: Schema.optional(Schema.String),
+  },
+  Resync: {
+    after: Schema.UndefinedOr(Schema.String),
+    reason: Schema.Literal("OwnerLost"),
+    deadlineMs: Schema.Finite,
+  },
+  ResyncReplayed: {},
+})
+
+export type ClientMessage = typeof ClientMessage.Type
+
 export const Deliver = Schema.Struct({
   epoch: Schema.String,
   owner: Schema.String,
@@ -49,8 +66,8 @@ const HOLDER_SEPARATOR = "|"
 export const holderGroup = (address: { readonly host: string; readonly port: number }) =>
   `h${BigInt.asUintN(64, Bun.hash.xxHash3(`${address.host}:${address.port}`)).toString(36)}`
 
-export const holderEntityId = (holder: string, epoch: string) =>
-  `${holder}${HOLDER_SEPARATOR}${epoch}`
+export const holderEntityId = (address: { readonly holder: string; readonly epoch: string }) =>
+  `${address.holder}${HOLDER_SEPARATOR}${address.epoch}`
 
 /** The framework entity through which owners on other runners reach this runner's holder. */
 export const HolderEntity = Entity.make("durable-actors/Holder", [
@@ -91,10 +108,15 @@ export const Replayed = Schema.TaggedUnion({
 })
 
 /** Messages a holder sends an actor's owner; they bypass the command mailbox. */
-export const makeConnectionEntity = (name: string) =>
+export const connectionsEntity = (name: string) =>
   Entity.make(`${name}/Connections`, [
     Rpc.make("Open", {
-      payload: { ...ConnectionAddress, member: Schema.String, caller: Caller, params: Schema.String },
+      payload: {
+        ...ConnectionAddress,
+        member: Schema.String,
+        caller: Caller,
+        params: Schema.String,
+      },
       success: Opened,
       error: ActorError,
     }),

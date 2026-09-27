@@ -1,13 +1,22 @@
-import { Crypto, Effect, Option } from "effect"
+import { Crypto, Effect, Option, Schema } from "effect"
 import { EntityId, Sharding, ShardingConfig } from "effect/unstable/cluster"
-import { type Deliver, type Delivered, HolderEntity, holderEntityId, holderGroup } from "./protocol.ts"
+import {
+  type Deliver,
+  type Delivered,
+  HolderEntity,
+  holderEntityId,
+  holderGroup,
+} from "./protocol.ts"
 
 const LOCAL = "local"
 
 /** How long an owner waits for a holder to acknowledge one message, before one retry. */
 const ACK_TIMEOUT = "1 second"
 
-export class HolderUnreachable extends Error {}
+export class HolderUnreachable extends Schema.TaggedError<HolderUnreachable>()(
+  "HolderUnreachable",
+  { message: Schema.String },
+) {}
 
 /**
  * This runner's transport identity and the channel to every other runner's
@@ -35,17 +44,19 @@ export const holderShardGroups = (config: Partial<ShardingConfig.ShardingConfig[
     }),
   })
 
-export const makeTransport = Effect.fnUntraced(function* (
+export const holderTransport = Effect.fnUntraced(function* (
   local: (message: Deliver) => Effect.Effect<Delivered>,
 ) {
   const config = yield* ShardingConfig.ShardingConfig
   const sharding = yield* Sharding.Sharding
   const crypto = yield* Crypto.Crypto
   const epoch = yield* crypto.randomUUIDv7.pipe(Effect.orDie)
+
   const holder = Option.match(config.runnerAddress, {
     onNone: () => LOCAL,
     onSome: holderGroup,
   })
+
   const clustered = holder !== LOCAL && config.assignedShardGroups.includes(holder)
 
   if (clustered)
@@ -54,7 +65,9 @@ export const makeTransport = Effect.fnUntraced(function* (
       Effect.succeed(
         HolderEntity.of({
           Deliver: ({ payload }) =>
-            payload.epoch === epoch ? local(payload) : Effect.succeed({ wrongEpoch: true, unknown: [] }),
+            payload.epoch === epoch
+              ? local(payload)
+              : Effect.succeed({ wrongEpoch: true, unknown: [] }),
           Ping: ({ payload }) => Effect.succeed(payload.epoch === epoch),
         }),
       ),
@@ -70,14 +83,16 @@ export const makeTransport = Effect.fnUntraced(function* (
         : Effect.succeed({ wrongEpoch: true, unknown: [] })
 
     if (client === undefined || target === LOCAL)
-      return Effect.fail(new HolderUnreachable(`Holder ${target} is not reachable`))
+      return Effect.fail(HolderUnreachable.make({ message: `Holder ${target} is not reachable` }))
 
-    return client(EntityId.make(holderEntityId(target, targetEpoch)))
+    return client(EntityId.make(holderEntityId({ holder: target, epoch: targetEpoch })))
       .Deliver(message)
       .pipe(
         Effect.timeout(ACK_TIMEOUT),
         Effect.retry({ times: 1 }),
-        Effect.mapError(() => new HolderUnreachable(`Holder ${target} did not acknowledge`)),
+        Effect.mapError(() =>
+          HolderUnreachable.make({ message: `Holder ${target} did not acknowledge` }),
+        ),
       )
   }
 
@@ -86,7 +101,7 @@ export const makeTransport = Effect.fnUntraced(function* (
 
     if (client === undefined || target === LOCAL) return Effect.succeed(false)
 
-    return client(EntityId.make(holderEntityId(target, targetEpoch)))
+    return client(EntityId.make(holderEntityId({ holder: target, epoch: targetEpoch })))
       .Ping({ epoch: targetEpoch })
       .pipe(
         Effect.timeout(ACK_TIMEOUT),

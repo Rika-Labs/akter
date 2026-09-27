@@ -6,8 +6,8 @@ import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { routingKey } from "../storage/codec.ts"
 import { executeTurn } from "../turn/execute.ts"
-import { makeOwner } from "../connections/owner.ts"
-import { makeConnectionEntity } from "../connections/protocol.ts"
+import { activationOwner } from "../connections/owner.ts"
+import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 
@@ -34,20 +34,20 @@ export const commandEntity = (name: string) => {
   return entity
 }
 
-const connectionEntities = new Map<string, ReturnType<typeof makeConnectionEntity>>()
+const connectionEntities = new Map<string, ReturnType<typeof connectionsEntity>>()
 
 export const connectionEntity = (name: string) => {
   const cached = connectionEntities.get(name)
 
   if (cached !== undefined) return cached
 
-  const entity = makeConnectionEntity(name)
+  const entity = connectionsEntity(name)
   connectionEntities.set(name, entity)
 
   return entity
 }
 
-const decodeEntityId = Schema.decodeUnknownSync(
+const decodeEntityId = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
 )
 
@@ -56,14 +56,15 @@ export const registerActor = Effect.fnUntraced(function* (
   transport: Transport,
 ) {
   const sharding = yield* Sharding.Sharding
-  const owner = makeOwner(registration, transport)
+  const owner = activationOwner({ registration, transport })
 
-  const activationOf = (entityId: string) => {
-    const [tenant, id] = decodeEntityId(entityId)
-    const ref = { actor: registration.name, tenant, id }
+  const activationOf = (entityId: string) =>
+    Effect.flatMap(Effect.orDie(decodeEntityId(entityId)), ([tenant, id]) => {
+      const ref = { actor: registration.name, tenant, id }
 
-    return owner.enter(entityId, ref, routingKey({ ref, placement: registration.placement }))
-  }
+      return owner.enter(entityId, ref, routingKey({ ref, placement: registration.placement }))
+    })
+
   const services = yield* Effect.context<Effect.Services<ReturnType<typeof executeTurn>>>()
   const entity = commandEntity(registration.name)
   // Cluster reports a full mailbox and a full runner with the same error; only

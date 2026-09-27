@@ -98,11 +98,14 @@ export interface RegisteredCommand {
 }
 
 /** What one connection handler is asked to do. */
-export type ConnectionPhase =
-  | { readonly _tag: "Open"; readonly params: string }
-  | { readonly _tag: "Frame"; readonly frame: string }
-  | { readonly _tag: "Close"; readonly reason: string }
-  | { readonly _tag: "Resync"; readonly after: string | undefined }
+export const ConnectionPhase = Schema.TaggedUnion({
+  Open: { params: Schema.String },
+  Frame: { frame: Schema.String },
+  Close: { reason: Schema.String },
+  Resync: { after: Schema.UndefinedOr(Schema.String) },
+})
+
+export type ConnectionPhase = typeof ConnectionPhase.Type
 
 /** The committed view and capabilities one connection handler runs with. */
 export interface ConnectionInput {
