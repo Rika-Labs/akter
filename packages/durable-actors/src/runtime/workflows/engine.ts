@@ -825,7 +825,21 @@ export const activationEngine = (options: {
                 yield* sql`UPDATE actor_workflow_executions SET status = 'suspended'
                   WHERE routing_key = ${routingKey} AND execution_id = ${executionId} AND status = 'running'`
 
-                if (due?.due === null || due === undefined)
+                // Holding the generation lock, an event committed after a wait's
+                // scan but before this suspend is found here, so its wake survives.
+                const [unseen] = yield* sql<{ found: boolean }>`
+                  SELECT EXISTS (
+                    SELECT 1 FROM actor_workflow_step s
+                    JOIN actor_events e ON e.routing_key = s.routing_key AND e.tenant_id = s.tenant_id
+                      AND e.actor_type = s.actor_type AND e.actor_id = s.actor_id
+                      AND e.event = s.wait_event AND e.sequence > s.scanned
+                    WHERE s.routing_key = ${routingKey} AND s.execution_id = ${executionId}
+                      AND s.kind = 'wait' AND s.exit IS NULL
+                  ) AS found`
+
+                if (unseen?.found === true)
+                  yield* armTimer(routingKey, ref, executionId, undefined, onBehalfOf)
+                else if (due?.due === null || due === undefined)
                   yield* deleteTimer(sql, routingKey, ref, executionId)
                 else yield* armTimer(routingKey, ref, executionId, Number(due.due), onBehalfOf)
               }),
