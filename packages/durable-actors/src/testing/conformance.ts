@@ -60,6 +60,10 @@ import {
   effectsLayer,
   type EffectsFixture,
 } from "./conformance/effects.ts"
+import {
+  inspectionViewsConformance,
+  inspectionViewsLayer,
+} from "./conformance/inspection-views.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -293,6 +297,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...effectsConformance,
   ...multiRunnerConformance,
   ...blobsConformance,
+  ...inspectionViewsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1250,6 +1255,7 @@ export const describeConformance = (options: {
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
     blobsLayer(fixture.blobs),
+    inspectionViewsLayer,
   )
 
   let store: ConformanceStore | undefined
