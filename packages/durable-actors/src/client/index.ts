@@ -3,10 +3,13 @@ export type {
   ActorClient,
   ClientHandle,
   ClientOptions,
+  ClientState,
   CommandOptions,
   HeadersProvider,
   QueryOptions,
 } from "./make.ts"
+
+export type { PendingInput } from "./optimistic.ts"
 
 export type { Failure } from "./transport.ts"
 
