@@ -75,19 +75,21 @@ export const workflows: Scenario = {
 
               const lifetime = yield* lifetimes(`${name}-`)
 
+              const lifetimeExtra = {
+                lifetimeP50Ms: lifetime.p50,
+                lifetimeP95Ms: lifetime.p95,
+                lifetimeP99Ms: lifetime.p99,
+              }
+
+              if (sleepMs === 0) return { ...result, extra: lifetimeExtra } satisfies CaseResult
+
               return {
                 ...result,
                 extra: {
-                  lifetimeP50Ms: lifetime.p50,
-                  lifetimeP95Ms: lifetime.p95,
-                  lifetimeP99Ms: lifetime.p99,
-                  ...(sleepMs > 0
-                    ? {
-                        resumeP50Ms: lifetime.p50 - sleepMs,
-                        resumeP95Ms: lifetime.p95 - sleepMs,
-                        resumeP99Ms: lifetime.p99 - sleepMs,
-                      }
-                    : {}),
+                  ...lifetimeExtra,
+                  resumeP50Ms: lifetime.p50 - sleepMs,
+                  resumeP95Ms: lifetime.p95 - sleepMs,
+                  resumeP99Ms: lifetime.p99 - sleepMs,
                 },
               } satisfies CaseResult
             }),
