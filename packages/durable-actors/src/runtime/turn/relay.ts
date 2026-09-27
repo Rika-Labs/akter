@@ -320,8 +320,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
   // leaves free capacity although it found more candidates than it took.
   const widen = { intents: 1, effects: 1 }
   let stopping = false
+
   // Attempts this runner is executing, keyed by effect id, with the attempt that holds each lease.
-  const running = new Map<string, { readonly routingKey: bigint; readonly attempt: number }>()
+  const running = new Map<
+    string,
+    {
+      readonly routingKey: bigint
+      readonly attempt: number
+      readonly extend: (millis: number) => void
+    }
+  >()
 
   const backoffMs = (attempts: number) =>
     Math.min(1000 * 2 ** Math.max(attempts - 1, 0), settings.maxBackoffMs)
@@ -491,7 +499,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
                 progress.closed({
                   ref: ActorRef.make(request.ref),
                   effectId: row.intent_id,
+                  effect: row.command,
                   attempt: attempts,
+                  everyMs: registered.progressEveryMs,
                 }),
               ),
               Effect.ignore,
@@ -569,7 +579,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
       }
     })
 
-    running.set(row.intent_id, { routingKey, attempt })
+    running.set(row.intent_id, {
+      routingKey,
+      attempt,
+      extend: (millis) => {
+        leaseUntil += millis
+      },
+    })
 
     const slot = yield* progress.open({
       ref,
@@ -592,6 +608,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           attempt,
           principal: principal(request.caller),
           ref,
+          reporting: slot.active,
           report: slot.offer,
         })
         .pipe(
@@ -647,7 +664,14 @@ export const outboxRelay = Effect.fnUntraced(function* (
         Effect.annotateLogs({ attempt, ambiguous }),
         annotate,
       )
-    }).pipe(Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))))
+    }).pipe(
+      Effect.ensuring(
+        Effect.andThen(
+          Effect.sync(() => running.delete(row.intent_id)),
+          progress.forget(row.intent_id),
+        ),
+      ),
+    )
   })
 
   const freed = (kind: "intents" | "effects") =>
@@ -792,10 +816,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const extendLeases = (millis: number) =>
     Effect.forEach(
       [...running],
-      ([intentId, { routingKey, attempt }]) =>
+      ([intentId, { routingKey, attempt, extend }]) =>
         sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
           WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
-            AND kind = 'effect' AND attempts = ${attempt}`,
+            AND kind = 'effect' AND attempts = ${attempt}`.pipe(
+          Effect.tap(Effect.sync(() => extend(millis))),
+        ),
       { discard: true },
     ).pipe(Effect.orDie)
 

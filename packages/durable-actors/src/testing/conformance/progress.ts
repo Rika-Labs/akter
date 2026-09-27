@@ -311,7 +311,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance(0)
           yield* fixture.progress.captured!.progress(Transcode, probe)
 
-          expect(framesOf(yield* recordsOf("plain"))).toEqual([])
+          expect(yield* recordsOf("plain")).toEqual([])
         }),
       ),
   },

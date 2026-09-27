@@ -4,6 +4,9 @@ import type { ActorRef } from "../../identity/caller.ts"
 /** An encoded frame is at most this many bytes. */
 export const MAX_PROGRESS_BYTES = 4096
 
+/** How long closing an attempt's progress waits on the sink before settling without it. */
+export const PROGRESS_CLOSE_WAIT_MS = 100
+
 /** Progress messages one runner's executor pool sends per second at most. */
 export const RUNNER_PROGRESS_PER_SECOND = 2000
 
@@ -43,12 +46,17 @@ export class ProgressSink extends Context.Service<
 
 /** One attempt's progress slot: latest wins, sent at most once per `everyMs`. */
 export interface ProgressSlot {
+  /** False when nothing will be sent, so a caller can skip encoding frames. */
+  readonly active: boolean
   readonly offer: (frame: Uint8Array) => Effect.Effect<void>
-  /** Sends the pending frame if the runner has a token free, and ignores every later offer. */
+  /**
+   * Ignores every later offer, then sends the pending frame if the runner has
+   * a token free. It never fails with the sink and waits on it only briefly.
+   */
   readonly close: Effect.Effect<void>
 }
 
-const closedSlot: ProgressSlot = { offer: () => Effect.void, close: Effect.void }
+const closedSlot: ProgressSlot = { active: false, offer: () => Effect.void, close: Effect.void }
 
 /**
  * A runner's progress pool. It holds one slot per running attempt and a
@@ -77,6 +85,19 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     return true
   })
 
+  // Runs `effect` off the caller's fiber, waiting for it only a bounded time.
+  const detached = (effect: Effect.Effect<void>) =>
+    effect.pipe(
+      Effect.ignoreCause,
+      Effect.forkIn(scope),
+      Effect.tap((fiber) =>
+        Fiber.await(fiber).pipe(Effect.timeoutOption(PROGRESS_CLOSE_WAIT_MS), Effect.asVoid),
+      ),
+    )
+
+  // Each effect's last flush, so its close is sent after that attempt's final frame.
+  const flushes = new Map<string, Fiber.Fiber<void>>()
+
   const token: Effect.Effect<void> = Effect.gen(function* () {
     while (!(yield* tryToken)) yield* Effect.sleep(Math.ceil(((1 - tokens) * 1000) / perSecond))
   })
@@ -100,15 +121,17 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     let sentAt: number | undefined
 
     const send = (frame: { readonly seq: number; readonly frame: Uint8Array }) =>
-      sink.send({
-        ref: attempt.ref,
-        effectId: attempt.effectId,
-        effect: attempt.effect,
-        attempt: attempt.attempt,
-        seq: frame.seq,
-        leaseUntil: attempt.leaseUntil(),
-        frame: frame.frame,
-      })
+      sink
+        .send({
+          ref: attempt.ref,
+          effectId: attempt.effectId,
+          effect: attempt.effect,
+          attempt: attempt.attempt,
+          seq: frame.seq,
+          leaseUntil: attempt.leaseUntil(),
+          frame: frame.frame,
+        })
+        .pipe(Effect.ignoreCause)
 
     const sender = yield* Effect.gen(function* () {
       while (true) {
@@ -131,6 +154,7 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     }).pipe(Effect.forkIn(scope))
 
     return {
+      active: true,
       offer: (frame) =>
         Effect.suspend(() => {
           if (closed) return Effect.void
@@ -154,15 +178,43 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
               return Effect.flatMap(tryToken, (free) => (free ? send(last) : Effect.void))
             }),
           ),
+          detached,
+          Effect.map((flush) => {
+            flushes.set(attempt.effectId, flush)
+          }),
         )
       }),
     } satisfies ProgressSlot
   })
 
-  const closed = (message: ProgressClosed) =>
-    sink === undefined ? Effect.void : sink.closed(message)
+  // Only effects that could have opened a slot are closed.
+  const closed = (
+    message: ProgressClosed & { readonly effect: string; readonly everyMs: number | undefined },
+  ) =>
+    Effect.suspend(() => {
+      const flush = flushes.get(message.effectId)
+      flushes.delete(message.effectId)
 
-  return { open, closed }
+      if (
+        sink === undefined ||
+        message.everyMs === undefined ||
+        !sink.wants(message.ref.actor, message.effect)
+      )
+        return Effect.void
+
+      return (flush === undefined ? Effect.void : Fiber.await(flush)).pipe(
+        Effect.andThen(
+          sink.closed({ ref: message.ref, effectId: message.effectId, attempt: message.attempt }),
+        ),
+        detached,
+        Effect.asVoid,
+      )
+    })
+
+  // An attempt that ends without a terminal settle keeps no flush.
+  const forget = (effectId: string) => Effect.sync(() => flushes.delete(effectId))
+
+  return { open, closed, forget }
 })
 
 export type ProgressPool = Effect.Success<ReturnType<typeof progressPool>>

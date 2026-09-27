@@ -121,3 +121,51 @@ it("caps a runner's progress messages per second across attempts", () =>
       expect(sent.length).toBe(4)
     }),
   ))
+
+it("closes a slot without waiting on or failing with its sink", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const closed: Array<string> = []
+
+      const run = (send: (message: ProgressMessage) => Effect.Effect<void>) => {
+        const runtime = ManagedRuntime.make(
+          Layer.succeed(ProgressSink, {
+            wants: () => true,
+            send,
+            closed: (message) =>
+              Effect.sync(() => {
+                closed.push(message.effectId)
+              }),
+          }),
+        )
+
+        return Effect.acquireUseRelease(
+          Effect.succeed(runtime),
+          () =>
+            Effect.promise(() =>
+              runtime.runPromise(
+                Effect.scoped(
+                  Effect.gen(function* () {
+                    const pool = yield* progressPool()
+                    const slot = yield* pool.open(attempt("a", 250))
+                    yield* slot.offer(frame(1))
+                    yield* Effect.yieldNow
+                    yield* slot.offer(frame(2))
+                    yield* slot.close
+                    yield* pool.closed({ ...attempt("a", 250), attempt: 1 })
+                    yield* pool.closed({ ...attempt("b", undefined), attempt: 1 })
+                    yield* Effect.sleep(20)
+                  }),
+                ),
+              ),
+            ),
+          () => Effect.promise(() => runtime.dispose()),
+        )
+      }
+
+      yield* run(() => Effect.die(new Error("sink down")))
+      expect(closed).toEqual(["a"])
+      yield* run(() => Effect.never)
+      expect(closed).toEqual(["a"])
+    }),
+  ))

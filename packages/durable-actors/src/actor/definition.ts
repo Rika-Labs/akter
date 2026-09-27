@@ -1180,7 +1180,7 @@ const make = <
               Effect.mapError((error) => ({ cause: String(error), ambiguous: false })),
             )
 
-            const { report, ...identity } = attempt
+            const { report, reporting, ...identity } = attempt
 
             // Progress is cosmetic: a bad frame is dropped with a warning,
             // never a defect that would make the outcome unknown.
@@ -1190,20 +1190,22 @@ const make = <
             ): Effect.Effect<void> =>
               target !== declared || encodeProgress === undefined
                 ? Effect.logWarning("Progress frame does not match the running effect")
-                : encodeProgress(frame).pipe(
-                    Effect.map((json) => new TextEncoder().encode(json)),
-                    Effect.matchEffect({
-                      onFailure: (error) =>
-                        Effect.logWarning("Progress frame did not encode", String(error)),
-                      onSuccess: (bytes) =>
-                        bytes.length > MAX_PROGRESS_BYTES
-                          ? Effect.logWarning("Progress frame exceeds 4 KiB")
-                          : report(bytes),
-                    }),
-                    Effect.catchDefect((defect) =>
-                      Effect.logWarning("Progress frame did not encode", String(defect)),
-                    ),
-                  )
+                : !reporting
+                  ? Effect.void
+                  : encodeProgress(frame).pipe(
+                      Effect.map((json) => new TextEncoder().encode(json)),
+                      Effect.matchEffect({
+                        onFailure: (error) =>
+                          Effect.logWarning("Progress frame did not encode", String(error)),
+                        onSuccess: (bytes) =>
+                          bytes.length > MAX_PROGRESS_BYTES
+                            ? Effect.logWarning("Progress frame exceeds 4 KiB")
+                            : report(bytes),
+                      }),
+                      Effect.catchDefect((defect) =>
+                        Effect.logWarning("Progress frame did not encode", String(defect)),
+                      ),
+                    )
 
             const context = { ...identity, progress } as ExecutorContext<Effects[number]>
 
