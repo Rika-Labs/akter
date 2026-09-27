@@ -1111,6 +1111,43 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "routes a capped success that finishes before the cancellation is seen to onCancelled",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        2,
+        { relay: NO_POLL },
+        Effect.gen(function* () {
+          const gate = yield* Deferred.make<void>()
+          fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
+          const { owner, other } = yield* ownerAndOther(yield* refOf("capped-raced"))
+          yield* on(
+            owner,
+            perform("capped-raced", "Capped", ["capped"], { keyed: true, afterMs: 60_000 }),
+          )
+          yield* advance(other, "1 minute").pipe(Effect.forkChild)
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+          yield* on(owner, cancel("capped-raced", ["capped"]))
+          yield* Deferred.succeed(gate, undefined)
+          yield* eventually(
+            on(owner, stateOf("capped-raced")).pipe(
+              Effect.map((state) => (state.cancelled ?? []).length === 1),
+            ),
+          )
+          const state = yield* on(owner, stateOf("capped-raced"))
+
+          expect(state.cancelled).toMatchObject([
+            { outcome: "Succeeded", value: "capped", ambiguous: false },
+          ])
+          expect(state.done ?? []).toEqual([])
+          expect(yield* query(owner, effectRows)).toEqual([])
+        }),
+      ),
+  },
+  {
     name: "routes a cancelled success that onSuccess cannot accept to onCancelled as Succeeded",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
