@@ -60,6 +60,7 @@ import {
   outboxLayer,
   type OutboxFixture,
 } from "./conformance/outbox.ts"
+import { propertiesConformance, propertiesLayer } from "./conformance/properties.ts"
 import {
   effectsConformance,
   effectsFixture,
@@ -1225,6 +1226,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
         }).pipe(Effect.scoped),
       ),
   },
+  ...propertiesConformance,
 ]
 
 interface ConformanceStore {
@@ -1260,6 +1262,7 @@ export const describeConformance = (options: {
     effectsLayer(fixture.effects),
     blobsLayer(fixture.blobs),
     retentionLayer(fixture.retention),
+    propertiesLayer,
   )
 
   let store: ConformanceStore | undefined
