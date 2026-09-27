@@ -1,6 +1,7 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { ActorCluster, ActorTest } from "@durable-actors/core/testing"
 import { Effect, Fiber, Layer, Schedule } from "effect"
+import type { Activity } from "../backend.ts"
 import { load, now } from "../measure.ts"
 import { Probe } from "../probe/contract.ts"
 import { ProbeLive } from "../probe/layer.ts"
@@ -35,6 +36,26 @@ const withCluster = <A, E>(
     }),
   )
 
+/** Connections each `ActorTest.cluster` runner's pool may open. */
+const RUNNER_POOL = 10
+
+/**
+ * Connections open to the case database during the measured window: the
+ * mean and the peak over every sample, and the peak divided by the runners.
+ * The totals include the connection the cluster keeps for inspecting locks.
+ */
+const connections = (activity: Activity | null, runners: number) => {
+  if (activity === null) return null
+
+  const mean = Object.values(activity.connections).reduce((total, count) => total + count, 0)
+
+  return {
+    meanConnections: Math.round(mean * 10) / 10,
+    peakConnections: activity.peakConnections,
+    peakConnectionsPerRunner: Math.round((activity.peakConnections / runners) * 10) / 10,
+  }
+}
+
 const add = (runner: number, actor: number) =>
   ActorCluster.use((cluster) =>
     cluster.on(runner)(Probe.get(`a-${actor}`).pipe(Effect.flatMap((probe) => probe.Add(1)))),
@@ -51,7 +72,7 @@ const spread = (runners: number) => (index: number) =>
 export const multiRunner: Scenario = {
   name: "multi-runner",
   description:
-    "In-process runners on one Postgres (ActorTest.cluster): turns per second with 1, 2, and 4 runners, and a runner kill under load with lock expiry, takeover, and resumed service timed separately. The runners share one process and its CPU, so this measures routing and ownership cost, not scale-out.",
+    "In-process runners on one Postgres (ActorTest.cluster): turns per second and connections open with 1, 2, 4, and 8 runners (8 in the full profile only), and a runner kill under load with lock expiry, takeover, and resumed service timed separately. The runners share one process and its CPU, so this measures routing and ownership cost, not scale-out.",
   run: (context) =>
     Effect.gen(function* () {
       // The harness refuses PGlite: several runners need independent connections.
@@ -60,20 +81,22 @@ export const multiRunner: Scenario = {
       const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
-      for (const runners of [1, 2, 4])
+      for (const runners of quick ? [1, 2, 4] : [1, 2, 4, 8])
         results.push(
           yield* withCluster(context, runners, (instruments) =>
             Effect.gen(function* () {
               yield* load({ workers: 64, operations: ACTORS * runners, operation: spread(runners) })
 
-              return yield* measure({
+              const result = yield* measure({
                 name: `runners-${runners}`,
-                parameters: { runners, actors: ACTORS, workers: 64 },
+                parameters: { runners, actors: ACTORS, workers: 64, poolPerRunner: RUNNER_POOL },
                 instruments,
                 workers: 64,
                 durationMs: quick ? 3000 : 15_000,
                 operation: spread(runners),
               })
+
+              return { ...result, extra: connections(result.activity, runners) }
             }),
           ),
         )
