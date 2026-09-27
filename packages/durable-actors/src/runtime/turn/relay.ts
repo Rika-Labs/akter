@@ -327,7 +327,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     {
       readonly routingKey: bigint
       readonly attempt: number
-      readonly extend: (millis: number) => void
+      readonly lease: { until: number }
     }
   >()
 
@@ -519,7 +519,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const attempt = row.attempts
     const request = yield* requestOf(row, "sender").pipe(Effect.orDie)
     const ref = ActorRef.make(request.ref)
-    let leaseUntil = Number(row.claimed_until)
+    const lease = running.get(row.intent_id)?.lease ?? { until: Number(row.claimed_until) }
     const leaseNanos = BigInt(settings.executorLeaseMs) * 1_000_000n
     // Measured on this runner from when the last claim or renewal was sent, so
     // the database's lease can only end later than this one.
@@ -566,7 +566,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
         if (renewed.length === 0) return "lost" as const
         confirmed = sent
-        leaseUntil = Number(renewed[0]!.due_at_ms)
+        lease.until = Number(renewed[0]!.due_at_ms)
       }
     })
 
@@ -579,26 +579,15 @@ export const outboxRelay = Effect.fnUntraced(function* (
       }
     })
 
-    running.set(row.intent_id, {
-      routingKey,
-      attempt,
-      extend: (millis) => {
-        leaseUntil += millis
-      },
-    })
-
     const slot = yield* progress.open({
       ref,
       effectId: row.intent_id,
       effect: row.command,
       attempt,
       everyMs: registered.progressEveryMs,
-      leaseUntil: () => leaseUntil,
+      leaseUntil: () => lease.until,
     })
 
-    // The lease stays registered until the outcome is written, so a clock jump
-    // between the call's return and its settle can't expire it and start a
-    // second call.
     return yield* Effect.gen(function* () {
       // Racing stops and awaits the renewal fiber before any settling write, so
       // a late renewal can't overwrite a failure's backoff with a fresh lease.
@@ -664,14 +653,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         Effect.annotateLogs({ attempt, ambiguous }),
         annotate,
       )
-    }).pipe(
-      Effect.ensuring(
-        Effect.andThen(
-          Effect.sync(() => running.delete(row.intent_id)),
-          progress.forget(row.intent_id),
-        ),
-      ),
-    )
+    }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })
 
   const freed = (kind: "intents" | "effects") =>
@@ -752,10 +734,20 @@ export const outboxRelay = Effect.fnUntraced(function* (
               ({ actor, effect }) => actor === row.actor_type && effect === row.command,
             )!.registered
 
+            // Registered from the claim until the outcome is written, so a
+            // clock jump anywhere in between moves the lease instead of
+            // expiring it and starting a second call.
+            running.set(row.intent_id, {
+              routingKey: BigInt(row.routing_key),
+              attempt: row.attempts,
+              lease: { until: Number(row.claimed_until) },
+            })
+
             yield* FiberSet.run(
               attempts,
               runAttempt(row, registered, claimedAt).pipe(
                 logFailure("Effect attempt crashed before it settled"),
+                Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))),
                 Effect.ensuring(freed("effects")),
               ),
             )
@@ -816,11 +808,15 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const extendLeases = (millis: number) =>
     Effect.forEach(
       [...running],
-      ([intentId, { routingKey, attempt, extend }]) =>
+      ([intentId, { routingKey, attempt, lease }]) =>
         sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
           WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
             AND kind = 'effect' AND attempts = ${attempt}`.pipe(
-          Effect.tap(Effect.sync(() => extend(millis))),
+          Effect.tap(
+            Effect.sync(() => {
+              lease.until += millis
+            }),
+          ),
         ),
       { discard: true },
     ).pipe(Effect.orDie)
