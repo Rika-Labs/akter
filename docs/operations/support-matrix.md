@@ -33,6 +33,8 @@ Support means the shared `@durable-actors/core/testing` conformance suite passes
 
 Topology is a separate gate. Multi-replica Railway support requires a reachable per-replica `railnet0` advertise address. A service-per-runner alternative needs equivalent evidence; `Topology.k8s` was removed from the agreed public API. Singleton support requires a two-runner uniqueness and failover test.
 
+Runner capacity limits are measured on one runner process, not certified: a resident activation holds about 20 KiB of JavaScript heap, so the default `maxResidentActors` of 10,000 needs about 200 MiB per runner, and each runner can open up to `maxConnections` Postgres connections. Size pools across runners as in [deployment](01-deployment.md#postgres-connections-across-runners); the in-process multi-runner benchmark shows how connections add up, not multi-process support. A connection pooler in front of Postgres is unverified.
+
 Served HTTP is verified behind Bun's HTTP server on loopback only; no proxy, load balancer, TLS terminator, or hosting provider is claimed. WebSocket and SSE are not served yet. The Promise client is exercised with Bun's `fetch` on loopback; no browser engine is run, and its browser safety rests on an import-graph and browser-build test.
 
 An unverified cell remains gated. Postgres wire compatibility is not evidence of locking, pooling, transaction, or restore equivalence.

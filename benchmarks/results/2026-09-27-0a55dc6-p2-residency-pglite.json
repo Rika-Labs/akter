@@ -1,0 +1,341 @@
+{
+  "schema": 2,
+  "label": "p2-residency",
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-27T15:36:58.758Z",
+  "finishedAt": "2026-09-27T15:41:48.258Z",
+  "git": {
+    "sha": "0a55dc6bf2dde1d0638fd6055f91c547424c1469",
+    "shortSha": "0a55dc6",
+    "branch": "chore/59-residency",
+    "mainBase": "c01a20f7ec9d38184a2e76737ca1563e11669f48",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "0a55dc6bf2dde1d0638fd6055f91c547424c1469",
+        "parents": [
+          "fe0f6f63d63cd9fb946e93e3272f89df1cd32849",
+          "c01a20f7ec9d38184a2e76737ca1563e11669f48"
+        ]
+      },
+      {
+        "commit": "b916768335ff5b71d7f0448c6bd378fd24ff62c0",
+        "parents": [
+          "f07707fcf6ffa40d4a8df5df2e56292656f5a556",
+          "0ba95fc3693b482602b776c47c3c34c07fc79afe"
+        ]
+      },
+      {
+        "commit": "f07707fcf6ffa40d4a8df5df2e56292656f5a556",
+        "parents": [
+          "db2b29575bc6c936c15aa25c577116a25eac676c",
+          "119432ec3a144d0bf118ca5869327cf022e6804e"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "many-actors",
+      "description": "64 concurrent callers over 1k/10k/100k actors: first touch (create + activate each actor once), then uniform steady-state load (warm only while resident; see coldFraction), then a connection-pool sweep at 10k actors.",
+      "cases": [
+        {
+          "name": "first-touch-1000",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "pool": 10,
+            "maxResidentActors": 10000
+          },
+          "operations": 1000,
+          "elapsedMs": 4743,
+          "throughput": 210.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 295.079,
+            "min": 117.34,
+            "p50": 292.839,
+            "p90": 327.057,
+            "p95": 356.549,
+            "p99": 416.234,
+            "max": 469.663
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 152.8,
+            "server": null,
+            "clientMsPerOperation": 7.246,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "rssDeltaMiB": -356.7,
+            "heapDeltaMiB": -661.1,
+            "rssKiBPerActor": -365.3
+          }
+        },
+        {
+          "name": "steady-1000",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "pool": 10,
+            "hibernateAfterMs": 60000,
+            "maxResidentActors": 10000
+          },
+          "operations": 5579,
+          "elapsedMs": 20166,
+          "throughput": 276.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 5579,
+            "mean": 230.348,
+            "min": 80.811,
+            "p50": 225.919,
+            "p90": 251.423,
+            "p95": 275.951,
+            "p99": 294.264,
+            "max": 392.853
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 116.3,
+            "server": null,
+            "clientMsPerOperation": 4.205,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "coldFraction": 0
+          }
+        },
+        {
+          "name": "first-touch-10000",
+          "parameters": {
+            "actors": 10000,
+            "workers": 64,
+            "pool": 10,
+            "maxResidentActors": 10000
+          },
+          "operations": 10000,
+          "elapsedMs": 42785,
+          "throughput": 233.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10000,
+            "mean": 273.161,
+            "min": 55.566,
+            "p50": 267.694,
+            "p90": 303.91,
+            "p95": 322.508,
+            "p99": 357.546,
+            "max": 366.915
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 114.3,
+            "server": null,
+            "clientMsPerOperation": 4.892,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "rssDeltaMiB": -71.3,
+            "heapDeltaMiB": -471.1,
+            "rssKiBPerActor": -7.3
+          }
+        },
+        {
+          "name": "steady-10000",
+          "parameters": {
+            "actors": 10000,
+            "workers": 64,
+            "pool": 10,
+            "hibernateAfterMs": 60000,
+            "maxResidentActors": 10000
+          },
+          "operations": 5569,
+          "elapsedMs": 20181,
+          "throughput": 275.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 5569,
+            "mean": 230.889,
+            "min": 49.395,
+            "p50": 228.05,
+            "p90": 253.911,
+            "p95": 259.41,
+            "p99": 276.36,
+            "max": 293.095
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 114,
+            "server": null,
+            "clientMsPerOperation": 4.132,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "coldFraction": 0.004
+          }
+        }
+      ]
+    },
+    {
+      "name": "retained-heap",
+      "description": "Heap per resident activation (resident-<n>: 64 callers first-touch n actors that stay resident), and heap retained after work finishes: 64 callers first-touch n actors that all hibernate (touch-<n>, per actor), and n sequential commands to one actor that hibernates (one-actor-<n>, per command). Excludes ArrayBuffers, where PGlite keeps its pages.",
+      "cases": [
+        {
+          "name": "resident-10000",
+          "parameters": {
+            "actors": 10000,
+            "workers": 64,
+            "pool": 10,
+            "maxResidentActors": 11000
+          },
+          "operations": 10000,
+          "elapsedMs": 44600,
+          "throughput": 224.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10000,
+            "mean": 284.54,
+            "min": 57.743,
+            "p50": 277.409,
+            "p90": 318.016,
+            "p95": 332.052,
+            "p99": 368.627,
+            "max": 396.472
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 112.6,
+            "server": null,
+            "clientMsPerOperation": 5.02,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "kibPerResidentActor": 19.434,
+            "objectsPerResidentActor": 261.31,
+            "rssKiBPerResidentActor": -20.7,
+            "topObjectTypesPerActor": "Object=85 Function=68 JSLexicalEnvironment=37 FunctionRareData=10 Map=9 Array=9 Cell Butterfly=9 string=2.76 Set=2 GeneratorFunction=2",
+            "sampleResident": 1
+          }
+        },
+        {
+          "name": "touch-10000",
+          "parameters": {
+            "actors": 10000,
+            "workers": 64,
+            "pool": 10,
+            "hibernateAfterMs": 250
+          },
+          "operations": 10000,
+          "elapsedMs": 49534,
+          "throughput": 201.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10000,
+            "mean": 316.351,
+            "min": 58.049,
+            "p50": 293.809,
+            "p90": 403.398,
+            "p95": 449.801,
+            "p99": 499.074,
+            "max": 528.65
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 108.3,
+            "server": null,
+            "clientMsPerOperation": 5.365,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "kibPerActorAfterTouch": 1.795,
+            "kibPerActorAfterHibernation": 0.001,
+            "objectsPerActorAfterHibernation": 0.27,
+            "sampleHibernated": 1
+          }
+        },
+        {
+          "name": "one-actor-10000",
+          "parameters": {
+            "commands": 10000,
+            "workers": 1,
+            "pool": 10,
+            "hibernateAfterMs": 250
+          },
+          "operations": 10000,
+          "elapsedMs": 35263,
+          "throughput": 283.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10000,
+            "mean": 3.524,
+            "min": 2.861,
+            "p50": 3.32,
+            "p90": 3.858,
+            "p95": 4.373,
+            "p99": 8.53,
+            "max": 59.081
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 108.4,
+            "server": null,
+            "clientMsPerOperation": 3.824,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "kibPerCommandAfterHibernation": 0.006,
+            "objectsPerCommandAfterHibernation": 0.29,
+            "sampleHibernated": 1
+          }
+        }
+      ]
+    }
+  ]
+}
