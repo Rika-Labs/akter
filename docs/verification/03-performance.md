@@ -231,6 +231,29 @@ On PGlite, which reports no statement counts, reducers ran at 197–202 op/s aga
 
 [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed. The handler generates the ids, so the payload doesn't grow with n ([`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 33 ms with 256, and 83–86 ms with 1,024. With 16 subscribers it was 8.9 ms in one run and 4.2 ms in the repeat. Statements per turn stay at 8.0–8.2, and runtime CPU per turn tracks the latency, at about 80 µs per staged intent. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
 
+### Multi-runner relay (M2.4, #96)
+
+`2026-09-27-0ba95fc-relay-{postgres,pglite}.json` and the same-SHA repeat `2026-09-27-0ba95fc-relay-repeat-{postgres,pglite}.json` run `bun run bench --scenario outbox,effect-round-trip --runners 1,2,4` (full profile) on `main` `0ba95fc`, which includes the probe widening past locked rows and the backoff cap fix. `2026-09-27-cd74d7e-relay-{postgres,pglite}.json` is the same command on the branch before those fixes. All runs used Postgres 18.6 in Docker, PGlite 0.5.8, Bun 1.4.2, and one 8-vCPU Xeon 8559C machine shared by the client, the runners, and Postgres. The runners are in-process and share those CPUs, so the runner counts measure claim contention, not scale. No run had errors.
+
+| Postgres case                   | Runners | `cd74d7e` p50/p95/p99 ms | `0ba95fc` p50/p95/p99 ms | Repeat p50/p95/p99 ms    | Statements/op (`0ba95fc`) |
+| ------------------------------- | ------- | ------------------------ | ------------------------ | ------------------------ | ------------------------- |
+| outbox/delivery-sequential      | 1       | 5.19 / 8.42 / 11.15      | 5.20 / 8.89 / 12.34      | 5.39 / 8.74 / 11.69      | 14.13                     |
+| outbox/delivery-sequential      | 4       | 4.50 / 6.12 / 8.12       | 5.36 / 6.87 / 7.91       | 5.41 / 7.00 / 8.19       | 14.17                     |
+| outbox/delivery-concurrent-16   | 1       | 19.59 / 31.83 / 39.98    | 22.39 / 34.32 / 41.62    | 22.08 / 35.00 / 41.86    | 13.30                     |
+| outbox/delivery-concurrent-16   | 4       | 24.62 / 31.94 / 39.76    | 23.42 / 30.52 / 36.63    | 23.25 / 29.74 / 35.83    | 13.88                     |
+| outbox/drain-20000              | 1       | 34.58 / 57.27 / 109.46   | 34.05 / 40.65 / 46.04    | 33.93 / 40.59 / 46.02    | 5.20                      |
+| outbox/drain-20000              | 4       | 43.35 / 63.17 / 87.48    | 39.53 / 51.86 / 63.84    | 40.12 / 52.46 / 65.11    | 5.28                      |
+| effect-round-trip/sequential    | 1       | 7.07 / 9.52 / 12.61      | 8.66 / 10.48 / 12.02     | 8.19 / 10.10 / 11.45     | 18.00                     |
+| effect-round-trip/sequential    | 4       | 7.24 / 9.50 / 11.60      | 8.51 / 10.50 / 12.01     | 8.40 / 10.50 / 12.11     | 18.03                     |
+| effect-round-trip/concurrent-64 | 1       | 94.98 / 119.73 / 141.96  | 99.03 / 131.29 / 144.65  | 102.46 / 139.54 / 156.95 | 16.22                     |
+| effect-round-trip/concurrent-64 | 4       | 71.93 / 350.36 / 592.66  | 97.81 / 243.28 / 340.79  | 73.81 / 306.72 / 615.87  | 16.80                     |
+
+- **The fixes add no statements.** Statements per operation match `cd74d7e` in every case to within 0.07, and more runners add at most 0.7 per operation, from claims that find their candidates taken by another runner. The locked-row widening only widens the next claim's probe, and it only applies after a claim leaves capacity free, so the drain cases, which keep every slot busy, didn't change.
+- **Adding runners doesn't speed anything up on one machine.** With 4 runners, a 20,000-intent drain ran at 1,556–1,564 intents/s against 1,746–1,838 with one runner. Sequential latency stays near 5 ms for outbox delivery and 8.5 ms for an effect round trip at every runner count. More runners on one machine split the same CPUs and contend on the same rows.
+- **The effect tail with 64 callers is noise.** At 4 runners, the `concurrent-64` p99 was 593, 341, and 616 ms across the three runs, while its p50 stayed between 72 and 98 ms. The two `0ba95fc` runs disagree as much as either one differs from `cd74d7e`, so this is run-to-run variance in executor-lease contention, not a change from the fixes.
+- **Some single-runner p50s are 0.5–1.6 ms higher than at `cd74d7e`.** The largest is `effect-round-trip/sequential`, at 7.07 ms before and 8.19–8.66 ms after. The same-SHA repeat reproduces it, but the statement counts and the SQL on this path are unchanged. It could be machine drift between runs hours apart; it wasn't isolated further.
+- **PGlite is unchanged within noise.** It runs one runner only: `outbox/delivery-sequential` p50 was 8.82 ms before and 8.96–9.15 ms after, and `effect-round-trip/concurrent-64` 491 ms before and 465–474 ms after.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
