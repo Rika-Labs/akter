@@ -382,7 +382,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           const cluster = yield* ActorCluster
           const subject = "é".repeat(256)
           const ids = Array.from({ length: 16 }, (_, index) => `principal-${index}`)
-          let crossed = 0
 
           for (const id of ids) {
             yield* add(0, id, 1)
@@ -396,11 +395,9 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
               ),
             )
 
+            expect(owner === 0 || owner === 1).toBe(true)
             expect(echoed).toBe(subject)
-            if (owner !== undefined) crossed += 1
           }
-
-          expect(crossed).toBe(ids.length)
         }),
       ),
   },

@@ -265,7 +265,7 @@ export const layer = (options: Options) => {
                     Schema.is(ActorUnavailable)(error.reason) ||
                     Schema.is(RunnerAtCapacity)(error.reason),
                   (error) =>
-                    Effect.sleep(retryDelay(error, attempt)).pipe(
+                    Effect.sleep(retryDelay(attempt)(error)).pipe(
                       Effect.andThen(Effect.suspend(() => retrying(attempt + 1))),
                     ),
                 ),

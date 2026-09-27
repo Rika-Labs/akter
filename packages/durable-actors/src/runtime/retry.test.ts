@@ -4,7 +4,7 @@ import { ActorError, ActorUnavailable, RunnerAtCapacity } from "../errors/actor.
 import { retryDelay } from "./retry.ts"
 
 const waits = (error: ActorError) =>
-  [0, 1, 2, 3].map((attempt) => Duration.toMillis(retryDelay(error, attempt)))
+  [0, 1, 2, 3].map((attempt) => Duration.toMillis(retryDelay(attempt)(error)))
 
 describe("retryDelay", () => {
   it("waits at least retryAfter before retrying RunnerAtCapacity in process", () => {
