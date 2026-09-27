@@ -10,7 +10,7 @@
 - **Activation:** disposable in-memory process representation of an actor.
 - **Actor definition:** the one data object passed to `Actor.make`, with sections `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, `api`, `internal`, and `policy`.
 - **Named actor:** actor whose `key` is an id schema, resolved with `X.get(id)`.
-- **Minted actor:** actor with no `key`; `X.create()` mints its id, and no row is written until its first turn.
+- **Minted actor:** actor with no `key`; `X.create()` mints its id outside a turn, or `turn.mint` derives it inside the parent's turn (target, ADR 0025), and no row is written until its first turn.
 - **Singleton:** actor with `key: Actor.singleton`, resolved with `X.get()`, and active at most once cluster-wide.
 - **Generation:** fenced authority epoch for an activation.
 - **Turn:** one bounded command execution and its transaction, which a turn batch shares.
