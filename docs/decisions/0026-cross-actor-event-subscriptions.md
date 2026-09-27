@@ -260,7 +260,7 @@ ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
 - Inserting a row adds 1 to `rows` for each of its tags.
 - Widening a row adds 1 for each newly added tag.
 - Deleting a row subtracts 1 for each of its tags and removes a tag's entry when it reaches 0. That covers `remove`, `Stale`/`Unsubscribed`, the one-day cleanup of removed declarations, and future actor deletion.
-- The #94 conformance suite checks, after each case, that every summary count equals the number of rows carrying that tag. A missed increment loses wakes, and a missed decrement costs feed writes forever.
+- The #94 conformance suite checks, after each case, that every summary count equals the number of active rows carrying that tag; tombstones are never counted. A missed increment loses wakes, and a missed decrement costs feed writes forever.
 
 The claim index leads with `subscriber_type` after `bucket`. That way a runner that doesn't register a subscriber type never scans past that type's rows, which is the property `actor_outbox_due_kind` gives effects.
 
