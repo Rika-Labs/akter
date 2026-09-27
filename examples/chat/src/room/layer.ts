@@ -107,20 +107,17 @@ export const RoomReads = Room.toQueryLayer(
       const read = yield* Room.Read
       const entries = yield* read.events(MessagePosted, { after, limit })
 
+      const ids = entries.map(({ event }) => event.id)
+      const rows = yield* read.rows(messages).all({ where: { id: { in: ids } } })
+      const kept = new Set(rows.map(({ id }) => id))
+
       // A moderated post keeps its event and cursor but not its body.
-      return yield* Effect.forEach(entries, ({ cursor, event }) =>
-        read
-          .rows(messages)
-          .one({ where: { id: event.id } })
-          .pipe(
-            Effect.map((row) => ({
-              cursor,
-              message: Option.isSome(row)
-                ? event
-                : MessagePosted.make({ id: event.id, author: event.author, body: "" }),
-            })),
-          ),
-      )
+      return entries.map(({ cursor, event }) => ({
+        cursor,
+        message: kept.has(event.id)
+          ? event
+          : MessagePosted.make({ id: event.id, author: event.author, body: "" }),
+      }))
     }),
     Attachment: Effect.fnUntraced(function* (id: string) {
       const message = yield* (yield* Room.Read).rows(messages).one({ where: { id } })
