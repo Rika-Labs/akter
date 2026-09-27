@@ -17,10 +17,25 @@ try {
           suites.map((suite) => `${suite}-${run}`),
         ),
         (run) =>
-          fs.readFileString(`${directory}/${run}.json`).pipe(
-            Effect.flatMap(Schema.decodeEffect(VitestReport)),
-            Effect.option,
-            Effect.map((report) => ({ run, report: Option.getOrUndefined(report) })),
+          Effect.all({
+            report: fs
+              .readFileString(`${directory}/${run}.json`)
+              .pipe(Effect.flatMap(Schema.decodeEffect(VitestReport)), Effect.option),
+            status: fs.readFileString(`${directory}/${run}.status`).pipe(
+              Effect.map((text) => text.trim()),
+              Effect.flatMap(Schema.decodeEffect(Schema.FiniteFromString)),
+              Effect.option,
+            ),
+            log: fs.readFileString(`${directory}/${run}.log`).pipe(Effect.option),
+          }).pipe(
+            Effect.map(({ report, status, log }) => ({
+              run,
+              report: Option.getOrUndefined(report),
+              status: Option.getOrUndefined(status),
+              unhandledErrors: Option.exists(log, (text) =>
+                /Vitest caught \d+ unhandled errors?/.test(text),
+              ),
+            })),
           ),
       )
 
