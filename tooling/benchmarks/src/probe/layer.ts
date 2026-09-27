@@ -88,6 +88,14 @@ const SenderCommands = Sender.toLayer(
           .Deliver(id)
           .pipe(Intent.at(DateTime.makeUnsafe(atMs)))
     }),
+    SendMany: Effect.fnUntraced(function* ({ offset, count, atMs }) {
+      for (let index = offset; index < offset + count; index++) {
+        const id = `subscriber-${index}`
+        yield* (yield* Sink.intents(sinkOf(id)))
+          .Deliver(id)
+          .pipe(Intent.at(DateTime.makeUnsafe(atMs)))
+      }
+    }),
   }),
 )
 

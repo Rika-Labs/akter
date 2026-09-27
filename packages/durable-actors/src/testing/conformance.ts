@@ -54,6 +54,7 @@ import {
   outboxLayer,
   type OutboxFixture,
 } from "./conformance/outbox.ts"
+import { propertiesConformance, propertiesLayer } from "./conformance/properties.ts"
 import {
   relayClusterConformance,
   relayConformance,
@@ -1228,6 +1229,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
         }).pipe(Effect.scoped),
       ),
   },
+  ...propertiesConformance,
 ]
 
 interface ConformanceStore {
@@ -1264,6 +1266,7 @@ export const describeConformance = (options: {
     blobsLayer(fixture.blobs),
     relayLayer(fixture.relay),
     relayEffects(fixture.relay),
+    propertiesLayer,
   )
 
   let store: ConformanceStore | undefined

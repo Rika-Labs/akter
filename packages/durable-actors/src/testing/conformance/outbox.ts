@@ -69,7 +69,7 @@ const Escape = Actor.command("Escape", { input: Schema.String })
 
 const Steal = Actor.command("Steal")
 
-const Outboxer = Actor.make("Outboxer", {
+export const Outboxer = Actor.make("Outboxer", {
   key: Schema.String,
   api: { Send, SendThenRefuse, SendThenDie, Schedule, Cancel, CancelThenRefuse, Escape, Steal },
 })
@@ -175,7 +175,7 @@ const inboxLog = Effect.fnUntraced(function* (to: string) {
   return (yield* Schema.decodeUnknownEffect(InboxLog)(state).pipe(Effect.orDie)).log ?? []
 })
 
-const receivedBodies = (to: string) =>
+export const receivedBodies = (to: string) =>
   inboxLog(to).pipe(Effect.map((log) => log.map(({ body }) => body)))
 
 export interface PlanNode {
