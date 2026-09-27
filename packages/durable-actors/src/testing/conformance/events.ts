@@ -67,7 +67,7 @@ const Snapshot = Actor.query("Snapshot", {
   errors: [UnknownCursor, RetentionGap],
 })
 
-const Feed = Actor.make("Feed", {
+export const Feed = Actor.make("Feed", {
   key: Schema.String,
   events: [Posted, Archived],
   api: {
@@ -150,13 +150,14 @@ export const eventsQueryLayer = (fixture: EventsFixture) =>
 
 const PostedJson = Schema.fromJsonString(Schema.toCodecJson(Posted))
 
-const bodies = (entries: ReadonlyArray<typeof Entry.Type>) =>
+export const bodies = (entries: ReadonlyArray<typeof Entry.Type>) =>
   entries.map(({ event }) => (Schema.is(Posted)(event) ? event.body : event._tag))
 
-const cursors = (entries: ReadonlyArray<typeof Entry.Type>) => entries.map(({ cursor }) => cursor)
+export const cursors = (entries: ReadonlyArray<typeof Entry.Type>) =>
+  entries.map(({ cursor }) => cursor)
 
 /** Deletes the oldest events up to `through`, as retention will. */
-const prune = Effect.fnUntraced(function* (id: string, through: number) {
+export const prune = Effect.fnUntraced(function* (id: string, through: number) {
   const sql = yield* SqlClient.SqlClient
   const test = yield* ActorTest
   yield* sql`DELETE FROM actor_events
