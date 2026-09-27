@@ -87,6 +87,8 @@ export const statusOf = (reason: Reason): number =>
       MailboxFull: () => 429,
       InvalidInput: (input) => inputStatus(input.code),
       TransportError: () => 502,
+      // Only connection sessions end this way; no served command or query returns it.
+      SessionEnded: () => 410,
     }),
   )
 

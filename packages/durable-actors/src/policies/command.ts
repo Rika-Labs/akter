@@ -56,6 +56,14 @@ export interface Policy<
   readonly keepWorkflows?: Duration.Input
   /** Per declared effect, keyed by tag: `retry`, `onSuccess`, and `onDeadLetter`. */
   readonly effects?: EffectPolicies<Effects, Command>
+  /**
+   * Whether open connections keep the activation awake. `"park"` (default)
+   * lets it hibernate with sockets open at their holders; `"keepAwake"`
+   * counts an open connection as activity.
+   */
+  readonly connections?: "park" | "keepAwake"
+  /** Longest time a connection runs on one authorization check, 1 second to 1 hour. Default 60 seconds. */
+  readonly reauthorizeEvery?: Duration.Input
 }
 
 export interface TurnPolicy {
@@ -69,6 +77,8 @@ export interface TurnPolicy {
   readonly keepReceiptsMs: number
   readonly keepEventsMs: number
   readonly blobMaxBytes: number
+  readonly connections: "park" | "keepAwake"
+  readonly reauthorizeMs: number
   readonly keepWorkflowsMs: number
 }
 
@@ -95,6 +105,10 @@ export const resolvePolicy = (policy: {
     keepReceiptsMs: horizon(declared?.keepReceipts ?? "7 days"),
     keepEventsMs: horizon(declared?.keepEvents ?? "30 days"),
     blobMaxBytes: Positive.make(declared?.maxBlobBytes ?? 67_108_864),
+    connections: declared?.connections ?? "park",
+    reauthorizeMs: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 3_600_000 })).make(
+      Duration.toMillis(declared?.reauthorizeEvery ?? "60 seconds"),
+    ),
     keepWorkflowsMs: horizon(declared?.keepWorkflows ?? "7 days"),
   })
 }
