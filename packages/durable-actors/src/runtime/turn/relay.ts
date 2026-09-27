@@ -914,17 +914,14 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 
-      const retryAt = (yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)
-
       // The outcome is recorded first, so a failed dead-letter transaction is
-      // retried with this attempt's cause rather than the claim's. A last
-      // attempt keeps its lease, so the row can't be claimed again before it settles.
+      // retried with this attempt's cause rather than the claim's.
       const recorded = yield* sql<{
         cancelled: boolean
         maybe_applied: boolean
       }>`UPDATE actor_outbox
         SET last_error = ${cause}, ambiguous = ${ambiguous}, running = false,
-          due_at_ms = ${last ? sql`greatest(due_at_ms, ${retryAt})` : sql`${retryAt}`}
+          due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
         WHERE ${attemptRow(attempt)}
         RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`
 
