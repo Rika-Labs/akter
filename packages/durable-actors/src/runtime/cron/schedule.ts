@@ -161,8 +161,10 @@ export interface ClaimedTick {
   readonly tenant_id: string
   readonly actor_type: string
   readonly actor_id: string
+  readonly routing_key: string
   readonly intent_id: string
   readonly command: string
+  readonly payload: string
   readonly timer_key: string | null
   readonly scheduled_at: string | null
   readonly claimed_until: string
@@ -175,7 +177,7 @@ export interface ClaimedTick {
  * the first tick after now with a fresh id. A tick whose entry this runner
  * does not declare is deleted once it is past the skip window and otherwise
  * released with backoff, so a runner that still declares it can fire it. A
- * tick whose stored target differs from its entry's is retargeted and released.
+ * tick whose stored target differs from its entry's delivers the entry's.
  */
 export const cronTicks = ({
   sql,
@@ -210,8 +212,8 @@ export const cronTicks = ({
   return {
     isTick: (row: ClaimedTick) => row.timer_key?.startsWith(CRON_PREFIX) === true,
     /**
-     * Settles a tick that must not fire and returns true, or returns false for
-     * one the relay should deliver now.
+     * Settles a tick that must not fire and returns undefined, or returns the
+     * command and payload the relay delivers on this claim.
      */
     settleUnfired: Effect.fnUntraced(function* (
       row: ClaimedTick,
@@ -238,27 +240,34 @@ export const cronTicks = ({
           yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
         } else yield* sql`UPDATE actor_outbox SET due_at_ms = ${now + backoffMs} WHERE ${claim}`
 
-        return true
+        return undefined
       }
 
-      // A deployment that retargets an expression keeps the tick's time and id
-      // and releases it, so the next claim delivers the current target.
-      if (!stale && row.command === entry.command) return false
+      if (stale) {
+        yield* Effect.logInfo("Cron tick skipped").pipe(
+          Effect.annotateLogs({ ...annotations, lateMs: now - scheduledAt }),
+        )
+        yield* rewrite(row, entry, claim)
 
-      if (!stale) {
-        const payload = yield* entry.payload
-        yield* sql`UPDATE actor_outbox SET command = ${entry.command}, payload = ${payload},
-            due_at_ms = ${now} WHERE ${claim}`
-
-        return true
+        return undefined
       }
 
-      yield* Effect.logInfo("Cron tick skipped").pipe(
-        Effect.annotateLogs({ ...annotations, lateMs: now - scheduledAt }),
-      )
-      yield* rewrite(row, entry, claim)
+      if (row.command === entry.command) return { command: row.command, payload: row.payload }
 
-      return true
+      // An expression this deployment maps to another command delivers that
+      // command on this claim, unless the tick already fired under its old one.
+      const fired = yield* sql`SELECT 1 FROM actor_receipts
+        WHERE routing_key = ${BigInt(row.routing_key)} AND tenant_id = ${row.tenant_id}
+          AND actor_type = ${row.actor_type} AND actor_id = ${row.actor_id}
+          AND command_id = ${row.intent_id}`
+
+      if (fired.length > 0) {
+        yield* rewrite(row, entry, claim)
+
+        return undefined
+      }
+
+      return { command: entry.command, payload: yield* entry.payload }
     }),
     /** Replaces a delivered tick's row with the entry's next tick. */
     settleFired: (row: ClaimedTick, claim: Statement.Fragment) =>

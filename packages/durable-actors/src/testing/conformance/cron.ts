@@ -358,6 +358,35 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "advances a retargeted tick that already fired under its old command without firing it again",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const heartbeat = yield* Heartbeat.get("retarget-fired")
+          yield* heartbeat.Open()
+          const [, first] = yield* ticksOf(heartbeat.ref)
+          yield* test.crashNext("beforeOutboxDelete")
+          yield* test.advance(Number(first!.scheduled) - (yield* nowMs))
+          expect(yield* receipts(heartbeat.ref, "Beat")).toBe(1)
+
+          // The receipt names `Beat`; a deployment now maps the expression elsewhere.
+          yield* sql`UPDATE actor_outbox SET command = 'Retired'
+            WHERE intent_id = ${first!.intent_id}`
+          yield* test.advance(CLAIM_LEASE)
+
+          expect(firedFor("retarget-fired").map((run) => run.commandId)).toEqual([first!.intent_id])
+          expect(yield* receipts(heartbeat.ref, "Beat")).toBe(1)
+          const [, next] = yield* ticksOf(heartbeat.ref)
+          expect(next).toMatchObject({ command: "Beat", attempts: 0 })
+          expect(next!.intent_id).not.toBe(first!.intent_id)
+          expect(nextMinuteAfter(next, yield* nowMs)).toBe(true)
+        }),
+      ),
+  },
+  {
     name: "fires once after downtime inside the skip window and skips a tick older than it",
     run: ({ expect, environment }) =>
       withRuntime(

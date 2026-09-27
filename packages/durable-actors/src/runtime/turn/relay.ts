@@ -399,15 +399,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
       })
 
     return yield* Effect.gen(function* () {
+      const tick = ticks.isTick(row)
+      const route = tick ? yield* ticks.settleUnfired(row, claim, backoffMs(row.attempts)) : row
+
+      if (route === undefined) return
+
       // A row that cannot form a request backs off like a failed delivery instead of dying on every claim.
-      const decoded = yield* requestOf(row, "receiver").pipe(Effect.result)
+      const decoded = yield* requestOf({ ...row, ...route }, "receiver").pipe(Effect.result)
 
       if (Result.isFailure(decoded)) return yield* retryLater("UnreadableRow", decoded.failure)
 
       const request = decoded.success
-      const tick = ticks.isTick(row)
-
-      if (tick && (yield* ticks.settleUnfired(row, claim, backoffMs(row.attempts)))) return
       yield* hooks.at("afterClaim", request)
 
       const delivered = yield* deliver(request).pipe(Effect.result)
