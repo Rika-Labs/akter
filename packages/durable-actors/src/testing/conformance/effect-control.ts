@@ -969,6 +969,73 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "keeps a newer capped attempt's slot when an attempt that lost its lease settles late",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        2,
+        { relay: NO_POLL, executors: SHORT_LEASE },
+        Effect.gen(function* () {
+          const held = yield* Deferred.make<void>()
+          const newer = yield* Deferred.make<void>()
+          const settling = yield* Deferred.make<void>()
+          fixture.provider = (attempt) =>
+            attempt.label === "slow" && attempt.attempt === 2
+              ? Deferred.await(newer).pipe(Effect.as("slow@2"))
+              : Effect.succeed(`${attempt.label}@${attempt.attempt}`)
+          // Attempt 1 has succeeded but its settle waits until attempt 2 runs.
+          fixture.hook = (point) =>
+            point === "afterExecute" && fixture.attempts.length === 1
+              ? Deferred.succeed(settling, undefined).pipe(Effect.andThen(Deferred.await(held)))
+              : Effect.void
+          const { owner, other } = yield* ownerAndOther(yield* refOf("overlap"))
+
+          yield* on(owner, perform("overlap", "Serial", ["slow"]))
+          yield* Deferred.await(settling)
+          expect(fixture.attempts[0]!.runner).toBe(owner)
+
+          // The other runner sees attempt 1's lease expired and takes attempt 2.
+          // Forked: the drain after the jump waits for the attempt it claims.
+          yield* advance(other, "4 seconds").pipe(Effect.forkChild)
+          yield* eventually(
+            Effect.sync(() => fixture.attempts.length === 2),
+            "10 seconds",
+          )
+          expect(fixture.attempts[1]).toMatchObject({ runner: other, attempt: 2 })
+
+          yield* Deferred.succeed(held, undefined)
+          yield* Effect.sleep("1 second")
+          yield* on(owner, perform("overlap", "Serial", ["next"]))
+          yield* Effect.sleep("2 seconds")
+
+          // Attempt 2 still holds the only slot, so the next effect has not started.
+          expect(fixture.attempts.map(({ label }) => label)).toEqual(["slow", "slow"])
+          expect(
+            (yield* query(other, effectRows)).find(
+              (row) => row.command === "Serial" && row.running,
+            ),
+          ).toMatchObject({ attempts: 2 })
+
+          yield* Deferred.succeed(newer, undefined)
+          yield* eventually(
+            on(other, stateOf("overlap")).pipe(
+              Effect.map((state) => (state.done ?? []).length === 2),
+            ),
+            "20 seconds",
+            "both effects",
+          )
+
+          expect(maxInFlight(fixture.attempts, "overlap", "Serial")).toBe(1)
+          const { done } = yield* on(other, stateOf("overlap"))
+          expect(done!.filter((label) => label.startsWith("slow")).length).toBe(1)
+          expect(done).toContain("next@1")
+        }),
+      ),
+  },
+  {
     name: "reaches a running attempt on another runner within cancelCheck and reports Unknown",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,

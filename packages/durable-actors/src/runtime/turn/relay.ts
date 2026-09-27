@@ -946,6 +946,32 @@ export const outboxRelay = Effect.fnUntraced(function* (
           }
         })
 
+      // A newer attempt of a capped effect holds its slot while its lease is
+      // live, so this success waits for it rather than freeing the slot early.
+      const settleSuccess = (
+        route: { readonly command: string; readonly payload: string } | undefined,
+        guard: typeof effectRow,
+      ) =>
+        registered.perActor === undefined
+          ? settleTo(route, guard)
+          : Effect.gen(function* () {
+              while (true) {
+                const newer = (at: number) =>
+                  sql`(attempts > ${attempt} AND running AND due_at_ms > ${at})`
+
+                if (yield* settleTo(route, sql`${guard} AND NOT ${newer(yield* databaseTime)}`))
+                  return true
+
+                const held = yield* sql<{ live: boolean }>`SELECT ${newer(
+                  yield* databaseTime,
+                )} AS live FROM actor_outbox WHERE ${guard}`
+
+                if (held.length === 0) return false
+
+                if (held[0]!.live) yield* Effect.sleep(renewEveryMs)
+              }
+            })
+
       const rejected = Result.isSuccess(outcome) ? outcome.success.rejected : undefined
 
       // A result onSuccess rejects still reaches onCancelled if the effect was cancelled.
@@ -953,7 +979,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         yield* hooks.at("afterExecute", request)
 
         if (
-          yield* settleTo(
+          yield* settleSuccess(
             outcome.success.cancelled,
             sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
           )
@@ -966,11 +992,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
         const routes = outcome.success
 
         // The first success of any attempt wins; the row stops being an effect.
-        if (yield* settleTo(routes.success, sql`${effectRow} AND cancelled_at_ms IS NULL`)) return
+        if (yield* settleSuccess(routes.success, sql`${effectRow} AND cancelled_at_ms IS NULL`))
+          return
 
         // Cancelled meanwhile: the result is reported as the cancellation's outcome.
         if (
-          yield* settleTo(
+          yield* settleSuccess(
             registered.routesCancelled ? routes.cancelled : routes.success,
             sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
           )
