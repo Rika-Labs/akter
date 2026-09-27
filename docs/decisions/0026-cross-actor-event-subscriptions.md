@@ -184,11 +184,11 @@ yield * turn.unsubscribe(Follow, supplierId)
   - `subscribe` upserts the source-side row only if the stored epoch is **strictly lower** than the operation's. A rerun of the same control row after a crash is a no-op, so it can't reset `delivered`.
   - A new row's `delivered` is the source's `event_sequence` for `"now"`, 0 for `"start"`, or the given cursor.
   - In the same statement, the row is made due now if the source has an event after `delivered`, so a `"start"` or cursor subscription to a quiet source still delivers its history. The per-source tag summary is updated too ([section 3](#3-fan-out-at-relay-time-not-at-commit)).
-  - `remove` deletes the source-side row only where `epoch < $epoch`.
+  - `remove` never leaves the source without the newest epoch. It turns the source-side row into a tombstone at `$epoch` where the stored epoch is lower, or inserts a tombstone if no row exists. A tombstone has `active = false`, is never due, is left out of the tag summary, and doesn't hold back pruning, so a paused `subscribe` control of an older epoch that runs later finds a higher epoch and does nothing. A later `subscribe` of a higher epoch replaces the tombstone. Like the subscriber's cursor row, a tombstone never expires, and there is at most one per `(subscription, source, subscriber)`.
 - **`from` values:**
   - `"now"` delivers events committed after the registration reaches the source.
   - `"start"` delivers from cursor 0. If history has been pruned, the first delivery is a `RetentionGap`.
-  - A cursor string resumes after that cursor. A cursor above the source's current sequence isn't registered. The relay delivers a `Rejected` delivery for that epoch instead. Admission lets a `Rejected` delivery through regardless of `applied` (section 4), and its commit sets the subscriber's row to `active = false`. The subscriber is told, and it never believes it is subscribed to nothing.
+  - A cursor string resumes after that cursor. A cursor above the source's current sequence isn't registered. The relay turns any older-epoch source row into a tombstone at the new epoch, as `remove` does, so the previous epoch's row stops waking and pinning events, and delivers a `Rejected` delivery for that epoch instead. Admission lets a `Rejected` delivery through regardless of `applied` (section 4), and its commit sets the subscriber's row to `active = false`. The subscriber is told, and it never believes it is subscribed to nothing.
 - **Unsubscribing takes effect in the subscriber's turn.** Once it commits, admission refuses every delivery for that row ([section 4](#4-cursors-receipts-and-at-least-once-transport-with-exactly-once-effect)). A delivery already in flight carries the older epoch, so it is acknowledged as `Stale` without running the handler. The relay then deletes the source row, but only where the source row's epoch equals the delivery's, so a stale acknowledgement can never delete a newer subscription.
 
 ### 3. Fan-out at relay time, not at commit
@@ -207,6 +207,7 @@ CREATE TABLE actor_subscriptions (
   subscriber_id text NOT NULL,
   events text[] NOT NULL,
   epoch bigint NOT NULL DEFAULT 0,      -- 0 for routed rows
+  active boolean NOT NULL DEFAULT true, -- false for a tombstone (section 2)
   delivered bigint NOT NULL,            -- the source position this row has settled through
   marked bigint NOT NULL DEFAULT 0,     -- the highest source sequence an expansion has seen for this row
   bucket integer NOT NULL CHECK (bucket = routing_key >> 56),
