@@ -21,6 +21,7 @@ import { events } from "./scenarios/events.ts"
 import { retention } from "./scenarios/retention.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { http } from "./scenarios/http.ts"
+import { inspectionViews } from "./scenarios/inspection-views.ts"
 import { ownedRows } from "./scenarios/storage/owned-rows.ts"
 import { multiRunner } from "./scenarios/multi-runner.ts"
 import { outbox } from "./scenarios/outbox.ts"
@@ -54,6 +55,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   blobs,
   reducers,
   capacity,
+  inspectionViews,
   retention,
   http,
   subscriptions,

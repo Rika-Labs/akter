@@ -11,5 +11,6 @@
 - [Backup and restore](04-backup-restore.md)
 - [Releasing](05-releasing.md)
 - [Retention](retention.md)
+- [Inspection views](inspection-views.md)
 - [Runbooks](runbooks.md)
 - [Backend support matrix](support-matrix.md)

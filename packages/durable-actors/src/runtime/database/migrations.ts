@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { Migrator, SqlClient } from "effect/unstable/sql"
 
-/** Every framework migration by id; the migrator runs ids above the latest applied one, in order. */
+/** Every framework migration by id, applied in order above the latest applied id. */
 export const migrations = {
   "0001_foundation": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
@@ -50,8 +50,9 @@ export const migrations = {
     const sql = yield* SqlClient.SqlClient
 
     if (
-      (yield* sql<{ rows: number }>`SELECT count(*)::int AS rows FROM actor_generations`)[0]!.rows >
-      0
+      (yield* sql<{
+        rows: number
+      }>`SELECT count(*)::int AS rows FROM actor_generations`)[0]!.rows > 0
     )
       return yield* Effect.die(
         new Error("0003 requires an empty foundation database; M0 stored no production data"),
@@ -294,6 +295,87 @@ export const migrations = {
         PRIMARY KEY (actor_type, workflow, manifest_hash)
       )`
   }),
+  // The placement join keeps every view from being automatically updatable,
+  // so writes fail without triggers or rules to maintain.
+  "0013_inspection_views": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE SCHEMA durable`
+    yield* sql`CREATE VIEW durable.actors AS
+      SELECT g.tenant_id, g.actor_type, g.actor_id, g.routing_key, p.placement,
+        g.generation, g.created, g.event_sequence AS last_event_sequence
+      FROM actor_generations g
+      LEFT JOIN actor_placements p ON p.actor_type = g.actor_type`
+    yield* sql`CREATE VIEW durable.state AS
+      SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key, p.placement,
+        s.key, s.value, octet_length(s.value) AS value_bytes
+      FROM actor_state s
+      LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
+    yield* sql`CREATE VIEW durable.receipts AS
+      SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
+        r.command_id, r.command, r.caller_key,
+        r.outcome::jsonb ->> '_tag' AS outcome_tag, r.outcome,
+        r.expires_at_ms, to_timestamp(r.expires_at_ms::float8 / 1000) AS expires_at
+      FROM actor_receipts r
+      LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`
+    yield* sql`CREATE VIEW durable.events AS
+      SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key, p.placement,
+        e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
+        e.emitted_at_ms, to_timestamp(e.emitted_at_ms::float8 / 1000) AS emitted_at
+      FROM actor_events e
+      LEFT JOIN actor_placements p ON p.actor_type = e.actor_type`
+    yield* sql`CREATE VIEW durable.outbox AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+        o.intent_id, o.timer_key, o.target_type, o.target_id, o.command, o.payload, o.caller,
+        o.attempts, o.last_error, o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
+      FROM actor_outbox o
+      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+      WHERE o.kind = 'intent'`
+    yield* sql`CREATE VIEW durable.timers AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+        o.timer_key, o.intent_id, o.target_type, o.target_id, o.command, o.payload, o.caller,
+        o.attempts, o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
+      FROM actor_outbox o
+      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+      WHERE o.kind = 'intent' AND o.timer_key IS NOT NULL`
+    yield* sql`CREATE VIEW durable.effects AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+        o.intent_id AS effect_id, o.command AS effect, o.payload, o.caller,
+        o.attempts, o.last_error, o.ambiguous,
+        o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
+      FROM actor_outbox o
+      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+      WHERE o.kind = 'effect'`
+    yield* sql`CREATE VIEW durable.dead_letters AS
+      SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
+        d.effect_id, d.effect, d.payload, d.attempts, d.cause, d.ambiguous,
+        d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at
+      FROM actor_dead_letters d
+      LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+    yield* sql`CREATE VIEW durable.workflows AS
+      SELECT w.tenant_id, w.actor_type, w.actor_id, w.routing_key, p.placement,
+        w.execution_id, w.workflow, w.workflow_key, w.manifest_hash, w.status, w.interrupt,
+        w.caller, w.payload, octet_length(w.payload) AS payload_bytes,
+        w.result, octet_length(w.result) AS result_bytes,
+        w.started_at_ms, to_timestamp(w.started_at_ms::float8 / 1000) AS started_at,
+        w.finished_at_ms, to_timestamp(w.finished_at_ms::float8 / 1000) AS finished_at
+      FROM actor_workflow_executions w
+      LEFT JOIN actor_placements p ON p.actor_type = w.actor_type`
+    yield* sql`CREATE VIEW durable.workflow_steps AS
+      SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key, p.placement,
+        s.execution_id, s.step, s.attempt, s.kind, s.exit, s.wait_event, s.version,
+        s.due_at_ms, to_timestamp(s.due_at_ms::float8 / 1000) AS due_at,
+        s.started_at_ms, to_timestamp(s.started_at_ms::float8 / 1000) AS started_at,
+        s.settled_at_ms, to_timestamp(s.settled_at_ms::float8 / 1000) AS settled_at
+      FROM actor_workflow_step s
+      LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
+    // The catalog is how a tool checks which view versions a database has.
+    yield* sql`CREATE VIEW durable.views AS
+      SELECT view_name, version FROM (VALUES
+        ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
+        ('timers', 1), ('effects', 1), ('dead_letters', 1), ('workflows', 1),
+        ('workflow_steps', 1), ('views', 1)
+      ) AS v(view_name, version)`
+  }),
   // A connection's session lives beside the actor's rows; its socket and
   // buffers live at the holder runner named by `holder` and `holder_epoch`.
   "0014_connections": Effect.gen(function* () {
@@ -319,7 +401,51 @@ export const migrations = {
   }),
 }
 
-export const migrate = Migrator.make({})({
-  table: "actor_migrations",
-  loader: Migrator.fromRecord(migrations),
-})
+/**
+ * Runs `record` like `Migrator`, but first refuses a database where a
+ * registered id below the latest applied one was never applied: `Migrator`
+ * would skip it forever, leaving its tables missing.
+ */
+export const migrator = (
+  record: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>>,
+) => {
+  const run = Migrator.make({})({
+    table: "actor_migrations",
+    loader: Migrator.fromRecord(record),
+  })
+
+  const registered = Object.keys(record).map((key) => Number(key.split("_")[0]))
+
+  const refuseSkipped = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    const [table] = yield* sql<{
+      readonly name: string | null
+    }>`SELECT to_regclass('actor_migrations')::text AS name`
+
+    const rows =
+      table?.name == null
+        ? []
+        : yield* sql<{ readonly id: number }>`SELECT migration_id::int AS id FROM actor_migrations`
+
+    const applied = new Set(rows.map(({ id }) => id))
+    const latest = Math.max(0, ...applied)
+    const skipped = registered.filter((id) => id < latest && !applied.has(id)).sort((a, b) => a - b)
+
+    if (skipped.length > 0) {
+      return yield* new Migrator.MigrationError({
+        kind: "BadState",
+        message: `Migrations ${skipped.join(", ")} were never applied but migration ${latest} was; they would be skipped. Restore this database from before migration ${latest} or recreate it.`,
+      })
+    }
+  })
+
+  // A concurrent runner with fewer migrations can commit a higher id between
+  // the first check and the migration lock, so the result is checked again.
+  return refuseSkipped.pipe(
+    Effect.andThen(run),
+    Effect.tap(() => refuseSkipped),
+  )
+}
+
+export const migrate = migrator(migrations)

@@ -6,7 +6,7 @@ import { pgTable, text } from "drizzle-orm/pg-core"
 import { Migrator, SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { Actor, NotCreated } from "../../index.ts"
-import { migrate, migrations } from "./migrations.ts"
+import { migrate, migrations, migrator } from "./migrations.ts"
 import { Database } from "../index.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
 import type { InternalActors } from "../../handles/actors.ts"
@@ -138,6 +138,7 @@ describe("PGlite migrations", () => {
             [10, "retention"],
             [11, "relay"],
             [12, "workflows"],
+            [13, "inspection_views"],
             [14, "connections"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
@@ -168,6 +169,7 @@ describe("PGlite migrations", () => {
             [10, "retention"],
             [11, "relay"],
             [12, "workflows"],
+            [13, "inspection_views"],
             [14, "connections"],
           ])
           expect(
@@ -208,6 +210,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [11, "relay"],
             [12, "workflows"],
+            [13, "inspection_views"],
             [14, "connections"],
           ])
           expect(
@@ -217,6 +220,71 @@ describe("PGlite migrations", () => {
             yield* sql`SELECT indexname FROM pg_indexes WHERE tablename = 'actor_outbox'
               AND indexname LIKE 'actor_outbox_due%'`,
           ).toEqual([{ indexname: "actor_outbox_due_kind" }])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("applies 0012_workflows then 0013_inspection_views to a database that stopped at 0011_relay", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughRelay = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0012")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughRelay
+          expect(yield* sql`SELECT to_regnamespace('durable')::text AS schema`).toEqual([
+            { schema: null },
+          ])
+          expect(yield* migrate).toEqual([
+            [12, "workflows"],
+            [13, "inspection_views"],
+            [14, "connections"],
+          ])
+          expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(
+            11,
+          )
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("refuses to start when a registered migration below the latest applied one was skipped", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    // A database that recorded 13 while 12 was never applied.
+    const throughRelay = migrator(
+      Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0012")),
+    )
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughRelay
+          yield* sql`INSERT INTO actor_migrations (migration_id, name) VALUES (13, 'inspection_views')`
+          const before = yield* sql`SELECT migration_id FROM actor_migrations ORDER BY migration_id`
+          const exit = yield* Effect.exit(migrate)
+          expect(Exit.isFailure(exit)).toBe(true)
+          const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+          expect(error).toBeInstanceOf(Migrator.MigrationError)
+          expect(error).toMatchObject({
+            kind: "BadState",
+            message: expect.stringContaining(
+              "Migrations 12 were never applied but migration 13 was",
+            ),
+          })
+          expect(
+            yield* sql`SELECT migration_id FROM actor_migrations ORDER BY migration_id`,
+          ).toEqual(before)
         }),
       )
       .finally(() => runtime.dispose())
@@ -279,6 +347,7 @@ describe("PGlite migrations", () => {
             { migration_id: 10 },
             { migration_id: 11 },
             { migration_id: 12 },
+            { migration_id: 13 },
             { migration_id: 14 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
