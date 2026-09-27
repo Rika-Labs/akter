@@ -869,7 +869,7 @@ const make = <
           commands === undefined
             ? undefined
             : (target: string, command: string) =>
-                connectionCommandId(commands, calls++, target, command)
+                connectionCommandId({ commands, index: calls++, target, command })
 
         const context: ConnectionContext<State, Event, Connections["server"]["Type"], SessionOf> = {
           id: input.ref.id,
@@ -1674,9 +1674,9 @@ const make = <
     name,
     key: isSingleton ? "singleton" : definition.key === undefined ? "minted" : "keyed",
     decodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => decodeId(id),
-    members: Object.values(api).map((member) =>
-      servedMember({ member, codecs: codecs.get(member.tag)! }),
-    ),
+    members: Object.values(api)
+      .filter((member) => member.kind !== "connection")
+      .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     deliveryMs: policy.deliveryMs,
   })
 

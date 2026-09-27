@@ -157,7 +157,7 @@ describe("connection command ids", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const id = (overrides: Partial<typeof commands>, index = 0, target = "t", command = "C") =>
-          connectionCommandId({ ...commands, ...overrides }, index, target, command)
+          connectionCommandId({ commands: { ...commands, ...overrides }, index, target, command })
 
         const first = yield* id({})
         expect(yield* id({})).toBe(first)

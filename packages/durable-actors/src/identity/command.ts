@@ -44,12 +44,17 @@ const fromHex = (value: string) =>
  * `seq`: HMAC-SHA256 of the call under the connection's secret, shaped as a
  * version-4 UUID so it matches every other command id.
  */
-export const connectionCommandId = (
-  commands: ConnectionCommands,
-  index: number,
-  target: string,
-  command: string,
-) =>
+export const connectionCommandId = ({
+  commands,
+  index,
+  target,
+  command,
+}: {
+  readonly commands: ConnectionCommands
+  readonly index: number
+  readonly target: string
+  readonly command: string
+}) =>
   Effect.gen(function* () {
     const subtle = globalThis.crypto.subtle
 
