@@ -140,6 +140,8 @@ export interface QueryRegistration {
 export interface Registration {
   readonly name: string
   readonly singleton: boolean
+  /** Unkeyed with `policy.createdBy`: its UUIDv8 ids come only from `turn.mint`. */
+  readonly mintable: boolean
   readonly placement: "tenant" | "actor"
   readonly policy: TurnPolicy
   readonly tables: ReadonlyArray<AnyOwnedTable>

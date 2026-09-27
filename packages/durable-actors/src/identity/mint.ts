@@ -2,6 +2,7 @@ import { Crypto, Effect, Schema } from "effect"
 import { type ActorRef, type Caller, System } from "./caller.ts"
 
 export interface MintInput {
+  /** The minting parent; a singleton parent's id is the empty string. */
   readonly parent: ActorRef
   readonly commandId: string
   readonly ordinal: number
@@ -9,6 +10,8 @@ export interface MintInput {
 }
 
 const DOMAIN = "durable-actors/mint/v1"
+
+const SINGLETON_ID = "singleton"
 
 const utf8 = new TextEncoder()
 
@@ -71,12 +74,12 @@ export const provesMint = Effect.fnUntraced(function* (caller: Caller, target: A
 
   if (ref === undefined || mint === undefined || ref.tenant !== target.tenant) return false
 
-  const derived = yield* deriveMintId({
-    parent: ref,
-    commandId: mint.commandId,
-    ordinal: mint.ordinal,
-    child: target.actor,
-  })
+  const derives = (parent: ActorRef) =>
+    deriveMintId({ parent, commandId: mint.commandId, ordinal: mint.ordinal, child: target.actor })
 
-  return derived === target.id
+  if ((yield* derives(ref)) === target.id) return true
+
+  // A singleton parent digests an empty id; its ref alone cannot tell it from
+  // a keyed parent whose id is `singleton`, and one actor type is never both.
+  return ref.id === SINGLETON_ID && (yield* derives({ ...ref, id: "" })) === target.id
 })

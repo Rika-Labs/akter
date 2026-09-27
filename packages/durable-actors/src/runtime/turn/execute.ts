@@ -60,6 +60,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   cache: ActivationCache,
   routingKey: bigint,
   policy: TurnPolicy,
+  mintable: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
@@ -137,6 +138,7 @@ export const executeTurn = Effect.fnUntraced(function* (
 
     // A minted actor is created only by the creating intent its parent's turn staged.
     if (
+      mintable &&
       policy.createdBy === request.command &&
       !admission.created &&
       isMintedId(id) &&

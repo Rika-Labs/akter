@@ -69,6 +69,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
             cache,
             routingKey({ ref: payload.ref, placement: registration.placement }),
             registration.policy,
+            registration.mintable,
           ).pipe(
             Effect.catchDefect(
               Effect.fnUntraced(function* (cause) {

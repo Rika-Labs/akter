@@ -39,12 +39,12 @@ describe("minted actor ids", () => {
           ],
           [
             {
-              parent: { tenant: "acme", actor: "Café", id: "singleton" },
+              parent: { tenant: "acme", actor: "Café", id: "" },
               commandId,
               ordinal: 0,
               child: "Task",
             },
-            "ae59748a-0241-805e-960f-395f670464dd",
+            "d30d3458-a1b1-89ad-af2e-945f0d48a9f1",
           ],
         ]
 

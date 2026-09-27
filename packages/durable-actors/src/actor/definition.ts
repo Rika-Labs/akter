@@ -820,7 +820,7 @@ const make = <
               const proof = outbox.nextMint()
 
               const id = yield* actors.mintChildId({
-                parent: request.ref,
+                parent: isSingleton ? { ...request.ref, id: "" } : request.ref,
                 commandId: request.commandId,
                 ordinal: proof.ordinal,
                 child: target.name,
@@ -964,6 +964,7 @@ const make = <
         name,
         commands,
         singleton: isSingleton,
+        mintable,
         placement,
         policy,
         tables,

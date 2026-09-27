@@ -58,6 +58,11 @@ const Escape = Actor.command("Escape")
 
 const Steal = Actor.command("Steal")
 
+const PlanStagedFirst = Actor.command("PlanStagedFirst", {
+  input: Schema.String,
+  output: Schema.String,
+})
+
 const Planner = Actor.make("MintPlanner", {
   key: Schema.String,
   api: {
@@ -71,7 +76,19 @@ const Planner = Actor.make("MintPlanner", {
     MintUnmintable,
     Escape,
     Steal,
+    PlanStagedFirst,
   },
+})
+
+const SoloPlan = Actor.command("SoloPlan", { output: Schema.String })
+
+const SoloPlanner = Actor.make("MintSoloPlanner", { key: Actor.singleton, api: { SoloPlan } })
+
+const Job = Actor.make("MintNamedJob", {
+  key: Schema.String,
+  state: childState,
+  api: { Open, Title },
+  policy: { createdBy: Open },
 })
 
 // Ids each handler run minted, including runs whose turn later rolled back.
@@ -159,6 +176,33 @@ export const mintLayer = Layer.mergeAll(
         escaped = (yield* Planner.Turn).mint(Task)
       }),
       Steal: () => Effect.asVoid(Effect.suspend(() => escaped)),
+      PlanStagedFirst: Effect.fnUntraced(function* (known: string) {
+        yield* (yield* Task.intents(known as Parameters<typeof Task.intents>[0])).Open(
+          "staged first",
+        )
+
+        return yield* (yield* Planner.Turn).mint(Task)
+      }),
+    }),
+  ),
+  SoloPlanner.toLayer(
+    Effect.succeed({
+      SoloPlan: Effect.fnUntraced(function* () {
+        const id = yield* (yield* SoloPlanner.Turn).mint(Task)
+        yield* (yield* Task.intents(id)).Open("solo")
+
+        return id
+      }),
+    }),
+  ),
+  Job.toLayer(
+    Effect.succeed({
+      Open: Effect.fnUntraced(function* (title: string) {
+        yield* (yield* Job.Turn).state.set({ title })
+      }),
+      Title: Effect.fnUntraced(function* () {
+        return (yield* Job.Turn).state.title
+      }),
     }),
   ),
 )
@@ -401,6 +445,50 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* created("MintTask", id)).toBe(1)
           yield* child.Open("reopened")
           expect(yield* child.Title()).toBe("reopened")
+        }),
+      ),
+  },
+  {
+    name: "gives the proof to a creating intent staged before its child was minted",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const planner = yield* Planner.get("staged-first")
+          const commandId = yield* (yield* Actors).mintCommandId
+          const known = yield* expected(planner.ref, commandId, 0)
+
+          expect(yield* planner.PlanStagedFirst(known).pipe(Actor.commandId(commandId))).toBe(known)
+          yield* (yield* ActorTest).advance(0)
+          expect(yield* (yield* task(known)).Title()).toBe("staged first")
+          expect(yield* created("MintTask", known)).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "mints from a singleton parent with an empty parent id",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const solo = yield* SoloPlanner.get()
+          const commandId = yield* (yield* Actors).mintCommandId
+          const id = yield* solo.SoloPlan().pipe(Actor.commandId(commandId))
+
+          expect(id).toBe(yield* expected({ ...solo.ref, id: "" }, commandId, 0))
+          yield* (yield* ActorTest).advance(0)
+          expect(yield* (yield* task(id)).Title()).toBe("solo")
+        }),
+      ),
+  },
+  {
+    name: "creates a named actor whose declared key is a UUIDv8 without a mint proof",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const planner = yield* Planner.get("named")
+          const id = yield* expected(planner.ref, "named", 0)
+          const job = yield* Job.get(id)
+          yield* job.Open("named")
+          expect(yield* job.Title()).toBe("named")
         }),
       ),
   },

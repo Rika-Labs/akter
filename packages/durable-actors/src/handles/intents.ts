@@ -78,6 +78,13 @@ const stagings = new WeakMap<InTurn["Service"], Staging>()
 
 const mintKey = (ref: ActorRef) => JSON.stringify([ref.actor, ref.id])
 
+const isSystem = Schema.is(System)
+
+const creates = (intent: StagedIntent, child: ActorRef, createdBy: string) =>
+  intent.command === createdBy &&
+  intent.target.actor === child.actor &&
+  intent.target.id === child.id
+
 /** Opens the outbox of one command turn; `close` returns what it staged and seals it. */
 export const openOutbox = ({
   sender,
@@ -117,16 +124,31 @@ export const openOutbox = ({
     /** Records a minted id; its creating intent then carries `proof`. */
     minted: (child: ActorRef, createdBy: string, proof: MintProof) => {
       staging.minted.set(mintKey(child), { child, createdBy, proof })
+
+      staging.intents = staging.intents.map((intent) =>
+        creates(intent, child, createdBy) && isSystem(intent.caller)
+          ? {
+              ...intent,
+              caller: System.make({
+                source: intent.caller.source,
+                ref: intent.caller.ref,
+                onBehalfOf: intent.caller.onBehalfOf,
+                mint: proof,
+              }),
+            }
+          : intent,
+      )
     },
     /** A minted actor that no staged intent to its creating command targets, if any. */
     uncreated: (): ActorRef | undefined => {
-      for (const { child, createdBy } of staging.minted.values())
+      for (const { child, createdBy, proof } of staging.minted.values())
         if (
           !staging.intents.some(
             (intent) =>
-              intent.command === createdBy &&
-              intent.target.actor === child.actor &&
-              intent.target.id === child.id,
+              creates(intent, child, createdBy) &&
+              isSystem(intent.caller) &&
+              intent.caller.mint?.commandId === proof.commandId &&
+              intent.caller.mint.ordinal === proof.ordinal,
           )
         )
           return child
