@@ -65,6 +65,13 @@
       }
     },
     {
+      "files": ["examples/chat/src/client.ts"],
+      "rules": {
+        "effecttsgo/global-console": "off",
+        "effecttsgo/instance-of-schema": "off"
+      }
+    },
+    {
       "files": ["apps/e2e/*.ts"],
       "rules": {
         "effecttsgo/async-function": "off",

@@ -48,6 +48,7 @@ import {
   type FoundationFixture,
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
+import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import {
   retentionConformance,
@@ -333,6 +334,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
   ...admissionConformance,
   ...httpConformance,
+  ...clientConformance,
   ...capacityConformance,
   ...heapConformance,
   ...eventsConformance,
