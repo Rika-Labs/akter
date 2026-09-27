@@ -98,13 +98,19 @@ export interface RegisteredEffect {
   readonly routesCancelled: boolean
   /**
    * Runs one attempt; succeeds with the `onSuccess` route and the
-   * `onCancelled` route of its result, each if declared.
+   * `onCancelled` route of its result, each if declared, or with the reason
+   * `onSuccess` rejects the result.
    */
   readonly execute: (
     payload: string,
     context: ExecutorContext,
   ) => Effect.Effect<
-    { readonly success: EffectRoute | undefined; readonly cancelled: EffectRoute | undefined },
+    {
+      readonly success: EffectRoute | undefined
+      readonly cancelled: EffectRoute | undefined
+      /** Why `onSuccess` cannot accept the result, when it cannot. */
+      readonly rejected: EffectFailure | undefined
+    },
     EffectFailure
   >
   /** The `onCancelled` route for a cancelled effect without a result, if declared. */

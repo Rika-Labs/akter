@@ -360,6 +360,8 @@ export const claimCapped = ({
           SELECT o.routing_key, o.intent_id, o.attempts AS previous, ${maxAttempts}::int AS max_attempts
           FROM actor_outbox o
           WHERE ${inGroup} AND o.cancelled_at_ms IS NOT NULL AND o.due_at_ms <= ${now}
+          ORDER BY o.due_at_ms, o.intent_id
+          LIMIT ${permits}::int
           FOR UPDATE OF o SKIP LOCKED
         ),
         next AS (
@@ -368,7 +370,8 @@ export const claimCapped = ({
           WHERE ${inGroup} AND o.cancelled_at_ms IS NULL
             AND (o.due_at_ms <= ${now} OR (o.waiting AND NOT o.running))
           ORDER BY coalesce(o.ready_at_ms, o.due_at_ms), o.intent_id
-          LIMIT greatest(0, least(${cap}::int - (SELECT n FROM live), ${permits}::int))
+          LIMIT greatest(0, least(${cap}::int - (SELECT n FROM live),
+            ${permits}::int - (SELECT count(*)::int FROM settle)))
           FOR UPDATE OF o SKIP LOCKED
         ),
         locked AS (SELECT * FROM settle UNION ALL SELECT * FROM next),
@@ -831,7 +834,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
         return yield* settleCancelled(attempt, "Unknown", cancelledCause(attempt))
       }
 
-      if (Result.isSuccess(outcome)) {
+      const rejected = Result.isSuccess(outcome) ? outcome.success.rejected : undefined
+
+      // A result onSuccess rejects still reaches onCancelled if the effect was cancelled.
+      if (
+        rejected !== undefined &&
+        registered.routesCancelled &&
+        Result.isSuccess(outcome) &&
+        (yield* settleTo(
+          outcome.success.cancelled,
+          sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
+        ))
+      )
+        return
+
+      if (Result.isSuccess(outcome) && rejected === undefined) {
         yield* hooks.at("afterExecute", request)
         const routes = outcome.success
 
@@ -888,7 +905,11 @@ export const outboxRelay = Effect.fnUntraced(function* (
         return
       }
 
-      const { cause, ambiguous, final } = outcome.failure
+      const failure = Result.isFailure(outcome) ? outcome.failure : rejected
+
+      if (failure === undefined) return
+
+      const { cause, ambiguous, final } = failure
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 

@@ -2,7 +2,7 @@
 
 **Status:** proposed (2026-09-26)
 
-**Implementation:** M2.13 (migration `0015_effect_control`) implements this ADR's recommended defaults below, pending acceptance; evidence is in the [conformance ledger](../verification/01-conformance.md#effect-cancellation-and-caps-m213). Accepting different defaults requires changing that implementation.
+**Implementation:** M2.13 (migration `0015_effect_control`) implements this ADR's recommended defaults below, pending acceptance; evidence is in the [conformance ledger](../verification/01-conformance.md#effect-cancellation-and-caps-m213). Accepting different defaults requires changing that implementation. Two statement boundaries differ from the text below: `cancelEffect` is applied by two statements (a `DELETE` of never-attempted rows, then an `UPDATE` of the rest) inside the turn's commit transaction rather than inside its single commit statement, and the wake of the oldest waiting row is its own statement right after a capped attempt's settle commits rather than part of the settle statement. A runner that dies between a settle and its wake leaves the waiting row to the lease-length fallback.
 
 ## Context
 

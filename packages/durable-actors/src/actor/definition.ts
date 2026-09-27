@@ -1339,19 +1339,26 @@ const make = <
                     Effect.orDie,
                   )
 
-            if (onSuccess === undefined) return { success: undefined, cancelled }
+            if (onSuccess === undefined)
+              return { success: undefined, cancelled, rejected: undefined }
 
             // The provider already applied the call, so a result the route
-            // cannot accept is dead-lettered instead of executed again.
-            const success = yield* onSuccess(exit.value).pipe(
-              Effect.mapError((error) => ({
-                cause: `The onSuccess route cannot accept the result: ${String(error)}`,
-                ambiguous: true,
-                final: true,
-              })),
-            )
+            // cannot accept is dead-lettered instead of executed again, unless
+            // the effect was cancelled and onCancelled takes the result.
+            const success = yield* onSuccess(exit.value).pipe(Effect.result)
 
-            return { success, cancelled }
+            if (Result.isFailure(success))
+              return {
+                success: undefined,
+                cancelled,
+                rejected: {
+                  cause: `The onSuccess route cannot accept the result: ${String(success.failure)}`,
+                  ambiguous: true,
+                  final: true,
+                },
+              }
+
+            return { success: success.success, cancelled, rejected: undefined }
           }) as RegisteredEffect["execute"],
           cancelled: Effect.fnUntraced(function* (payload, letter) {
             const effect = yield* decode(payload).pipe(Effect.option)

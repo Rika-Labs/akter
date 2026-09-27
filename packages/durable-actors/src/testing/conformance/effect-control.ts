@@ -64,7 +64,12 @@ class Serial extends Actor.effect<Serial>()("Serial", {
   success: Schema.String,
 }) {}
 
-const EffectName = Schema.Literals(["Job", "Capped", "Serial"])
+class Picky extends Actor.effect<Picky>()("Picky", {
+  input: { label: Schema.String },
+  success: Schema.String,
+}) {}
+
+const EffectName = Schema.Literals(["Job", "Capped", "Serial", "Picky"])
 
 type EffectName = typeof EffectName.Type
 
@@ -100,6 +105,12 @@ const CappedCancelled = Actor.command("CappedCancelled", { input: Actor.Cancelle
 
 const SerialFailed = Actor.command("SerialFailed", { input: Actor.DeadLetter(Serial) })
 
+const PickyDone = Actor.command("PickyDone", {
+  input: Schema.String.check(Schema.isPattern(/^accepted$/)),
+})
+
+const PickyCancelled = Actor.command("PickyCancelled", { input: Actor.Cancelled(Picky) })
+
 const Report = Schema.Struct({
   label: Schema.String,
   effectId: Schema.String,
@@ -116,7 +127,7 @@ const Controlled = Actor.make("Controlled", {
     cancelled: Schema.Array(Report).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     letters: Schema.Array(Report).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  effects: [Job, Capped, Serial],
+  effects: [Job, Capped, Serial, Picky],
   api: {
     Perform,
     CancelEffect,
@@ -126,7 +137,7 @@ const Controlled = Actor.make("Controlled", {
     CaptureCancel,
     UseCaptured,
   },
-  internal: { Done, JobCancelled, CappedCancelled, SerialFailed },
+  internal: { Done, JobCancelled, CappedCancelled, SerialFailed, PickyDone, PickyCancelled },
   policy: {
     effects: {
       Job: {
@@ -145,6 +156,11 @@ const Controlled = Actor.make("Controlled", {
         concurrency: { perActor: 1 },
         onSuccess: Done,
         onDeadLetter: SerialFailed,
+      },
+      Picky: {
+        retry: { times: 0 },
+        onSuccess: PickyDone,
+        onCancelled: PickyCancelled,
       },
     },
   },
@@ -178,7 +194,7 @@ export const effectControlLayer = Controlled.toLayer(
       const turn = yield* Controlled.Turn
 
       for (const label of labels) {
-        const instance = { Job, Capped, Serial }[effect].make({ label })
+        const instance = { Job, Capped, Serial, Picky }[effect].make({ label })
 
         const options: Mutable<PerformOptions> = {}
 
@@ -220,6 +236,11 @@ export const effectControlLayer = Controlled.toLayer(
     }),
     JobCancelled: reportCancelled,
     CappedCancelled: (cancelled) => reportCancelled(cancelled as never),
+    PickyDone: Effect.fnUntraced(function* (value) {
+      const turn = yield* Controlled.Turn
+      yield* turn.state.set({ done: [...turn.state.done, value] })
+    }),
+    PickyCancelled: (cancelled) => reportCancelled(cancelled as never),
     SerialFailed: Effect.fnUntraced(function* (letter) {
       const turn = yield* Controlled.Turn
 
@@ -274,6 +295,7 @@ const runnerEffects = (fixture: EffectControlFixture, runner: number) => {
       Job: ({ label }) => execute("Job", label),
       Capped: ({ label }) => execute("Capped", label),
       Serial: ({ label }) => execute("Serial", label),
+      Picky: ({ label }) => execute("Picky", label),
     }),
   )
 }
@@ -982,6 +1004,44 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             { outcome: "Succeeded", value: "raced", ambiguous: false },
           ])
           expect(state.done ?? []).toEqual([])
+        }),
+      ),
+  },
+  {
+    name: "routes a cancelled success that onSuccess cannot accept to onCancelled as Succeeded",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        2,
+        { relay: NO_POLL },
+        Effect.gen(function* () {
+          const gate = yield* Deferred.make<void>()
+          fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
+          const { owner, other } = yield* ownerAndOther(yield* refOf("picky"))
+          yield* on(
+            owner,
+            perform("picky", "Picky", ["rejected"], { keyed: true, afterMs: 60_000 }),
+          )
+          yield* advance(other, "1 minute").pipe(Effect.forkChild)
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+          yield* on(owner, cancel("picky", ["rejected"]))
+          yield* Deferred.succeed(gate, undefined)
+          yield* eventually(
+            on(owner, stateOf("picky")).pipe(
+              Effect.map((state) => (state.cancelled ?? []).length === 1),
+            ),
+          )
+          const state = yield* on(owner, stateOf("picky"))
+
+          expect(state.cancelled).toMatchObject([
+            { outcome: "Succeeded", value: "rejected", ambiguous: false },
+          ])
+          expect(state.done ?? []).toEqual([])
+          expect(yield* query(owner, effectRows)).toEqual([])
+          expect(fixture.attempts.length).toBe(1)
         }),
       ),
   },
