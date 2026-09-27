@@ -14,7 +14,7 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { eventsStatements, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
-import { FrameworkClock } from "./admission.ts"
+import { FrameworkClock, databaseTime } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, outboxStatements } from "./outbox.ts"
 import {
@@ -354,7 +354,10 @@ export const executeTurn = Effect.fnUntraced(function* (
       routingKey,
       request.ref,
       result.outbox,
-      Effect.succeed(now),
+      // A relative delay starts at commit, so a slow handler must not shorten it.
+      result.outbox.intents.some((intent) => intent.due?._tag === "After")
+        ? databaseTime
+        : Effect.succeed(now),
     )
 
     writes.push(...outbox.statements)

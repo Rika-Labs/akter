@@ -529,4 +529,25 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
+  {
+    name: "pipeline: a crash after commit resolves the retry through the receipt without rerunning the handler",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, {}, (probe) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("after-commit")
+          expect(yield* meter.Add(1)).toBe(1)
+          yield* test.crashNext("afterCommit")
+          expect(yield* meter.Add(2)).toBe(3)
+          expect(yield* meter.Add(3)).toBe(6)
+          expect(probe.handled).toBe(3)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 6 },
+            receipts: 3,
+          })
+        }),
+      ),
+  },
 ]

@@ -253,6 +253,10 @@ export const compareStatements = (input: {
           : (current.roundTripsPerOperation ?? {}),
       ),
     ],
+    unmeasured: Object.keys(input.baseline.roundTripsPerOperation ?? {}).filter(
+      (key) =>
+        key in current.statementsPerOperation && !(key in (current.roundTripsPerOperation ?? {})),
+    ),
     added: Object.keys(current.statementsPerOperation).filter((key) => !(key in expected)),
     removed: Object.keys(expected).filter((key) => !(key in current.statementsPerOperation)),
   }
@@ -403,7 +407,7 @@ const statements = Effect.fnUntraced(function* (
     `baseline: ${baseline.sha}\nrun:      ${result.git.shortSha}\ntolerance: ±${STATEMENT_TOLERANCE} statements or round trips per operation\n`,
   )
 
-  const { cases, added, removed } = compareStatements({ baseline, result })
+  const { cases, unmeasured, added, removed } = compareStatements({ baseline, result })
 
   for (const { key, metric, before, after, changed } of cases) {
     const delta = Math.round((after - before) * 100) / 100
@@ -413,12 +417,19 @@ const statements = Effect.fnUntraced(function* (
     )
   }
 
+  for (const key of unmeasured)
+    yield* Console.log(`UNMEASURED ${key} round trips: in the baseline, missing from this run`)
+
   for (const key of added) yield* Console.log(`ADDED   ${key}: not in the baseline`)
 
   for (const key of removed)
     yield* Console.log(`REMOVED ${key}: in the baseline, missing from this run`)
 
-  const failures = cases.filter((entry) => entry.changed).length + added.length + removed.length
+  const failures =
+    cases.filter((entry) => entry.changed).length +
+    unmeasured.length +
+    added.length +
+    removed.length
 
   if (failures === 0) return yield* Console.log(`\nstatements and round trips match the baseline`)
 

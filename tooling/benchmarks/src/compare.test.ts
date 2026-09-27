@@ -224,6 +224,10 @@ describe("compareStatements", () => {
         (entry) => entry.metric === "round trips",
       ),
     ).toBe(false)
+    expect(
+      compareStatements({ baseline: recorded, result: ci({ sequential: 7 }) }).unmeasured,
+    ).toEqual(["hot-actor/sequential"])
+    expect(compareStatements({ baseline: recorded, result: counted(2) }).unmeasured).toEqual([])
   })
 
   it("builds a baseline only from a ci run on postgres", () => {
