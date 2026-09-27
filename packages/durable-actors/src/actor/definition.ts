@@ -818,12 +818,7 @@ const make = <
     })
   })
 
-  const register = <R, RW>(
-    handlers: Handlers<All, R>,
-    services: Context.Context<R>,
-    workflowHandlers: WorkflowHandlers<All, RW>,
-    workflowServices: Context.Context<RW>,
-  ) =>
+  const commandsOf = <R>(handlers: Handlers<All, R>, services: Context.Context<R>) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
       const commands = new Map<string, RegisteredCommand>()
@@ -1060,6 +1055,14 @@ const make = <
         })
       }
 
+      return commands as ReadonlyMap<string, RegisteredCommand>
+    })
+
+  const workflowsOf = <RW>(
+    workflowHandlers: WorkflowHandlers<All, RW>,
+    workflowServices: Context.Context<RW>,
+  ) =>
+    Effect.gen(function* () {
       const registeredWorkflows = new Map<string, RegisteredWorkflow>()
 
       for (const member of workflows) {
@@ -1114,21 +1117,15 @@ const make = <
         })
       }
 
-      yield* actors.register({
-        name,
-        commands,
-        workflows: registeredWorkflows,
-        singleton: isSingleton,
-        placement,
-        policy,
-        tables,
-        blobs,
-      })
+      return registeredWorkflows as ReadonlyMap<string, RegisteredWorkflow>
     })
 
   /**
-   * Implements every `api` and `internal` command. The build Effect runs once
-   * when the layer is built; handlers read their turn with `yield* X.Turn`.
+   * Implements every `api` and `internal` command; handlers read their turn
+   * with `yield* X.Turn`. The build Effect runs once when the layer is built,
+   * except on a singleton, where it runs once per activation in the
+   * activation's scope, so a fiber it forks with `Effect.forkScoped` lives
+   * exactly as long as the one cluster-wide activation.
    */
   // Defaults keep R `never` when there is no handler to infer it from, as for an actor of reducers only.
   const toLayer = <R = never, RB = never, RW = never>(
@@ -1141,15 +1138,56 @@ const make = <
   > =>
     Layer.effectDiscard(
       Effect.gen(function* () {
-        const handlers = yield* build
-        const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
-        const workflowServices = yield* Effect.context<Exclude<RW, Workflow>>()
-        yield* register(
-          handlers,
-          services as Context.Context<R>,
-          handlers,
-          workflowServices as Context.Context<RW>,
-        )
+        const actors = yield* InternalActors
+
+        const registration = {
+          name,
+          singleton: isSingleton,
+          tenant: yield* Tenant,
+          placement,
+          policy,
+          tables,
+          blobs,
+        }
+
+        if (!isSingleton) {
+          const handlers = yield* build
+          const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
+          const workflowServices = yield* Effect.context<Exclude<RW, Workflow>>()
+          const commands = yield* commandsOf(handlers, services as Context.Context<R>)
+
+          return yield* actors.register({
+            ...registration,
+            workflows: yield* workflowsOf(handlers, workflowServices as Context.Context<RW>),
+            activate: () => Effect.succeed(commands),
+          })
+        }
+
+        const services = yield* Effect.context<
+          Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+        >()
+
+        if (workflows.length > 0)
+          return yield* Effect.die(new Error(`Singleton actor ${name} cannot declare workflows`))
+
+        yield* actors.register({
+          ...registration,
+          workflows: new Map(),
+          activate: Effect.fnUntraced(function* (ref: ActorRef) {
+            const scope = yield* Scope.Scope
+
+            const handlers = yield* build.pipe(
+              Effect.provideService(Scope.Scope, scope),
+              Effect.provideService(Tenant, ref.tenant),
+              Effect.provideService(CurrentCaller, System.make({ source: "actor", ref })),
+              Effect.provideContext(services as Context.Context<RB>),
+            )
+
+            return yield* commandsOf(handlers, services as Context.Context<R>).pipe(
+              Effect.provideContext(services),
+            )
+          }),
+        })
       }),
     ) as Layer.Layer<
       never,

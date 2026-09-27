@@ -141,11 +141,19 @@ export interface QueryRegistration {
 export interface Registration {
   readonly name: string
   readonly singleton: boolean
+  /** The deployment's default tenant: the ambient `Tenant` when the actor's layer is built. */
+  readonly tenant: string
   readonly placement: "tenant" | "actor"
   readonly policy: TurnPolicy
   readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly blobs: ReadonlyArray<AnyBlob>
-  readonly commands: ReadonlyMap<string, RegisteredCommand>
+  /**
+   * Resolves one activation's commands in the activation's scope. A singleton
+   * runs its build here, so fibers it forks live as long as the activation.
+   */
+  readonly activate: (
+    ref: ActorRef,
+  ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
 }
