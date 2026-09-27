@@ -117,9 +117,7 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
 
           yield* turn.emit(Paid.make(input))
         }),
-        Quote: Effect.fnUntraced(function* (input: { readonly n: number }) {
-          return `q-${input.n}`
-        }),
+        Quote: (input: { readonly n: number }) => Effect.succeed(`q-${input.n}`),
         Ship: Effect.fnUntraced(function* (input: {
           readonly orderId: string
           readonly sku: string
@@ -259,6 +257,7 @@ const suspendedRow = (executionId: string) =>
   eventually(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
+
       const rows = yield* sql<{ status: string }>`SELECT status FROM actor_workflow_executions
         WHERE execution_id = ${executionId}`
 
