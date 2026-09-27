@@ -10,7 +10,6 @@ import {
   Layer,
   Option,
   Result,
-  Schedule,
   Schema,
 } from "effect"
 import {
@@ -44,6 +43,7 @@ import {
 } from "../handles/actors.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
+import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
@@ -65,6 +65,8 @@ export interface Options {
     readonly caller: Caller
     readonly ref: ActorRef
     readonly command: string
+    /** `command` for commands and reducers, `query` for queries. */
+    readonly kind: "command" | "query"
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
@@ -193,8 +195,11 @@ export const layer = (options: Options) => {
       // group reads may only touch these, never other Actor.table values.
       const checked = new Set<AnyOwnedTable>()
 
-      const allow = Effect.fnUntraced(function* (request: Request) {
-        if (!(yield* options.authorize(request)))
+      const allow = Effect.fnUntraced(function* (
+        request: Request,
+        kind: "command" | "query" = "command",
+      ) {
+        if (!(yield* options.authorize({ ...request, kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
@@ -323,18 +328,22 @@ export const layer = (options: Options) => {
               }),
             )
 
-            const outcome = yield* deliver.pipe(
-              Effect.retry({
-                while: (error) =>
-                  Schema.is(ActorUnavailable)(error.reason) ||
-                  Schema.is(RunnerAtCapacity)(error.reason),
-                // Exponential backoff capped at 500 ms; the delivery timeout bounds the total.
-                schedule: Schedule.min([
-                  Schedule.exponential("10 millis", 2),
-                  Schedule.spaced("500 millis"),
-                ]),
-              }),
-            )
+            // Each retry waits from the error's own retryAfter, as a served
+            // caller would; the delivery timeout bounds the total.
+            const retrying = (attempt: number): typeof deliver =>
+              deliver.pipe(
+                Effect.catchIf(
+                  (error) =>
+                    Schema.is(ActorUnavailable)(error.reason) ||
+                    Schema.is(RunnerAtCapacity)(error.reason),
+                  (error) =>
+                    Effect.sleep(retryDelay(attempt)(error)).pipe(
+                      Effect.andThen(Effect.suspend(() => retrying(attempt + 1))),
+                    ),
+                ),
+              )
+
+            const outcome = yield* retrying(0)
 
             if (external) yield* authorize(request)
 
@@ -429,11 +438,30 @@ export const layer = (options: Options) => {
         )
       const outbox = { retryWindowMs, wake: relay.wake }
 
+      const databaseNow = databaseTime.pipe(
+        Effect.provideContext(services),
+        Effect.catchIf(SqlError.isSqlError, (cause) =>
+          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+        ),
+      )
+
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+        retryWindowMs,
+        databaseNow,
+        mintCommandId: Effect.gen(function* () {
+          const now = yield* databaseNow
+          const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+
+          return `v1.${now}.${now + retryWindowMs}.${uuid}`
+        }),
         tables: (scope, write) =>
           bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
         blobs: (scope, write) => bindBlobs(scope, write).pipe(Effect.provideContext(services)),
+        registered: (actor) => ({
+          commands: registrations.has(actor),
+          queries: queryRegistrations.has(actor),
+        }),
         declaredBlobs: (actor) =>
           (registrations.get(actor) ?? queryRegistrations.get(actor))?.blobs.map(
             (blob) => blob.name,
@@ -503,7 +531,7 @@ export const layer = (options: Options) => {
                 reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
               })
 
-            yield* allow(request)
+            yield* allow(request, "query")
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
             // Query reads run on the pool outside a transaction, so no
@@ -563,7 +591,7 @@ export const layer = (options: Options) => {
 
             // Access can be revoked while the handler runs; like a command's
             // outcome, a query result is released only to a caller still allowed.
-            yield* allow(request)
+            yield* allow(request, "query")
 
             return outcome
           },
