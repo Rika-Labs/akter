@@ -3,7 +3,7 @@ import { pgTable, text } from "drizzle-orm/pg-core"
 import { Crypto, Effect, Fiber, Layer, Redacted, Schedule, Schema } from "effect"
 import type { Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, User } from "../../index.ts"
+import { Actor, Actors, Intent, User } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -32,12 +32,20 @@ const Meter = Actor.make("Meter", {
   api: { Add, Mark, Tap },
 })
 
+const Defer = Actor.command("Defer", {
+  input: Schema.Finite,
+  output: Schema.Finite,
+})
+
+const Remind = Actor.command("Remind", {})
+
 const Plain = Actor.make("Plain", {
   key: Schema.String,
   state: Actor.state({
     count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  api: { Add },
+  api: { Add, Defer },
+  internal: { Remind },
 })
 
 interface Probe {
@@ -91,6 +99,18 @@ const actorsLive = (probe: Probe) =>
 
               return turn.state.count
             }),
+            // Stages a one-hour reminder after a real-time pause, so a due
+            // time measured from admission would land short of commit + 1 h.
+            Defer: Effect.fnUntraced(function* (pauseMs: number) {
+              probe.handled += 1
+              yield* Effect.sleep(pauseMs)
+              const turn = yield* Plain.Turn
+              const self = yield* Plain.intents(turn.id)
+              yield* self.Remind().pipe(Intent.after("1 hour"))
+
+              return turn.state.count
+            }),
+            Remind: () => Effect.void,
           }),
         ),
       )
@@ -547,6 +567,34 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             state: { count: 6 },
             receipts: 3,
           })
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a delayed intent keeps two round trips and is due its delay after commit",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, {}, (probe) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const meter = yield* Plain.get("delayed")
+          yield* meter.Add(1)
+          yield* meter.Add(1)
+
+          const clock = sql<{ now: string }>`
+            SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
+
+          const before = Number((yield* clock)[0]!.now)
+          const deferred = yield* flightsOf(probe, meter.Defer(400))
+          expect(deferred).toMatchObject({ value: 2, flights: 2 })
+
+          const [row] = yield* sql<{ due: string; scheduled: string }>`
+            SELECT due_at_ms::text AS due, scheduled_at_ms::text AS scheduled FROM actor_outbox
+            WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id} AND command = 'Remind'`
+
+          expect(Number(row!.due) >= before + 400 + 3_600_000).toBe(true)
+          expect(row!.scheduled).toBe(row!.due)
         }),
       ),
   },

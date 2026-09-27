@@ -14,7 +14,7 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { eventsStatements, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
-import { FrameworkClock, databaseTime } from "./admission.ts"
+import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, outboxStatements } from "./outbox.ts"
 import {
@@ -354,10 +354,8 @@ export const executeTurn = Effect.fnUntraced(function* (
       routingKey,
       request.ref,
       result.outbox,
-      // A relative delay starts at commit, so a slow handler must not shorten it.
-      result.outbox.intents.some((intent) => intent.due?._tag === "After")
-        ? databaseTime
-        : Effect.succeed(now),
+      Effect.succeed(now),
+      { slackMs: policy.executionMs },
     )
 
     writes.push(...outbox.statements)
@@ -456,9 +454,10 @@ const pipelined = <E, R>(
       let tag: string | undefined
 
       const plan = yield* Effect.gen(function* () {
-        const begin = Effect.map(control("BEGIN"), () => {
-          open = true
-        })
+        // The session is unsafe from the moment BEGIN may be queued until a
+        // transaction-ending reply confirms it is idle again.
+        open = true
+        const begin = Effect.asVoid(control("BEGIN"))
 
         const decided = yield* turn(
           { send: pipeline, control: (text) => Effect.asVoid(control(text)) },

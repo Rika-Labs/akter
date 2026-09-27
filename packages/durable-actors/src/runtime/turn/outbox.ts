@@ -2,7 +2,7 @@ import { Context, Crypto, Effect, Schema } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Due, type StagedOutbox } from "../../handles/intents.ts"
 import { type ActorRef, Caller } from "../../identity/caller.ts"
-import { databaseTime } from "./admission.ts"
+import { databaseTime, FrameworkClock } from "./admission.ts"
 
 /**
  * The due-work bucket: the top eight bits of `routing_key`. Every runner's
@@ -40,6 +40,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   sender: ActorRef,
   outbox: StagedOutbox,
   databaseNow: Effect.Effect<number, SqlError.SqlError, R>,
+  commit?: { readonly slackMs: number },
 ) {
   const sql = yield* SqlClient.SqlClient
   const { tenant, actor, id } = sender
@@ -63,11 +64,16 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   // The row id is the receiver's command id: an intent's, or an effect's
   // route's. Its expiry keeps that receipt at least one retry window past the
   // due time.
-  const rowId = (dueAt: number) =>
+  const rowId = (dueAt: number, slackMs = 0) =>
     crypto.randomUUIDv4.pipe(
       Effect.orDie,
-      Effect.map((uuid) => `v1.${now}.${Math.max(dueAt, now) + retryWindowMs}.${uuid}`),
+      Effect.map((uuid) => `v1.${now}.${Math.max(dueAt, now) + slackMs + retryWindowMs}.${uuid}`),
     )
+
+  // When `now` was read before the handler ran, a relative delay is moved to
+  // the commit statement's clock, and its receipt horizon covers the turn's
+  // longest possible run.
+  const delayed: Array<string> = []
 
   for (const intent of outbox.intents) {
     const dueAt =
@@ -80,9 +86,14 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
 
     dueNow ||= dueAt <= now
 
+    const relative = commit !== undefined && intent.due?._tag === "After"
+    const intentId = yield* rowId(dueAt, relative ? commit.slackMs : 0)
+
+    if (relative) delayed.push(intentId)
+
     rows.push({
       routing_key: routingKey,
-      intent_id: yield* rowId(dueAt),
+      intent_id: intentId,
       kind: "intent",
       bucket: bucketOf(routingKey),
       due_at_ms: dueAt,
@@ -121,6 +132,16 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     })
 
   statements.push(Effect.asVoid(sql`INSERT INTO actor_outbox ${sql.insert(rows)}`))
+
+  if (delayed.length > 0) {
+    const shift = sql`floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint + ${(yield* FrameworkClock).offsetMillis() - now}`
+
+    statements.push(
+      Effect.asVoid(sql`UPDATE actor_outbox
+        SET due_at_ms = due_at_ms + ${shift}, scheduled_at_ms = scheduled_at_ms + ${shift}
+        WHERE routing_key = ${routingKey} AND intent_id IN ${sql.in(delayed)}`),
+    )
+  }
 
   return { statements, dueNow }
 })
