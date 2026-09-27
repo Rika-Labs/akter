@@ -18,14 +18,17 @@ import {
   ShardId,
 } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
-import { SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
-import { executeTurn, emptyActivationCache } from "../turn/execute.ts"
+import { executeTurn } from "../turn/execute.ts"
+import { activationOwner } from "../connections/owner.ts"
+import { connectionsEntity } from "../connections/protocol.ts"
+import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
@@ -78,8 +81,32 @@ export const commandEntity = (name: string) => {
   return entity
 }
 
-export const registerActor = Effect.fnUntraced(function* (registration: Registration) {
+const connectionEntities = new Map<string, ReturnType<typeof connectionsEntity>>()
+
+export const connectionEntity = (name: string) => {
+  const cached = connectionEntities.get(name)
+
+  if (cached !== undefined) return cached
+
+  const entity = connectionsEntity(name)
+  connectionEntities.set(name, entity)
+
+  return entity
+}
+
+export const registerActor = Effect.fnUntraced(function* (
+  registration: Registration,
+  transport: Transport,
+) {
   const sharding = yield* Sharding.Sharding
+  const owner = activationOwner({ registration, transport })
+
+  const ownedOf = (entityId: string) =>
+    Effect.flatMap(Effect.orDie(decodeEntityId(entityId)), ([tenant, id]) => {
+      const ref = { actor: registration.name, tenant, id }
+
+      return owner.enter(entityId, ref, routingKey({ ref, placement: registration.placement }))
+    })
 
   const services = yield* Effect.context<
     Effect.Services<ReturnType<typeof executeTurn>> | Crypto.Crypto
@@ -176,7 +203,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
           }),
       ).pipe(Scope.provide(scope))
 
-      const cache = emptyActivationCache()
+      const owned = yield* ownedOf(entityId)
       let engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
 
       // A singleton builds here, on its owner; a failing build answers every
@@ -204,16 +231,25 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
           if (command === undefined)
             return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
 
-          const outcome = yield* executeTurn(
-            payload,
-            command,
-            cache,
-            routingKeyOf(payload.ref),
-            registration.policy,
-            registration.mintable,
-            waited,
-            registration.cron,
-          ).pipe(
+          const outcome = yield* Effect.gen(function* () {
+            yield* owner.prepare(owned)
+
+            const done = yield* executeTurn(
+              payload,
+              command,
+              owned.cache,
+              owned.key,
+              registration.policy,
+              registration.mintable,
+              waited,
+              owner.hasConnections ? owner.list(owned) : undefined,
+              registration.cron,
+            )
+
+            if (owner.hasConnections) yield* owner.flush(owned, done.broadcasts, done.head)
+
+            return done.outcome
+          }).pipe(
             Effect.catchDefect(
               Effect.fnUntraced(function* (cause) {
                 if (
@@ -264,7 +300,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
                 registration,
                 ref: payload.ref,
                 routingKey: routingKeyOf(payload.ref),
-                cache,
+                cache: owned.cache,
                 scope,
                 deliveryMs: registration.policy.deliveryMs,
               })
@@ -283,7 +319,31 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
     },
   )
 
+  const connections = connectionEntity(registration.name)
+  const connectionServices = yield* Effect.context<SqlClient.SqlClient>()
+
   yield* register
+
+  if (owner.hasConnections)
+    yield* sharding.registerEntity(
+      connections,
+      Effect.gen(function* () {
+        const { entityId } = yield* Entity.CurrentAddress
+        const owned = yield* ownedOf(entityId)
+
+        return connections.of({
+          Open: ({ payload }) =>
+            owner.open(owned, payload).pipe(Effect.provideContext(connectionServices)),
+          Frame: ({ payload }) =>
+            owner.frame(owned, payload).pipe(Effect.provideContext(connectionServices)),
+          Close: ({ payload }) =>
+            owner.close(owned, payload).pipe(Effect.provideContext(connectionServices)),
+          Resync: ({ payload }) =>
+            owner.resync(owned, payload).pipe(Effect.provideContext(connectionServices)),
+        })
+      }),
+      { concurrency: "unbounded", maxIdleTime: registration.policy.idleMs },
+    )
 
   // Every runner serves the singleton's entity, so its shard lock and the
   // generation fence keep each tenant's instance to one activation. One
@@ -318,5 +378,5 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
     )
   }
 
-  return (entityId: string) => resident.has(entityId)
+  return { isResident: (entityId: string) => resident.has(entityId), owner }
 })

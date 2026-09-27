@@ -1,7 +1,10 @@
+import type { Transport } from "../runtime/connections/transport.ts"
+import type { Holder } from "../runtime/connections/holder.ts"
 import { Context, Effect, type Exit, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { ConnectionCommands } from "../identity/command.ts"
 import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
@@ -47,7 +50,29 @@ export interface BusinessResult {
   readonly events: ReadonlyArray<EmittedEvent>
   /** Intents and effects to commit with the turn; a declared failure stages none. */
   readonly outbox: StagedOutbox
+  /** Frames to send to open connections once the turn commits; a declared failure sends none. */
+  readonly broadcasts?: ReadonlyArray<Broadcast>
 }
+
+/** One encoded frame for a connection member's open connections. */
+export interface Broadcast {
+  readonly member: string
+  readonly frame: string
+  /** The cursor of the event the frame was sent from. */
+  readonly event?: string | undefined
+  readonly to?: ReadonlyArray<string> | undefined
+  readonly except?: ReadonlyArray<string> | undefined
+}
+
+/** An open connection as a turn or connection handler lists it. */
+export interface OpenConnection {
+  readonly connectionId: string
+  readonly caller: Caller
+  readonly session: string | undefined
+}
+
+/** Lists one connection member's open connections. */
+export type ConnectionLister = (member: string) => Effect.Effect<ReadonlyArray<OpenConnection>>
 
 export interface EmittedEvent {
   readonly tag: string
@@ -73,7 +98,54 @@ export interface RegisteredCommand {
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
+    connections?: ConnectionLister,
   ) => Effect.Effect<BusinessResult, BusinessResult>
+}
+
+/** What one connection handler is asked to do. */
+export const ConnectionPhase = Schema.TaggedUnion({
+  Open: { params: Schema.String },
+  Frame: { frame: Schema.String },
+  Close: { reason: Schema.String },
+  Resync: { after: Schema.UndefinedOr(Schema.String) },
+})
+
+export type ConnectionPhase = typeof ConnectionPhase.Type
+
+/** The committed view and capabilities one connection handler runs with. */
+export interface ConnectionInput {
+  readonly ref: ActorRef
+  readonly connectionId: string
+  readonly member: string
+  readonly caller: Caller
+  readonly resumed: boolean
+  readonly cursor: string
+  readonly state: ReadonlyArray<readonly [string, string]>
+  readonly session: string | undefined
+  readonly connections: ConnectionLister
+  readonly events: EventReader
+  /** Present for open and frame phases, so command calls get redelivery-stable ids. */
+  readonly commands?: ConnectionCommands | undefined
+}
+
+/** What a connection handler leaves to write and send once it returns. */
+export interface ConnectionResult {
+  /** The encoded session after the handler, or undefined when it has none. */
+  readonly session: string | undefined
+  readonly changed: boolean
+  readonly sends: ReadonlyArray<{ readonly frame: string; readonly event?: string | undefined }>
+  readonly broadcasts: ReadonlyArray<Broadcast>
+  readonly close: boolean
+}
+
+export interface RegisteredConnection {
+  readonly stampCursor: boolean
+  readonly hasResync: boolean
+  /** Fails with an encoded declared error only while opening. */
+  readonly run: (
+    input: ConnectionInput,
+    phase: ConnectionPhase,
+  ) => Effect.Effect<ConnectionResult, { readonly failure: string }>
 }
 
 /** A command an effect's outcome is delivered to, with its encoded input. */
@@ -168,6 +240,7 @@ export interface Registration {
   readonly activate: (
     ref: ActorRef,
   ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
+  readonly connections: ReadonlyMap<string, RegisteredConnection>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
   /** `policy.cron` entries; each is one keyed tick row per actor. */
@@ -201,6 +274,11 @@ export class InternalActors extends Context.Service<
   InternalActors,
   {
     readonly register: (actor: Registration) => Effect.Effect<void, never, Scope.Scope>
+    readonly transport: Transport
+    /** This runner's in-process connection holder. */
+    readonly holder: Holder
+    /** Ends the actor's activation on this runner as idle expiry would. */
+    readonly hibernate: (ref: ActorRef) => Effect.Effect<void>
     readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
     /**
      * Delivers a committed intent. The obligation was admitted by its sending

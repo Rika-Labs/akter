@@ -8,11 +8,21 @@ import {
   User,
 } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
-import { Config, Crypto, Effect, Layer, ManagedRuntime, Option, Redacted, Schema } from "effect"
+import {
+  Config,
+  Crypto,
+  Effect,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+  Schema,
+  Stream,
+} from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
-import { Room, RoomClosed, RoomId } from "./contract.ts"
+import { Presence, Room, RoomClosed, RoomId } from "./contract.ts"
 import { RoomLive } from "./layer.ts"
 import { ModerationApi } from "./moderation.ts"
 
@@ -229,5 +239,24 @@ it("keeps each room's messages to itself", () =>
 
       expect((yield* mine.Recent({ limit: 10 })).map(({ body }) => body)).toEqual(["mine"])
       expect((yield* theirs.Recent({ limit: 10 })).map(({ body }) => body)).toEqual(["theirs"])
+    }),
+  ))
+
+it("relays typing frames to the room's other connections, across hibernation", () =>
+  run(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const room = yield* Room.get(RoomId.make("r7"))
+      const typist = yield* test.connect(room.ref, Presence, undefined)
+      const watcher = yield* test.connect(room.ref, Presence, undefined)
+
+      yield* test.hibernate(room.ref)
+      yield* typist.send({ typing: true })
+
+      const [seen] = yield* watcher.frames.pipe(Stream.take(1), Stream.runCollect)
+      expect(seen).toEqual({ user: "ada", typing: true })
+
+      yield* typist.close
+      yield* watcher.close
     }),
   ))
