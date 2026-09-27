@@ -1,5 +1,52 @@
-import { Effect, PrimaryKey } from "effect"
+import { Context, Duration, Effect, PrimaryKey } from "effect"
 import { type RunnerAddress, type RunnerStorage, type ShardId } from "effect/unstable/cluster"
+import type { SqlClient } from "effect/unstable/sql"
+
+/**
+ * Whether this runner still holds a shard's lock, read from the database. A
+ * runner whose lock refreshes stall keeps serving its shards in memory until
+ * it notices; singleton activations check this lease so their background work
+ * stops before another runner can take the shard.
+ */
+export class ShardLease extends Context.Service<
+  ShardLease,
+  {
+    /** How often a resident singleton rechecks its lease. */
+    readonly interval: Duration.Duration
+    readonly holds: (shardId: string) => Effect.Effect<boolean>
+  }
+>()("@durable-actors/core/runtime/topology/locks/ShardLease") {}
+
+/**
+ * The lease of table-backed shard locks. A lock counts as held only while its
+ * last refresh is younger than half the expiration, so its holder stops
+ * before the lock expires and another runner may acquire it; a healthy runner
+ * refreshes at least every third of the expiration. A failed read counts as
+ * lost.
+ */
+export const tableShardLease = ({
+  sql,
+  address,
+  expiration,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly address: RunnerAddress.RunnerAddress
+  readonly expiration: Duration.Duration
+}) => {
+  const fresh = Duration.toMillis(expiration) / 2 / 1000
+  const holder = PrimaryKey.value(address)
+
+  return ShardLease.of({
+    interval: Duration.divideUnsafe(expiration, 6),
+    holds: (shardId) =>
+      sql<{ held: number }>`SELECT 1 AS held FROM cluster_locks
+        WHERE shard_id = ${shardId} AND address = ${holder}
+          AND acquired_at >= NOW() - make_interval(secs => ${fresh})`.pipe(
+        Effect.map((rows) => rows.length > 0),
+        Effect.orElseSucceed(() => false),
+      ),
+  })
+}
 
 /**
  * Keeps Cluster from dropping a shard it has just acquired.
