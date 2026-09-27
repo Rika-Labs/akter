@@ -25,9 +25,9 @@ Commands and queries over HTTP are implemented. Feeds, streams, connections, and
 
 ```ts
 import { ActorError } from "durable-actors/client"
-import { Chat, RoomFull } from "./chat/contract.ts" // definitions and schemas only
+import { Room, RoomId } from "./room/contract.ts" // definitions and schemas only
 
-const rooms = Chat.client({
+const rooms = Room.client({
   baseUrl: "/api", // absolute, or relative to the page
   headers: () => ({ authorization: `Bearer ${token()}` }), // called for every attempt
   timeoutInMs: 10_000, // per call, retries included; default 60,000
@@ -35,9 +35,10 @@ const rooms = Chat.client({
   commandIds: "client", // or "server" to take each id from POST /command-ids
 })
 
+const lobby = rooms.get(RoomId.make("lobby"))
 const id = await rooms.commandId()
-const count = await rooms.get("lobby").Post({ text: "hi" }, { commandId: id, signal })
-const history = await rooms.get("lobby").History()
+const messageId = await lobby.Post({ body: "hi" }, { commandId: id, signal })
+const page = await lobby.History({})
 ```
 
 `X.client` returns `get(id)` for keyed actors, `get()` for singletons, and `get(id)` plus `create()` for minted ones, where `create()` mints a UUIDv7 locally. Each handle method takes its input (omitted when the member has none) and `{ signal, timeoutInMs }`, plus `commandId` for commands. Routes, key encoding, input and output codecs, and the declared-error decoder come from the definition. The entry imports no runtime, SQL, Cluster, Bun, or Node module; a test walks its import graph and builds it for the browser.

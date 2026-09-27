@@ -4,13 +4,22 @@
   "type": "module",
   "scripts": {
     "start": "bun src/main.ts",
+    "serve": "bun src/serve.ts",
     "client": "bun src/client.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "CHAT_BACKEND=pglite bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/chat/src",
+    "test:integration": "CHAT_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/chat/src"
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",
+    "drizzle-orm": "catalog:",
     "durable-actors": "workspace:*",
     "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "pg": "8.23.0",
+    "vitest": "catalog:"
   }
 }

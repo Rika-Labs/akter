@@ -204,6 +204,15 @@ export const migrations = {
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
   }),
+  // Cleanup reads each actor type's oldest receipts and events by age, and
+  // keeps a receipt while an outbox row with its id can still be redelivered;
+  // these indexes keep every cleanup batch a range read.
+  "0010_retention": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE INDEX actor_receipts_expiry ON actor_receipts (actor_type, expires_at_ms)`
+    yield* sql`CREATE INDEX actor_events_emitted ON actor_events (actor_type, emitted_at_ms)`
+    yield* sql`CREATE INDEX actor_outbox_intent ON actor_outbox (intent_id)`
+  }),
 }
 
 export const migrate = Migrator.make({})({

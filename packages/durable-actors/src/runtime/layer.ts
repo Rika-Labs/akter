@@ -47,11 +47,12 @@ import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { replayEvents } from "./events/replay.ts"
-import { checkIdentity, databaseTime, readAdmission } from "./turn/admission.ts"
+import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
-import { TurnHooks } from "./turn/hooks.ts"
+import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
+import { sweep } from "./storage/retention.ts"
 import { keepAcquiredShards } from "./topology/locks.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
@@ -106,6 +107,9 @@ export class RunnerWiring extends Context.Service<
 const encodeEntityId = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
 )
+
+/** Pause between retention sweeps. */
+const CLEANUP_INTERVAL = "1 minute"
 
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
@@ -235,7 +239,9 @@ export const layer = (options: Options) => {
 
             // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
             const deliver = Effect.suspend(() =>
-              client.Execute(request).pipe(Effect.forkIn(scope)),
+              client
+                .Execute(external ? { ...request, external } : request)
+                .pipe(Effect.forkIn(scope)),
             ).pipe(
               Effect.flatMap(Fiber.join),
               Effect.catchCause((cause) => {
@@ -324,6 +330,42 @@ export const layer = (options: Options) => {
       )
 
       yield* relay.run.pipe(Effect.forkIn(scope))
+
+      const frameworkClock = yield* FrameworkClock
+      const cleanupHooks = yield* CleanupHooks
+
+      const cleanup = Effect.suspend(() =>
+        sweep(
+          Array.from(registrations.values(), ({ name, policy }) => ({
+            actorType: name,
+            keepReceiptsMs: policy.keepReceiptsMs,
+            keepEventsMs: policy.keepEventsMs,
+            deliveryMs: policy.deliveryMs,
+          })),
+          retryWindowMs,
+        ),
+      ).pipe(
+        Effect.provideContext(services),
+        Effect.provideService(FrameworkClock, frameworkClock),
+        Effect.provideService(CleanupHooks, cleanupHooks),
+      )
+
+      // Horizons are days long, so a sweep a minute keeps up; each batch is
+      // its own short transaction, so turns never wait on a whole sweep.
+      if (cleanupHooks.periodic)
+        yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
+          Effect.andThen(
+            cleanup.pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.interrupt
+                  : Effect.logWarning("Retention cleanup failed", cause),
+              ),
+            ),
+          ),
+          Effect.forever,
+          Effect.forkIn(scope),
+        )
       const outbox = { retryWindowMs, wake: relay.wake }
 
       const databaseNow = databaseTime.pipe(
@@ -420,34 +462,48 @@ export const layer = (options: Options) => {
               })
 
             yield* allow(request, "query")
-            const sql = yield* SqlClient.SqlClient
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-            // The event head is read with state in one statement, and every replay
-            // in this query stops at it, so state and events describe one moment.
-            const rows = yield* sql<{
-              head: string | null
-              key: string | null
-              value: Uint8Array | null
-            }>`
-              SELECT g.event_sequence::text AS head, s.key, s.value
-              FROM (VALUES (1)) AS one (x)
-              LEFT JOIN actor_generations g ON g.routing_key = ${key} AND g.tenant_id = ${request.ref.tenant}
-                AND g.actor_type = ${request.ref.actor} AND g.actor_id = ${request.ref.id}
-              LEFT JOIN actor_state s ON s.routing_key = g.routing_key AND s.tenant_id = g.tenant_id
-                AND s.actor_type = g.actor_type AND s.actor_id = g.actor_id`
+            // Query reads run on the pool outside a transaction, so no
+            // statement_timeout bounds them; interrupting a read past
+            // commandTimeout cancels its statement on the server instead.
+            const outcome = yield* Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
 
-            const head = rows[0]?.head ?? "0"
-            const state: Array<readonly [string, string]> = []
+              // The event head is read with state in one statement, and every replay
+              // in this query stops at it, so state and events describe one moment.
+              const rows = yield* sql<{
+                head: string | null
+                key: string | null
+                value: Uint8Array | null
+              }>`
+                SELECT g.event_sequence::text AS head, s.key, s.value
+                FROM (VALUES (1)) AS one (x)
+                LEFT JOIN actor_generations g ON g.routing_key = ${key} AND g.tenant_id = ${request.ref.tenant}
+                  AND g.actor_type = ${request.ref.actor} AND g.actor_id = ${request.ref.id}
+                LEFT JOIN actor_state s ON s.routing_key = g.routing_key AND s.tenant_id = g.tenant_id
+                  AND s.actor_type = g.actor_type AND s.actor_id = g.actor_id`
 
-            for (const row of rows)
-              if (row.key !== null) state.push([row.key, decompress(row.value!)])
+              const head = rows[0]?.head ?? "0"
+              const state: Array<readonly [string, string]> = []
 
-            const outcome = yield* query.run(request, state, head, (tag, after) =>
-              replayEvents(request.ref, key, tag, after, BigInt(head)).pipe(
-                Effect.catchIf(SqlError.isSqlError, Effect.die),
-                Effect.provideContext(services),
-              ),
+              for (const row of rows)
+                if (row.key !== null) state.push([row.key, decompress(row.value!)])
+
+              return yield* query.run(request, state, head, (tag, after, limit) =>
+                replayEvents(request.ref, key, tag, after, BigInt(head), limit).pipe(
+                  Effect.catchIf(SqlError.isSqlError, Effect.die),
+                  Effect.provideContext(services),
+                ),
+              )
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: registration.timeoutMs,
+                orElse: () =>
+                  Effect.fail(
+                    ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
+                  ),
+              }),
             )
 
             // A failed replay read is unavailability, not a deterministic query defect.
@@ -468,6 +524,7 @@ export const layer = (options: Options) => {
         execute: (request) => dispatch(request, true),
         deliver: (request) => dispatch(request, false),
         drainOutbox: relay.drain,
+        cleanup: cleanup.pipe(Effect.orDie),
         shardId: (ref) =>
           entityId(ref).pipe(
             Effect.flatMap((id) => commandEntity(ref.actor).getShardId(EntityId.make(id))),

@@ -2,11 +2,11 @@ import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Pool } from "pg"
-import { Actor } from "../../../index.ts"
-import { Actors, Database } from "../../../runtime/index.ts"
-import { decompress } from "../../../runtime/storage/codec.ts"
-import { TurnHooks } from "../../../runtime/turn/hooks.ts"
-import { OutboxClock } from "../../../runtime/turn/outbox.ts"
+import { Actor } from "../../../../index.ts"
+import { Actors, Database } from "../../../../runtime/index.ts"
+import { decompress } from "../../../../runtime/storage/codec.ts"
+import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
+import { FrameworkClock } from "../../../../runtime/turn/admission.ts"
 
 class Moderate extends Actor.effect<Moderate>()("Moderate", {
   input: { body: Schema.String },
@@ -76,7 +76,7 @@ const runtime = Layer.unwrap(
     })
 
     // The recovering process runs past the crashed attempt's execution lease.
-    const clock = Layer.succeed(OutboxClock, {
+    const clock = Layer.succeed(FrameworkClock, {
       offsetMillis: () => (mode === "recover" ? 120_000 : 0),
     })
 
