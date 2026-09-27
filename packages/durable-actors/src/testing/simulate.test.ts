@@ -87,7 +87,7 @@ const script = (seed: string, tag = seed) =>
           expect(reply).toBe(expected.get(`tally:${name}`))
         } else {
           const payer = yield* Payer.get(`${tag}-payer`)
-          yield* sim.command(`pay ${name}`, payer.Pay({ to: name, amount }))
+          yield* sim.command(`pay ${name}`, payer.Pay({ to: name, amount }), { relays: true })
           expected.set(`wallet:${name}`, (expected.get(`wallet:${name}`) ?? 0) + amount)
         }
       }
@@ -157,6 +157,66 @@ describe("ActorTest.simulate", () => {
 
         expect(String(failure)).toContain("Simulation failed with seed broken")
         expect(String(failure)).toContain("not a command")
+      }),
+    ))
+
+  it("dies with the seed when a relayed command's crash is never reached", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const tally = yield* Tally.get("unrelayed")
+
+        const failure = yield* ActorTest.simulate(
+          { seed: "unrelayed", faults: ["relayCrash"], faultRate: 1 },
+          (sim) => sim.command("add unrelayed", tally.Add(1), { relays: true }),
+        ).pipe(Effect.exit)
+
+        expect(String(failure)).toContain("Simulation failed with seed unrelayed")
+        expect(String(failure)).toContain("beforeOutboxDelete were never reached")
+      }),
+    ))
+
+  it("draws no relay crash for a command that stages no intent", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const tally = yield* Tally.get("direct")
+
+        const report = yield* ActorTest.simulate(
+          { seed: "direct", faults: ["relayCrash"], faultRate: 1 },
+          (sim) => sim.command("add direct", tally.Add(1)),
+        )
+
+        expect(report.steps.map(({ fault }) => fault)).toEqual(["none"])
+      }),
+    ))
+
+  it("leaves no fault queued for the next run after a program fails", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const test = yield* ActorTest
+
+        const failure = yield* ActorTest.simulate(
+          { seed: "abandoned", faults: ["crashBeforeCommit"], faultRate: 1 },
+          (sim) => sim.command("fails before its call", Effect.die(new Error("program failed"))),
+        ).pipe(Effect.exit)
+
+        expect(String(failure)).toContain("Simulation failed with seed abandoned")
+        expect(yield* test.clearFaults).toEqual([])
+      }),
+    ))
+
+  it("refuses to run over faults the caller already queued", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const test = yield* ActorTest
+        yield* test.crashNext("beforeCommit")
+
+        const failure = yield* ActorTest.simulate(
+          { seed: "queued", faults: [] },
+          () => Effect.void,
+        ).pipe(Effect.exit)
+
+        expect(String(failure)).toContain("were already queued")
+        expect(yield* test.clearFaults).toEqual([])
       }),
     ))
 })

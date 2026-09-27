@@ -72,7 +72,7 @@ jobs:
       # A failure names its seed; rerun it with SIMULATION_SEEDS=1 SIMULATION_SEED_BASE=<seed>.
       - name: Simulate
         run: |
-          export SIMULATION_SEED_BASE=$(( $(date +%s) % 100000 * 10000 ))
+          export SIMULATION_SEED_BASE=$(( GITHUB_RUN_NUMBER * 10000 ))
           echo "Seeds from $SIMULATION_SEED_BASE"
           bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/simulate.test.ts --testTimeout=0 -t "exactly once"
         env:

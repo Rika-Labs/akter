@@ -1,4 +1,4 @@
-import { Cause, Config, DateTime, Duration, Effect } from "effect"
+import { Cause, Config, Duration, Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors } from "../index.ts"
 import type { TurnPoint } from "../runtime/turn/hooks.ts"
@@ -10,7 +10,7 @@ import type { ActorTest } from "./actor-test.ts"
  * - `crashAfterCommit`: the turn commits and the reply is lost, so the retry reads the receipt.
  * - `dropReply`: the caller never sees the reply and sends the same command id again.
  * - `relayCrash`: the next relay delivery dies before deleting its outbox row, so the row
- *   is redelivered once its claim lease ends.
+ *   is redelivered once its claim lease ends. Drawn only for commands marked `relays`.
  * - `clockSkew`: the framework clock jumps ahead of the database clock before the command.
  */
 export type SimulationFault =
@@ -43,8 +43,6 @@ export interface SimulationStep {
 export interface SimulationReport {
   readonly seed: string
   readonly steps: ReadonlyArray<SimulationStep>
-  /** Queued relay crashes no delivery reached before the run settled. */
-  readonly unreached: number
 }
 
 export interface Simulation {
@@ -52,10 +50,13 @@ export interface Simulation {
   /**
    * Runs one command under the seed's next fault, with a command id minted
    * for it. `effect` must be a single command call, so it commits one receipt.
+   * `relays` marks a command whose turn stages an intent, so a relay crash
+   * drawn for it must be reached by that intent's delivery.
    */
   readonly command: <A, E, R>(
     label: string,
     effect: Effect.Effect<A, E, R>,
+    options?: { readonly relays?: boolean },
   ) => Effect.Effect<A, E, R>
   /** A seeded integer in `[min, max]`. */
   readonly int: (min: number, max: number) => Effect.Effect<number>
@@ -112,19 +113,28 @@ export const simulate =
       const int = (min: number, max: number) =>
         Effect.sync(() => min + Math.floor(draw() * (max - min + 1)))
 
-      const nextFault = Effect.sync((): SimulationFault | "none" => {
-        if (options.faults.length === 0 || draw() >= rate) return "none"
+      const direct = options.faults.filter((fault) => fault !== "relayCrash")
 
-        return options.faults[Math.floor(draw() * options.faults.length)]!
-      })
+      const nextFault = (relays: boolean) =>
+        Effect.sync((): SimulationFault | "none" => {
+          const faults = relays ? options.faults : direct
+
+          if (faults.length === 0 || draw() >= rate) return "none"
+
+          return faults[Math.floor(draw() * faults.length)]!
+        })
 
       const simulation: Simulation = {
         seed: options.seed,
         int,
         pick: (values) => Effect.sync(() => values[Math.floor(draw() * values.length)]!),
-        command: <A, E1, R1>(label: string, effect: Effect.Effect<A, E1, R1>) =>
+        command: <A, E1, R1>(
+          label: string,
+          effect: Effect.Effect<A, E1, R1>,
+          commandOptions?: { readonly relays?: boolean },
+        ) =>
           Effect.gen(function* () {
-            const fault = yield* nextFault
+            const fault = yield* nextFault(commandOptions?.relays === true)
             const skewMs = fault === "clockSkew" ? Math.floor(draw() * maxSkewMs) : 0
             const commandId = yield* actors.mintCommandId.pipe(Effect.orDie)
             steps.push({ label, commandId, fault, skewMs })
@@ -146,26 +156,24 @@ export const simulate =
       const run = Effect.gen(function* () {
         yield* program(simulation)
 
-        let due = Number.POSITIVE_INFINITY
+        // A crashed delivery leaves its row claimed until its lease ends, so
+        // settling waits for every row, not only the ones due now.
+        let stored = Number.POSITIVE_INFINITY
 
-        for (let round = 0; round < SETTLE_ROUNDS && due > 0; round++) {
+        for (let round = 0; round < SETTLE_ROUNDS && stored > 0; round++) {
           yield* test.advance(settle)
-          const now = DateTime.toEpochMillis(yield* test.now)
 
           const [pending] = yield* sql<{ count: number }>`
-          SELECT count(*)::integer AS count FROM actor_outbox
-          WHERE tenant_id = ${test.tenant} AND due_at_ms <= ${now}`
+          SELECT count(*)::integer AS count FROM actor_outbox WHERE tenant_id = ${test.tenant}`
 
-          due = pending!.count
+          stored = pending!.count
         }
 
-        if (due > 0) violations.push(`${due} due outbox rows were never delivered`)
+        if (stored > 0) violations.push(`${stored} outbox rows were never delivered`)
 
         const left = yield* test.clearFaults
-        const unreached = left.filter((point) => point === "beforeOutboxDelete").length
 
-        if (left.length > unreached)
-          violations.push(`faults at ${left.join(", ")} were never reached by a turn`)
+        if (left.length > 0) violations.push(`faults at ${left.join(", ")} were never reached`)
 
         for (const step of steps) {
           const [receipts] = yield* sql<{ count: number }>`
@@ -175,11 +183,19 @@ export const simulate =
           if (receipts!.count !== 1)
             violations.push(`${step.label} (${step.commandId}) has ${receipts!.count} receipts`)
         }
-
-        return unreached
       })
 
-      const unreached = yield* run.pipe(
+      const queued = yield* test.clearFaults
+
+      if (queued.length > 0)
+        return yield* Effect.die(
+          new Error(
+            `ActorTest.simulate injects every fault itself; faults at ${queued.join(", ")} were already queued`,
+          ),
+        )
+
+      yield* run.pipe(
+        Effect.ensuring(test.clearFaults),
         Effect.catchCause((cause) =>
           Effect.die(
             new Error(
@@ -198,7 +214,7 @@ export const simulate =
           ),
         )
 
-      return { seed: options.seed, steps, unreached }
+      return { seed: options.seed, steps }
     })
 
 /** Seeds pull requests run: `0` to `19`. */
