@@ -1,0 +1,314 @@
+{
+  "schema": 2,
+  "label": "cr4-inspection-views",
+  "note": "CR.4 inspection views at 100k actors, hashed routing keys",
+  "profile": "full",
+  "startedAt": "2026-09-27T02:58:53.970Z",
+  "finishedAt": "2026-09-27T02:59:17.570Z",
+  "git": {
+    "sha": "583d074c0195af7399b8d8ca56e902f2a70e9e8b",
+    "shortSha": "583d074",
+    "branch": "feat/88-inspection-views",
+    "mainBase": "119432ec3a144d0bf118ca5869327cf022e6804e",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "3868117cc9db8009084c50e65ff35108d7366d57",
+        "parents": [
+          "932f4da4cf29263a1164cd429df60554f209609d",
+          "119432ec3a144d0bf118ca5869327cf022e6804e"
+        ]
+      },
+      {
+        "commit": "5c741fce7f5fc3630435dec1586aa4d83533ad76",
+        "parents": [
+          "eb7ed832351699bb9ac7567147b53cf87d0ad4f6",
+          "5f9292efaec48d2441eec914f5bafeb0427c89c6"
+        ]
+      },
+      {
+        "commit": "eb7ed832351699bb9ac7567147b53cf87d0ad4f6",
+        "parents": [
+          "6ace30b9b833f43603904a4e310d5bed85aa9356",
+          "717a1c1d0c8153bbf557bed8e420cafacc5a248d"
+        ]
+      },
+      {
+        "commit": "6ace30b9b833f43603904a4e310d5bed85aa9356",
+        "parents": [
+          "73c9de8abe79f64a3ae547547de51bcbd38c4ff0",
+          "21862920bd3b1686d99d24b90ebd40dd6a305e23"
+        ]
+      },
+      {
+        "commit": "1fc6fed1f7e7fcfee98a5c4ad93de6910dbaedfe",
+        "parents": [
+          "a3169d7c4e9ae6699c121088a7376d8279f56b51",
+          "658cd092f260cec649d6130da996a01d1bd20c05"
+        ]
+      },
+      {
+        "commit": "c4b925bcef2121979341d9246e664d44911de477",
+        "parents": [
+          "89981a07f44e1a795f8a25c2fae71097b71fa3c1",
+          "eefbe8584ec1612149b06fd2e571c850a1790baa"
+        ]
+      },
+      {
+        "commit": "89981a07f44e1a795f8a25c2fae71097b71fa3c1",
+        "parents": [
+          "269377887af687fd51ad1ae777eec80ac3d3d422",
+          "554587ba98022200b05ee80a91f817822d58c3f6"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "inspection-views",
+      "description": "Operator SQL through the durable inspection views at 100k actors (10k in quick): point lookups, tenant scans, and due timers.",
+      "cases": [
+        {
+          "name": "actor-by-identity",
+          "parameters": {
+            "actors": 100000,
+            "tenants": 100,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 2853,
+          "throughput": 175.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 5.701,
+            "min": 4.543,
+            "p50": 5.548,
+            "p90": 6.287,
+            "p95": 6.869,
+            "p99": 8.365,
+            "max": 21.533
+          },
+          "statementsPerOperation": 1.01,
+          "statements": null,
+          "activity": {
+            "samples": 111,
+            "connections": {
+              "idle:Client/ClientRead": 9.09,
+              "active": 0.88,
+              "idle": 0.03
+            }
+          },
+          "cpu": {
+            "client": 7.3,
+            "server": 93.8,
+            "clientMsPerOperation": 0.418,
+            "serverMsPerOperation": 5.355
+          },
+          "extra": {
+            "query": "one actor by tenant, type, and id"
+          }
+        },
+        {
+          "name": "receipts-by-routing-key",
+          "parameters": {
+            "actors": 100000,
+            "tenants": 100,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 49,
+          "throughput": 10186.1,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 0.097,
+            "min": 0.057,
+            "p50": 0.068,
+            "p90": 0.177,
+            "p95": 0.275,
+            "p99": 0.479,
+            "max": 0.684
+          },
+          "statementsPerOperation": 1,
+          "statements": null,
+          "activity": {
+            "samples": 2,
+            "connections": {
+              "idle:Client/ClientRead": 10
+            }
+          },
+          "cpu": {
+            "client": 104.4,
+            "server": 70.7,
+            "clientMsPerOperation": 0.103,
+            "serverMsPerOperation": 0.07
+          },
+          "extra": {
+            "query": "one actor's receipts, keyed by the routing key the actors view reports"
+          }
+        },
+        {
+          "name": "tenant-dead-letters",
+          "parameters": {
+            "actors": 100000,
+            "tenants": 100,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 78,
+          "throughput": 6392.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 0.156,
+            "min": 0.123,
+            "p50": 0.134,
+            "p90": 0.167,
+            "p95": 0.227,
+            "p99": 0.603,
+            "max": 1.248
+          },
+          "statementsPerOperation": 1,
+          "statements": null,
+          "activity": {
+            "samples": 4,
+            "connections": {
+              "idle:Client/ClientRead": 9.25,
+              "active": 0.5,
+              "idle": 0.25
+            }
+          },
+          "cpu": {
+            "client": 44.8,
+            "server": 92.3,
+            "clientMsPerOperation": 0.07,
+            "serverMsPerOperation": 0.145
+          },
+          "extra": {
+            "query": "a tenant's newest 20 dead letters"
+          }
+        },
+        {
+          "name": "tenant-receipt-count",
+          "parameters": {
+            "actors": 100000,
+            "tenants": 100,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 2510,
+          "throughput": 199.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 5.017,
+            "min": 3.915,
+            "p50": 4.847,
+            "p90": 5.916,
+            "p95": 6.39,
+            "p99": 6.95,
+            "max": 10.762
+          },
+          "statementsPerOperation": 1.01,
+          "statements": null,
+          "activity": {
+            "samples": 97,
+            "connections": {
+              "idle:Client/ClientRead": 9.05,
+              "active": 0.94,
+              "idle": 0.01
+            }
+          },
+          "cpu": {
+            "client": 5.8,
+            "server": 93.6,
+            "clientMsPerOperation": 0.292,
+            "serverMsPerOperation": 4.699
+          },
+          "extra": {
+            "query": "how many receipts a tenant holds"
+          }
+        },
+        {
+          "name": "next-timers",
+          "parameters": {
+            "actors": 100000,
+            "tenants": 100,
+            "workers": 1
+          },
+          "operations": 500,
+          "elapsedMs": 13002,
+          "throughput": 38.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 26.002,
+            "min": 22.949,
+            "p50": 25.337,
+            "p90": 29.238,
+            "p95": 30.57,
+            "p99": 34.209,
+            "max": 41.631
+          },
+          "statementsPerOperation": 1.05,
+          "statements": null,
+          "activity": {
+            "samples": 504,
+            "connections": {
+              "idle:Client/ClientRead": 2,
+              "active": 0.88,
+              "active:IPC/BgworkerShutdown": 0.1,
+              "active:IPC/MessageQueueReceive": 0.01,
+              "idle": 0,
+              "active:IO/DsmAllocate": 0
+            }
+          },
+          "cpu": {
+            "client": 2.6,
+            "server": 191.4,
+            "clientMsPerOperation": 0.686,
+            "serverMsPerOperation": 49.771
+          },
+          "extra": {
+            "query": "the 20 timers due soonest across every tenant"
+          }
+        }
+      ]
+    }
+  ]
+}
