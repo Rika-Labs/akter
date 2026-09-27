@@ -95,6 +95,41 @@ const json = (status: number, body: Schema.Json) =>
 
 export const clientConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "client retries with the body it first sent, even if the caller mutates the input",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          const input = { text: "a" }
+          let dropped = false
+
+          const wire = recording((sent) => {
+            if (dropped || !sent.path.endsWith("/Post")) return undefined
+            dropped = true
+            input.text = "mutated"
+
+            return "drop"
+          })
+
+          const rooms = HttpRoom.client({
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+            fetch: wire.fetch,
+          })
+
+          const before = runs.count
+
+          expect(yield* settle(() => rooms.get("mutated").Post(input))).toEqual({
+            ok: true,
+            value: 1,
+          })
+          expect(wire.commands("Post").length).toBe(2)
+          expect(runs.count - before).toBe(1)
+        }),
+      ),
+  },
+  {
     name: "client mints through /command-ids when a slow /protocol leaves no clock sample",
     run: ({ expect, environment }) =>
       environment.run(

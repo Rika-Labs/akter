@@ -517,13 +517,16 @@ export const clientOf =
         const isQuery = member.kind === "query"
         let commandId = isQuery ? undefined : call.commandId
 
-        const body = Schema.encodeUnknownEffect(Schema.toCodecJson(member.input))(
-          isVoid ? undefined : args[0],
-        ).pipe(
-          Effect.flatMap((json) =>
-            json === undefined ? Effect.succeedNone : Effect.asSome(encodeJson(json)),
+        // Encoded once at call time, so every attempt under one id sends the same bytes.
+        const body = Effect.runSyncExit(
+          Schema.encodeUnknownEffect(Schema.toCodecJson(member.input))(
+            isVoid ? undefined : args[0],
+          ).pipe(
+            Effect.flatMap((json) =>
+              json === undefined ? Effect.succeedNone : Effect.asSome(encodeJson(json)),
+            ),
+            Effect.mapError(invalid),
           ),
-          Effect.mapError(invalid),
         )
 
         const decode = outputDecoder(member)
