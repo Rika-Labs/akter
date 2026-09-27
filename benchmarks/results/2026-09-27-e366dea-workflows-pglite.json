@@ -1,0 +1,160 @@
+{
+  "schema": 2,
+  "label": "workflows",
+  "note": "M2.7 workflow step cost and resume latency",
+  "profile": "full",
+  "startedAt": "2026-09-27T16:10:59.361Z",
+  "finishedAt": "2026-09-27T16:15:00.976Z",
+  "git": {
+    "sha": "e366deab47ef7fbc1506080471737209cd02de83",
+    "shortSha": "e366dea",
+    "branch": "feat/52-workflows",
+    "mainBase": "0ba95fc3693b482602b776c47c3c34c07fc79afe",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "workflows",
+      "description": "Workflow executions to completion, sequentially: no steps, four activity steps, and a 50 ms durable sleep resumed by the relay; extra holds database-clock start-to-finish times.",
+      "cases": [
+        {
+          "name": "steps-0",
+          "parameters": {
+            "workers": 1,
+            "steps": 0,
+            "sleepMs": 0
+          },
+          "operations": 500,
+          "elapsedMs": 5436,
+          "throughput": 92,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 10.867,
+            "min": 7.953,
+            "p50": 10.734,
+            "p90": 12.949,
+            "p95": 14.722,
+            "p99": 20.425,
+            "max": 24.306
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 139.4,
+            "server": null,
+            "clientMsPerOperation": 15.158,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "lifetimeP50Ms": 5,
+            "lifetimeP95Ms": 7,
+            "lifetimeP99Ms": 12
+          }
+        },
+        {
+          "name": "steps-4",
+          "parameters": {
+            "workers": 1,
+            "steps": 4,
+            "sleepMs": 0
+          },
+          "operations": 500,
+          "elapsedMs": 11910,
+          "throughput": 42,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 500,
+            "mean": 23.817,
+            "min": 19.833,
+            "p50": 22.927,
+            "p90": 28.081,
+            "p95": 30.306,
+            "p99": 33.454,
+            "max": 54.706
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 114.6,
+            "server": null,
+            "clientMsPerOperation": 27.287,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "lifetimeP50Ms": 18,
+            "lifetimeP95Ms": 23,
+            "lifetimeP99Ms": 26
+          }
+        },
+        {
+          "name": "sleep-50ms",
+          "parameters": {
+            "workers": 1,
+            "steps": 0,
+            "sleepMs": 50
+          },
+          "operations": 200,
+          "elapsedMs": 200120,
+          "throughput": 1,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 200,
+            "mean": 1000.588,
+            "min": 901.686,
+            "p50": 1000.087,
+            "p90": 1082.954,
+            "p95": 1093.105,
+            "p99": 1102.243,
+            "max": 1103.875
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 22.5,
+            "server": null,
+            "clientMsPerOperation": 224.891,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "lifetimeP50Ms": 995,
+            "lifetimeP95Ms": 1088,
+            "lifetimeP99Ms": 1094,
+            "resumeP50Ms": 945,
+            "resumeP95Ms": 1038,
+            "resumeP99Ms": 1044
+          }
+        }
+      ]
+    }
+  ]
+}
