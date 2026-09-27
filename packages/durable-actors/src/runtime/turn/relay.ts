@@ -586,25 +586,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const last = final === true || attempt >= registered.attempts
     const { baseMs, maxMs } = registered.backoff
 
-    const record = Effect.gen(function* () {
-      yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
-          due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
-        WHERE ${attemptRow(attempt)}`
-    })
+    // The outcome is recorded first, so a failed dead-letter transaction is
+    // retried with this attempt's cause rather than the claim's.
+    yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
+        due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
+      WHERE ${attemptRow(attempt)}`
 
-    // A last attempt's outcome commits with its dead letter, since recorded
-    // alone its backoff could come due and start another call first. If the
-    // letter fails, the outcome is still recorded for the next claim to use.
-    if (last)
-      return yield* sql
-        .withTransaction(Effect.andThen(record, exhaust(attempt, cause, ambiguous)))
-        .pipe(
-          Effect.tapCause((failure) =>
-            Cause.hasInterruptsOnly(failure) ? Effect.void : Effect.ignore(record),
-          ),
-        )
-
-    yield* record
+    if (last) return yield* exhaust(attempt, cause, ambiguous)
 
     yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
       Effect.annotateLogs({ attempt, ambiguous }),
