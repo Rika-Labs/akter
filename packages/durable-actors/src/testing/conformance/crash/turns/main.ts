@@ -1,10 +1,10 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor } from "../../../index.ts"
-import { Actors, Database } from "../../../runtime/index.ts"
-import { decompress } from "../../../runtime/storage/codec.ts"
-import { TurnHooks } from "../../../runtime/turn/hooks.ts"
+import { Actor } from "../../../../index.ts"
+import { Actors, Database } from "../../../../runtime/index.ts"
+import { decompress } from "../../../../runtime/storage/codec.ts"
+import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
 
 const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
 
