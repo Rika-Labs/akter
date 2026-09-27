@@ -1,7 +1,7 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Effect, Layer, ManagedRuntime, Schema } from "effect"
 import { afterAll, describe, expect, it } from "vitest"
-import { Actor } from "../index.ts"
+import { Actor, Intent } from "../index.ts"
 import { ActorTest } from "./actor-test.ts"
 import { type SimulationFault, simulationSeeds } from "./simulate.ts"
 
@@ -24,7 +24,11 @@ const Pay = Actor.command("Pay", {
   input: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
 })
 
-const Payer = Actor.make("SimPayer", { key: Schema.String, api: { Pay } })
+const PayLater = Actor.command("PayLater", {
+  input: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
+})
+
+const Payer = Actor.make("SimPayer", { key: Schema.String, api: { Pay, PayLater } })
 
 /** Handler runs, including runs whose turn rolled back. */
 const runs = { adds: 0 }
@@ -53,6 +57,9 @@ const live = Layer.mergeAll(
     Effect.succeed({
       Pay: Effect.fnUntraced(function* ({ to, amount }) {
         yield* (yield* Wallet.intents(to)).Credit(amount)
+      }),
+      PayLater: Effect.fnUntraced(function* ({ to, amount }) {
+        yield* (yield* Wallet.intents(to)).Credit(amount).pipe(Intent.after("1 day"))
       }),
     }),
   ),
@@ -186,6 +193,21 @@ describe("ActorTest.simulate", () => {
         )
 
         expect(report.steps.map(({ fault }) => fault)).toEqual(["none"])
+      }),
+    ))
+
+  it("leaves a future timer the program scheduled in the outbox", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const payer = yield* Payer.get("later-payer")
+        const wallet = yield* Wallet.get("later")
+
+        const report = yield* ActorTest.simulate({ seed: "later", faults: [] }, (sim) =>
+          sim.command("pay later", payer.PayLater({ to: "later", amount: 5 })),
+        )
+
+        expect(report.steps).toHaveLength(1)
+        expect((yield* (yield* ActorTest).inspect(wallet.ref)).state).not.toEqual({ total: 5 })
       }),
     ))
 
