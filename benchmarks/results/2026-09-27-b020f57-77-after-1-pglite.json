@@ -1,0 +1,182 @@
+{
+  "schema": 2,
+  "label": "77-after-1",
+  "note": "#77 after: UNION ALL query read, round 1 of 3, alternating with 77-before",
+  "profile": "full",
+  "startedAt": "2026-09-27T15:37:18.785Z",
+  "finishedAt": "2026-09-27T15:37:52.367Z",
+  "git": {
+    "sha": "b020f574cc0964336a4b3e0a4f9c4bcfb6457432",
+    "shortSha": "b020f57",
+    "branch": "perf/77-read-path",
+    "mainBase": "0ba95fc3693b482602b776c47c3c34c07fc79afe",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "query-latency",
+      "description": "Query handler reads of committed state: sequential on one actor, then 64 concurrent callers over 1k actors.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 1620,
+          "throughput": 1852.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 0.538,
+            "min": 0.441,
+            "p50": 0.515,
+            "p90": 0.624,
+            "p95": 0.668,
+            "p99": 0.82,
+            "max": 2.491
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 172.7,
+            "server": null,
+            "clientMsPerOperation": 0.933,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64
+          },
+          "operations": 18399,
+          "elapsedMs": 10029,
+          "throughput": 1834.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 18399,
+            "mean": 34.831,
+            "min": 2.388,
+            "p50": 33.925,
+            "p90": 37.91,
+            "p95": 39.174,
+            "p99": 42.363,
+            "max": 88.815
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 112.4,
+            "server": null,
+            "clientMsPerOperation": 0.612,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        }
+      ]
+    },
+    {
+      "name": "receipt-replay",
+      "description": "Same-command-id retries of committed commands: sequential replay latency, then 64 concurrent replayers.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "commands": 1000,
+            "actors": 100,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 750,
+          "throughput": 1332.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 0.749,
+            "min": 0.678,
+            "p50": 0.74,
+            "p90": 0.777,
+            "p95": 0.806,
+            "p99": 0.96,
+            "max": 2.416
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 102.6,
+            "server": null,
+            "clientMsPerOperation": 0.77,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "commands": 1000,
+            "actors": 100,
+            "workers": 64
+          },
+          "operations": 15296,
+          "elapsedMs": 10033,
+          "throughput": 1524.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 15296,
+            "mean": 41.953,
+            "min": 29.018,
+            "p50": 40.916,
+            "p90": 44.643,
+            "p95": 45.768,
+            "p99": 50.27,
+            "max": 107.313
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 107.1,
+            "server": null,
+            "clientMsPerOperation": 0.703,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}
