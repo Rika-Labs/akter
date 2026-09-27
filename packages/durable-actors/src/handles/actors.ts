@@ -4,6 +4,7 @@ import { Context, Effect, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { ConnectionCommands } from "../identity/command.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
@@ -119,6 +120,8 @@ export interface ConnectionInput {
   readonly session: string | undefined
   readonly connections: ConnectionLister
   readonly events: EventReader
+  /** Present for open and frame phases, so command calls get redelivery-stable ids. */
+  readonly commands?: ConnectionCommands | undefined
 }
 
 /** What a connection handler leaves to write and send once it returns. */

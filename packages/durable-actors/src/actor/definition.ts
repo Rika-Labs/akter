@@ -60,7 +60,11 @@ import {
   principal,
   type System,
 } from "../identity/caller.ts"
-import { CurrentCommandId } from "../identity/command.ts"
+import {
+  CurrentCommandId,
+  CurrentConnectionCommands,
+  connectionCommandId,
+} from "../identity/command.ts"
 import { type AnyBlob, isBlob } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
 import type {
@@ -664,8 +668,18 @@ const make = <
 
               const identify = lock.withPermit(
                 Effect.gen(function* () {
-                  if (identity === undefined)
-                    identity = (yield* CurrentCommandId) ?? (yield* actors.mintCommandId)
+                  if (identity === undefined) {
+                    const connectionCommands = yield* CurrentConnectionCommands
+
+                    identity =
+                      (yield* CurrentCommandId) ??
+                      (connectionCommands === undefined
+                        ? yield* actors.mintCommandId
+                        : yield* connectionCommands(
+                            `${ref.tenant}\u0000${ref.actor}\u0000${ref.id}`,
+                            member.tag,
+                          ))
+                  }
 
                   return identity
                 }),
@@ -847,6 +861,15 @@ const make = <
           changed = true
         })
 
+        let calls = 0
+        const commands = input.commands
+
+        const commandIds =
+          commands === undefined
+            ? undefined
+            : (target: string, command: string) =>
+                connectionCommandId(commands, calls++, target, command)
+
         const context: ConnectionContext<State, Event, Connections["server"]["Type"], SessionOf> = {
           id: input.ref.id,
           ref: input.ref,
@@ -973,6 +996,7 @@ const make = <
           ),
           Effect.ensuring(Effect.sync(() => (open = false))),
           Effect.provideContext(Context.add(services, Connection, context)),
+          Effect.provideService(CurrentConnectionCommands, commandIds),
         )
       }),
     }

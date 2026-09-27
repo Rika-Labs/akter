@@ -233,6 +233,7 @@ export const layer = (options: Options) => {
         return {
           deliveryMs: registration.policy.deliveryMs,
           reauthorizeMs: registration.policy.reauthorizeMs,
+          retryWindowMs,
           placement: registration.placement,
           routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
           hasResync: (member) => registration.connections.get(member)?.hasResync ?? false,

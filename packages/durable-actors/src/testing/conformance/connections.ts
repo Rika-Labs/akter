@@ -58,6 +58,8 @@ export const connectionsLayer = Room.toLayer(
 
         if (name === "mallory") return yield* Banned.make({ name })
 
+        if (name === "leaver") return yield* conn.close
+
         yield* conn.session.set({ name, frames: 0 })
         yield* conn.send(Hello.make({ name, resumed: conn.resumed, frames: 0 }))
       }),
@@ -307,6 +309,52 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             Effect.timeout("5 seconds"),
             Effect.orDie,
           )
+        }),
+      ),
+  },
+  {
+    name: "a connection whose row its owner dropped ends with ServerClosed and resync at the holder's liveness check",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-excluded")
+          yield* next(connection)
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`DELETE FROM actor_connections WHERE tenant_id = ${room.ref.tenant}
+            AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id}`.pipe(Effect.orDie)
+          yield* test.advance("11 seconds")
+          const closed = reasonOf(yield* endOf(connection))
+          expect(Schema.is(SessionEnded)(closed)).toBe(true)
+          expect(closed).toMatchObject({ cause: "ServerClosed", resync: true })
+        }),
+      ),
+  },
+  {
+    name: "an open handler that closes its connection leaves it ended with ServerClosed",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-leaver", "leaver")
+          const closed = reasonOf(yield* endOf(connection))
+          expect(Schema.is(SessionEnded)(closed)).toBe(true)
+          expect(closed).toMatchObject({ cause: "ServerClosed", resync: false })
+          expect(yield* rows(room.ref)).toEqual([])
+        }),
+      ),
+  },
+  {
+    name: "a frame queued after the reauthorization bound never reaches its handler",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-lapsed")
+          yield* next(connection)
+          yield* test.advance("61 seconds")
+          yield* connection.send(Say.make({ text: "late" })).pipe(Effect.ignore)
+          expect(reasonOf(yield* endOf(connection))).toMatchObject(
+            Unauthorized.make({ code: "reauthorization_unavailable" }),
+          )
+          expect((yield* test.inspect(room.ref)).state).not.toMatchObject({ posts: 1 })
         }),
       ),
   },

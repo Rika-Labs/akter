@@ -10,6 +10,7 @@ import {
   type Registration,
 } from "../../handles/actors.ts"
 import { type ActorRef, Caller } from "../../identity/caller.ts"
+import type { ConnectionCommands } from "../../identity/command.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { type ActivationCache, emptyActivationCache } from "../turn/execute.ts"
@@ -61,6 +62,8 @@ export interface Activation {
   through: string
   readonly channels: Map<string, Channel>
   readonly flush: Semaphore.Semaphore
+  /** Serializes the first load of `rows`, which opens may race to start. */
+  readonly loading: Semaphore.Semaphore
   readonly locks: Map<string, Semaphore.Semaphore>
   /** Connections this activation opened itself; every other one is resumed. */
   readonly opened: Set<string>
@@ -124,6 +127,7 @@ export const activationOwner = ({
           through: "0",
           channels: new Map(),
           flush: Semaphore.makeUnsafe(1),
+          loading: Semaphore.makeUnsafe(1),
           locks: new Map(),
           opened: new Set(),
           keptAwake: false,
@@ -264,8 +268,13 @@ export const activationOwner = ({
 
   /** Loads the actor's connection rows once per activation, excluding holders that are gone. */
   const load = (activation: Activation) =>
+    activation.rows !== undefined || !hasConnections
+      ? Effect.void
+      : activation.loading.withPermit(loadOnce(activation))
+
+  const loadOnce = (activation: Activation) =>
     Effect.gen(function* () {
-      if (activation.rows !== undefined || !hasConnections) return
+      if (activation.rows !== undefined) return
       const sql = yield* SqlClient.SqlClient
       const actor = yield* where(activation)
 
@@ -440,7 +449,12 @@ export const activationOwner = ({
         Effect.provideService(SqlClient.SqlClient, sql),
       )
 
-  const run = (activation: Activation, row: Omit<Row, "frameSeq">, phase: ConnectionPhase) =>
+  const run = (
+    activation: Activation,
+    row: Omit<Row, "frameSeq">,
+    phase: ConnectionPhase,
+    commands?: ConnectionCommands,
+  ) =>
     Effect.gen(function* () {
       const connection = registration.connections.get(row.member)!
       const sql = yield* SqlClient.SqlClient
@@ -457,6 +471,7 @@ export const activationOwner = ({
           session: row.session,
           connections: list(activation),
           events: events(activation, sql),
+          commands,
         },
         phase,
       )
@@ -498,6 +513,7 @@ export const activationOwner = ({
       readonly member: string
       readonly caller: Caller
       readonly params: string
+      readonly commands: ConnectionCommands
     },
   ) =>
     lockOf(activation, request.connectionId).withPermit(
@@ -546,6 +562,7 @@ export const activationOwner = ({
           activation,
           row,
           ConnectionPhase.cases.Open.make({ params: request.params }),
+          request.commands,
         ).pipe(
           Effect.catchDefect((cause) =>
             Effect.gen(function* () {
@@ -634,7 +651,11 @@ export const activationOwner = ({
 
   const frame = (
     activation: Activation,
-    request: Address & { readonly seq: number; readonly frame: string },
+    request: Address & {
+      readonly seq: number
+      readonly frame: string
+      readonly commands: ConnectionCommands
+    },
   ) =>
     lockOf(activation, request.connectionId).withPermit(
       Effect.gen(function* () {
@@ -653,6 +674,7 @@ export const activationOwner = ({
             activation,
             row,
             ConnectionPhase.cases.Frame.make({ frame: request.frame }),
+            request.commands,
           ).pipe(Effect.catch(() => Effect.die(new Error("A frame handler cannot fail"))))
 
           yield* checkSession(result)

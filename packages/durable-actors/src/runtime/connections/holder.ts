@@ -17,6 +17,7 @@ import {
 import { SqlClient } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
+import { type ConnectionCommands, connectionSecret } from "../../identity/command.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import { ClientMessage, type Deliver, type Delivered, HolderItem } from "./protocol.ts"
 import type { Transport } from "./transport.ts"
@@ -45,6 +46,10 @@ export const RESYNC_WINDOW_MS = 300_000
 const TICK = "100 millis"
 
 const OWNER_CHECK_MS = 1_000
+
+const LIVENESS_MS = 10_000
+
+const COMMAND_SKEW_MS = 1_000
 
 const utf8 = new TextEncoder()
 
@@ -81,6 +86,7 @@ export interface OwnerChannel {
       readonly member: string
       readonly caller: Caller
       readonly params: string
+      readonly commands: ConnectionCommands
     },
   ) => Effect.Effect<
     | ({ readonly _tag: "Opened"; readonly baseline: string } & Owner)
@@ -88,7 +94,11 @@ export interface OwnerChannel {
     ActorError
   >
   readonly frame: (
-    request: Address & { readonly seq: number; readonly frame: string },
+    request: Address & {
+      readonly seq: number
+      readonly frame: string
+      readonly commands: ConnectionCommands
+    },
   ) => Effect.Effect<
     | ({ readonly _tag: "Acked" } & Owner)
     | { readonly _tag: "Closed"; readonly ended: SessionEnded },
@@ -110,6 +120,7 @@ export interface OwnerChannel {
 export interface HeldActorType {
   readonly deliveryMs: number
   readonly reauthorizeMs: number
+  readonly retryWindowMs: number
   readonly placement: "tenant" | "actor"
   readonly hasResync: (member: string) => boolean
   readonly channel: OwnerChannel
@@ -135,7 +146,8 @@ interface Held {
   readonly caller: Caller
   readonly type: HeldActorType
   readonly outbound: Queue.Queue<ClientMessage, ActorError | Cause.Done>
-  readonly inbound: Array<string>
+  readonly secret: string
+  readonly inbound: Array<{ readonly frame: string; readonly issuedAt: number }>
   readonly wake: Queue.Queue<void>
   open: boolean
   ended: boolean
@@ -193,6 +205,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
   const actors = new Map<string, HeldActor>()
   const held = new Map<string, Held>()
   let heldBytes = 0
+  let lastLiveness = 0
+  let checkingLiveness = false
 
   const now = Effect.map(Clock.currentTimeMillis, (millis) => millis + clock.offsetMillis())
 
@@ -444,6 +458,29 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       }),
     )
 
+  const authorizedUntil = (connection: Held) =>
+    connection.lastAuthorized + connection.type.reauthorizeMs
+
+  const unauthorized = ActorError.make({
+    reason: Unauthorized.make({ code: "reauthorization_unavailable" }),
+  })
+
+  // Nothing reaches the owner once the connection's authorization has lapsed.
+  const expired = (connection: Held) =>
+    Effect.gen(function* () {
+      if ((yield* now) < authorizedUntil(connection)) return false
+      yield* end(connection, unauthorized, true)
+
+      return true
+    })
+
+  const commandsOf = (connection: Held, seq: number, issuedAt: number): ConnectionCommands => ({
+    secret: connection.secret,
+    seq,
+    issuedAt,
+    expiresAt: issuedAt + connection.type.retryWindowMs,
+  })
+
   // Delivers a connection's inbound frames one at a time, after any pending resync.
   const inboundLoop = (connection: Held) =>
     Effect.gen(function* () {
@@ -451,12 +488,13 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         const pending = connection.resync
 
         if (pending !== undefined && !pending.sent) {
+          if (yield* expired(connection)) return
           pending.sent = true
 
           const answer = yield* retrying(
             connection,
             connection.type.channel.resync({ ...address(connection), after: pending.after }),
-            Math.max(0, pending.deadline - (yield* now)),
+            Math.max(0, Math.min(pending.deadline, authorizedUntil(connection)) - (yield* now)),
           ).pipe(Effect.exit)
 
           if (connection.ended) return
@@ -488,16 +526,23 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           continue
         }
 
-        const frame = connection.inbound.shift()!
+        if (yield* expired(connection)) return
+        const { frame, issuedAt } = connection.inbound.shift()!
         const bytes = utf8.encode(frame).byteLength
         connection.inBytes -= bytes
         heldBytes -= bytes
         connection.nextSeq += 1
+        const seq = connection.nextSeq
 
         const answer = yield* retrying(
           connection,
-          connection.type.channel.frame({ ...address(connection), seq: connection.nextSeq, frame }),
-          connection.type.deliveryMs,
+          connection.type.channel.frame({
+            ...address(connection),
+            seq,
+            frame,
+            commands: commandsOf(connection, seq, issuedAt),
+          }),
+          Math.min(connection.type.deliveryMs, authorizedUntil(connection) - (yield* now)),
         ).pipe(Effect.exit)
 
         if (connection.ended) return
@@ -549,6 +594,24 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         )
     })
 
+  // An owner that could not reach this holder dropped the rows of the
+  // connections it held; each such connection ends so its client reconnects.
+  const liveness = (at: number) =>
+    Effect.gen(function* () {
+      const transport = options.transport()
+      const checked = [...held.values()].filter((connection) => connection.open)
+
+      const rows = yield* sql<{ connection_id: string }>`
+        SELECT connection_id FROM actor_connections
+        WHERE bucket >= 0 AND holder = ${transport.holder} AND holder_epoch = ${transport.epoch}`
+
+      lastLiveness = at
+      const present = new Set(rows.map((row) => row.connection_id))
+
+      for (const connection of checked)
+        if (!present.has(connection.id)) yield* end(connection, ended("ServerClosed", true), false)
+    }).pipe(Effect.catchCause((cause) => Effect.logWarning("Holder liveness check failed", cause)))
+
   // Reauthorization, resync deadlines, and owner liveness, checked on one clock.
   const tick = Effect.gen(function* () {
     const at = yield* now
@@ -580,6 +643,19 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     }
 
     const transport = options.transport()
+
+    const every = Math.min(
+      LIVENESS_MS,
+      ...[...held.values()].map((connection) => connection.type.reauthorizeMs),
+    )
+
+    if (!checkingLiveness && held.size > 0 && at - lastLiveness >= every) {
+      checkingLiveness = true
+      yield* liveness(at).pipe(
+        Effect.ensuring(Effect.sync(() => (checkingLiveness = false))),
+        Effect.forkIn(scope),
+      )
+    }
 
     for (const actor of actors.values()) {
       if (actor.sealed || actor.owner === "" || at - actor.lastCheck < OWNER_CHECK_MS) continue
@@ -635,6 +711,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       caller: request.caller,
       type,
       outbound: yield* Queue.unbounded<ClientMessage, ActorError | Cause.Done>(),
+      secret: connectionSecret(yield* crypto.randomBytes(32).pipe(Effect.orDie)),
       inbound: [],
       wake: yield* Queue.sliding<void>(1),
       open: false,
@@ -662,6 +739,12 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         member: request.member,
         caller: request.caller,
         params: request.params,
+        commands: {
+          secret: connection.secret,
+          seq: 0,
+          issuedAt: (yield* now) - COMMAND_SKEW_MS,
+          expiresAt: (yield* now) - COMMAND_SKEW_MS + type.retryWindowMs,
+        },
       }),
       type.deliveryMs,
     ).pipe(
@@ -680,8 +763,12 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     }
 
     yield* observe(actor, answer)
-    connection.open = true
-    connection.loop = yield* inboundLoop(connection).pipe(Effect.forkIn(scope))
+
+    // An open handler that closed the connection leaves it already ended with `ServerClosed`.
+    if (!connection.ended) {
+      connection.open = true
+      connection.loop = yield* inboundLoop(connection).pipe(Effect.forkIn(scope))
+    }
 
     const held_: HeldConnection = {
       connectionId: connection.id,
@@ -700,13 +787,17 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           if (heldBytes + bytes > MAX_HELD_BYTES)
             return yield* end(connection, ended("SlowConsumer", true), true)
 
-          connection.inbound.push(frame)
+          connection.inbound.push({ frame, issuedAt: (yield* now) - COMMAND_SKEW_MS })
           connection.inBytes += bytes
           heldBytes += bytes
           yield* Queue.offer(connection.wake, undefined)
         }),
       resyncDone: Effect.gen(function* () {
-        if (connection.resync === undefined) return
+        const pending = connection.resync
+
+        // An acknowledgment before the member's replay finished is ignored.
+        if (pending === undefined || (type.hasResync(connection.member) && !pending.replayed))
+          return
         connection.resync = undefined
         yield* Queue.offer(connection.wake, undefined)
       }),

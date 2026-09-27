@@ -85,6 +85,13 @@ export const ConnectionAddress = {
   holderEpoch: Schema.String,
 }
 
+const Commands = Schema.Struct({
+  secret: Schema.String,
+  seq: Schema.Finite,
+  issuedAt: Schema.Finite,
+  expiresAt: Schema.Finite,
+})
+
 /** The activation that answered: its fencing generation and its runner's holder identity. */
 const OwnerIdentity = {
   generation: Schema.String,
@@ -116,12 +123,18 @@ export const connectionsEntity = (name: string) =>
         member: Schema.String,
         caller: Caller,
         params: Schema.String,
+        commands: Commands,
       },
       success: Opened,
       error: ActorError,
     }),
     Rpc.make("Frame", {
-      payload: { ...ConnectionAddress, seq: Schema.Finite, frame: Schema.String },
+      payload: {
+        ...ConnectionAddress,
+        seq: Schema.Finite,
+        frame: Schema.String,
+        commands: Commands,
+      },
       success: Acked,
       error: ActorError,
     }),
