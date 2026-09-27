@@ -174,8 +174,9 @@ export const activationOwner = ({
       const sql = yield* SqlClient.SqlClient
       const actor = yield* where(activation)
 
-      for (const id of ids) activation.rows?.delete(id)
       yield* sql`DELETE FROM actor_connections WHERE ${actor} AND connection_id IN ${sql.in(ids)}`
+
+      for (const id of ids) activation.rows?.delete(id)
       const holder = activation.keptAwake
 
       if (holder !== undefined && (activation.rows?.size ?? 0) === 0) {
@@ -782,12 +783,16 @@ export const activationOwner = ({
             const written = yield* sql<{ connection_id: string }>`
               UPDATE actor_connections c SET session = ${result.session === undefined ? null : compress(result.session)},
                 frame_seq = ${request.seq}
-              FROM actor_generations g
-              WHERE c.routing_key = ${activation.key} AND c.tenant_id = ${activation.ref.tenant}
-                AND c.actor_type = ${activation.ref.actor} AND c.actor_id = ${activation.ref.id}
+              FROM (
+                SELECT routing_key, tenant_id, actor_type, actor_id FROM actor_generations
+                WHERE routing_key = ${activation.key} AND tenant_id = ${activation.ref.tenant}
+                  AND actor_type = ${activation.ref.actor} AND actor_id = ${activation.ref.id}
+                  AND generation = ${activation.cache.generation!}
+                FOR SHARE
+              ) g
+              WHERE c.routing_key = g.routing_key AND c.tenant_id = g.tenant_id
+                AND c.actor_type = g.actor_type AND c.actor_id = g.actor_id
                 AND c.connection_id = ${request.connectionId} AND c.frame_seq < ${request.seq}
-                AND g.routing_key = c.routing_key AND g.tenant_id = c.tenant_id AND g.actor_type = c.actor_type
-                AND g.actor_id = c.actor_id AND g.generation = ${activation.cache.generation!}
               RETURNING c.connection_id`
 
             if (written.length === 0) {
@@ -861,7 +866,7 @@ export const activationOwner = ({
 
   const resync = (
     activation: Activation,
-    request: Address & { readonly after?: string | undefined },
+    request: Address & { readonly after?: string | undefined; readonly authorizedUntil: number },
   ) =>
     withLock(
       activation,
@@ -872,6 +877,15 @@ export const activationOwner = ({
         const row = owned(activation, request)
 
         if (row === undefined) return { _tag: "Closed" as const, ended: ended("OwnerLost", true) }
+
+        const clock = yield* FrameworkClock
+
+        if ((yield* Clock.currentTimeMillis) + clock.offsetMillis() >= request.authorizedUntil) {
+          yield* dropRows(activation, [request.connectionId])
+          yield* setKeepAwake(activation)
+
+          return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
+        }
 
         if (!registration.connections.get(row.member)!.hasResync)
           return { _tag: "Replayed" as const, ...identity(activation) }
@@ -889,6 +903,13 @@ export const activationOwner = ({
             frames: result.sends,
             replay: true,
           })
+
+          if (result.close) {
+            yield* dropRows(activation, [request.connectionId])
+            yield* setKeepAwake(activation)
+
+            return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
+          }
 
           return { _tag: "Replayed" as const, ...identity(activation) }
         }).pipe(Effect.catchDefect(closeOnDefect(activation, request.connectionId)))

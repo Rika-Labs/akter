@@ -145,7 +145,11 @@ export const connectionsEntity = (name: string) =>
       error: ActorError,
     }),
     Rpc.make("Resync", {
-      payload: { ...ConnectionAddress, after: Schema.optional(Schema.String) },
+      payload: {
+        ...ConnectionAddress,
+        after: Schema.optional(Schema.String),
+        authorizedUntil: Schema.Finite,
+      },
       success: Replayed,
       error: ActorError,
     }),

@@ -112,7 +112,7 @@ export interface OwnerChannel {
     request: Address & { readonly cause: SessionEnded },
   ) => Effect.Effect<void, ActorError>
   readonly resync: (
-    request: Address & { readonly after?: string | undefined },
+    request: Address & { readonly after?: string | undefined; readonly authorizedUntil: number },
   ) => Effect.Effect<
     | ({ readonly _tag: "Replayed" } & Owner)
     | { readonly _tag: "Closed"; readonly ended: SessionEnded },
@@ -551,7 +551,11 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
           const answer = yield* retrying(
             connection,
-            connection.type.channel.resync({ ...address(connection), after: pending.after }),
+            connection.type.channel.resync({
+              ...address(connection),
+              after: pending.after,
+              authorizedUntil: authorizedUntil(connection),
+            }),
             Math.max(0, Math.min(authorizedUntil(connection), pending.deadline) - (yield* now)),
           ).pipe(Effect.exit)
 
@@ -648,7 +652,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
       if (connection.ended) return
 
-      if (Exit.isSuccess(allowed) && allowed.value) connection.lastAuthorized = at
+      // An answer that arrives past the bound cannot extend it; the session already lapsed.
+      if (Exit.isSuccess(allowed) && allowed.value && (yield* now) >= authorizedUntil(connection))
+        yield* end(connection, unauthorized, true)
+      else if (Exit.isSuccess(allowed) && allowed.value) connection.lastAuthorized = at
       else if (Exit.isSuccess(allowed))
         yield* end(
           connection,

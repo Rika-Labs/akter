@@ -99,6 +99,9 @@ export const connectionsLayer = Room.toLayer(
       }),
       resync: Effect.fnUntraced(function* ({ after }: { readonly after: string | undefined }) {
         const conn = yield* Room.Connection
+        const session = yield* conn.session.get
+
+        if (Option.isSome(session) && session.value.name === "quitter") return yield* conn.close
 
         for (const entry of yield* conn.events(Said, { after }).pipe(Effect.orDie))
           yield* conn.send(entry)
@@ -478,6 +481,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const owner = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" }
           const resyncs: Array<string | undefined> = []
           const windows: Array<number> = []
+          const bounds: Array<number> = []
           let opens = 0
           let ticks = 0
 
@@ -517,6 +521,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
               resync: (request) =>
                 Effect.sync(() => {
                   resyncs.push(request.after)
+                  bounds.push(request.authorizedUntil)
 
                   return { _tag: "Replayed" as const, ...owner }
                 }),
@@ -562,8 +567,92 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(resync?._tag).toBe("Resync")
           expect(resync?._tag === "Resync" ? resync.after : undefined).toBe("5")
           expect(resyncs).toEqual(["5"])
+          // The resync request carries the session's authorization bound, like a frame.
+          expect(bounds.length === 1 && bounds[0]! > 0).toBe(true)
           yield* held.close
           yield* earlier.close
+        }),
+      ),
+  },
+  {
+    name: "an authorization check that answers after the session's bound ends the session",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-late-check")
+          yield* next(connection)
+
+          const sql = yield* SqlClient.SqlClient
+          const owner = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" }
+          let offset = 0
+
+          const type: HeldActorType = {
+            deliveryMs: 1_000,
+            takeoverMs: 5_000,
+            reauthorizeMs: 1_000,
+            retryWindowMs: 60_000,
+            placement: "actor",
+            hasResync: () => false,
+            hasMember: () => true,
+            routingKey: () => 0n,
+            channel: {
+              // The owner's row, so the holder's liveness check keeps the session.
+              open: (request) =>
+                sql`
+                  INSERT INTO actor_connections (
+                    routing_key, connection_id, bucket, tenant_id, actor_type, actor_id, member,
+                    holder, holder_epoch, caller, session, opened_at_ms, opened_through
+                  )
+                  SELECT routing_key, ${request.connectionId}, bucket, tenant_id, actor_type, actor_id,
+                    member, ${request.holder}, ${request.holderEpoch}, caller, NULL, opened_at_ms, 0
+                  FROM actor_connections WHERE connection_id = ${connection.connectionId}`.pipe(
+                  Effect.orDie,
+                  Effect.as({ _tag: "Opened" as const, ...owner, baseline: "0" }),
+                ),
+              frame: () => Effect.die(new Error("No frame is sent")),
+              close: () => Effect.void,
+              resync: () => Effect.die(new Error("No owner is lost")),
+            },
+          }
+
+          const holder = yield* connectionHolder({
+            transport: () => ({
+              holder: "late-holder",
+              epoch: "late-epoch",
+              deliver: () => Effect.die(new Error("No owner delivers")),
+              ping: () => Effect.succeed(true),
+            }),
+            actorType: () => type,
+            authorize: (request) =>
+              Effect.sync(() => {
+                // The check started inside the bound and answers after it.
+                if (request.kind === "reauthorize") offset += 700
+
+                return true
+              }),
+          }).pipe(Effect.provideService(FrameworkClock, { offsetMillis: () => offset }))
+
+          const held = yield* holder.open({
+            ref: room.ref,
+            member: Live.tag,
+            caller: System.make({ source: "actor" }),
+            params: "{}",
+          })
+
+          offset = 600
+
+          const exit = yield* held.messages.pipe(
+            Stream.runDrain,
+            Effect.exit,
+            Effect.timeout("10 seconds"),
+            Effect.orDie,
+          )
+
+          const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+
+          expect(Option.getOrUndefined(failure)?.reason).toMatchObject({
+            code: "reauthorization_unavailable",
+          })
         }),
       ),
   },
@@ -596,9 +685,16 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           yield* next(connection)
+
+          const quitter = yield* cluster.on(0)(
+            ActorTest.use((test) => test.connect(target, Live, { name: "quitter" })),
+          )
+
+          yield* next(quitter)
           yield* cluster.on(0)(
             Room.get(target.id).pipe(Effect.flatMap((room) => room.Post("before"))),
           )
+          yield* next(quitter)
           const [before] = yield* next(connection)
           expect(frameOf(before)).toEqual(Said.make({ text: "before" }))
 
@@ -620,6 +716,12 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect([...replay].at(-1)?._tag).toBe("ResyncReplayed")
           expect([...replay].filter(isFrame)).toEqual([])
+
+          // A resync handler that closes its connection ends it instead of reporting the replay done.
+          expect(reasonOf(yield* endOf(quitter))).toMatchObject({
+            cause: "ServerClosed",
+            resync: false,
+          })
 
           // A live broadcast committed before the client acknowledges the resync waits for it.
           yield* cluster.on(0)(
