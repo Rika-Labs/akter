@@ -21,7 +21,26 @@ Declared application errors are thrown as their schema-defined classes. Framewor
 
 ## Implemented subset (M3.4)
 
-Commands and queries over HTTP are implemented. Feeds, streams, connections, and optimistic reducers are M3.5; until then a reducer is called like a command and answered with its committed reply.
+Commands, queries, and optimistic reducers over HTTP are implemented. Feeds, streams, and connections are M3.5, so no server pushes committed state yet: a handle learns committed state from each non-commutative reducer's reply and from `handle.state.reconcile(committed)`, such as with a state a query read.
+
+`rooms.get(id)` returns the same handle for the same id while it has pending inputs or listeners. `handle.state` is `{ current, pending, subscribe, reconcile }`:
+
+- Calling a reducer applies its `reduce` to a copy of `current`'s committed state at once and appends its input to `pending`. Until committed state is known, `current` is `undefined`.
+- A handle sends its reducer calls one at a time in call order, each with its own command id and the usual retries, so each non-commutative reply is the committed state before every later pending input. A call's `timeoutInMs` and `signal` include its wait behind earlier calls; one stopped while waiting is never sent. `pending` returns copies of its inputs.
+- A success receipt removes the input. A non-commutative reducer's reply replaces committed state; a commutative reducer replies nothing, so its `reduce` is applied to committed state.
+- A failure (a declared error, or any `ActorError`, including `Timeout`) removes the input and rethrows; `current` becomes committed state with the remaining inputs. A timed-out call may still commit; the next reply or `reconcile` shows it.
+- After every change, `current` is recomputed from committed state and `pending` in order, and each `subscribe` listener is called with it. An input whose `reduce` fails, throws, or returns a state the schema rejects is skipped in `current`; the server decides its receipt.
+- `reconcile` replaces committed state and reapplies `pending`, so a state read before a pending input committed can show that input twice until its receipt arrives.
+
+`state` is a reserved member tag, like `ref`.
+
+```ts
+const tally = tallies.get("t1")
+tally.state.reconcile(await tally.Snapshot())
+const unsubscribe = tally.state.subscribe((state) => render(state))
+const reply = tally.Add({ by: 2 }) // tally.state.current shows the +2 now
+await reply // committed state from the reply; or throws TooMany and rolls back
+```
 
 ```ts
 import { ActorError } from "@durable-actors/core/client"

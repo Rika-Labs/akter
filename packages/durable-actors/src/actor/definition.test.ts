@@ -115,6 +115,9 @@ describe("actor declarations", () => {
     expect(() =>
       Actor.make("Reserved", { api: { Increment }, state: Actor.state({ set: Schema.Finite }) }),
     ).toThrow("reserved")
+    expect(() => Actor.make("Stateful", { api: { state: Actor.command("state") } })).toThrow(
+      "reserved",
+    )
     const Start = Actor.command("$workflow/start")
     expect(() => Actor.make("Prefixed", { api: { "$workflow/start": Start } })).toThrow("reserved")
     expect(() =>

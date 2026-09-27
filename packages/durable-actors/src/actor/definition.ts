@@ -496,7 +496,12 @@ const make = <
   for (const [key, member] of [...Object.entries(api), ...Object.entries(internal)]) {
     if (key !== member.tag) throw new Error(`Command key ${key} must equal its tag ${member.tag}`)
 
-    if (tags.has(member.tag) || member.tag === "ref" || member.tag.startsWith("$"))
+    if (
+      tags.has(member.tag) ||
+      member.tag === "ref" ||
+      member.tag === "state" ||
+      member.tag.startsWith("$")
+    )
       throw new Error(`Duplicate or reserved command: ${member.tag}`)
     tags.add(member.tag)
   }
@@ -1950,7 +1955,8 @@ const make = <
         ActorClient<
           Omit<Api, WorkflowKeys<Api>>,
           K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
-          Id
+          Id,
+          StateOf<Fields>
         >
       >(served)(options),
   }
