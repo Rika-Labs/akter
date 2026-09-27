@@ -1,6 +1,6 @@
 // Chat from a Promise-only caller, against `bun run serve`:
 //   bun run client alice "hello"
-import { ActorError } from "durable-actors/client"
+import { ActorError } from "@durable-actors/core/client"
 import { Room, RoomClosed, RoomId } from "./room/contract.ts"
 
 const [user = "alice", body = "hello"] = Bun.argv.slice(2)

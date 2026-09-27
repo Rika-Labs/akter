@@ -1,3 +1,4 @@
+import type { NodeInspectSymbol, Unify } from "../../actor/definition.ts"
 import {
   Context,
   Crypto,
@@ -1079,3 +1080,6 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** A declaration file names the unique symbols these actors inherit only through a module that exports them. */
+export type { NodeInspectSymbol, Unify }

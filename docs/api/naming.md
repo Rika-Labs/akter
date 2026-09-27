@@ -14,7 +14,7 @@ Settled names ([ADR 0010](../decisions/0010-one-way-effect-native-api.md)):
 - Context services: `X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`, and the runtime marker `Actor.InTurn`
 - Ambient scope: `Actor.as`, `Actor.tenant`, `Actor.commandId`
 - Fleet reads: `Fleet.view`, `Fleet.subscribe`
-- `Actors.layer` from `durable-actors/runtime`
+- `Actors.layer` from `@durable-actors/core/runtime`
 - `Actor.serve`, `Actor.auth`
 - `ActorTest`, `test.actor`, `ActorTest.simulate`
 

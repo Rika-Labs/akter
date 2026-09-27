@@ -1,4 +1,4 @@
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 import { Effect, Layer, Option, Schema } from "effect"
 
 export const documents = Actor.blob("documents")

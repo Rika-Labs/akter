@@ -67,6 +67,7 @@ const Snapshot = Actor.query("Snapshot", {
   errors: [UnknownCursor, RetentionGap],
 })
 
+/** @internal */
 export const Feed = Actor.make("Feed", {
   key: Schema.String,
   events: [Posted, Archived],

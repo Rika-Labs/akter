@@ -12,9 +12,9 @@
     "test:integration": "CHAT_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/chat/src"
   },
   "dependencies": {
+    "@durable-actors/core": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "drizzle-orm": "catalog:",
-    "durable-actors": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

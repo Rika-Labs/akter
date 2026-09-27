@@ -7,8 +7,8 @@
 //     -H 'content-type: application/json' -d '{}'
 //   curl localhost:3000/openapi.json
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Actor, Unauthorized, User } from "durable-actors"
-import { Actors, Database } from "durable-actors/runtime"
+import { Actor, Unauthorized, User } from "@durable-actors/core"
+import { Actors, Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { Headers, HttpRouter } from "effect/unstable/http"
 import { Room } from "./room/contract.ts"

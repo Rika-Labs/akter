@@ -10,7 +10,7 @@ Actor-owned tables use Drizzle semantics and gain `routing_key`, `tenant_id`, an
 ## Declaring an owned table
 
 ```ts
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 
 export const messages = Actor.table(

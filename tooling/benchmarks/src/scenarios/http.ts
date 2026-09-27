@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 import {
   type Cause,
   Clock,
@@ -33,7 +33,7 @@ interface Caller {
 
 interface Served extends Caller {
   readonly url: string
-  /** The same calls through `durable-actors/client`, which mints ids, decodes replies, and tracks tokens. */
+  /** The same calls through `@durable-actors/core/client`, which mints ids, decodes replies, and tracks tokens. */
   readonly client: Caller
   /** The Promise client over a connection that loses every hundredth command response after the server sent it. */
   readonly lossy: Caller
@@ -129,7 +129,7 @@ const serve = Effect.fnUntraced(function* () {
 export const http: Scenario = {
   name: "http",
   description:
-    "Actor.serve over loopback HTTP with Actor.auth.none: sequential commands and queries on one actor, then 64 concurrent command callers over 1k actors; first through raw fetch, then through the durable-actors/client Promise SDK.",
+    "Actor.serve over loopback HTTP with Actor.auth.none: sequential commands and queries on one actor, then 64 concurrent command callers over 1k actors; first through raw fetch, then through the @durable-actors/core/client Promise SDK.",
   run: (context) =>
     Effect.gen(function* () {
       const quick = context.profile === "quick"

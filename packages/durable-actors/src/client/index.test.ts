@@ -27,7 +27,7 @@ const graph = Effect.fnUntraced(function* (entry: string) {
   return { files: [...seen], packages: [...packages] }
 })
 
-describe("durable-actors/client", () => {
+describe("@durable-actors/core/client", () => {
   it("imports no runtime, SQL, or Cluster module in a browser build", () =>
     Effect.runPromise(
       Effect.gen(function* () {

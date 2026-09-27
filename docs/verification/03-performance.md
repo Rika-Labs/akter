@@ -229,7 +229,7 @@ On PGlite, which reports no statement counts, reducers ran at 197–202 op/s aga
 
 ### Promise client over HTTP (#93)
 
-`2026-09-27-0e82396-m3.4-client-{postgres,pglite}.json` runs the `http` scenario (`bun run bench --scenario http --label m3.4-client`, full profile, one run per backend) with Bun 1.4.2 on an 8-vCPU cloud VM that also hosts Postgres 18.6. Each case runs first through raw `fetch` with an id minted from the `/protocol` offset, then through `durable-actors/client` against the same `Actor.serve`. An earlier full Postgres run on the same VM at `2bf9b7b` is the noise reference: the client cases there were within 5% on throughput (682.6 against 695.3 op/s with 64 callers).
+`2026-09-27-0e82396-m3.4-client-{postgres,pglite}.json` runs the `http` scenario (`bun run bench --scenario http --label m3.4-client`, full profile, one run per backend) with Bun 1.4.2 on an 8-vCPU cloud VM that also hosts Postgres 18.6. Each case runs first through raw `fetch` with an id minted from the `/protocol` offset, then through `@durable-actors/core/client` against the same `Actor.serve`. An earlier full Postgres run on the same VM at `2bf9b7b` is the noise reference: the client cases there were within 5% on throughput (682.6 against 695.3 op/s with 64 callers).
 
 | Postgres case                  | raw `fetch` op/s | p50 / p95 / p99 ms   | client op/s | p50 / p95 / p99 ms   | stmts/op |
 | ------------------------------ | ---------------- | -------------------- | ----------- | -------------------- | -------- |
