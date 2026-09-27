@@ -57,11 +57,16 @@ jobs:
         run: |
           set -u
           case "$RUNS" in
-            ''|*[!0-9]*|0)
+            ''|*[!0-9]*)
               echo "RUNS must be a positive integer" >&2
               exit 2
               ;;
           esac
+          RUNS=$((10#$RUNS))
+          if [ "$RUNS" -lt 1 ]; then
+            echo "RUNS must be a positive integer" >&2
+            exit 2
+          fi
           mkdir -p ../../stress
           stress-ng --cpu "$(nproc)" --timeout 0 --quiet &
           trap 'kill %1' EXIT
