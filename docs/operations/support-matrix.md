@@ -25,9 +25,10 @@ Support means the shared `durable-actors/testing` conformance suite passes and t
 | Reducers (optimistic, commutative) | target; unverified                       | target; unverified                                     | gated; unverified                | merge-law property tests; client convergence                            |
 | Migrations and restore             | target; unverified                       | target; unverified                                     | gated; unverified                | migration and restore rehearsal                                         |
 | Served HTTP and OpenAPI (M3.2)     | verified, single runner                  | verified, single runner                                | gated; unverified                | `conformance/http.ts` over a real Bun listener                          |
+| Promise client over HTTP (M3.4)    | verified, single runner                  | verified, single runner, incl. SIGKILL                 | gated; unverified                | `conformance/client.ts`, `crash/client.test.ts`                         |
 
 Topology is a separate gate. Multi-replica Railway support requires a reachable per-replica `railnet0` advertise address. A service-per-runner alternative needs equivalent evidence; `Topology.k8s` was removed from the agreed public API. Singleton support requires a two-runner uniqueness and failover test.
 
-Served HTTP is verified behind Bun's HTTP server on loopback only; no proxy, load balancer, TLS terminator, or hosting provider is claimed. WebSocket and SSE are not served yet.
+Served HTTP is verified behind Bun's HTTP server on loopback only; no proxy, load balancer, TLS terminator, or hosting provider is claimed. WebSocket and SSE are not served yet. The Promise client is exercised with Bun's `fetch` on loopback; no browser engine is run, and its browser safety rests on an import-graph and browser-build test.
 
 An unverified cell remains gated. Postgres wire compatibility is not evidence of locking, pooling, transaction, or restore equivalence.

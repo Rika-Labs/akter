@@ -227,6 +227,23 @@ First touch of 100k actors grew the heap by 1.0–1.8 GiB across the two runs. T
 
 On PGlite, which reports no statement counts, reducers ran at 197–202 op/s against 144 op/s for commands in the same run. They run the same turn code path, so treat that gap as unconfirmed noise rather than a reducer advantage. The capacity cases stayed near 200 op/s at and past the limit. PGlite's single connection tops out near that rate, which coincides with the sweep's ceiling of about 1,000 slots per 5 seconds, so this run can't separate the two. A `quick` run with a limit of 250 does show the sweep bound on PGlite: past the limit, steady-state throughput fell from 220 to 21 op/s (an uncommitted run on this VM).
 
+### Promise client over HTTP (#93)
+
+`2026-09-27-0e82396-m3.4-client-{postgres,pglite}.json` runs the `http` scenario (`bun run bench --scenario http --label m3.4-client`, full profile, one run per backend) with Bun 1.4.2 on an 8-vCPU cloud VM that also hosts Postgres 18.6. Each case runs first through raw `fetch` with an id minted from the `/protocol` offset, then through `durable-actors/client` against the same `Actor.serve`. An earlier full Postgres run on the same VM at `2bf9b7b` is the noise reference: the client cases there were within 5% on throughput (682.6 against 695.3 op/s with 64 callers).
+
+| Postgres case                  | raw `fetch` op/s | p50 / p95 / p99 ms   | client op/s | p50 / p95 / p99 ms   | stmts/op |
+| ------------------------------ | ---------------- | -------------------- | ----------- | -------------------- | -------- |
+| command, sequential            | 487.6            | 1.88 / 3.43 / 4.69   | 451.1       | 2.06 / 3.42 / 4.95   | 6.01     |
+| query, sequential              | 1777.4           | 0.48 / 0.97 / 1.93   | 1628.6      | 0.54 / 0.93 / 2.02   | 1        |
+| command, 64 callers, 1k actors | 944              | 60.3 / 132.2 / 175.4 | 695.3       | 82.4 / 176.1 / 244.4 | 6        |
+| command, sequential, 1% loss   |                  |                      | 323.2       | 1.94 / 3.30 / 13.42  | 6.03     |
+
+- **The client adds no database work.** Statements per operation match raw `fetch` in every case; a lost response costs one replayed receipt read, 0.03 statements per operation at 1% loss, and `duplicateTurns` was 0 on both backends.
+- **Sequential calls cost about 0.1–0.2 ms more at p50**, the client's schema encode, envelope decode, and clock bookkeeping. With 64 concurrent callers the client ran 26% slower, because the benchmark client, runtime, and Postgres share 8 CPUs and the client spends 1.95 against 1.46 ms of CPU per operation. A client on another machine would not compete with the runtime for that CPU; this run does not measure that.
+- **At 1% loss, p99 absorbs the retries.** Each lost response waits the first 100 ms backoff step, so p99 rose to 13.4 ms while p50 did not move.
+
+On PGlite the single connection sets the pace and the client matches raw `fetch` within noise: 264.8 against 262.2 op/s for sequential commands, 827.3 against 904.6 for queries, 288.9 against 318.7 with 64 callers, and 208.2 op/s at 1% loss.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:

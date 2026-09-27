@@ -19,4 +19,38 @@ Expired command identities are rejected even after receipt cleanup. Automatic re
 
 Declared application errors are thrown as their schema-defined classes. Framework failures use `ActorError` with a typed `reason`, `isRetryable`, and `retryAfter`. `InvalidInput` and `TransportError` belong only to the HTTP/Promise boundary, not typed in-process Effect handles. Each Effect method narrows its framework failures through `ActorError.Of<Reasons>` rather than adding every possible reason.
 
+## Implemented subset (M3.4)
+
+Commands and queries over HTTP are implemented. Feeds, streams, connections, and optimistic reducers are M3.5; until then a reducer is called like a command and answered with its committed reply.
+
+```ts
+import { ActorError } from "durable-actors/client"
+import { Chat, RoomFull } from "./chat/contract.ts" // definitions and schemas only
+
+const rooms = Chat.client({
+  baseUrl: "/api", // absolute, or relative to the page
+  headers: () => ({ authorization: `Bearer ${token()}` }), // called for every attempt
+  timeoutInMs: 10_000, // per call, retries included; default 60,000
+  fetch, // optional; defaults to the global fetch
+  commandIds: "client", // or "server" to take each id from POST /command-ids
+})
+
+const id = await rooms.commandId()
+const count = await rooms.get("lobby").Post({ text: "hi" }, { commandId: id, signal })
+const history = await rooms.get("lobby").History()
+```
+
+`X.client` returns `get(id)` for keyed actors, `get()` for singletons, and `get(id)` plus `create()` for minted ones, where `create()` mints a UUIDv7 locally. Each handle method takes its input (omitted when the member has none) and `{ signal, timeoutInMs }`, plus `commandId` for commands. Routes, key encoding, input and output codecs, and the declared-error decoder come from the definition. The entry imports no runtime, SQL, Cluster, Bun, or Node module; a test walks its import graph and builds it for the browser.
+
+Clients of one `baseUrl` share its clock samples, retry window, and `durable-version` token. The clock uses the lowest-latency sample of the last minute and ignores round trips over 5 seconds and every 504. A minted id is issued at least a second, or one round trip, behind the estimated database clock. Retries stop a second before the id expires. Without a `retryAfter`, the delay backs off from 100 ms to at most 2 seconds.
+
+A call rejects with:
+
+- the declared error's class, for a declared failure, replayed identically on retry;
+- `ActorError` with the served reason (`CommandExpired`, `CommandConflict`, `InvalidCommandId`, `Unauthorized`, `NotCreated`, `MailboxFull`, `RunnerAtCapacity`, `ActorUnavailable`, `Timeout`, `InvalidInput`) and its `isRetryable` and `retryAfter`;
+- `ActorError` with `Timeout` carrying the command id, when `timeoutInMs` or `signal` stops the wait; the outcome is unknown and a retry with that id is safe;
+- `ActorError` with `TransportError` for a response the server didn't describe: `network` for a failed fetch, `status` for a status without an envelope (retried for 408, 429, and 5xx), `decode` for a success body the output schema rejects, and `defect` for the server's opaque 500, which carries nothing but its status.
+
+`InvalidCommandId` from the client carries `neverAdmitted: true` only when the client minted the id itself and every attempt was answered with that refusal, so no turn can have run under it. Only then is resending under a new id a retry rather than a second operation.
+
 Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or branch with `Effect.catchReasons`. On Effect `4.0.0-rc.116`, omitting `orElse` retains the full `ActorError` in `E`; branching is not automatically exhaustive error-channel elimination. See the [error contract](../contracts/error-model.md). OpenAPI is the intended input for external client and tool generators.

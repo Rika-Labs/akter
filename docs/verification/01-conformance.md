@@ -262,6 +262,25 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 
 These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency.
 
+### Promise client (M3.4)
+
+The cases live in [`conformance/client.ts`](../../packages/durable-actors/src/testing/conformance/client.ts) and run on PGlite and Postgres against the same fixture served by `Actor.serve` on a real `Bun.serve` listener, called through `HttpRoom.client`, `HttpLobby.client`, and `HttpTicket.client`. A recording `fetch` sees every attempt's path and headers, and can lose a response after the server sent it or answer in place of a gateway. Unit tests beside the client ([`client/clock.test.ts`](../../packages/durable-actors/src/client/clock.test.ts), [`client/browser.test.ts`](../../packages/durable-actors/src/client/browser.test.ts)) cover clock sampling, id lifetimes, token ordering, and the browser build.
+
+- `client retries a dropped response with the same command id and returns the committed receipt` — row **Command response lost over HTTP** through the client: every attempt sends the same `Idempotency-Key`, one receipt, the handler runs once.
+- `client retries a gateway 5xx and a retryAfter envelope with the same id, honoring the delay` — a bare 502, then a `RunnerAtCapacity` 503 with `retryAfter`, then success, all under one id.
+- `client surfaces an expired id as CommandExpired without reminting or retrying` — row **External identity expires before delivery or retry**: one attempt, the given id, no new id.
+- `client retries a future id with the same id once the database clock passes it, and never repairs a wrong-window id` — row **Client clock ahead of the database clock**; `window` and `version` fail after one attempt.
+- `client marks a self-minted id the server refused before any turn as never admitted`.
+- `client maps declared errors to their classes and framework failures to typed ActorErrors` — invariant R3 through the client: a declared failure and its replay are instances of the declared class with the same fields; `CommandConflict`, `InvalidInput`, an opaque defect (`TransportError` `defect`, no server detail), and a non-envelope 400 (`TransportError` `status`) map to their reasons; input the schema rejects never reaches the network.
+- `client surfaces auth failures and refreshes expired credentials once with the same id` — missing and invalid credentials fail `Unauthorized` without retry; after `expired` the header function is called again and the single retry keeps the id.
+- `client routes queries, singleton and minted actors, and special-character keys, sending the greatest consistency token` — no `Idempotency-Key` on queries; `durable-min-version` carries the greatest `durable-version` seen.
+- `client stops waiting at its timeout or abort, and the same id later returns the committed receipt` — row **Caller gives up before a reply**: `Timeout` with the command id; the held turn commits once and a retry with that id returns it.
+- `client ids minted from a skewed local clock are admitted, and /command-ids ids are preserved` — local clocks 10 minutes fast and slow; `commandIds: "server"` sends the server's id unchanged.
+
+[`crash/client.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/client.test.ts) runs on real Postgres only. It serves a counter from a child process, blocks the turn at `beforeCommit` or `afterCommit`, SIGKILLs the process while the client waits, and starts a replacement on the same port. The pending call then returns its output, with one receipt, one event, and the same `Idempotency-Key` on every attempt.
+
+These cases cover one runtime process on loopback with Bun's `fetch`. Browsers, proxies, and TLS are not exercised; the browser claim rests on the import-graph and `target: "browser"` build test. The `http` benchmark scenario reports client latency beside raw `fetch`, and duplicate turns under 1% response loss.
+
 The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
 
 Run `bun run --filter durable-actors test` for declaration, identity, and the PGlite suite; run `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter durable-actors test:integration` and `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/counter test:integration` for Postgres and crash coverage. The role must create/drop temporary databases; tests never use application data. The existing CI `check:ci` task runs these and records the tested revision in `evidence/sha.txt`, logs in `evidence/check.log`, and the `evidence-<head-sha>` artifact. The PR links its actual current-revision run; this ledger is a map to tests, not a replacement for that artifact.
