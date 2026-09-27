@@ -28,12 +28,13 @@ interface Variant {
   readonly reserve?: typeof Schema.String | typeof Schema.NonEmptyString
   /** A step the body never reaches. */
   readonly extra?: string
+  readonly id?: typeof Schema.String | typeof Schema.NonEmptyString
 }
 
 /** One deployment of the `Versioned` actor type: reserve, sleep, then label. */
 const deployment = (variant: Variant) => {
   const Order = Actor.workflow("Order", {
-    input: { id: Schema.String },
+    input: { id: variant.id ?? Schema.String },
     output: Schema.String,
     key: ({ id }) => id,
     versions: variant.versions ?? {},
@@ -98,6 +99,8 @@ const Renamed = deployment({ label: "label-v2" })
 const Audited = deployment({ extra: "audit" })
 
 const Retyped = deployment({ reserve: Schema.NonEmptyString })
+
+const Reinput = deployment({ id: Schema.NonEmptyString })
 
 const Marked = deployment({ versions: { fraud: { current: 1, min: 0 } } })
 
@@ -321,6 +324,71 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* refusal(database, Retyped.layer)).toContain(
             `step "reserve" result schema changed  1 open execution`,
+          )
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
+    name: "workflow versions: refuses a result schema change under a manifest stored without result fingerprints",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+          yield* deploy(
+            database,
+            Base.layer,
+            Effect.gen(function* () {
+              yield* sleeping(Base, "o")
+              const sql = yield* SqlClient.SqlClient
+              yield* sql`UPDATE actor_workflow_manifests SET manifest = jsonb_set(manifest, '{steps}',
+                (SELECT jsonb_agg(step - 'result') FROM jsonb_array_elements(manifest->'steps') step))
+                WHERE actor_type = 'Versioned'`.pipe(Effect.orDie)
+            }),
+          )
+
+          expect(yield* refusal(database, Retyped.layer)).toContain(
+            `step "reserve" result schema changed  1 open execution`,
+          )
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
+    name: "workflow versions: refuses startup when the workflow input schema changes",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+          yield* deploy(database, Base.layer, sleeping(Base, "o"))
+
+          expect(yield* refusal(database, Reinput.layer)).toContain(
+            `input schema changed  1 open execution`,
+          )
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
+    name: "workflow versions: refuses startup when an open execution's start manifest is missing",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+          yield* deploy(
+            database,
+            Base.layer,
+            Effect.gen(function* () {
+              yield* sleeping(Base, "o")
+              const sql = yield* SqlClient.SqlClient
+              yield* sql`DELETE FROM actor_workflow_manifests WHERE actor_type = 'Versioned'`.pipe(
+                Effect.orDie,
+              )
+            }),
+          )
+
+          expect(yield* refusal(database, Audited.layer)).toContain(
+            `start manifest missing  1 open execution`,
           )
         }),
       ),

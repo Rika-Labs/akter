@@ -442,9 +442,8 @@ export const activationEngine = (options: {
           SELECT manifest::text AS manifest FROM actor_workflow_manifests
           WHERE actor_type = ${ref.actor} AND workflow = ${workflow.member.tag} AND manifest_hash = ${hash}`
 
-        // Pruned only once no open execution references it; the recorded steps still decide.
         const covered =
-          row === undefined ||
+          row !== undefined &&
           missingSteps({
             stored: yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie),
             steps: workflow.steps,

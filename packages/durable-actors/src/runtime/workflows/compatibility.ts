@@ -33,6 +33,7 @@ export const declaredOf = (actor: {
 })
 
 const StoredManifest = Schema.Struct({
+  input: Schema.optional(Schema.String),
   steps: Schema.Array(
     Schema.Struct({
       name: Schema.String,
@@ -53,7 +54,11 @@ export const decodeStoredManifest = (manifest: string) => decodeManifest(manifes
 interface Current {
   readonly member: AnyWorkflow
   readonly hash: string
-  readonly steps: ReadonlyMap<string, { readonly kind: string; readonly result: string }>
+  readonly input: string
+  readonly steps: ReadonlyMap<
+    string,
+    { readonly kind: string; readonly fingerprint: string; readonly result: string }
+  >
 }
 
 const currentOf = Effect.fnUntraced(function* (declared: ReadonlyArray<DeclaredActor>) {
@@ -67,6 +72,7 @@ const currentOf = Effect.fnUntraced(function* (declared: ReadonlyArray<DeclaredA
       workflows.set(member.tag, {
         member,
         hash,
+        input: manifest.input,
         steps: new Map(manifest.steps.map((step) => [step.name, step])),
       })
     }
@@ -174,10 +180,18 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
 
     manifests.set(toJson([group.actor_type, group.workflow, group.manifest_hash]), stored)
 
-    if (stored === undefined || group.manifest_hash === workflow.hash) continue
+    if (group.manifest_hash === workflow.hash) continue
+
+    if (stored === undefined) {
+      add(group.actor_type, group.workflow, "start manifest missing", group.open, oldest)
+      continue
+    }
 
     for (const problem of missingSteps({ stored, steps: workflow.steps }))
       add(group.actor_type, group.workflow, problem, group.open, oldest)
+
+    if (stored.input !== undefined && stored.input !== workflow.input)
+      add(group.actor_type, group.workflow, "input schema changed", group.open, oldest)
   }
 
   const recorded = yield* sql<{
@@ -245,7 +259,12 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
 
     if (entry === undefined) continue
 
-    if (entry.result !== undefined && entry.result !== step.result)
+    // Manifests without `result` fingerprint the whole activity, input included.
+    if (
+      entry.result === undefined
+        ? entry.fingerprint !== step.fingerprint
+        : entry.result !== step.result
+    )
       add(
         row.actor_type,
         row.workflow,
