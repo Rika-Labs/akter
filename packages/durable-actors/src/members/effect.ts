@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { type Duration, Schema } from "effect"
 import type { AnyCommand, ValueSchema } from "./command.ts"
 
 /**
@@ -76,8 +76,17 @@ type Accepting<Command extends AnyCommand, T> = Command extends AnyCommand
  * accepts the executor's return type or the effect's dead letter.
  */
 export interface EffectPolicy<E extends AnyEffect, Command extends AnyCommand> {
-  /** Retries after the first failed attempt. Default 3. */
-  readonly retry?: { readonly times: number }
+  /** Bounds one executor attempt, measured on the runner. Default 30 seconds. */
+  readonly timeout?: Duration.Input
+  /**
+   * Retries after the first failed attempt (default 3), and the wait after
+   * failed attempt `n`: `min(base × 2^(n − 1), max)`. Default base 1 second,
+   * max 256 seconds.
+   */
+  readonly retry?: {
+    readonly times: number
+    readonly backoff?: { readonly base: Duration.Input; readonly max: Duration.Input }
+  }
   /** Receives the executor's return value, with the effect id as its command id. */
   readonly onSuccess?: Accepting<Command, E["success"]["Type"]>
   /** Receives `Actor.DeadLetter(E)` once when retries are exhausted. */
