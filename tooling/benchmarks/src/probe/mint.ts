@@ -15,6 +15,7 @@ export const MintMany = Actor.command("MintMany", {
     count: Schema.Int,
     atMs: Schema.optional(Schema.Int),
   }),
+  output: Schema.Array(Schema.String),
 })
 
 /** Mints `count` children per turn and stages each one's creating intent. */
@@ -38,12 +39,16 @@ export const MintLive = Layer.mergeAll(
     Effect.succeed({
       MintMany: Effect.fnUntraced(function* ({ label, count, atMs }) {
         const turn = yield* Minter.Turn
+        const ids: Array<string> = []
 
         for (let index = 0; index < count; index++) {
           const id = yield* turn.mint(MintedChild)
           const open = (yield* MintedChild.intents(id)).Open(`${label}-${index}`)
           yield* atMs === undefined ? open : open.pipe(Intent.at(DateTime.makeUnsafe(atMs)))
+          ids.push(id)
         }
+
+        return ids
       }),
     }),
   ),

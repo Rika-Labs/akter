@@ -1,4 +1,5 @@
 import { DateTime, Deferred, Effect } from "effect"
+import { SqlClient } from "effect/unstable/sql"
 import { load } from "../measure.ts"
 import { Sender } from "../probe/contract.ts"
 import { creations, MintedChild, Minter } from "../probe/mint.ts"
@@ -20,6 +21,23 @@ const expectCreations = (labels: ReadonlyArray<string>) =>
     ),
   )
 
+/** Waits until every id's creating turn has committed its creation marker. */
+const committed = (ids: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    if (ids.length === 0) return
+
+    const sql = yield* SqlClient.SqlClient
+
+    const count = sql<{ readonly created: number }>`
+      SELECT count(*)::int AS created FROM actor_generations
+      WHERE actor_type = 'MintedChild' AND created AND actor_id IN ${sql.in(ids)}`.pipe(
+      Effect.map(([row]) => row!.created),
+      Effect.orDie,
+    )
+
+    yield* count.pipe(Effect.repeat({ until: (created) => created === ids.length }))
+  })
+
 const labelsOf = (label: string, count: number) =>
   Array.from({ length: count }, (_, index) => `${label}-${index}`)
 
@@ -28,7 +46,7 @@ const labelsOf = (label: string, count: number) =>
  * creating intent. `turn-<n>` times only the parent turn, with the intents
  * due in a day; `intents-<n>` is the same turn staging plain intents without
  * minting, so the difference is the derivation and proof cost. `created-<n>`
- * times from the parent's call until every child's creating turn committed,
+ * times from the parent's call until every child's creation marker committed,
  * and `create-then-open-<n>` is the same outcome through `X.create()` and one
  * creating command per child from the caller.
  */
@@ -104,8 +122,9 @@ export const mint: Scenario = {
                 Effect.gen(function* () {
                   const label = `created-${next++}`
                   const all = yield* expectCreations(labelsOf(label, count))
-                  yield* parent.MintMany({ label, count })
+                  const ids = yield* parent.MintMany({ label, count })
                   yield* all
+                  yield* committed(ids)
                 })
 
               yield* load({ workers: 1, operations: 5, operation: created })
