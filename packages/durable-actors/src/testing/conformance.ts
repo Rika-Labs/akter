@@ -57,6 +57,7 @@ import {
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import { connectionsConformance, connectionsLayer } from "./conformance/connections.ts"
+import { singletonConformance } from "./conformance/singleton.ts"
 import {
   outboxConformance,
   outboxFixture,
@@ -322,6 +323,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...multiRunnerConformance,
   ...relayConformance,
   ...relayClusterConformance,
+  ...singletonConformance,
   ...blobsConformance,
   ...retentionConformance,
   ...connectionsConformance,

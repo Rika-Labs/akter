@@ -46,7 +46,12 @@ import { migrate } from "./database/migrations.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
-import { commandEntity, connectionEntity, registerActor } from "./entity/register.ts"
+import {
+  commandEntity,
+  connectionEntity,
+  encodeEntityId,
+  registerActor,
+} from "./entity/register.ts"
 import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
 import type { Owner } from "./connections/owner.ts"
@@ -57,7 +62,7 @@ import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
-import { keepAcquiredShards } from "./topology/locks.ts"
+import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -143,11 +148,6 @@ export class RunnerWiring extends Context.Service<
     ) => RunnerStorage.RunnerStorage["Service"]
   }
 >()("@durable-actors/core/runtime/layer/RunnerWiring") {}
-
-// Cluster entity ids name the tenant and actor id together.
-const encodeEntityId = Schema.encodeEffect(
-  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-)
 
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
@@ -756,7 +756,30 @@ export const layer = (options: Options) => {
         ),
       )
 
-      return runtime.pipe(Layer.provide(sharding))
+      // Advisory locks are held by a live session, so no second runner can
+      // take a shard while its holder runs; table locks can expire under a
+      // runner that keeps serving, and singletons then check their lease.
+      const config = wiring?.config
+      const address = config?.runnerAddress
+
+      const lease =
+        runnerStorage === "sql" &&
+        config?.shardLockDisableAdvisory === true &&
+        address !== undefined &&
+        Option.isSome(address)
+          ? Layer.succeed(
+              ShardLease,
+              tableShardLease({
+                sql,
+                address: address.value,
+                expiration: Duration.fromInputUnsafe(
+                  config.shardLockExpiration ?? ShardingConfig.defaults.shardLockExpiration,
+                ),
+              }),
+            )
+          : Layer.empty
+
+      return runtime.pipe(Layer.provide(sharding), Layer.provide(lease))
     }),
   )
 }
