@@ -331,6 +331,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("inspected")
           const run = yield* shipper.Ship({ orderId: "o-inspect", sku: "sleep" })
+
           const execution = () =>
             sql<{
               execution_id: string
@@ -344,6 +345,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
                 finished_at IS NOT NULL AS finished, result_bytes > 0 AS stored
               FROM durable.workflows
               WHERE tenant_id = ${test.tenant} AND actor_type = 'Shipper' AND actor_id = 'inspected'`
+
           const steps = () =>
             sql<{ step: string; kind: string; settled: boolean; dated: boolean }>`
               SELECT step, kind, exit IS NOT NULL AS settled,
@@ -352,6 +354,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
               WHERE tenant_id = ${test.tenant} AND execution_id = ${run.executionId}
                 AND kind IN ('activity', 'clock')
               ORDER BY started_at_ms, step`
+
           yield* suspendedRow(run.executionId)
           expect(yield* execution()).toEqual([
             {

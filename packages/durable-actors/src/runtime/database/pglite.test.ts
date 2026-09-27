@@ -255,6 +255,7 @@ describe("PGlite migrations", () => {
 
   it("refuses to start when a registered migration below the latest applied one was skipped", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
+
     // A database that recorded 13 while 12 was never applied.
     const throughRelay = migrator(
       Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0012")),
