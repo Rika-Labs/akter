@@ -11,6 +11,8 @@ class Tallied extends Actor.Event<Tallied>()("Tallied", { amount: Schema.Finite 
 
 const Add = Actor.command("Add", { input: Schema.Finite, output: Schema.Finite })
 
+const Whoami = Actor.command("Whoami", { output: Schema.String })
+
 const Log = Actor.query("Log", {
   output: Schema.Array(Schema.Struct({ cursor: Schema.String, commandId: Schema.String })),
 })
@@ -19,7 +21,7 @@ const Tally = Actor.make("Tally", {
   key: Schema.String,
   state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   events: [Tallied],
-  api: { Add, Log },
+  api: { Add, Whoami, Log },
 })
 
 const TallyLive = Layer.mergeAll(
@@ -31,6 +33,11 @@ const TallyLive = Layer.mergeAll(
         yield* turn.emit(Tallied.make({ amount }))
 
         return turn.state.count
+      }),
+      Whoami: Effect.fnUntraced(function* () {
+        const turn = yield* Tally.Turn
+
+        return Schema.is(User)(turn.caller) ? turn.caller.subject : turn.caller._tag
       }),
     }),
   ),
@@ -360,6 +367,40 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* add(owner, "restart", 1)).toBe(3)
           expect(yield* add(other, "restart", 1)).toBe(4)
           expect(yield* inspect(owner, ref)).toMatchObject({ state: { count: 4 }, receipts: 4 })
+        }),
+      ),
+  },
+  {
+    name: "serializes a 512-byte subject through a cross-runner command",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withCluster(
+        environment,
+        2,
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const subject = "é".repeat(256)
+          const ids = Array.from({ length: 16 }, (_, index) => `principal-${index}`)
+          let crossed = 0
+
+          for (const id of ids) {
+            yield* add(0, id, 1)
+            const owner = yield* cluster.owner(yield* refOf(id))
+            const caller = owner === 0 ? 1 : 0
+
+            const echoed = yield* cluster.on(caller)(
+              Tally.get(id).pipe(
+                Effect.flatMap((tally) => tally.Whoami()),
+                Actor.as(User.make({ subject })),
+              ),
+            )
+
+            expect(echoed).toBe(subject)
+            if (owner !== undefined) crossed += 1
+          }
+
+          expect(crossed).toBe(ids.length)
         }),
       ),
   },

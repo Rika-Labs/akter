@@ -1,17 +1,6 @@
 import { PgClient, PgTypes } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
-import {
-  Cause,
-  Context,
-  Crypto,
-  Effect,
-  Fiber,
-  Layer,
-  Option,
-  Result,
-  Schedule,
-  Schema,
-} from "effect"
+import { Cause, Context, Crypto, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
 import {
   ClusterError,
   EntityId,
@@ -43,6 +32,7 @@ import {
 } from "../handles/actors.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
+import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
@@ -266,18 +256,22 @@ export const layer = (options: Options) => {
               }),
             )
 
-            const outcome = yield* deliver.pipe(
-              Effect.retry({
-                while: (error) =>
-                  Schema.is(ActorUnavailable)(error.reason) ||
-                  Schema.is(RunnerAtCapacity)(error.reason),
-                // Exponential backoff capped at 500 ms; the delivery timeout bounds the total.
-                schedule: Schedule.min([
-                  Schedule.exponential("10 millis", 2),
-                  Schedule.spaced("500 millis"),
-                ]),
-              }),
-            )
+            // Each retry waits from the error's own retryAfter, as a served
+            // caller would; the delivery timeout bounds the total.
+            const retrying = (attempt: number): typeof deliver =>
+              deliver.pipe(
+                Effect.catchIf(
+                  (error) =>
+                    Schema.is(ActorUnavailable)(error.reason) ||
+                    Schema.is(RunnerAtCapacity)(error.reason),
+                  (error) =>
+                    Effect.sleep(retryDelay(error, attempt)).pipe(
+                      Effect.andThen(Effect.suspend(() => retrying(attempt + 1))),
+                    ),
+                ),
+              )
+
+            const outcome = yield* retrying(0)
 
             if (external) yield* authorize(request)
 

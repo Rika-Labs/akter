@@ -1,8 +1,10 @@
 import {
+  Cause,
   Context,
   Crypto,
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Layer,
   Option,
@@ -1071,6 +1073,35 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           expect(reply.headers.get("x-request-id")).toBe(null)
           expect(reply.headers.get("durable-version")).toBe(null)
           expect(reply.headers.get("durable-protocol")).toBe("1")
+        }),
+      ),
+  },
+  {
+    name: "fails Actor.serve at startup when retryWindowMs is below 60 seconds, and admits ids minted at exactly 60 seconds",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const actors = yield* InternalActors
+          const short = InternalActors.of({ ...actors, retryWindowMs: 59_999 })
+
+          const exit = yield* HttpRouter.toHttpEffect(
+            Actor.serve({ actors: served, auth: tokens }).pipe(
+              Layer.provide(Layer.succeed(InternalActors, short)),
+            ),
+          ).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain("at least 60 seconds")
+          expect(actors.retryWindowMs).toBe(60_000)
+
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+
+          const reply = yield* server.send("/actors/HttpRoom/window/Whoami", {
+            token: `${tenant}:alice`,
+            key: yield* server.mint(0, 60_000),
+          })
+
+          expect(reply).toMatchObject({ status: 200, body: `${tenant}/alice` })
         }),
       ),
   },

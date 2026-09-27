@@ -52,6 +52,10 @@ const ALLOWED_HEADERS = [
   "tracestate",
 ].join(", ")
 
+// Clients mint ids up to a second or a round trip behind the database clock,
+// then retry within the window; shorter windows expire ids before delivery.
+const MIN_RETRY_WINDOW_MS = 60_000
+
 const EXPOSED_HEADERS = ["x-request-id", "durable-now", "durable-version", "retry-after"].join(", ")
 
 const JSON_TYPE = /^application\/json[ ]*(;.*)?$/i
@@ -134,6 +138,13 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       }
 
       const actors = yield* InternalActors
+
+      if (actors.retryWindowMs < MIN_RETRY_WINDOW_MS)
+        return yield* Effect.die(
+          new Error(
+            `Actor.serve: retryWindowMs is ${actors.retryWindowMs}; served clients need at least 60 seconds`,
+          ),
+        )
 
       for (const definition of definitions) {
         const registered = actors.registered(definition.name)
