@@ -227,6 +227,10 @@ First touch of 100k actors grew the heap by 1.0–1.8 GiB across the two runs. T
 
 On PGlite, which reports no statement counts, reducers ran at 197–202 op/s against 144 op/s for commands in the same run. They run the same turn code path, so treat that gap as unconfirmed noise rather than a reducer advantage. The capacity cases stayed near 200 op/s at and past the limit. PGlite's single connection tops out near that rate, which coincides with the sweep's ceiling of about 1,000 slots per 5 seconds, so this run can't separate the two. A `quick` run with a limit of 250 does show the sweep bound on PGlite: past the limit, steady-state throughput fell from 220 to 21 op/s (an uncommitted run on this VM).
 
+### Cross-actor subscriptions baseline
+
+[ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed. The handler generates the ids, so the payload doesn't grow with n ([`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 33 ms with 256, and 83–86 ms with 1,024. With 16 subscribers it was 8.9 ms in one run and 4.2 ms in the repeat. Statements per turn stay at 8.0–8.2, and runtime CPU per turn tracks the latency, at about 80 µs per staged intent. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
