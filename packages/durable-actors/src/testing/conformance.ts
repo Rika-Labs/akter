@@ -79,6 +79,7 @@ import {
   effectsLayer,
   type EffectsFixture,
 } from "./conformance/effects.ts"
+import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import {
   progressConformance,
   progressFixture,
@@ -345,6 +346,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...relayClusterConformance,
   ...singletonConformance,
   ...blobsConformance,
+  ...inspectionViewsConformance,
   ...retentionConformance,
   ...workflowsConformance,
   {
@@ -1311,6 +1313,7 @@ export const describeConformance = (options: {
     effectsLayer(fixture.effects),
     progressLayer(fixture.progress),
     blobsLayer(fixture.blobs),
+    inspectionViewsLayer,
     relayLayer(fixture.relay),
     relayEffects(fixture.relay),
     retentionLayer(fixture.retention),
