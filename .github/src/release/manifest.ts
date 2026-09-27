@@ -107,8 +107,8 @@ export function undeclaredImports({
   ])
 
   const specifiers = sources.flatMap((source) =>
-    [...source.matchAll(/(?:from|import)\s*\(?\s*"([^"./][^"]*)"/g)].flatMap((match) =>
-      match[1] === undefined ? [] : [match[1]],
+    [...source.matchAll(/(?:from|import)\s*\(?\s*(["'])([^"'./][^"']*)\1/g)].flatMap((match) =>
+      match[2] === undefined ? [] : [match[2]],
     ),
   )
 

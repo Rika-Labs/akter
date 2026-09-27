@@ -125,3 +125,20 @@ it("accepts valid SemVer build metadata", () => {
 
   expect(tarballProblems({ files: complete, manifest: packed })).toEqual([])
 })
+
+it("names undeclared bare imports written with single quotes", () => {
+  const packed = publishManifest({ manifest, catalog: { effect: "4.0.0-rc.116" } })
+
+  expect(
+    undeclaredImports({
+      sources: [
+        "import { x } from 'optional-driver'",
+        "export { y } from 'reexported'",
+        "await import('dynamic-driver')",
+        "import 'side-effect'",
+        "import { Effect } from 'effect'",
+      ],
+      manifest: packed,
+    }),
+  ).toEqual(["dynamic-driver", "optional-driver", "reexported", "side-effect"])
+})
