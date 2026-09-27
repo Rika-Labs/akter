@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect"
+import { Effect, Option, Random, Schema } from "effect"
 
 export class CommandConflict extends Schema.TaggedError<CommandConflict>()("CommandConflict", {
   commandId: Schema.String,
@@ -8,12 +8,65 @@ export class CommandExpired extends Schema.TaggedError<CommandExpired>()("Comman
   commandId: Schema.String,
 }) {}
 
+/**
+ * `malformed`: not a v1 id. `future`: issued after the database clock; the
+ * same id is admissible once the clock passes it. `window`: its lifetime is
+ * not the deployment's retry window. `version`: a protocol version this
+ * runner doesn't serve.
+ */
 export class InvalidCommandId extends Schema.TaggedError<InvalidCommandId>()("InvalidCommandId", {
   commandId: Schema.String,
+  code: Schema.Literals(["malformed", "future", "window", "version"]),
 }) {}
 
+/**
+ * `missing_credentials`, `invalid_credentials`, and `expired` come from a
+ * served endpoint's auth provider; `access_denied` and `receipt_access_denied`
+ * from the runtime's `authorize` hook.
+ */
 export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthorized", {
-  code: Schema.Literals(["access_denied", "receipt_access_denied", "reauthorization_unavailable"]),
+  code: Schema.Literals([
+    "access_denied",
+    "receipt_access_denied",
+    "reauthorization_unavailable",
+    "missing_credentials",
+    "invalid_credentials",
+    "expired",
+  ]),
+}) {}
+
+/** A schema issue at a path, without the offending value. */
+export const InputIssue = Schema.Struct({ path: Schema.String, message: Schema.String })
+
+/**
+ * A served request the boundary refused before any turn. Never in a typed
+ * in-process handle's error channel.
+ */
+export class InvalidInput extends Schema.TaggedError<InvalidInput>()("InvalidInput", {
+  code: Schema.Literals([
+    "decode",
+    "missing_command_id",
+    "too_large",
+    "unsupported_media_type",
+    "unsupported_protocol",
+    "unknown_route",
+    "unservable_id",
+    "origin_not_allowed",
+    "unknown_event",
+    "too_many_filters",
+  ]),
+  issues: Schema.optionalKey(Schema.Array(InputIssue)),
+}) {}
+
+/**
+ * Produced only by clients, for a response that is neither a success, a
+ * declared failure, nor an `ActorError` envelope. `retryable` says whether a
+ * retry with the same command id is safe.
+ */
+export class TransportError extends Schema.TaggedError<TransportError>()("TransportError", {
+  code: Schema.Literals(["network", "status", "decode", "defect"]),
+  status: Schema.optionalKey(Schema.Int),
+  retryable: Schema.Boolean,
 }) {}
 
 export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("ActorUnavailable", {
@@ -83,6 +136,8 @@ export const Reason = Schema.Union([
   MailboxFull,
   RunnerAtCapacity,
   SessionEnded,
+  InvalidInput,
+  TransportError,
 ])
 
 export type Reason = typeof Reason.Type
@@ -94,21 +149,52 @@ export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", {
     if (Schema.is(Unauthorized)(this.reason))
       return this.reason.code === "reauthorization_unavailable"
 
-    return Schema.is(Schema.Union([ActorUnavailable, Timeout, MailboxFull, RunnerAtCapacity]))(
-      this.reason,
-    )
+    if (isTransportError(this.reason)) return this.reason.retryable
+
+    return isRetryableReason(this.reason)
   }
 
+  /**
+   * Milliseconds to wait before retrying with the same command id: 250 for
+   * `ActorUnavailable`, 1,000 for `RunnerAtCapacity`, and 100 for
+   * `MailboxFull`, each with ±50% jitter drawn once per error.
+   */
   get retryAfter(): Option.Option<number> {
-    return Schema.is(SessionEnded)(this.reason)
-      ? Option.fromUndefinedOr(this.reason.retryAfterMs)
-      : Option.none()
+    if (Schema.is(SessionEnded)(this.reason))
+      return Option.fromUndefinedOr(this.reason.retryAfterMs)
+
+    const nominal = NOMINAL_RETRY_AFTER[this.reason._tag]
+
+    if (nominal === undefined) return Option.none()
+
+    let value = jittered.get(this)
+
+    if (value === undefined) {
+      value = Math.round(nominal * Effect.runSync(Random.nextBetween(0.5, 1.5)))
+      jittered.set(this, value)
+    }
+
+    return Option.some(value)
   }
 
   override get message(): string {
     return this.reason.message
   }
 }
+
+const isTransportError = Schema.is(TransportError)
+
+const isRetryableReason = Schema.is(
+  Schema.Union([ActorUnavailable, Timeout, MailboxFull, RunnerAtCapacity]),
+)
+
+const NOMINAL_RETRY_AFTER: Partial<Record<Reason["_tag"], number>> = {
+  ActorUnavailable: 250,
+  RunnerAtCapacity: 1_000,
+  MailboxFull: 100,
+}
+
+const jittered = new WeakMap<ActorError, number>()
 
 export namespace ActorError {
   export type Of<Reasons extends Reason["_tag"]> = [Reasons] extends [never]
