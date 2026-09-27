@@ -53,6 +53,7 @@ import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
+import { reportShardsAcquiredDuringRefresh } from "./storage/shard-refresh.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -130,8 +131,6 @@ export const layer = (options: Options) => {
       const services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
       >()
-      const frameworkClock = yield* FrameworkClock
-      const cleanupHooks = yield* CleanupHooks
 
       const database = yield* rowsDatabase
 
@@ -327,6 +326,9 @@ export const layer = (options: Options) => {
 
       yield* relay.run.pipe(Effect.forkIn(scope))
 
+      const frameworkClock = yield* FrameworkClock
+      const cleanupHooks = yield* CleanupHooks
+
       const cleanup = Effect.suspend(() =>
         sweep(
           Array.from(registrations.values(), ({ name, policy }) => ({
@@ -338,14 +340,14 @@ export const layer = (options: Options) => {
           retryWindowMs,
         ),
       ).pipe(
-        Effect.provideService(SqlClient.SqlClient, yield* SqlClient.SqlClient),
+        Effect.provideContext(services),
         Effect.provideService(FrameworkClock, frameworkClock),
         Effect.provideService(CleanupHooks, cleanupHooks),
       )
 
       // Horizons are days long, so a sweep a minute keeps up; each batch is
       // its own short transaction, so turns never wait on a whole sweep.
-      if ((yield* CleanupHooks).periodic)
+      if (cleanupHooks.periodic)
         yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
           Effect.andThen(
             cleanup.pipe(
@@ -550,7 +552,9 @@ export const layer = (options: Options) => {
             : Layer.effect(
                 RunnerStorage.RunnerStorage,
                 SqlRunnerStorage.make({}).pipe(
-                  Effect.map(wiring?.storage ?? ((storage) => storage)),
+                  Effect.map((storage) =>
+                    reportShardsAcquiredDuringRefresh(wiring?.storage(storage) ?? storage),
+                  ),
                 ),
               ).pipe(Layer.orDie),
           RunnerHealth.layerNoop,
