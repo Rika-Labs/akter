@@ -81,7 +81,11 @@ export const sweep = Effect.fnUntraced(function* (
           FROM actor_receipts r
           WHERE r.actor_type = ${policy.actorType} AND r.expires_at_ms >= ${from}::bigint
             AND r.expires_at_ms <= ${receiptCutoff}
-            AND NOT EXISTS (SELECT 1 FROM actor_outbox o WHERE o.intent_id = r.command_id)
+            AND NOT EXISTS (
+              SELECT 1 FROM actor_outbox o
+              WHERE o.intent_id = r.command_id AND o.tenant_id = r.tenant_id
+                AND o.target_type = r.actor_type AND o.target_id = r.actor_id
+            )
           ORDER BY r.expires_at_ms
           LIMIT ${hooks.batchSize}
           FOR UPDATE SKIP LOCKED),

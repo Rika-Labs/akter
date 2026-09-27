@@ -325,8 +325,16 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const sender = yield* Journal.get("sender")
           const receiver = yield* Journal.get("receiver")
+          const bystander = yield* Journal.get("bystander")
           const before = fixture.retention.receives
           yield* sender.Forward("receiver")
+
+          // Another actor's receipt under the same id is not held by the row.
+          const sql = yield* SqlClient.SqlClient
+          yield* bystander.Add(1)
+          yield* sql`UPDATE actor_receipts SET command_id = o.intent_id FROM actor_outbox o
+            WHERE o.tenant_id = ${test.tenant} AND o.actor_id = 'sender'
+              AND actor_receipts.tenant_id = ${test.tenant} AND actor_receipts.actor_id = 'bystander'`
 
           // The first delivery crashes before deleting the sender's row; the
           // redelivery pauses there, days past the receipt's horizon.
@@ -340,6 +348,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           // The row can still be redelivered, so its receipt stays.
           yield* test.cleanup
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
+          expect(yield* test.receiptsFor(bystander.ref, "Add")).toBe(0)
 
           // This delivery dies too; the next one comes after another sweep and
           // replays the receipt that sweep kept.
