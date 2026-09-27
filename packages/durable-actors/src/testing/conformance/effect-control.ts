@@ -1087,7 +1087,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
         environment,
         fixture,
         3,
-        { executors: SHORT_LEASE },
+        { executors: { lease: "9 seconds" } },
         Effect.gen(function* () {
           fixture.provider = () => Effect.never
           const { owner, other } = yield* ownerAndOther(yield* refOf("orphan"))
