@@ -39,64 +39,116 @@ const CoolOff = Ship.sleep("cool-off")
 
 const AwaitPaid = Ship.wait("paid", Paid)
 
-const Pay = Actor.command("Pay", { input: Schema.Struct({ orderId: Schema.String, amount: Schema.Int }) })
+const Pay = Actor.command("Pay", {
+  input: Schema.Struct({ orderId: Schema.String, amount: Schema.Int }),
+})
+
+const Charge = Actor.command("Charge", { input: Schema.String, output: Schema.Int })
+
+const Ledger = Actor.make("Ledger", {
+  key: Schema.String,
+  state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  api: { Charge },
+})
+
+const Begin = Actor.command("Begin", {
+  input: Schema.Struct({ orderId: Schema.String, sku: Schema.String }),
+  output: Schema.String,
+})
 
 const Shipper = Actor.make("Shipper", {
   key: Schema.String,
   events: [Paid],
-  api: { Ship, Pay },
+  api: { Ship, Pay, Begin },
 })
 
 const bump = (fixture: WorkflowsFixture, key: string) =>
   Effect.sync(() => fixture.runs.set(key, (fixture.runs.get(key) ?? 0) + 1))
 
-export const workflowsLayer = (fixture: WorkflowsFixture) =>
-  Shipper.toLayer(
-    Effect.succeed({
-      Pay: Effect.fnUntraced(function* (input: { readonly orderId: string; readonly amount: number }) {
-        const turn = yield* Shipper.Turn
+const LedgerLive = Ledger.toLayer(
+  Effect.succeed({
+    Charge: Effect.fnUntraced(function* () {
+      const turn = yield* Ledger.Turn
+      yield* turn.state.set({ count: turn.state.count + 1 })
 
-        yield* turn.emit(Paid.make(input))
-      }),
-      Ship: Effect.fnUntraced(function* (input: { readonly orderId: string; readonly sku: string }) {
-        const wf = yield* Shipper.Workflow
-
-        const reservation = yield* Reserve.run(input.sku, (sku) =>
-          Effect.gen(function* () {
-            yield* bump(fixture, `reserve:${input.orderId}`)
-
-            if (sku === "none") return yield* OutOfStock.make({ sku })
-
-            const gate = fixture.blocked
-
-            if (sku.startsWith("block") && gate !== undefined) {
-              fixture.blocked = undefined
-              yield* Deferred.await(gate)
-            }
-
-            return `r-${sku}`
-          }),
-        )
-
-        const label = yield* wf.version("label")
-
-        if (input.sku.startsWith("sleep")) yield* CoolOff("10 seconds")
-
-        if (input.sku.startsWith("wait")) {
-          const paid = yield* AwaitPaid({
-            where: (event) => event.orderId === input.orderId,
-            timeout: "1 minute",
-          })
-
-          return Option.match(paid, {
-            onNone: () => `${reservation}:unpaid`,
-            onSome: (event) => `${reservation}:paid-${event.amount}`,
-          })
-        }
-
-        return `${reservation}:v${label}`
-      }),
+      return turn.state.count
     }),
+  }),
+)
+
+export const workflowsLayer = (fixture: WorkflowsFixture) =>
+  Layer.mergeAll(
+    LedgerLive,
+    Shipper.toLayer(
+      Effect.succeed({
+        Begin: Effect.fnUntraced(function* (input: {
+          readonly orderId: string
+          readonly sku: string
+        }) {
+          const turn = yield* Shipper.Turn
+          yield* turn.emit(Paid.make({ orderId: input.orderId, amount: 3 }))
+
+          return yield* (yield* Shipper.intents(turn.id)).Ship(input)
+        }),
+        Pay: Effect.fnUntraced(function* (input: {
+          readonly orderId: string
+          readonly amount: number
+        }) {
+          const turn = yield* Shipper.Turn
+
+          yield* turn.emit(Paid.make(input))
+        }),
+        Ship: Effect.fnUntraced(function* (input: {
+          readonly orderId: string
+          readonly sku: string
+        }) {
+          const wf = yield* Shipper.Workflow
+
+          const reservation = yield* Reserve.run(input.sku, (sku) =>
+            Effect.gen(function* () {
+              yield* bump(fixture, `reserve:${input.orderId}`)
+
+              if (sku === "none") return yield* OutOfStock.make({ sku })
+
+              if (sku.startsWith("charge")) {
+                const ledger = yield* Ledger.get(input.orderId)
+                const first = yield* ledger.Charge(sku).pipe(Effect.orDie)
+                const again = yield* ledger.Charge(sku).pipe(Effect.orDie)
+
+                return `r-${sku}-${first}-${again}`
+              }
+
+              const gate = fixture.blocked
+
+              if (sku.startsWith("block") && gate !== undefined) {
+                fixture.blocked = undefined
+                yield* Deferred.await(gate)
+              }
+
+              return `r-${sku}`
+            }),
+          )
+
+          const label = yield* wf.version("label")
+
+          if (input.sku.startsWith("sleep")) yield* CoolOff("10 seconds")
+
+          if (input.sku.startsWith("wait")) {
+            const paid = yield* AwaitPaid({
+              where: (event) => event.orderId === input.orderId,
+              timeout: "1 minute",
+            })
+
+            return Option.match(paid, {
+              onNone: () => `${reservation}:unpaid`,
+              onSome: (event) => `${reservation}:paid-${event.amount}`,
+            })
+          }
+
+          return `${reservation}:v${label}`
+        }),
+      }),
+    ),
   )
 
 export const workflowsLive = (fixture: WorkflowsFixture) => Layer.mergeAll(workflowsLayer(fixture))
@@ -381,6 +433,65 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           expect(result).toBe("r-block:v2")
           expect(fixture.workflows.runs.get("reserve:k2")).toBe(2)
           yield* Deferred.succeed(gate, undefined)
+        }),
+      ),
+  },
+  {
+    name: "workflows: a turn stages a start whose wait sees that turn's own event",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const shipper = yield* Shipper.get("staged")
+          const id = yield* shipper.Begin({ orderId: "s1", sku: "wait-s" })
+          expect(yield* (yield* Shipper.run(Ship, id)).result).toBe("r-wait-s:paid-3")
+          const again = yield* shipper.Ship({ orderId: "s1", sku: "wait-s" })
+          expect(again.executionId).toBe(id)
+          expect(yield* again.result).toBe("r-wait-s:paid-3")
+        }),
+      ),
+  },
+  {
+    name: "workflows: activity actor calls get distinct ids per call and reach the receiver once each",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const test = yield* ActorTest
+          const shipper = yield* Shipper.get("charging")
+          const run = yield* shipper.Ship({ orderId: "c1", sku: "charge" })
+          expect(yield* run.result).toBe("r-charge-1-2:v2")
+          const ledger = yield* Ledger.get("c1")
+          expect(yield* test.receiptsFor(ledger.ref, "Charge")).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "workflows: an event appended while a wait is registering is never lost",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+
+          const results = yield* Effect.forEach(
+            Array.from({ length: 20 }, (_, index) => index),
+            (index) =>
+              Effect.gen(function* () {
+                const shipper = yield* Shipper.get(`race-${index}`)
+                const orderId = `race-${index}`
+                const run = yield* shipper.Ship({ orderId, sku: "wait-race" })
+                yield* shipper.Pay({ orderId, amount: index })
+
+                return yield* run.result
+              }),
+            { concurrency: 5 },
+          )
+
+          expect(results).toEqual(
+            Array.from({ length: 20 }, (_, index) => `r-wait-race:paid-${index}`),
+          )
         }),
       ),
   },
