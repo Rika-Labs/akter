@@ -57,6 +57,8 @@ import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
 import { recordManifests } from "./workflows/manifest.ts"
 import { decodeResult } from "./workflows/engine.ts"
+import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
+import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
@@ -112,6 +114,8 @@ const Millis = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_48
 
 const millis = (duration: Duration.Input) =>
   Millis.make(Math.floor(Duration.toMillis(Duration.fromInputUnsafe(duration))))
+
+const decodeTarget = Schema.decodeEffect(Target)
 
 /** Added to the longest turn a claimed intent's receiver may take. */
 const CLAIM_MARGIN_MS = 5000
@@ -193,11 +197,21 @@ export const layer = (options: Options) => {
       // group reads may only touch these, never other Actor.table values.
       const checked = new Set<AnyOwnedTable>()
 
+      // An interrupt is authorized as the workflow member its execution id names.
+      const authorizedAs = (request: Request) =>
+        request.command !== INTERRUPT
+          ? Effect.succeed(request)
+          : decodeTarget(request.payload).pipe(
+              Effect.flatMap(({ executionId }) => decodeExecutionId(executionId)),
+              Effect.map(({ workflow }) => ({ ...request, command: workflow })),
+              Effect.orElseSucceed(() => request),
+            )
+
       const allow = Effect.fnUntraced(function* (
         request: Request,
         kind: "command" | "query" = "command",
       ) {
-        if (!(yield* options.authorize({ ...request, kind })))
+        if (!(yield* options.authorize({ ...(yield* authorizedAs(request)), kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
@@ -278,7 +292,9 @@ export const layer = (options: Options) => {
 
             if (external) yield* checkIdentity(request.commandId, retryWindowMs, admission.now)
 
-            if (admission.receipt !== undefined) {
+            // A replayed resume still reaches the owner, whose turn replays the
+            // receipt and then wakes the execution the lost delivery would have.
+            if (admission.receipt !== undefined && request.command !== RESUME) {
               const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
 
               if (external) yield* authorize(request)

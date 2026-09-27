@@ -685,8 +685,19 @@ const make = <
         if (isWorkflow(member))
           return [
             member.tag,
-            (input: typeof member.input.Type) =>
-              Effect.gen(function* () {
+            (input: typeof member.input.Type) => {
+              const lock = Semaphore.makeUnsafe(1)
+              let identity: string | undefined
+
+              const identify = lock.withPermit(
+                Effect.gen(function* () {
+                  if (identity === undefined) identity = yield* callId
+
+                  return identity
+                }),
+              )
+
+              return Effect.gen(function* () {
                 yield* outsideTurn
                 yield* callable
 
@@ -698,7 +709,7 @@ const make = <
                     ref,
                     caller,
                     command: member.tag,
-                    commandId: yield* callId,
+                    commandId: yield* identify,
                     payload,
                   }),
                 )
@@ -723,7 +734,8 @@ const make = <
                   internalActors.pollWorkflow,
                   actors.mintCommandId,
                 )
-              }),
+              })
+            },
           ]
 
         return [

@@ -474,8 +474,9 @@ export const activationEngine = (options: {
           if (row.kind === "version") markers.set(row.step, row.version!)
           else steps.set(row.step, row)
 
-        // A runner without this workflow, or whose markers exclude the
-        // execution's, leaves it for a compatible runner.
+        // A runner without this workflow, whose markers exclude the
+        // execution's, or that lacks a recorded step, leaves it for a
+        // compatible runner.
         const compatible =
           workflow !== undefined &&
           Object.entries(workflow.member.versions).every(([name, range]) => {
@@ -483,7 +484,8 @@ export const activationEngine = (options: {
 
             return value >= range.min && value <= range.current
           }) &&
-          [...markers.keys()].every((name) => workflow.member.versions[name] !== undefined)
+          [...markers.keys()].every((name) => workflow.member.versions[name] !== undefined) &&
+          [...steps.values()].every((row) => workflow.steps.get(row.step)?.kind === row.kind)
 
         if (!compatible) {
           yield* Effect.logWarning(

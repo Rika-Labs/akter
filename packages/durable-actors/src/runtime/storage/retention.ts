@@ -125,14 +125,14 @@ export const sweep = Effect.fnUntraced(function* (
           LIMIT ${hooks.batchSize}),
         upto AS (
           SELECT p.routing_key, p.tenant_id, p.actor_type, p.actor_id,
-            LEAST(max(p.sequence), (
+            LEAST(max(p.sequence), COALESCE((
               SELECT min(LEAST(x.event_cursor, COALESCE(w.wait_after, x.event_cursor)))
               FROM actor_workflow_executions x
               LEFT JOIN actor_workflow_step w ON w.routing_key = x.routing_key
                 AND w.execution_id = x.execution_id AND w.kind = 'wait' AND w.exit IS NULL
               WHERE x.routing_key = p.routing_key AND x.tenant_id = p.tenant_id
                 AND x.actor_type = p.actor_type AND x.actor_id = p.actor_id AND x.status <> 'finished'
-            )) AS last
+            ), max(p.sequence))) AS last
           FROM picked p GROUP BY p.routing_key, p.tenant_id, p.actor_type, p.actor_id),
         gone AS (
           DELETE FROM actor_events e USING upto u
