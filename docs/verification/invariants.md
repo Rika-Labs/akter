@@ -56,3 +56,5 @@ W1 and W2 are specified further by [ADR 0022](../decisions/0022-workflow-engine-
 P1 has single-runner evidence from M1.7 on PGlite and Postgres: a lost result reruns the executor under the same effect id, and a dead letter reports `ambiguous` unless the last attempt failed with a typed error; the case names are in the [conformance ledger](01-conformance.md#effects-with-routes-m17). Provider-specific reconciliation remains per adapter.
 
 The mapping from these invariants to normative guarantees is in [runtime contracts](../contracts/README.md); crash expectations are in the [failure matrix](02-failure-matrix.md).
+
+R5 with automatic pruning (boundary, prune/retry race, crash inside a sweep, and restart) is executed in `conformance/retention.ts` and `crash/retention.test.ts`; its restore and version-skew cases wait for M4.

@@ -17,6 +17,7 @@ import { blobs } from "./scenarios/storage/blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
+import { retention } from "./scenarios/retention.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { ownedRows } from "./scenarios/storage/owned-rows.ts"
 import { multiRunner } from "./scenarios/multi-runner.ts"
@@ -49,6 +50,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   blobs,
   reducers,
   capacity,
+  retention,
   subscriptions,
 ]
 

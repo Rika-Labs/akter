@@ -7,7 +7,7 @@
 
 The intended deployment has one shared relational database and one `Actors.layer` runtime per runner process; a deployment may have multiple runners. These operating shapes describe the accepted design, not currently implemented deployment support:
 
-- **Embedded:** provide `Actors.layer` from `durable-actors/runtime` inside the application.
+- **Embedded:** provide `Actors.layer` from `@durable-actors/core/runtime` inside the application.
 - **Served:** add `Actor.serve` for HTTP, WebSocket, SSE, and OpenAPI access.
 - **Hosted:** deploy served containers on our runners behind `apps/edge`, with Neki and parked sockets.
 

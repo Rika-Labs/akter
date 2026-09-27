@@ -4,7 +4,8 @@ import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { TurnHooks } from "./hooks.ts"
-import { BUCKETS, CallerJson, outboxTime } from "./outbox.ts"
+import { databaseTime } from "./admission.ts"
+import { BUCKETS, CallerJson } from "./outbox.ts"
 
 /** Durable polling is the correctness path; a post-commit wake only shortens it. */
 const POLL_INTERVAL = "1 second"
@@ -167,7 +168,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       attempts: number,
     ) =>
       Effect.gen(function* () {
-        const at = yield* outboxTime
+        const at = yield* databaseTime
 
         const settled =
           route === undefined
@@ -217,7 +218,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
               actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
             VALUES (${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
               ${row.actor_id}, ${row.command}, ${row.payload}, ${attempts}, ${cause}, ${ambiguous},
-              ${yield* outboxTime})`
+              ${yield* databaseTime})`
 
           // Only the fault hook needs the caller, so an unreadable one must not block the letter.
           const caller = yield* Schema.decodeEffect(CallerJson)(row.caller).pipe(Effect.option)
@@ -236,7 +237,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     // Claiming records the attempt before the provider can see it, so a crash
     // during the call is counted and reported as an unknown outcome.
     const claimed = yield* sql`UPDATE actor_outbox SET attempts = ${attempt},
-        due_at_ms = ${(yield* outboxTime) + EXECUTION_LEASE_MS}, ambiguous = true,
+        due_at_ms = ${(yield* databaseTime) + EXECUTION_LEASE_MS}, ambiguous = true,
         last_error = ${`Attempt ${attempt} ended without reporting an outcome`}
       WHERE ${attemptRow(row.attempts)} RETURNING 1`
 
@@ -269,7 +270,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     // The outcome is recorded first, so a failed dead-letter transaction is
     // retried with this attempt's cause rather than the claim's.
     yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
-        due_at_ms = ${(yield* outboxTime) + backoffMs(attempt - 1)}
+        due_at_ms = ${(yield* databaseTime) + backoffMs(attempt - 1)}
       WHERE ${attemptRow(attempt)}`
 
     if (last) return yield* exhaust(attempt, cause, ambiguous)
@@ -283,7 +284,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const pass = lock
     .withPermit(
       Effect.gen(function* () {
-        const now = yield* outboxTime
+        const now = yield* databaseTime
         const due = yield* scanDue({ sql, now, limit: PASS_LIMIT })
 
         const settled = yield* Effect.forEach(
