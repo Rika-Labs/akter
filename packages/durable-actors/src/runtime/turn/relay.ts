@@ -925,6 +925,19 @@ export const outboxRelay = Effect.fnUntraced(function* (
         WHERE ${attemptRow(attempt)}
         RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`
 
+      // A cancellation that committed after the check above still takes the known result.
+      if (
+        recorded[0]?.cancelled === true &&
+        rejected !== undefined &&
+        registered.routesCancelled &&
+        Result.isSuccess(outcome) &&
+        (yield* settleTo(
+          outcome.success.cancelled,
+          sql`${attemptRow(attempt)} AND cancelled_at_ms IS NOT NULL`,
+        ))
+      )
+        return
+
       if (recorded[0]?.cancelled === true)
         return yield* settleCancelled(
           attempt,
