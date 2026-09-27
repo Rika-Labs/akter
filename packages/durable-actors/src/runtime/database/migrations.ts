@@ -214,6 +214,15 @@ export const migrations = {
     yield* sql`CREATE INDEX actor_events_emitted ON actor_events (actor_type, emitted_at_ms)`
     yield* sql`CREATE INDEX actor_outbox_intent ON actor_outbox (intent_id)`
   }),
+  // Claims and backoff move `due_at_ms`, so `scheduled_at_ms` keeps the time a
+  // row first became due. `kind` follows `bucket` in the due index so intent
+  // scans never read effect rows waiting for an executor, and the reverse.
+  "0011_relay": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_outbox ADD COLUMN scheduled_at_ms bigint`
+    yield* sql`CREATE INDEX actor_outbox_due_kind ON actor_outbox (bucket, kind, due_at_ms)`
+    yield* sql`DROP INDEX actor_outbox_due`
+  }),
   // The placement join keeps every view from being automatically updatable,
   // so writes fail without triggers or rules to maintain.
   "0013_inspection_views": Effect.gen(function* () {

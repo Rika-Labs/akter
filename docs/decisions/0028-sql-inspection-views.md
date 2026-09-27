@@ -106,12 +106,12 @@ Each question has a proposed default. Migration `0013_inspection_views` already 
 - Operators and tools get a supported way to read runtime state that survives runtime migrations.
 - Every future migration that changes a table under a view must keep that view's columns and rows, or add a new view version; the conformance cases catch a break.
 - The views add no write, lock, or index cost to turns.
-- `0013` lands after `0010_retention`, `0011_relay`, and `0012_workflows` in the migration order but may merge before them; a local database that already applied `0013` must be recreated before it can apply a lower id.
+- `0013` lands after `0010_retention`, `0011_relay`, and `0012_workflows` in the migration order but may merge before `0012`; a local database that already applied `0013` must be recreated before it can apply a lower id.
 
 ## Evidence
 
 - Conformance ([`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts)), shared by PGlite and Postgres: committed turns appear in every view, declared failures leave only their receipt, defects leave nothing, effects move to `dead_letters`, fired timers leave the outbox; rows keep their tenant; every write through every view fails and leaves the rows untouched; a role granted only the schema reads the views and is denied every runtime table.
-- Migration, in `pglite.test.ts`: `0013` applies to a database that stopped at `0010` despite the `0011`–`0012` gap, and a database that applied `0013` without a registered lower id refuses to migrate, naming that id.
+- Migration, in `pglite.test.ts`: `0013` applies to a database that stopped at `0011` despite the `0012` gap, and a database that applied `0013` without a registered lower id refuses to migrate, naming that id.
 - Benchmark `inspection-views` (see the [reference](../operations/inspection-views.md#cost) and `benchmarks/results/`).
 
 ## Revisit when
