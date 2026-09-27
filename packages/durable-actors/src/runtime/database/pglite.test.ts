@@ -135,6 +135,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [9, "blobs"],
             [10, "retention"],
+            [11, "relay"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
             { blobs: "actor_blobs" },
@@ -160,7 +161,10 @@ describe("PGlite migrations", () => {
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
           yield* throughBlobs
-          expect(yield* migrate).toEqual([[10, "retention"]])
+          expect(yield* migrate).toEqual([
+            [10, "retention"],
+            [11, "relay"],
+          ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
               WHERE indexname IN ('actor_receipts_expiry', 'actor_events_emitted', 'actor_outbox_intent')
@@ -171,6 +175,39 @@ describe("PGlite migrations", () => {
             { indexname: "actor_receipts_expiry" },
           ])
           expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("applies 0011_relay after 0010_retention to a database with pending rows, keeping them and swapping the due index", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughRetention = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0011")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughRetention
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (1, 't', 'Sender', 's')`
+          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
+              actor_type, actor_id, target_type, target_id, command, payload, caller)
+            VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
+          expect(yield* migrate).toEqual([[11, "relay"]])
+          expect(
+            yield* sql`SELECT intent_id, due_at_ms::int AS due, scheduled_at_ms FROM actor_outbox`,
+          ).toEqual([{ intent_id: "pending", due: 42, scheduled_at_ms: null }])
+          expect(
+            yield* sql`SELECT indexname FROM pg_indexes WHERE tablename = 'actor_outbox'
+              AND indexname LIKE 'actor_outbox_due%'`,
+          ).toEqual([{ indexname: "actor_outbox_due_kind" }])
         }),
       )
       .finally(() => runtime.dispose())
@@ -202,6 +239,7 @@ describe("PGlite migrations", () => {
             { migration_id: 8 },
             { migration_id: 9 },
             { migration_id: 10 },
+            { migration_id: 11 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

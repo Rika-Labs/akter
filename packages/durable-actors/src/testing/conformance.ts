@@ -62,6 +62,14 @@ import {
 } from "./conformance/outbox.ts"
 import { propertiesConformance, propertiesLayer } from "./conformance/properties.ts"
 import {
+  relayClusterConformance,
+  relayConformance,
+  relayEffects,
+  relayFixture,
+  relayLayer,
+  type RelayFixture,
+} from "./conformance/relay.ts"
+import {
   effectsConformance,
   effectsFixture,
   effectsLayer,
@@ -153,6 +161,7 @@ export interface ConformanceFixture {
   readonly tables: TablesFixture
   readonly effects: EffectsFixture
   readonly blobs: BlobsFixture
+  readonly relay: RelayFixture
   readonly retention: RetentionFixture
   executions: number
   queries: number
@@ -273,6 +282,7 @@ const makeFixture = (): ConformanceFixture => ({
   tables: tablesFixture(),
   effects: effectsFixture(),
   blobs: blobsFixture(),
+  relay: relayFixture(),
   retention: retentionFixture(),
   executions: 0,
   queries: 0,
@@ -301,6 +311,8 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...tablesConformance,
   ...effectsConformance,
   ...multiRunnerConformance,
+  ...relayConformance,
+  ...relayClusterConformance,
   ...blobsConformance,
   ...retentionConformance,
   {
@@ -1261,6 +1273,8 @@ export const describeConformance = (options: {
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
     blobsLayer(fixture.blobs),
+    relayLayer(fixture.relay),
+    relayEffects(fixture.relay),
     retentionLayer(fixture.retention),
     propertiesLayer,
   )
