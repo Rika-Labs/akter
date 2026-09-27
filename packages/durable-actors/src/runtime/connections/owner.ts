@@ -632,6 +632,7 @@ export const activationOwner = ({
           baseline,
           session: undefined,
         }
+
         activation.rows!.set(request.connectionId, { ...row, frameSeq: 0, buffered: [] })
 
         const result = yield* run(
