@@ -3,7 +3,7 @@ import { Config, Crypto, Effect, ManagedRuntime, Schedule, Stream } from "effect
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { ServedCounter } from "./client-actor.ts"
+import { ServedCounter } from "./client.ts"
 
 const baseFetch = globalThis.fetch.bind(globalThis)
 
