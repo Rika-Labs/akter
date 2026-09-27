@@ -392,13 +392,10 @@ export const clientOf =
       commandId: () => string | undefined,
     ): Promise<A> => {
       const retry: Retry = { attempts: 0, futureRetried: false, authRetried: false }
-      let last: Failure | undefined
 
       const loop: Effect.Effect<A, Failure> = attempt.pipe(
         Effect.catch((attempted) =>
           Effect.gen(function* () {
-            last = attempted.failure
-
             // A deployment at this URL may have changed its window; the next mint asks again.
             if (
               isFramework(attempted.failure) &&
@@ -409,7 +406,7 @@ export const clientOf =
             const delay = yield* retryDelay(retry, clock)(attempted)
             retry.attempts += 1
             const id = commandId()
-            const deadline = id === undefined ? undefined : retryDeadline(id)
+            const deadline = id === undefined || !clock.isFresh ? undefined : retryDeadline(id)
 
             if (
               Option.isNone(delay) ||
@@ -429,9 +426,7 @@ export const clientOf =
         const id = commandId()
 
         return Effect.fail(
-          id === undefined
-            ? (last ?? network())
-            : ActorError.make({ reason: Timeout.make({ commandId: id }) }),
+          ActorError.make({ reason: Timeout.make(id === undefined ? {} : { commandId: id }) }),
         )
       })
 

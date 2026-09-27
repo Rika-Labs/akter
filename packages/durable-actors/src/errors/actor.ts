@@ -76,7 +76,7 @@ export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("Ac
 }) {}
 
 export class Timeout extends Schema.TaggedError<Timeout>()("Timeout", {
-  commandId: Schema.String,
+  commandId: Schema.optionalKey(Schema.String),
 }) {}
 
 export class NotCreated extends Schema.TaggedError<NotCreated>()("NotCreated", {}) {}

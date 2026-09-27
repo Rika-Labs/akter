@@ -561,6 +561,23 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
             expect(retried).toEqual({ ok: true, value: 1 })
             expect(yield* receipts(tenant, "HttpRoom", id)).toBe(1)
           }
+
+          const unreachable = recording((sent) =>
+            sent.path.endsWith("/Count") ? new Response("bad gateway", { status: 502 }) : undefined,
+          )
+
+          const counted = yield* settle(() =>
+            HttpRoom.client({
+              baseUrl: server.url,
+              headers: { authorization: `Bearer ${tenant}:alice` },
+              fetch: unreachable.fetch,
+            })
+              .get("hold-query")
+              .Count({ timeoutInMs: 300 }),
+          )
+
+          expect(reasonOf(counted)).toMatchObject({ tag: "Timeout" })
+          expect(Object.keys(reasonOf(counted) ?? {})).not.toContain("commandId")
         }),
       )
     },
