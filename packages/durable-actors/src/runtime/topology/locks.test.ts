@@ -93,4 +93,18 @@ describe("shard locks", () => {
 
       expect(yield* storage.refresh(address, [])).toEqual([])
     }).pipe(Effect.runPromise))
+
+  it("reports a shard only to the runner that acquired it", () =>
+    Effect.gen(function* () {
+      const storage = yield* lostLocks
+      const other = RunnerAddress.make("localhost", 34432)
+      yield* storage.acquire(other, [shard])
+
+      expect(yield* storage.refresh(address, [])).toEqual([])
+      expect(yield* storage.refresh(other, [])).toEqual([shard])
+
+      yield* storage.releaseAll(address)
+
+      expect(yield* storage.refresh(other, [])).toEqual([shard])
+    }).pipe(Effect.runPromise))
 })
