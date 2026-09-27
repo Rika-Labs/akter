@@ -269,11 +269,19 @@ const EFFECT_BACKOFF = { baseMs: 1000, maxMs: 256_000 } as const
 const PROGRESS_EVERY_MS = { default: 250, min: 50, max: 60_000 } as const
 
 /** Effect timings are timer durations: 1 ms to 2^31 − 1 ms. */
-const effectMillis = (path: string, duration: Duration.Input) => {
+const effectMillis = (
+  path: string,
+  duration: Duration.Input,
+  bounds: { readonly min: number; readonly max: number; readonly label: string } = {
+    min: 1,
+    max: 2_147_483_647,
+    label: "1 millisecond to 2147483647 milliseconds",
+  },
+) => {
   const millis = Duration.toMillis(Duration.fromInputUnsafe(duration))
 
-  if (!Number.isFinite(millis) || millis < 1 || millis > 2_147_483_647)
-    throw new Error(`${path} must be a duration from 1 millisecond to 2147483647 milliseconds`)
+  if (!Number.isFinite(millis) || millis < bounds.min || millis > bounds.max)
+    throw new Error(`${path} must be a duration from ${bounds.label}`)
 
   return Math.floor(millis)
 }
@@ -296,18 +304,16 @@ const effectTiming = (tag: string, policy: EffectPolicy<AnyEffect, AnyCommand> |
     progressEveryMs:
       policy?.progressEvery === undefined
         ? PROGRESS_EVERY_MS.default
-        : effectMillis(`policy.effects.${tag}.progressEvery`, policy.progressEvery),
+        : effectMillis(`policy.effects.${tag}.progressEvery`, policy.progressEvery, {
+            min: PROGRESS_EVERY_MS.min,
+            max: PROGRESS_EVERY_MS.max,
+            label: "50 milliseconds to 1 minute",
+          }),
   } satisfies {
     readonly timeoutMs: number
     readonly backoff: RegisteredEffect["backoff"]
     readonly progressEveryMs: number
   }
-
-  if (
-    timing.progressEveryMs < PROGRESS_EVERY_MS.min ||
-    timing.progressEveryMs > PROGRESS_EVERY_MS.max
-  )
-    throw new Error(`policy.effects.${tag}.progressEvery must be from 50 milliseconds to 1 minute`)
 
   if (timing.backoff.maxMs < timing.backoff.baseMs)
     throw new Error(`policy.effects.${tag}.retry.backoff.max must be at least its base`)
@@ -1217,10 +1223,10 @@ const make = <
               target: AnyEffect,
               frame: ProgressOf<ProgressEffect>,
             ): Effect.Effect<void> =>
-              target !== declared || encodeProgress === undefined
-                ? Effect.logWarning("Progress frame does not match the running effect")
-                : !reporting
-                  ? Effect.void
+              !reporting()
+                ? Effect.void
+                : target !== declared || encodeProgress === undefined
+                  ? Effect.logWarning("Progress frame does not match the running effect")
                   : encodeProgress(frame).pipe(
                       Effect.map((json) => new TextEncoder().encode(json)),
                       Effect.matchEffect({

@@ -46,8 +46,8 @@ export class ProgressSink extends Context.Service<
 
 /** One attempt's progress slot: latest wins, sent at most once per `everyMs`. */
 export interface ProgressSlot {
-  /** False when nothing will be sent, so a caller can skip encoding frames. */
-  readonly active: boolean
+  /** False once nothing more will be sent, so a caller can skip encoding frames. */
+  readonly active: () => boolean
   readonly offer: (frame: Uint8Array) => Effect.Effect<void>
   /**
    * Ignores every later offer, then sends the pending frame if the runner has
@@ -56,7 +56,11 @@ export interface ProgressSlot {
   readonly close: Effect.Effect<void>
 }
 
-const closedSlot: ProgressSlot = { active: false, offer: () => Effect.void, close: Effect.void }
+const closedSlot: ProgressSlot = {
+  active: () => false,
+  offer: () => Effect.void,
+  close: Effect.void,
+}
 
 /**
  * A runner's progress pool. It holds one slot per running attempt and a
@@ -118,6 +122,8 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     let seq = 0
     let closed = false
     let pending: { readonly seq: number; readonly frame: Uint8Array } | undefined
+    // The frame the sink is accepting, resent on close if that send is interrupted.
+    let inflight: { readonly seq: number; readonly frame: Uint8Array } | undefined
     let sentAt: number | undefined
 
     const send = (frame: { readonly seq: number; readonly frame: Uint8Array }) =>
@@ -149,12 +155,14 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
 
         if (next === undefined) continue
         sentAt = yield* Clock.currentTimeMillis
+        inflight = next
         yield* send(next)
+        inflight = undefined
       }
     }).pipe(Effect.forkIn(scope))
 
     return {
-      active: true,
+      active: () => !closed,
       offer: (frame) =>
         Effect.suspend(() => {
           if (closed) return Effect.void
@@ -170,8 +178,9 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
         return Fiber.interrupt(sender).pipe(
           Effect.andThen(
             Effect.suspend(() => {
-              const last = pending
+              const last = pending ?? inflight
               pending = undefined
+              inflight = undefined
 
               if (last === undefined) return Effect.void
 

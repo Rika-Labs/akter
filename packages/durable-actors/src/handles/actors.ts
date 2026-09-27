@@ -91,7 +91,7 @@ export interface EffectFailure {
 export type AttemptContext = Omit<ExecutorContext, "progress"> & {
   /** Offers one encoded progress frame to the attempt's slot. */
   /** False when progress reports go nowhere, so frames need not be encoded. */
-  readonly reporting: boolean
+  readonly reporting: () => boolean
   readonly report: (frame: Uint8Array) => Effect.Effect<void>
 }
 

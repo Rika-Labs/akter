@@ -467,7 +467,7 @@ describe("actor declarations", () => {
       }),
     ).toThrow("retry.times")
 
-    for (const progressEvery of ["49 millis", "61 seconds"] as const)
+    for (const progressEvery of ["49 millis", "60000.5 millis", "61 seconds"] as const)
       expect(() =>
         Actor.make("BadProgressEvery", {
           effects: [Moderate],

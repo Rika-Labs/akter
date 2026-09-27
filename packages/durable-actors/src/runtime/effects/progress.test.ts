@@ -169,3 +169,50 @@ it("closes a slot without waiting on or failing with its sink", () =>
       expect(closed).toEqual(["a"])
     }),
   ))
+
+it("resends on close a frame whose send the close interrupted", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const delivered: Array<number> = []
+
+      const runtime = ManagedRuntime.make(
+        Layer.mergeAll(
+          Layer.succeed(ProgressSink, {
+            wants: () => true,
+            send: (message) =>
+              Effect.sleep(20).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    delivered.push(message.seq)
+                  }),
+                ),
+              ),
+            closed: () => Effect.void,
+          }),
+          TestClock.layer(),
+        ),
+      )
+
+      yield* Effect.acquireUseRelease(
+        Effect.succeed(runtime),
+        () =>
+          Effect.promise(() =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const pool = yield* progressPool()
+                  const slot = yield* pool.open(attempt("a", 250))
+                  yield* slot.offer(frame(1))
+                  yield* TestClock.adjust(1)
+                  yield* Effect.forkChild(slot.close)
+                  yield* TestClock.adjust(100)
+                }),
+              ),
+            ),
+          ),
+        () => Effect.promise(() => runtime.dispose()),
+      )
+
+      expect(delivered).toEqual([1])
+    }),
+  ))

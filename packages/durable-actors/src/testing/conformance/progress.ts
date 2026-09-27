@@ -29,6 +29,7 @@ class EncoderDown extends Schema.TaggedError<EncoderDown>()("EncoderDown", {}) {
 const Stage = Schema.Struct({
   percent: Schema.Finite,
   stage: Schema.Literals(["probe", "encode", "upload"]),
+  note: Schema.optional(Schema.String),
 })
 
 class Transcode extends Actor.effect<Transcode>()("Transcode", {
@@ -191,7 +192,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
           const exec = () => fixture.progress.captured!
           fixture.progress.frames = [
             { percent: "half", stage: "encode" },
-            { percent: 1, stage: "x".repeat(5000) },
+            { percent: 1, stage: "encode", note: "x".repeat(5000) },
             { percent: 1, stage: "mux" },
           ]
           fixture.progress.progressFailed = false
