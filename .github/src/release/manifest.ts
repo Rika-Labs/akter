@@ -141,6 +141,14 @@ const exportTargets = (exports: Exports) =>
   )
 
 /** Everything wrong with a packed tarball, given its file list and manifest; empty when publishable. */
+const identifier = String.raw`(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)`
+
+const semver = new RegExp(
+  String.raw`^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)` +
+    String.raw`(?:-${identifier}(?:\.${identifier})*)?` +
+    String.raw`(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`,
+)
+
 export function tarballProblems({
   files,
   manifest,
@@ -168,7 +176,7 @@ export function tarballProblems({
     if (/^(catalog|workspace):/.test(specifier))
       problems.push(`dependency ${name} is unresolved (${specifier})`)
 
-  if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(manifest.version))
+  if (!semver.test(manifest.version))
     problems.push(`version ${manifest.version} is not a semantic version`)
 
   return problems

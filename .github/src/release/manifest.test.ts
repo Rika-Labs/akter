@@ -142,3 +142,24 @@ it("names undeclared bare imports written with single quotes", () => {
     }),
   ).toEqual(["dynamic-driver", "optional-driver", "reexported", "side-effect"])
 })
+
+it("rejects versions outside the SemVer grammar", () => {
+  const problems = ["01.2.3", "1.2.3-alpha..1", "1.2.3+build+extra", "1.2.3-01", "1.2"].map(
+    (version) =>
+      tarballProblems({
+        files: complete,
+        manifest: publishManifest({
+          manifest: { ...manifest, version },
+          catalog: { effect: "4.0.0-rc.116" },
+        }),
+      }),
+  )
+
+  expect(problems).toEqual([
+    ["version 01.2.3 is not a semantic version"],
+    ["version 1.2.3-alpha..1 is not a semantic version"],
+    ["version 1.2.3+build+extra is not a semantic version"],
+    ["version 1.2.3-01 is not a semantic version"],
+    ["version 1.2 is not a semantic version"],
+  ])
+})
