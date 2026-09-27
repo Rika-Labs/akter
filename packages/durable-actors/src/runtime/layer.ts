@@ -46,7 +46,7 @@ import { migrate } from "./database/migrations.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
-import { commandEntity, registerActor } from "./entity/register.ts"
+import { commandEntity, encodeEntityId, registerActor } from "./entity/register.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
@@ -54,7 +54,7 @@ import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
-import { keepAcquiredShards } from "./topology/locks.ts"
+import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -140,11 +140,6 @@ export class RunnerWiring extends Context.Service<
     ) => RunnerStorage.RunnerStorage["Service"]
   }
 >()("@durable-actors/core/runtime/layer/RunnerWiring") {}
-
-// Cluster entity ids name the tenant and actor id together.
-const encodeEntityId = Schema.encodeEffect(
-  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-)
 
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
@@ -547,21 +542,30 @@ export const layer = (options: Options) => {
                 key: string | null
                 value: Uint8Array | null
               }>`
-                SELECT g.event_sequence::text AS head, s.key, s.value
-                FROM (VALUES (1)) AS one (x)
-                LEFT JOIN actor_generations g ON g.routing_key = ${key} AND g.tenant_id = ${request.ref.tenant}
-                  AND g.actor_type = ${request.ref.actor} AND g.actor_id = ${request.ref.id}
-                LEFT JOIN actor_state s ON s.routing_key = g.routing_key AND s.tenant_id = g.tenant_id
-                  AND s.actor_type = g.actor_type AND s.actor_id = g.actor_id`
+                SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
+                FROM actor_generations
+                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
+                UNION ALL
+                SELECT NULL, key, value
+                FROM actor_state
+                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
 
-              const head = rows[0]?.head ?? "0"
+              let head: string | undefined
               const state: Array<readonly [string, string]> = []
 
               for (const row of rows)
-                if (row.key !== null) state.push([row.key, decompress(row.value!)])
+                if (row.head !== null) head = row.head
+                else state.push([row.key!, decompress(row.value!)])
 
-              return yield* query.run(request, state, head, (tag, after, limit) =>
-                replayEvents(request.ref, key, tag, after, BigInt(head), limit).pipe(
+              // State counts only alongside its generation row, which carries the head.
+              if (head === undefined) state.length = 0
+
+              const cursor = head ?? "0"
+
+              return yield* query.run(request, state, cursor, (tag, after, limit) =>
+                replayEvents(request.ref, key, tag, after, BigInt(cursor), limit).pipe(
                   Effect.catchIf(SqlError.isSqlError, Effect.die),
                   Effect.provideContext(services),
                 ),
@@ -668,7 +672,30 @@ export const layer = (options: Options) => {
         ),
       )
 
-      return runtime.pipe(Layer.provide(sharding))
+      // Advisory locks are held by a live session, so no second runner can
+      // take a shard while its holder runs; table locks can expire under a
+      // runner that keeps serving, and singletons then check their lease.
+      const config = wiring?.config
+      const address = config?.runnerAddress
+
+      const lease =
+        runnerStorage === "sql" &&
+        config?.shardLockDisableAdvisory === true &&
+        address !== undefined &&
+        Option.isSome(address)
+          ? Layer.succeed(
+              ShardLease,
+              tableShardLease({
+                sql,
+                address: address.value,
+                expiration: Duration.fromInputUnsafe(
+                  config.shardLockExpiration ?? ShardingConfig.defaults.shardLockExpiration,
+                ),
+              }),
+            )
+          : Layer.empty
+
+      return runtime.pipe(Layer.provide(sharding), Layer.provide(lease))
     }),
   )
 }
