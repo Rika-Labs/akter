@@ -546,7 +546,10 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(opens).toBe(3)
-          expect([...replay][0]).toMatchObject({ _tag: "Resync", after: "5" })
+          const [resync] = replay
+
+          expect(resync?._tag).toBe("Resync")
+          expect(resync?._tag === "Resync" ? resync.after : undefined).toBe("5")
           expect(resyncs).toEqual(["5"])
           yield* held.close
           yield* earlier.close
