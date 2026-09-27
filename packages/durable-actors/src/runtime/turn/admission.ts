@@ -29,19 +29,25 @@ export const databaseTime = Effect.gen(function* () {
 
 const decodeCommandId = Schema.decodeEffect(CommandId)
 
+// A versioned id this runner can't read: `v<n>.` for any n other than 1.
+const OTHER_VERSION = /^v(?!1\.)\d{1,9}\./
+
 export const checkIdentity = Effect.fnUntraced(function* (
   id: string,
   windowMs: number,
   now: number,
 ) {
+  const invalid = (code: InvalidCommandId["code"]) =>
+    ActorError.make({ reason: InvalidCommandId.make({ commandId: id, code }) })
+
   yield* decodeCommandId(id).pipe(
-    Effect.mapError(() => ActorError.make({ reason: InvalidCommandId.make({ commandId: id }) })),
+    Effect.mapError(() => invalid(OTHER_VERSION.test(id) ? "version" : "malformed")),
   )
   const { issuedAt, expiresAt } = commandTimes(id)
 
-  if (expiresAt - issuedAt !== windowMs || issuedAt > now) {
-    return yield* ActorError.make({ reason: InvalidCommandId.make({ commandId: id }) })
-  }
+  if (expiresAt - issuedAt !== windowMs) return yield* invalid("window")
+
+  if (issuedAt > now) return yield* invalid("future")
 
   if (now >= expiresAt)
     return yield* ActorError.make({ reason: CommandExpired.make({ commandId: id }) })

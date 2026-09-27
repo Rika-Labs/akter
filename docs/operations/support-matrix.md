@@ -29,9 +29,12 @@ Support means the shared `@durable-actors/core/testing` conformance suite passes
 | Retention cleanup                      | verified, single runner                  | verified incl. SIGKILL, single runner                  | gated; unverified                           | `conformance/retention.ts`, `crash/retention.test.ts` (ADR 0038)        |
 | Generated quickstart app (CR.2)        | development, one process per `dataDir`   | verified, single runner                                | gated; unverified                           | `.github/src/release/quickstart.ts` runs each template's tests          |
 | Migrations and restore                 | target; unverified                       | target; unverified                                     | gated; unverified                           | migration and restore rehearsal                                         |
+| Served HTTP and OpenAPI (M3.2)         | verified, single runner                  | verified, single runner                                | gated; unverified                           | `conformance/http.ts` over a real Bun listener                          |
 
 Topology is a separate gate. Multi-replica Railway support requires a reachable per-replica `railnet0` advertise address. A service-per-runner alternative needs equivalent evidence; `Topology.k8s` was removed from the agreed public API. Singleton support requires a two-runner uniqueness and failover test.
 
 PGlite is a development and test backend: the quickstart's file-backed default is for one process per data directory, and a PGlite cell is never production support. Production PGlite is gated on M4.14.
+
+Served HTTP is verified behind Bun's HTTP server on loopback only; no proxy, load balancer, TLS terminator, or hosting provider is claimed. WebSocket and SSE are not served yet.
 
 An unverified cell remains gated. Postgres wire compatibility is not evidence of locking, pooling, transaction, or restore equivalence.
