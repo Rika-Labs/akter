@@ -161,6 +161,9 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       expect(yield* test.receiptsFor(room.ref, "Moderated")).toBe(1)
       expect(yield* room.Recent({ limit: 10 })).toEqual([])
       expect(yield* room.Attachment(id)).toEqual(Option.none())
+      expect((yield* room.History({})).map(({ message }) => [message.id, message.body])).toEqual([
+        [id, ""],
+      ])
     }),
   ))
 
