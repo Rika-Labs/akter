@@ -540,10 +540,18 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const freed = (kind: "intents" | "effects") =>
     Effect.suspend(() => (more[kind] ? Queue.offer(signals, undefined) : Effect.void))
 
+  const inFlight = Effect.gen(function* () {
+    return (yield* FiberSet.size(deliveries)) + (yield* FiberSet.size(attempts))
+  })
+
   const pass = lock
     .withPermit(
       Effect.gen(function* () {
-        if (stopping) return { claimed: 0, backlog: false }
+        if (stopping) return { claimed: 0, backlog: false, quiet: true }
+
+        // Work runs only on fibers a pass starts, so none running now means
+        // nothing can stage rows after this claim reads.
+        const quiet = (yield* inFlight) === 0
 
         const slots = Math.min(
           settings.deliveryConcurrency - (yield* FiberSet.size(deliveries)),
@@ -603,7 +611,11 @@ export const outboxRelay = Effect.fnUntraced(function* (
           )
         }
 
-        return { claimed: rows.length, backlog: more.intents || more.effects }
+        return {
+          claimed: rows.length,
+          backlog: more.intents || more.effects,
+          quiet,
+        }
       }),
     )
     .pipe(Effect.provideContext(services))
@@ -621,18 +633,14 @@ export const outboxRelay = Effect.fnUntraced(function* (
     yield* FiberSet.awaitEmpty(attempts)
   })
 
-  const inFlight = Effect.gen(function* () {
-    return (yield* FiberSet.size(deliveries)) + (yield* FiberSet.size(attempts))
-  })
-
   // Waits for in-flight work, which may stage more, then claims again; done
-  // once a claim finds nothing and nothing is running.
+  // once a claim finds nothing while nothing was running.
   const drain = Effect.gen(function* () {
     for (let rounds = 0; rounds < DRAIN_ROUNDS;) {
       yield* idle
-      const { claimed, backlog } = yield* pass
+      const { claimed, backlog, quiet } = yield* pass
 
-      if (claimed === 0 && (yield* inFlight) === 0) return
+      if (claimed === 0 && quiet) return
 
       // A backlog larger than the free slots takes many rounds; only rounds
       // that drained every due row count toward the loop guard.
