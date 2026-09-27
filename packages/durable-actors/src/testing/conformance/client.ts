@@ -492,7 +492,7 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "client routes queries, singleton and minted actors, and special-character keys, sending the greatest consistency token",
+    name: "client routes queries, singleton and minted actors, and special-character keys, sending the greatest consistency token a server issued",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
