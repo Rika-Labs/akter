@@ -28,6 +28,7 @@ import { receiptReplay } from "./scenarios/receipt-replay.ts"
 import { reducers } from "./scenarios/reducers.ts"
 import { capacity } from "./scenarios/scale/capacity.ts"
 import { manyActors } from "./scenarios/scale/many-actors.ts"
+import { singletonFailover } from "./scenarios/singleton-failover.ts"
 import { retainedHeap } from "./scenarios/scale/retained-heap.ts"
 import { stateSize } from "./scenarios/state-size.ts"
 import { subscriptions } from "./scenarios/subscriptions.ts"
@@ -46,6 +47,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   ownedRows,
   effectRoundTrip,
   multiRunner,
+  singletonFailover,
   blobs,
   reducers,
   capacity,

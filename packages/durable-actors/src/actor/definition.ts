@@ -37,14 +37,7 @@ import {
   Request,
 } from "../handles/actors.ts"
 import { currentStaging, emptyOutbox, InTurn, openOutbox, stage } from "../handles/intents.ts"
-import {
-  ActorRef,
-  Caller,
-  CurrentCaller,
-  Tenant,
-  principal,
-  type System,
-} from "../identity/caller.ts"
+import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
 import { type AnyBlob, isBlob } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
@@ -671,7 +664,7 @@ const make = <
     })
   })
 
-  const register = <R>(handlers: Handlers<All, R>, services: Context.Context<R>) =>
+  const commandsOf = <R>(handlers: Handlers<All, R>, services: Context.Context<R>) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
       const commands = new Map<string, RegisteredCommand>()
@@ -907,20 +900,15 @@ const make = <
         })
       }
 
-      yield* actors.register({
-        name,
-        commands,
-        singleton: isSingleton,
-        placement,
-        policy,
-        tables,
-        blobs,
-      })
+      return commands as ReadonlyMap<string, RegisteredCommand>
     })
 
   /**
-   * Implements every `api` and `internal` command. The build Effect runs once
-   * when the layer is built; handlers read their turn with `yield* X.Turn`.
+   * Implements every `api` and `internal` command; handlers read their turn
+   * with `yield* X.Turn`. The build Effect runs once when the layer is built,
+   * except on a singleton, where it runs once per activation in the
+   * activation's scope, so a fiber it forks with `Effect.forkScoped` lives
+   * exactly as long as the one cluster-wide activation.
    */
   // Defaults keep R `never` when there is no handler to infer it from, as for an actor of reducers only.
   const toLayer = <R = never, RB = never>(
@@ -932,9 +920,50 @@ const make = <
   > =>
     Layer.effectDiscard(
       Effect.gen(function* () {
-        const handlers = yield* build
-        const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
-        yield* register(handlers, services as Context.Context<R>)
+        const actors = yield* InternalActors
+
+        const registration = {
+          name,
+          singleton: isSingleton,
+          tenant: yield* Tenant,
+          placement,
+          policy,
+          tables,
+          blobs,
+        }
+
+        if (!isSingleton) {
+          const handlers = yield* build
+          const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
+          const commands = yield* commandsOf(handlers, services as Context.Context<R>)
+
+          return yield* actors.register({
+            ...registration,
+            activate: () => Effect.succeed(commands),
+          })
+        }
+
+        const services = yield* Effect.context<
+          Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+        >()
+
+        yield* actors.register({
+          ...registration,
+          activate: Effect.fnUntraced(function* (ref: ActorRef) {
+            const scope = yield* Scope.Scope
+
+            const handlers = yield* build.pipe(
+              Effect.provideService(Scope.Scope, scope),
+              Effect.provideService(Tenant, ref.tenant),
+              Effect.provideService(CurrentCaller, System.make({ source: "actor", ref })),
+              Effect.provideContext(services as Context.Context<RB>),
+            )
+
+            return yield* commandsOf(handlers, services as Context.Context<R>).pipe(
+              Effect.provideContext(services),
+            )
+          }),
+        })
       }),
     ) as Layer.Layer<
       never,
