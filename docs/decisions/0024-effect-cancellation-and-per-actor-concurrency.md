@@ -126,7 +126,10 @@ ALTER TABLE actor_outbox
   ADD COLUMN maybe_applied boolean NOT NULL DEFAULT false,
   ADD COLUMN ready_at_ms bigint;
 
-UPDATE actor_outbox SET ready_at_ms = due_at_ms, maybe_applied = attempts > 0 AND ambiguous
+UPDATE actor_outbox
+  SET ready_at_ms = due_at_ms,
+      maybe_applied = attempts > 0 AND ambiguous,
+      running = attempts > 0 AND ambiguous AND due_at_ms > (extract(epoch FROM clock_timestamp()) * 1000)::bigint
   WHERE kind = 'effect';
 
 -- per-actor cap counts; holds only claimed effect rows
@@ -136,6 +139,7 @@ CREATE INDEX actor_outbox_running
 ```
 
 - The attempt claim sets `running = true`. Every settle (success, failure, cancellation, dead letter) sets it to `false` or removes the row. A row whose runner died keeps `running = true` with an expired `due_at_ms`; the cap counts `running AND due_at_ms > now`, so a dead runner's slot frees when its lease ends.
+- **Rolling upgrade.** The backfill marks rows that a pre-0015 runner has claimed under a live lease as `running`, so the first cancellation cannot mistake them for idle rows. A pre-0015 runner that claims after the migration would not set `running`, so pre-0015 runners must run without executors, or be stopped, from the migration until every runner has the M2.13 code. Under ADR 0021 an executor-less runner never claims effects, so this needs no new mechanism. The M2.13 release notes state the order.
 - `maybe_applied` is sticky: an attempt claim that finds the previous attempt unreported (`attempts > 0 AND ambiguous`, so its lease ended without a settle) sets it, and nothing clears it. Cancellation and cancelled settles read it so that one possibly applied attempt makes the whole effect `Unknown`.
 - `ready_at_ms` is set once, to the row's first due time, when the effect is performed; waiting at the cap and backoff never change it. It is read only by the capped claim and the settle's wake.
 - `cancelled_at_ms` is written only by a cancelling commit and read by renewals, settles, and the attempt claim's `cancelled_at_ms IS NULL` filter.
