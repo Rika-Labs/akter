@@ -51,7 +51,7 @@ export const writeOutbox = Effect.fnUntraced(function* (
   if (outbox.replaced.length > 0)
     yield* sql`DELETE FROM actor_outbox WHERE ${actorRow} AND timer_key IN ${sql.in(outbox.replaced)}`
 
-  let dueNow = outbox.effects.length > 0
+  let dueNow = false
   let cancelledRunning = false
 
   if (outbox.cancelledEffects.length > 0) {
@@ -131,6 +131,8 @@ export const writeOutbox = Effect.fnUntraced(function* (
   // where its routes deliver; the relay runs its executor when it is due.
   for (const effect of outbox.effects) {
     const dueAt = dueOf(effect.due)
+
+    dueNow ||= dueAt <= now
 
     rows.push({
       routing_key: routingKey,
