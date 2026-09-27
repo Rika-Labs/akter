@@ -430,13 +430,20 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const attempt = row.attempts
     const request = yield* requestOf(row, "sender").pipe(Effect.orDie)
     const ref = ActorRef.make(request.ref)
-    yield* hooks.at("afterClaim", request)
-    yield* hooks.at("beforeExecute", request)
-
     const leaseNanos = BigInt(settings.executorLeaseMs) * 1_000_000n
     // Measured on this runner from when the last claim or renewal was sent, so
     // the database's lease can only end later than this one.
     let confirmed = claimedAt
+
+    yield* hooks.at("afterClaim", request)
+    yield* hooks.at("beforeExecute", request)
+
+    // Another runner may already hold the row, and a started call can't be undone.
+    if ((yield* Clock.currentTimeNanos) - confirmed >= leaseNanos)
+      return yield* Effect.logWarning("Effect attempt outlived its lease before it started").pipe(
+        Effect.annotateLogs({ attempt }),
+        annotate,
+      )
 
     const renewals = Effect.gen(function* () {
       while (true) {

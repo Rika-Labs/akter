@@ -1100,6 +1100,41 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "does not start an attempt whose claim outlived its lease before execution",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        2,
+        { relay: NO_POLL, executors: SHORT_LEASE },
+        Effect.gen(function* () {
+          const { owner, other } = yield* ownerAndOther(yield* refOf("stalled"))
+          fixture.provider = (attempt) => Effect.succeed(attempt.key)
+
+          // The owner's commit wakes its own relay, which claims attempt 1 and stalls before calling.
+          const stalled = yield* faults(owner, (test) => test.pauseNext("beforeExecute"))
+          yield* perform(owner, "stalled")
+          yield* stalled.reached
+          yield* Effect.sleep("3100 millis")
+
+          yield* advance(other, "4 seconds")
+          expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([
+            [2, other],
+          ])
+          yield* stalled.release
+
+          yield* advance(owner, "0 seconds")
+          expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([
+            [2, other],
+          ])
+          expect(yield* receipts(other, "Called")).toBe(1)
+          expect((yield* callerState(other, "stalled")).called).toEqual(["stalled"])
+        }),
+      ),
+  },
+  {
     name: "keeps a failure's backoff when a renewal races the settle",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
