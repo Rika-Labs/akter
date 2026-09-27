@@ -100,7 +100,7 @@ describe("durable workflows check", () => {
       expect(Exit.isFailure(unknown) && String(unknown.cause)).toContain("Unknown argument")
 
       const absent = yield* Effect.exit(loadEntry("./does-not-exist.ts"))
-      expect(Exit.isFailure(absent) && Cause.squash(absent.cause) instanceof UsageError).toBe(true)
+      expect(Exit.isFailure(absent) && Schema.is(UsageError)(Cause.squash(absent.cause))).toBe(true)
       expect(Exit.isFailure(absent) && String(absent.cause)).toContain(
         "Cannot load ./does-not-exist.ts",
       )
