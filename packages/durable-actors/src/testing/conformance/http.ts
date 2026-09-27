@@ -37,9 +37,9 @@ import { actorErrorBody } from "../../serve/wire.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
-class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
+export class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
 
-class Closed extends Schema.TaggedError<Closed>()(
+export class Closed extends Schema.TaggedError<Closed>()(
   "Closed",
   { reason: Schema.String },
   { httpApiStatus: 423 },
@@ -65,7 +65,7 @@ const count = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
-const HttpRoom = Actor.make("HttpRoom", {
+export const HttpRoom = Actor.make("HttpRoom", {
   key: Schema.String,
   state: count,
   api: { Post, Whoami, Hold, Crash, Count },
@@ -74,18 +74,22 @@ const HttpRoom = Actor.make("HttpRoom", {
 
 const Join = Actor.command("Join", { output: Schema.Int })
 
-const HttpLobby = Actor.make("HttpLobby", { key: Actor.singleton, state: count, api: { Join } })
+export const HttpLobby = Actor.make("HttpLobby", {
+  key: Actor.singleton,
+  state: count,
+  api: { Join },
+})
 
-const HttpTicket = Actor.make("HttpTicket", { state: count, api: { Join } })
+export const HttpTicket = Actor.make("HttpTicket", { state: count, api: { Join } })
 
 /** Handler runs, so a replay can be shown not to rerun the handler. */
-const runs = { count: 0 }
+export const runs = { count: 0 }
 
 interface Gate {
   hold: Effect.Effect<void>
 }
 
-const gate: Gate = { hold: Effect.void }
+export const gate: Gate = { hold: Effect.void }
 
 export const httpLayer = Layer.mergeAll(
   HttpRoom.toLayer(
@@ -315,7 +319,7 @@ const isDefectBody = Schema.is(Schema.TaggedStruct("Defect", { traceId: Schema.S
 
 const envelope = (reason: Reason) => actorErrorBody(ActorError.make({ reason }))
 
-const receipts = Effect.fnUntraced(function* (tenant: string, actor: string, id: string) {
+export const receipts = Effect.fnUntraced(function* (tenant: string, actor: string, id: string) {
   return (yield* (yield* ActorTest).inspect(ActorRef.make({ tenant, actor, id }))).receipts
 })
 
@@ -326,7 +330,7 @@ const rows = Effect.fnUntraced(function* (table: string) {
   return row!.n
 })
 
-const tenantOf = Effect.gen(function* () {
+export const tenantOf = Effect.gen(function* () {
   const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
 
   return `http-${uuid.slice(0, 8)}`

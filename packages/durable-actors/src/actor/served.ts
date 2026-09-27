@@ -18,6 +18,8 @@ export interface ServedDefinition {
   readonly name: string
   readonly key: "keyed" | "singleton" | "minted"
   readonly decodeId: (id: string) => Effect.Effect<string, Schema.SchemaError>
+  /** The path segment a client sends for a typed id. */
+  readonly encodeId: (id: string) => Effect.Effect<string, Schema.SchemaError>
   /** `api` members only; `internal` commands are never served. */
   readonly members: ReadonlyArray<ServedMember>
   readonly deliveryMs: number
