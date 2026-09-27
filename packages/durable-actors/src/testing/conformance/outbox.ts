@@ -573,10 +573,12 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
 
             for (const scan of [small, large]) {
               expect(scan).toMatchObject({ seqScans: 0, rows: 0, indexRows: 0 })
-              // The primary key only locates claimed rows, and there are none.
-              expect(scan.indexes.filter((index) => index !== "actor_outbox_pkey")).toEqual([
-                "actor_outbox_due_kind",
-              ])
+              // The primary key or intent id index only locates claimed rows, and there are none.
+              expect(
+                scan.indexes.filter(
+                  (index) => index !== "actor_outbox_pkey" && index !== "actor_outbox_intent",
+                ),
+              ).toEqual(["actor_outbox_due_kind"])
             }
 
             // The planner may skip the per-bucket probe when no intent is due at all, so the
