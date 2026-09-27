@@ -162,6 +162,7 @@ export interface ClaimedTick {
   readonly actor_type: string
   readonly actor_id: string
   readonly intent_id: string
+  readonly command: string
   readonly timer_key: string | null
   readonly scheduled_at: string | null
   readonly claimed_until: string
@@ -173,7 +174,8 @@ export interface ClaimedTick {
  * receipt commits the row is rewritten, in place and under the same claim, to
  * the first tick after now with a fresh id. A tick whose entry this runner
  * does not declare is deleted once it is past the skip window and otherwise
- * released with backoff, so a runner that still declares it can fire it.
+ * released with backoff, so a runner that still declares it can fire it. A
+ * tick whose stored target differs from its entry's is retargeted and released.
  */
 export const cronTicks = ({
   sql,
@@ -239,7 +241,17 @@ export const cronTicks = ({
         return true
       }
 
-      if (!stale) return false
+      // A deployment that retargets an expression keeps the tick's time and id
+      // and releases it, so the next claim delivers the current target.
+      if (!stale && row.command === entry.command) return false
+
+      if (!stale) {
+        const payload = yield* entry.payload
+        yield* sql`UPDATE actor_outbox SET command = ${entry.command}, payload = ${payload},
+            due_at_ms = ${now} WHERE ${claim}`
+
+        return true
+      }
 
       yield* Effect.logInfo("Cron tick skipped").pipe(
         Effect.annotateLogs({ ...annotations, lateMs: now - scheduledAt }),

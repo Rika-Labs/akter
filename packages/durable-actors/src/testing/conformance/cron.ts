@@ -67,6 +67,13 @@ const Gated = Actor.make("CronGated", {
   policy: { createdBy: Open, cron: { "* * * * *": Beat } },
 })
 
+const Secondly = Actor.make("CronSecondly", {
+  key: Schema.String,
+  api: { Open },
+  internal: { Beat },
+  policy: { cron: { "* * * * * *": Beat } },
+})
+
 const Pulse = Actor.command("Pulse")
 
 const Beacon = Actor.make("CronBeacon", {
@@ -124,6 +131,16 @@ const GatedLive = Gated.toLayer(
   }),
 )
 
+const SecondlyLive = Secondly.toLayer(
+  Effect.succeed({
+    Open: () => Effect.void,
+    Beat: Effect.fnUntraced(function* () {
+      const turn = yield* Secondly.Turn
+      yield* record(turn.ref, turn.commandId, turn.caller)
+    }),
+  }),
+)
+
 const BeaconLive = Beacon.toLayer(
   Effect.succeed({
     Pulse: Effect.fnUntraced(function* () {
@@ -134,7 +151,7 @@ const BeaconLive = Beacon.toLayer(
   }),
 )
 
-const CronLive = Layer.mergeAll(HeartbeatLive, GatedLive)
+const CronLive = Layer.mergeAll(HeartbeatLive, GatedLive, SecondlyLive)
 
 /**
  * One runtime of the cron actors for one case. The singleton's minutely tick
@@ -287,6 +304,56 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* stateOf(heartbeat.ref)).toMatchObject({ beats: 2 })
           expect(new Set(firedFor("fires").map((run) => run.commandId)).size).toBe(2)
           expect((yield* ticksOf(heartbeat.ref)).length).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "schedules a first tick from the time the first turn writes it, not from its admission",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const secondly = yield* Secondly.get("slow-first-turn")
+          const admitted = yield* nowMs
+          const handling = yield* test.pauseNext("beforeHandler")
+          const opening = yield* secondly.Open().pipe(Effect.forkChild)
+          yield* handling.reached
+          yield* Effect.sleep("1200 millis")
+
+          // Holds the relay so the first tick's row is read as written.
+          const claimed = yield* test.pauseNext("afterClaim")
+          yield* handling.release
+          yield* Fiber.join(opening)
+          const [tick] = yield* ticksOf(secondly.ref)
+          yield* claimed.release
+
+          expect(Number(tick!.scheduled) > admitted + 1200).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "retargets a pending tick to the entry's current command and fires it once",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const heartbeat = yield* Heartbeat.get("retarget")
+          yield* heartbeat.Open()
+          const [, first] = yield* ticksOf(heartbeat.ref)
+
+          // As an earlier deployment that targeted a since-removed command wrote it.
+          yield* sql`UPDATE actor_outbox SET command = 'Retired'
+            WHERE intent_id = ${first!.intent_id}`
+          yield* test.advance("1 minute")
+
+          expect(firedFor("retarget").map((run) => run.commandId)).toEqual([first!.intent_id])
+          expect(yield* receipts(heartbeat.ref, "Beat")).toBe(1)
+          const [, next] = yield* ticksOf(heartbeat.ref)
+          expect(next!.command).toBe("Beat")
+          expect(next!.intent_id).not.toBe(first!.intent_id)
         }),
       ),
   },

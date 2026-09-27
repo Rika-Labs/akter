@@ -15,7 +15,7 @@ import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
-import { FrameworkClock } from "./admission.ts"
+import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, writeOutbox } from "./outbox.ts"
 import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
@@ -130,25 +130,26 @@ export const executeTurn = Effect.fnUntraced(function* (
     const hash = yield* hashCanonical(admission.canonical)
 
     let current = admission.generation
+    const opens = cache.generation === undefined && cron.length > 0
+
+    // The first turn a generation commits schedules every entry not yet
+    // ticking, from the clock as it writes them; a turn that rolls back, as a
+    // NotCreated rejection does, writes none.
+    const scheduleTicks = opens
+      ? Effect.flatMap(databaseTime, (now) => writeTicks(routingKey, request.ref, cron, now))
+      : Effect.void
 
     if (cache.generation === undefined) {
       current = (yield* sql<{ generation: string }>`
         UPDATE actor_generations SET generation = generation + 1 WHERE ${actorRow}
         RETURNING generation::text AS generation`)[0]!.generation
-      // The first turn a generation commits schedules every entry not yet
-      // ticking; a turn that rolls back, as a NotCreated rejection does, writes none.
-      yield* writeTicks(
-        routingKey,
-        request.ref,
-        cron,
-        Number(admission.now) + (yield* FrameworkClock).offsetMillis(),
-      )
     } else if (cache.generation !== current) {
       return yield* Effect.die(RetryTurn.make({ message: "Stale actor generation" }))
     }
 
     if (admission.outcome !== null) {
       const outcome = yield* checkReceipt(request, hash, admission as StoredReceipt)
+      yield* scheduleTicks
 
       return { outcome, generation: current, state: cache.state, wake: false }
     }
@@ -242,6 +243,7 @@ export const executeTurn = Effect.fnUntraced(function* (
 
     if (creates) yield* sql`UPDATE actor_generations SET created = true WHERE ${actorRow}`
     const wake = (yield* writeOutbox(routingKey, request.ref, result.outbox)) || notified
+    yield* scheduleTicks
     const encoded = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
     yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
       VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${request.commandId}, ${request.command}, ${hash}, ${callerKey(request.caller)}, ${encoded}, ${commandTimes(request.commandId).expiresAt})`
