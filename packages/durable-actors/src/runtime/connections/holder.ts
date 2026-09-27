@@ -100,6 +100,7 @@ export interface OwnerChannel {
     request: Address & {
       readonly seq: number
       readonly frame: string
+      readonly authorizedUntil: number
       readonly commands: ConnectionCommands
     },
   ) => Effect.Effect<
@@ -167,6 +168,7 @@ interface Held {
         readonly after: string | undefined
         replayed: boolean
         sent: boolean
+        answered: boolean
         deadline: number
         deferredBytes: number
         readonly deferred: Array<ClientMessage>
@@ -349,6 +351,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         after,
         replayed: false,
         sent: false,
+        answered: false,
         // Until the new owner answers, this bounds the takeover; then the client's acknowledgment.
         deadline: at + connection.type.takeoverMs,
         deferred: previous?.deferred ?? [],
@@ -437,7 +440,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
                 const out = ClientMessage.cases.Frame.make({
                   frame: frame.frame,
                   cursor: frame.stamp ? message.through : undefined,
-                  event: frame.event,
+                  event: frame.stamp ? frame.event : undefined,
                 })
 
                 const pending = connection.resync
@@ -563,6 +566,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           }
 
           yield* observe(actorOf(connection.ref), answer.value)
+          pending.answered = true
           pending.deadline = (yield* now) + RESYNC_DEADLINE_MS
 
           if (connection.type.hasResync(connection.member)) {
@@ -592,12 +596,15 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
             ...address(connection),
             seq,
             frame,
+            authorizedUntil: authorizedUntil(connection),
             commands: commandsOf(connection, seq, issuedAt),
           }),
           Math.min(connection.type.deliveryMs, authorizedUntil(connection) - (yield* now)),
         ).pipe(Effect.exit)
 
         if (connection.ended) return
+
+        if (yield* expired(connection)) return
 
         if (Exit.isFailure(answer)) {
           const failure = Cause.findErrorOption(answer.cause)
@@ -903,8 +910,12 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       resyncDone: Effect.gen(function* () {
         const pending = connection.resync
 
-        // An acknowledgment before the member's replay finished is ignored.
-        if (pending === undefined || (type.hasResync(connection.member) && !pending.replayed))
+        // An acknowledgment before the new owner answered, or before the member's replay finished, is ignored.
+        if (
+          pending === undefined ||
+          !pending.answered ||
+          (type.hasResync(connection.member) && !pending.replayed)
+        )
           return
         connection.resync = undefined
         heldBytes -= pending.deferredBytes

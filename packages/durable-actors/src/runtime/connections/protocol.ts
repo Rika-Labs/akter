@@ -134,6 +134,7 @@ export const connectionsEntity = (name: string) =>
         ...ConnectionAddress,
         seq: Schema.Finite,
         frame: Schema.String,
+        authorizedUntil: Schema.Finite,
         commands: Commands,
       },
       success: Acked,

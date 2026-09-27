@@ -1,5 +1,5 @@
-import { Cause, type Context, Effect, Exit, Option, Schema, Semaphore } from "effect"
-import { Entity } from "effect/unstable/cluster"
+import { Cause, Clock, type Context, Effect, Exit, Option, Schema, Semaphore } from "effect"
+import { Entity, type Sharding } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable, NotCreated, SessionEnded } from "../../errors/actor.ts"
 import {
@@ -13,6 +13,7 @@ import { type ActorRef, Caller } from "../../identity/caller.ts"
 import type { ConnectionCommands } from "../../identity/command.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
+import { FrameworkClock } from "../turn/admission.ts"
 import { type ActivationCache, emptyActivationCache } from "../turn/execute.ts"
 import { type Deliver, HolderItem } from "./protocol.ts"
 import { HolderUnreachable, type Transport } from "./transport.ts"
@@ -70,7 +71,7 @@ export interface Activation {
   /** Connections this activation opened itself; every other one is resumed. */
   readonly opened: Set<string>
   /** The entity that holds this activation awake, released through its own context. */
-  keptAwake: Context.Context<never> | undefined
+  keptAwake: Context.Context<Sharding.Sharding | Entity.CurrentAddress> | undefined
   /** Serializes generation acquisition across the command and connection entities. */
   readonly acquiring: Semaphore.Semaphore
 }
@@ -173,6 +174,12 @@ export const activationOwner = ({
 
       for (const id of ids) activation.rows?.delete(id)
       yield* sql`DELETE FROM actor_connections WHERE ${actor} AND connection_id IN ${sql.in(ids)}`
+      const holder = activation.keptAwake
+
+      if (holder !== undefined && (activation.rows?.size ?? 0) === 0) {
+        activation.keptAwake = undefined
+        yield* Entity.keepAlive(false).pipe(Effect.provideContext(holder))
+      }
     })
 
   const send = (activation: Activation, channel: Channel, items: ReadonlyArray<HolderItem>) =>
@@ -527,7 +534,7 @@ export const activationOwner = ({
       if (open === (activation.keptAwake !== undefined)) return
 
       if (open) {
-        activation.keptAwake = yield* Effect.context<never>()
+        activation.keptAwake = yield* Effect.context<Sharding.Sharding | Entity.CurrentAddress>()
         yield* Entity.keepAlive(true)
 
         return
@@ -716,6 +723,7 @@ export const activationOwner = ({
     request: Address & {
       readonly seq: number
       readonly frame: string
+      readonly authorizedUntil: number
       readonly commands: ConnectionCommands
     },
   ) =>
@@ -732,6 +740,16 @@ export const activationOwner = ({
           return { _tag: "Closed" as const, ended: ended("ServerClosed", true) }
 
         if (request.seq <= row.frameSeq) return { _tag: "Acked" as const, ...identity(activation) }
+
+        // A frame that reaches the owner past its session's authorization bound never runs.
+        const clock = yield* FrameworkClock
+
+        if ((yield* Clock.currentTimeMillis) + clock.offsetMillis() >= request.authorizedUntil) {
+          yield* dropRows(activation, [request.connectionId])
+          yield* setKeepAwake(activation)
+
+          return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
+        }
 
         return yield* Effect.gen(function* () {
           const result = yield* run(
