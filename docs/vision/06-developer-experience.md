@@ -52,6 +52,10 @@ There is one package, `@durable-actors/core`, with four entries:
 - Workflows live beside the actor handlers that own them.
 - Activation-local values are ordinary Effect values in the layer's build closure; committed state is read through `X.Read`.
 
+## First five minutes
+
+`bun create @durable-actors` scaffolds a counter or chat app that runs, restarts with its state, and passes its own retry and crash tests on file-backed PGlite with no Docker; `DATABASE_URL` moves the same code to Postgres. The [quickstart](../quickstart.md) is the path, and a CI smoke keeps it runnable. PGlite there is for development only.
+
 ## Testing
 
 The intended `ActorTest` exercises the real turn, storage, serialization, receipts, and fault boundaries. PGlite is the fast-test target subject to compatibility checks; real Postgres must prove locking and multi-connection behavior, and the same conformance suite gates Neki support. The designed harness includes callers, virtual time, crashes, pauses, stale generations, effects, workflows, seeded old state, and inspection without inventing a fake handler runtime. Those capabilities still require implementation and evidence.

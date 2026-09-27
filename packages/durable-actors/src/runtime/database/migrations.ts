@@ -223,6 +223,78 @@ export const migrations = {
     yield* sql`CREATE INDEX actor_outbox_due_kind ON actor_outbox (bucket, kind, due_at_ms)`
     yield* sql`DROP INDEX actor_outbox_due`
   }),
+  // Workflow executions, their recorded steps, and the manifests deployments
+  // accepted. Every execution and step row lives on its owner's shard; a step
+  // row is written pending before its work starts and settled once.
+  "0012_workflows": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE actor_workflow_executions (
+        routing_key bigint NOT NULL,
+        execution_id text NOT NULL,
+        bucket integer NOT NULL CHECK (bucket = routing_key >> 56),
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        workflow text NOT NULL,
+        workflow_key text NOT NULL,
+        manifest_hash text NOT NULL,
+        payload bytea NOT NULL,
+        caller text NOT NULL,
+        event_cursor bigint NOT NULL,
+        status text NOT NULL CHECK (status IN ('running', 'suspended', 'finished')),
+        interrupt boolean NOT NULL DEFAULT false,
+        result bytea,
+        started_at_ms bigint NOT NULL,
+        finished_at_ms bigint,
+        PRIMARY KEY (routing_key, execution_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations,
+        CHECK ((status = 'finished') = (result IS NOT NULL AND finished_at_ms IS NOT NULL))
+      )`
+    yield* sql`CREATE INDEX actor_workflow_executions_open
+        ON actor_workflow_executions (routing_key, tenant_id, actor_type, actor_id)
+        WHERE status <> 'finished'`
+    yield* sql`CREATE INDEX actor_workflow_executions_finished
+        ON actor_workflow_executions (bucket, finished_at_ms)
+        WHERE status = 'finished'`
+    yield* sql`CREATE INDEX actor_workflow_executions_check
+        ON actor_workflow_executions (actor_type, workflow, manifest_hash)
+        WHERE status <> 'finished'`
+    yield* sql`CREATE TABLE actor_workflow_step (
+        routing_key bigint NOT NULL,
+        execution_id text NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        step text NOT NULL,
+        attempt integer NOT NULL,
+        kind text NOT NULL CHECK (kind IN ('activity', 'clock', 'deferred', 'wait', 'version')),
+        exit bytea,
+        due_at_ms bigint,
+        wait_event text,
+        wait_after bigint,
+        scanned bigint,
+        matched bigint,
+        version integer,
+        started_at_ms bigint NOT NULL,
+        settled_at_ms bigint,
+        PRIMARY KEY (routing_key, execution_id, step, attempt),
+        FOREIGN KEY (routing_key, execution_id) REFERENCES actor_workflow_executions ON DELETE CASCADE,
+        CHECK ((kind = 'wait') = (wait_event IS NOT NULL AND wait_after IS NOT NULL AND scanned IS NOT NULL)),
+        CHECK ((kind = 'clock') <= (due_at_ms IS NOT NULL)),
+        CHECK ((kind = 'version') = (version IS NOT NULL AND exit IS NULL))
+      )`
+    yield* sql`CREATE INDEX actor_workflow_step_waits
+        ON actor_workflow_step (routing_key, tenant_id, actor_type, actor_id, wait_event)
+        WHERE kind = 'wait' AND exit IS NULL`
+    yield* sql`CREATE TABLE actor_workflow_manifests (
+        actor_type text NOT NULL,
+        workflow text NOT NULL,
+        manifest_hash text NOT NULL,
+        manifest jsonb NOT NULL,
+        accepted_at_ms bigint NOT NULL,
+        PRIMARY KEY (actor_type, workflow, manifest_hash)
+      )`
+  }),
   // The placement join keeps every view from being automatically updatable,
   // so writes fail without triggers or rules to maintain.
   "0013_inspection_views": Effect.gen(function* () {
@@ -279,11 +351,29 @@ export const migrations = {
         d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at
       FROM actor_dead_letters d
       LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+    yield* sql`CREATE VIEW durable.workflows AS
+      SELECT w.tenant_id, w.actor_type, w.actor_id, w.routing_key, p.placement,
+        w.execution_id, w.workflow, w.workflow_key, w.manifest_hash, w.status, w.interrupt,
+        w.caller, w.payload, octet_length(w.payload) AS payload_bytes,
+        w.result, octet_length(w.result) AS result_bytes,
+        w.started_at_ms, to_timestamp(w.started_at_ms::float8 / 1000) AS started_at,
+        w.finished_at_ms, to_timestamp(w.finished_at_ms::float8 / 1000) AS finished_at
+      FROM actor_workflow_executions w
+      LEFT JOIN actor_placements p ON p.actor_type = w.actor_type`
+    yield* sql`CREATE VIEW durable.workflow_steps AS
+      SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key, p.placement,
+        s.execution_id, s.step, s.attempt, s.kind, s.exit, s.wait_event, s.version,
+        s.due_at_ms, to_timestamp(s.due_at_ms::float8 / 1000) AS due_at,
+        s.started_at_ms, to_timestamp(s.started_at_ms::float8 / 1000) AS started_at,
+        s.settled_at_ms, to_timestamp(s.settled_at_ms::float8 / 1000) AS settled_at
+      FROM actor_workflow_step s
+      LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
     // The catalog is how a tool checks which view versions a database has.
     yield* sql`CREATE VIEW durable.views AS
       SELECT view_name, version FROM (VALUES
         ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
-        ('timers', 1), ('effects', 1), ('dead_letters', 1), ('views', 1)
+        ('timers', 1), ('effects', 1), ('dead_letters', 1), ('workflows', 1),
+        ('workflow_steps', 1), ('views', 1)
       ) AS v(view_name, version)`
   }),
 }

@@ -20,8 +20,8 @@ These facts from the shipped code shape the answer:
 - State values and event values are zstd-compressed JSON (`bytea`). Postgres has no built-in zstd decompressor for arbitrary `bytea`.
 - The outbox holds intents, keyed timers (`timer_key IS NOT NULL`), and effects (`kind = 'effect'`) in one table. A settled effect becomes an intent to its route in the same row.
 - There is no separate cron table: cron entries are keyed timers with `timer_key = '$cron:<expression>'` (ADR 0021), and each tick leaves a receipt.
-- Workflow tables arrive with `0012_workflows` (ADR 0022), which is not on `main` yet.
-- The Effect migrator applies ids in order and skips any id at or below the latest applied, so `0013` applies on a database that has no `0010`–`0012`. The framework refuses to start a database where a registered id below the latest applied one is missing, checked both before and after the migrator runs, so a database that applied `0013` first fails loudly instead of skipping `0010`–`0012` without a word. That is why this migration merges after them.
+- Workflow executions and their steps live in `actor_workflow_executions` and `actor_workflow_step`, created by `0012_workflows` (ADR 0022), which precedes `0013`. Step rows are deleted when their execution finishes.
+- The Effect migrator applies ids in order and skips any id at or below the latest applied. The framework refuses to start a database where a registered id below the latest applied one is missing, checked both before and after the migrator runs, so a database that recorded `0013` without `0012` fails loudly instead of skipping `0012` without a word.
 - RLS is optional and per table (contract 10); M4.5 will add the framework's policies.
 
 ## Decision
@@ -30,23 +30,25 @@ These facts from the shipped code shape the answer:
 
 Migration `0013_inspection_views` creates schema `durable` and these views, version 1:
 
-| View                   | Rows                                                     | Source               |
-| ---------------------- | -------------------------------------------------------- | -------------------- |
-| `durable.actors`       | one per actor identity with a generation row             | `actor_generations`  |
-| `durable.state`        | one per stored state key                                 | `actor_state`        |
-| `durable.receipts`     | one per retained receipt                                 | `actor_receipts`     |
-| `durable.events`       | one per retained committed event                         | `actor_events`       |
-| `durable.outbox`       | pending intents and timers (`kind = 'intent'`)           | `actor_outbox`       |
-| `durable.timers`       | the keyed subset of `outbox`, including cron entries     | `actor_outbox`       |
-| `durable.effects`      | pending effects (`kind = 'effect'`)                      | `actor_outbox`       |
-| `durable.dead_letters` | exhausted effects                                        | `actor_dead_letters` |
-| `durable.views`        | the catalog: `(view_name, version)` for every view above | constant             |
+| View                     | Rows                                                     | Source                      |
+| ------------------------ | -------------------------------------------------------- | --------------------------- |
+| `durable.actors`         | one per actor identity with a generation row             | `actor_generations`         |
+| `durable.state`          | one per stored state key                                 | `actor_state`               |
+| `durable.receipts`       | one per retained receipt                                 | `actor_receipts`            |
+| `durable.events`         | one per retained committed event                         | `actor_events`              |
+| `durable.outbox`         | pending intents and timers (`kind = 'intent'`)           | `actor_outbox`              |
+| `durable.timers`         | the keyed subset of `outbox`, including cron entries     | `actor_outbox`              |
+| `durable.effects`        | pending effects (`kind = 'effect'`)                      | `actor_outbox`              |
+| `durable.dead_letters`   | exhausted effects                                        | `actor_dead_letters`        |
+| `durable.workflows`      | one per retained workflow execution                      | `actor_workflow_executions` |
+| `durable.workflow_steps` | one per recorded step of an open execution               | `actor_workflow_step`       |
+| `durable.views`          | the catalog: `(view_name, version)` for every view above | constant                    |
 
 Every view except the catalog also carries the actor type's `placement` from `actor_placements`. The exact columns are listed in [inspection views](../operations/inspection-views.md#columns).
 
 ### 2. Every exposed column is public contract; every other column is private
 
-A column that appears in a view is stable: its name, meaning, and SQL type do not change within a version. Base-table columns the views leave out stay private runtime detail: `payload_hash`, `bucket`, `kind` (expressed by the view split), `actor_outbox.ambiguous` on intents, and anything a later migration adds, such as `scheduled_at_ms`, until a view version exposes it. `routing_key` is exposed as an opaque join and index key; its value is stable for an actor but its encoding is not part of the contract.
+A column that appears in a view is stable: its name, meaning, and SQL type do not change within a version. Base-table columns the views leave out stay private runtime detail: `payload_hash`, `bucket`, `kind` (expressed by the view split), `actor_outbox.ambiguous` on intents, the workflow `bucket` and `event_cursor`, a step's `wait_after`, `scanned`, and `matched`, the whole `actor_workflow_manifests` table (deployment metadata with no tenant), and anything a later migration adds, such as `scheduled_at_ms`, until a view version exposes it. `routing_key` is exposed as an opaque join and index key; its value is stable for an actor but its encoding is not part of the contract.
 
 Adding a column at the end of a view is compatible and keeps its version. Removing, renaming, retyping, or changing the meaning of a column, or changing which rows a view returns, requires a new view (for example `durable.receipts_v2`) and a catalog row; the old view keeps working until an ADR retires it.
 
@@ -80,7 +82,7 @@ The migration adds no index, so the views cost nothing on the turn path. Point l
 
 ### 7. Workflows and cron
 
-This narrows the M2 plan, which put workflow views and a cron run-history view into `0013`. Cron (M2.5) is not on `main`; once it lands, `durable.timers` shows its entries (`timer_key LIKE '$cron:%'`) and `durable.receipts` its ticks, and a dedicated run-history view is an additive follow-up. Workflow views (`durable.workflows`, `durable.workflow_steps`) are not in version 1: `0013` must apply on databases without `0012_workflows`, and a view cannot reference a table that does not exist. They ship with, or right after, the workflow slice as additive views with their own catalog rows.
+Cron (M2.5) is not on `main`; once it lands, `durable.timers` shows its entries (`timer_key LIKE '$cron:%'`) and `durable.receipts` its ticks, and a dedicated run-history view is an additive follow-up. `0012_workflows` precedes `0013`, so version 1 includes `durable.workflows` (every retained execution, with `status`, `interrupt`, `payload` and `result` as compressed `bytea` with their byte counts, and start and finish times) and `durable.workflow_steps` (the steps recorded for open executions: `step`, `attempt`, `kind`, the compressed `exit` once settled, a clock's `due_at`, a wait's `wait_event`, a version marker's `version`, and start and settle times). A finished execution has no step rows, because the engine deletes them when it records the result.
 
 ## Open questions for Dallen
 
@@ -90,7 +92,7 @@ Each question has a proposed default. Migration `0013_inspection_views` already 
 2. **Should the migration create the role?** Proposed default: no, document the grant script (§5). Alternative: create `durable_inspector NOLOGIN` when the migration user may, and skip otherwise, which makes migration behavior depend on privileges.
 3. **Should `durable.state` and `durable.events` expose compressed values?** Proposed default: yes, as `bytea` with `value_bytes`, decoded client-side. Alternative: omit values until a `pg` zstd extension is a supported deployment requirement.
 4. **Secondary index for identity lookups.** Proposed default: none; use the two-step pattern. Alternative: `actor_generations (tenant_id, actor_type, actor_id)`, one extra index write per new actor, which the benchmark suggests is not needed below millions of actors.
-5. **Workflow views.** Proposed default: add them in the workflow slice's migration or the next free one after `0012`, as version 1 of new view names. Alternative: hold CR.4 until `0012` lands and include them in `0013`.
+5. **Workflow views.** Decided by merge order: `0012_workflows` merged first, so `0013` includes `durable.workflows` and `durable.workflow_steps` (§7). Alternative: move them to a later migration, which would only delay them.
 6. **When RLS lands, switch to `security_invoker`.** Proposed default: yes (§4). Alternative: keep owner-rights views and add per-view tenant predicates driven by a session setting.
 
 ## Alternatives considered
@@ -106,16 +108,16 @@ Each question has a proposed default. Migration `0013_inspection_views` already 
 - Operators and tools get a supported way to read runtime state that survives runtime migrations.
 - Every future migration that changes a table under a view must keep that view's columns and rows, or add a new view version; the conformance cases catch a break.
 - The views add no write, lock, or index cost to turns.
-- `0013` lands after `0010_retention`, `0011_relay`, and `0012_workflows` in the migration order but may merge before `0012`; a local database that already applied `0013` must be recreated before it can apply a lower id.
+- `0013` applies after `0010_retention`, `0011_relay`, and `0012_workflows`; a database that recorded `0013` without a lower id refuses to start.
 
 ## Evidence
 
 - Conformance ([`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts)), shared by PGlite and Postgres: committed turns appear in every view, declared failures leave only their receipt, defects leave nothing, effects move to `dead_letters`, fired timers leave the outbox; rows keep their tenant; every write through every view fails and leaves the rows untouched; a role granted only the schema reads the views and is denied every runtime table.
-- Migration, in `pglite.test.ts`: `0013` applies to a database that stopped at `0011` despite the `0012` gap, and a database that applied `0013` without a registered lower id refuses to migrate, naming that id.
+- Workflow views, in `conformance/workflows.ts`: a suspended execution shows in `durable.workflows` with its settled activity and pending clock step in `durable.workflow_steps`; once it finishes, its row reports `finished` with a result and it has no steps.
+- Migration, in `pglite.test.ts`: `0012` then `0013` apply to a database that stopped at `0011`, and a database that applied `0013` without a registered lower id refuses to migrate, naming that id.
 - Benchmark `inspection-views` (see the [reference](../operations/inspection-views.md#cost) and `benchmarks/results/`).
 
 ## Revisit when
 
 - M4.5 adds RLS policies (question 6).
-- `0012_workflows` lands (question 5).
 - A deployment needs identity lookups on tables large enough that the scan in §6 matters (question 4).

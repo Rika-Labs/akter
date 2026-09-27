@@ -1,4 +1,15 @@
-import { Cause, Context, Duration, Effect, Exit, Option, Schedule, Schema, Scope } from "effect"
+import {
+  Cause,
+  Context,
+  type Crypto,
+  Duration,
+  Effect,
+  Exit,
+  Option,
+  Schedule,
+  Schema,
+  Scope,
+} from "effect"
 import {
   ClusterSchema,
   Entity,
@@ -15,6 +26,7 @@ import { routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { executeTurn, emptyActivationCache } from "../turn/execute.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
+import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
 // committed inside the turn is the only durable admission record.
@@ -67,8 +79,27 @@ export const commandEntity = (name: string) => {
 
 export const registerActor = Effect.fnUntraced(function* (registration: Registration) {
   const sharding = yield* Sharding.Sharding
-  const services = yield* Effect.context<Effect.Services<ReturnType<typeof executeTurn>>>()
+
+  const services = yield* Effect.context<
+    Effect.Services<ReturnType<typeof executeTurn>> | Crypto.Crypto
+  >()
+
   const entity = commandEntity(registration.name)
+
+  const routingKeyOf = (ref: Request["ref"]) =>
+    routingKey({ ref, placement: registration.placement })
+
+  const workflowRoutes = workflowCommands({ registration, routingKeyOf, services })
+
+  // Event classes some workflow of this actor waits for; only these check waits on append.
+  const waited = new Set(
+    [...registration.workflows.values()].flatMap((workflow) =>
+      [...workflow.member.registry.steps.values()].flatMap((step) =>
+        step.event === undefined ? [] : [step.event],
+      ),
+    ),
+  )
+
   // Cluster reports a full mailbox and a full runner with the same error; only
   // an activation that is already resident can have a full mailbox. A handler
   // rebuilt after a defect can overlap its predecessor, hence the count.
@@ -145,6 +176,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
       ).pipe(Scope.provide(scope))
 
       const cache = emptyActivationCache()
+      let engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
 
       // A singleton builds here, on its owner; a failing build answers every
       // command with its defect instead of retrying the activation forever.
@@ -165,7 +197,8 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
           if (Exit.isFailure(activated))
             return Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) })
 
-          const command = activated.value.get(payload.command)
+          const command =
+            activated.value.get(payload.command) ?? workflowRoutes.get(payload.command)
 
           if (command === undefined)
             return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
@@ -174,8 +207,10 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
             payload,
             command,
             cache,
-            routingKey({ ref: payload.ref, placement: registration.placement }),
+            routingKeyOf(payload.ref),
             registration.policy,
+            registration.mintable,
+            waited,
           ).pipe(
             Effect.catchDefect(
               Effect.fnUntraced(function* (cause) {
@@ -218,6 +253,22 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
           const hooks = yield* TurnHooks
 
           if (!Outcome.guards.Defect(outcome)) yield* hooks.at("afterCommit", payload)
+
+          if (workflowRoutes.has(payload.command)) {
+            const kicked = yield* kickedExecution({ request: payload, outcome })
+
+            if (kicked !== undefined) {
+              engine ??= yield* activationEngine({
+                registration,
+                ref: payload.ref,
+                routingKey: routingKeyOf(payload.ref),
+                cache,
+                scope,
+                deliveryMs: registration.policy.deliveryMs,
+              })
+              yield* engine.kick(kicked.executionId, kicked.interrupt)
+            }
+          }
 
           return outcome
         }, Effect.provideContext(services)),

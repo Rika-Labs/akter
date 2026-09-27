@@ -48,6 +48,7 @@ import {
   type FoundationFixture,
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
+import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import {
   retentionConformance,
   retentionFixture,
@@ -79,6 +80,12 @@ import {
   type EffectsFixture,
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
+import {
+  workflowsConformance,
+  workflowsFixture,
+  type WorkflowsFixture,
+  workflowsLive,
+} from "./conformance/workflows.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -172,6 +179,7 @@ export interface ConformanceFixture {
   readonly blobs: BlobsFixture
   readonly relay: RelayFixture
   readonly retention: RetentionFixture
+  readonly workflows: WorkflowsFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -179,6 +187,8 @@ export interface ConformanceFixture {
   holdHandler: Effect.Effect<void>
   duringQuery: Effect.Effect<unknown, import("../errors/actor.ts").ActorError>
   allowed: boolean
+  /** Commands the test authorization refuses while `allowed` holds. */
+  readonly denied: Set<string>
 }
 
 export interface ConformanceContext {
@@ -293,6 +303,7 @@ const makeFixture = (): ConformanceFixture => ({
   blobs: blobsFixture(),
   relay: relayFixture(),
   retention: retentionFixture(),
+  workflows: workflowsFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -300,6 +311,7 @@ const makeFixture = (): ConformanceFixture => ({
   holdHandler: Effect.void,
   duringQuery: Effect.void,
   allowed: true,
+  denied: new Set(),
 })
 
 /**
@@ -327,6 +339,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...blobsConformance,
   ...inspectionViewsConformance,
   ...retentionConformance,
+  ...workflowsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1254,6 +1267,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   ...propertiesConformance,
+  ...mintConformance,
 ]
 
 interface ConformanceStore {
@@ -1294,6 +1308,8 @@ export const describeConformance = (options: {
     relayEffects(fixture.relay),
     retentionLayer(fixture.retention),
     propertiesLayer,
+    workflowsLive(fixture.workflows),
+    mintLayer,
   )
 
   let store: ConformanceStore | undefined
@@ -1318,7 +1334,8 @@ export const describeConformance = (options: {
             ActorTest.layer({
               database,
               as: User.make({ subject: "alice" }),
-              authorize: () => Effect.sync(() => fixture.allowed),
+              authorize: (request) =>
+                Effect.sync(() => fixture.allowed && !fixture.denied.has(request.command)),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
             }),
           ),

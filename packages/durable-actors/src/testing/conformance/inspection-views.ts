@@ -84,6 +84,8 @@ const VIEWS = [
   "timers",
   "effects",
   "dead_letters",
+  "workflows",
+  "workflow_steps",
   "views",
 ] as const
 
@@ -104,7 +106,10 @@ const rowsOf = Effect.fnUntraced(function* (
   )
 })
 
-const COUNTED = VIEWS.filter((name) => name !== "views")
+// `Specimen` runs no workflow; the workflow cases cover those views.
+const COUNTED = VIEWS.filter(
+  (name) => name !== "views" && name !== "workflows" && name !== "workflow_steps",
+)
 
 // One statement, so every count reads the same snapshot.
 const counts = Effect.fnUntraced(function* (tenant: string, id: string) {
@@ -340,6 +345,9 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
                   "actor_events",
                   "actor_outbox",
                   "actor_dead_letters",
+                  "actor_workflow_executions",
+                  "actor_workflow_step",
+                  "actor_workflow_manifests",
                 ])
                   denied[table] = rejection(
                     yield* sql

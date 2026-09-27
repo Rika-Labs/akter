@@ -13,17 +13,19 @@ Everything a view shows is committed. A turn that rolls back (a defect, a crash 
 
 `SELECT * FROM durable.views` lists each view and its version. Version 1:
 
-| View                   | Rows                                                                         |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| `durable.actors`       | one per actor identity                                                       |
-| `durable.state`        | one per stored state key                                                     |
-| `durable.receipts`     | one per retained command receipt                                             |
-| `durable.events`       | one per retained committed event                                             |
-| `durable.outbox`       | pending intents and timers                                                   |
-| `durable.timers`       | pending keyed timers (a subset of `outbox`), including `policy.cron` entries |
-| `durable.effects`      | performed effects not yet settled                                            |
-| `durable.dead_letters` | exhausted effects, kept for operators                                        |
-| `durable.views`        | this catalog                                                                 |
+| View                     | Rows                                                                         |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| `durable.actors`         | one per actor identity                                                       |
+| `durable.state`          | one per stored state key                                                     |
+| `durable.receipts`       | one per retained command receipt                                             |
+| `durable.events`         | one per retained committed event                                             |
+| `durable.outbox`         | pending intents and timers                                                   |
+| `durable.timers`         | pending keyed timers (a subset of `outbox`), including `policy.cron` entries |
+| `durable.effects`        | performed effects not yet settled                                            |
+| `durable.dead_letters`   | exhausted effects, kept for operators                                        |
+| `durable.workflows`      | one per retained workflow execution, open or finished                        |
+| `durable.workflow_steps` | recorded steps of open executions (a finished execution has none)            |
+| `durable.views`          | this catalog                                                                 |
 
 Adding a column at the end keeps a view's version. Any other change adds a new view, such as `durable.receipts_v2`, and a catalog row.
 
@@ -31,25 +33,27 @@ Adding a column at the end keeps a view's version. Any other change adds a new v
 
 Every view except `durable.views` starts with the actor's ownership columns: `tenant_id`, `actor_type`, `actor_id`, `routing_key` (`bigint`, an opaque shard key that every runtime index leads with), and `placement` (`'tenant'` or `'actor'`, the actor type's placement). Each `*_ms` column is milliseconds since the Unix epoch and has a `timestamptz` twin without the suffix.
 
-| View           | Further columns                                                                                                                                                                            |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `actors`       | `generation` (`bigint`, activations that took authority), `created` (`boolean`, the creation command committed), `last_event_sequence` (`bigint`)                                          |
-| `state`        | `key` (`text`), `value` (`bytea`, zstd-compressed JSON), `value_bytes` (`integer`)                                                                                                         |
-| `receipts`     | `command_id`, `command`, `caller_key` (JSON array, below), `outcome_tag` (`'Success'` or `'Failure'`), `outcome` (JSON `text`), `expires_at_ms`, `expires_at`                              |
-| `events`       | `sequence` (`bigint`), `event` (tag), `command_id`, `value` (`bytea`, zstd-compressed JSON), `value_bytes`, `emitted_at_ms`, `emitted_at`                                                  |
-| `outbox`       | `intent_id`, `timer_key` (null for plain intents), `target_type`, `target_id`, `command`, `payload` (JSON `text`), `caller` (JSON `text`), `attempts`, `last_error`, `due_at_ms`, `due_at` |
-| `timers`       | `timer_key`, `intent_id`, `target_type`, `target_id`, `command`, `payload`, `caller`, `attempts`, `due_at_ms`, `due_at`                                                                    |
-| `effects`      | `effect_id`, `effect` (effect name), `payload`, `caller`, `attempts`, `last_error`, `ambiguous` (last attempt's outcome unknown), `due_at_ms`, `due_at`                                    |
-| `dead_letters` | `effect_id`, `effect`, `payload`, `attempts`, `cause`, `ambiguous`, `dead_at_ms`, `dead_at`                                                                                                |
-| `views`        | `view_name`, `version`                                                                                                                                                                     |
+| View             | Further columns                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `actors`         | `generation` (`bigint`, activations that took authority), `created` (`boolean`, the creation command committed), `last_event_sequence` (`bigint`)                                                                                                                                                                                                                                                          |
+| `state`          | `key` (`text`), `value` (`bytea`, zstd-compressed JSON), `value_bytes` (`integer`)                                                                                                                                                                                                                                                                                                                         |
+| `receipts`       | `command_id`, `command`, `caller_key` (JSON array, below), `outcome_tag` (`'Success'` or `'Failure'`), `outcome` (JSON `text`), `expires_at_ms`, `expires_at`                                                                                                                                                                                                                                              |
+| `events`         | `sequence` (`bigint`), `event` (tag), `command_id`, `value` (`bytea`, zstd-compressed JSON), `value_bytes`, `emitted_at_ms`, `emitted_at`                                                                                                                                                                                                                                                                  |
+| `outbox`         | `intent_id`, `timer_key` (null for plain intents), `target_type`, `target_id`, `command`, `payload` (JSON `text`), `caller` (JSON `text`), `attempts`, `last_error`, `due_at_ms`, `due_at`                                                                                                                                                                                                                 |
+| `timers`         | `timer_key`, `intent_id`, `target_type`, `target_id`, `command`, `payload`, `caller`, `attempts`, `due_at_ms`, `due_at`                                                                                                                                                                                                                                                                                    |
+| `effects`        | `effect_id`, `effect` (effect name), `payload`, `caller`, `attempts`, `last_error`, `ambiguous` (last attempt's outcome unknown), `due_at_ms`, `due_at`                                                                                                                                                                                                                                                    |
+| `dead_letters`   | `effect_id`, `effect`, `payload`, `attempts`, `cause`, `ambiguous`, `dead_at_ms`, `dead_at`                                                                                                                                                                                                                                                                                                                |
+| `workflows`      | `execution_id`, `workflow` (member name), `workflow_key`, `manifest_hash`, `status` (`'running'`, `'suspended'`, `'finished'`), `interrupt` (`boolean`, requested), `caller` (JSON `text`), `payload` (`bytea`, zstd-compressed JSON), `payload_bytes`, `result` (`bytea`, zstd-compressed JSON exit, null until finished), `result_bytes`, `started_at_ms`, `started_at`, `finished_at_ms`, `finished_at` |
+| `workflow_steps` | `execution_id`, `step`, `attempt`, `kind` (`'activity'`, `'clock'`, `'deferred'`, `'wait'`, `'version'`), `exit` (`bytea`, zstd-compressed JSON, null while pending), `wait_event`, `version`, `due_at_ms`, `due_at`, `started_at_ms`, `started_at`, `settled_at_ms`, `settled_at`                                                                                                                         |
+| `views`          | `view_name`, `version`                                                                                                                                                                                                                                                                                                                                                                                     |
 
 A receipt's `caller_key` is the caller's replay identity, not the tagged caller object that `outbox`, `timers`, and `effects` show as `caller`: `["User", subject]`, `["Anonymous"]`, or `["System", source, [tenant, actor_type, actor_id] or null, on-behalf-of subject or null]`. Read the subject of a user command with `caller_key::jsonb ->> 1` where `caller_key::jsonb ->> 0 = 'User'`.
 
-The JSON columns (`caller_key`, `outcome`, `payload`, `caller`) are `text` holding JSON, as in the runtime tables; cast them to `jsonb` before using JSON operators, for example `outcome::jsonb -> 'value'` or `caller::jsonb ->> '_tag'`.
+The JSON columns (`caller_key`, `outcome`, `payload` outside `workflows`, `caller`) are `text` holding JSON, as in the runtime tables; cast them to `jsonb` before using JSON operators, for example `outcome::jsonb -> 'value'` or `caller::jsonb ->> '_tag'`.
 
 While a relay attempt holds a row, its `due_at` is the end of that attempt's lease, not the original due time. A settled effect leaves `effects` and appears in `outbox` as an intent to its `onSuccess` or `onDeadLetter` route (and, when exhausted, in `dead_letters`).
 
-State and event values are compressed; decode them client-side, for example `zstd -d` on the bytes, or `Bun.zstdDecompressSync` then `JSON.parse`. SQL cannot decompress them without an extension.
+State and event values, and workflow payloads, results, and step exits, are compressed; decode them client-side, for example `zstd -d` on the bytes, or `Bun.zstdDecompressSync` then `JSON.parse`. SQL cannot decompress them without an extension.
 
 ## Privileges
 
@@ -117,7 +121,16 @@ SELECT tenant_id, actor_type, actor_id, sum(value_bytes) AS bytes FROM durable.s
 GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 20;
 ```
 
-Workflow executions are not in version 1; they arrive as new views after `0012_workflows`.
+```sql
+-- Open workflow executions, oldest first.
+SELECT tenant_id, actor_type, actor_id, workflow, workflow_key, status, started_at
+FROM durable.workflows WHERE status <> 'finished' ORDER BY started_at_ms LIMIT 20;
+
+-- Steps of one execution, with the pending ones last.
+SELECT step, attempt, kind, exit IS NOT NULL AS settled, due_at, wait_event, settled_at
+FROM durable.workflow_steps
+WHERE routing_key = $1 AND execution_id = $2 ORDER BY started_at_ms;
+```
 
 ## Cost
 

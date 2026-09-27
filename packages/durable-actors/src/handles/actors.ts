@@ -1,7 +1,8 @@
-import { Context, Effect, Schema, Scope } from "effect"
+import { Context, Effect, type Exit, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
@@ -9,6 +10,8 @@ import type { StagedOutbox } from "./intents.ts"
 import type { AnyBlob } from "../members/blob.ts"
 import type { BlobAccess, BlobScope } from "../state/blob.ts"
 import type { AnyOwnedTable, TableAccess, TableScope } from "../tables/owned.ts"
+import type { RecordedExit, StoredResult, WorkflowContext } from "../contexts/workflow.ts"
+import type { AnyWorkflow } from "../members/workflow.ts"
 
 export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
@@ -139,6 +142,8 @@ export interface QueryRegistration {
 export interface Registration {
   readonly name: string
   readonly singleton: boolean
+  /** Unkeyed with `policy.createdBy`: its UUIDv8 ids come only from `turn.mint`. */
+  readonly mintable: boolean
   /** The deployment's default tenant: the ambient `Tenant` when the actor's layer is built. */
   readonly tenant: string
   readonly placement: "tenant" | "actor"
@@ -152,6 +157,30 @@ export interface Registration {
   readonly activate: (
     ref: ActorRef,
   ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
+  /** Workflow members with their bodies, keyed by tag. */
+  readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
+}
+
+/** A workflow member bound to its body when the actor's layer was built. */
+export interface RegisteredWorkflow {
+  readonly member: AnyWorkflow
+  /** The member's constructors when the layer was built; any other step dies. */
+  readonly steps: ReadonlyMap<string, { readonly kind: string }>
+  /** The execution key of an encoded input; `fallback` when the member declares no key. */
+  readonly key: (payload: string, fallback: string) => Effect.Effect<string>
+  /** Runs the body once from its start; recorded steps replay instead of running again. */
+  readonly run: (
+    payload: string,
+    context: WorkflowContext,
+  ) => Effect.Effect<Exit.Exit<unknown, unknown>>
+  readonly encodeExit: (exit: Exit.Exit<unknown, unknown>) => Effect.Effect<RecordedExit>
+}
+
+/** One execution's committed status as `poll` reads it. */
+export interface WorkflowStatus {
+  readonly finished: boolean
+  /** The recorded exit, once finished; `Interrupt` for an interrupted execution. */
+  readonly result: StoredResult | undefined
 }
 
 /** Runtime-only capabilities; package entry points export only Actors. */
@@ -169,12 +198,24 @@ export class InternalActors extends Context.Service<
     readonly drainOutbox: Effect.Effect<void>
     /** Runs one retention sweep now; used by `ActorTest.cleanup`. */
     readonly cleanup: Effect.Effect<Swept>
-    /** Moves the leases of this runner's running effect attempts forward; used by `ActorTest.advance`. */
-    readonly extendOutboxLeases: (millis: number) => Effect.Effect<void>
+    /**
+     * Moves the leases of this runner's running effect attempts forward and
+     * runs `jump`, with no relay pass between them; used by `ActorTest.advance`.
+     */
+    readonly extendOutboxLeases: (millis: number, jump: Effect.Effect<void>) => Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /**
+     * Reads one execution's status like a query: `request.command` is the
+     * workflow member, `request.payload` the execution id.
+     */
+    readonly pollWorkflow: (
+      request: Request,
+    ) => Effect.Effect<WorkflowStatus | undefined, ActorError>
     readonly mintActorId: Effect.Effect<string>
+    /** Derives the id a parent turn mints for a child actor. */
+    readonly mintChildId: (input: MintInput) => Effect.Effect<string>
     /** The deployment's command retry window: every id's `expiresAt - issuedAt`. */
     readonly retryWindowMs: number
     /** The database clock in epoch milliseconds, the only clock command ids are checked against. */
