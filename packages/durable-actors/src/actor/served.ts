@@ -1,4 +1,4 @@
-import { Effect, Schema, SchemaAST } from "effect"
+import { Effect, type Result, Schema, SchemaAST } from "effect"
 import type { DeclaredError, MemberKind, ValueSchema } from "../members/command.ts"
 
 /** A public member as a served endpoint sees it: wire schemas and the runtime's payload codec. */
@@ -12,6 +12,23 @@ export interface ServedMember {
   readonly payload: (body: Schema.Json | undefined) => Effect.Effect<string, Schema.SchemaError>
   /** Status per declared error, in declaration order. */
   readonly failureStatus: (value: string) => Effect.Effect<number, Schema.SchemaError>
+  /** A reducer's pure transition, which a client applies before its receipt arrives. */
+  readonly reducer: OptimisticReducer | undefined
+}
+
+/** An actor's decoded state. */
+export type StateValue = Schema.Struct.Type<Schema.Struct.Fields>
+
+/** What a client needs to run a reducer on its own copy of committed state. */
+export interface OptimisticReducer {
+  /** The actor's state schema. */
+  readonly state: ValueSchema & { readonly Type: StateValue }
+  readonly reduce: (
+    state: StateValue,
+    input: ValueSchema["Type"],
+  ) => Result.Result<StateValue, unknown>
+  /** True when the reducer replies nothing, so its receipt carries no committed state. */
+  readonly commutative: boolean
 }
 
 export interface ServedDefinition {
@@ -68,6 +85,10 @@ export interface ServedMemberSource {
     readonly input: ValueSchema
     readonly output: ValueSchema
     readonly errors: ReadonlyArray<DeclaredError>
+    readonly state?: { readonly fields: Readonly<Record<string, ValueSchema>> }
+    // Method syntax keeps the parameters bivariant so every reducer's `reduce` fits.
+    reduce?(state: StateValue, input: ValueSchema["Type"]): Result.Result<StateValue, unknown>
+    readonly commutative?: unknown
   }
   readonly codecs: {
     readonly encodeInput: (value: {
@@ -97,5 +118,13 @@ export const servedMember = ({ member, codecs }: ServedMemberSource): ServedMemb
         .pipe(
           Effect.map((error) => statuses.find(([is]) => is(error))?.[1] ?? DECLARED_FAILURE_STATUS),
         ),
+    reducer:
+      member.kind === "reducer" && member.state !== undefined && member.reduce !== undefined
+        ? {
+            state: Schema.Struct(member.state.fields),
+            reduce: member.reduce.bind(member),
+            commutative: member.commutative !== undefined,
+          }
+        : undefined,
   }
 }
