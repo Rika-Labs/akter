@@ -1,4 +1,4 @@
-import { Deferred, Effect, Layer, ManagedRuntime, type Scope } from "effect"
+import { Clock, Deferred, Effect, Layer, ManagedRuntime, type Scope } from "effect"
 import { TestClock } from "effect/testing"
 import { expect, it } from "vitest"
 import { ActorRef } from "../../identity/caller.ts"
@@ -252,6 +252,7 @@ it("closes a slot and its effect within the bound while a send ignores interrupt
   Effect.runPromise(
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>()
+
       const runtime = ManagedRuntime.make(
         Layer.succeed(ProgressSink, {
           wants: () => true,
@@ -271,7 +272,7 @@ it("closes a slot and its effect within the bound while a send ignores interrupt
                   const slot = yield* pool.open(attempt("a", 250))
                   yield* slot.offer(frame(1))
                   yield* Effect.sleep(5)
-                  const start = Date.now()
+                  const start = yield* Clock.currentTimeMillis
                   // Closing runs as the attempt's finalizer, where interruption is masked.
                   yield* Effect.void.pipe(
                     Effect.ensuring(
@@ -280,7 +281,7 @@ it("closes a slot and its effect within the bound while a send ignores interrupt
                       ),
                     ),
                   )
-                  const took = Date.now() - start
+                  const took = (yield* Clock.currentTimeMillis) - start
                   // Lets the stuck send finish so the pool's scope can close.
                   yield* Deferred.succeed(gate, undefined)
 
