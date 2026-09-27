@@ -52,19 +52,19 @@ BunRuntime.runMain(
 
 Routes, under `basePath`:
 
-| Member                          | Method and path                                                        | Body          | Response                                        |
-| ------------------------------- | ---------------------------------------------------------------------- | ------------- | ----------------------------------------------- |
-| Command, reducer                | `POST /actors/{Actor}/{id}/{Member}`                                   | encoded input | encoded output (a reducer: the committed state) |
-| Query                           | `POST /actors/{Actor}/{id}/{Member}`                                   | encoded input | encoded output                                  |
-| Workflow start                  | `POST /actors/{Actor}/{id}/{Workflow}`                                 | encoded input | `{ executionId }`                               |
-| Workflow run                    | `GET /actors/{Actor}/{id}/{Workflow}/runs/{executionId}?wait=<0–30>`   | –             | `{ status: "running" }` or the encoded `Exit`   |
-| Workflow interrupt              | `POST /actors/{Actor}/{id}/{Workflow}/runs/{executionId}/interrupt`    | –             | `204`; a command with its own `Idempotency-Key` |
-| Event feed                      | `GET /actors/{Actor}/{id}/events?event={Event}&event=…&after={cursor}` | –             | `text/event-stream` (section 7)                 |
-| Stream (`Actor.stream`)         | `POST /actors/{Actor}/{id}/{Stream}` with `accept: text/event-stream`  | encoded input | `text/event-stream` (section 7)                 |
-| Connection (`Actor.connection`) | `GET /actors/{Actor}/{id}/{Connection}`, WebSocket upgrade             | –             | WebSocket (section 8)                           |
-| Protocol discovery              | `GET /protocol`                                                        | –             | `{ protocol, retryWindowMs, now }` (section 2)  |
-| Command id mint                 | `POST /command-ids`                                                    | –             | `{ commandId }` (section 2)                     |
-| OpenAPI                         | `GET {openapi.path}`                                                   | –             | OpenAPI 3.1 document (section 6)                |
+| Member                          | Method and path                                                        | Body          | Response                                                                  |
+| ------------------------------- | ---------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------- |
+| Command, reducer                | `POST /actors/{Actor}/{id}/{Member}`                                   | encoded input | encoded output (a reducer: the committed state, or `void` if commutative) |
+| Query                           | `POST /actors/{Actor}/{id}/{Member}`                                   | encoded input | encoded output                                                            |
+| Workflow start                  | `POST /actors/{Actor}/{id}/{Workflow}`                                 | encoded input | `{ executionId }`                                                         |
+| Workflow run                    | `GET /actors/{Actor}/{id}/{Workflow}/runs/{executionId}?wait=<0–30>`   | –             | `{ status: "running" }` or the encoded `Exit`                             |
+| Workflow interrupt              | `POST /actors/{Actor}/{id}/{Workflow}/runs/{executionId}/interrupt`    | –             | `204`; a command with its own `Idempotency-Key`                           |
+| Event feed                      | `GET /actors/{Actor}/{id}/events?event={Event}&event=…&after={cursor}` | –             | `text/event-stream` (section 7)                                           |
+| Stream (`Actor.stream`)         | `POST /actors/{Actor}/{id}/{Stream}` with `accept: text/event-stream`  | encoded input | `text/event-stream` (section 7)                                           |
+| Connection (`Actor.connection`) | `GET /actors/{Actor}/{id}/{Connection}`, WebSocket upgrade             | –             | WebSocket (section 8)                                                     |
+| Protocol discovery              | `GET /protocol`                                                        | –             | `{ protocol, retryWindowMs, now }` (section 2)                            |
+| Command id mint                 | `POST /command-ids`                                                    | –             | `{ commandId }` (section 2)                                               |
+| OpenAPI                         | `GET {openapi.path}`                                                   | –             | OpenAPI 3.1 document (section 6)                                          |
 
 - **Actor and member names** appear verbatim and case-sensitive. `Actor.serve` fails at startup if a served actor's name or member tag is not `[A-Za-z][A-Za-z0-9_]*`, or if a member is named `events`, which the feed route reserves.
 - **The id segment** is the key schema's encoded string, percent-encoded as one RFC 3986 path segment; `/` in an id is `%2F`. The server decodes the segment exactly once after routing and never normalizes it. The key schema then decodes it, and a decode failure is `InvalidInput`. Two kinds of id can't survive real URLs: the WHATWG URL parser (and so `fetch`) removes `.` and `..` segments, even percent-encoded, and many proxies (nginx, AWS ALB, Apache by default) decode or reject `%2F`. So the server answers an id of `.` or `..` with `400 InvalidInput { code: "unservable_id" }`, and M3.2's deployment guide lists the proxy settings that pass `%2F` through. Applications that key on free text should use a key schema that encodes it (for example base64url).
@@ -503,7 +503,7 @@ const result = yield * room.Post({ body: "hi" })
 - **M3.2 is buildable now.** Sections 1 to 6 need nothing from M2, so HTTP serving and OpenAPI can ship before M2.10. Streams and workflows appear on the wire only once their members exist.
 - **Statements per operation.** A served command runs exactly the embedded turn, so for actor types without `feeds` `http` must show the same statement count as the embedded path, which T2's gate can enforce. An actor type with `feeds` adds one pipelined statement to a cold activation's first turn, embedded or served, in the same round trip, and the baseline records it.
 - **Clients learn one clock.** Every client pays one `/protocol` request per `baseUrl` before its first command, or one `/command-ids` request per command if it can't keep a clock offset.
-- **`retryAfter` becomes real.** `ActorError.retryAfter` returns a value for three reasons. Whether the in-process handle's backoff changes to match is Q12.
+- **`retryAfter` becomes real.** `ActorError.retryAfter` returns a value for three reasons, and the in-process handle's backoff starts from the same values (Q12).
 - **Error schemas grow.** `InvalidInput` and `TransportError` gain fields; `InvalidCommandId` gains `code`; `Unauthorized.code` gains `missing_credentials`, `invalid_credentials`, and `expired`. These are additive for existing embedded callers.
 - **`authorize` hooks see new fields.** `kind` and `of` reach every hook; feeds stay closed until an actor type declares `feeds`, so an old hook can't open one by accident.
 - **Decisions still open elsewhere.** Signed assertions (ADR 0031), MCP and generated clients (M6.6), and offline commands (M6) build on this wire without changing it.
