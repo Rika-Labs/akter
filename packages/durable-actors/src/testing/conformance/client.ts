@@ -1,4 +1,4 @@
-import { Crypto, Deferred, Effect, Fiber, Schema } from "effect"
+import { Crypto, Deferred, Duration, Effect, Fiber, Schema } from "effect"
 import { DatabaseClock, monotonic } from "../../client/clock.ts"
 import {
   ActorError,
@@ -102,10 +102,11 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           const server = yield* serveHttp()
           const tenant = yield* tenantOf
           const wire = recording()
+          const services = yield* Effect.context<never>()
 
           const slow = (input: RequestInfo | URL, init?: RequestInit) =>
             urlOf(input).pathname === "/protocol"
-              ? new Promise<void>((resolve) => setTimeout(resolve, 5_100)).then(() =>
+              ? Effect.runPromiseWith(services)(Effect.sleep(Duration.millis(5_100))).then(() =>
                   wire.fetch(input, init),
                 )
               : wire.fetch(input, init)
