@@ -15,7 +15,7 @@ The following is accepted design notation, not a runnable example of the current
 
 ```ts
 import { Effect, Schema } from "effect"
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 
 export const Reset = Actor.command("Reset", { description: "Reset the counter." })
 
@@ -35,12 +35,12 @@ export const CounterLive = Counter.toLayer(
 )
 ```
 
-There is one package, `durable-actors`, with four entries:
+There is one package, `@durable-actors/core`, with four entries:
 
-- `durable-actors` for `Actor.make`, members, `Intent`, `Fleet`, identity, `ActorError`, `Actor.serve`, and auth;
-- `durable-actors/runtime` for `Actors.layer`, topology, database, and migrations;
-- `durable-actors/client` for the browser-safe Promise client;
-- `durable-actors/testing` for `ActorTest`.
+- `@durable-actors/core` for `Actor.make`, members, `Intent`, `Fleet`, identity, `ActorError`, `Actor.serve`, and auth;
+- `@durable-actors/core/runtime` for `Actors.layer`, topology, database, and migrations;
+- `@durable-actors/core/client` for the browser-safe Promise client;
+- `@durable-actors/core/testing` for `ActorTest`.
 
 ## Defaults that guide correct code
 

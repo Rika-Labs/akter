@@ -1,4 +1,4 @@
-import type { ActorError } from "durable-actors"
+import type { ActorError } from "@durable-actors/core"
 import { Effect } from "effect"
 import { load } from "../../measure.ts"
 import { Ledger } from "../../probe/ledger.ts"

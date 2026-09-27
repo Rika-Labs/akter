@@ -19,4 +19,4 @@ Use expand, deploy, backfill, validate, and contract phases when old and new run
 
 Hosted Neki migrations must preserve `routing_key` shard placement and the `actor_outbox` relay, and run in every region of a multi-region deployment. Never assume every actor is awake or that rows on different shards share a transaction.
 
-Before rollout, test the migration through `durable-actors/testing` against PGlite and Postgres; run the same conformance cases on Neki when hosted support is affected. Back up before destructive phases and record the rollback boundary.
+Before rollout, test the migration through `@durable-actors/core/testing` against PGlite and Postgres; run the same conformance cases on Neki when hosted support is affected. Back up before destructive phases and record the rollback boundary.

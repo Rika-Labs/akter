@@ -5,7 +5,7 @@
 **Owner role:** API/reliability.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-The four package entries version together. Persisted commands, receipts, events, keyed state, connection state, workflow records, transport frames, OpenAPI, and Promise-client contracts remain decodable during rolling deployment.
+The four package entries version together. Published packages start at `0.1.0-alpha.0` on the `alpha` dist-tag; an alpha may change APIs and stored formats without a migration path, and the first alpha supports one runner per database ([ADR 0029](../decisions/0029-licence-package-name-and-release-policy.md)). The compatibility rules below bind from the first non-alpha release. Persisted commands, receipts, events, keyed state, connection state, workflow records, transport frames, OpenAPI, and Promise-client contracts remain decodable during rolling deployment.
 
 Evolution is additive by default: add schema fields with decoding defaults before requiring them, retain stable actor and member tags, and do not reuse a command identity for different semantics. Keyed state changes use a validated `Actor.migration` chain; table changes use SQL migrations.
 

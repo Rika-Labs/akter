@@ -48,7 +48,7 @@ export class ClusterMember extends Context.Service<
     readonly tenant: string
     readonly connect: NonNullable<PgClient.PgPoolConfig["stream"]>
   }
->()("durable-actors/testing/actor-test/ClusterMember") {}
+>()("@durable-actors/core/testing/actor-test/ClusterMember") {}
 
 export interface TestOptions {
   /**
@@ -157,7 +157,7 @@ export class ActorTest extends Context.Service<
       version: number,
     ) => Effect.Effect<void>
   }
->()("durable-actors/testing/actor-test/ActorTest") {
+>()("@durable-actors/core/testing/actor-test/ActorTest") {
   /**
    * Runs `runners` runtimes in this process against one Postgres database,
    * each a distinct Cluster runner with its own address, connection pool, and

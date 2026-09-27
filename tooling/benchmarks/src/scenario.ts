@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actors } from "durable-actors/runtime"
-import { CleanupHooks, TurnHooks } from "durable-actors/testing"
+import { Actors } from "@durable-actors/core/runtime"
+import { CleanupHooks, TurnHooks } from "@durable-actors/core/testing"
 import { Effect, Layer } from "effect"
 import type { SqlClient } from "effect/unstable/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"

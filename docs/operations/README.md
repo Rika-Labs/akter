@@ -9,6 +9,7 @@
 - [Migrations](02-migrations.md)
 - [Observability](03-observability.md)
 - [Backup and restore](04-backup-restore.md)
+- [Releasing](05-releasing.md)
 - [Retention](retention.md)
 - [Inspection views](inspection-views.md)
 - [Runbooks](runbooks.md)
