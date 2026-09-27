@@ -110,16 +110,19 @@ const performAndWait = (
   Effect.gen(function* () {
     const cluster = yield* ActorCluster
     const finished = yield* expectAll(labels)
-    const at = yield* now
-
-    for (const label of labels) performed.set(label, at)
     yield* cluster.on(runner)(
       ControlProbe.get(actor).pipe(Effect.flatMap((probe) => probe.PerformAll({ effect, labels }))),
     )
+    const at = yield* now
+
+    for (const label of labels) performed.set(label, at)
     yield* Effect.forEach(finished, Deferred.await, { discard: true })
   })
 
-/** Effect-start latency, from the performing call to the provider seeing the attempt. */
+/**
+ * Due-to-start latency: from the reply to the performing turn, which follows
+ * its commit and so the effect becoming due, to the provider seeing the attempt.
+ */
 const startLatency = (labels: Iterable<string>) => {
   const samples: Array<number> = []
 
