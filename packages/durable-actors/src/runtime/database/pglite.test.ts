@@ -484,3 +484,119 @@ describe("owned table startup", () => {
       }),
     ))
 })
+
+describe("singleton activation", () => {
+  it("builds a singleton when it activates, so a failing build fails its commands, not startup", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const live = yield* Effect.acquireRelease(
+          Effect.promise(() => PGlite.create()),
+          (client) => Effect.promise(() => client.close()),
+        )
+
+        const Ping = Actor.command("Ping", { output: Schema.String })
+        const Healthy = Actor.make("HealthySingleton", { key: Actor.singleton, api: { Ping } })
+        const Broken = Actor.make("BrokenSingleton", { key: Actor.singleton, api: { Ping } })
+        const builds = { healthy: 0, broken: 0 }
+
+        const runtime = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            ManagedRuntime.make(
+              Layer.mergeAll(
+                Healthy.toLayer(
+                  Effect.sync(() => {
+                    builds.healthy += 1
+
+                    return { Ping: () => Effect.succeed("pong") }
+                  }),
+                ),
+                Broken.toLayer(
+                  Effect.suspend(() => {
+                    builds.broken += 1
+
+                    return Effect.die(new Error("Broken singleton build"))
+                  }),
+                ),
+              ).pipe(
+                Layer.provideMerge(ActorTest.layer({ database: { liveClient: live } })),
+                Layer.provideMerge(BunCrypto.layer),
+                Layer.orDie,
+              ),
+            ),
+          ),
+          (runtime) => Effect.promise(() => runtime.dispose()),
+        )
+
+        yield* Effect.promise(() =>
+          runtime.runPromise(
+            Effect.gen(function* () {
+              expect(builds).toEqual({ healthy: 0, broken: 0 })
+              const broken = yield* (yield* Broken.get()).Ping().pipe(Effect.exit)
+              expect(Exit.isFailure(broken) && Cause.pretty(broken.cause)).toContain(
+                "Broken singleton build",
+              )
+              expect(builds.broken).toBe(1)
+              const again = yield* (yield* Broken.get()).Ping().pipe(Effect.exit)
+              expect(Exit.isFailure(again) && Cause.pretty(again.cause)).toContain(
+                "Broken singleton build",
+              )
+              expect(builds.broken).toBe(1)
+              expect(yield* (yield* Healthy.get()).Ping()).toBe("pong")
+              expect(yield* (yield* Healthy.get()).Ping()).toBe("pong")
+              expect(builds.healthy).toBe(1)
+            }),
+          ),
+        )
+      }).pipe(Effect.scoped),
+    ))
+
+  it("keeps a singleton whose hibernateAfter is shorter than a second resident", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const live = yield* Effect.acquireRelease(
+          Effect.promise(() => PGlite.create()),
+          (client) => Effect.promise(() => client.close()),
+        )
+
+        const Ping = Actor.command("Ping", { output: Schema.String })
+
+        const Drowsy = Actor.make("DrowsySingleton", {
+          key: Actor.singleton,
+          api: { Ping },
+          policy: { hibernateAfter: "200 millis" },
+        })
+
+        let builds = 0
+
+        const runtime = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            ManagedRuntime.make(
+              Drowsy.toLayer(
+                Effect.sync(() => {
+                  builds += 1
+
+                  return { Ping: () => Effect.succeed("pong") }
+                }),
+              ).pipe(
+                Layer.provideMerge(ActorTest.layer({ database: { liveClient: live } })),
+                Layer.provideMerge(BunCrypto.layer),
+                Layer.orDie,
+              ),
+            ),
+          ),
+          (runtime) => Effect.promise(() => runtime.dispose()),
+        )
+
+        yield* Effect.promise(() =>
+          runtime.runPromise(
+            Effect.gen(function* () {
+              expect(yield* (yield* Drowsy.get()).Ping()).toBe("pong")
+              yield* Effect.sleep("6 seconds")
+              expect(yield* (yield* Drowsy.get()).Ping()).toBe("pong")
+              expect(builds).toBe(1)
+            }),
+          ),
+        )
+      }).pipe(Effect.scoped),
+    ))
+})
