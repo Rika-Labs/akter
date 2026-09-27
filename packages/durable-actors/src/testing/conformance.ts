@@ -48,6 +48,12 @@ import {
   type FoundationFixture,
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
+import {
+  retentionConformance,
+  retentionFixture,
+  type RetentionFixture,
+  retentionLayer,
+} from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import {
@@ -154,6 +160,7 @@ export interface ConformanceFixture {
   readonly tables: TablesFixture
   readonly effects: EffectsFixture
   readonly blobs: BlobsFixture
+  readonly retention: RetentionFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -273,6 +280,7 @@ const makeFixture = (): ConformanceFixture => ({
   tables: tablesFixture(),
   effects: effectsFixture(),
   blobs: blobsFixture(),
+  retention: retentionFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -302,6 +310,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...effectsConformance,
   ...multiRunnerConformance,
   ...blobsConformance,
+  ...retentionConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1264,6 +1273,7 @@ export const describeConformance = (options: {
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
     blobsLayer(fixture.blobs),
+    retentionLayer(fixture.retention),
     propertiesLayer,
   )
 

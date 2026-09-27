@@ -78,8 +78,14 @@
       "name": "@durable-actors/chat",
       "dependencies": {
         "@effect/platform-bun": "catalog:",
+        "drizzle-orm": "catalog:",
         "durable-actors": "workspace:*",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
       },
     },
     "examples/coding-agent": {

@@ -1,18 +1,30 @@
-import { Effect, Schema } from "effect"
+import { Context, Effect, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { ActorError, CommandExpired, InvalidCommandId } from "../../errors/actor.ts"
 import type { Request } from "../../handles/actors.ts"
 import { CommandId, commandTimes } from "../../identity/command.ts"
 import { hashCanonical, type StoredReceipt } from "./receipt.ts"
 
+/**
+ * Shifts the framework clock: command ids, their expiry, timers, event
+ * timestamps, and retention all read database time plus this offset. Only
+ * `ActorTest.advance` moves it, so every one of them moves together.
+ */
+export const FrameworkClock = Context.Reference<{ readonly offsetMillis: () => number }>(
+  "durable-actors/FrameworkClock",
+  { defaultValue: () => ({ offsetMillis: () => 0 }) },
+)
+
+/** The database clock as the framework sees it, in epoch milliseconds. */
 export const databaseTime = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const clock = yield* FrameworkClock
 
   const rows = yield* sql<{
     now: string
   }>`SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
 
-  return Number(rows[0]!.now)
+  return Number(rows[0]!.now) + clock.offsetMillis()
 })
 
 const decodeCommandId = Schema.decodeEffect(CommandId)
@@ -49,6 +61,7 @@ export const checkIdentity = Effect.fnUntraced(function* (
  */
 export const readAdmission = Effect.fnUntraced(function* (request: Request, routingKey: bigint) {
   const sql = yield* SqlClient.SqlClient
+  const clock = yield* FrameworkClock
 
   const row = (yield* sql<
     { now: string; canonical: string } & { [K in keyof StoredReceipt]: StoredReceipt[K] | null }
@@ -62,7 +75,7 @@ export const readAdmission = Effect.fnUntraced(function* (request: Request, rout
       AND r.command_id = ${request.commandId}`)[0]!
 
   return {
-    now: Number(row.now),
+    now: Number(row.now) + clock.offsetMillis(),
     hash: yield* hashCanonical(row.canonical),
     receipt: row.outcome === null ? undefined : (row as StoredReceipt),
   }

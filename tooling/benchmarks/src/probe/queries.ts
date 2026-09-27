@@ -19,11 +19,22 @@ export const SleepyProbeReads = SleepyProbe.toQueryLayer(
 
 export const EventProbeReads = EventProbe.toQueryLayer(
   Effect.succeed({
+    // Replay is paged, so a whole stream is read page by page, as a reader resynchronizing does.
     Replay: Effect.fnUntraced(function* (after: string | undefined) {
       const read = yield* EventProbe.Read
-      const entries = yield* read.events(Ticked, { after })
+      let events = 0
+      let last = after ?? "0"
 
-      return { events: entries.length, last: entries.at(-1)?.cursor ?? after ?? "0" }
+      for (;;) {
+        const page = yield* read.events(Ticked, { after: last, limit: 10_000 })
+        events += page.length
+        last = page.at(-1)?.cursor ?? last
+
+        if (page.length < 10_000) return { events, last }
+      }
+    }),
+    ReplayPage: Effect.fnUntraced(function* ({ after, limit }) {
+      return (yield* (yield* EventProbe.Read).events(Ticked, { after, limit })).length
     }),
   }),
 )
