@@ -11,6 +11,7 @@ export type TurnPoint =
   | "beforeExecute"
   | "afterExecute"
   | "beforeRenew"
+  | "beforeDeadLetterCommit"
 
 export class RetryTurn extends Schema.TaggedError<RetryTurn>()("RetryTurn", {
   message: Schema.String,

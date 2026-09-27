@@ -1,4 +1,15 @@
-import { Cause, Clock, Effect, FiberSet, Queue, Random, Result, Schema, Semaphore } from "effect"
+import {
+  Cause,
+  Clock,
+  Effect,
+  FiberSet,
+  Option,
+  Queue,
+  Random,
+  Result,
+  Schema,
+  Semaphore,
+} from "effect"
 import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
@@ -418,6 +429,11 @@ export const outboxRelay = Effect.fnUntraced(function* (
             VALUES (${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
               ${row.actor_id}, ${row.command}, ${row.payload}, ${attempts}, ${cause}, ${ambiguous},
               ${yield* outboxTime})`
+
+          // Only the fault hook needs the request, so an unreadable one must not block the letter.
+          const request = yield* requestOf(row, "sender").pipe(Effect.option)
+
+          if (Option.isSome(request)) yield* hooks.at("beforeDeadLetterCommit", request.value)
         }),
       )
 
