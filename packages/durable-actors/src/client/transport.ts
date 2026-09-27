@@ -33,13 +33,18 @@ const isUnavailable = Schema.is(Schema.TaggedStruct("ActorUnavailable", {}))
 
 const decodeReason = Schema.decodeUnknownOption(Schema.toCodecJson(Reason))
 
-/** Seconds from an HTTP `retry-after` header, as milliseconds. */
+/** An HTTP `retry-after` header as milliseconds: delay seconds, or a date measured from the response's `date`. */
 export const retryAfterHeader = (headers: Headers): number | undefined => {
-  const value = headers.get("retry-after")
+  const value = headers.get("retry-after")?.trim()
 
-  if (value === null || !/^\d+$/.test(value.trim())) return undefined
+  if (value === undefined) return undefined
 
-  return Number(value.trim()) * 1_000
+  if (/^\d+$/.test(value)) return Number(value) * 1_000
+
+  const at = Date.parse(value)
+  const sent = Date.parse(headers.get("date") ?? "")
+
+  return Number.isNaN(at) || Number.isNaN(sent) ? undefined : Math.max(0, at - sent)
 }
 
 export const transport = (reason: TransportError): ActorError => ActorError.make({ reason })
