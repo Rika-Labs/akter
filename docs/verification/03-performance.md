@@ -244,6 +244,10 @@ On PGlite, which reports no statement counts, reducers ran at 197–202 op/s aga
 
 On PGlite the single connection sets the pace and the client matches raw `fetch` within noise: 264.8 against 262.2 op/s for sequential commands, 827.3 against 904.6 for queries, 288.9 against 318.7 with 64 callers, and 208.2 op/s at 1% loss.
 
+### Cross-actor subscriptions baseline
+
+[ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed. The handler generates the ids, so the payload doesn't grow with n ([`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 33 ms with 256, and 83–86 ms with 1,024. With 16 subscribers it was 8.9 ms in one run and 4.2 ms in the repeat. Statements per turn stay at 8.0–8.2, and runtime CPU per turn tracks the latency, at about 80 µs per staged intent. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:

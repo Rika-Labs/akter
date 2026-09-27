@@ -15,7 +15,7 @@ Commands MUST map committed outputs and declared failures through receipts. Fram
 
 The Effect handle, Promise client from `durable-actors/client`, HTTP, WebSocket, and SSE adapters MUST preserve these semantics rather than define independent lifecycle states. Public spans MUST use `durable-actors.<Actor>/<Command>`.
 
-## Served mapping (proposed, [ADR 0027](../decisions/0027-served-protocol.md))
+## Served mapping ([ADR 0027](../decisions/0027-served-protocol.md))
 
 M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, and OpenAPI; feeds, streams, and WebSocket sessions are later slices. Evidence: [`conformance/http.ts`](../verification/01-conformance.md#served-http-m32).
 
