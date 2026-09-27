@@ -250,7 +250,17 @@ These cases cover a single runner. Executors on separate processes, effect cance
 
 `turn.mint` is not implemented. [ADR 0025](../decisions/0025-turn-mint.md) (proposed) lists the cases M2.15 must add in `conformance/mint.ts`, including fixed derivation vectors; they are required tests, not recorded results.
 
-Executor progress frames are not implemented. [ADR 0030](../decisions/0030-executor-progress-frames.md) (proposed) lists the cases M2.18 must add in `conformance/progress.ts`; they are required tests, not recorded results.
+Executor progress frames are implemented on the executor side only; delivery to owners, holders, connections, and streams is not. The cases in [`conformance/progress.ts`](../../packages/durable-actors/src/testing/conformance/progress.ts) record what a runner's executor pool sends, through the test sink `ActorTest.progress`, on one runner:
+
+- `sends an executor's latest progress frame before the effect settles, then closes it`: a burst of three frames inside one `progressEvery` window sends at most the first immediately, the last (`seq` 3) is flushed before settle, and `ProgressClosed` follows the terminal settle.
+- `drops undecodable, oversized, and mismatched progress frames without failing the effect`: none is sent, `progress` never fails, and the route commits.
+- `ignores a captured progress callback once its attempt ends`.
+- `keeps progress open across a retryable failure and restarts the sequence per attempt`: no `ProgressClosed` after the retryable failure; attempt 2 reports from `seq` 1.
+- `closes progress when an effect dead-letters`.
+- `loses dropped progress frames without changing the effect's durable outcome` (`ActorTest.dropProgress`).
+- `sends no progress for an effect that declares no progress schema`.
+
+`runtime/effects/progress.test.ts` checks the pool on `TestClock`: latest-wins coalescing at `progressEvery`, the close flush and later offers ignored, no sends without a sink, recipient, or progress schema, and the runner-wide messages-per-second cap. `definition.test.ts` rejects `progressEvery` outside 50 ms to one minute. The remaining [ADR 0030](../decisions/0030-executor-progress-frames.md) (proposed) cases, which need connections (owner admission, audiences, holder coalescing, `ProgressEnd`, authorization, owner moves, cross-runner delivery), are required tests, not recorded results.
 
 ### Multi-runner harness (M2.1)
 

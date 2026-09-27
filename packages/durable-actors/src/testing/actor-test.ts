@@ -3,6 +3,7 @@ import type { PgliteClient } from "@effect/sql-pglite"
 import {
   Context,
   Crypto,
+  Data,
   DateTime,
   Deferred,
   Duration,
@@ -33,6 +34,11 @@ import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.
 import { compress, decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
 import { VERSION_KEY } from "../state/migration.ts"
 import { CleanupHooks, RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
+import {
+  type ProgressClosed,
+  type ProgressMessage,
+  ProgressSink,
+} from "../runtime/effects/progress.ts"
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
 import { type ClusterOptions, clusterLayer } from "./cluster.ts"
@@ -111,6 +117,14 @@ export const cleanup: Effect.Effect<Swept, never, InternalActors> = Effect.gen(f
   return yield* (yield* InternalActors).cleanup
 })
 
+/** A progress message an executor pool sent, and whether `dropProgress` dropped it. */
+export type ProgressRecord = Data.TaggedEnum<{
+  Progress: ProgressMessage & { readonly dropped: boolean }
+  ProgressClosed: ProgressClosed
+}>
+
+export const ProgressRecord = Data.taggedEnum<ProgressRecord>()
+
 export class ActorTest extends Context.Service<
   ActorTest,
   {
@@ -158,6 +172,10 @@ export class ActorTest extends Context.Service<
       state: { readonly [key: string]: Schema.Json },
       version: number,
     ) => Effect.Effect<void>
+    /** Every progress message this runner's executor pool sent, in order. */
+    readonly progress: Effect.Effect<ReadonlyArray<ProgressRecord>>
+    /** Drops progress messages matching `predicate` between the pool and the owner. */
+    readonly dropProgress: (predicate: (message: ProgressMessage) => boolean) => Effect.Effect<void>
   }
 >()("@durable-actors/core/testing/actor-test/ActorTest") {
   /**
@@ -179,6 +197,8 @@ export class ActorTest extends Context.Service<
         const outer = yield* TurnHooks
 
         let clockOffset = 0
+        const progress: Array<ProgressRecord> = []
+        let dropProgress: (message: ProgressMessage) => boolean = () => false
 
         const hooks = Layer.mergeAll(
           Layer.succeed(TurnHooks, {
@@ -186,6 +206,19 @@ export class ActorTest extends Context.Service<
               Effect.suspend(() => faults.get(point)?.shift() ?? outer.at(point, request)),
           }),
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
+          Layer.succeed(ProgressSink, {
+            wants: () => true,
+            send: (message) =>
+              Effect.sync(() => {
+                progress.push(
+                  ProgressRecord.Progress({ ...message, dropped: dropProgress(message) }),
+                )
+              }),
+            closed: (message) =>
+              Effect.sync(() => {
+                progress.push(ProgressRecord.ProgressClosed(message))
+              }),
+          }),
           // Tests sweep with `cleanup` when they choose, never on a timer
           // that could fire between a case's `advance` and its assertions.
           Layer.succeed(CleanupHooks, {
@@ -407,6 +440,11 @@ export class ActorTest extends Context.Service<
                 yield* sql`UPDATE actor_generations SET generation = generation + 1
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
               }, Effect.orDie),
+              progress: Effect.sync(() => [...progress]),
+              dropProgress: (predicate) =>
+                Effect.sync(() => {
+                  dropProgress = predicate
+                }),
             })
 
             testActors.set(service, internalActors)

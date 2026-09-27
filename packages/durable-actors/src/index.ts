@@ -76,7 +76,7 @@ export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/
 
 export type { ExecutorContext, PerformContext } from "./contexts/effect.ts"
 
-export type { EffectClass, EffectPolicy } from "./members/effect.ts"
+export type { EffectClass, EffectPolicy, ProgressEffect, ProgressOf } from "./members/effect.ts"
 
 export type { Executors, Handle, Intents } from "./actor/definition.ts"
 

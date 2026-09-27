@@ -75,6 +75,12 @@ import {
   effectsLayer,
   type EffectsFixture,
 } from "./conformance/effects.ts"
+import {
+  progressConformance,
+  progressFixture,
+  progressLayer,
+  type ProgressFixture,
+} from "./conformance/progress.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -160,6 +166,7 @@ export interface ConformanceFixture {
   readonly outbox: OutboxFixture
   readonly tables: TablesFixture
   readonly effects: EffectsFixture
+  readonly progress: ProgressFixture
   readonly blobs: BlobsFixture
   readonly relay: RelayFixture
   readonly retention: RetentionFixture
@@ -281,6 +288,7 @@ const makeFixture = (): ConformanceFixture => ({
   outbox: outboxFixture(),
   tables: tablesFixture(),
   effects: effectsFixture(),
+  progress: progressFixture(),
   blobs: blobsFixture(),
   relay: relayFixture(),
   retention: retentionFixture(),
@@ -310,6 +318,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...outboxConformance,
   ...tablesConformance,
   ...effectsConformance,
+  ...progressConformance,
   ...multiRunnerConformance,
   ...relayConformance,
   ...relayClusterConformance,
@@ -1272,6 +1281,7 @@ export const describeConformance = (options: {
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
+    progressLayer(fixture.progress),
     blobsLayer(fixture.blobs),
     relayLayer(fixture.relay),
     relayEffects(fixture.relay),
