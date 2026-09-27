@@ -13,6 +13,7 @@ import {
 import { EffectProbeLive } from "./effects.ts"
 import { ArchiveLive } from "./archive.ts"
 import { LedgerLive } from "./ledger.ts"
+import { MintLive } from "./mint.ts"
 import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
 import { ReducerProbeLive } from "./reducers.ts"
 import { WorkflowProbeLive } from "./workflows.ts"
@@ -159,4 +160,5 @@ export const ProbeLive = Layer.mergeAll(
   ArchiveLive,
   ReducerProbeLive,
   WorkflowProbeLive,
+  MintLive,
 )

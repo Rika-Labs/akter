@@ -9,6 +9,7 @@ import { Actor, NotCreated } from "../../index.ts"
 import { migrate, migrations } from "./migrations.ts"
 import { Database } from "../index.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
+import type { InternalActors } from "../../handles/actors.ts"
 import { describeConformance, type ConformanceBackend } from "../../testing/conformance.ts"
 
 const harness = ManagedRuntime.make(BunFileSystem.layer)
@@ -600,6 +601,107 @@ describe("singleton activation", () => {
               yield* Effect.sleep("6 seconds")
               expect(yield* (yield* Drowsy.get()).Ping()).toBe("pong")
               expect(builds).toBe(1)
+            }),
+          ),
+        )
+      }).pipe(Effect.scoped),
+    ))
+})
+
+describe("minted actor policy changes", () => {
+  it("keeps a child minted under policy.createdBy reachable after a deployment removes the policy", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const live = yield* Effect.acquireRelease(
+          Effect.promise(() => PGlite.create()),
+          (client) => Effect.promise(() => client.close()),
+        )
+
+        const Open = Actor.command("Open", { input: Schema.String })
+        const Title = Actor.command("Title", { output: Schema.String })
+        const Spawn = Actor.command("Spawn", { output: Schema.String })
+
+        const state = Actor.state({
+          title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+        })
+
+        const Before = Actor.make("PolicyChild", {
+          state,
+          api: { Open, Title },
+          policy: { createdBy: Open },
+        })
+
+        const After = Actor.make("PolicyChild", { state, api: { Open, Title } })
+        const Parent = Actor.make("PolicyParent", { key: Schema.String, api: { Spawn } })
+
+        const handlers = <A extends typeof Before | typeof After>(child: A) =>
+          Effect.succeed({
+            Open: Effect.fnUntraced(function* (title: string) {
+              yield* (yield* child.Turn).state.set({ title })
+            }),
+            Title: Effect.fnUntraced(function* () {
+              return (yield* child.Turn).state.title
+            }),
+          })
+
+        const deployment = (actors: Layer.Layer<never, never, InternalActors>) =>
+          Effect.acquireRelease(
+            Effect.sync(() =>
+              ManagedRuntime.make(
+                actors.pipe(
+                  Layer.provideMerge(ActorTest.layer({ database: { liveClient: live } })),
+                  Layer.provideMerge(BunCrypto.layer),
+                  Layer.orDie,
+                ),
+              ),
+            ),
+            (runtime) => Effect.promise(() => runtime.dispose()),
+          )
+
+        const first = yield* deployment(
+          Layer.mergeAll(
+            Before.toLayer(handlers(Before)),
+            Parent.toLayer(
+              Effect.succeed({
+                Spawn: Effect.fnUntraced(function* () {
+                  const id = yield* (yield* Parent.Turn).mint(Before)
+                  yield* (yield* Before.intents(id)).Open("kept")
+
+                  return id
+                }),
+              }),
+            ),
+          ),
+        )
+
+        const { id, tenant } = yield* Effect.promise(() =>
+          first.runPromise(
+            Effect.gen(function* () {
+              const id = yield* (yield* Parent.get("p")).Spawn()
+              yield* (yield* ActorTest).advance(0)
+              expect(
+                yield* (yield* Before.get(id as Parameters<typeof Before.get>[0])).Title(),
+              ).toBe("kept")
+
+              return { id, tenant: (yield* ActorTest).tenant }
+            }),
+          ),
+        )
+
+        yield* Effect.promise(() => first.dispose())
+
+        const second = yield* deployment(After.toLayer(handlers(After)))
+
+        yield* Effect.promise(() =>
+          second.runPromise(
+            Effect.gen(function* () {
+              const child = yield* After.get(id as Parameters<typeof After.get>[0]).pipe(
+                Actor.tenant(tenant),
+              )
+
+              expect(yield* child.Title()).toBe("kept")
+              yield* child.Open("changed")
+              expect(yield* child.Title()).toBe("changed")
             }),
           ),
         )

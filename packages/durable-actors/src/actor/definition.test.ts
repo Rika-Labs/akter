@@ -70,6 +70,38 @@ describe("actor declarations", () => {
     const _unbranded = A.get("not-a-minted-id")
   })
 
+  it("lets a turn mint only unkeyed actors that declare createdBy", () => {
+    const Open = Actor.command("Open")
+    const Mint = Actor.command("Mint")
+    const Child = Actor.make("Child", { api: { Open }, policy: { createdBy: Open } })
+    const Plain = Actor.make("Plain", { api: { Open } })
+
+    const Keyed = Actor.make("Keyed", {
+      key: Schema.String,
+      api: { Open },
+      policy: { createdBy: Open },
+    })
+
+    const Single = Actor.make("Single", { key: Actor.singleton, api: { Open } })
+    const Parent = Actor.make("Parent", { key: Schema.String, api: { Mint } })
+
+    type TurnContext = (typeof Parent.Turn)["Service"]
+
+    const mints = (turn: TurnContext) => {
+      expectTypeOf(turn.mint(Child)).toEqualTypeOf<Effect.Effect<Parameters<typeof Child.get>[0]>>()
+      // @ts-expect-error an actor without createdBy cannot be minted
+      void turn.mint(Plain)
+      // @ts-expect-error a keyed actor cannot be minted
+      void turn.mint(Keyed)
+      // @ts-expect-error a singleton cannot be minted
+      void turn.mint(Single)
+    }
+
+    void mints
+    // @ts-expect-error minting needs the turn context, which exists only inside a command turn
+    void Child.mint
+  })
+
   it("rejects mismatched keys, duplicates, reserved names, and foreign creation commands", () => {
     const Create = Actor.command("Create")
     const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })

@@ -19,6 +19,7 @@ import {
   type CommandContext,
   type EventEntry,
   InsideTurn,
+  type Mintable,
   outsideTurn,
   type QueryContext,
 } from "../contexts/command.ts"
@@ -55,6 +56,7 @@ import {
   workflowRun,
   type WorkflowRun,
 } from "../handles/workflow.ts"
+import { isMintedId } from "../identity/mint.ts"
 import { type AnyBlob, isBlob } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
 import type {
@@ -140,6 +142,11 @@ export type SingletonKey = typeof singleton
 type KeySchema = Schema.Codec<string, string>
 
 type Key = KeySchema | SingletonKey | undefined
+
+// Actors a turn may mint, with the command that alone creates each.
+const mintables = new WeakMap<object, { readonly name: string; readonly createdBy: string }>()
+
+const isUUIDv7 = Schema.is(Schema.String.check(Schema.isUUID(7)))
 
 export declare const InternalHandleType: unique symbol
 
@@ -567,9 +574,17 @@ const make = <
 
   const key: Key = definition.key
 
+  const mintable = key === undefined && policy.createdBy !== undefined
+
   const idSchema: KeySchema = Schema.isSchema(key)
     ? key
-    : Schema.String.check(Schema.isUUID(7)).pipe(Schema.brand(name))
+    : key === undefined
+      ? Schema.String.check(
+          Schema.makeFilter((id: string) => isUUIDv7(id) || isMintedId(id), {
+            expected: "a UUID v7 or a minted UUID v8",
+          }),
+        ).pipe(Schema.brand(name))
+      : Schema.String.check(Schema.isUUID(7)).pipe(Schema.brand(name))
 
   const decodeId = Schema.decodeEffect(idSchema)
 
@@ -952,6 +967,34 @@ const make = <
               onBehalfOf: Option.getOrUndefined(principal(request.caller)),
             })
 
+            const mint = Effect.fnUntraced(function* (child: Mintable<string>) {
+              yield* escaped("Mint")
+
+              const target = mintables.get(child)
+
+              if (target === undefined)
+                return yield* Effect.die(
+                  new Error("turn.mint needs an unkeyed actor that declares policy.createdBy"),
+                )
+
+              const proof = outbox.nextMint()
+
+              const id = yield* actors.mintChildId({
+                parent: isSingleton ? { ...request.ref, id: "" } : request.ref,
+                commandId: request.commandId,
+                ordinal: proof.ordinal,
+                child: target.name,
+              })
+
+              outbox.minted(
+                ActorRef.make({ tenant: request.ref.tenant, actor: target.name, id }),
+                target.createdBy,
+                proof,
+              )
+
+              return id
+            })
+
             const perform = Effect.fnUntraced(function* (instance: { readonly _tag: string }) {
               if (!open || (yield* InsideTurn) !== turn)
                 return yield* Effect.die(new Error("Effect capability escaped its turn"))
@@ -979,6 +1022,7 @@ const make = <
               rows: access.rows as CommandContext<State, Event, Owned>["rows"],
               group: access.group,
               blob: blob as CommandContext<State, Event, Owned, Blobs>["blob"],
+              mint: mint as CommandContext<State>["mint"],
               perform,
             }
 
@@ -988,6 +1032,22 @@ const make = <
               const output = yield* handle(input.value)
 
               if (misused !== undefined) return yield* Effect.die(new Error(misused))
+
+              const uncreated = outbox.uncreated()
+
+              if (uncreated !== undefined)
+                return yield* Effect.die(
+                  new Error(
+                    `Minted actor ${uncreated.actor}/${uncreated.id} has no creating intent`,
+                  ),
+                )
+
+              const keyed = outbox.keyedCreation()
+
+              if (keyed !== undefined)
+                return yield* Effect.die(
+                  new Error(`Minted actor ${keyed.actor}/${keyed.id} has a keyed creating intent`),
+                )
 
               const value = yield* memberCodec.encodeOutput({ value: output }).pipe(Effect.orDie)
 
@@ -1155,6 +1215,7 @@ const make = <
         const registration = {
           name,
           singleton: isSingleton,
+          mintable,
           tenant: yield* Tenant,
           placement,
           policy,
@@ -1663,7 +1724,11 @@ const make = <
     handle: (id, tenant, caller) => getHandle(id, true, caller, tenant),
   })
 
-  return actor as typeof actor & DefinitionWithInternal<Handle<All, Creating, BoundedMailbox>>
+  if (mintable) mintables.set(actor, { name, createdBy: policy.createdBy! })
+
+  return actor as typeof actor &
+    DefinitionWithInternal<Handle<All, Creating, BoundedMailbox>> &
+    (K extends undefined ? ([Creating] extends [never] ? unknown : Mintable<Id>) : unknown)
 }
 
 /**

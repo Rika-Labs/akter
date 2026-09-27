@@ -33,6 +33,7 @@ import { retainedHeap } from "./scenarios/scale/retained-heap.ts"
 import { stateSize } from "./scenarios/state-size.ts"
 import { subscriptions } from "./scenarios/subscriptions.ts"
 import { workflows } from "./scenarios/workflows.ts"
+import { mint } from "./scenarios/mint.ts"
 
 /** Every scenario, in run order. A new slice adds its scenario here. */
 const SCENARIOS: ReadonlyArray<Scenario> = [
@@ -56,6 +57,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   http,
   subscriptions,
   workflows,
+  mint,
 ]
 
 /**

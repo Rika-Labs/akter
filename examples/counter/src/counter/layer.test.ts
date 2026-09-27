@@ -4,7 +4,7 @@ import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schedule } fro
 import { Pool } from "pg"
 import { SqlClient } from "effect/unstable/sql"
 import { afterAll, expect, it } from "vitest"
-import { Counter } from "./contract.ts"
+import { Counter, Snapshot } from "./contract.ts"
 import { CounterLive } from "./layer.ts"
 
 const live = Layer.unwrap(
@@ -71,5 +71,24 @@ it("resumes a sleeping workflow on the framework clock and replays its result", 
       const again = yield* counter.Double({ value: 21 })
       expect(again.executionId).toBe(run.executionId)
       expect(yield* again.result).toBe(42)
+    }),
+  ))
+
+it("mints the same snapshot id when a checkpoint turn is retried after a crash", () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const counter = yield* Counter.get("checkpointed")
+      yield* counter.Increment(4)
+      yield* test.crashNext("beforeCommit")
+      const call = counter.Checkpoint()
+      const id = yield* call
+
+      expect(yield* call).toBe(id)
+      yield* test.advance(0)
+
+      const snapshot = yield* Snapshot.get(id as Parameters<typeof Snapshot.get>[0])
+      expect(yield* snapshot.Recorded()).toBe(4)
+      expect(yield* test.receiptsFor(snapshot.ref, "Record")).toBe(1)
     }),
   ))
