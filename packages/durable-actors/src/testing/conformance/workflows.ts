@@ -339,9 +339,9 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
               workflow_key: string
               status: string
               finished: boolean
-              result_bytes: number | null
+              stored: boolean | null
             }>`SELECT execution_id, tenant_id, workflow, workflow_key, status,
-                finished_at IS NOT NULL AS finished, result_bytes
+                finished_at IS NOT NULL AS finished, result_bytes > 0 AS stored
               FROM durable.workflows
               WHERE tenant_id = ${test.tenant} AND actor_type = 'Shipper' AND actor_id = 'inspected'`
           const steps = () =>
@@ -361,7 +361,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
               workflow_key: "o-inspect",
               status: "suspended",
               finished: false,
-              result_bytes: null,
+              stored: null,
             },
           ])
           expect(yield* steps()).toEqual([
@@ -370,9 +370,9 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           ])
           yield* test.advance("11 seconds")
           expect(yield* run.result).toBe("r-sleep:v2")
-          const [finished] = yield* execution()
-          expect(finished).toMatchObject({ status: "finished", finished: true })
-          expect(finished!.result_bytes).toBeGreaterThan(0)
+          expect(yield* execution()).toMatchObject([
+            { status: "finished", finished: true, stored: true },
+          ])
           expect(yield* steps()).toEqual([])
         }),
       ),
