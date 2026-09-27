@@ -2,6 +2,7 @@ import { Context, Effect, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { StagedOutbox } from "./intents.ts"
@@ -151,6 +152,8 @@ export class InternalActors extends Context.Service<
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>
+    /** Derives the id a parent turn mints for a child actor. */
+    readonly mintChildId: (input: MintInput) => Effect.Effect<string>
     /**
      * Binds owned-table capabilities to the calling fiber's turn or query.
      * Writable access requires the turn transaction and never opens its own.

@@ -34,7 +34,8 @@ const program = Effect.gen(function* () {
   const increment = counter.Increment(1)
   const committed = yield* increment
   const replayed = yield* increment
-  yield* Console.log({ actor: counter.ref.id, committed, replayed })
+  const snapshot = yield* counter.Checkpoint()
+  yield* Console.log({ actor: counter.ref.id, committed, replayed, snapshot })
 })
 
 Layer.effectDiscard(program).pipe(

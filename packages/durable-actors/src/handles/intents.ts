@@ -1,5 +1,11 @@
 import { Context, DateTime, Duration, Effect, Schema } from "effect"
-import { type ActorRef, type Caller, type Principal, System } from "../identity/caller.ts"
+import {
+  type ActorRef,
+  type Caller,
+  type MintProof,
+  type Principal,
+  System,
+} from "../identity/caller.ts"
 
 /** When a staged intent becomes due: relative to the turn's commit, or at an instant. */
 export const Due = Schema.TaggedUnion({
@@ -51,9 +57,16 @@ export class InTurn extends Context.Service<InTurn, { readonly turn: symbol }>()
   "durable-actors/handles/intents/InTurn",
 ) {}
 
+interface Minted {
+  readonly child: ActorRef
+  readonly createdBy: string
+  readonly proof: MintProof
+}
+
 interface Staging {
   readonly sender: ActorRef
   readonly onBehalfOf: Principal | undefined
+  readonly minted: Map<string, Minted>
   open: boolean
   intents: Array<StagedIntent>
   readonly replaced: Set<string>
@@ -63,19 +76,24 @@ interface Staging {
 // Keyed by the provided marker, so a hand-built `InTurn` value stages nothing.
 const stagings = new WeakMap<InTurn["Service"], Staging>()
 
+const mintKey = (ref: ActorRef) => JSON.stringify([ref.actor, ref.id])
+
 /** Opens the outbox of one command turn; `close` returns what it staged and seals it. */
 export const openOutbox = ({
   sender,
   onBehalfOf,
+  commandId,
 }: {
   readonly sender: ActorRef
   readonly onBehalfOf: Principal | undefined
+  readonly commandId: string
 }) => {
   const marker = InTurn.of({ turn: Symbol() })
 
   const staging: Staging = {
     sender,
     onBehalfOf,
+    minted: new Map(),
     open: true,
     intents: [],
     replaced: new Set(),
@@ -93,6 +111,27 @@ export const openOutbox = ({
         ...effect,
         caller: System.make({ source: "effect", ref: sender, onBehalfOf }),
       })
+    },
+    /** The proof the next `turn.mint` call of this turn carries. */
+    nextMint: (): MintProof => ({ commandId, ordinal: staging.minted.size }),
+    /** Records a minted id; its creating intent then carries `proof`. */
+    minted: (child: ActorRef, createdBy: string, proof: MintProof) => {
+      staging.minted.set(mintKey(child), { child, createdBy, proof })
+    },
+    /** A minted actor that no staged intent to its creating command targets, if any. */
+    uncreated: (): ActorRef | undefined => {
+      for (const { child, createdBy } of staging.minted.values())
+        if (
+          !staging.intents.some(
+            (intent) =>
+              intent.command === createdBy &&
+              intent.target.actor === child.actor &&
+              intent.target.id === child.id,
+          )
+        )
+          return child
+
+      return undefined
     },
     close: (): StagedOutbox => {
       staging.open = false
@@ -129,12 +168,20 @@ export const stage = Effect.fnUntraced(function* (
   const { staging } = yield* currentStaging(marker)
   const { due, key } = yield* IntentSettings
 
+  const minted = staging.minted.get(mintKey(intent.target))
+
   // The receiver sees the sending actor, attributed to the sending turn's principal.
-  const caller = System.make({
-    source: due === undefined ? "actor" : "timer",
+  const attribution = {
+    source: due === undefined ? ("actor" as const) : ("timer" as const),
     ref: staging.sender,
     onBehalfOf: staging.onBehalfOf,
-  })
+  }
+
+  // Only a minted child's creating intent carries the proof that lets it create the child.
+  const caller =
+    minted?.createdBy === intent.command
+      ? System.make({ ...attribution, mint: minted.proof })
+      : System.make(attribution)
 
   if (key !== undefined) replaceKey(staging, key)
   staging.intents.push({ ...intent, due, key, caller })

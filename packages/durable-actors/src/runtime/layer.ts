@@ -42,6 +42,7 @@ import {
   type Request,
 } from "../handles/actors.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
+import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
@@ -323,6 +324,8 @@ export const layer = (options: Options) => {
 
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+        mintChildId: (input) =>
+          deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),
         tables: (scope, write) =>
           bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
         blobs: (scope, write) => bindBlobs(scope, write).pipe(Effect.provideContext(services)),

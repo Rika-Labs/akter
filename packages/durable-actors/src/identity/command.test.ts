@@ -99,6 +99,9 @@ const SmallCaller = Schema.Union([
     source: Schema.Literals(["actor", "timer"]),
     ref: Schema.optionalKey(SmallRef),
     onBehalfOf: Schema.optionalKey(Schema.Struct({ subject: Subject })),
+    mint: Schema.optionalKey(
+      Schema.Struct({ commandId: Schema.Literals(["a", "b"]), ordinal: Schema.Literals([0, 1]) }),
+    ),
   }),
 ])
 

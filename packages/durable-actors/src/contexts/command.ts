@@ -22,6 +22,13 @@ export interface Turn<Name extends string> {
   readonly [TurnTypeId]: Name
 }
 
+/** Type-level mark of an unkeyed actor that declares `policy.createdBy`, so turns can mint it. */
+export declare const MintableTypeId: unique symbol
+
+export interface Mintable<Id extends string = string> {
+  readonly [MintableTypeId]: Id
+}
+
 /** The writable context of one command turn, obtained with `yield* X.Turn`. */
 export interface CommandContext<
   State,
@@ -45,6 +52,13 @@ export interface CommandContext<
   readonly group: Group
   /** This actor's entries of a declared blob, bound to the turn transaction. */
   readonly blob: (blob: Blobs) => BlobWrite
+  /**
+   * Derives the id of a new `child` from this command id and the number of
+   * earlier mints in the turn; retries of the command mint the same ids. The
+   * turn must stage an intent to the child's `createdBy` command, which alone
+   * can create it.
+   */
+  readonly mint: <Id extends string>(child: Mintable<Id>) => Effect.Effect<Id>
 }
 
 /** One committed event and where it sits in its actor's stream. */

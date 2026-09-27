@@ -47,6 +47,7 @@ import {
   type FoundationFixture,
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
+import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import {
   outboxConformance,
@@ -1218,6 +1219,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   ...propertiesConformance,
+  ...mintConformance,
 ]
 
 interface ConformanceStore {
@@ -1253,6 +1255,7 @@ export const describeConformance = (options: {
     effectsLayer(fixture.effects),
     blobsLayer(fixture.blobs),
     propertiesLayer,
+    mintLayer,
   )
 
   let store: ConformanceStore | undefined

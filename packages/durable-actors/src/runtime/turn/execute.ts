@@ -1,6 +1,6 @@
 import { Effect, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { ActorError, NotCreated } from "../../errors/actor.ts"
+import { ActorError, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
   type BusinessResult,
   Outcome,
@@ -9,6 +9,7 @@ import {
 } from "../../handles/actors.ts"
 import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
+import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { appendEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
@@ -112,6 +113,15 @@ export const executeTurn = Effect.fnUntraced(function* (
       policy.createdBy !== request.command
     )
       return yield* ActorError.make({ reason: NotCreated.make({}) })
+
+    // A minted actor is created only by the creating intent its parent's turn staged.
+    if (
+      policy.createdBy === request.command &&
+      !admission.created &&
+      isMintedId(id) &&
+      !(yield* provesMint(request.caller, request.ref))
+    )
+      return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
 
     const committed =
       cache.state ??

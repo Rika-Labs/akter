@@ -1,0 +1,431 @@
+import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
+import {
+  Actor,
+  Actors,
+  CurrentCaller,
+  Intent,
+  NotCreated,
+  System,
+  Unauthorized,
+} from "../../index.ts"
+import type { Mintable } from "../../contexts/command.ts"
+import type { ActorRef } from "../../identity/caller.ts"
+import { deriveMintId } from "../../identity/mint.ts"
+import { ActorTest } from "../actor-test.ts"
+import type { ConformanceCase } from "../conformance.ts"
+
+class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
+
+const Open = Actor.command("Open", { input: Schema.String, errors: [Refused] })
+
+const Title = Actor.command("Title", { output: Schema.String })
+
+const childState = Actor.state({
+  title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+})
+
+const Task = Actor.make("MintTask", {
+  state: childState,
+  api: { Open, Title },
+  policy: { createdBy: Open },
+})
+
+const Note = Actor.make("MintNote", {
+  state: childState,
+  api: { Open, Title },
+  policy: { createdBy: Open },
+})
+
+const Ids = Schema.Array(Schema.String)
+
+const Plan = Actor.command("Plan", { input: Schema.Int, output: Ids })
+
+const PlanMixed = Actor.command("PlanMixed", { output: Ids })
+
+const PlanLater = Actor.command("PlanLater", { output: Schema.String })
+
+const PlanThenRefuse = Actor.command("PlanThenRefuse", { errors: [Refused] })
+
+const PlanThenDie = Actor.command("PlanThenDie")
+
+const PlanRefusedChild = Actor.command("PlanRefusedChild", { output: Schema.String })
+
+const MintOnly = Actor.command("MintOnly")
+
+const MintUnmintable = Actor.command("MintUnmintable")
+
+const Escape = Actor.command("Escape")
+
+const Steal = Actor.command("Steal")
+
+const Planner = Actor.make("MintPlanner", {
+  key: Schema.String,
+  api: {
+    Plan,
+    PlanMixed,
+    PlanLater,
+    PlanThenRefuse,
+    PlanThenDie,
+    PlanRefusedChild,
+    MintOnly,
+    MintUnmintable,
+    Escape,
+    Steal,
+  },
+})
+
+// Ids each handler run minted, including runs whose turn later rolled back.
+const runs: Array<ReadonlyArray<string>> = []
+
+let escaped: Effect.Effect<string> = Effect.succeed("")
+
+const openTask = Effect.fnUntraced(function* (title: string) {
+  const id = yield* (yield* Planner.Turn).mint(Task)
+  yield* (yield* Task.intents(id)).Open(title)
+
+  return id
+})
+
+const openNote = Effect.fnUntraced(function* (title: string) {
+  const id = yield* (yield* Planner.Turn).mint(Note)
+  yield* (yield* Note.intents(id)).Open(title)
+
+  return id
+})
+
+export const mintLayer = Layer.mergeAll(
+  Task.toLayer(
+    Effect.succeed({
+      Open: Effect.fnUntraced(function* (title: string) {
+        yield* (yield* Task.Turn).state.set({ title })
+
+        if (title === "refuse") return yield* Refused.make({})
+      }),
+      Title: Effect.fnUntraced(function* () {
+        return (yield* Task.Turn).state.title
+      }),
+    }),
+  ),
+  Note.toLayer(
+    Effect.succeed({
+      Open: Effect.fnUntraced(function* (title: string) {
+        yield* (yield* Note.Turn).state.set({ title })
+      }),
+      Title: Effect.fnUntraced(function* () {
+        return (yield* Note.Turn).state.title
+      }),
+    }),
+  ),
+  Planner.toLayer(
+    Effect.succeed({
+      Plan: Effect.fnUntraced(function* (count: number) {
+        const ids: Array<string> = []
+
+        for (let index = 0; index < count; index++) ids.push(yield* openTask(`task ${index}`))
+        runs.push(ids)
+
+        return ids
+      }),
+      PlanMixed: Effect.fnUntraced(function* () {
+        const ids: ReadonlyArray<string> = [yield* openTask("task"), yield* openNote("note")]
+
+        return ids
+      }),
+      PlanLater: Effect.fnUntraced(function* () {
+        const id = yield* (yield* Planner.Turn).mint(Task)
+        yield* (yield* Task.intents(id)).Open("later").pipe(Intent.after("1 hour"))
+
+        return id
+      }),
+      PlanThenRefuse: Effect.fnUntraced(function* () {
+        runs.push([yield* openTask("refused")])
+
+        return yield* Refused.make({})
+      }),
+      PlanThenDie: Effect.fnUntraced(function* () {
+        runs.push([yield* openTask("died")])
+
+        return yield* Effect.die(new Error("Planner defect after minting"))
+      }),
+      PlanRefusedChild: () => openTask("refuse"),
+      MintOnly: Effect.fnUntraced(function* () {
+        yield* (yield* Planner.Turn).mint(Task)
+      }),
+      MintUnmintable: Effect.fnUntraced(function* () {
+        const unmintable: object = Planner
+        yield* (yield* Planner.Turn).mint(unmintable as Mintable)
+      }),
+      Escape: Effect.fnUntraced(function* () {
+        escaped = (yield* Planner.Turn).mint(Task)
+      }),
+      Steal: () => Effect.asVoid(Effect.suspend(() => escaped)),
+    }),
+  ),
+)
+
+// Command outputs carry ids as plain strings; handles take the branded id.
+const task = (id: string) => Task.get(id as Parameters<typeof Task.get>[0])
+
+const note = (id: string) => Note.get(id as Parameters<typeof Note.get>[0])
+
+const expected = (parent: ActorRef, commandId: string, ordinal: number, child = "MintTask") =>
+  deriveMintId({ parent, commandId, ordinal, child })
+
+const created = Effect.fnUntraced(function* (actor: string, id: string) {
+  const test = yield* ActorTest
+
+  return yield* test.receiptsFor({ tenant: test.tenant, actor, id }, "Open")
+})
+
+export const mintConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "mints ids from the command id and ordinal and creates each child once from its intent",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const planner = yield* Planner.get("derive")
+          const commandId = yield* (yield* Actors).mintCommandId
+          const ids = yield* planner.Plan(2).pipe(Actor.commandId(commandId))
+
+          expect(ids).toEqual([
+            yield* expected(planner.ref, commandId, 0),
+            yield* expected(planner.ref, commandId, 1),
+          ])
+          expect(new Set(ids).size).toBe(2)
+          expect(yield* test.inspect(planner.ref)).toMatchObject({
+            receipts: 1,
+            outbox: 2,
+          })
+          yield* test.advance(0)
+
+          for (const [index, id] of ids.entries()) {
+            expect(yield* (yield* task(id)).Title()).toBe(`task ${index}`)
+            expect(yield* created("MintTask", id)).toBe(1)
+          }
+
+          expect(yield* test.inspect(planner.ref)).toMatchObject({ outbox: 0 })
+          expect(yield* planner.Plan(2).pipe(Actor.commandId(commandId))).toEqual(ids)
+        }),
+      ),
+  },
+  {
+    name: "mints distinct ids per parent, per ordinal, and per child type from one command id",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const commandId = yield* (yield* Actors).mintCommandId
+          const first = yield* Planner.get("distinct-a")
+          const second = yield* Planner.get("distinct-b")
+          const a = yield* first.PlanMixed().pipe(Actor.commandId(commandId))
+          const b = yield* second.PlanMixed().pipe(Actor.commandId(commandId))
+
+          expect(a).toEqual([
+            yield* expected(first.ref, commandId, 0),
+            yield* expected(first.ref, commandId, 1, "MintNote"),
+          ])
+          expect(new Set([...a, ...b]).size).toBe(4)
+          yield* test.advance(0)
+          expect(yield* (yield* task(a[0]!)).Title()).toBe("task")
+          expect(yield* (yield* note(a[1]!)).Title()).toBe("note")
+          expect(yield* (yield* note(b[1]!)).Title()).toBe("note")
+        }),
+      ),
+  },
+  {
+    name: "mints the same ids when a beforeCommit crash reruns the command",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const planner = yield* Planner.get("crash-before")
+          const before = runs.length
+          yield* test.crashNext("beforeCommit")
+          const ids = yield* planner.Plan(2)
+
+          expect(runs.slice(before)).toEqual([ids, ids])
+          yield* test.advance(0)
+
+          for (const id of ids) expect(yield* created("MintTask", id)).toBe(1)
+          expect(yield* test.inspect(planner.ref)).toMatchObject({
+            receipts: 1,
+            outbox: 0,
+          })
+        }),
+      ),
+  },
+  {
+    name: "replays minted ids after an afterCommit crash and creates each child once",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const planner = yield* Planner.get("crash-after")
+          const commandId = yield* (yield* Actors).mintCommandId
+          const before = runs.length
+          yield* test.crashNext("afterCommit")
+          const ids = yield* planner.Plan(2).pipe(Actor.commandId(commandId))
+
+          expect(yield* planner.Plan(2).pipe(Actor.commandId(commandId))).toEqual(ids)
+          expect(runs.slice(before)).toEqual([ids])
+          yield* test.advance(0)
+
+          for (const id of ids) expect(yield* created("MintTask", id)).toBe(1)
+          expect(yield* test.inspect(planner.ref)).toMatchObject({
+            receipts: 1,
+            outbox: 0,
+          })
+        }),
+      ),
+  },
+  {
+    name: "mints per command when several commands wait at one parent",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const planner = yield* Planner.get("queued")
+          const actors = yield* Actors
+          const commandIds = [yield* actors.mintCommandId, yield* actors.mintCommandId]
+          const pause = yield* test.pauseNext("beforeCommit")
+
+          const first = yield* planner
+            .Plan(1)
+            .pipe(Actor.commandId(commandIds[0]!), Effect.forkChild)
+
+          yield* pause.reached
+
+          const second = yield* planner
+            .Plan(1)
+            .pipe(Actor.commandId(commandIds[1]!), Effect.forkChild)
+
+          yield* pause.release
+
+          expect(yield* Fiber.join(first)).toEqual([
+            yield* expected(planner.ref, commandIds[0]!, 0),
+          ])
+          expect(yield* Fiber.join(second)).toEqual([
+            yield* expected(planner.ref, commandIds[1]!, 0),
+          ])
+        }),
+      ),
+  },
+  {
+    name: "creates no child from a declared failure, a defect, or a mint without a creating intent",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const planner = yield* Planner.get("rollback")
+          const before = runs.length
+
+          expect(yield* planner.PlanThenRefuse().pipe(Effect.flip)).toBeInstanceOf(Refused)
+
+          const died = yield* planner.PlanThenDie().pipe(Effect.exit)
+          expect(Exit.isFailure(died) && Cause.pretty(died.cause)).toContain("Planner defect")
+
+          const commandId = yield* (yield* Actors).mintCommandId
+          const unstaged = yield* planner.MintOnly().pipe(Actor.commandId(commandId), Effect.exit)
+          const orphan = yield* expected(planner.ref, commandId, 0)
+
+          expect(Exit.isFailure(unstaged) && Cause.pretty(unstaged.cause)).toContain(
+            `Minted actor MintTask/${orphan} has no creating intent`,
+          )
+
+          yield* test.advance(0)
+          expect(yield* test.inspect(planner.ref)).toMatchObject({
+            receipts: 1,
+            outbox: 0,
+          })
+
+          for (const [id] of runs.slice(before)) expect(yield* created("MintTask", id!)).toBe(0)
+        }),
+      ),
+  },
+  {
+    name: "keeps a minted child uncreated when its creating turn fails with a declared error",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const planner = yield* Planner.get("child-refuses")
+          const id = yield* planner.PlanRefusedChild()
+          yield* test.advance(0)
+
+          expect(yield* created("MintTask", id)).toBe(1)
+          expect(yield* test.inspect(planner.ref)).toMatchObject({ receipts: 1, outbox: 0 })
+          expect(yield* (yield* task(id)).Title().pipe(Effect.flip)).toMatchObject({
+            reason: NotCreated.make({}),
+          })
+        }),
+      ),
+  },
+  {
+    name: "refuses a minted child's creating command without its parent's mint proof",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const planner = yield* Planner.get("forged")
+          const other = yield* Planner.get("forged-other")
+          const commandId = yield* (yield* Actors).mintCommandId
+          const id = yield* planner.PlanLater().pipe(Actor.commandId(commandId))
+          const child = yield* task(id)
+
+          const denied = {
+            reason: Unauthorized.make({ code: "access_denied" }),
+          }
+
+          expect(yield* child.Open("client").pipe(Effect.flip)).toMatchObject(denied)
+
+          const forged = System.make({
+            source: "actor",
+            ref: other.ref,
+            onBehalfOf: { subject: "alice" },
+            mint: { commandId, ordinal: 0 },
+          })
+
+          const impostor = yield* task(id).pipe(Effect.provideService(CurrentCaller, forged))
+          expect(yield* impostor.Open("impostor").pipe(Effect.flip)).toMatchObject(denied)
+          expect(yield* created("MintTask", id)).toBe(0)
+          yield* test.advance("1 hour")
+          expect(yield* child.Title()).toBe("later")
+          expect(yield* created("MintTask", id)).toBe(1)
+          yield* child.Open("reopened")
+          expect(yield* child.Title()).toBe("reopened")
+        }),
+      ),
+  },
+  {
+    name: "keeps create() children open to any authorized caller of the creating command",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const child = yield* Task.create()
+          yield* child.Open("direct")
+          expect(yield* child.Title()).toBe("direct")
+        }),
+      ),
+  },
+  {
+    name: "rejects a mint capability that escaped its turn and an actor that cannot be minted",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const planner = yield* Planner.get("escape")
+          yield* planner.Escape()
+
+          const stolen = yield* planner.Steal().pipe(Effect.exit)
+          expect(Exit.isFailure(stolen) && Cause.pretty(stolen.cause)).toContain(
+            "Mint capability escaped its turn",
+          )
+
+          const unmintable = yield* planner.MintUnmintable().pipe(Effect.exit)
+          expect(Exit.isFailure(unmintable) && Cause.pretty(unmintable.cause)).toContain(
+            "turn.mint needs an unkeyed actor that declares policy.createdBy",
+          )
+        }),
+      ),
+  },
+]
