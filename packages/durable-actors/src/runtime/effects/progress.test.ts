@@ -1,4 +1,4 @@
-import { Effect, Layer, ManagedRuntime, type Scope } from "effect"
+import { Deferred, Effect, Layer, ManagedRuntime, type Scope } from "effect"
 import { TestClock } from "effect/testing"
 import { expect, it } from "vitest"
 import { ActorRef } from "../../identity/caller.ts"
@@ -245,5 +245,53 @@ it("spends no token on a wakeup whose frame was already sent", () =>
       )
 
       expect(sent.length).toBe(3)
+    }),
+  ))
+
+it("closes a slot and its effect within the bound while a send ignores interruption", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>()
+      const runtime = ManagedRuntime.make(
+        Layer.succeed(ProgressSink, {
+          wants: () => true,
+          send: () => Effect.uninterruptible(Deferred.await(gate)),
+          closed: () => Effect.void,
+        }),
+      )
+
+      const took = yield* Effect.acquireUseRelease(
+        Effect.succeed(runtime),
+        () =>
+          Effect.promise(() =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const pool = yield* progressPool()
+                  const slot = yield* pool.open(attempt("a", 250))
+                  yield* slot.offer(frame(1))
+                  yield* Effect.sleep(5)
+                  const start = Date.now()
+                  // Closing runs as the attempt's finalizer, where interruption is masked.
+                  yield* Effect.void.pipe(
+                    Effect.ensuring(
+                      slot.close.pipe(
+                        Effect.andThen(pool.closed({ ...attempt("a", 250), attempt: 1 })),
+                      ),
+                    ),
+                  )
+                  const took = Date.now() - start
+                  // Lets the stuck send finish so the pool's scope can close.
+                  yield* Deferred.succeed(gate, undefined)
+
+                  return took
+                }),
+              ),
+            ),
+          ),
+        () => Effect.promise(() => runtime.dispose()),
+      )
+
+      expect(took).toBeLessThan(1_000)
     }),
   ))
