@@ -15,7 +15,8 @@ import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { TurnHooks } from "./hooks.ts"
-import { BUCKETS, CallerJson, OutboxClock, outboxTime } from "./outbox.ts"
+import { databaseTime, FrameworkClock } from "./admission.ts"
+import { BUCKETS, CallerJson } from "./outbox.ts"
 
 /**
  * A drain whose deliveries keep staging due work after this many rounds, each
@@ -326,7 +327,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
             reason,
           }),
         )
-        yield* sql`UPDATE actor_outbox SET due_at_ms = ${(yield* outboxTime) + backoffMs(row.attempts)}
+        yield* sql`UPDATE actor_outbox SET due_at_ms = ${(yield* databaseTime) + backoffMs(row.attempts)}
           WHERE ${claim}`
       })
 
@@ -355,7 +356,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       // that already committed it replays the receipt on redelivery.
       Effect.onInterrupt(() =>
         Effect.gen(function* () {
-          yield* sql`UPDATE actor_outbox SET due_at_ms = ${yield* outboxTime} WHERE ${claim}`
+          yield* sql`UPDATE actor_outbox SET due_at_ms = ${yield* databaseTime} WHERE ${claim}`
         }).pipe(Effect.ignore),
       ),
     )
@@ -388,7 +389,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       guard: typeof effectRow,
     ) =>
       Effect.gen(function* () {
-        const at = yield* outboxTime
+        const at = yield* databaseTime
 
         const settled =
           route === undefined
@@ -428,7 +429,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
               actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
             VALUES (${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
               ${row.actor_id}, ${row.command}, ${row.payload}, ${attempts}, ${cause}, ${ambiguous},
-              ${yield* outboxTime})`
+              ${yield* databaseTime})`
 
           // Only the fault hook needs the request, so an unreadable one must not block the letter.
           const request = yield* requestOf(row, "sender").pipe(Effect.option)
@@ -471,7 +472,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           // Never shortens a deadline, so a renewal can't undo a test clock's lease shift.
           return yield* sql`UPDATE actor_outbox
-              SET due_at_ms = greatest(due_at_ms, ${(yield* outboxTime) + settings.executorLeaseMs})
+              SET due_at_ms = greatest(due_at_ms, ${(yield* databaseTime) + settings.executorLeaseMs})
               WHERE ${attemptRow(attempt)} RETURNING 1`.pipe(Effect.uninterruptible)
         }).pipe(
           Effect.catchCause((cause) =>
@@ -555,7 +556,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     // The outcome is recorded first, so a failed dead-letter transaction is
     // retried with this attempt's cause rather than the claim's.
     yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
-        due_at_ms = ${(yield* outboxTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
+        due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
       WHERE ${attemptRow(attempt)}`
 
     if (last) return yield* exhaust(attempt, cause, ambiguous)
@@ -592,7 +593,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const local = executors()
           const permits = settings.executorConcurrency - (yield* FiberSet.size(attempts))
           const claimedAt = yield* Clock.currentTimeNanos
-          const clock = yield* OutboxClock
+          const clock = yield* FrameworkClock
 
           const rows = yield* claimDue({
             sql,

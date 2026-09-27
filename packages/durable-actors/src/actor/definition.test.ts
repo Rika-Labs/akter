@@ -129,7 +129,9 @@ describe("actor declarations", () => {
       ActorError
     >["reason"]["_tag"]
 
-    expectTypeOf<Reason<Public["Peek"]>>().toEqualTypeOf<"ActorUnavailable" | "Unauthorized">()
+    expectTypeOf<Reason<Public["Peek"]>>().toEqualTypeOf<
+      "ActorUnavailable" | "Unauthorized" | "Timeout"
+    >()
 
     const commands = Box.toLayer(Effect.succeed({ Bump: () => Effect.void }))
     expectTypeOf(commands).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()

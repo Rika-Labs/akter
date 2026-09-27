@@ -37,11 +37,26 @@ export const Replay = Actor.query("Replay", {
   errors: [UnknownCursor, RetentionGap],
 })
 
+/** Reads one page of events after a cursor. */
+export const ReplayPage = Actor.query("ReplayPage", {
+  input: Schema.Struct({ after: Schema.String, limit: Schema.Int }),
+  output: Schema.Int,
+  errors: [UnknownCursor, RetentionGap],
+})
+
 /** Emits a given number of events per turn and replays them from a cursor. */
 export const EventProbe = Actor.make("EventProbe", {
   key: Schema.NonEmptyString,
   events: [Ticked],
-  api: { Emit, Replay },
+  api: { Emit, Replay, ReplayPage },
+})
+
+/** Emits like `EventProbe`, under one-day horizons, so everything seeded as old is prunable. */
+export const RetentionProbe = Actor.make("RetentionProbe", {
+  key: Schema.NonEmptyString,
+  events: [Ticked],
+  api: { Emit },
+  policy: { keepReceipts: "1 day", keepEvents: "1 day" },
 })
 
 export const Deliver = Actor.command("Deliver", { input: Schema.String })

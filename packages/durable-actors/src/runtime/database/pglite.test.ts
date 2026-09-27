@@ -134,6 +134,7 @@ describe("PGlite migrations", () => {
           ])
           expect(yield* migrate).toEqual([
             [9, "blobs"],
+            [10, "retention"],
             [11, "relay"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
@@ -145,7 +146,7 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
-  it("applies 0011_relay to a database with pending rows, keeping them and swapping the due index", () => {
+  it("applies 0010_retention to a database that already ran 0009_blobs", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
     const throughBlobs = Migrator.make({})({
@@ -160,6 +161,40 @@ describe("PGlite migrations", () => {
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
           yield* throughBlobs
+          expect(yield* migrate).toEqual([
+            [10, "retention"],
+            [11, "relay"],
+          ])
+          expect(
+            yield* sql`SELECT indexname FROM pg_indexes
+              WHERE indexname IN ('actor_receipts_expiry', 'actor_events_emitted', 'actor_outbox_intent')
+              ORDER BY indexname`,
+          ).toEqual([
+            { indexname: "actor_events_emitted" },
+            { indexname: "actor_outbox_intent" },
+            { indexname: "actor_receipts_expiry" },
+          ])
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("applies 0011_relay after 0010_retention to a database with pending rows, keeping them and swapping the due index", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughRetention = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0011")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughRetention
           yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
             VALUES (1, 't', 'Sender', 's')`
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,

@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actors } from "durable-actors/runtime"
-import { ActorCluster, ActorTest, TurnHooks } from "durable-actors/testing"
+import { ActorCluster, ActorTest, CleanupHooks, TurnHooks } from "durable-actors/testing"
 import { Effect, Layer } from "effect"
 import type { SqlClient } from "effect/unstable/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"
@@ -48,9 +48,14 @@ export type ActorServices = Layer.Success<ReturnType<typeof runtimeLayer>> | Sql
 
 // The effect round trip ends when its route's turn commits, which only the
 // runtime's post-commit hook observes; every other point stays a no-op.
-const hooks = Layer.succeed(TurnHooks, {
-  at: (point, request) => (point === "afterCommit" ? afterCommit(request) : Effect.void),
-})
+// Retention sweeps run only when a scenario asks, so a timed sweep never
+// lands inside another case's measurement.
+const hooks = Layer.mergeAll(
+  Layer.succeed(TurnHooks, {
+    at: (point, request) => (point === "afterCommit" ? afterCommit(request) : Effect.void),
+  }),
+  Layer.succeed(CleanupHooks, { batchSize: 1000, afterBatch: Effect.void, periodic: false }),
+)
 
 const runtimeLayer = (maxResidentActors: number | undefined) =>
   ProbeLive.pipe(

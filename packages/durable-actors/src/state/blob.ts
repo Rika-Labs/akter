@@ -22,6 +22,8 @@ export interface BlobWrite extends BlobRead {
 export interface BlobScope extends Omit<TableScope, "tables"> {
   /** The blobs the actor type declares; `blob` refuses any other. */
   readonly blobs: ReadonlyArray<AnyBlob>
+  /** Bytes all of the actor's entries may hold together: `policy.maxBlobBytes`. */
+  readonly maxBytes: number
 }
 
 /** Turn-bound access returns `BlobWrite`; read access only `BlobRead`. */

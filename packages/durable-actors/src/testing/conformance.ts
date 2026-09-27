@@ -47,6 +47,12 @@ import {
   type FoundationFixture,
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
+import {
+  retentionConformance,
+  retentionFixture,
+  type RetentionFixture,
+  retentionLayer,
+} from "./conformance/retention.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import {
   outboxConformance,
@@ -156,6 +162,7 @@ export interface ConformanceFixture {
   readonly effects: EffectsFixture
   readonly blobs: BlobsFixture
   readonly relay: RelayFixture
+  readonly retention: RetentionFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -276,6 +283,7 @@ const makeFixture = (): ConformanceFixture => ({
   effects: effectsFixture(),
   blobs: blobsFixture(),
   relay: relayFixture(),
+  retention: retentionFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -306,6 +314,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...relayConformance,
   ...relayClusterConformance,
   ...blobsConformance,
+  ...retentionConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1266,6 +1275,7 @@ export const describeConformance = (options: {
     blobsLayer(fixture.blobs),
     relayLayer(fixture.relay),
     relayEffects(fixture.relay),
+    retentionLayer(fixture.retention),
     propertiesLayer,
   )
 

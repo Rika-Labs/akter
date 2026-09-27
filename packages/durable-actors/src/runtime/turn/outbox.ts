@@ -13,18 +13,6 @@ export const bucketOf = (routingKey: bigint) => Number(routingKey >> 56n)
 
 export const BUCKETS = { first: -128, last: 127 } as const
 
-/** Shifts the outbox's view of the database clock; only `ActorTest.advance` moves it. */
-export const OutboxClock = Context.Reference<{ readonly offsetMillis: () => number }>(
-  "durable-actors/OutboxClock",
-  { defaultValue: () => ({ offsetMillis: () => 0 }) },
-)
-
-export const outboxTime = Effect.gen(function* () {
-  const clock = yield* OutboxClock
-
-  return (yield* databaseTime) + clock.offsetMillis()
-})
-
 /**
  * Runtime settings a turn needs to write intents: the deployment retry window,
  * which becomes each intent's receipt horizon past its due time, and the
@@ -62,7 +50,7 @@ export const writeOutbox = Effect.fnUntraced(function* (
 
   const crypto = yield* Crypto.Crypto
   const { retryWindowMs } = yield* OutboxRuntime
-  const now = yield* outboxTime
+  const now = yield* databaseTime
   let dueNow = outbox.effects.length > 0
   const rows = []
 
