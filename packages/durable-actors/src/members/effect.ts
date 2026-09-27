@@ -11,21 +11,32 @@ export type EffectClass<
   Tag extends string,
   Fields extends Schema.Struct.Fields,
   Success extends ValueSchema,
+  Progress extends ValueSchema | undefined = undefined,
 > = Schema.Class<Self, Schema.TaggedStruct<Tag, Fields>, {}> & {
   readonly tag: Tag
   readonly success: Success
+  readonly progress: Progress
 }
 
 /** Any declared effect class, as listed in an actor's `effects` section. */
 export type AnyEffect = ValueSchema & {
   readonly tag: string
   readonly success: ValueSchema
+  readonly progress: ValueSchema | undefined
   readonly Type: { readonly _tag: string }
 }
+
+/** An effect class that declares a `progress` schema. */
+export type ProgressEffect = AnyEffect & { readonly progress: ValueSchema }
+
+/** The frame type an executor of `E` reports with `X.Executor.progress`. */
+export type ProgressOf<E extends ProgressEffect> = E["progress"]["Type"]
 
 /**
  * Declares an effect class. `input` holds the instance fields; `success` is
  * the schema of the executor's return value and defaults to `void`.
+ * `progress`, when declared, is the schema of the transient frames its
+ * executor may report before the result commits; they are never state.
  */
 export const effect =
   <Self = never>() =>
@@ -33,18 +44,24 @@ export const effect =
     const Tag extends string,
     const Fields extends Schema.Struct.Fields = {},
     Success extends ValueSchema = Schema.Void,
+    Progress extends ValueSchema | undefined = undefined,
   >(
     tag: Tag,
-    options?: { readonly input?: Fields; readonly success?: Success },
+    options?: {
+      readonly input?: Fields
+      readonly success?: Success
+      readonly progress?: Progress
+    },
   ): [Self] extends [never]
     ? "Missing Self generic: Actor.effect<Self>()(tag, options)"
-    : EffectClass<Self, Tag, Fields, Success> => {
+    : EffectClass<Self, Tag, Fields, Success, Progress> => {
     if (tag.length === 0) throw new Error("Actor.effect needs a non-empty tag")
     const base = Schema.TaggedClass<unknown>()(tag, options?.input ?? {})
 
     return Object.assign(class extends base {}, {
       tag,
       success: options?.success ?? Schema.Void,
+      progress: options?.progress,
     }) as never
   }
 
@@ -78,6 +95,12 @@ type Accepting<Command extends AnyCommand, T> = Command extends AnyCommand
 export interface EffectPolicy<E extends AnyEffect, Command extends AnyCommand> {
   /** Bounds one executor attempt, measured on the runner. Default 30 seconds. */
   readonly timeout?: Duration.Input
+  /**
+   * The least time between two progress frames one attempt sends; frames
+   * reported sooner replace the one waiting. Default 250 milliseconds, from
+   * 50 milliseconds to 1 minute.
+   */
+  readonly progressEvery?: Duration.Input
   /**
    * Retries after the first failed attempt (default 3), and the wait after
    * failed attempt `n`: `min(base × 2^(n − 1), max)`. Default base 1 second,

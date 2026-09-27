@@ -162,15 +162,25 @@ export interface EffectFailure {
   readonly final?: boolean
 }
 
+/** What the relay gives one attempt; the executor sees it as `X.Executor`. */
+export type AttemptContext = Omit<ExecutorContext, "progress"> & {
+  /** Offers one encoded progress frame to the attempt's slot. */
+  /** False when progress reports go nowhere, so frames need not be encoded. */
+  readonly reporting: () => boolean
+  readonly report: (frame: Uint8Array) => Effect.Effect<void>
+}
+
 export interface RegisteredEffect {
   /** Total attempts before the effect is dead-lettered. */
   readonly attempts: number
+  /** The least time between two progress frames of one attempt; undefined when the effect declares no progress. */
+  readonly progressEveryMs: number | undefined
   /** The wait after failed attempt `n` is `min(baseMs × 2^(n − 1), maxMs)`. */
   readonly backoff: { readonly baseMs: number; readonly maxMs: number }
   /** Runs one attempt; succeeds with the `onSuccess` route, if declared. */
   readonly execute: (
     payload: string,
-    context: ExecutorContext,
+    context: AttemptContext,
   ) => Effect.Effect<EffectRoute | undefined, EffectFailure>
   /** The `onDeadLetter` route for an exhausted effect, if declared. */
   readonly deadLetter: (

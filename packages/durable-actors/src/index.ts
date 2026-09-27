@@ -113,7 +113,7 @@ export type { AnyConnection, Connection } from "./members/connection.ts"
 
 export type { ConnectionHandlers } from "./actor/definition.ts"
 
-export type { EffectClass, EffectPolicy } from "./members/effect.ts"
+export type { EffectClass, EffectPolicy, ProgressEffect, ProgressOf } from "./members/effect.ts"
 
 export type { Executors, Handle, Intents, WorkflowHandlers } from "./actor/definition.ts"
 

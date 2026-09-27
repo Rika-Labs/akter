@@ -87,8 +87,9 @@ import type {
   ValueSchema,
 } from "../members/command.ts"
 import type { AnyReducer } from "../members/reducer.ts"
-import type { AnyEffect, EffectPolicy } from "../members/effect.ts"
+import type { AnyEffect, EffectPolicy, ProgressEffect, ProgressOf } from "../members/effect.ts"
 import type { NoDatabase } from "../runtime/effects/isolation.ts"
+import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
 import { type ActorClient, type ClientOptions, clientOf } from "../client/make.ts"
@@ -360,12 +361,22 @@ const EXECUTOR_TIMEOUT_MS = 30_000
 
 const EFFECT_BACKOFF = { baseMs: 1000, maxMs: 256_000 } as const
 
+const PROGRESS_EVERY_MS = { default: 250, min: 50, max: 60_000 } as const
+
 /** Effect timings are timer durations: 1 ms to 2^31 − 1 ms. */
-const effectMillis = (path: string, duration: Duration.Input) => {
+const effectMillis = (
+  path: string,
+  duration: Duration.Input,
+  bounds: { readonly min: number; readonly max: number; readonly label: string } = {
+    min: 1,
+    max: 2_147_483_647,
+    label: "1 millisecond to 2147483647 milliseconds",
+  },
+) => {
   const millis = Duration.toMillis(Duration.fromInputUnsafe(duration))
 
-  if (!Number.isFinite(millis) || millis < 1 || millis > 2_147_483_647)
-    throw new Error(`${path} must be a duration from 1 millisecond to 2147483647 milliseconds`)
+  if (!Number.isFinite(millis) || millis < bounds.min || millis > bounds.max)
+    throw new Error(`${path} must be a duration from ${bounds.label}`)
 
   return Math.floor(millis)
 }
@@ -385,7 +396,19 @@ const effectTiming = (tag: string, policy: EffectPolicy<AnyEffect, AnyCommand> |
             baseMs: effectMillis(`policy.effects.${tag}.retry.backoff.base`, backoff.base),
             maxMs: effectMillis(`policy.effects.${tag}.retry.backoff.max`, backoff.max),
           },
-  } satisfies { readonly timeoutMs: number; readonly backoff: RegisteredEffect["backoff"] }
+    progressEveryMs:
+      policy?.progressEvery === undefined
+        ? PROGRESS_EVERY_MS.default
+        : effectMillis(`policy.effects.${tag}.progressEvery`, policy.progressEvery, {
+            min: PROGRESS_EVERY_MS.min,
+            max: PROGRESS_EVERY_MS.max,
+            label: "50 milliseconds to 1 minute",
+          }),
+  } satisfies {
+    readonly timeoutMs: number
+    readonly backoff: RegisteredEffect["backoff"]
+    readonly progressEveryMs: number
+  }
 
   if (timing.backoff.maxMs < timing.backoff.baseMs)
     throw new Error(`policy.effects.${tag}.retry.backoff.max must be at least its base`)
@@ -684,7 +707,7 @@ const make = <
       BroadcastContext<ConnectionsOf<Api>>
   >()(`durable-actors/Turn/${name}`) {}
 
-  class Executor extends Context.Service<Executor, ExecutorContext>()(
+  class Executor extends Context.Service<Executor, ExecutorContext<Effects[number]>>()(
     `durable-actors/Executor/${name}`,
   ) {}
 
@@ -1865,16 +1888,53 @@ const make = <
         const onDeadLetter =
           routes?.onDeadLetter === undefined ? undefined : routeCodec(routes.onDeadLetter)
 
-        const { timeoutMs, backoff } =
+        const { timeoutMs, backoff, progressEveryMs } =
           effectTimings.get(declared.tag) ?? effectTiming(declared.tag, undefined)
+
+        const encodeProgress =
+          declared.progress === undefined
+            ? undefined
+            : Schema.encodeUnknownEffect(
+                Schema.fromJsonString(Schema.toCodecJson(declared.progress)),
+              )
 
         registered.set(declared.tag, {
           attempts: 1 + (routes?.retry?.times ?? DEFAULT_EFFECT_RETRIES),
           backoff,
-          execute: Effect.fnUntraced(function* (payload, context) {
+          progressEveryMs: encodeProgress === undefined ? undefined : progressEveryMs,
+          execute: Effect.fnUntraced(function* (payload, attempt) {
             const effect = yield* decode(payload).pipe(
               Effect.mapError((error) => ({ cause: String(error), ambiguous: false })),
             )
+
+            const { report, reporting, ...identity } = attempt
+
+            // Progress is cosmetic: a bad frame is dropped with a warning,
+            // never a defect that would make the outcome unknown.
+            const progress = (
+              target: AnyEffect,
+              frame: ProgressOf<ProgressEffect>,
+            ): Effect.Effect<void> =>
+              !reporting()
+                ? Effect.void
+                : target !== declared || encodeProgress === undefined
+                  ? Effect.logWarning("Progress frame does not match the running effect")
+                  : encodeProgress(frame).pipe(
+                      Effect.map((json) => new TextEncoder().encode(json)),
+                      Effect.matchEffect({
+                        onFailure: (error) =>
+                          Effect.logWarning("Progress frame did not encode", String(error)),
+                        onSuccess: (bytes) =>
+                          bytes.length > MAX_PROGRESS_BYTES
+                            ? Effect.logWarning("Progress frame exceeds 4 KiB")
+                            : report(bytes),
+                      }),
+                      Effect.catchDefect((defect) =>
+                        Effect.logWarning("Progress frame did not encode", String(defect)),
+                      ),
+                    )
+
+            const context = { ...identity, progress } as ExecutorContext<Effects[number]>
 
             const exit = yield* execute(effect).pipe(
               Effect.timeoutOrElse({
