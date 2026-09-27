@@ -8,6 +8,8 @@ export interface RetentionPolicy {
   readonly keepReceiptsMs: number
   readonly keepEventsMs: number
   readonly deliveryMs: number
+  readonly keepWorkflowsMs: number
+  readonly workflows: boolean
 }
 
 /**
@@ -27,6 +29,7 @@ export const receiptMarginMs = (horizon: {
 export interface Swept {
   readonly receipts: number
   readonly events: number
+  readonly workflows: number
 }
 
 /**
@@ -42,7 +45,11 @@ export interface Swept {
  * Events go as a prefix: each batch removes, per actor, every event up to the
  * newest one it picked, so a retained event always has every later one after
  * it. `event_sequence` lives on the generation row and is never touched, so
- * no cursor is reissued.
+ * no cursor is reissued. The prefix stops at the oldest cursor or pending
+ * wait of an open workflow execution of that actor, which still reads past it.
+ *
+ * A finished workflow execution goes `keepWorkflows` after it finished; its
+ * steps went when it finished.
  *
  * The sweep yields after each batch, so a turn waiting for PGlite's one
  * connection runs between batches instead of after the whole sweep.
@@ -55,6 +62,7 @@ export const sweep = Effect.fnUntraced(function* (
   const hooks = yield* CleanupHooks
   let receipts = 0
   let events = 0
+  let workflows = 0
 
   for (const policy of policies) {
     const now = yield* databaseTime
@@ -116,8 +124,16 @@ export const sweep = Effect.fnUntraced(function* (
           ORDER BY emitted_at_ms
           LIMIT ${hooks.batchSize}),
         upto AS (
-          SELECT routing_key, tenant_id, actor_type, actor_id, max(sequence) AS last
-          FROM picked GROUP BY routing_key, tenant_id, actor_type, actor_id),
+          SELECT p.routing_key, p.tenant_id, p.actor_type, p.actor_id,
+            LEAST(max(p.sequence), COALESCE((
+              SELECT min(LEAST(x.event_cursor, COALESCE(w.wait_after, x.event_cursor)))
+              FROM actor_workflow_executions x
+              LEFT JOIN actor_workflow_step w ON w.routing_key = x.routing_key
+                AND w.execution_id = x.execution_id AND w.kind = 'wait' AND w.exit IS NULL
+              WHERE x.routing_key = p.routing_key AND x.tenant_id = p.tenant_id
+                AND x.actor_type = p.actor_type AND x.actor_id = p.actor_id AND x.status <> 'finished'
+            ), max(p.sequence))) AS last
+          FROM picked p GROUP BY p.routing_key, p.tenant_id, p.actor_type, p.actor_id),
         gone AS (
           DELETE FROM actor_events e USING upto u
           WHERE e.routing_key = u.routing_key AND e.tenant_id = u.tenant_id
@@ -133,7 +149,33 @@ export const sweep = Effect.fnUntraced(function* (
       yield* hooks.afterBatch
       yield* Effect.yieldNow
     }
+
+    const workflowCutoff = now - policy.keepWorkflowsMs
+
+    for (;;) {
+      if (!policy.workflows) break
+
+      const [pruned] = yield* batch(sql<{ count: number }>`
+        WITH doomed AS (
+          SELECT routing_key, execution_id FROM actor_workflow_executions
+          WHERE actor_type = ${policy.actorType} AND status = 'finished'
+            AND finished_at_ms <= ${workflowCutoff}
+          ORDER BY finished_at_ms
+          LIMIT ${hooks.batchSize}
+          FOR UPDATE SKIP LOCKED),
+        gone AS (
+          DELETE FROM actor_workflow_executions x USING doomed d
+          WHERE x.routing_key = d.routing_key AND x.execution_id = d.execution_id
+          RETURNING 1)
+        SELECT count(*)::integer AS count FROM gone`)
+
+      workflows += pruned!.count
+
+      if (pruned!.count === 0) break
+      yield* hooks.afterBatch
+      yield* Effect.yieldNow
+    }
   }
 
-  return { receipts, events } satisfies Swept
+  return { receipts, events, workflows } satisfies Swept
 })

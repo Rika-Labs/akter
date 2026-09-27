@@ -222,6 +222,78 @@ export const migrations = {
     yield* sql`CREATE INDEX actor_outbox_due_kind ON actor_outbox (bucket, kind, due_at_ms)`
     yield* sql`DROP INDEX actor_outbox_due`
   }),
+  // Workflow executions, their recorded steps, and the manifests deployments
+  // accepted. Every execution and step row lives on its owner's shard; a step
+  // row is written pending before its work starts and settled once.
+  "0012_workflows": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE actor_workflow_executions (
+        routing_key bigint NOT NULL,
+        execution_id text NOT NULL,
+        bucket integer NOT NULL CHECK (bucket = routing_key >> 56),
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        workflow text NOT NULL,
+        workflow_key text NOT NULL,
+        manifest_hash text NOT NULL,
+        payload bytea NOT NULL,
+        caller text NOT NULL,
+        event_cursor bigint NOT NULL,
+        status text NOT NULL CHECK (status IN ('running', 'suspended', 'finished')),
+        interrupt boolean NOT NULL DEFAULT false,
+        result bytea,
+        started_at_ms bigint NOT NULL,
+        finished_at_ms bigint,
+        PRIMARY KEY (routing_key, execution_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations,
+        CHECK ((status = 'finished') = (result IS NOT NULL AND finished_at_ms IS NOT NULL))
+      )`
+    yield* sql`CREATE INDEX actor_workflow_executions_open
+        ON actor_workflow_executions (routing_key, tenant_id, actor_type, actor_id)
+        WHERE status <> 'finished'`
+    yield* sql`CREATE INDEX actor_workflow_executions_finished
+        ON actor_workflow_executions (bucket, finished_at_ms)
+        WHERE status = 'finished'`
+    yield* sql`CREATE INDEX actor_workflow_executions_check
+        ON actor_workflow_executions (actor_type, workflow, manifest_hash)
+        WHERE status <> 'finished'`
+    yield* sql`CREATE TABLE actor_workflow_step (
+        routing_key bigint NOT NULL,
+        execution_id text NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        step text NOT NULL,
+        attempt integer NOT NULL,
+        kind text NOT NULL CHECK (kind IN ('activity', 'clock', 'deferred', 'wait', 'version')),
+        exit bytea,
+        due_at_ms bigint,
+        wait_event text,
+        wait_after bigint,
+        scanned bigint,
+        matched bigint,
+        version integer,
+        started_at_ms bigint NOT NULL,
+        settled_at_ms bigint,
+        PRIMARY KEY (routing_key, execution_id, step, attempt),
+        FOREIGN KEY (routing_key, execution_id) REFERENCES actor_workflow_executions ON DELETE CASCADE,
+        CHECK ((kind = 'wait') = (wait_event IS NOT NULL AND wait_after IS NOT NULL AND scanned IS NOT NULL)),
+        CHECK ((kind = 'clock') <= (due_at_ms IS NOT NULL)),
+        CHECK ((kind = 'version') = (version IS NOT NULL AND exit IS NULL))
+      )`
+    yield* sql`CREATE INDEX actor_workflow_step_waits
+        ON actor_workflow_step (routing_key, tenant_id, actor_type, actor_id, wait_event)
+        WHERE kind = 'wait' AND exit IS NULL`
+    yield* sql`CREATE TABLE actor_workflow_manifests (
+        actor_type text NOT NULL,
+        workflow text NOT NULL,
+        manifest_hash text NOT NULL,
+        manifest jsonb NOT NULL,
+        accepted_at_ms bigint NOT NULL,
+        PRIMARY KEY (actor_type, workflow, manifest_hash)
+      )`
+  }),
   "0015_effect_control": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_outbox

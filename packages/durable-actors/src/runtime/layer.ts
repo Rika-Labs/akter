@@ -39,6 +39,7 @@ import {
   Outcome,
   type QueryRegistration,
   type Registration,
+  type WorkflowStatus,
   type Request,
 } from "../handles/actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
@@ -55,6 +56,10 @@ import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
+import { recordManifests } from "./workflows/manifest.ts"
+import { decodeResult } from "./workflows/engine.ts"
+import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
+import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
@@ -117,6 +122,8 @@ const Millis = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_48
 
 const millis = (duration: Duration.Input) =>
   Millis.make(Math.floor(Duration.toMillis(Duration.fromInputUnsafe(duration))))
+
+const decodeTarget = Schema.decodeEffect(Target)
 
 /** Added to the longest turn a claimed intent's receiver may take. */
 const CLAIM_MARGIN_MS = 5000
@@ -208,11 +215,21 @@ export const layer = (options: Options) => {
       // group reads may only touch these, never other Actor.table values.
       const checked = new Set<AnyOwnedTable>()
 
+      // An interrupt is authorized as the workflow member its execution id names.
+      const authorizedAs = (request: Request) =>
+        request.command !== INTERRUPT
+          ? Effect.succeed(request)
+          : decodeTarget(request.payload).pipe(
+              Effect.flatMap(({ executionId }) => decodeExecutionId(executionId)),
+              Effect.map(({ workflow }) => ({ ...request, command: workflow })),
+              Effect.orElseSucceed(() => request),
+            )
+
       const allow = Effect.fnUntraced(function* (
         request: Request,
         kind: "command" | "query" = "command",
       ) {
-        if (!(yield* options.authorize({ ...request, kind })))
+        if (!(yield* options.authorize({ ...(yield* authorizedAs(request)), kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
@@ -300,7 +317,9 @@ export const layer = (options: Options) => {
 
             if (external) yield* checkIdentity(request.commandId, retryWindowMs, admission.now)
 
-            if (admission.receipt !== undefined) {
+            // A replayed resume still reaches the owner, whose turn replays the
+            // receipt and then wakes the execution the lost delivery would have.
+            if (admission.receipt !== undefined && request.command !== RESUME) {
               const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
 
               if (external) yield* authorize(request)
@@ -426,11 +445,13 @@ export const layer = (options: Options) => {
 
       const cleanup = Effect.suspend(() =>
         sweep(
-          Array.from(registrations.values(), ({ name, policy }) => ({
+          Array.from(registrations.values(), ({ name, policy, workflows }) => ({
             actorType: name,
             keepReceiptsMs: policy.keepReceiptsMs,
             keepEventsMs: policy.keepEventsMs,
             deliveryMs: policy.deliveryMs,
+            keepWorkflowsMs: policy.keepWorkflowsMs,
+            workflows: workflows.size > 0,
           })),
           retryWindowMs,
         ),
@@ -498,6 +519,17 @@ export const layer = (options: Options) => {
           )
 
           for (const table of registration.tables) checked.add(table)
+
+          if (
+            registration.workflows.size > 0 &&
+            registration.policy.keepWorkflowsMs < retryWindowMs
+          )
+            return yield* Effect.die(
+              new Error(
+                `Actor ${registration.name} keepWorkflows is shorter than the retry window`,
+              ),
+            )
+          yield* recordManifests(registration).pipe(Effect.provideContext(services), Effect.orDie)
 
           const isResident = yield* registerActor(registration).pipe(
             Effect.provideContext(services),
@@ -616,6 +648,41 @@ export const layer = (options: Options) => {
             yield* allow(request, "query")
 
             return outcome
+          },
+          Effect.provideContext(services),
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        ),
+        pollWorkflow: Effect.fnUntraced(
+          function* (request: Request) {
+            const registration =
+              registrations.get(request.ref.actor) ?? queryRegistrations.get(request.ref.actor)
+
+            if (registration === undefined)
+              return yield* ActorError.make({
+                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+              })
+
+            yield* allow(request)
+            const sql = yield* SqlClient.SqlClient
+
+            const [row] = yield* sql<{ status: string; result: Uint8Array | null }>`
+              SELECT status, result FROM actor_workflow_executions
+              WHERE routing_key = ${routingKey({ ref: request.ref, placement: registration.placement })}
+                AND execution_id = ${request.payload} AND tenant_id = ${request.ref.tenant}
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
+                AND workflow = ${request.command}`
+
+            // Access can be revoked while the read runs, as for a query.
+            yield* allow(request)
+
+            if (row === undefined) return undefined
+
+            return {
+              finished: row.status === "finished",
+              result: row.result === null ? undefined : yield* decodeResult(row.result),
+            } satisfies WorkflowStatus
           },
           Effect.provideContext(services),
           Effect.catchIf(SqlError.isSqlError, (cause) =>

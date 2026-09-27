@@ -24,6 +24,8 @@ import {
   type QueryContext,
 } from "../contexts/command.ts"
 import type { ExecutorContext, PerformContext, PerformOptions } from "../contexts/effect.ts"
+import { CallPhase, CurrentCallPhase, type WorkflowContext } from "../contexts/workflow.ts"
+import { InvalidExecutionId, InvalidExecutionKey } from "../errors/workflow.ts"
 import type { ActorError } from "../errors/actor.ts"
 import {
   Actors,
@@ -34,6 +36,8 @@ import {
   type RegisteredCommand,
   type RegisteredEffect,
   type RegisteredQuery,
+  type RegisteredWorkflow,
+  type WorkflowStatus,
   type EmittedEvent,
   Request,
 } from "../handles/actors.ts"
@@ -46,8 +50,20 @@ import {
   openOutbox,
   stage,
 } from "../handles/intents.ts"
+
 import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
+import { checkKey, decodeExecutionId, encodeExecutionId } from "../identity/execution.ts"
+import { type AnyWorkflow, exitCodec, isWorkflow } from "../members/workflow.ts"
+import {
+  ExecutionIdOutput,
+  INTERRUPT,
+  START,
+  StartPayload,
+  Target,
+  workflowRun,
+  type WorkflowRun,
+} from "../handles/workflow.ts"
 import { isMintedId } from "../identity/mint.ts"
 import { type AnyBlob, isBlob } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
@@ -187,6 +203,10 @@ type QueryKeys<Members extends MemberRecord> = {
   [K in keyof Members]: Members[K]["kind"] extends "query" ? K : never
 }[keyof Members]
 
+type WorkflowKeys<Members extends MemberRecord> = {
+  [K in keyof Members]: Members[K]["kind"] extends "workflow" ? K : never
+}[keyof Members]
+
 type ReducerKeys<Members extends MemberRecord> = {
   [K in keyof Members]: Members[K]["kind"] extends "reducer" ? K : never
 }[keyof Members]
@@ -213,6 +233,11 @@ export type Intents<Members extends MemberRecord> = {
   readonly [K in CommandKeys<Members>]: (
     ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
   ) => Effect.Effect<void, never, InTurn>
+} & {
+  /** Stages a workflow start and returns its execution id. */
+  readonly [K in WorkflowKeys<Members>]: (
+    ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
+  ) => Effect.Effect<string, never, InTurn>
 } & { readonly ref: ActorRef }
 
 export type Handle<
@@ -222,11 +247,16 @@ export type Handle<
 > = {
   readonly [K in keyof Members]: (
     ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
-  ) => Effect.Effect<
-    Members[K]["output"]["Type"],
-    | Members[K]["errors"][number]["Type"]
-    | ActorError.Of<Reasons<Members[K], Creating, BoundedMailbox>>
-  >
+  ) => Members[K] extends AnyWorkflow
+    ? Effect.Effect<
+        WorkflowRun<Members[K]>,
+        InvalidExecutionKey | ActorError.Of<Reasons<Members[K], Creating, BoundedMailbox>>
+      >
+    : Effect.Effect<
+        Members[K]["output"]["Type"],
+        | Members[K]["errors"][number]["Type"]
+        | ActorError.Of<Reasons<Members[K], Creating, BoundedMailbox>>
+      >
 } & { readonly ref: ActorRef }
 
 type HandlerMap<Members extends MemberRecord, Keys extends keyof Members, R> = {
@@ -251,6 +281,16 @@ export type Handlers<Members extends MemberRecord, R> = HandlerMap<
 > & {
   readonly [K in ReducerKeys<Members>]?: never
 }
+
+/**
+ * One body per workflow in `api`. Bodies run outside turns and may use
+ * request/reply handles, but only inside a step's `execute`.
+ */
+export type WorkflowHandlers<Members extends MemberRecord, R> = HandlerMap<
+  Members,
+  WorkflowKeys<Members>,
+  R
+>
 
 /** One handler per query in `api`. */
 export type QueryHandlers<Members extends MemberRecord, R> = HandlerMap<
@@ -388,6 +428,13 @@ interface Definition<
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>, Effects[number]>
 }
 
+const encodeTarget = Schema.encodeEffect(Target)
+
+const encodeStartPayload = Schema.encodeEffect(StartPayload)
+
+// Workflow starts staged so far in each turn, numbering keyless starts.
+const startCounts = new WeakMap<object, number>()
+
 const make = <
   const Name extends string,
   const Api extends MemberRecord,
@@ -414,7 +461,7 @@ const make = <
   for (const [key, member] of [...Object.entries(api), ...Object.entries(internal)]) {
     if (key !== member.tag) throw new Error(`Command key ${key} must equal its tag ${member.tag}`)
 
-    if (tags.has(member.tag) || member.tag === "ref")
+    if (tags.has(member.tag) || member.tag === "ref" || member.tag.startsWith("$"))
       throw new Error(`Duplicate or reserved command: ${member.tag}`)
     tags.add(member.tag)
   }
@@ -427,6 +474,10 @@ const make = <
   const members = all.filter((member): member is AnyCommand => member.kind === "command")
   const queries = all.filter((member) => member.kind === "query")
   const reducers = all.filter((member): member is AnyReducer => member.kind === "reducer")
+  const workflows = all.filter(isWorkflow)
+
+  for (const member of Object.values(internal))
+    if (isWorkflow(member)) throw new Error(`Workflow ${member.tag} must be in api`)
   const internalMembers = new Set<AnyMember>(Object.values(internal))
   const fields: StateFields = definition.state?.fields ?? {}
   const policy = resolvePolicy({ declared: definition.policy, commands: members })
@@ -634,6 +685,50 @@ const make = <
     `durable-actors/Executor/${name}`,
   ) {}
 
+  class Workflow extends Context.Service<Workflow, WorkflowContext>()(
+    `durable-actors/Workflow/${name}`,
+  ) {}
+
+  const workflowExits = new Map(
+    workflows.map((member) => [
+      member.tag,
+      exitCodec({ success: member.output, errors: member.errors }),
+    ]),
+  )
+
+  // Handles for one execution: poll reads like a query; interrupt is a receipted command.
+  const runOf = (
+    member: AnyWorkflow,
+    ref: ActorRef,
+    caller: Caller,
+    executionId: string,
+    execute: (request: Request) => Effect.Effect<Outcome, ActorError>,
+    poll: (request: Request) => Effect.Effect<WorkflowStatus | undefined, ActorError>,
+    mint: Effect.Effect<string>,
+  ) =>
+    workflowRun({
+      executionId,
+      poll: poll(
+        Request.make({ ref, caller, command: member.tag, commandId: "", payload: executionId }),
+      ),
+      interrupt: Effect.gen(function* () {
+        const commandId = (yield* CurrentCommandId) ?? (yield* mint)
+
+        const outcome = yield* execute(
+          Request.make({
+            ref,
+            caller,
+            command: INTERRUPT,
+            commandId,
+            payload: yield* encodeTarget({ executionId }).pipe(Effect.orDie),
+          }),
+        )
+
+        if (Outcome.guards.Defect(outcome)) return yield* Effect.die(outcome.cause)
+      }),
+      decode: workflowExits.get(member.tag)!.decode,
+    })
+
   class Read extends Context.Service<Read, QueryContext<State, Event, Owned, Blobs>>()(
     `durable-actors/Read/${name}`,
   ) {}
@@ -656,9 +751,79 @@ const make = <
       id: isSingleton ? "singleton" : yield* decodeId(id).pipe(Effect.orDie),
     })
 
+    // A workflow body sends only from inside a step, whose attempt derives each call's id.
+    const callable = Effect.gen(function* () {
+      if (CallPhase.$is("Body")(yield* CurrentCallPhase))
+        return yield* Effect.die(new Error("Actor call in a workflow body outside a step"))
+    })
+
+    const callId = Effect.gen(function* () {
+      const phase = yield* CurrentCallPhase
+
+      if (CallPhase.$is("Activity")(phase)) return yield* phase.nextCommandId
+
+      return (yield* CurrentCommandId) ?? (yield* actors.mintCommandId)
+    })
+
     const methods = Object.fromEntries(
       (includeInternal ? all : Object.values(api)).map((member) => {
         const { encodeInput, decodeOutput, decodeError } = codecs.get(member.tag)!
+
+        if (isWorkflow(member))
+          return [
+            member.tag,
+            (input: typeof member.input.Type) => {
+              const lock = Semaphore.makeUnsafe(1)
+              let identity: string | undefined
+
+              const identify = lock.withPermit(
+                Effect.gen(function* () {
+                  if (identity === undefined) identity = yield* callId
+
+                  return identity
+                }),
+              )
+
+              return Effect.gen(function* () {
+                yield* outsideTurn
+                yield* callable
+
+                if (member.key !== undefined) yield* checkKey(member.key(input))
+                const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+
+                const outcome = yield* internalActors.execute(
+                  Request.make({
+                    ref,
+                    caller,
+                    command: member.tag,
+                    commandId: yield* identify,
+                    payload,
+                  }),
+                )
+
+                if (!Outcome.guards.Success(outcome))
+                  return yield* Effect.die(
+                    Outcome.guards.Defect(outcome)
+                      ? outcome.cause
+                      : new Error("Workflow start failed"),
+                  )
+
+                const { value: executionId } = yield* Schema.decodeEffect(ExecutionIdOutput)(
+                  outcome.value,
+                ).pipe(Effect.orDie)
+
+                return runOf(
+                  member,
+                  ref,
+                  caller,
+                  executionId,
+                  internalActors.execute,
+                  internalActors.pollWorkflow,
+                  actors.mintCommandId,
+                )
+              })
+            },
+          ]
 
         return [
           member.tag,
@@ -668,8 +833,7 @@ const make = <
 
             const identify = lock.withPermit(
               Effect.gen(function* () {
-                if (identity === undefined)
-                  identity = (yield* CurrentCommandId) ?? (yield* actors.mintCommandId)
+                if (identity === undefined) identity = yield* callId
 
                 return identity
               }),
@@ -677,6 +841,8 @@ const make = <
 
             return Effect.gen(function* () {
               yield* outsideTurn
+
+              if (member.kind !== "query") yield* callable
 
               const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
@@ -869,8 +1035,8 @@ const make = <
 
             const outbox = openOutbox({
               sender: request.ref,
-              onBehalfOf: Option.getOrUndefined(principal(request.caller)),
               commandId: request.commandId,
+              onBehalfOf: Option.getOrUndefined(principal(request.caller)),
             })
 
             const mint = Effect.fnUntraced(function* (child: Mintable<string>) {
@@ -1053,6 +1219,68 @@ const make = <
       return commands as ReadonlyMap<string, RegisteredCommand>
     })
 
+  const workflowsOf = <RW>(
+    workflowHandlers: WorkflowHandlers<All, RW>,
+    workflowServices: Context.Context<RW>,
+  ) =>
+    Effect.gen(function* () {
+      const registeredWorkflows = new Map<string, RegisteredWorkflow>()
+
+      for (const member of workflows) {
+        const body = (
+          workflowHandlers as Record<
+            string,
+            | ((input: never) => Effect.Effect<unknown, Cause.YieldableError, RW | Workflow>)
+            | undefined
+          >
+        )[member.tag]
+
+        if (body === undefined)
+          return yield* Effect.die(new Error(`Missing workflow ${member.tag}`))
+
+        const memberCodec = codecs.get(member.tag)!
+        const exits = workflowExits.get(member.tag)!
+
+        registeredWorkflows.set(member.tag, {
+          member,
+          steps: new Map(member.registry.steps),
+          key: (payload, fallback) =>
+            Effect.gen(function* () {
+              if (member.key === undefined) return fallback
+
+              const input = yield* memberCodec.decodeInput(payload)
+              const key = member.key(input.value)
+
+              yield* checkKey(key)
+
+              return key
+            }).pipe(Effect.orDie),
+          run: (payload, context) =>
+            memberCodec.decodeInput(payload).pipe(
+              Effect.orDie,
+              Effect.flatMap((input) => body(input.value as never)),
+              Effect.exit,
+              Effect.provideContext(
+                Context.merge(Context.make(Workflow, context), workflowServices).pipe(
+                  Context.add(Tenant, context.ref.tenant),
+                  Context.add(
+                    CurrentCaller,
+                    System.make({
+                      source: "workflow",
+                      ref: context.ref,
+                      onBehalfOf: Option.getOrUndefined(context.principal),
+                    }),
+                  ),
+                ),
+              ),
+            ),
+          encodeExit: exits.encode,
+        })
+      }
+
+      return registeredWorkflows as ReadonlyMap<string, RegisteredWorkflow>
+    })
+
   /**
    * Implements every `api` and `internal` command; handlers read their turn
    * with `yield* X.Turn`. The build Effect runs once when the layer is built,
@@ -1061,12 +1289,13 @@ const make = <
    * exactly as long as the one cluster-wide activation.
    */
   // Defaults keep R `never` when there is no handler to infer it from, as for an actor of reducers only.
-  const toLayer = <R = never, RB = never>(
-    build: Effect.Effect<Handlers<All, R>, never, RB> & NoRequestReply<R>,
+  const toLayer = <R = never, RB = never, RW = never>(
+    build: Effect.Effect<Handlers<All, R> & WorkflowHandlers<All, RW>, never, RB> &
+      NoRequestReply<R>,
   ): Layer.Layer<
     never,
     never,
-    Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+    Exclude<R, Turn | InTurn> | Exclude<RW, Workflow> | Exclude<RB, Scope.Scope> | InternalActors
   > =>
     Layer.effectDiscard(
       Effect.gen(function* () {
@@ -1086,10 +1315,12 @@ const make = <
         if (!isSingleton) {
           const handlers = yield* build
           const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
+          const workflowServices = yield* Effect.context<Exclude<RW, Workflow>>()
           const commands = yield* commandsOf(handlers, services as Context.Context<R>)
 
           return yield* actors.register({
             ...registration,
+            workflows: yield* workflowsOf(handlers, workflowServices as Context.Context<RW>),
             activate: () => Effect.succeed(commands),
           })
         }
@@ -1098,8 +1329,12 @@ const make = <
           Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
         >()
 
+        if (workflows.length > 0)
+          return yield* Effect.die(new Error(`Singleton actor ${name} cannot declare workflows`))
+
         yield* actors.register({
           ...registration,
+          workflows: new Map(),
           activate: Effect.fnUntraced(function* (ref: ActorRef) {
             const scope = yield* Scope.Scope
 
@@ -1119,7 +1354,7 @@ const make = <
     ) as Layer.Layer<
       never,
       never,
-      Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+      Exclude<R, Turn | InTurn> | Exclude<RW, Workflow> | Exclude<RB, Scope.Scope> | InternalActors
     >
 
   const registerQueries = <R>(handlers: QueryHandlers<Api, R>, services: Context.Context<R>) =>
@@ -1502,7 +1737,88 @@ const make = <
       }),
     )
 
-    return { ...methods, ref: target } as Intents<All>
+    const starts = Object.fromEntries(
+      workflows.map((member) => {
+        const { encodeInput } = codecs.get(member.tag)!
+
+        return [
+          member.tag,
+          (input: typeof member.input.Type) =>
+            Effect.gen(function* () {
+              const { staging: current } = yield* currentStaging(marker)
+              const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+              const ordinal = (startCounts.get(current) ?? 0) + 1
+
+              startCounts.set(current, ordinal)
+
+              // A retried turn repeats its command id, so it restages the same executions.
+              const key =
+                member.key === undefined ? `${current.commandId}:${ordinal}` : member.key(input)
+
+              const executionId = yield* encodeExecutionId({
+                tenant: target.tenant,
+                actor: target.actor,
+                id: target.id,
+                workflow: member.tag,
+                key,
+              }).pipe(Effect.orDie)
+
+              const own = current.sender.actor === target.actor && current.sender.id === target.id
+
+              yield* stage(marker, {
+                target,
+                command: START,
+                payload: yield* encodeStartPayload({
+                  workflow: member.tag,
+                  input: payload,
+                  key,
+                  startedBy: own ? current.commandId : null,
+                }).pipe(Effect.orDie),
+              })
+
+              return executionId
+            }),
+        ]
+      }),
+    )
+
+    return { ...methods, ...starts, ref: target } as Intents<All>
+  })
+
+  /** Reattaches to an execution by id, without contacting its owner. */
+  const run = Effect.fnUntraced(function* <W extends Extract<Values<Api>, AnyWorkflow>>(
+    member: W,
+    executionId: string,
+  ): Effect.fn.Return<WorkflowRun<W>, InvalidExecutionId, Actors | InternalActors> {
+    yield* outsideTurn
+    const actors = yield* Actors
+    const internalActors = yield* InternalActors
+    const caller = yield* decodeCaller(yield* CurrentCaller).pipe(Effect.orDie)
+    const tenant = yield* Tenant
+    const invalid = InvalidExecutionId.make({ executionId })
+    const execution = yield* decodeExecutionId(executionId)
+
+    if (
+      execution.tenant !== tenant ||
+      execution.actor !== name ||
+      execution.workflow !== member.tag ||
+      !workflows.includes(member)
+    )
+      return yield* invalid
+
+    const id = isSingleton ? "singleton" : execution.id
+
+    if (!isSingleton && Result.isFailure(Schema.decodeResult(idSchema)(id))) return yield* invalid
+
+    return runOf(
+      member,
+      ActorRef.make({ actor: name, tenant, id }),
+      caller,
+      executionId,
+      internalActors.execute,
+      internalActors.pollWorkflow,
+      actors.mintCommandId,
+    ) as WorkflowRun<W>
   })
 
   const get = isSingleton
@@ -1518,6 +1834,11 @@ const make = <
     Turn,
     Read,
     Executor,
+    Workflow,
+    run: run as <W extends Extract<Values<Api>, AnyWorkflow>>(
+      member: W,
+      executionId: string,
+    ) => Effect.Effect<WorkflowRun<W>, InvalidExecutionId, Actors>,
     toLayer,
     toQueryLayer,
     toEffectLayer,
@@ -1543,9 +1864,9 @@ const make = <
     name,
     key: isSingleton ? "singleton" : definition.key === undefined ? "minted" : "keyed",
     decodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => decodeId(id),
-    members: Object.values(api).map((member) =>
-      servedMember({ member, codecs: codecs.get(member.tag)! }),
-    ),
+    members: Object.values(api)
+      .filter((member) => member.kind !== "workflow")
+      .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     deliveryMs: policy.deliveryMs,
   })
 

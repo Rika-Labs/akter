@@ -137,6 +137,7 @@ describe("PGlite migrations", () => {
             [9, "blobs"],
             [10, "retention"],
             [11, "relay"],
+            [12, "workflows"],
             [15, "effect_control"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
@@ -166,6 +167,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [10, "retention"],
             [11, "relay"],
+            [12, "workflows"],
             [15, "effect_control"],
           ])
           expect(
@@ -205,6 +207,7 @@ describe("PGlite migrations", () => {
             VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
           expect(yield* migrate).toEqual([
             [11, "relay"],
+            [12, "workflows"],
             [15, "effect_control"],
           ])
           expect(
@@ -330,6 +333,7 @@ describe("PGlite migrations", () => {
             { migration_id: 9 },
             { migration_id: 10 },
             { migration_id: 11 },
+            { migration_id: 12 },
             { migration_id: 15 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
