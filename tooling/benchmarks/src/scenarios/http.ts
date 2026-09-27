@@ -1,9 +1,19 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actor } from "durable-actors"
-import { Clock, Context, Crypto, Effect, Layer, Schema } from "effect"
+import {
+  type Cause,
+  Clock,
+  Context,
+  Crypto,
+  Effect,
+  Layer,
+  type PlatformError,
+  Schema,
+} from "effect"
 import {
   FetchHttpClient,
   HttpClient,
+  type HttpClientError,
   HttpClientRequest,
   HttpClientResponse,
   HttpRouter,
@@ -14,10 +24,17 @@ import { type ActorServices, type CaseResult, measure, type Scenario } from "../
 
 const ProtocolInfo = Schema.Struct({ retryWindowMs: Schema.Int, now: Schema.Int })
 
-interface Served {
+type CallError = HttpClientError.HttpClientError | PlatformError.PlatformError | Cause.UnknownError
+
+interface Caller {
+  readonly command: (id: string, amount: number) => Effect.Effect<unknown, CallError>
+  readonly query: (id: string) => Effect.Effect<unknown, CallError>
+}
+
+interface Served extends Caller {
   readonly url: string
-  readonly command: (id: string, amount: number) => Effect.Effect<string, unknown>
-  readonly query: (id: string) => Effect.Effect<string, unknown>
+  /** The same calls through `durable-actors/client`, which mints ids, decodes replies, and tracks tokens. */
+  readonly client: Caller
 }
 
 /** Serves the probe from a listening Bun server; every request crosses loopback through `fetch`. */
@@ -69,11 +86,17 @@ const serve = Effect.fnUntraced(function* () {
       return yield* (yield* client.execute(request)).text
     })
 
+  const probes = Probe.client({ baseUrl: url })
+
   return {
     url,
     command: (id, amount) =>
       mint.pipe(Effect.flatMap((key) => post(`/actors/Probe/${id}/Add`, amount, key))),
     query: (id) => post(`/actors/Probe/${id}/Peek`, null),
+    client: {
+      command: (id, amount) => Effect.tryPromise(() => probes.get(id).Add(amount)),
+      query: (id) => Effect.tryPromise(() => probes.get(id).Peek()),
+    },
   } satisfies Served
 })
 
@@ -81,83 +104,92 @@ const serve = Effect.fnUntraced(function* () {
 export const http: Scenario = {
   name: "http",
   description:
-    "Actor.serve over loopback HTTP with Actor.auth.none: sequential commands and queries on one actor, then 64 concurrent command callers over 1k actors.",
+    "Actor.serve over loopback HTTP with Actor.auth.none: sequential commands and queries on one actor, then 64 concurrent command callers over 1k actors; first through raw fetch, then through the durable-actors/client Promise SDK.",
   run: (context) =>
     Effect.gen(function* () {
       const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
-      results.push(
-        yield* context.withRuntime({}, (instruments) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const served = yield* serve()
-              yield* load({
-                workers: 1,
-                operations: 100,
-                operation: () => served.command("hot", 1),
-              })
+      for (const via of ["fetch", "client"] as const) {
+        const prefix = via === "fetch" ? "" : "client-"
+        const pick = (served: Served): Caller => (via === "fetch" ? served : served.client)
 
-              return yield* measure({
-                name: "command-sequential",
-                parameters: { actors: 1, workers: 1, auth: "none" },
-                instruments,
-                workers: 1,
-                operations: quick ? 300 : 3000,
-                operation: () => served.command("hot", 1),
-                listStatements: true,
-              })
-            }),
+        results.push(
+          yield* context.withRuntime({}, (instruments) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const served = yield* serve()
+                yield* load({
+                  workers: 1,
+                  operations: 100,
+                  operation: () => pick(served).command("hot", 1),
+                })
+
+                return yield* measure({
+                  name: `${prefix}command-sequential`,
+                  parameters: { actors: 1, workers: 1, auth: "none", via },
+                  instruments,
+                  workers: 1,
+                  operations: quick ? 300 : 3000,
+                  operation: () => pick(served).command("hot", 1),
+                  listStatements: true,
+                })
+              }),
+            ),
           ),
-        ),
-      )
+        )
 
-      results.push(
-        yield* context.withRuntime({}, (instruments) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const served = yield* serve()
-              yield* served.command("read", 1).pipe(Effect.orDie)
-              yield* load({ workers: 1, operations: 100, operation: () => served.query("read") })
+        results.push(
+          yield* context.withRuntime({}, (instruments) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const served = yield* serve()
+                yield* pick(served).command("read", 1).pipe(Effect.orDie)
+                yield* load({
+                  workers: 1,
+                  operations: 100,
+                  operation: () => pick(served).query("read"),
+                })
 
-              return yield* measure({
-                name: "query-sequential",
-                parameters: { actors: 1, workers: 1, auth: "none" },
-                instruments,
-                workers: 1,
-                operations: quick ? 300 : 3000,
-                operation: () => served.query("read"),
-                listStatements: true,
-              })
-            }),
+                return yield* measure({
+                  name: `${prefix}query-sequential`,
+                  parameters: { actors: 1, workers: 1, auth: "none", via },
+                  instruments,
+                  workers: 1,
+                  operations: quick ? 300 : 3000,
+                  operation: () => pick(served).query("read"),
+                  listStatements: true,
+                })
+              }),
+            ),
           ),
-        ),
-      )
+        )
 
-      results.push(
-        yield* context.withRuntime({}, (instruments) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const served = yield* serve()
-              const actors = 1000
-              yield* load({
-                workers: 32,
-                operations: actors,
-                operation: (actor) => served.command(`hot-${actor}`, 1),
-              })
+        results.push(
+          yield* context.withRuntime({}, (instruments) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const served = yield* serve()
+                const actors = 1000
+                yield* load({
+                  workers: 32,
+                  operations: actors,
+                  operation: (actor) => pick(served).command(`hot-${actor}`, 1),
+                })
 
-              return yield* measure({
-                name: "command-concurrent-64",
-                parameters: { actors, workers: 64, auth: "none" },
-                instruments,
-                workers: 64,
-                durationMs: quick ? 2000 : 10_000,
-                operation: (index) => served.command(`hot-${index % actors}`, 1),
-              })
-            }),
+                return yield* measure({
+                  name: `${prefix}command-concurrent-64`,
+                  parameters: { actors, workers: 64, auth: "none", via },
+                  instruments,
+                  workers: 64,
+                  durationMs: quick ? 2000 : 10_000,
+                  operation: (index) => pick(served).command(`hot-${index % actors}`, 1),
+                })
+              }),
+            ),
           ),
-        ),
-      )
+        )
+      }
 
       return results
     }),
