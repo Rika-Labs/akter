@@ -36,14 +36,7 @@ import {
   Request,
 } from "../handles/actors.ts"
 import { currentStaging, emptyOutbox, InTurn, openOutbox, stage } from "../handles/intents.ts"
-import {
-  ActorRef,
-  Caller,
-  CurrentCaller,
-  Tenant,
-  principal,
-  System,
-} from "../identity/caller.ts"
+import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
 import { CurrentCommandId } from "../identity/command.ts"
 import { type AnyBlob, isBlob } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
@@ -902,7 +895,10 @@ const make = <
           const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
           const commands = yield* commandsOf(handlers, services as Context.Context<R>)
 
-          return yield* actors.register({ ...registration, activate: () => Effect.succeed(commands) })
+          return yield* actors.register({
+            ...registration,
+            activate: () => Effect.succeed(commands),
+          })
         }
 
         const services = yield* Effect.context<Exclude<RB, Scope.Scope> | InternalActors>()
