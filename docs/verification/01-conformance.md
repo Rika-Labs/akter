@@ -220,6 +220,8 @@ These cases cover a single runner. Executors on separate processes, effect cance
 
 `turn.mint` is not implemented. [ADR 0025](../decisions/0025-turn-mint.md) (proposed) lists the cases M2.15 must add in `conformance/mint.ts`, including fixed derivation vectors; they are required tests, not recorded results.
 
+Executor progress frames are not implemented. [ADR 0030](../decisions/0030-executor-progress-frames.md) (proposed) lists the cases M2.18 must add in `conformance/progress.ts`; they are required tests, not recorded results.
+
 ### Multi-runner harness (M2.1)
 
 The cases live in [`conformance/multi-runner.ts`](../../packages/durable-actors/src/testing/conformance/multi-runner.ts) and are registered with `describeConformance`. They need independent connections, so they run on Postgres and are reported skipped on PGlite. Each case builds `ActorTest.cluster` ([testing API](../api/01-server-api.md)) on a fresh database with a `shardLockExpiration` of 3 seconds. The runners are separate Cluster runners in one process, each with its own connection pool, SQL shard locks (not advisory locks), and address; they call each other over an in-process transport that serializes every message. The fixture `Tally` actor adds to a count and emits one `Tallied` event per turn. `cluster.test.ts` checks that `ActorTest.cluster` refuses PGlite.
