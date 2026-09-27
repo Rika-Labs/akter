@@ -18,3 +18,14 @@ export class ModerationApi extends Context.Service<
     check: (body) => Effect.succeed(body.toLowerCase().includes("spam")),
   })
 }
+
+/** Tells moderators about an appeal; an appeal's notify step calls it at least once. */
+export class Moderators extends Context.Service<
+  Moderators,
+  { readonly notify: (messageId: string) => Effect.Effect<void> }
+>()("@durable-actors/chat/room/moderation/Moderators") {
+  /** Demo substitute: logs the appeal instead of paging anyone. */
+  static readonly layer = Layer.succeed(Moderators, {
+    notify: (messageId) => Effect.logInfo("appeal awaiting a moderator", messageId),
+  })
+}

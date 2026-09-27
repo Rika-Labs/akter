@@ -14,7 +14,7 @@ import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { Room, RoomClosed, RoomId } from "./contract.ts"
 import { RoomLive } from "./layer.ts"
-import { ModerationApi } from "./moderation.ts"
+import { ModerationApi, Moderators } from "./moderation.ts"
 
 /** Provider calls per idempotency key. */
 const provider = { calls: new Map<string, number>() }
@@ -52,7 +52,7 @@ const database = Effect.gen(function* () {
 const live = Layer.unwrap(
   Effect.gen(function* () {
     return RoomLive.pipe(
-      Layer.provide(CountingModeration),
+      Layer.provide([CountingModeration, Moderators.layer]),
       Layer.provideMerge(
         ActorTest.layer({ database: yield* database, as: User.make({ subject: "ada" }) }),
       ),
