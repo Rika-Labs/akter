@@ -161,7 +161,10 @@ describe("PGlite migrations", () => {
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
           yield* throughBlobs
-          expect(yield* migrate).toEqual([[10, "retention"]])
+          expect(yield* migrate).toEqual([
+            [10, "retention"],
+            [13, "inspection_views"],
+          ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
               WHERE indexname IN ('actor_receipts_expiry', 'actor_events_emitted', 'actor_outbox_intent')
@@ -177,14 +180,14 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
-  it("applies 0010_retention and 0013_inspection_views to a database that stopped at 0009_blobs", () => {
+  it("applies 0013_inspection_views to a database that stopped at 0010_retention", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
     // Ids 0011 and 0012 belong to other slices; the gap must not block 0013.
-    const throughBlobs = Migrator.make({})({
+    const throughRetention = Migrator.make({})({
       table: "actor_migrations",
       loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0010")),
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0011")),
       ),
     })
 
@@ -192,14 +195,11 @@ describe("PGlite migrations", () => {
       .runPromise(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
-          yield* throughBlobs
+          yield* throughRetention
           expect(yield* sql`SELECT to_regnamespace('durable')::text AS schema`).toEqual([
             { schema: null },
           ])
-          expect(yield* migrate).toEqual([
-            [10, "retention"],
-            [13, "inspection_views"],
-          ])
+          expect(yield* migrate).toEqual([[13, "inspection_views"]])
           expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(9)
           expect(yield* migrate).toEqual([])
         }),

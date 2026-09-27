@@ -111,7 +111,7 @@ Each question has a proposed default. Migration `0013_inspection_views` already 
 ## Evidence
 
 - Conformance ([`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts)), shared by PGlite and Postgres: committed turns appear in every view, declared failures leave only their receipt, defects leave nothing, effects move to `dead_letters`, fired timers leave the outbox; rows keep their tenant; every write through every view fails and leaves the rows untouched; a role granted only the schema reads the views and is denied every runtime table.
-- Migration, in `pglite.test.ts`: `0010` then `0013` apply to a database that stopped at `0009` despite the `0011`–`0012` gap, and a database that applied `0013` without a registered lower id refuses to migrate, naming that id.
+- Migration, in `pglite.test.ts`: `0013` applies to a database that stopped at `0010` despite the `0011`–`0012` gap, and a database that applied `0013` without a registered lower id refuses to migrate, naming that id.
 - Benchmark `inspection-views` (see the [reference](../operations/inspection-views.md#cost) and `benchmarks/results/`).
 
 ## Revisit when

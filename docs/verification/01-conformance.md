@@ -189,7 +189,7 @@ The cases live in [`conformance/inspection-views.ts`](../../packages/durable-act
 - `inspection views reject every write and leave the runtime rows untouched` — the catalog lists the nine views at version 1; `INSERT`, `UPDATE`, and `DELETE` through each fail as writes to a non-updatable view, and every count is unchanged.
 - `a role granted only the durable schema reads the views and no runtime table` — inside a rolled-back transaction a fresh `NOLOGIN` role granted `USAGE` on `durable` and `SELECT` on its views reads them, gets `permission denied` on each `actor_*` table it would otherwise need, and cannot delete through a view; the role does not survive the rollback.
 
-Counts that include effects add `effects` and `dead_letters` in one statement, because the relay may settle an effect at any moment after its commit. Migration, in `pglite.test.ts`: `applies 0010_retention and 0013_inspection_views to a database that stopped at 0009_blobs` — `0010` to `0012` belong to other slices, and the gap does not block `0013`.
+Counts that include effects add `effects` and `dead_letters` in one statement, because the relay may settle an effect at any moment after its commit. Migration, in `pglite.test.ts`: `applies 0013_inspection_views to a database that stopped at 0010_retention` — `0010` to `0012` belong to other slices, and the gap does not block `0013`.
 
 ### Backend-specific cases
 
