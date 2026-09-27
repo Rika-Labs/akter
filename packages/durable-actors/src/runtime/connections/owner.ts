@@ -207,7 +207,12 @@ export const activationOwner = ({
     activation.flush
       .withPermit(
         Effect.forEach(
-          [...activation.channels.values()],
+          new Set([
+            ...activation.channels.values(),
+            ...[...(activation.rows?.values() ?? [])].map((row) =>
+              channelOf(activation, row.holder, row.holderEpoch),
+            ),
+          ]),
           (channel) => send(activation, channel, [HolderItem.cases.Seal.make({})]),
           { discard: true },
         ),

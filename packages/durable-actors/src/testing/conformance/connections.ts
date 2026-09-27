@@ -239,6 +239,23 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "hibernating before the owner sends anything seals the holder, so the next frame resyncs nothing",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-park-quiet")
+          yield* next(connection)
+
+          for (let round = 0; round < 3; round++) {
+            yield* test.hibernate(room.ref)
+            yield* connection.send(Say.make({ text: "whoami" }))
+            const [woken] = yield* next(connection)
+            expect(isFrame(woken)).toBe(true)
+          }
+        }),
+      ),
+  },
+  {
     name: "a turn's broadcast wakes a parked actor, flushes only after commit, and carries cursor stamps",
     run: ({ expect, environment }) =>
       environment.run(
