@@ -77,9 +77,9 @@
     "examples/chat": {
       "name": "@durable-actors/chat",
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "drizzle-orm": "catalog:",
-        "durable-actors": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -91,15 +91,15 @@
     "examples/coding-agent": {
       "name": "@durable-actors/coding-agent",
       "dependencies": {
-        "durable-actors": "workspace:*",
+        "@durable-actors/core": "workspace:*",
         "effect": "catalog:",
       },
     },
     "examples/counter": {
       "name": "@durable-actors/counter",
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
-        "durable-actors": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -154,25 +154,32 @@
     "packages/deployments": {
       "name": "@durable-actors/deployments",
       "dependencies": {
-        "durable-actors": "workspace:*",
+        "@durable-actors/core": "workspace:*",
         "effect": "catalog:",
       },
     },
     "packages/durable-actors": {
-      "name": "durable-actors",
+      "name": "@durable-actors/core",
+      "version": "0.1.0-alpha.0",
       "dependencies": {
-        "@effect/sql-pg": "catalog:",
-        "@effect/sql-pglite": "catalog:",
         "@electric-sql/pglite": "0.5.8",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
       },
       "devDependencies": {
         "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@effect/sql-pglite": "catalog:",
         "@types/pg": "8.23.1",
         "drizzle-kit": "catalog:",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
         "pg": "8.23.0",
         "vitest": "catalog:",
+      },
+      "peerDependencies": {
+        "@effect/sql-pg": "catalog:",
+        "@effect/sql-pglite": "catalog:",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
       },
     },
     "packages/email": {
@@ -222,10 +229,10 @@
     "tooling/benchmarks": {
       "name": "@durable-actors/benchmarks",
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@electric-sql/pglite": "0.5.8",
         "drizzle-orm": "catalog:",
-        "durable-actors": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -472,6 +479,8 @@
     "@durable-actors/console": ["@durable-actors/console@workspace:apps/console"],
 
     "@durable-actors/contracts": ["@durable-actors/contracts@workspace:packages/contracts"],
+
+    "@durable-actors/core": ["@durable-actors/core@workspace:packages/durable-actors"],
 
     "@durable-actors/counter": ["@durable-actors/counter@workspace:examples/counter"],
 
@@ -1056,8 +1065,6 @@
     "drizzle-kit": ["drizzle-kit@1.0.0-rc.5-5935859", "", { "dependencies": { "@drizzle-team/brocli": "0.12.1", "@js-temporal/polyfill": "^0.5.1", "esbuild": "^0.25.10", "get-tsconfig": "^4.13.6", "jiti": "^2.6.1" }, "bin": { "drizzle-kit": "bin.cjs" } }, "sha512-p//MvJbSeDFxa3pODv0ebNVJmk/5aAHHaCyQTtDGFlCYX4e7eY9rrSX/liBJ7098Ei9WUi9VT65JQkSFDuG1ng=="],
 
     "drizzle-orm": ["drizzle-orm@1.0.0-rc.5-5935859", "", { "peerDependencies": { "@aws-sdk/client-rds-data": ">=3", "@cloudflare/workers-types": ">=4", "@drizzle-team/minipg": ">=0.3.2", "@effect/sql-d1": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-libsql": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-mysql2": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-pg": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-pglite": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-bun": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-do": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-node": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-wasm": ">=4.0.0-beta.105 || >=4.0.0", "@electric-sql/pglite": ">=0.2.0", "@libsql/client": ">=0.10.0", "@libsql/client-wasm": ">=0.10.0", "@neondatabase/serverless": ">=0.10.0", "@op-engineering/op-sqlite": ">=17", "@opentelemetry/api": "^1.4.1", "@planetscale/database": ">=1.13", "@sinclair/typebox": ">=0.34.8", "@sqlitecloud/drivers": ">=1.0.653", "@tidbcloud/serverless": "*", "@tursodatabase/database": ">=0.7.1", "@tursodatabase/database-common": ">=0.7.1", "@tursodatabase/database-wasm": ">=0.7.1", "@tursodatabase/serverless": ">=1.4.0", "@tursodatabase/sync": ">=0.7.1", "@types/better-sqlite3": "*", "@types/mssql": "^9.1.4", "@types/pg": "*", "@types/sql.js": "*", "@upstash/redis": ">=1.34.7", "@vercel/postgres": ">=0.8.0", "@xata.io/client": "*", "arktype": ">=2.0.0", "better-sqlite3": ">=9.3.0", "bun-types": "*", "effect": ">=4.0.0-beta.105 || >=4.0.0", "expo-sqlite": ">=14.0.0", "mssql": "^11.0.1", "mysql2": ">=2", "pg": ">=8", "postgres": ">=3", "sql.js": ">=1", "sqlite3": ">=5", "typebox": ">=1.2.0", "valibot": ">=1.0.0-beta.7", "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["@aws-sdk/client-rds-data", "@cloudflare/workers-types", "@drizzle-team/minipg", "@effect/sql-d1", "@effect/sql-libsql", "@effect/sql-mysql2", "@effect/sql-pg", "@effect/sql-pglite", "@effect/sql-sqlite-bun", "@effect/sql-sqlite-do", "@effect/sql-sqlite-node", "@effect/sql-sqlite-wasm", "@electric-sql/pglite", "@libsql/client", "@libsql/client-wasm", "@neondatabase/serverless", "@op-engineering/op-sqlite", "@opentelemetry/api", "@planetscale/database", "@sinclair/typebox", "@sqlitecloud/drivers", "@tidbcloud/serverless", "@tursodatabase/database", "@tursodatabase/database-common", "@tursodatabase/database-wasm", "@tursodatabase/serverless", "@tursodatabase/sync", "@types/better-sqlite3", "@types/mssql", "@types/pg", "@types/sql.js", "@upstash/redis", "@vercel/postgres", "@xata.io/client", "arktype", "better-sqlite3", "bun-types", "effect", "expo-sqlite", "mssql", "mysql2", "pg", "postgres", "sql.js", "sqlite3", "typebox", "valibot", "zod"] }, "sha512-PkVjyxhamD7IOVfpDMn3BmV9afyvj3eeLvIPind3NmPv+cfv6/jh6GN0fHP0zzgrprGx/jGE4mkE0ttRFlzHwA=="],
-
-    "durable-actors": ["durable-actors@workspace:packages/durable-actors"],
 
     "effect": ["effect@4.0.0-rc.116", "", {}, "sha512-nawqJHSjHV8XIBRZNZ+D7cLZpN3kkSjzy6aiT9ofKENsl7xAMFKEoDa0itN5JFl3GUQ1PIN1T1HNlva5+xyO/A=="],
 

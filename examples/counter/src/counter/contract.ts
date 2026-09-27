@@ -1,4 +1,4 @@
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
 export const Increment = Actor.command("Increment", { input: Schema.Int, output: Schema.Int })

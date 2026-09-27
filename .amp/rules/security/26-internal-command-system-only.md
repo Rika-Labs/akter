@@ -15,7 +15,7 @@ contextFiles:
 
 # Internal commands are System-only and never public
 
-Internal commands are absent from public handles, the `durable-actors/client`
+Internal commands are absent from public handles, the `@durable-actors/core/client`
 Promise client, and served endpoints. They run only through framework System
 handles; a non-`System` caller reaching one is a deterministic defect — `Die`,
 rollback, cause recorded — not an `ActorError` and not a forgeable result path.
