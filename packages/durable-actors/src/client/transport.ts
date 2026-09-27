@@ -33,8 +33,14 @@ const isUnavailable = Schema.is(Schema.TaggedStruct("ActorUnavailable", {}))
 
 const decodeReason = Schema.decodeUnknownOption(Schema.toCodecJson(Reason))
 
-/** An HTTP `retry-after` header as milliseconds: delay seconds, or a date measured from the response's `date`. */
-export const retryAfterHeader = (headers: Headers): number | undefined => {
+/** An HTTP `retry-after` header as milliseconds: delay seconds, or a date measured from the response's `date`, else from `now`. */
+export const retryAfterHeader = ({
+  headers,
+  now,
+}: {
+  readonly headers: Headers
+  readonly now?: number
+}): number | undefined => {
   const value = headers.get("retry-after")?.trim()
 
   if (value === undefined) return undefined
@@ -42,9 +48,10 @@ export const retryAfterHeader = (headers: Headers): number | undefined => {
   if (/^\d+$/.test(value)) return Number(value) * 1_000
 
   const at = Date.parse(value)
-  const sent = Date.parse(headers.get("date") ?? "")
+  const date = Date.parse(headers.get("date") ?? "")
+  const sent = Number.isNaN(date) ? now : date
 
-  return Number.isNaN(at) || Number.isNaN(sent) ? undefined : Math.max(0, at - sent)
+  return Number.isNaN(at) || sent === undefined ? undefined : Math.max(0, at - sent)
 }
 
 export const transport = (reason: TransportError): ActorError => ActorError.make({ reason })
@@ -69,7 +76,7 @@ const framework = (body: typeof Envelope.Type, reply: Reply): ActorError | undef
   if (Option.isNone(reason)) return undefined
 
   const error = ActorError.make({ reason: reason.value })
-  const retryAfter = body.retryAfter ?? retryAfterHeader(reply.headers)
+  const retryAfter = body.retryAfter ?? retryAfterHeader({ headers: reply.headers })
 
   return retryAfter === undefined ? error : withRetryAfter(retryAfter)(error)
 }

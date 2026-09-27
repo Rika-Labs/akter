@@ -219,8 +219,10 @@ const retryDelay = (retry: Retry, clock: DatabaseClock) => (attempted: Attempted
 
     if (!isFramework(failure)) return Option.none<number>()
 
+    const now = yield* Clock.currentTimeMillis
+
     const header = Option.fromUndefinedOr(
-      reply === undefined ? undefined : retryAfterHeader(reply.headers),
+      reply === undefined ? undefined : retryAfterHeader({ headers: reply.headers, now }),
     )
 
     return yield* Match.value(failure.reason).pipe(
