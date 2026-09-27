@@ -2,6 +2,8 @@
 
 **Status:** proposed (2026-09-26)
 
+**Implementation:** M2.13 (migration `0015_effect_control`) implements this ADR's recommended defaults below, pending acceptance; evidence is in the [conformance ledger](../verification/01-conformance.md#effect-cancellation-and-caps-m213). Accepting different defaults requires changing that implementation.
+
 ## Context
 
 [Contract 08](../contracts/08-background-work.md) says effect cancellation and per-actor effect concurrency caps are not provided and that a performed effect cannot be withdrawn after its turn commits. Two general needs are unmet:
