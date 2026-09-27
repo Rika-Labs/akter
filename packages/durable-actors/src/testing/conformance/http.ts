@@ -79,10 +79,12 @@ export const HttpRoom = Actor.make("HttpRoom", {
 
 const Join = Actor.command("Join", { output: Schema.Int })
 
+const Leave = Actor.command("Leave")
+
 export const HttpLobby = Actor.make("HttpLobby", {
   key: Actor.singleton,
   state: count,
-  api: { Join },
+  api: { Join, Leave },
 })
 
 export const HttpTicket = Actor.make("HttpTicket", { state: count, api: { Join } })
@@ -147,6 +149,10 @@ export const httpLayer = Layer.mergeAll(
         yield* turn.state.set({ count: turn.state.count + 1 })
 
         return turn.state.count
+      }),
+      Leave: Effect.fnUntraced(function* () {
+        const turn = yield* HttpLobby.Turn
+        yield* turn.state.set({ count: turn.state.count - 1 })
       }),
     }),
   ),
@@ -888,6 +894,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           expect(operations.map(({ operation }) => operation.operationId).sort()).toEqual(
             [
               "HttpLobby.Join",
+              "HttpLobby.Leave",
               "HttpRoom.Count",
               "HttpRoom.Crash",
               "HttpRoom.Hold",

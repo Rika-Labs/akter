@@ -306,6 +306,55 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
             code: "window",
             neverAdmitted: false,
           })
+
+          // A refusal while another attempt with the same id is unanswered proves nothing.
+          let concurrentRefusal: Schema.Json | undefined
+
+          const concurrentWire = recording((sent) =>
+            concurrentRefusal !== undefined && sent.path.endsWith("/Post")
+              ? json(400, concurrentRefusal)
+              : undefined,
+          )
+
+          const rooms = HttpRoom.client({
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+            fetch: concurrentWire.fetch,
+          })
+
+          const shared = yield* Effect.promise(() => rooms.commandId())
+
+          concurrentRefusal = yield* actorErrorBody(
+            ActorError.make({
+              reason: InvalidCommandId.make({ commandId: shared, code: "window" }),
+            }),
+          )
+
+          const entered = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          gate.hold = Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          )
+
+          const held = yield* settle(() =>
+            rooms.get("concurrent").Hold({ commandId: shared }),
+          ).pipe(Effect.forkChild)
+
+          yield* Deferred.await(entered)
+
+          const refusedWhileHeld = yield* settle(() =>
+            rooms.get("concurrent").Post({ text: "c" }, { commandId: shared }),
+          )
+
+          expect(reasonOf(refusedWhileHeld)).toMatchObject({
+            tag: "InvalidCommandId",
+            code: "window",
+            neverAdmitted: false,
+          })
+
+          gate.hold = Effect.void
+          yield* Deferred.succeed(release, undefined)
+          expect(yield* Fiber.join(held)).toEqual({ ok: true, value: 1 })
         }),
       ),
   },
@@ -490,6 +539,14 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           const lobby = HttpLobby.client({ baseUrl: server.url, headers, fetch: wire.fetch })
           expect(yield* settle(() => lobby.get().Join())).toEqual({ ok: true, value: 1 })
           expect(wire.commands("Join")[0]!.path).toBe("/actors/HttpLobby/Join")
+          expect(yield* settle(() => lobby.get().Leave())).toEqual({ ok: true, value: undefined })
+
+          const peeked = HttpRoom.client({ baseUrl: server.url, headers, fetch: wire.fetch }).get(
+            "peek",
+          )
+          expect(yield* settle(() => peeked.Peek())).toEqual({ ok: true, value: undefined })
+          expect(yield* settle(() => peeked.Post({ text: "p" }))).toEqual({ ok: true, value: 1 })
+          expect(yield* settle(() => peeked.Peek())).toEqual({ ok: true, value: 1 })
 
           const tickets = HttpTicket.client({ baseUrl: server.url, headers, fetch: wire.fetch })
           const ticket = tickets.create()

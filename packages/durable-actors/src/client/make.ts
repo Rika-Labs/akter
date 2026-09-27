@@ -2,6 +2,7 @@ import {
   Clock,
   Duration,
   Effect,
+  Exit,
   Match,
   Option,
   Predicate,
@@ -99,7 +100,13 @@ interface Origin {
   readonly token: ConsistencyToken
   window: number | undefined
   /** Ids this client minted, each with whether any attempt might have been admitted. */
-  readonly minted: Map<string, boolean>
+  readonly minted: Map<string, MintedUse>
+}
+
+/** A minted id's attempts: whether any might have been admitted, and how many are unanswered. */
+interface MintedUse {
+  admitted: boolean
+  inFlight: number
 }
 
 const origins = new Map<string, Origin>()
@@ -154,6 +161,24 @@ const refusedBeforeTurn = (failure: Failure) =>
     }),
     Match.orElse(() => false),
   )
+
+/** Counts `request` as unanswered for `use` while it runs; an abandoned request might still be admitted. */
+const tracked = <A, E>(use: MintedUse | undefined, request: Effect.Effect<A, E>) =>
+  use === undefined
+    ? request
+    : Effect.suspend(() => {
+        use.inFlight += 1
+
+        return request.pipe(
+          Effect.onExit((exit) =>
+            Effect.sync(() => {
+              use.inFlight -= 1
+
+              if (Exit.hasInterrupts(exit)) use.admitted = true
+            }),
+          ),
+        )
+      })
 
 const network = () => transport(TransportError.make({ code: "network", retryable: true }))
 
@@ -280,6 +305,17 @@ const declaredDecoder = (member: ServedMember) => {
 const isVoidInput = (member: ServedMember) =>
   SchemaAST.isVoid(member.input.ast) || SchemaAST.isUndefined(member.input.ast)
 
+/** Decodes a success body the way the server writes it: empty for void, `null` for undefined. */
+const outputDecoder = (member: ServedMember) => {
+  if (SchemaAST.isVoid(member.output.ast))
+    return (_: Schema.Json | undefined) => Effect.succeed(undefined)
+
+  const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(member.output))
+
+  return (json: Schema.Json | undefined) =>
+    json === null ? decode(null).pipe(Effect.catch(() => decode(undefined))) : decode(json)
+}
+
 /** The Promise client of one served actor type, typed by its caller. */
 export const clientOf =
   <Client>(definition: ServedDefinition) =>
@@ -376,7 +412,7 @@ export const clientOf =
     const mint = (options.commandIds === "server" ? mintServer : mintLocal).pipe(
       Effect.tap((commandId) =>
         Effect.sync(() => {
-          origin.minted.set(commandId, false)
+          origin.minted.set(commandId, { admitted: false, inFlight: 0 })
           const oldest = origin.minted.keys().next()
 
           if (origin.minted.size > MINTED_LIMIT && oldest.done !== true)
@@ -470,12 +506,14 @@ export const clientOf =
           Effect.mapError(invalid),
         )
 
-        const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(member.output))
+        const decode = outputDecoder(member)
 
         const admitted = (failure: Failure) => {
-          if (commandId === undefined || !origin.minted.has(commandId)) return failure
+          const use = commandId === undefined ? undefined : origin.minted.get(commandId)
 
-          if (!refusedBeforeTurn(failure)) origin.minted.set(commandId, true)
+          if (use === undefined) return failure
+
+          if (!refusedBeforeTurn(failure)) use.admitted = true
 
           if (!isFramework(failure) || !isInvalidCommandId(failure.reason)) return failure
 
@@ -483,7 +521,7 @@ export const clientOf =
             reason: InvalidCommandId.make({
               commandId: failure.reason.commandId,
               code: failure.reason.code,
-              neverAdmitted: origin.minted.get(commandId) === false,
+              neverAdmitted: !use.admitted && use.inFlight === 0,
             }),
           })
         }
@@ -504,13 +542,14 @@ export const clientOf =
 
           if (isQuery && token !== undefined) headers["durable-min-version"] = token
 
-          const reply = yield* send({ method: "POST", path, body: payload, headers })
+          const use = commandId === undefined ? undefined : origin.minted.get(commandId)
+
+          const reply = yield* tracked(use, send({ method: "POST", path, body: payload, headers }))
 
           if (isOk(reply)) {
-            if (commandId !== undefined && origin.minted.has(commandId))
-              origin.minted.set(commandId, true)
+            if (use !== undefined) use.admitted = true
 
-            return yield* decodeSuccess((json) => decode(json))(reply)
+            return yield* decodeSuccess(decode)(reply)
           }
 
           const attempted: Attempted = {
