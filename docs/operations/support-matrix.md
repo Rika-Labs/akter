@@ -35,6 +35,8 @@ Topology is a separate gate. Multi-replica Railway support requires a reachable 
 
 PGlite is a development and test backend: the quickstart's file-backed default is for one process per data directory, and a PGlite cell is never production support. Production PGlite is gated on M4.14.
 
+Runner capacity limits are measured on one runner process, not certified: a resident activation holds about 20 KiB of JavaScript heap, so the default `maxResidentActors` of 10,000 needs about 200 MiB per runner, and each runner can open up to `maxConnections` Postgres connections. Size pools across runners as in [deployment](01-deployment.md#postgres-connections-across-runners); the in-process multi-runner benchmark shows how connections add up, not multi-process support. A connection pooler in front of Postgres is unverified.
+
 Served HTTP is verified behind Bun's HTTP server on loopback only; no proxy, load balancer, TLS terminator, or hosting provider is claimed. WebSocket and SSE are not served yet.
 
 An unverified cell remains gated. Postgres wire compatibility is not evidence of locking, pooling, transaction, or restore equivalence.
