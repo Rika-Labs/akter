@@ -47,7 +47,7 @@ import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, registerActor } from "./entity/register.ts"
 import { replayEvents } from "./events/replay.ts"
-import { checkIdentity, databaseTime, readAdmission } from "./turn/admission.ts"
+import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
@@ -130,6 +130,8 @@ export const layer = (options: Options) => {
       const services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
       >()
+      const frameworkClock = yield* FrameworkClock
+      const cleanupHooks = yield* CleanupHooks
 
       const database = yield* rowsDatabase
 
@@ -335,7 +337,11 @@ export const layer = (options: Options) => {
           })),
           retryWindowMs,
         ),
-      ).pipe(Effect.provideContext(services))
+      ).pipe(
+        Effect.provideService(SqlClient.SqlClient, yield* SqlClient.SqlClient),
+        Effect.provideService(FrameworkClock, frameworkClock),
+        Effect.provideService(CleanupHooks, cleanupHooks),
+      )
 
       // Horizons are days long, so a sweep a minute keeps up; each batch is
       // its own short transaction, so turns never wait on a whole sweep.
