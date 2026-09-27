@@ -219,6 +219,8 @@ export class InternalActors extends Context.Service<
     readonly transport: Transport
     /** This runner's in-process connection holder. */
     readonly holder: Holder
+    /** Ends the actor's activation on this runner as idle expiry would. */
+    readonly hibernate: (ref: ActorRef) => Effect.Effect<void>
     readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
     /**
      * Delivers a committed intent. The obligation was admitted by its sending

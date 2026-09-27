@@ -410,7 +410,7 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
           connectionId: row.connectionId,
           member: row.member,
           caller: row.caller,
-          resumed: !activation.opened.has(row.connectionId),
+          resumed: phase._tag !== "Open" && !activation.opened.has(row.connectionId),
           cursor: activation.through,
           state: [...(activation.cache.state ?? new Map<string, string>())],
           session: row.session,
@@ -699,9 +699,27 @@ export const makeOwner = (registration: Registration, transport: Transport) => {
       ),
     )
 
+  // Ends an activation as idle expiry would: holders get a seal, and whatever
+  // runs next re-acquires the generation and sees `resumed === true`.
+  const hibernate = (entityId: string) =>
+    Effect.gen(function* () {
+      const activation = activations.get(entityId)
+
+      if (activation === undefined) return
+      yield* seal(activation)
+      activation.cache.generation = undefined
+      activation.cache.state = undefined
+      activation.rows = undefined
+      activation.channels.clear()
+      activation.opened.clear()
+      activation.head = "0"
+      activation.through = "0"
+    })
+
   return {
     activations,
     hasConnections,
+    hibernate,
     enter,
     prepare,
     list,

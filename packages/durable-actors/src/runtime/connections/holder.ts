@@ -364,7 +364,7 @@ export const makeHolder = Effect.fnUntraced(function* (options: HolderOptions) {
                 {
                   _tag: "Frame",
                   frame: item.frame,
-                  ...(item.stamp && message.through !== "0" ? { cursor: message.through } : {}),
+                  ...(item.stamp ? { cursor: message.through } : {}),
                   ...(item.event === undefined ? {} : { event: item.event }),
                 },
                 false,
@@ -511,9 +511,7 @@ export const makeHolder = Effect.fnUntraced(function* (options: HolderOptions) {
         yield* end(
           connection,
           ActorError.make({
-            reason: Unauthorized.make({
-              code: connection.checking ? "reauthorization_unavailable" : "access_denied",
-            }),
+            reason: Unauthorized.make({ code: "reauthorization_unavailable" }),
           }),
           true,
         )
@@ -521,7 +519,7 @@ export const makeHolder = Effect.fnUntraced(function* (options: HolderOptions) {
         continue
       }
 
-      if (!connection.checking && at >= connection.lastAuthorized + every / 2)
+      if (!connection.checking && at >= connection.lastAuthorized + every - Math.min(10_000, every / 2))
         yield* reauthorize(connection, at).pipe(Effect.forkIn(scope))
 
       if (

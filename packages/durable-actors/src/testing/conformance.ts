@@ -54,6 +54,7 @@ import {
   retentionLayer,
 } from "./conformance/retention.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
+import { connectionsConformance, connectionsLayer } from "./conformance/connections.ts"
 import {
   outboxConformance,
   outboxFixture,
@@ -303,6 +304,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...multiRunnerConformance,
   ...blobsConformance,
   ...retentionConformance,
+  ...connectionsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1263,6 +1265,7 @@ export const describeConformance = (options: {
     blobsLayer(fixture.blobs),
     retentionLayer(fixture.retention),
     propertiesLayer,
+    connectionsLayer,
   )
 
   let store: ConformanceStore | undefined

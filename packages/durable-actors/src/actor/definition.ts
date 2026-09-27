@@ -266,7 +266,7 @@ type NoRequestReply<R> = [Extract<R, Actors>] extends [never]
   : { readonly "Request/reply inside a turn: use X.intents(id)": never }
 
 /** One handler per command in `api` and `internal`; a reducer has no handler. */
-export type Handlers<Members extends MemberRecord, R> = HandlerMap<
+export type Handlers<Members extends MemberRecord, R, RC = R> = HandlerMap<
   Members,
   CommandKeys<Members>,
   R
@@ -275,7 +275,7 @@ export type Handlers<Members extends MemberRecord, R> = HandlerMap<
 } & {
   readonly [K in ConnectionKeys<Members>]: ConnectionHandlers<
     Members[K] & AnyConnection,
-    R
+    RC
   >
 }
 
@@ -1195,23 +1195,32 @@ const make = <
    * when the layer is built; handlers read their turn with `yield* X.Turn`.
    */
   // Defaults keep R `never` when there is no handler to infer it from, as for an actor of reducers only.
-  const toLayer = <R = never, RB = never>(
-    build: Effect.Effect<Handlers<All, R>, never, RB> & NoRequestReply<R>,
+  const toLayer = <R = never, RB = never, RC = never>(
+    build: Effect.Effect<Handlers<All, R, RC>, never, RB> & NoRequestReply<R>,
   ): Layer.Layer<
     never,
     never,
-    Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+    | Exclude<R, Turn | InTurn>
+    | Exclude<RC, Connection>
+    | Exclude<RB, Scope.Scope>
+    | InternalActors
   > =>
     Layer.effectDiscard(
       Effect.gen(function* () {
         const handlers = yield* build
-        const services = yield* Effect.context<Exclude<R, Turn | InTurn>>()
-        yield* register(handlers, services as Context.Context<R>)
+        const services = yield* Effect.context<Exclude<R, Turn | InTurn> | Exclude<RC, Connection>>()
+        yield* register(
+          handlers as unknown as Handlers<All, R | RC>,
+          services as Context.Context<R | RC>,
+        )
       }),
     ) as Layer.Layer<
       never,
       never,
-      Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+      | Exclude<R, Turn | InTurn>
+      | Exclude<RC, Connection>
+      | Exclude<RB, Scope.Scope>
+      | InternalActors
     >
 
   const registerQueries = <R>(handlers: QueryHandlers<Api, R>, services: Context.Context<R>) =>

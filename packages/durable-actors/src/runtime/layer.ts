@@ -48,6 +48,7 @@ import { pglite } from "./database/pglite.ts"
 import { commandEntity, connectionEntity, registerActor } from "./entity/register.ts"
 import { type Holder, type HeldActorType, makeHolder } from "./connections/holder.ts"
 import { holderShardGroups, makeTransport, type Transport } from "./connections/transport.ts"
+import type { Owner } from "./connections/owner.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
@@ -129,6 +130,7 @@ export const layer = (options: Options) => {
       const sharding = yield* Sharding.Sharding
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
+      const owners = new Map<string, Owner>()
       const queryRegistrations = new Map<string, QueryRegistration>()
       const effectRegistrations = new Map<string, EffectRegistration>()
 
@@ -442,19 +444,21 @@ export const layer = (options: Options) => {
 
           for (const table of registration.tables) checked.add(table)
 
-          const { isResident } = yield* registerActor(registration, transport).pipe(
+          const { isResident, owner } = yield* registerActor(registration, transport).pipe(
             Effect.provideContext(services),
             Effect.provideService(OutboxRuntime, outbox),
           )
 
           registrations.set(registration.name, registration)
           residency.set(registration.name, isResident)
+          owners.set(registration.name, owner)
 
           if (registration.connections.size > 0) heldTypes.set(registration.name, heldType(registration))
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               registrations.delete(registration.name)
               residency.delete(registration.name)
+              owners.delete(registration.name)
               heldTypes.delete(registration.name)
             }),
           )
@@ -561,6 +565,10 @@ export const layer = (options: Options) => {
         ),
         transport,
         holder,
+        hibernate: (ref) =>
+          Effect.flatMap(entityId(ref), (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void).pipe(
+            Effect.provideContext(services),
+          ),
         execute: (request) => dispatch(request, true),
         deliver: (request) => dispatch(request, false),
         drainOutbox: relay.drain,

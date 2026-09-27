@@ -1,5 +1,7 @@
 export { ActorTest, cleanup } from "./actor-test.ts"
 
+export type { TestConnection, TestMessage } from "./actor-test.ts"
+
 export { ActorCluster } from "./cluster.ts"
 
 export type { ClusterOptions, RunnerServices } from "./cluster.ts"
