@@ -31,7 +31,7 @@ const Beacon = Actor.make("Beacon", {
 })
 
 /** What one background loop did, as seen from inside the (single) process. */
-export interface Loop {
+interface Loop {
   readonly id: string
   live: boolean
   closed: boolean
@@ -45,11 +45,11 @@ const loops = new Map<string, Array<Loop>>()
 /** The most loops of one tenant live at once, checked whenever a loop starts. */
 const peaks = new Map<string, number>()
 
-export const peakOf = (tenant: string) => peaks.get(tenant) ?? 0
+const peakOf = (tenant: string) => peaks.get(tenant) ?? 0
 
-export const liveOf = (tenant: string) => loopsOf(tenant).filter(({ live }) => live)
+const liveOf = (tenant: string) => loopsOf(tenant).filter(({ live }) => live)
 
-export const loopsOf = (tenant: string): ReadonlyArray<Loop> => loops.get(tenant) ?? []
+const loopsOf = (tenant: string): ReadonlyArray<Loop> => loops.get(tenant) ?? []
 
 const TICK_INTERVAL = "50 millis"
 
@@ -57,12 +57,13 @@ const TICK_INTERVAL = "50 millis"
  * A singleton whose build forks one background loop. The loop shows it ran
  * only by sending `Tick` commands, so every tick it made is a committed turn.
  */
-export const BeaconLive = Layer.mergeAll(
+const BeaconLive = Layer.mergeAll(
   Beacon.toLayer(
     Effect.gen(function* () {
       const beacon = yield* Beacon.get()
       const started = loops.get(beacon.ref.tenant) ?? []
       loops.set(beacon.ref.tenant, started)
+
       const loop: Loop = {
         id: `loop-${started.length + 1}`,
         live: true,
@@ -70,6 +71,7 @@ export const BeaconLive = Layer.mergeAll(
         attempts: 0,
         refused: 0,
       }
+
       started.push(loop)
       peaks.set(
         beacon.ref.tenant,
@@ -129,10 +131,10 @@ export const BeaconLive = Layer.mergeAll(
   ),
 )
 
-export const EXPIRATION_SECONDS = 3
+const EXPIRATION_SECONDS = 3
 
 /** Builds a fresh database and a cluster of `runners` serving the singleton. */
-export const withSingletonCluster = <A, E>(
+const withSingletonCluster = <A, E>(
   environment: ConformanceEnvironment,
   runners: number,
   body: Effect.Effect<A, E, ActorCluster>,
@@ -164,20 +166,20 @@ const on =
       return yield* cluster.on(runner)(effect)
     })
 
-export const beaconRef = (runner: number) =>
+const beaconRef = (runner: number) =>
   on(runner)(Beacon.get().pipe(Effect.map((beacon) => beacon.ref)))
 
-export const logOf = (runner: number) =>
+const logOf = (runner: number) =>
   on(runner)(Beacon.get().pipe(Effect.flatMap((beacon) => beacon.Log())))
 
-export const tickFrom = (runner: number, from: string) =>
+const tickFrom = (runner: number, from: string) =>
   on(runner)(Beacon.get().pipe(Effect.flatMap((beacon) => beacon.Tick(from))))
 
-export const inspectOn = (runner: number, ref: ActorRef) =>
+const inspectOn = (runner: number, ref: ActorRef) =>
   on(runner)(ActorTest.use((test) => test.inspect(ref)))
 
 /** Polls `runner`'s view of the log until `accept` holds. */
-export const awaitLog = (
+const awaitLog = (
   runner: number,
   accept: (log: ReadonlyArray<{ readonly loop: string; readonly by: string }>) => boolean,
   what: string,
@@ -191,7 +193,7 @@ export const awaitLog = (
   )
 
 /** Polls until `check` holds. */
-export const awaitThat = (check: () => boolean, what: string) =>
+const awaitThat = (check: () => boolean, what: string) =>
   Effect.sync(check).pipe(
     Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (held) => held }),
     Effect.timeoutOrElse({
@@ -201,7 +203,7 @@ export const awaitThat = (check: () => boolean, what: string) =>
   )
 
 /** A shard lock row with database-clock times in epoch milliseconds. */
-export const lockOf = (runner: number, ref: ActorRef) =>
+const lockOf = (runner: number, ref: ActorRef) =>
   on(runner)(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
@@ -222,7 +224,7 @@ export const lockOf = (runner: number, ref: ActorRef) =>
  * it has committed a tick; rebalancing while runners join may move the
  * singleton, and so restart its loop, before that.
  */
-export const settled = Effect.gen(function* () {
+const settled = Effect.gen(function* () {
   const cluster = yield* ActorCluster
   const ref = yield* beaconRef(0)
   yield* cluster.ready
@@ -262,8 +264,8 @@ const steady = (runner: number, tenant: string) =>
  * duplicates collapsed. Each activation's commits are one unbroken run when
  * none commits after its successor has.
  */
-export const runs = (log: ReadonlyArray<{ readonly by: string }>) =>
-  log.map(({ by }) => by).filter((by, index, all) => index === 0 || all[index - 1] !== by)
+const runs = (log: ReadonlyArray<{ readonly by: string }>) =>
+  log.flatMap(({ by }, index) => (index === 0 || log[index - 1]!.by !== by ? [by] : []))
 
 const unbroken = (log: ReadonlyArray<{ readonly by: string }>) =>
   new Set(runs(log)).size === runs(log).length
@@ -304,6 +306,7 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           expect(unbroken(log)).toBe(true)
           expect(runs(log).at(-1)).toBe(loop.id)
           expect(contiguous(log)).toBe(true)
+
           for (const runner of [0, 1, 2])
             expect(log.find(({ loop: from }) => from === `runner-${runner}`)?.by).toBe(loop.id)
           expect(loop.refused).toBe(0)
@@ -336,11 +339,13 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* awaitThat(() => loopsOf(ref.tenant).length > before, "a survivor's loop")
           const successor = loopsOf(ref.tenant)[before]!
+
           const log = yield* awaitLog(
             survivor,
             (entries) => entries.filter(({ by }) => by === successor.id).length >= 10,
             "the survivor's loop to tick",
           )
+
           const taken = yield* lockOf(survivor, ref)
           const next = (yield* cluster.owner(ref))!
 

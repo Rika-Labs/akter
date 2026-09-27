@@ -22,7 +22,10 @@ const makeCommandEntity = (name: string) =>
 // Cluster entity ids name the tenant and actor id together.
 const EntityId = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String]))
 
-export const encodeEntityId = Schema.encodeEffect(EntityId)
+const encodeEntityIdOf = Schema.encodeEffect(EntityId)
+
+export const encodeEntityId = (tenantAndId: readonly [string, string]) =>
+  encodeEntityIdOf(tenantAndId)
 
 const decodeEntityId = Schema.decodeEffect(EntityId)
 
@@ -32,9 +35,10 @@ const SINGLETON_WAKE_INTERVAL = Duration.seconds(1)
 
 // Cluster's lifetime of one entity, shared by every handler a defect restart
 // rebuilds within it.
-class EntityScope extends Context.Service<EntityScope, Scope.Scope>()(
-  "effect/cluster/internal/CurrentActivationScope",
-) {}
+const entityScope = () =>
+  Effect.serviceOption(
+    Context.Service<Scope.Scope>("effect/cluster/internal/CurrentActivationScope"),
+  )
 
 // The current handler's scope within each entity scope.
 const handlerScopes = new WeakMap<Scope.Scope, Scope.Closeable>()
@@ -68,11 +72,12 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
     Effect.gen(function* () {
       const { entityId } = yield* Entity.CurrentAddress
       const [tenant, id] = yield* decodeEntityId(entityId).pipe(Effect.orDie)
+
       // A defect restart rebuilds the handler, and a defect while the entity
       // shuts down can drop the superseded handler's scope. Each handler's
       // resources live in a child of the entity's own scope instead, closed
       // when a rebuild supersedes it, the handler closes, or the entity ends.
-      const activation = yield* Effect.serviceOption(EntityScope).pipe(
+      const activation = yield* entityScope().pipe(
         Effect.flatMap(
           Option.match({
             onNone: () => Effect.die(new Error("Cluster provided no entity scope")),
@@ -80,9 +85,13 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
           }),
         ),
       )
+
       const superseded = handlerScopes.get(activation)
+
       if (superseded !== undefined) yield* Scope.close(superseded, Exit.void)
+
       const scope = yield* Scope.fork(activation)
+
       handlerScopes.set(activation, scope)
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
 
@@ -96,7 +105,9 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
             else resident.set(entityId, count)
           }),
       ).pipe(Scope.provide(scope))
+
       const cache = emptyActivationCache()
+
       const commands = yield* registration
         .activate(ActorRef.make({ tenant, actor: registration.name, id }))
         .pipe(Scope.provide(scope))

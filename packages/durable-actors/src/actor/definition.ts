@@ -920,6 +920,7 @@ const make = <
     Layer.effectDiscard(
       Effect.gen(function* () {
         const actors = yield* InternalActors
+
         const registration = {
           name,
           singleton: isSingleton,
@@ -941,7 +942,9 @@ const make = <
           })
         }
 
-        const services = yield* Effect.context<Exclude<RB, Scope.Scope> | InternalActors>()
+        const services = yield* Effect.context<
+          Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
+        >()
 
         yield* actors.register({
           ...registration,
@@ -955,7 +958,7 @@ const make = <
               Effect.provideContext(services as Context.Context<RB>),
             )
 
-            return yield* commandsOf(handlers, services as unknown as Context.Context<R>).pipe(
+            return yield* commandsOf(handlers, services as Context.Context<R>).pipe(
               Effect.provideContext(services),
             )
           }),
