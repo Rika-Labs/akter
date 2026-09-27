@@ -65,6 +65,8 @@ CREATE ROLE grafana LOGIN PASSWORD '...' IN ROLE durable_inspector;
 
 That role reads every view and gets `permission denied` on every `actor_*` table. Writes through a view fail for every role, including the owner (`cannot insert into view`, `cannot update view`, `cannot delete from view`). Rerun the `GRANT SELECT` after a migration adds a view.
 
+A role also holds every privilege granted to `PUBLIC`, and these grants are not limited to `durable`: `EXECUTE` on functions by default, `USAGE` on schema `public`, and any table grant made to `PUBLIC`. To keep the role view-only, audit and revoke those grants, for example `REVOKE ALL ON SCHEMA public FROM PUBLIC` and `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`, or point the tool at a database where `PUBLIC` holds nothing else.
+
 Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows, but nothing enforces the filter yet: until the framework's RLS policies ship (M4.5), treat view access as operator access to every tenant in the database.
 
 ## Example queries
