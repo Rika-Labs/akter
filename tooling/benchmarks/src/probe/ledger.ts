@@ -1,4 +1,4 @@
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"

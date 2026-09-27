@@ -11,7 +11,13 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
     "types": ["bun"],
-    "plugins": [{ "name": "@effect/language-service", "diagnostics": false }]
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnostics": false,
+        "allowedDuplicatedPackages": ["@durable-actors/core"]
+      }
+    ]
   },
   "include": ["**/*.ts", ".github/**/*.ts", ".amp/plugins/**/*.ts"],
   "exclude": ["node_modules", "dist", ".local"]

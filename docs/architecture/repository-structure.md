@@ -15,7 +15,7 @@ apps/                       deployables and the CLI bin; never imported by anoth
   edge/                     @durable-actors/edge       hosted ingress: deployment hosts → runners, API key → Principal, parked sockets, limits
   cli/                      @durable-actors/cli        `durable login | dev | deploy | migrate | dead-letters`
 packages/
-  durable-actors/           durable-actors             the framework; the only published package
+  durable-actors/           @durable-actors/core       the framework; published (other published packages follow ADR 0029)
   deployments/              @durable-actors/deployments  Deployment, Runners (singleton), UsageMeter actors — written on the framework
   accounts/                 @durable-actors/accounts   better-auth, organizations, API keys
   billing/                  @durable-actors/billing    Polar
@@ -40,7 +40,7 @@ Dependency direction: `apps → packages → nothing app-ward`. `packages/durabl
 
 ## The framework package
 
-`durable-actors` ships one distribution with four subpath entries. The root and `client/` are browser-safe contracts, tags and handles; `runtime/` and `testing/` are the only folders that may import `effect/unstable/sql`, `@effect/sql-pg` or `effect/unstable/cluster`. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag.
+`@durable-actors/core` ships one distribution with four subpath entries. The root and `client/` are browser-safe contracts, tags and handles; `runtime/` and `testing/` are the only folders that may import `effect/unstable/sql`, `@effect/sql-pg` or `effect/unstable/cluster`. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag.
 
 ```text
 packages/durable-actors/src/
@@ -75,7 +75,7 @@ packages/durable-actors/src/
 
 ## Naming contract
 
-- Package name is `@durable-actors/<directory basename>`; the framework alone is unscoped `durable-actors`. A name says what the package owns, never a layer.
+- Package name is `@durable-actors/<directory basename>`, except the framework in `packages/durable-actors`, which is `@durable-actors/core` ([ADR 0029](../decisions/0029-licence-package-name-and-release-policy.md)). A name says what the package owns, never a layer.
 - Folders are kebab-case nouns with one responsibility. Forbidden: `core shared common utils helpers lib misc domain types internal`. Role-plural folders (`commands/ events/ queries/ workflows/ effects/ providers/`) are allowed inside a feature with two or more files.
 - Files are kebab-case and named for an operation (`create.ts`) or a role (`contract.ts layer.ts queries.ts handler.ts repository.ts schema.ts errors.ts state.ts config.ts client.ts`). Never `<parent>-<x>.ts`, never `<x>-service.ts`.
 - An actor definition is a role folder: `<actor>/contract.ts` (the `Actor.make` definition), `<actor>/layer.ts` (`X.toLayer`), `<actor>/queries.ts` (`X.toQueryLayer`), `<actor>/effects.ts` (`X.toEffectLayer`), with `workflows/` beside them when they exist.
@@ -88,10 +88,10 @@ Two lint layers implement this specification: per-file oxlint rules in `tooling/
 
 ## Ways to run, mapped to the tree
 
-- **Embedded:** an application provides `Actors.layer` from `durable-actors/runtime` and calls actors as Effects. `apps/api` runs this way.
+- **Embedded:** an application provides `Actors.layer` from `@durable-actors/core/runtime` and calls actors as Effects. `apps/api` runs this way.
 - **Served:** `Actor.serve` in its own process; the `docker/` images and a customer's BYO runner are this shape. There is no `apps/runner`: a managed runner is the customer's served container started by a `Deployment` actor effect.
 - **Hosted:** the same layer on our runners behind `apps/edge`, with Neki as the database.
 
 ## Scaffolds versus implemented features
 
-Directories that hold only `.gitkeep` reserve ownership. Entry files that `export {}` are placeholders, not APIs. Add the test task with the first real behavior test; do not add placeholder passing tests. The CLI has no `bin` until `durable login` exists. Publishing metadata, compiled declaration exports and release automation are settled before `durable-actors` loses `private: true`.
+Directories that hold only `.gitkeep` reserve ownership. Entry files that `export {}` are placeholders, not APIs. Add the test task with the first real behavior test; do not add placeholder passing tests. The CLI has no `bin` until `durable login` exists. `@durable-actors/core` is the one published package today. The workspace resolves its entries to TypeScript sources; `bun run --cwd packages/durable-actors build` emits `dist/`, and `publishConfig` points the tarball's `exports` and `types` there. `.github/src/pack.ts` stages and checks the tarball in CI, and `.github/workflows/release.yml` publishes it on a `v<version>` tag ([ADR 0029](../decisions/0029-licence-package-name-and-release-policy.md); the first publish is CR.1b, [#99](https://github.com/Rika-Labs/durable-actors/issues/99)).

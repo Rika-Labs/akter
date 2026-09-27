@@ -177,6 +177,7 @@ const Smuggled = Actor.query("Smuggled", {
 
 const Everything = Actor.query("Everything", { output: Schema.Array(Schema.String) })
 
+/** @internal */
 export const Notebook = Actor.make("Notebook", {
   key: Schema.String,
   tables: [notes],
