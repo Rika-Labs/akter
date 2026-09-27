@@ -414,8 +414,12 @@ export class ActorTest extends Context.Service<
                   )
 
                 // Running attempts keep renewing through the jump, so their leases move with it.
-                yield* internalActors.extendOutboxLeases(millis)
-                clockOffset += millis
+                yield* internalActors.extendOutboxLeases(
+                  millis,
+                  Effect.sync(() => {
+                    clockOffset += millis
+                  }),
+                )
                 yield* internalActors.drainOutbox
               }),
               now: databaseTime.pipe(

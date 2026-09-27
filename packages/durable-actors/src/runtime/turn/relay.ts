@@ -734,9 +734,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
               ({ actor, effect }) => actor === row.actor_type && effect === row.command,
             )!.registered
 
-            // Registered from the claim until the outcome is written, so a
-            // clock jump anywhere in between moves the lease instead of
-            // expiring it and starting a second call.
+            // Registered before the lock is released and until the outcome is
+            // written, so every clock jump after the claim moves this lease.
             running.set(row.intent_id, {
               routingKey: BigInt(row.routing_key),
               attempt: row.attempts,
@@ -746,8 +745,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
             yield* FiberSet.run(
               attempts,
               runAttempt(row, registered, claimedAt).pipe(
-                logFailure("Effect attempt crashed before it settled"),
                 Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))),
+                logFailure("Effect attempt crashed before it settled"),
                 Effect.ensuring(freed("effects")),
               ),
             )
@@ -804,22 +803,28 @@ export const outboxRelay = Effect.fnUntraced(function* (
   )
 
   // Moves this runner's running attempts' leases with a jump of the outbox clock,
-  // as the renewals during that time would have.
-  const extendLeases = (millis: number) =>
-    Effect.forEach(
-      [...running],
-      ([intentId, { routingKey, attempt, lease }]) =>
-        sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
-          WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
-            AND kind = 'effect' AND attempts = ${attempt}`.pipe(
-          Effect.tap(
-            Effect.sync(() => {
-              lease.until += millis
-            }),
-          ),
-        ),
-      { discard: true },
-    ).pipe(Effect.orDie)
+  // as the renewals during that time would have. Holding the pass lock means
+  // no claim reads the clock between the moved leases and the jump, and a pass
+  // in progress registers its rows first.
+  const extendLeases = (millis: number, jump: Effect.Effect<void>) =>
+    lock
+      .withPermit(
+        Effect.forEach(
+          [...running],
+          ([intentId, { routingKey, attempt, lease }]) =>
+            sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
+            WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
+              AND kind = 'effect' AND attempts = ${attempt}`.pipe(
+              Effect.tap(
+                Effect.sync(() => {
+                  lease.until += millis
+                }),
+              ),
+            ),
+          { discard: true },
+        ).pipe(Effect.andThen(jump)),
+      )
+      .pipe(Effect.orDie)
 
   return {
     run,
