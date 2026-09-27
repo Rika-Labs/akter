@@ -1,9 +1,11 @@
 import type { NodeInspectSymbol, Unify } from "../../actor/definition.ts"
 import {
+  Cause,
   Context,
   Crypto,
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Layer,
   Option,
@@ -62,6 +64,8 @@ const Secret = Actor.command("Secret")
 
 const Count = Actor.query("Count", { output: Schema.Int })
 
+const Peek = Actor.query("Peek", { output: Schema.UndefinedOr(Schema.Int) })
+
 const count = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
@@ -69,7 +73,7 @@ const count = Actor.state({
 export const HttpRoom = Actor.make("HttpRoom", {
   key: Schema.String,
   state: count,
-  api: { Post, Whoami, Hold, Crash, Count },
+  api: { Post, Whoami, Hold, Crash, Count, Peek },
   internal: { Secret },
 })
 
@@ -128,6 +132,11 @@ export const httpLayer = Layer.mergeAll(
     Effect.succeed({
       Count: Effect.fnUntraced(function* () {
         return (yield* HttpRoom.Read).state.count
+      }),
+      Peek: Effect.fnUntraced(function* () {
+        const { count } = (yield* HttpRoom.Read).state
+
+        return count === 0 ? undefined : count
       }),
     }),
   ),
@@ -864,6 +873,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
                 {
                   readonly operationId: string
                   readonly parameters: ReadonlyArray<{ readonly name: string; readonly in: string }>
+                  readonly security: ReadonlyArray<Record<string, ReadonlyArray<string>>>
                 }
               >
             >
@@ -881,6 +891,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               "HttpRoom.Count",
               "HttpRoom.Crash",
               "HttpRoom.Hold",
+              "HttpRoom.Peek",
               "HttpRoom.Post",
               "HttpRoom.Whoami",
               "HttpTicket.Join",
@@ -891,9 +902,15 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const { path, method, operation } of operations) {
             const headers = operation.parameters.filter((parameter) => parameter.in === "header")
-            const isCommand = path.startsWith("/actors/") && !path.endsWith("/Count")
+
+            const isCommand =
+              path.startsWith("/actors/") && !path.endsWith("/Count") && !path.endsWith("/Peek")
+
             expect(headers.map((parameter) => parameter.name)).toEqual(
               isCommand ? ["idempotency-key"] : [],
+            )
+            expect(operation.security.length === 0).toBe(
+              operation.operationId === "durable.protocol",
             )
 
             if (path === "/actors/HttpRoom/{id}/Crash" || path === "/actors/HttpRoom/{id}/Hold")
@@ -955,6 +972,25 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           expect(same.status).toBe(200)
+
+          const otherScheme = yield* server.send("/actors/HttpRoom/origin/Whoami", {
+            token,
+            key: yield* server.mint(),
+            headers: { origin: server.url.replace(/^http:/, "https:") },
+          })
+
+          expect(otherScheme.status).toBe(403)
+
+          const forwarded = yield* server.send("/actors/HttpRoom/origin/Whoami", {
+            token,
+            key: yield* server.mint(),
+            headers: {
+              origin: server.url.replace(/^http:/, "https:"),
+              "x-forwarded-proto": "https",
+            },
+          })
+
+          expect(forwarded.status).toBe(403)
 
           const bare = yield* server.send("/actors/HttpRoom/origin/Whoami", {
             token,
@@ -1076,6 +1112,106 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           expect(reply.headers.get("x-request-id")).toBe(null)
           expect(reply.headers.get("durable-version")).toBe(null)
           expect(reply.headers.get("durable-protocol")).toBe("1")
+        }),
+      ),
+  },
+  {
+    name: "fails Actor.serve at startup when retryWindowMs is below 60 seconds, and admits ids minted at exactly 60 seconds",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const actors = yield* InternalActors
+          const short = InternalActors.of({ ...actors, retryWindowMs: 59_999 })
+
+          const exit = yield* HttpRouter.toHttpEffect(
+            Actor.serve({ actors: served, auth: tokens }).pipe(
+              Layer.provide(Layer.succeed(InternalActors, short)),
+            ),
+          ).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain("at least 60 seconds")
+          expect(actors.retryWindowMs).toBe(60_000)
+
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+
+          const reply = yield* server.send("/actors/HttpRoom/window/Whoami", {
+            token: `${tenant}:alice`,
+            key: yield* server.mint(0, 60_000),
+          })
+
+          expect(reply).toMatchObject({ status: 200, body: `${tenant}/alice` })
+        }),
+      ),
+  },
+  {
+    name: "serves routes at the root for basePath /, and answers an undefined query output with 200 null",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp({ basePath: "/" })
+          const token = `${yield* tenantOf}:alice`
+
+          expect((yield* server.send("/protocol", { method: "GET" })).status).toBe(200)
+          expect(yield* server.send("/actors/HttpRoom/peek/Peek", { token })).toMatchObject({
+            status: 200,
+            text: "null",
+          })
+
+          yield* server.send("/actors/HttpRoom/peek/Post", {
+            token,
+            key: yield* server.mint(),
+            body: { text: "a" },
+          })
+
+          expect(yield* server.send("/actors/HttpRoom/peek/Peek", { token })).toMatchObject({
+            status: 200,
+            body: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "fails Actor.serve at startup when a member's operation id collides with a protocol route",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const Durable = Actor.make("durable", {
+            key: Actor.singleton,
+            state: count,
+            api: { protocol: Actor.query("protocol", { output: Schema.Int }) },
+          })
+
+          const exit = yield* HttpRouter.toHttpEffect(
+            Actor.serve({ actors: [Durable], auth: tokens }).pipe(
+              Layer.provide(Layer.succeed(InternalActors, yield* InternalActors)),
+            ),
+          ).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+            "collides with a protocol operation id",
+          )
+        }),
+      ),
+  },
+  {
+    name: "fails Actor.serve at startup when openapi.path collides with a protocol route",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const internal = Layer.succeed(InternalActors, yield* InternalActors)
+
+          for (const path of ["/protocol", "/command-ids", "/actors/Room"] as const) {
+            const exit = yield* HttpRouter.toHttpEffect(
+              Actor.serve({ actors: [HttpRoom], auth: tokens, openapi: { path } }).pipe(
+                Layer.provide(internal),
+              ),
+            ).pipe(Effect.exit)
+
+            expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+              `openapi.path ${path} collides with a protocol route`,
+            )
+          }
         }),
       ),
   },

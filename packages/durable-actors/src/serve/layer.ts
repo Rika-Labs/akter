@@ -9,7 +9,7 @@ import { type ServedDefinition, type ServedMember, servedDefinitions } from "../
 import { ActorError, Unauthorized } from "../errors/actor.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
-import { build, document, memberPath } from "./api.ts"
+import { build, document, memberPath, PROTOCOL_OPERATIONS } from "./api.ts"
 import { type AuthProvider, type Authenticated, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
@@ -51,6 +51,10 @@ const ALLOWED_HEADERS = [
   "traceparent",
   "tracestate",
 ].join(", ")
+
+// Clients mint ids up to a second or a round trip behind the database clock,
+// then retry within the window; shorter windows expire ids before delivery.
+const MIN_RETRY_WINDOW_MS = 60_000
 
 const EXPOSED_HEADERS = ["x-request-id", "durable-now", "durable-version", "retry-after"].join(", ")
 
@@ -123,7 +127,7 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
 export const serve = <R = never>(options: ServeOptions<R>) =>
   HttpRouter.use(
     Effect.fnUntraced(function* (router) {
-      const basePath = options.basePath ?? ""
+      const basePath = options.basePath === "/" ? "" : (options.basePath ?? "")
       const definitions = options.actors.map(resolve)
       const names = new Set<string>()
 
@@ -131,9 +135,40 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         if (names.has(definition.name))
           return yield* Effect.die(new Error(`Actor.serve: ${definition.name} is listed twice`))
         names.add(definition.name)
+
+        const collision = definition.members.find((member) =>
+          PROTOCOL_OPERATIONS.has(`${definition.name}.${member.tag}`),
+        )
+
+        if (collision !== undefined)
+          return yield* Effect.die(
+            new Error(
+              `Actor.serve: ${definition.name}.${collision.tag} collides with a protocol operation id`,
+            ),
+          )
       }
 
+      const openapiPath = options.openapi?.path
+
+      if (
+        openapiPath !== undefined &&
+        (openapiPath === "/protocol" ||
+          openapiPath === "/command-ids" ||
+          openapiPath === "/actors" ||
+          openapiPath.startsWith("/actors/"))
+      )
+        return yield* Effect.die(
+          new Error(`Actor.serve: openapi.path ${openapiPath} collides with a protocol route`),
+        )
+
       const actors = yield* InternalActors
+
+      if (actors.retryWindowMs < MIN_RETRY_WINDOW_MS)
+        return yield* Effect.die(
+          new Error(
+            `Actor.serve: retryWindowMs is ${actors.retryWindowMs}; served clients need at least 60 seconds`,
+          ),
+        )
 
       for (const definition of definitions) {
         const registered = actors.registered(definition.name)
@@ -181,8 +216,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
         if (Option.isNone(host)) return false
 
+        if (!URL.canParse(request.originalUrl)) return false
+
         try {
-          return new URL(origin).host === host.value
+          const parsed = new URL(origin)
+
+          return (
+            parsed.host === host.value && parsed.protocol === new URL(request.originalUrl).protocol
+          )
         } catch {
           return false
         }
@@ -287,14 +328,19 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const unframed =
             Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
 
+          let received = 0
+
           const chunks = yield* request.stream.pipe(
-            Stream.catch(() => (unframed ? Stream.empty : Stream.fail(invalidInput("decode")))),
+            Stream.catch(() =>
+              unframed && received === 0 ? Stream.empty : Stream.fail(invalidInput("decode")),
+            ),
             Stream.runFoldEffect(
               () => ({ size: 0, chunks: [] as Array<Uint8Array> }),
               (acc, chunk) => {
                 const size = acc.size + chunk.byteLength
 
                 if (size > requestBytes) return Effect.fail(invalidInput("too_large"))
+                received = size
                 acc.chunks.push(chunk)
 
                 return Effect.succeed({ size, chunks: acc.chunks })
@@ -338,9 +384,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         if (SchemaAST.isVoid(member.output.ast)) return HttpServerResponse.empty({ status: 204 })
         const decoded = yield* decodeSuccess(value).pipe(Effect.orDie)
 
-        return decoded.value === undefined
-          ? HttpServerResponse.empty({ status: 204 })
-          : HttpServerResponse.jsonUnsafe(decoded.value, { status: 200 })
+        return HttpServerResponse.jsonUnsafe(decoded.value ?? null, { status: 200 })
       })
 
       const outcomeResponse = (member: ServedMember, outcome: Outcome) =>

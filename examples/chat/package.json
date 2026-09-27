@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "start": "bun src/main.ts",
-    "serve": "bun src/serve.ts",
     "client": "bun src/client.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",

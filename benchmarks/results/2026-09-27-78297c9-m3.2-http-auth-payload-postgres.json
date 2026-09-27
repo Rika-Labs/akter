@@ -1,0 +1,670 @@
+{
+  "schema": 2,
+  "label": "m3.2-http-auth-payload",
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-27T01:47:13.570Z",
+  "finishedAt": "2026-09-27T01:48:25.364Z",
+  "git": {
+    "sha": "78297c9a6840dd888bdddd81aae6723e0ad1b05c",
+    "shortSha": "78297c9",
+    "branch": "feat/92-actor-serve-http",
+    "mainBase": "eefbe8584ec1612149b06fd2e571c850a1790baa",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "b21501db02775d0b8724b909e8f8ddaa229847b4",
+        "parents": [
+          "4f6bf0cffb5f366d30e205bbcbbd45b0556ebc62",
+          "eefbe8584ec1612149b06fd2e571c850a1790baa"
+        ]
+      },
+      {
+        "commit": "4f6bf0cffb5f366d30e205bbcbbd45b0556ebc62",
+        "parents": [
+          "29b35faa7ff127b006e94c5ecbe8b8abd339ff66",
+          "554587ba98022200b05ee80a91f817822d58c3f6"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "hot-actor",
+      "description": "Warm command turns on one actor: sequential latency, then 8 and 64 concurrent callers competing for its single turn slot.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 4217,
+          "throughput": 711.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 1.404,
+            "min": 0.878,
+            "p50": 1.226,
+            "p90": 1.929,
+            "p95": 2.375,
+            "p99": 3.941,
+            "max": 6.98
+          },
+          "statementsPerOperation": 7,
+          "statements": [
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now",
+              "calls": 6004,
+              "meanMs": 0.002
+            },
+            {
+              "query": "INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms) VALUES ($1, $2,",
+              "calls": 3000,
+              "meanMs": 0.019
+            },
+            {
+              "query": "INSERT INTO actor_state (routing_key, tenant_id, actor_type, actor_id, key, value) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (routing_key, tenant_id, actor_ty",
+              "calls": 3000,
+              "meanMs": 0.013
+            },
+            {
+              "query": "SELECT g.generation::text AS generation, g.created, $1::jsonb::text AS canonical, r.caller_key, r.command, r.payload_hash, r.outcome FROM actor_generations g LE",
+              "calls": 3000,
+              "meanMs": 0.011
+            },
+            {
+              "query": "INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id) SELECT $1, $2, $3, $4 FROM (SELECT set_config('lock_timeout', $5, true), set_config",
+              "calls": 3000,
+              "meanMs": 0.008
+            },
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now, $1::jsonb::text AS canonical, r.caller_key, r.command, r.payload_hash, r.outcome FROM (",
+              "calls": 3000,
+              "meanMs": 0.008
+            },
+            {
+              "query": "SELECT o.routing_key::text AS routing_key, o.intent_id, o.kind, o.attempts, o.last_error, o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.t",
+              "calls": 4,
+              "meanMs": 0.11
+            }
+          ],
+          "activity": {
+            "samples": 166,
+            "connections": {
+              "idle:Client/ClientRead": 9.39,
+              "idle in transaction:Client/ClientRead": 0.33,
+              "active:IO/WalSync": 0.08,
+              "idle in transaction": 0.06,
+              "active:Client/ClientRead": 0.06,
+              "active": 0.04,
+              "idle": 0.04
+            }
+          },
+          "cpu": {
+            "client": 102.9,
+            "server": 19.6,
+            "clientMsPerOperation": 1.447,
+            "serverMsPerOperation": 0.276
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-8",
+          "parameters": {
+            "actors": 1,
+            "workers": 8
+          },
+          "operations": 7562,
+          "elapsedMs": 10006,
+          "throughput": 755.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 7562,
+            "mean": 10.58,
+            "min": 3.71,
+            "p50": 10.267,
+            "p90": 12.995,
+            "p95": 14.193,
+            "p99": 16.419,
+            "max": 28.361
+          },
+          "statementsPerOperation": 7,
+          "statements": null,
+          "activity": {
+            "samples": 394,
+            "connections": {
+              "idle:Client/ClientRead": 8.96,
+              "idle in transaction:Client/ClientRead": 0.53,
+              "active:Client/ClientRead": 0.08,
+              "idle in transaction": 0.07,
+              "active:IO/WalSync": 0.07,
+              "active": 0.06,
+              "idle": 0.05,
+              "idle in transaction:IO/WalSync": 0.01,
+              "active:Timeout/SpinDelay": 0,
+              "idle in transaction:IO/WalWrite": 0
+            }
+          },
+          "cpu": {
+            "client": 94.5,
+            "server": 28.8,
+            "clientMsPerOperation": 1.251,
+            "serverMsPerOperation": 0.381
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "actors": 1,
+            "workers": 64
+          },
+          "operations": 7632,
+          "elapsedMs": 10070,
+          "throughput": 757.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 7632,
+            "mean": 84.161,
+            "min": 7.232,
+            "p50": 83.801,
+            "p90": 93.76,
+            "p95": 97.584,
+            "p99": 106.697,
+            "max": 112.609
+          },
+          "statementsPerOperation": 7,
+          "statements": null,
+          "activity": {
+            "samples": 395,
+            "connections": {
+              "idle:Client/ClientRead": 8.95,
+              "idle in transaction:Client/ClientRead": 0.52,
+              "idle": 0.08,
+              "active:IO/WalSync": 0.07,
+              "active": 0.07,
+              "idle in transaction": 0.06,
+              "active:Client/ClientRead": 0.05,
+              "idle in transaction:IO/WalWrite": 0.01,
+              "idle in transaction:IO/WalSync": 0.01,
+              "active:IO/DataFileExtend": 0
+            }
+          },
+          "cpu": {
+            "client": 84.3,
+            "server": 28.4,
+            "clientMsPerOperation": 1.113,
+            "serverMsPerOperation": 0.374
+          },
+          "extra": null
+        }
+      ]
+    },
+    {
+      "name": "query-latency",
+      "description": "Query handler reads of committed state: sequential on one actor, then 64 concurrent callers over 1k actors.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 390,
+          "throughput": 7692.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 0.129,
+            "min": 0.085,
+            "p50": 0.106,
+            "p90": 0.163,
+            "p95": 0.194,
+            "p99": 0.452,
+            "max": 5.871
+          },
+          "statementsPerOperation": 1,
+          "statements": [
+            {
+              "query": "SELECT g.event_sequence::text AS head, s.key, s.value FROM (VALUES (1)) AS one (x) LEFT JOIN actor_generations g ON g.routing_key = $1 AND g.tenant_id = $2 AND ",
+              "calls": 3000,
+              "meanMs": 0.004
+            }
+          ],
+          "activity": {
+            "samples": 16,
+            "connections": {
+              "idle:Client/ClientRead": 9.94,
+              "idle": 0.06
+            }
+          },
+          "cpu": {
+            "client": 103.2,
+            "server": 23.2,
+            "clientMsPerOperation": 0.134,
+            "serverMsPerOperation": 0.03
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64
+          },
+          "operations": 123283,
+          "elapsedMs": 10006,
+          "throughput": 12321,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 123283,
+            "mean": 5.191,
+            "min": 0.133,
+            "p50": 0.574,
+            "p90": 1.052,
+            "p95": 1.418,
+            "p99": 2.944,
+            "max": 10004.451
+          },
+          "statementsPerOperation": 1,
+          "statements": null,
+          "activity": {
+            "samples": 373,
+            "connections": {
+              "idle:Client/ClientRead": 9.75,
+              "idle": 0.14,
+              "active": 0.07,
+              "active:Client/ClientRead": 0.04
+            }
+          },
+          "cpu": {
+            "client": 110.1,
+            "server": 48.1,
+            "clientMsPerOperation": 0.089,
+            "serverMsPerOperation": 0.039
+          },
+          "extra": null
+        }
+      ]
+    },
+    {
+      "name": "http",
+      "description": "Actor.serve over loopback HTTP/1.1 keep-alive: sequential commands and queries on one actor, 64 concurrent command callers over 1k actors, then sequential commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload.",
+      "cases": [
+        {
+          "name": "command-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none"
+          },
+          "operations": 3000,
+          "elapsedMs": 5622,
+          "throughput": 533.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 1.872,
+            "min": 1.213,
+            "p50": 1.729,
+            "p90": 2.36,
+            "p95": 2.698,
+            "p99": 4.766,
+            "max": 14.423
+          },
+          "statementsPerOperation": 6,
+          "statements": [
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now",
+              "calls": 3005,
+              "meanMs": 0.003
+            },
+            {
+              "query": "INSERT INTO actor_state (routing_key, tenant_id, actor_type, actor_id, key, value) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (routing_key, tenant_id, actor_ty",
+              "calls": 3000,
+              "meanMs": 0.016
+            },
+            {
+              "query": "INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms) VALUES ($1, $2,",
+              "calls": 3000,
+              "meanMs": 0.023
+            },
+            {
+              "query": "INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id) SELECT $1, $2, $3, $4 FROM (SELECT set_config('lock_timeout', $5, true), set_config",
+              "calls": 3000,
+              "meanMs": 0.012
+            },
+            {
+              "query": "SELECT g.generation::text AS generation, g.created, $1::jsonb::text AS canonical, r.caller_key, r.command, r.payload_hash, r.outcome FROM actor_generations g LE",
+              "calls": 3000,
+              "meanMs": 0.013
+            },
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now, $1::jsonb::text AS canonical, r.caller_key, r.command, r.payload_hash, r.outcome FROM (",
+              "calls": 3000,
+              "meanMs": 0.011
+            },
+            {
+              "query": "SELECT o.routing_key::text AS routing_key, o.intent_id, o.kind, o.attempts, o.last_error, o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.t",
+              "calls": 5,
+              "meanMs": 0.118
+            },
+            {
+              "query": "BEGIN",
+              "calls": 1,
+              "meanMs": 0
+            },
+            {
+              "query": "SAVEPOINT $1",
+              "calls": 1,
+              "meanMs": 0.001
+            },
+            {
+              "query": "COMMIT",
+              "calls": 1,
+              "meanMs": 0.001
+            }
+          ],
+          "activity": {
+            "samples": 220,
+            "connections": {
+              "idle:Client/ClientRead": 9.45,
+              "idle in transaction:Client/ClientRead": 0.28,
+              "active:IO/WalSync": 0.07,
+              "idle in transaction": 0.07,
+              "active": 0.07,
+              "active:Client/ClientRead": 0.03,
+              "idle": 0.02,
+              "idle in transaction:IO/WalSync": 0
+            }
+          },
+          "cpu": {
+            "client": 99,
+            "server": 17.2,
+            "clientMsPerOperation": 1.855,
+            "serverMsPerOperation": 0.322
+          },
+          "extra": null
+        },
+        {
+          "name": "query-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none"
+          },
+          "operations": 3000,
+          "elapsedMs": 1680,
+          "throughput": 1785.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 0.558,
+            "min": 0.326,
+            "p50": 0.498,
+            "p90": 0.798,
+            "p95": 0.888,
+            "p99": 2.108,
+            "max": 4.7
+          },
+          "statementsPerOperation": 1,
+          "statements": [
+            {
+              "query": "SELECT g.event_sequence::text AS head, s.key, s.value FROM (VALUES (1)) AS one (x) LEFT JOIN actor_generations g ON g.routing_key = $1 AND g.tenant_id = $2 AND ",
+              "calls": 3000,
+              "meanMs": 0.007
+            },
+            {
+              "query": "SELECT o.routing_key::text AS routing_key, o.intent_id, o.kind, o.attempts, o.last_error, o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.t",
+              "calls": 1,
+              "meanMs": 0.106
+            },
+            {
+              "query": "SELECT floor(extract($1 FROM clock_timestamp()) * $2)::text AS now",
+              "calls": 1,
+              "meanMs": 0.032
+            }
+          ],
+          "activity": {
+            "samples": 66,
+            "connections": {
+              "idle:Client/ClientRead": 9.97,
+              "idle": 0.03
+            }
+          },
+          "cpu": {
+            "client": 115,
+            "server": 9.5,
+            "clientMsPerOperation": 0.644,
+            "serverMsPerOperation": 0.053
+          },
+          "extra": null
+        },
+        {
+          "name": "command-concurrent-64",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "auth": "none"
+          },
+          "operations": 9543,
+          "elapsedMs": 10061,
+          "throughput": 948.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 9543,
+            "mean": 67.29,
+            "min": 6.495,
+            "p50": 60.087,
+            "p90": 110.779,
+            "p95": 129.315,
+            "p99": 177.928,
+            "max": 300.169
+          },
+          "statementsPerOperation": 6,
+          "statements": null,
+          "activity": {
+            "samples": 374,
+            "connections": {
+              "idle in transaction:Client/ClientRead": 4.95,
+              "idle:Client/ClientRead": 4.66,
+              "active": 0.12,
+              "active:IO/WalSync": 0.09,
+              "active:Client/ClientRead": 0.08,
+              "idle in transaction": 0.05,
+              "idle": 0.02,
+              "active:LWLock/WALWrite": 0.02,
+              "active:IO/WalWrite": 0.01
+            }
+          },
+          "cpu": {
+            "client": 136.5,
+            "server": 40.1,
+            "clientMsPerOperation": 1.439,
+            "serverMsPerOperation": 0.423
+          },
+          "extra": null
+        },
+        {
+          "name": "command-sequential-jwt",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "jwt-es256"
+          },
+          "operations": 2000,
+          "elapsedMs": 4239,
+          "throughput": 471.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 2.118,
+            "min": 1.388,
+            "p50": 1.951,
+            "p90": 2.69,
+            "p95": 3.165,
+            "p99": 5.159,
+            "max": 18.487
+          },
+          "statementsPerOperation": 6.01,
+          "statements": null,
+          "activity": {
+            "samples": 167,
+            "connections": {
+              "idle:Client/ClientRead": 9.62,
+              "idle in transaction:Client/ClientRead": 0.22,
+              "idle in transaction": 0.08,
+              "active:Client/ClientRead": 0.04,
+              "active": 0.02,
+              "active:IO/WalSync": 0.02,
+              "idle": 0.01,
+              "idle in transaction:IO/WalSync": 0.01
+            }
+          },
+          "cpu": {
+            "client": 98,
+            "server": 15.7,
+            "clientMsPerOperation": 2.077,
+            "serverMsPerOperation": 0.333
+          },
+          "extra": {}
+        },
+        {
+          "name": "command-sequential-largest-principal",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "largest-principal"
+          },
+          "operations": 2000,
+          "elapsedMs": 3744,
+          "throughput": 534.1,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 1.871,
+            "min": 1.235,
+            "p50": 1.709,
+            "p90": 2.38,
+            "p95": 2.769,
+            "p99": 4.697,
+            "max": 12.235
+          },
+          "statementsPerOperation": 6,
+          "statements": null,
+          "activity": {
+            "samples": 147,
+            "connections": {
+              "idle:Client/ClientRead": 9.52,
+              "idle in transaction:Client/ClientRead": 0.24,
+              "active:IO/WalSync": 0.1,
+              "idle in transaction": 0.05,
+              "active": 0.04,
+              "idle": 0.04,
+              "active:Client/ClientRead": 0.01
+            }
+          },
+          "cpu": {
+            "client": 93.2,
+            "server": 17.3,
+            "clientMsPerOperation": 1.746,
+            "serverMsPerOperation": 0.324
+          },
+          "extra": {
+            "callerBytes": 1020
+          }
+        },
+        {
+          "name": "command-sequential-64kib",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none"
+          },
+          "operations": 2000,
+          "elapsedMs": 5412,
+          "throughput": 369.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 2.704,
+            "min": 1.876,
+            "p50": 2.499,
+            "p90": 3.122,
+            "p95": 4.282,
+            "p99": 5.953,
+            "max": 18.006
+          },
+          "statementsPerOperation": 6.01,
+          "statements": null,
+          "activity": {
+            "samples": 210,
+            "connections": {
+              "idle:Client/ClientRead": 9.45,
+              "idle in transaction:Client/ClientRead": 0.27,
+              "active": 0.12,
+              "active:IO/WalSync": 0.08,
+              "idle in transaction": 0.03,
+              "active:Client/ClientRead": 0.02,
+              "idle": 0.02,
+              "active:IO/WalWrite": 0
+            }
+          },
+          "cpu": {
+            "client": 110,
+            "server": 20.5,
+            "clientMsPerOperation": 2.977,
+            "serverMsPerOperation": 0.553
+          },
+          "extra": {
+            "payloadBytes": 65536
+          }
+        }
+      ]
+    }
+  ]
+}

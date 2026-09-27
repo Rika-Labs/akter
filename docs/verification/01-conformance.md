@@ -277,7 +277,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 - `fails missing, invalid, and expired credentials with their codes before any turn and never as Anonymous` — 401 with `www-authenticate: Bearer` for commands, queries, and `/command-ids`; no handler runs.
 - `serves every caller as Anonymous in the default tenant under Actor.auth.none, ignoring credentials`.
 - `takes the tenant only from the provider, and refuses a provider that returns a System caller` — tenant-looking query strings and headers are ignored; a `System` caller is an opaque 500 and runs nothing.
-- `serves a 512-byte subject and rejects 513 bytes and an encoded caller over 1 KiB` — gate **Cluster header size** at the served edge.
+- `serves a 512-byte subject and rejects 513 bytes and an encoded caller over 1 KiB` — gate **Cluster header size** at the served edge. `serializes a 512-byte subject through a cross-runner command` (`conformance/multi-runner.ts`, two runners on real Postgres) carries that largest subject through Cluster to an actor owned by the other runner and back from its turn.
 - `replays a committed output when a response is dropped and the same Idempotency-Key is retried` — row **Command response lost over HTTP**: one receipt, the handler runs once, and a quoted key is the same id.
 - `replays a declared failure with the same tag, fields, and status` — default 422 and a declared `httpApiStatus` 423.
 - `returns 409 CommandConflict for a reused id with different input, without running the handler`.
@@ -293,8 +293,16 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 - `refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin` — 403 before authentication; CORS headers and preflight for a listed origin.
 - `rejects non-JSON and oversized bodies and credentials before any turn` — 415, 413 for body and credentials, 400 with value-free schema issues, 400 `decode` for invalid UTF-8, and 400 `unsupported_protocol`.
 - `answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version`.
+- `fails Actor.serve at startup when retryWindowMs is below 60 seconds, and admits ids minted at exactly 60 seconds`.
+- `serves routes at the root for basePath /, and answers an undefined query output with 200 null`.
+- `fails Actor.serve at startup when a member's operation id collides with a protocol route`.
+- `fails Actor.serve at startup when openapi.path collides with a protocol route`.
 
-These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency.
+`rejects a declared error that claims a framework status or tag` (`serve/wire.test.ts`) covers 400, 404, and 409. `serves the OpenAPI document recorded in the snapshot` (`examples/chat/src/server.test.ts`) snapshots the chat example's document, so a schema change shows up in review.
+
+`waits at least retryAfter before retrying RunnerAtCapacity in process` (`runtime/retry.test.ts`) checks that in-process retries of `RunnerAtCapacity` and `ActorUnavailable` start from each error's own `retryAfter`; the existing `conformance/capacity.ts` cases still pass.
+
+These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency over HTTP/1.1 keep-alive for commands and queries with `Actor.auth.none`, 64 concurrent command callers, and commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload; HTTP/2 is not measured, since the harness serves through `Bun.serve` over plain HTTP/1.1.
 
 ### Promise client (M3.4)
 

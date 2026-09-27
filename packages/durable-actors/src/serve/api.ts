@@ -32,6 +32,7 @@ const QUERY_ERRORS = {
   413: ["InvalidInput"],
   415: ["InvalidInput"],
   503: ["ActorUnavailable"],
+  504: ["Timeout"],
 } as const
 
 const errorSchemas = (errors: Readonly<Record<number, ReadonlyArray<WireTag>>>, prefix: string) =>
@@ -91,8 +92,14 @@ const endpoint = (basePath: string, definition: ServedDefinition, member: Served
   })
 }
 
-/** Protocol routes live in their own group, so no actor name can collide with them. */
+/** Protocol routes live in their own group. */
 const PROTOCOL_GROUP = "durable"
+
+/** Operation ids of the protocol routes; no served member may reuse one. */
+export const PROTOCOL_OPERATIONS: ReadonlySet<string> = new Set([
+  `${PROTOCOL_GROUP}.protocol`,
+  `${PROTOCOL_GROUP}.commandIds`,
+])
 
 export interface ServedRoutes {
   readonly definitions: ReadonlyArray<ServedDefinition>
@@ -155,7 +162,11 @@ export const document = ({ api, auth, title, version }: DocumentOptions) => {
           Array.isArray(operation)
             ? operation
             : Object.assign({}, operation, {
-                security: secured && !path.endsWith("/protocol") ? [{ [SECURITY_NAME]: [] }] : [],
+                security:
+                  secured &&
+                  !("operationId" in operation && operation.operationId === "durable.protocol")
+                    ? [{ [SECURITY_NAME]: [] }]
+                    : [],
               }),
         ]),
       ),

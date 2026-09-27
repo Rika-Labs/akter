@@ -70,9 +70,19 @@ describe("served error envelopes", () => {
 
     class Defect extends Schema.TaggedError<Defect>()("Defect", {}) {}
 
+    class Malformed extends Schema.TaggedError<Malformed>()(
+      "Malformed",
+      {},
+      { httpApiStatus: 400 },
+    ) {}
+
+    class Missing extends Schema.TaggedError<Missing>()("Missing", {}, { httpApiStatus: 404 }) {}
+
     class Teapot extends Schema.TaggedError<Teapot>()("Teapot", {}, { httpApiStatus: 418 }) {}
 
     expect(() => checkDeclaredErrors({ tag: "M", errors: [Conflict] })).toThrow(/409/)
+    expect(() => checkDeclaredErrors({ tag: "M", errors: [Malformed] })).toThrow(/400/)
+    expect(() => checkDeclaredErrors({ tag: "M", errors: [Missing] })).toThrow(/404/)
     expect(() => checkDeclaredErrors({ tag: "M", errors: [Defect] })).toThrow(/reserved/)
     expect(() => checkDeclaredErrors({ tag: "M", errors: [Teapot] })).not.toThrow()
   })

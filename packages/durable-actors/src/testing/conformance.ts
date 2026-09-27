@@ -49,13 +49,13 @@ import {
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
-import { httpConformance, httpLayer } from "./conformance/http.ts"
 import {
   retentionConformance,
   retentionFixture,
   type RetentionFixture,
   retentionLayer,
 } from "./conformance/retention.ts"
+import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import {
   outboxConformance,

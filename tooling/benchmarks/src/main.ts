@@ -49,8 +49,8 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   blobs,
   reducers,
   capacity,
-  http,
   retention,
+  http,
   subscriptions,
 ]
 

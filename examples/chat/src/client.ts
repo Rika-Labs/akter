@@ -1,4 +1,4 @@
-// Chat from a Promise-only caller, against `bun run serve`:
+// Chat from a Promise-only caller, against `bun run start`:
 //   bun run client alice "hello"
 import { ActorError } from "@durable-actors/core/client"
 import { Room, RoomClosed, RoomId } from "./room/contract.ts"

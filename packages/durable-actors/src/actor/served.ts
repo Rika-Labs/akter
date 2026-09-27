@@ -32,7 +32,9 @@ interface ServedOwner {
 export const servedDefinitions = new WeakMap<ServedOwner, ServedDefinition>()
 
 /** Statuses the served protocol assigns to framework outcomes; a declared failure can't claim one. */
-const RESERVED_STATUSES: ReadonlySet<number> = new Set([401, 403, 409, 410, 413, 415, 429])
+const RESERVED_STATUSES: ReadonlySet<number> = new Set([
+  400, 401, 403, 404, 409, 410, 413, 415, 429,
+])
 
 const RESERVED_TAGS: ReadonlySet<string> = new Set(["ActorError", "Defect"])
 
