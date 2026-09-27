@@ -69,7 +69,7 @@ const QUERIES: ReadonlyArray<Query> = [
     name: "receipts-by-routing-key",
     description: "one actor's receipts, keyed by the routing key the actors view reports",
     run: (sql, actor) => sql`SELECT * FROM durable.receipts
-      WHERE routing_key = ${String((BigInt(actor) * 2654435761n) % 9223372036854775807n)}::bigint
+      WHERE routing_key = hashtextextended(${`${tenantOf(actor)}/${actor}`}, 0)
         AND tenant_id = ${tenantOf(actor)} AND actor_type = 'Inspected' AND actor_id = ${String(actor)}`,
   },
   {
