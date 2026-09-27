@@ -103,7 +103,9 @@ export const RoomReads = Room.toQueryLayer(
     }),
     Attachment: Effect.fnUntraced(function* (id: string) {
       const message = yield* (yield* Room.Read).rows(messages).one({ where: { id } })
+
       if (Option.isNone(message) || message.value.attachment !== id) return Option.none()
+
       return yield* (yield* Room.Read).blob(Attachments).get(id)
     }),
   }),
