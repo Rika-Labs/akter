@@ -417,6 +417,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
                   cursor: frame.stamp ? message.through : undefined,
                   event: frame.event,
                 })
+
                 const pending = connection.resync
 
                 // Live frames wait until the resync's replay is acknowledged, so replay always comes first.

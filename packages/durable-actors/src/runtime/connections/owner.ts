@@ -414,7 +414,7 @@ export const activationOwner = ({
                 frame: frame.frame,
                 event: frame.event,
                 stamp,
-                ...(own.replay === true ? { replay: true } : {}),
+                replay: own.replay === true,
               }),
             )
         }

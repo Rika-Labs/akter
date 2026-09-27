@@ -478,12 +478,14 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* cluster.on(0)(
             Room.get(target.id).pipe(Effect.flatMap((room) => room.Post("during"))),
           )
+
           const early = yield* connection.messages.pipe(
             Stream.take(1),
             Stream.runCollect,
             Effect.timeout("1 second"),
             Effect.option,
           )
+
           expect(early._tag).toBe("None")
 
           yield* connection.resyncDone
