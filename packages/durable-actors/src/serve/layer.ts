@@ -127,7 +127,7 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
 export const serve = <R = never>(options: ServeOptions<R>) =>
   HttpRouter.use(
     Effect.fnUntraced(function* (router) {
-      const basePath = options.basePath === "/" ? "" : (options.basePath ?? "")
+      const basePath = (options.basePath ?? "").replace(/\/+$/, "")
       const definitions = options.actors.map(resolve)
       const names = new Set<string>()
 

@@ -1167,6 +1167,22 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "ignores a trailing slash on basePath",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp({ basePath: "/api/" })
+          const token = `${yield* tenantOf}:alice`
+
+          expect((yield* server.send("/api/protocol", { method: "GET" })).status).toBe(200)
+          expect(yield* server.send("/api/actors/HttpRoom/slash/Peek", { token })).toMatchObject({
+            status: 200,
+            text: "null",
+          })
+        }),
+      ),
+  },
+  {
     name: "fails Actor.serve at startup when a member's operation id collides with a protocol route",
     run: ({ expect, environment }) =>
       environment.run(

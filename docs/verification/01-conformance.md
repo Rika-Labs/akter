@@ -295,6 +295,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 - `answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version`.
 - `fails Actor.serve at startup when retryWindowMs is below 60 seconds, and admits ids minted at exactly 60 seconds`.
 - `serves routes at the root for basePath /, and answers an undefined query output with 200 null`.
+- `ignores a trailing slash on basePath`.
 - `fails Actor.serve at startup when a member's operation id collides with a protocol route`.
 - `fails Actor.serve at startup when openapi.path collides with a protocol route`.
 
