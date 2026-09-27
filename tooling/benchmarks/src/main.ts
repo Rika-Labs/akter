@@ -30,6 +30,7 @@ import { manyActors } from "./scenarios/scale/many-actors.ts"
 import { retainedHeap } from "./scenarios/scale/retained-heap.ts"
 import { stateSize } from "./scenarios/state-size.ts"
 import { subscriptions } from "./scenarios/subscriptions.ts"
+import { workflows } from "./scenarios/workflows.ts"
 
 /** Every scenario, in run order. A new slice adds its scenario here. */
 const SCENARIOS: ReadonlyArray<Scenario> = [
@@ -50,6 +51,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   capacity,
   retention,
   subscriptions,
+  workflows,
 ]
 
 /**

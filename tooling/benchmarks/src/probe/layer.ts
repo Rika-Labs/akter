@@ -6,6 +6,7 @@ import { ArchiveLive } from "./archive.ts"
 import { LedgerLive } from "./ledger.ts"
 import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
 import { ReducerProbeLive } from "./reducers.ts"
+import { WorkflowProbeLive } from "./workflows.ts"
 
 const ProbeCommands = Probe.toLayer(
   Effect.succeed({
@@ -130,4 +131,5 @@ export const ProbeLive = Layer.mergeAll(
   EffectProbeLive,
   ArchiveLive,
   ReducerProbeLive,
+  WorkflowProbeLive,
 )
