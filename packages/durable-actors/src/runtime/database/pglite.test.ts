@@ -6,7 +6,7 @@ import { pgTable, text } from "drizzle-orm/pg-core"
 import { Migrator, SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { Actor, NotCreated } from "../../index.ts"
-import { migrate, migrations } from "./migrations.ts"
+import { migrate, migrations, migrator } from "./migrations.ts"
 import { Database } from "../index.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
 import { describeConformance, type ConformanceBackend } from "../../testing/conformance.ts"
@@ -166,6 +166,35 @@ describe("PGlite migrations", () => {
           ])
           expect(yield* migrate).toEqual([[13, "inspection_views"]])
           expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(9)
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("refuses to start when a registered migration below the latest applied one was skipped", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+    const withWorkflows = migrator({ ...migrations, "0012_workflows": Effect.void })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* migrate
+          const before = yield* sql`SELECT migration_id FROM actor_migrations ORDER BY migration_id`
+          const exit = yield* Effect.exit(withWorkflows)
+          expect(Exit.isFailure(exit)).toBe(true)
+          const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+          expect(error).toBeInstanceOf(Migrator.MigrationError)
+          expect(error).toMatchObject({
+            kind: "BadState",
+            message: expect.stringContaining(
+              "Migrations 12 were never applied but migration 13 was",
+            ),
+          })
+          expect(
+            yield* sql`SELECT migration_id FROM actor_migrations ORDER BY migration_id`,
+          ).toEqual(before)
           expect(yield* migrate).toEqual([])
         }),
       )

@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { Migrator, SqlClient } from "effect/unstable/sql"
 
-/** Every framework migration by id; the migrator runs ids above the latest applied one, in order. */
+/** Every framework migration by id, applied in order above the latest applied id. */
 export const migrations = {
   "0001_foundation": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
@@ -270,7 +270,46 @@ export const migrations = {
   }),
 }
 
-export const migrate = Migrator.make({})({
-  table: "actor_migrations",
-  loader: Migrator.fromRecord(migrations),
-})
+/**
+ * Runs `record` like `Migrator`, but first refuses a database where a
+ * registered id below the latest applied one was never applied: `Migrator`
+ * would skip it forever, leaving its tables missing.
+ */
+export const migrator = (
+  record: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>>,
+) => {
+  const run = Migrator.make({})({
+    table: "actor_migrations",
+    loader: Migrator.fromRecord(record),
+  })
+
+  const registered = Object.keys(record).map((key) => Number(key.split("_")[0]))
+
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    const [table] = yield* sql<{
+      readonly name: string | null
+    }>`SELECT to_regclass('actor_migrations')::text AS name`
+
+    const rows =
+      table?.name == null
+        ? []
+        : yield* sql<{ readonly id: number }>`SELECT migration_id::int AS id FROM actor_migrations`
+
+    const applied = new Set(rows.map(({ id }) => id))
+    const latest = Math.max(0, ...applied)
+    const skipped = registered.filter((id) => id < latest && !applied.has(id)).sort((a, b) => a - b)
+
+    if (skipped.length > 0) {
+      return yield* new Migrator.MigrationError({
+        kind: "BadState",
+        message: `Migrations ${skipped.join(", ")} were never applied but migration ${latest} was; they would be skipped. Restore this database from before migration ${latest} or recreate it.`,
+      })
+    }
+
+    return yield* run
+  })
+}
+
+export const migrate = migrator(migrations)
