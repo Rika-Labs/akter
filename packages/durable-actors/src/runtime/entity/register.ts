@@ -210,6 +210,7 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
             routingKeyOf(payload.ref),
             registration.policy,
             registration.mintable,
+            registration.tables.length > 0 || registration.blobs.length > 0,
             waited,
           ).pipe(
             Effect.catchDefect(

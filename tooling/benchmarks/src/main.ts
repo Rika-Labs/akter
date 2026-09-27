@@ -90,7 +90,8 @@ const describeCase = (scenario: string, result: CaseResult) => {
   const latency = result.latencyMs
 
   const statements =
-    result.statementsPerOperation === null ? "" : ` stmts/op=${result.statementsPerOperation}`
+    (result.statementsPerOperation === null ? "" : ` stmts/op=${result.statementsPerOperation}`) +
+    (result.roundTripsPerOperation === null ? "" : ` rt/op=${result.roundTripsPerOperation}`)
 
   const cpu =
     result.cpu.clientMsPerOperation === null ? "" : ` cpu/op=${result.cpu.clientMsPerOperation} ms`

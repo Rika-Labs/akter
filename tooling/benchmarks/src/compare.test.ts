@@ -190,6 +190,42 @@ describe("compareStatements", () => {
     expect(removed).toEqual(["hot-actor/concurrent-8"])
   })
 
+  it("fails a round-trip change the baseline records, and ignores cases without a count", () => {
+    const counted = (sequential: number): Result => {
+      const run = ci({ sequential: 7 })
+      const [scenario] = run.scenarios
+
+      return {
+        ...run,
+        scenarios: [
+          {
+            ...scenario!,
+            cases: [{ ...scenario!.cases[0]!, roundTripsPerOperation: sequential }],
+          },
+        ],
+      }
+    }
+
+    const recorded = toBaseline(counted(2))
+
+    expect(recorded.roundTripsPerOperation).toEqual({ "hot-actor/sequential": 2 })
+    expect(
+      compareStatements({ baseline: recorded, result: counted(2.1) }).cases.some(
+        (entry) => entry.changed,
+      ),
+    ).toBe(false)
+    expect(
+      compareStatements({ baseline: recorded, result: counted(3) }).cases.filter(
+        (entry) => entry.changed,
+      ),
+    ).toMatchObject([{ key: "hot-actor/sequential", metric: "round trips", before: 2, after: 3 }])
+    expect(
+      compareStatements({ baseline, result: counted(3) }).cases.some(
+        (entry) => entry.metric === "round trips",
+      ),
+    ).toBe(false)
+  })
+
   it("builds a baseline only from a ci run on postgres", () => {
     expect(baseline).toEqual({
       profile: "ci",

@@ -135,6 +135,8 @@ The `Statements` workflow fails a pull request to `main` whose statements per op
 
 The job runs `bun run bench --profile ci`: `hot-actor`, `cold-activation`, `query-latency`, `receipt-replay`, `events`, `outbox`, `owned-rows`, and `effect-round-trip` on Postgres at the `quick` counts, in about 75 seconds. It then compares every case with the baseline and fails when a case moves by more than 0.2 statements per operation in either direction, or when a case is added or removed. Repeat runs of one commit differ by up to 0.13, because relay passes and Cluster retries fall inside a measured window a varying number of times; one extra statement in every fourth operation adds 0.25 and fails.
 
+On Postgres the harness also puts a TCP relay in front of the turn pool and counts flights: a flight starts whenever the client writes after the server last answered, so one flight is one round trip the turn waited for, however many pipelined statements it carried. The result reports it as `roundTripsPerOperation` (`rt/op` in the log), and the baseline's `roundTripsPerOperation` holds the gate to it with the same tolerance. Statements and round trips differ: a warm `hot-actor` turn issues 7 counted statements, plus the `BEGIN` and `COMMIT` that `pg_stat_statements` leaves out, in 2 round trips. Queries and replays that never lease a turn session count 0.
+
 A fall fails too: a lower count left out of the baseline would let a later change add the statement back unnoticed. When a change to the count is intended, update the baseline in the same pull request and say why in its description:
 
 ```sh

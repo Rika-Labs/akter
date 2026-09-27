@@ -6,6 +6,7 @@ const Case = Schema.Struct({
   throughput: Schema.Finite,
   errors: Schema.Finite,
   statementsPerOperation: Schema.optional(Schema.NullOr(Schema.Finite)),
+  roundTripsPerOperation: Schema.optional(Schema.NullOr(Schema.Finite)),
   latencyMs: Schema.Struct({ p50: Schema.Finite, p95: Schema.Finite, p99: Schema.Finite }),
   cpu: Schema.optional(
     Schema.Struct({ clientMsPerOperation: Schema.optional(Schema.NullOr(Schema.Finite)) }),
@@ -162,6 +163,8 @@ const Baseline = Schema.Struct({
   backend: Schema.Literal("postgres"),
   sha: Schema.String,
   statementsPerOperation: Schema.Record(Schema.String, Schema.Finite),
+  /** Turn round trips per operation, for the cases whose runtime counts them. */
+  roundTripsPerOperation: Schema.optional(Schema.Record(Schema.String, Schema.Finite)),
 })
 
 export type Baseline = typeof Baseline.Type
@@ -181,33 +184,33 @@ export const toBaseline = (result: Result): Baseline => {
       `a baseline comes from a ci profile run on postgres, not ${result.profile} on ${result.backend.name}`,
     )
 
+  const entries = [...flatten(result)]
+
+  const roundTrips = entries.flatMap(([key, entry]) =>
+    entry.roundTripsPerOperation == null ? [] : [[key, entry.roundTripsPerOperation] as const],
+  )
+
   return {
     profile: "ci",
     backend: "postgres",
     sha: result.git.shortSha,
     statementsPerOperation: Object.fromEntries(
-      [...flatten(result)].map(([key, entry]) => {
+      entries.map(([key, entry]) => {
         if (entry.statementsPerOperation == null) throw new Error(`${key} has no statement count`)
 
         return [key, entry.statementsPerOperation]
       }),
     ),
+    ...(roundTrips.length === 0 ? {} : { roundTripsPerOperation: Object.fromEntries(roundTrips) }),
   }
 }
 
-/**
- * Every case whose statements per operation moved beyond the tolerance, in
- * either direction: a rise is a new round trip, and a fall left unrecorded
- * would let a later rise back to the old count pass.
- */
-export const compareStatements = (input: {
-  readonly baseline: Baseline
-  readonly result: Result
-}) => {
-  const expected = input.baseline.statementsPerOperation
-  const current = toBaseline(input.result).statementsPerOperation
-
-  const cases = Object.entries(current).flatMap(([key, after]) => {
+const drift = (
+  metric: "statements" | "round trips",
+  expected: Readonly<Record<string, number>>,
+  current: Readonly<Record<string, number>>,
+) =>
+  Object.entries(current).flatMap(([key, after]) => {
     const before = expected[key]
 
     return before === undefined
@@ -215,6 +218,7 @@ export const compareStatements = (input: {
       : [
           {
             key,
+            metric,
             before,
             after,
             changed: Math.round(Math.abs(after - before) * 100) / 100 > STATEMENT_TOLERANCE,
@@ -222,10 +226,32 @@ export const compareStatements = (input: {
         ]
   })
 
+/**
+ * Every case whose statements or round trips per operation moved beyond the
+ * tolerance, in either direction: a rise is new work on the wire, and a fall
+ * left unrecorded would let a later rise back to the old count pass. Round
+ * trips are compared for the cases the baseline records them for.
+ */
+export const compareStatements = (input: {
+  readonly baseline: Baseline
+  readonly result: Result
+}) => {
+  const expected = input.baseline.statementsPerOperation
+  const current = toBaseline(input.result)
+
   return {
-    cases,
-    added: Object.keys(current).filter((key) => !(key in expected)),
-    removed: Object.keys(expected).filter((key) => !(key in current)),
+    cases: [
+      ...drift("statements", expected, current.statementsPerOperation),
+      ...drift(
+        "round trips",
+        input.baseline.roundTripsPerOperation ?? {},
+        input.baseline.roundTripsPerOperation === undefined
+          ? {}
+          : (current.roundTripsPerOperation ?? {}),
+      ),
+    ],
+    added: Object.keys(current.statementsPerOperation).filter((key) => !(key in expected)),
+    removed: Object.keys(expected).filter((key) => !(key in current.statementsPerOperation)),
   }
 }
 
@@ -371,16 +397,16 @@ const statements = Effect.fnUntraced(function* (
     .pipe(Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(Baseline))), Effect.orDie)
 
   yield* Console.log(
-    `baseline: ${baseline.sha}\nrun:      ${result.git.shortSha}\ntolerance: ±${STATEMENT_TOLERANCE} statements per operation\n`,
+    `baseline: ${baseline.sha}\nrun:      ${result.git.shortSha}\ntolerance: ±${STATEMENT_TOLERANCE} statements or round trips per operation\n`,
   )
 
   const { cases, added, removed } = compareStatements({ baseline, result })
 
-  for (const { key, before, after, changed } of cases) {
+  for (const { key, metric, before, after, changed } of cases) {
     const delta = Math.round((after - before) * 100) / 100
 
     yield* Console.log(
-      `${changed ? "CHANGED " : "        "}${key}: ${before}→${after} (${delta > 0 ? "+" : ""}${delta})`,
+      `${changed ? "CHANGED " : "        "}${key} ${metric}: ${before}→${after} (${delta > 0 ? "+" : ""}${delta})`,
     )
   }
 
@@ -391,7 +417,7 @@ const statements = Effect.fnUntraced(function* (
 
   const failures = cases.filter((entry) => entry.changed).length + added.length + removed.length
 
-  if (failures === 0) return yield* Console.log(`\nstatements match the baseline`)
+  if (failures === 0) return yield* Console.log(`\nstatements and round trips match the baseline`)
 
   yield* Console.log(
     `\n${failures} case(s) differ from the baseline. If the change is intended, update the baseline in this pull request and say why:\n` +
@@ -399,7 +425,9 @@ const statements = Effect.fnUntraced(function* (
   )
 
   if (process.argv.includes("--fail"))
-    return yield* Effect.die(new Error("Statements per operation differ from the baseline"))
+    return yield* Effect.die(
+      new Error("Statements or round trips per operation differ from the baseline"),
+    )
 })
 
 if (import.meta.main) {

@@ -1,5 +1,5 @@
 import { Context, Crypto, Effect, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Due, type StagedOutbox } from "../../handles/intents.ts"
 import { type ActorRef, Caller } from "../../identity/caller.ts"
 import { databaseTime } from "./admission.ts"
@@ -28,29 +28,35 @@ export const OutboxRuntime = Context.Reference<{
 export const CallerJson = Schema.fromJsonString(Caller)
 
 /**
- * Writes one turn's intents and effects inside its transaction: deletes
- * committed rows whose keys the turn replaced or cancelled, then inserts the
- * staged rows.
- * Returns whether any inserted row is already due, so the caller can wake the
- * relay after commit.
+ * The statements that write one turn's intents and effects inside its
+ * transaction: a delete of committed rows whose keys the turn replaced or
+ * cancelled, then an insert of the staged rows. `now` is the database time
+ * due times are measured from; it is read only when there are rows to insert.
+ * `dueNow` says whether any inserted row is already due, so the caller can
+ * wake the relay after commit.
  */
-export const writeOutbox = Effect.fnUntraced(function* (
+export const outboxStatements = Effect.fnUntraced(function* <R>(
   routingKey: bigint,
   sender: ActorRef,
   outbox: StagedOutbox,
+  databaseNow: Effect.Effect<number, SqlError.SqlError, R>,
 ) {
   const sql = yield* SqlClient.SqlClient
   const { tenant, actor, id } = sender
+  const statements: Array<Effect.Effect<void, SqlError.SqlError>> = []
 
   if (outbox.replaced.length > 0)
-    yield* sql`DELETE FROM actor_outbox WHERE routing_key = ${routingKey} AND tenant_id = ${tenant}
-      AND actor_type = ${actor} AND actor_id = ${id} AND timer_key IN ${sql.in(outbox.replaced)}`
+    statements.push(
+      Effect.asVoid(sql`DELETE FROM actor_outbox WHERE routing_key = ${routingKey} AND tenant_id = ${tenant}
+      AND actor_type = ${actor} AND actor_id = ${id} AND timer_key IN ${sql.in(outbox.replaced)}`),
+    )
 
-  if (outbox.intents.length === 0 && outbox.effects.length === 0) return false
+  if (outbox.intents.length === 0 && outbox.effects.length === 0)
+    return { statements, dueNow: false }
 
   const crypto = yield* Crypto.Crypto
   const { retryWindowMs } = yield* OutboxRuntime
-  const now = yield* databaseTime
+  const now = yield* databaseNow
   let dueNow = outbox.effects.length > 0
   const rows = []
 
@@ -114,7 +120,20 @@ export const writeOutbox = Effect.fnUntraced(function* (
       caller: yield* Schema.encodeEffect(CallerJson)(effect.caller).pipe(Effect.orDie),
     })
 
-  yield* sql`INSERT INTO actor_outbox ${sql.insert(rows)}`
+  statements.push(Effect.asVoid(sql`INSERT INTO actor_outbox ${sql.insert(rows)}`))
 
-  return dueNow
+  return { statements, dueNow }
+})
+
+/** Writes one turn's intents and effects now, reading the database time when it needs it. */
+export const writeOutbox = Effect.fnUntraced(function* (
+  routingKey: bigint,
+  sender: ActorRef,
+  outbox: StagedOutbox,
+) {
+  const staged = yield* outboxStatements(routingKey, sender, outbox, databaseTime)
+
+  for (const statement of staged.statements) yield* statement
+
+  return staged.dueNow
 })
