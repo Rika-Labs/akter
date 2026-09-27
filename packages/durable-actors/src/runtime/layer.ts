@@ -91,7 +91,7 @@ export class RunnerWiring extends Context.Service<
       storage: RunnerStorage.RunnerStorage["Service"],
     ) => RunnerStorage.RunnerStorage["Service"]
   }
->()("durable-actors/runtime/layer/RunnerWiring") {}
+>()("@durable-actors/core/runtime/layer/RunnerWiring") {}
 
 // Cluster entity ids name the tenant and actor id together.
 const encodeEntityId = Schema.encodeEffect(

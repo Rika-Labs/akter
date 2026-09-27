@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor, User } from "durable-actors"
+import { Actor, User } from "@durable-actors/core"
 import { Clock, Context, Crypto, Effect, Encoding, Layer, type PlatformError, Schema } from "effect"
 import {
   FetchHttpClient,

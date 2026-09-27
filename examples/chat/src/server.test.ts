@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { User } from "durable-actors"
-import { ActorTest } from "durable-actors/testing"
+import { User } from "@durable-actors/core"
+import { ActorTest } from "@durable-actors/core/testing"
 import { Effect, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { afterAll, expect, it } from "vitest"

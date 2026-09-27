@@ -5,7 +5,7 @@
 **Owner role:** verification.
 **Change policy:** a change requires the conformance suite to be updated in the same change.
 
-`durable-actors/testing` exports `ActorTest`, `conformance`, and `describeConformance`. The same named cases MUST run against PGlite, real Postgres, and Neki. PGlite is valid for fast/unit coverage; lock contention and true concurrent connection behavior MUST run on real Postgres. A backend is supported only when its applicable cases pass.
+`@durable-actors/core/testing` exports `ActorTest`, `conformance`, and `describeConformance`. The same named cases MUST run against PGlite, real Postgres, and Neki. PGlite is valid for fast/unit coverage; lock contention and true concurrent connection behavior MUST run on real Postgres. A backend is supported only when its applicable cases pass.
 
 ## Foundation evidence
 
@@ -338,7 +338,7 @@ The `Stress` workflow ([`.github/workflows/stress.yml`](../../.github/workflows/
 
 The runnable [counter's own test](../../examples/counter/src/counter/layer.test.ts) uses its actual contract/handler through both commit fault points, rather than relying only on a framework fixture.
 
-Run `bun run --filter durable-actors test` for declaration, identity, and the PGlite suite; run `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter durable-actors test:integration` and `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/counter test:integration` for Postgres and crash coverage. The role must create/drop temporary databases; tests never use application data. The existing CI `check:ci` task runs these and records the tested revision in `evidence/sha.txt`, logs in `evidence/check.log`, and the `evidence-<head-sha>` artifact. The PR links its actual current-revision run; this ledger is a map to tests, not a replacement for that artifact.
+Run `bun run --filter @durable-actors/core test` for declaration, identity, and the PGlite suite; run `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/core test:integration` and `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/counter test:integration` for Postgres and crash coverage. The role must create/drop temporary databases; tests never use application data. The existing CI `check:ci` task runs these and records the tested revision in `evidence/sha.txt`, logs in `evidence/check.log`, and the `evidence-<head-sha>` artifact. The PR links its actual current-revision run; this ledger is a map to tests, not a replacement for that artifact.
 
 This completes M0 evidence plus M1.1–M1.3 (placement and `routing_key`, queries, and state migrations), M1.4 owned tables, M1.5 events (invariant E1 on one runner; the multi-runner feed case waits for M2), M1.6 outbox, intents, and timers on one runner, and M1.8 server reducers, not full backend certification. Unimplemented gates below remain required for their later milestones, including the remaining [M1](../milestones/M1.md) members, multi-process runner ownership, singleton failover/run/cron, cleanup/restore, bounded drain, and provider behavior.
 

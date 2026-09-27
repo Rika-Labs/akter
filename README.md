@@ -8,7 +8,7 @@ _An Effect-native actor framework with durable identity, transactional turns, an
 
 </div>
 
-**M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The package remains private. Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
+**M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
 
 Run the example against a **disposable Postgres database**; startup creates the framework tables:
 
@@ -18,13 +18,31 @@ DATABASE_URL=postgres://user:password@localhost:5432/counter bun run --filter @d
 
 Each run commits one increment and retries the same command Effect. `committed` and `replayed` match; restarting the program increments the persisted counter once more. [Runtime wiring](examples/counter/src/main.ts) uses explicit application authorization, not an HTTP authentication endpoint.
 
+## Install
+
+> **Alpha, single runner.** `0.1.0-alpha.0` is the first alpha release candidate; follow [the release procedure](docs/operations/05-releasing.md) for its publication status. Run one runtime process per database: multi-runner operation is not supported yet. APIs and stored formats may change between alphas without a migration path, so don't point it at data you need to keep.
+
+The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests). Effect, Drizzle and the Effect SQL drivers are peer dependencies pinned to the exact release candidates the framework is tested against, so install those versions beside it:
+
+```sh
+bun add @durable-actors/core@alpha effect@4.0.0-rc.116 @effect/sql-pg@4.0.0-rc.116 @effect/sql-pglite@4.0.0-rc.116 drizzle-orm@1.0.0-rc.5-5935859
+```
+
+```ts
+import { Actor } from "@durable-actors/core"
+import { Actors, Database } from "@durable-actors/core/runtime"
+import { ActorTest } from "@durable-actors/core/testing"
+```
+
+Changes are listed in the [changelog](packages/durable-actors/CHANGELOG.md). The code is licensed under [Apache-2.0](LICENSE).
+
 ## The API
 
-Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables. There is one way to do each task. The shape below follows [ADR 0010](docs/decisions/0010-one-way-effect-native-api.md). The reducer is target design; the command, state, policy, and `X.Turn` parts run today (see the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and the runnable [counter](examples/counter/src/counter/contract.ts)).
+Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables. There is one way to do each task. The shape below follows [ADR 0010](docs/decisions/0010-one-way-effect-native-api.md). The command, reducer, state, policy, and `X.Turn` parts run today (see the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and the runnable [counter](examples/counter/src/counter/contract.ts)).
 
 ```ts
 import { Effect, Result, Schema } from "effect"
-import { Actor } from "durable-actors"
+import { Actor } from "@durable-actors/core"
 
 export const CounterState = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -62,7 +80,7 @@ const program = Effect.gen(function* () {
 
 Omit `key` for a framework-minted ID and `Counter.create()`. Use an ID schema for `Counter.get(id)`, or `key: Actor.singleton` for `Counter.get()`. Outside a turn every call is request/reply; inside a turn, `Counter.intents(id)` records durable intents that commit with the turn. Acquiring a handle writes nothing; the first command establishes durable state.
 
-In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `durable-actors/runtime`. See the [server API](docs/api/01-server-api.md) for the full design.
+In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `@durable-actors/core/runtime`. See the [server API](docs/api/01-server-api.md) for the full design.
 
 ## Why Effect for actors?
 
@@ -118,12 +136,12 @@ The command/receipt recovery subset has completed fault tests; hibernation, prov
 
 ## One package, four entries
 
-| Entry                    | Responsibility                                                                         |
-| ------------------------ | -------------------------------------------------------------------------------------- |
-| `durable-actors`         | Actor contracts, members, policies, identity, errors, handles, and served composition. |
-| `durable-actors/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.     |
-| `durable-actors/client`  | A browser-safe Promise client derived from the same contracts, not a second runtime.   |
-| `durable-actors/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                      |
+| Entry                          | Responsibility                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `@durable-actors/core`         | Actor contracts, members, policies, identity, errors, and handles; served composition is planned. |
+| `@durable-actors/core/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.                |
+| `@durable-actors/core/client`  | The planned browser-safe Promise client (M3.4); a placeholder in the alpha.                       |
+| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                                 |
 
 The same design targets **embedded** use inside an Effect application, **served** use through `Actor.serve`, and **hosted** operation behind managed ingress. Only the embedded Postgres foundation subset is implemented. Serving is optional; embedded callers do not need an HTTP hop.
 
