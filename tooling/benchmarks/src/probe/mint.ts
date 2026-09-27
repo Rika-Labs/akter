@@ -1,4 +1,4 @@
-import { Actor, Intent } from "durable-actors"
+import { Actor, Intent } from "@durable-actors/core"
 import { DateTime, Deferred, Effect, Layer, Schema } from "effect"
 
 export const Open = Actor.command("Open", { input: Schema.String })
