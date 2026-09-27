@@ -21,8 +21,8 @@ describe("effect dead-letter process death with Postgres", () => {
   // letter is recorded and the row is already the route's intent.
   for (const [point, letters, row] of [
     ["beforeDeadLetterCommit", null, ["effect", "Charge", 1]],
-    ["beforeDelivery", [[1, false, true]], ["intent", "ChargeFailed", 0]],
-    ["beforeCommit", [[1, false, true]], ["intent", "ChargeFailed", 0]],
+    ["beforeDelivery", [[1, false, true]], ["intent", "ChargeFailed", 1]],
+    ["beforeCommit", [[1, false, true]], ["intent", "ChargeFailed", 1]],
   ] as const) {
     it(
       `recovers a SIGKILL ${point} of an exhausted effect with one dead letter and one route`,

@@ -4,6 +4,7 @@ import {
   Cause,
   Context,
   DateTime,
+  Duration,
   Effect,
   Exit,
   Fiber,
@@ -273,7 +274,42 @@ const MAX_EMIT_BYTES = 1_048_576
 const DEFAULT_EFFECT_RETRIES = 3
 
 /** An attempt that runs longer is abandoned and counts as an unknown outcome. */
-const EXECUTOR_TIMEOUT = "30 seconds"
+const EXECUTOR_TIMEOUT_MS = 30_000
+
+const EFFECT_BACKOFF = { baseMs: 1000, maxMs: 256_000 } as const
+
+/** Effect timings are timer durations: 1 ms to 2^31 − 1 ms. */
+const effectMillis = (path: string, duration: Duration.Input) => {
+  const millis = Duration.toMillis(Duration.fromInputUnsafe(duration))
+
+  if (!Number.isFinite(millis) || millis < 1 || millis > 2_147_483_647)
+    throw new Error(`${path} must be a duration from 1 millisecond to 2147483647 milliseconds`)
+
+  return Math.floor(millis)
+}
+
+const effectTiming = (tag: string, policy: EffectPolicy<AnyEffect, AnyCommand> | undefined) => {
+  const backoff = policy?.retry?.backoff
+
+  const timing = {
+    timeoutMs:
+      policy?.timeout === undefined
+        ? EXECUTOR_TIMEOUT_MS
+        : effectMillis(`policy.effects.${tag}.timeout`, policy.timeout),
+    backoff:
+      backoff === undefined
+        ? EFFECT_BACKOFF
+        : {
+            baseMs: effectMillis(`policy.effects.${tag}.retry.backoff.base`, backoff.base),
+            maxMs: effectMillis(`policy.effects.${tag}.retry.backoff.max`, backoff.max),
+          },
+  } satisfies { readonly timeoutMs: number; readonly backoff: RegisteredEffect["backoff"] }
+
+  if (timing.backoff.maxMs < timing.backoff.baseMs)
+    throw new Error(`policy.effects.${tag}.retry.backoff.max must be at least its base`)
+
+  return timing
+}
 
 /** `api` and `internal` keys must equal their member's tag. */
 type TagsMatch<Members extends MemberRecord> = {
@@ -382,6 +418,8 @@ const make = <
   const effectPolicies: Readonly<Record<string, EffectPolicy<AnyEffect, AnyCommand> | undefined>> =
     definition.policy?.effects ?? {}
 
+  const effectTimings = new Map<string, ReturnType<typeof effectTiming>>()
+
   for (const [tag, effectPolicy] of Object.entries(effectPolicies)) {
     if (!effects.has(tag)) throw new Error(`policy.effects.${tag} names no declared effect`)
 
@@ -393,6 +431,8 @@ const make = <
 
     if (times !== undefined && (!Number.isInteger(times) || times < 0 || times > 100))
       throw new Error(`policy.effects.${tag}.retry.times must be an integer from 0 to 100`)
+
+    effectTimings.set(tag, effectTiming(tag, effectPolicy))
   }
 
   if ("set" in fields) throw new Error("State key 'set' is reserved")
@@ -1157,8 +1197,12 @@ const make = <
         const onDeadLetter =
           routes?.onDeadLetter === undefined ? undefined : routeCodec(routes.onDeadLetter)
 
+        const { timeoutMs, backoff } =
+          effectTimings.get(declared.tag) ?? effectTiming(declared.tag, undefined)
+
         registered.set(declared.tag, {
           attempts: 1 + (routes?.retry?.times ?? DEFAULT_EFFECT_RETRIES),
+          backoff,
           execute: Effect.fnUntraced(function* (payload, context) {
             const effect = yield* decode(payload).pipe(
               Effect.mapError((error) => ({ cause: String(error), ambiguous: false })),
@@ -1166,8 +1210,8 @@ const make = <
 
             const exit = yield* execute(effect).pipe(
               Effect.timeoutOrElse({
-                duration: EXECUTOR_TIMEOUT,
-                orElse: () => Effect.die(new Error(`Executor timed out after ${EXECUTOR_TIMEOUT}`)),
+                duration: timeoutMs,
+                orElse: () => Effect.die(new Error(`Executor timed out after ${timeoutMs} ms`)),
               }),
               Effect.provideService(Executor, context),
               Effect.provideService(Tenant, context.ref.tenant),

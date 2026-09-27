@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actors } from "@durable-actors/core/runtime"
-import { CleanupHooks, TurnHooks } from "@durable-actors/core/testing"
+import { ActorCluster, ActorTest, CleanupHooks, TurnHooks } from "@durable-actors/core/testing"
 import { Effect, Layer } from "effect"
 import type { SqlClient } from "effect/unstable/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"
@@ -72,6 +72,12 @@ export interface ScenarioContext {
   readonly backend: Backend
   readonly profile: Profile
   /**
+   * Runners sharing the case database. Above 1, `withRuntime` starts an
+   * `ActorTest.cluster` on Postgres and runs `body` through runner 0; every
+   * runner's relay and executors take due work.
+   */
+  readonly runners: number
+  /**
    * Runs `body` against a fresh database and a fresh actor runtime, so no
    * case inherits another's activations, caches, or rows.
    */
@@ -84,19 +90,50 @@ export interface ScenarioContext {
 export interface Scenario {
   readonly name: string
   readonly description: string
+  /** Whether `--runners` above 1 applies; other scenarios run once, on one runner. */
+  readonly multiRunner?: boolean
   readonly run: (context: ScenarioContext) => Effect.Effect<ReadonlyArray<CaseResult>>
 }
 
 export const DEFAULT_POOL = 10
 
+// Well past a case's length, so no runner's shard locks expire while it runs.
+const SHARD_LOCK_EXPIRATION = "30 seconds"
+
 export const withRuntime =
-  (backend: Backend): ScenarioContext["withRuntime"] =>
+  ({
+    backend,
+    runners,
+  }: {
+    readonly backend: Backend
+    readonly runners: number
+  }): ScenarioContext["withRuntime"] =>
   (options, body) =>
     Effect.scoped(
       Effect.gen(function* () {
         const database = yield* backend.database({
           maxConnections: options.maxConnections ?? DEFAULT_POOL,
         })
+
+        if (runners > 1) {
+          if (database.url === undefined)
+            return yield* Effect.die(new Error("--runners above 1 needs the postgres backend"))
+
+          const cluster = yield* Layer.build(
+            ActorTest.cluster({
+              database: database.url,
+              runners,
+              shardLockExpiration: SHARD_LOCK_EXPIRATION,
+              actors: ProbeLive,
+              authorize: () => Effect.succeed(true),
+              maxResidentActors: options.maxResidentActors,
+            }).pipe(Layer.provide([BunCrypto.layer, hooks])),
+          ).pipe(Effect.orDie)
+
+          return yield* ActorCluster.use((actors) => actors.on(0)(body(database.instruments))).pipe(
+            Effect.provideContext(cluster),
+          )
+        }
 
         const services = yield* Layer.build(
           runtimeLayer(options.maxResidentActors).pipe(Layer.provideMerge(database.layer)),

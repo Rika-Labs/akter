@@ -91,6 +91,8 @@ export interface EffectFailure {
 export interface RegisteredEffect {
   /** Total attempts before the effect is dead-lettered. */
   readonly attempts: number
+  /** The wait after failed attempt `n` is `min(baseMs × 2^(n − 1), maxMs)`. */
+  readonly backoff: { readonly baseMs: number; readonly maxMs: number }
   /** Runs one attempt; succeeds with the `onSuccess` route, if declared. */
   readonly execute: (
     payload: string,
@@ -160,6 +162,8 @@ export class InternalActors extends Context.Service<
     readonly drainOutbox: Effect.Effect<void>
     /** Runs one retention sweep now; used by `ActorTest.cleanup`. */
     readonly cleanup: Effect.Effect<Swept>
+    /** Moves the leases of this runner's running effect attempts forward; used by `ActorTest.advance`. */
+    readonly extendOutboxLeases: (millis: number) => Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
