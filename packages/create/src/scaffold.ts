@@ -1,3 +1,4 @@
+import { parseArgs } from "node:util"
 import { Effect, FileSystem, Path, Schema } from "effect"
 
 export const templates = ["counter", "chat"] as const
@@ -33,6 +34,44 @@ export class TargetNotEmpty extends Schema.TaggedError<TargetNotEmpty>()("Target
     return `${this.directory} already exists and is not empty`
   }
 }
+
+export const usage = `Usage: bun create @durable-actors [directory] [--template ${templates.join("|")}]`
+
+export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
+  reason: Schema.String,
+}) {
+  override get message() {
+    return `${this.reason}\n${usage}`
+  }
+}
+
+/** Reads `[directory] [--template name] [--help]`, rejecting unknown options and extra arguments. */
+export const parseArguments = Effect.fn("parseArguments")(function* (args: ReadonlyArray<string>) {
+  const { values, positionals } = yield* Effect.try({
+    try: () =>
+      parseArgs({
+        args: [...args],
+        options: { template: { type: "string" }, help: { type: "boolean" } },
+        allowPositionals: true,
+        strict: true,
+      }),
+    catch: (cause) =>
+      UsageError.make({ reason: cause instanceof Error ? cause.message : String(cause) }),
+  })
+
+  if (positionals.length > 1)
+    return yield* UsageError.make({ reason: `Unexpected argument ${positionals[1]}` })
+
+  if (values.help === true) return { help: true } as const
+
+  const requested = values.template ?? "counter"
+
+  const template = yield* Schema.decodeUnknownEffect(Template)(requested).pipe(
+    Effect.mapError(() => UnknownTemplate.make({ template: requested })),
+  )
+
+  return { help: false, template, directory: positionals[0] ?? "durable-actors-app" } as const
+})
 
 const runtimeDependencies = [
   "@durable-actors/core",

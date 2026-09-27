@@ -3,7 +3,17 @@ import { Effect, FileSystem, ManagedRuntime, Path, Schema, Scope } from "effect"
 import { afterAll, expect, it } from "vitest"
 import rootManifest from "../../../package.json" with { type: "json" }
 import coreManifest from "../../durable-actors/package.json" with { type: "json" }
-import { manifest, packageName, scaffold, TargetNotEmpty, templates, versions } from "./scaffold.ts"
+import {
+  manifest,
+  packageName,
+  parseArguments,
+  scaffold,
+  TargetNotEmpty,
+  templates,
+  UnknownTemplate,
+  UsageError,
+  versions,
+} from "./scaffold.ts"
 
 const runtime = ManagedRuntime.make(BunServices.layer)
 
@@ -37,6 +47,33 @@ it("derives an installable package name from the directory", () => {
   expect(packageName(".hidden")).toBe("hidden")
   expect(packageName("???")).toBe("durable-actors-app")
 })
+
+it("reads the directory and template in either order and rejects anything else", () =>
+  run(
+    Effect.gen(function* () {
+      expect(yield* parseArguments([])).toEqual({
+        help: false,
+        template: "counter",
+        directory: "durable-actors-app",
+      })
+      expect(yield* parseArguments(["--template", "chat", "app"])).toEqual({
+        help: false,
+        template: "chat",
+        directory: "app",
+      })
+      expect(yield* parseArguments(["app", "--template=chat"])).toMatchObject({ template: "chat" })
+      expect(yield* parseArguments(["--help"])).toEqual({ help: true })
+
+      expect(yield* parseArguments(["app", "--templat", "chat"]).pipe(Effect.flip)).toBeInstanceOf(
+        UsageError,
+      )
+      expect(yield* parseArguments(["app", "extra"]).pipe(Effect.flip)).toBeInstanceOf(UsageError)
+      expect(yield* parseArguments(["--template"]).pipe(Effect.flip)).toBeInstanceOf(UsageError)
+      expect(yield* parseArguments(["--template", "todo"]).pipe(Effect.flip)).toBeInstanceOf(
+        UnknownTemplate,
+      )
+    }),
+  ))
 
 it.each(templates)("scaffolds the %s template into a fresh directory", (template) =>
   run(

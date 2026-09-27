@@ -6,10 +6,6 @@ export const RoomCommands = Room.toLayer(
   Effect.succeed({
     Post: Effect.fnUntraced(function* ({ body }) {
       const turn = yield* Room.Turn
-
-      // A declared failure rolls back everything the turn wrote.
-      if (turn.state.closed) return yield* RoomClosed.make({})
-
       const id = turn.commandId
 
       const author = Option.match(turn.principal, {
@@ -24,6 +20,9 @@ export const RoomCommands = Room.toLayer(
         sentAt: DateTime.toDate(yield* DateTime.now),
       })
       yield* turn.emit(MessagePosted.make({ id, author, body }))
+
+      // A declared failure rolls back the row and event written above.
+      if (turn.state.closed) return yield* RoomClosed.make({})
 
       return id
     }),
