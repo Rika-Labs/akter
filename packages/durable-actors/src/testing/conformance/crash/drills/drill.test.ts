@@ -1,6 +1,16 @@
 import { createServer } from "node:net"
 import { BunServices } from "@effect/platform-bun"
-import { Config, Console, Crypto, type Duration, Effect, ManagedRuntime, Stream } from "effect"
+import {
+  Clock,
+  Config,
+  Console,
+  Crypto,
+  type Duration,
+  Effect,
+  ManagedRuntime,
+  Schema,
+  Stream,
+} from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
@@ -10,19 +20,23 @@ const OPERATIONS = 120
 
 const REPLACEMENT_OPERATIONS = 60
 
-const freePort = Effect.promise(
-  () =>
-    new Promise<number>((resolve, reject) => {
-      const server = createServer()
-      server.once("error", reject)
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address()
-        server.close(() =>
-          resolve(typeof address === "object" && address !== null ? address.port : 0),
-        )
-      })
-    }),
-)
+const isBound = Schema.is(Schema.Struct({ port: Schema.Int }))
+
+/** A port the OS just handed out, so each runner process can listen on its own. */
+const freePort = Effect.callback<number>((resume) => {
+  const server = createServer()
+  server.once("error", (error) => resume(Effect.die(error)))
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address()
+    server.close(() =>
+      resume(
+        isBound(address)
+          ? Effect.succeed(address.port)
+          : Effect.die(new Error("the probe socket has no port")),
+      ),
+    )
+  })
+})
 
 interface Done {
   readonly index: number
@@ -102,8 +116,11 @@ describe("runner and relay process death with Postgres", () => {
                   const [tag, index, started, latency, incrementId, sendId] = line.split(" ")
 
                   if (tag === "READY") process.ready = true
+
                   if (tag === "CLAIMED") process.claimed = true
+
                   if (tag === "FINISHED") process.finished = true
+
                   if (tag === "DONE")
                     process.done.push({
                       index: Number(index),
@@ -148,7 +165,7 @@ describe("runner and relay process death with Postgres", () => {
           )
 
           yield* until(() => second.process.done.length >= 30, "r1 under load", "60 seconds")
-          const killedAt = Date.now()
+          const killedAt = yield* Clock.currentTimeMillis
           yield* killed(second.child)
           yield* until(() => third.process.claimed, "r2's relay claim", "60 seconds")
           yield* killed(third.child)
@@ -166,9 +183,11 @@ describe("runner and relay process death with Postgres", () => {
             query<{ count: number }>("SELECT count(*)::int AS count FROM actor_outbox").pipe(
               Effect.map((rows) => rows[0]!.count),
             )
+
           const drained = Effect.gen(function* () {
             while ((yield* outbox()) > 0) yield* Effect.sleep("100 millis")
           })
+
           yield* drained.pipe(
             Effect.timeoutOrElse({
               duration: "60 seconds",
@@ -179,7 +198,9 @@ describe("runner and relay process death with Postgres", () => {
           const receipts = yield* query<{ command: string; command_id: string }>(
             "SELECT command, command_id FROM actor_receipts WHERE command IN ('Increment', 'Send', 'Add')",
           )
+
           const ids = new Set(receipts.map((receipt) => receipt.command_id))
+
           const total = (actorType: string) =>
             query<{ value: Uint8Array }>(
               `SELECT value FROM actor_state WHERE actor_type = '${actorType}' AND key = 'count'`,
@@ -188,6 +209,7 @@ describe("runner and relay process death with Postgres", () => {
                 rows.reduce((sum, row) => sum + Number(decompress(row.value)), 0),
               ),
             )
+
           const of = (command: string) =>
             receipts.filter((receipt) => receipt.command === command).length
 
@@ -195,6 +217,7 @@ describe("runner and relay process death with Postgres", () => {
           const lost = [first, second, third, fourth, fifth].flatMap(({ process }) =>
             process.done.flatMap(({ ids: minted }) => minted.filter((id) => !ids.has(id))),
           )
+
           expect(lost).toEqual([])
           expect(survivors.map(({ process }) => process.done.length)).toEqual([
             OPERATIONS,
@@ -212,12 +235,14 @@ describe("runner and relay process death with Postgres", () => {
               .filter(({ started }) => started >= killedAt)
               .map(({ started, latency }) => started + latency - killedAt),
           )
+
           const worst = Math.max(
             ...survivors.flatMap(({ process }) => process.done.map(({ latency }) => latency)),
           )
           // Tagged so a drill run's recovery can be read from the test output.
+
           yield* Console.error(
-            `DRILL ${JSON.stringify({ increments: of("Increment"), sends: of("Send"), adds: of("Add"), lost: lost.length, recoveryMs: recovery, worstCommandMs: worst })}`,
+            `DRILL increments=${of("Increment")} sends=${of("Send")} adds=${of("Add")} lost=${lost.length} recoveryMs=${recovery} worstCommandMs=${worst}`,
           )
         }).pipe(Effect.scoped, Effect.timeout("5 minutes")),
       ),

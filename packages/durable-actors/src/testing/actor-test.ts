@@ -42,7 +42,7 @@ import {
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
 import { type ClusterOptions, clusterLayer } from "./cluster.ts"
-import { simulate } from "./simulate.ts"
+import { type Simulation, type SimulationOptions, simulate } from "./simulate.ts"
 
 /**
  * Present while `ActorTest.cluster` builds one of its runners: the runner
@@ -194,7 +194,13 @@ export class ActorTest extends Context.Service<
    * from `seed`, then checks exactly-once receipts and outbox delivery; a
    * failure dies with the seed that reproduces it.
    */
-  static readonly simulate = simulate
+  static readonly simulate = <E, R>(
+    options: SimulationOptions,
+    program: (simulation: Simulation) => Effect.Effect<void, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      return yield* simulate(yield* ActorTest)(options, program)
+    })
 
   static readonly layer = (options: TestOptions) =>
     Layer.unwrap(

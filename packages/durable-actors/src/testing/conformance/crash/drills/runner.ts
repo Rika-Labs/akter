@@ -1,6 +1,6 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
+import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
 import { RunnerAddress, RunnerServer } from "effect/unstable/cluster"
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc"
 import { Actor, Actors as ActorClient } from "../../../../index.ts"
@@ -116,7 +116,7 @@ const program = Effect.gen(function* () {
   yield* Console.log("READY")
 
   for (let index = 0; index < operations; index++) {
-    const started = Date.now()
+    const started = yield* Clock.currentTimeMillis
     const incrementId = yield* actors.mintCommandId
     const sendId = yield* actors.mintCommandId
     const counter = yield* Counter.get(`counter-${index % 48}`)
@@ -138,11 +138,13 @@ const program = Effect.gen(function* () {
         Effect.orDie,
       )
 
-    yield* Console.log(`DONE ${index} ${started} ${Date.now() - started} ${incrementId} ${sendId}`)
+    const latency = (yield* Clock.currentTimeMillis) - started
+    yield* Console.log(`DONE ${index} ${started} ${latency} ${incrementId} ${sendId}`)
   }
 
   yield* Console.log("FINISHED")
-  yield* Effect.never
+
+  return yield* Effect.never
 })
 
 Layer.effectDiscard(program).pipe(
