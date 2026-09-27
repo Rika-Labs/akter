@@ -347,8 +347,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
       // A loss during a resync starts it again from the same cursor, keeping the frames it deferred.
       const previous = connection.resync
+
       const after =
         previous?.after ?? (fromStart || actor.through === "0" ? undefined : actor.through)
+
       connection.resync = {
         after,
         replayed: false,
