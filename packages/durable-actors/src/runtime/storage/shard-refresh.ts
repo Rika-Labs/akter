@@ -10,7 +10,7 @@ type Storage = RunnerStorage.RunnerStorage["Service"]
  * verifies them against the database.
  */
 export const reportShardsAcquiredDuringRefresh = (storage: Storage): Storage => {
-  const inFlight = new Set<Array<ShardId.ShardId>>()
+  const inFlight = new Map<string, Set<Array<ShardId.ShardId>>>()
 
   return {
     ...storage,
@@ -18,7 +18,7 @@ export const reportShardsAcquiredDuringRefresh = (storage: Storage): Storage => 
       storage.acquire(address, shardIds).pipe(
         Effect.tap((acquired) =>
           Effect.sync(() => {
-            for (const seen of inFlight) seen.push(...acquired)
+            for (const seen of inFlight.get(String(address)) ?? []) seen.push(...acquired)
           }),
         ),
       ),
@@ -26,11 +26,14 @@ export const reportShardsAcquiredDuringRefresh = (storage: Storage): Storage => 
       Effect.acquireUseRelease(
         Effect.sync(() => {
           const seen: Array<ShardId.ShardId> = []
-          inFlight.add(seen)
+          const key = String(address)
+          const refreshes = inFlight.get(key) ?? new Set<Array<ShardId.ShardId>>()
+          refreshes.add(seen)
+          inFlight.set(key, refreshes)
 
-          return seen
+          return { key, seen }
         }),
-        (seen) =>
+        ({ seen }) =>
           storage
             .refresh(address, shardIds)
             .pipe(
@@ -41,7 +44,13 @@ export const reportShardsAcquiredDuringRefresh = (storage: Storage): Storage => 
                 ),
               ]),
             ),
-        (seen) => Effect.sync(() => inFlight.delete(seen)),
+        ({ key, seen }) =>
+          Effect.sync(() => {
+            const refreshes = inFlight.get(key)
+            refreshes?.delete(seen)
+
+            if (refreshes?.size === 0) inFlight.delete(key)
+          }),
       ),
   }
 }

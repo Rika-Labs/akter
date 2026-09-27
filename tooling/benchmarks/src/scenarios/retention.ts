@@ -87,12 +87,15 @@ export const retention: Scenario = {
                 ),
             })
 
+            const rowsPerSecond = perSecond(swept.receipts + swept.events, result.elapsedMs)
+
             return {
               ...result,
+              throughput: rowsPerSecond,
               extra: {
                 receiptsSwept: swept.receipts,
                 eventsSwept: swept.events,
-                rowsPerSecond: perSecond(swept.receipts + swept.events, result.elapsedMs),
+                rowsPerSecond,
               },
             }
           }),

@@ -476,7 +476,9 @@ export const layer = (options: Options) => {
               Effect.timeoutOrElse({
                 duration: registration.timeoutMs,
                 orElse: () =>
-                  Effect.fail(ActorError.make({ reason: Timeout.make({ commandId: "" }) })),
+                  Effect.fail(
+                    ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
+                  ),
               }),
             )
 
