@@ -33,6 +33,7 @@ import { singletonFailover } from "./scenarios/singleton-failover.ts"
 import { retainedHeap } from "./scenarios/scale/retained-heap.ts"
 import { stateSize } from "./scenarios/state-size.ts"
 import { subscriptions } from "./scenarios/subscriptions.ts"
+import { workflowCheck } from "./scenarios/workflow-check.ts"
 import { workflows } from "./scenarios/workflows.ts"
 import { mint } from "./scenarios/mint.ts"
 
@@ -59,6 +60,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   http,
   subscriptions,
   workflows,
+  workflowCheck,
   mint,
 ]
 
