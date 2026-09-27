@@ -16,7 +16,7 @@ import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { progressPool } from "../effects/progress.ts"
-import { CRON_PREFIX } from "../cron/key.ts"
+import { CRON_CALLER, CRON_PREFIX } from "../cron/key.ts"
 import { type CronSchedule, cronTicks } from "../cron/schedule.ts"
 import { TurnHooks } from "./hooks.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
@@ -167,7 +167,7 @@ export const claimDue = ({
           now,
           probe,
           sql`AND (timer_key IS NULL OR left(timer_key, 6) <> ${CRON_PREFIX}
-            OR caller NOT LIKE '%"source":"cron"%'${local})`,
+            OR strpos(caller, ${CRON_CALLER}) = 0${local})`,
         )}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
@@ -400,7 +400,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       })
 
     return yield* Effect.gen(function* () {
-      const tick = yield* ticks.isTick(row)
+      const tick = ticks.isTick(row)
       const route = tick ? yield* ticks.settleUnfired(row, claim, backoffMs(row.attempts)) : row
 
       if (route === undefined) return

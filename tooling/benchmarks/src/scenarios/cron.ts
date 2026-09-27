@@ -123,7 +123,7 @@ export const cron: Scenario = {
                   )
 
                 const from = cronFires.length
-                yield* Effect.sleep(Math.max(0, scheduled - (yield* databaseNow)))
+                let waitedMs = 0
 
                 const result = yield* measure({
                   name: `tick-${actors}`,
@@ -131,7 +131,13 @@ export const cron: Scenario = {
                   instruments,
                   workers: 1,
                   operations: 1,
-                  operation: () => drained(from, scheduled, actors),
+                  operation: () =>
+                    Effect.gen(function* () {
+                      // Sampling spans the wait so early claims count; the drain time excludes it.
+                      waitedMs = Math.max(0, scheduled - (yield* databaseNow))
+                      yield* Effect.sleep(waitedMs)
+                      yield* drained(from, scheduled, actors)
+                    }),
                   listStatements: true,
                 })
 
@@ -143,6 +149,7 @@ export const cron: Scenario = {
 
                 return {
                   ...result,
+                  elapsedMs: result.elapsedMs - waitedMs,
                   p99: summarize(fires).p99,
                   createMs,
                   extra: {

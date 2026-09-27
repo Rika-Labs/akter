@@ -2,7 +2,7 @@ import { Crypto, Cron, Effect, Result, Schema, SchemaAST } from "effect"
 import { SqlClient, type Statement } from "effect/unstable/sql"
 import { type ActorRef, System } from "../../identity/caller.ts"
 import type { AnyCommand } from "../../members/command.ts"
-import { CRON_PREFIX } from "./key.ts"
+import { CRON_CALLER, CRON_PREFIX } from "./key.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { bucketOf, CallerJson, OutboxRuntime } from "../turn/outbox.ts"
 
@@ -213,14 +213,7 @@ export const cronTicks = ({
   return {
     /** A tick is a `$cron:` row the runtime wrote, which names a cron caller. */
     isTick: (row: ClaimedTick) =>
-      row.timer_key?.startsWith(CRON_PREFIX) === true
-        ? Schema.decodeEffect(CallerJson)(row.caller).pipe(
-            Effect.match({
-              onFailure: () => false,
-              onSuccess: (caller) => Schema.is(System)(caller) && caller.source === "cron",
-            }),
-          )
-        : Effect.succeed(false),
+      row.timer_key?.startsWith(CRON_PREFIX) === true && row.caller.includes(CRON_CALLER),
     /**
      * Settles a tick that must not fire and returns undefined, or returns the
      * command and payload the relay delivers on this claim.
