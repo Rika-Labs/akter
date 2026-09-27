@@ -1,0 +1,241 @@
+{
+  "schema": 2,
+  "label": "77-after-1",
+  "note": "#77 after: UNION ALL query read, round 1 of 3, alternating with 77-before",
+  "profile": "full",
+  "startedAt": "2026-09-27T15:40:40.791Z",
+  "finishedAt": "2026-09-27T15:41:04.533Z",
+  "git": {
+    "sha": "b020f574cc0964336a4b3e0a4f9c4bcfb6457432",
+    "shortSha": "b020f57",
+    "branch": "perf/77-read-path",
+    "mainBase": "0ba95fc3693b482602b776c47c3c34c07fc79afe",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "query-latency",
+      "description": "Query handler reads of committed state: sequential on one actor, then 64 concurrent callers over 1k actors.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 505,
+          "throughput": 5942.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 0.167,
+            "min": 0.087,
+            "p50": 0.111,
+            "p90": 0.215,
+            "p95": 0.566,
+            "p99": 0.922,
+            "max": 4.767
+          },
+          "statementsPerOperation": 1,
+          "statements": [
+            {
+              "query": "SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value FROM actor_generations WHERE routing_key = $1 AND tenant_id = $2 AND actor_type = $3 AND ",
+              "calls": 3000,
+              "meanMs": 0.005
+            }
+          ],
+          "activity": {
+            "samples": 20,
+            "connections": {
+              "idle:Client/ClientRead": 9.85,
+              "idle": 0.15
+            }
+          },
+          "cpu": {
+            "client": 158.1,
+            "server": 20.5,
+            "clientMsPerOperation": 0.266,
+            "serverMsPerOperation": 0.035
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64
+          },
+          "operations": 111917,
+          "elapsedMs": 10007,
+          "throughput": 11184,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 111917,
+            "mean": 5.719,
+            "min": 0.155,
+            "p50": 0.656,
+            "p90": 1.248,
+            "p95": 1.401,
+            "p99": 3.085,
+            "max": 10004.801
+          },
+          "statementsPerOperation": 1,
+          "statements": null,
+          "activity": {
+            "samples": 370,
+            "connections": {
+              "idle:Client/ClientRead": 9.66,
+              "idle": 0.16,
+              "active": 0.13,
+              "active:Client/ClientRead": 0.04
+            }
+          },
+          "cpu": {
+            "client": 114.9,
+            "server": 46.4,
+            "clientMsPerOperation": 0.103,
+            "serverMsPerOperation": 0.042
+          },
+          "extra": null
+        }
+      ]
+    },
+    {
+      "name": "receipt-replay",
+      "description": "Same-command-id retries of committed commands: sequential replay latency, then 64 concurrent replayers.",
+      "cases": [
+        {
+          "name": "sequential",
+          "parameters": {
+            "commands": 1000,
+            "actors": 100,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 426,
+          "throughput": 2348.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 0.425,
+            "min": 0.306,
+            "p50": 0.345,
+            "p90": 0.64,
+            "p95": 0.846,
+            "p99": 1.056,
+            "max": 3.822
+          },
+          "statementsPerOperation": 2,
+          "statements": [
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now, $1::jsonb::text AS canonical, r.caller_key, r.command, r.payload_hash, r.outcome FROM (",
+              "calls": 1000,
+              "meanMs": 0.181
+            },
+            {
+              "query": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now",
+              "calls": 1000,
+              "meanMs": 0.001
+            },
+            {
+              "query": "WITH intent_candidates AS ( SELECT o.routing_key, o.intent_id, o.actor_type, o.command FROM generate_series($1::int, $2::int) AS b(bucket) CROSS JOIN LATERAL ( ",
+              "calls": 1,
+              "meanMs": 0.475
+            }
+          ],
+          "activity": {
+            "samples": 17,
+            "connections": {
+              "idle:Client/ClientRead": 9.35,
+              "active": 0.53,
+              "idle": 0.12
+            }
+          },
+          "cpu": {
+            "client": 42.5,
+            "server": 56.9,
+            "clientMsPerOperation": 0.181,
+            "serverMsPerOperation": 0.243
+          },
+          "extra": null
+        },
+        {
+          "name": "concurrent-64",
+          "parameters": {
+            "commands": 1000,
+            "actors": 100,
+            "workers": 64
+          },
+          "operations": 105438,
+          "elapsedMs": 10021,
+          "throughput": 10521.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 105438,
+            "mean": 6.076,
+            "min": 0.345,
+            "p50": 0.751,
+            "p90": 1.152,
+            "p95": 1.354,
+            "p99": 3.359,
+            "max": 10019.438
+          },
+          "statementsPerOperation": 2,
+          "statements": null,
+          "activity": {
+            "samples": 388,
+            "connections": {
+              "idle:Client/ClientRead": 7.62,
+              "active": 1.9,
+              "idle": 0.29,
+              "active:Client/ClientRead": 0.18,
+              "active:IO/WalSync": 0
+            }
+          },
+          "cpu": {
+            "client": 111.1,
+            "server": 270.9,
+            "clientMsPerOperation": 0.106,
+            "serverMsPerOperation": 0.257
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}
