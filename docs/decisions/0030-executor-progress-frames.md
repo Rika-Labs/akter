@@ -48,10 +48,12 @@ export const MediaEffects = Media.toEffectLayer(
     return {
       Transcode: Effect.fn(function* ({ assetId, preset }) {
         const exec = yield* Media.Executor
-        return yield* encoder.run(assetId, preset, {
-          idempotencyKey: exec.effectId,
-          onProgress: (percent, stage) => exec.progress(Transcode, { percent, stage }),
-        })
+        const job = yield* encoder.start(assetId, preset, { idempotencyKey: exec.effectId })
+        yield* job.progress.pipe(
+          Stream.runForEach(({ percent, stage }) => exec.progress(Transcode, { percent, stage })),
+          Effect.forkChild,
+        )
+        return yield* job.result
       }),
     }
   }),
@@ -131,7 +133,7 @@ An actor with neither a connection member nor a stream member that lists `E` in 
 
    It has no retry, no acknowledgment, and no resend; a lost message is a lost frame. It never passes through the command mailbox or counts against `mailboxCapacity`, like every connection-entity message.
 
-3. **Final frame and close.** When the executor returns or fails, the pool closes the slot, sends its pending frame, if any, before it runs its settle statement, without waiting for delivery, and never sends another frame for that attempt. The settle is not delayed by progress. After the settle commits, the pool sends the owner one fire-and-forget `ProgressClosed(effectId, attempt)`. It matters for an effect whose settle deletes its row without a route turn (success with no `onSuccess`, exhaustion with no `onDeadLetter`), where no owner turn would otherwise close the effect.
+3. **Final frame and close.** When the executor returns or fails, the pool closes the slot, sends its pending frame, if any, before it runs its settle statement, without waiting for delivery, and never sends another frame for that attempt. The settle is not delayed by progress. After a **terminal** settle commits (success, a declared or exhausted failure, or a dead letter), the pool sends the owner one fire-and-forget `ProgressClosed(effectId, attempt)`. A retryable failure's settle keeps the row for the next attempt and sends nothing: the effect stays open, the failed attempt's slot is already closed, and the next attempt's frames carry a higher `attempt`. It matters for an effect whose settle deletes its row without a route turn (success with no `onSuccess`, exhaustion with no `onDeadLetter`), where no owner turn would otherwise close the effect.
 4. **Owner admission.** The owner activation accepts a `Progress` message only if all of these hold, and otherwise drops it and counts the reason:
    - its `ref` names this activation's actor, tenant included;
    - the effect tag is declared with `progress` and at least one opted-in member or open `read.progress` subscription wants it;
@@ -227,6 +229,7 @@ Cases run on real Postgres with the in-process multi-runner harness and `Transpo
 
 - `delivers progress from an executor on runner C to a connection parked at holder A for an actor owned by runner B` — the activation is parked when the first frame arrives and wakes on it.
 - `loses nothing durable when every progress message is dropped` — `test.dropProgress(() => true)`: the effect routes `onSuccess` once, receipts, state, events, and outbox rows equal a run without progress.
+- `keeps reporting across a retry` — attempt 1 reports and fails retryably; attempt 2's frames reach the client with `attempt = 2` from `seq` 1.
 - `drops delayed progress after a route-less settle` — an effect with no `onSuccess` settles and deletes its row; a delayed frame is dropped after `ProgressClosed`, and within 5 seconds when `ProgressClosed` is dropped.
 - `delivers performer progress after a cold wake` — two callers' connections on a parked actor; progress wakes it and reaches only the performer's connection.
 - `drops progress that arrives after the route commits` — frames delayed past the settle, on the same activation and after an owner move between settle and delivery: none reach the client after the route's broadcast.
