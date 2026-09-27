@@ -49,6 +49,7 @@ import {
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
+import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import {
   retentionConformance,
   retentionFixture,
@@ -338,6 +339,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...blobsConformance,
   ...retentionConformance,
   ...workflowsConformance,
+  ...workflowVersionsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>

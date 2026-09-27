@@ -56,7 +56,7 @@ import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
-import { recordManifests } from "./workflows/manifest.ts"
+import { acceptWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
 import { decodeResult } from "./workflows/engine.ts"
 import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
@@ -512,7 +512,21 @@ export const layer = (options: Options) => {
                 `Actor ${registration.name} keepWorkflows is shorter than the retry window`,
               ),
             )
-          yield* recordManifests(registration).pipe(Effect.provideContext(services), Effect.orDie)
+
+          const { incompatibilities } = yield* acceptWorkflows({
+            name: registration.name,
+            workflows: Array.from(registration.workflows.values(), ({ member }) => member),
+          }).pipe(Effect.provideContext(services), Effect.orDie)
+
+          if (incompatibilities.length > 0)
+            return yield* Effect.die(
+              new Error(
+                [
+                  `Actor ${registration.name} workflows are incompatible with open executions; deploy refused`,
+                  ...incompatibilities.map(formatIncompatibility),
+                ].join("\n"),
+              ),
+            )
 
           const isResident = yield* registerActor(registration).pipe(
             Effect.provideContext(services),

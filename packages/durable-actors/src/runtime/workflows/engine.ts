@@ -44,6 +44,7 @@ import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import type { ActivationCache } from "../turn/execute.ts"
+import { decodeStoredManifest, missingSteps } from "./compatibility.ts"
 import { manifestOf } from "./manifest.ts"
 
 /** A running activity re-arms its execution's timer this far ahead, so a lost runner's work resumes. */
@@ -354,6 +355,7 @@ interface ExecutionRow {
   readonly event_cursor: string
   readonly status: string
   readonly interrupt: boolean
+  readonly manifest_hash: string
 }
 
 const RecordedJson = Schema.fromJsonString(RecordedExit)
@@ -426,10 +428,38 @@ export const activationEngine = (options: {
 
     const now = databaseTime
 
+    // Whether this runner registers every step of a start manifest, by hash.
+    const startManifests = new Map<string, boolean>()
+
+    const coversStartManifest = (workflow: RegisteredWorkflow, hash: string) =>
+      Effect.gen(function* () {
+        if (hash === (yield* manifestOf(ref.actor, workflow.member)).hash) return true
+        const known = startManifests.get(hash)
+
+        if (known !== undefined) return known
+
+        const [row] = yield* sql<{ manifest: string }>`
+          SELECT manifest::text AS manifest FROM actor_workflow_manifests
+          WHERE actor_type = ${ref.actor} AND workflow = ${workflow.member.tag} AND manifest_hash = ${hash}`
+
+        // Pruned only once no open execution references it; the recorded steps still decide.
+        const covered =
+          row === undefined ||
+          missingSteps({
+            stored: yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie),
+            steps: workflow.steps,
+          }).length === 0
+
+        startManifests.set(hash, covered)
+
+        return covered
+      })
+
     const runOnce = (executionId: string) =>
       Effect.gen(function* () {
         const [execution] = yield* sql<ExecutionRow>`
-          SELECT workflow, workflow_key, payload, caller, event_cursor::text AS event_cursor, status, interrupt
+          SELECT workflow, workflow_key, payload, caller, event_cursor::text AS event_cursor, status, interrupt,
+            manifest_hash
           FROM actor_workflow_executions
           WHERE routing_key = ${routingKey} AND execution_id = ${executionId}`
 
@@ -475,10 +505,11 @@ export const activationEngine = (options: {
           else steps.set(row.step, row)
 
         // A runner without this workflow, whose markers exclude the
-        // execution's, or that lacks a recorded step, leaves it for a
-        // compatible runner.
+        // execution's, or that lacks a recorded step or a step of the start
+        // manifest, leaves it for a compatible runner.
         const compatible =
           workflow !== undefined &&
+          (yield* coversStartManifest(workflow, execution.manifest_hash)) &&
           Object.entries(workflow.member.versions).every(([name, range]) => {
             const value = markers.get(name) ?? 0
 
