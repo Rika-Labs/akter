@@ -231,3 +231,22 @@ it("keeps each room's messages to itself", () =>
       expect((yield* theirs.Recent({ limit: 10 })).map(({ body }) => body)).toEqual(["theirs"])
     }),
   ))
+
+it("retracts a message and settles its moderation call once", () =>
+  run(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const room = yield* Room.get(RoomId.make("r7"))
+      const id = yield* room.Post({ body: "oops" })
+      yield* room.Retract(id)
+
+      while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
+
+      // Deleted before its claim, reported cancelled mid-call, or already moderated: one fate.
+      const settled =
+        (yield* test.receiptsFor(room.ref, "Moderated")) +
+        (yield* test.receiptsFor(room.ref, "ModerationCancelled"))
+      expect(settled <= 1).toBe(true)
+      expect(yield* room.Recent({ limit: 10 })).toEqual([])
+    }),
+  ))

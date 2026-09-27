@@ -65,6 +65,9 @@ export const Post = Actor.command("Post", {
 
 export const Archive = Actor.command("Archive")
 
+/** Deletes the author's message and withdraws its moderation call if it has not settled. */
+export const Retract = Actor.command("Retract", { input: Schema.String })
+
 export const Recent = Actor.query("Recent", {
   input: Schema.Struct({ limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) }),
   output: Schema.Array(
@@ -100,6 +103,10 @@ export const ModerationFailed = Actor.command("ModerationFailed", {
   input: Actor.DeadLetter(ModerateMessage),
 })
 
+export const ModerationCancelled = Actor.command("ModerationCancelled", {
+  input: Actor.Cancelled(ModerateMessage),
+})
+
 export const Room = Actor.make("Room", {
   key: RoomId,
   state: RoomState,
@@ -107,16 +114,19 @@ export const Room = Actor.make("Room", {
   blobs: [Attachments],
   events: [MessagePosted, RoomArchived],
   effects: [ModerateMessage],
-  api: { Post, Archive, Recent, History, Attachment, React },
-  internal: { IdleCheck, Moderated, ModerationFailed },
+  api: { Post, Archive, Retract, Recent, History, Attachment, React },
+  internal: { IdleCheck, Moderated, ModerationFailed, ModerationCancelled },
   policy: {
     keepReceipts: "7 days",
     keepEvents: "30 days",
     effects: {
       ModerateMessage: {
         retry: { times: 5 },
+        // At most four calls per room in flight, across every runner.
+        concurrency: { perActor: 4 },
         onSuccess: Moderated,
         onDeadLetter: ModerationFailed,
+        onCancelled: ModerationCancelled,
       },
     },
   },

@@ -246,7 +246,7 @@ Postgres SIGKILL, in [`crash/delivery/effects.test.ts`](../../packages/durable-a
 
 The declaration test `types effects, executors, and routes against the executor's return type` is the compile-time part of the **Effect routes** check: an `onSuccess` command whose input does not accept the executor's return type, an `onDeadLetter` command whose input does not accept `Actor.DeadLetter(E)`, a route to another actor's command, a `policy.effects` key that is not a declared effect, an executor returning the wrong type, and performing an undeclared effect all fail to compile; `perform` is absent from `X.Read`. `rejects an executor that requires the SQL client` (in `runtime/effects/isolation.test.ts`) checks that an effect layer whose executors, or whose build Effect, require `SqlClient` does not compile.
 
-These cases cover a single runner. Executors on separate processes, effect cancellation, and per-actor concurrency caps are not implemented. [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md) (proposed) lists the cases M2.13 must add in `conformance/effect-control.ts`; they are required tests, not recorded results.
+These cases cover a single runner. Effect cancellation and per-actor caps are recorded under [Effect cancellation and caps (M2.13)](#effect-cancellation-and-caps-m213).
 
 `turn.mint` is not implemented. [ADR 0025](../decisions/0025-turn-mint.md) (proposed) lists the cases M2.15 must add in `conformance/mint.ts`, including fixed derivation vectors; they are required tests, not recorded results.
 
@@ -312,6 +312,44 @@ Postgres only (independent connections, on the harness):
 - `routes one result when the runner is killed after the provider succeeded` — row **Provider success / result acknowledgment lost** with a runner kill: attempt 1 succeeds and its runner is killed before recording it; attempt 2 on the survivor runs under the same effect id and one result routes.
 
 These cases are in-process runners on one Postgres; real process death stays with the SIGKILL cases and the T7 drills.
+
+### Effect cancellation and caps (M2.13)
+
+The cases live in [`conformance/effect-control.ts`](../../packages/durable-actors/src/testing/conformance/effect-control.ts) and are registered with `describeConformance`; they implement the proposed defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md), which is still proposed. The executor is a fake provider that records each attempt's runner, start and end time, and whether it was interrupted.
+
+**Executed 2026-09-27 (M2.13, branch `feat/67-effect-control` on `main` at `c01a20f`):** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, and disposable Postgres 18.6; see the PR for the test counts at its head.
+
+Shared (PGlite and Postgres):
+
+- `never runs a pending keyed effect cancelled by a later turn or in its own turn` — failure-matrix row **Effect cancelled before claim**: an effect performed with `after` and cancelled in a later turn, and one cancelled in its own turn, leave no row, no provider call, no route, and no dead letter after the delay.
+- `replaces a pending keyed effect performed again under its key` — the old effect never runs; the new one runs under a new effect id.
+- `reports Failed when cancelled while backing off after a typed failure, and never retries` — row **Lost-lease attempt, then a typed failure, then cancel**, typed half: `Failed`, `ambiguous: false`, one provider call.
+- `reports Unknown when cancelled while backing off after an attempt that may have applied` — an attempt that ended without an outcome, then a typed failure, then cancel: `Unknown` and `ambiguous: true`, never `Failed`.
+- `interrupts a running attempt its own runner cancels and reports Unknown, never Failed` — row **Effect cancelled while executing** on one runner: the local cancel interrupts the attempt at once; `onCancelled` runs once with `Unknown`; no attempt 2.
+- `dead-letters an ambiguous cancellation as ambiguous and drops a failed one without onCancelled` — the fallbacks: `Unknown` becomes an ambiguous dead letter; `Failed` is deleted with a warning.
+- `runs one capped attempt at a time per actor, in perform order, without holding other actors back` — `perActor: 1`: attempts never overlap, run in `(ready_at_ms, intent_id)` order while new effects arrive, each settle wakes the next row, and another actor's effect runs meanwhile.
+- `rejects effect keys, intent keys in the effect namespace, and caps out of range` — empty or oversized effect keys, `Intent.key("$effect:…")`, and `perActor` 0, 65, or 1.5.
+- `cancels nothing when the cancelling turn rolls back` — row **Cancelling turn rolls back**: a declared failure, a defect, and a `beforeCommit` crash after `cancelEffect`; the effect runs and routes `onSuccess` once.
+- `does nothing when cancelling an effect that already completed` — `onSuccess` is delivered once and the key is free for a new effect.
+- `replaces a running keyed effect: reports the old one and runs the new one under a new id`.
+- `rejects reserved intent keys and a captured cancelEffect` — `Intent.cancel("$effect:…")` dies, and a `cancelEffect` captured in one turn and run in another dies with `Effect capability escaped its turn`.
+
+Postgres only (independent connections, on the multi-runner harness):
+
+- `caps one actor's running attempts across three runners while other actors proceed` — `perActor: 2` over three polling runners: the provider's in-flight high-water mark for the actor is 2, every effect routes once, and another actor's effects are not delayed. Row **Two runners claim one capped actor at once**.
+- `keeps a killed runner's capped attempt counted until its lease ends, then retries it first` — row **Runner killed holding a capped effect slot**: no new attempt starts while the killed runner's lease lives; after it, the killed attempt runs again before the waiting row.
+- `frees a capped slot when an attempt loses its lease, interrupting it before the takeover starts`.
+- `reaches a running attempt on another runner within cancelCheck and reports Unknown` — the cancel commits on a runner that executes none of the effects; the attempt is interrupted within one `cancelCheck` and reported once as `Unknown`, `ambiguous: true`.
+- `routes a success that finishes before the cancellation is seen to onCancelled as Succeeded` — row **Effect result arrives after cancel**: `Succeeded` with the value, once.
+- `records a late success after its cancellation settled as ambiguous and routes it once` — a lease-lost attempt's success after the cancelled settle only marks an ambiguous dead letter.
+- `gives each effect exactly one fate when cancellation races its claim` — row **Cancel races the attempt claim**: each effect is either deleted with no provider call or claimed and reported once.
+- `settles a cancelled effect whose runner was killed as ambiguous without running it` — row **Runner killed while a cancelled attempt runs**: after the lease a survivor settles it as `Unknown` with one provider call in the ledger.
+
+Unit and migration cases: `applies 0015_effect_control to pending, backing-off, and running effect rows` (PGlite migration test; a live pre-0015 attempt is backfilled as `running`), `Actors.layer executor settings` (`cancelCheck` under 1 second rejected, lowered to `lease / 3`), and the declaration test that an `onCancelled` input must accept `Actor.Cancelled(E)`.
+
+Postgres SIGKILL, in [`crash/delivery/effect-control.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/delivery/effect-control.test.ts): `recovers a SIGKILL afterExecute on a cancelled effect and reports it once` — the provider is called, the process is killed before the result is recorded, the recovering process cancels the effect, and it is reported once as `Unknown` and ambiguous without a second provider call.
+
+Not covered: the 1,000-row hot-actor starvation case runs in the `effect-concurrency` benchmark rather than as a case, and the claim race runs 40 effects rather than 200 iterations; the uncapped claim `EXPLAIN` is unchanged by construction (the uncapped claim statement filters out capped executors only) and is checked by the Statements gate, not an `EXPLAIN` case. Neki is not run: advisory-lock support there is unverified, so caps stay gated.
 
 ### Property tests (T3)
 
