@@ -21,6 +21,7 @@ import { claimIntents } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import { mintedTitle, mintLayer, planLaterTask } from "./mint.ts"
 import { CLAIM_LEASE, ExplainOutput, planNodes } from "./outbox.ts"
 
 /** One executor attempt as the fake provider saw it; times are this process's clock. */
@@ -286,7 +287,7 @@ const withCluster = <A, E>(
           database,
           runners,
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
-          actors: relayLayer(fixture),
+          actors: Layer.merge(relayLayer(fixture), mintLayer),
           runnerActors: (runner) =>
             (settings.withoutExecutors ?? []).includes(runner)
               ? Layer.empty
@@ -541,6 +542,35 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           expect(fixture.taken.get("killed-before-delete")).toBe(1)
           expect(yield* receipts(2, "Take")).toBe(1)
           expect(yield* outboxRows(2)).toEqual([])
+        }),
+      ),
+  },
+  {
+    name: "creates a minted child once when the runner claiming its creating intent is killed",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        3,
+        { relay: NO_POLL },
+        Effect.gen(function* () {
+          const id = yield* on(1, planLaterTask("killed-mint")).pipe(Effect.orDie)
+          const pause = yield* faults(0, (test) => test.pauseNext("beforeDelivery"))
+          yield* advance(0, "1 hour").pipe(Effect.forkChild)
+          yield* pause.reached
+          yield* kill(0)
+
+          // The dead runner's claim holds the creating intent until its lease ends.
+          yield* advance(1, "1 hour")
+          yield* advance(2, "1 hour")
+          expect(yield* receipts(1, "Open")).toBe(0)
+
+          yield* advance(1, CLAIM_LEASE)
+          expect(yield* receipts(1, "Open")).toBe(1)
+          expect(yield* outboxRows(1)).toEqual([])
+          expect(yield* on(1, mintedTitle(id)).pipe(Effect.orDie)).toBe("later")
         }),
       ),
   },
