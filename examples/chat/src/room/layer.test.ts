@@ -6,8 +6,8 @@ import {
   CommandExpired,
   RetentionGap,
   User,
-} from "durable-actors"
-import { ActorTest } from "durable-actors/testing"
+} from "@durable-actors/core"
+import { ActorTest } from "@durable-actors/core/testing"
 import { Config, Crypto, Effect, Layer, ManagedRuntime, Option, Redacted, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Pool } from "pg"

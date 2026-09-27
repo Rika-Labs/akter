@@ -1,4 +1,4 @@
-import { Actor, RetentionGap, UnknownCursor } from "durable-actors"
+import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Effect, Result, Schema } from "effect"
 

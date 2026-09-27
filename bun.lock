@@ -77,9 +77,9 @@
     "examples/chat": {
       "name": "@durable-actors/chat",
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "drizzle-orm": "catalog:",
-        "@durable-actors/core": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
