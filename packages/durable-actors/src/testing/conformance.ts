@@ -48,6 +48,7 @@ import {
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
+import { singletonConformance } from "./conformance/singleton.ts"
 import {
   outboxConformance,
   outboxFixture,
@@ -293,6 +294,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...tablesConformance,
   ...effectsConformance,
   ...multiRunnerConformance,
+  ...singletonConformance,
   ...blobsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",

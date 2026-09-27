@@ -45,7 +45,7 @@ import type { ActorRef, Caller } from "../identity/caller.ts"
 import { migrate } from "./database/migrations.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
-import { commandEntity, registerActor } from "./entity/register.ts"
+import { commandEntity, encodeEntityId, registerActor } from "./entity/register.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
@@ -99,11 +99,6 @@ export class RunnerWiring extends Context.Service<
     ) => RunnerStorage.RunnerStorage["Service"]
   }
 >()("durable-actors/runtime/layer/RunnerWiring") {}
-
-// Cluster entity ids name the tenant and actor id together.
-const encodeEntityId = Schema.encodeEffect(
-  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-)
 
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
