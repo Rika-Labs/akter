@@ -135,6 +135,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [9, "blobs"],
             [10, "retention"],
+            [14, "connections"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
             { blobs: "actor_blobs" },
@@ -160,7 +161,10 @@ describe("PGlite migrations", () => {
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
           yield* throughBlobs
-          expect(yield* migrate).toEqual([[10, "retention"]])
+          expect(yield* migrate).toEqual([
+            [10, "retention"],
+            [14, "connections"],
+          ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
               WHERE indexname IN ('actor_receipts_expiry', 'actor_events_emitted', 'actor_outbox_intent')
@@ -170,6 +174,35 @@ describe("PGlite migrations", () => {
             { indexname: "actor_outbox_intent" },
             { indexname: "actor_receipts_expiry" },
           ])
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("applies 0014_connections to a database that already ran 0010_retention", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughRetention = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0014")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughRetention
+          expect(yield* sql`SELECT to_regclass('actor_connections')::text AS connections`).toEqual([
+            { connections: null },
+          ])
+          expect(yield* migrate).toEqual([[14, "connections"]])
+          expect(
+            yield* sql`SELECT indexname FROM pg_indexes
+              WHERE indexname = 'actor_connections_holder'`,
+          ).toEqual([{ indexname: "actor_connections_holder" }])
           expect(yield* migrate).toEqual([])
         }),
       )
@@ -202,6 +235,7 @@ describe("PGlite migrations", () => {
             { migration_id: 8 },
             { migration_id: 9 },
             { migration_id: 10 },
+            { migration_id: 14 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },
