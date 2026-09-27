@@ -263,27 +263,27 @@ On PGlite, which reports no statement counts, reducers ran at 197–202 op/s aga
 
 ### Effect cancellation and per-actor caps (M2.13)
 
-`2026-09-27-959da2f-m2.13-run{0..5}-postgres.json` runs `effect-concurrency` on Postgres 18.6, Bun 1.4.2, three in-process runners, on one 8-vCPU host (Xeon Platinum 8559C, 31 GiB) shared by client, runtime, and database. Command: `bun run bench --scenario effect-concurrency --backend postgres --profile full --label m2.13-run<i>`. Run 0 is the warm-up; the figures are medians of runs 1–5 with the range and coefficient of variation (CV). Statements are counted with `pg_stat_statements`; each is one round trip.
+`2026-09-27-7dd0260-m2.13-run{0..5}-postgres.json` runs `effect-concurrency` on Postgres 18.6, Bun 1.4.2, three in-process runners, on one 8-vCPU host (Xeon Platinum 8559C, 31 GiB) shared by client, runtime, and database. Command: `bun run bench --scenario effect-concurrency --backend postgres --profile full --label m2.13-run<i>`. Run 0 is the warm-up and contributes to none of the figures below: every median, range, and coefficient of variation (CV) is over runs 1–5 only. Statements are counted with `pg_stat_statements`; each is one round trip. Start latency is due-to-start: from the reply to the performing turn, which follows its commit and so the effect becoming due, to the fake provider seeing the attempt. The earlier `959da2f` runs timed start from before the performing command and are superseded; their other figures agree with these within noise.
 
-| Case                         | Metric                                 | Median                   | Range             | CV       |
-| ---------------------------- | -------------------------------------- | ------------------------ | ----------------- | -------- |
-| uncapped                     | effects/s                              | 1,820                    | 1,626–1,942       | 6.8%     |
-| uncapped                     | start p50 / p95 / p99 ms               | 287 / 386 / 443          | p99 423–695       | 5–23%    |
-| uncapped                     | most in flight per actor               | 10                       | 10                | 0%       |
-| uncapped                     | statements per effect                  | 4.42                     | 4.38–4.53         | 1.3%     |
-| `perActor: 2`                | effects/s                              | 512                      | 338–522           | 16.4%    |
-| `perActor: 2`                | start p50 / p95 / p99 ms               | 698 / 1,353 / 1,642      | p99 1,497–5,039   | 7–67%    |
-| `perActor: 2`                | most in flight per actor               | 2                        | 2                 | 0%       |
-| `perActor: 2`                | statements per effect                  | 12.31                    | 12.26–12.35       | 0.3%     |
-| hot actor, `perActor: 1`     | hot effects/s                          | 16.1                     | 15.7–16.2         | 1.3%     |
-| hot actor, `perActor: 1`     | cold-actor start p50 / p95 / p99 ms    | 151 / 214 / 255          | p99 243–452       | 7–30%    |
-| cancel, default check (20 s) | cancel-to-interrupt p50 / p95 / p99 ms | 19,199 / 20,054 / 20,084 | p50 17,194–19,947 | 0.3–5.9% |
-| cancel, 1 s check            | cancel-to-interrupt p50 / p95 / p99 ms | 1,145 / 1,448 / 2,001    | p50 998–6,561     | 93–111%  |
+| Case                         | Metric                                 | Median                   | Range             | CV     |
+| ---------------------------- | -------------------------------------- | ------------------------ | ----------------- | ------ |
+| uncapped                     | effects/s                              | 1,890                    | 1,834–1,932       | 2.2%   |
+| uncapped                     | start p50 / p95 / p99 ms               | 205 / 260 / 283          | p99 268–300       | 2–5%   |
+| uncapped                     | most in flight per actor               | 10                       | 10                | 0%     |
+| uncapped                     | statements per effect                  | 4.46                     | 4.38–4.46         | 0.7%   |
+| `perActor: 2`                | effects/s                              | 523                      | 402–545           | 10.5%  |
+| `perActor: 2`                | start p50 / p95 / p99 ms               | 669 / 1,311 / 1,501      | p99 1,389–2,442   | 11–24% |
+| `perActor: 2`                | most in flight per actor               | 2                        | 2                 | 0%     |
+| `perActor: 2`                | statements per effect                  | 12.35                    | 12.18–12.40       | 0.6%   |
+| hot actor, `perActor: 1`     | hot effects/s                          | 16.3                     | 16.1–16.3         | 0.5%   |
+| hot actor, `perActor: 1`     | cold-actor start p50 / p95 / p99 ms    | 127 / 174 / 204          | p99 168–473       | 5–44%  |
+| cancel, default check (20 s) | cancel-to-interrupt p50 / p95 / p99 ms | 19,195 / 20,050 / 20,080 | p50 19,073–19,619 | 1.0%   |
+| cancel, 1 s check            | cancel-to-interrupt p50 / p95 / p99 ms | 1,095 / 1,436 / 1,476    | p50 1,073–1,953   | 27–34% |
 
 - **The cap holds.** No actor ever had more attempts in flight than its cap in any run, across three runners, and no case recorded an error.
-- **A capped claim costs about three times the statements of an uncapped one.** 12.3 against 4.4 statements per effect, and a quarter of the throughput. The cap itself is not the limit here (2 in flight × 20 calls/s per actor would allow far more): each capped claim takes a transaction and an advisory lock per `(actor, tag)` group, so claiming is per group rather than one batch. Claims that group many actors per transaction are the obvious follow-up if capped throughput matters.
-- **A hot actor does not starve cold ones.** With one actor holding 1,000 queued effects at `perActor: 1`, it ran at 16 effects/s (50 ms provider, so near its 20/s ceiling) while the other 1,000 actors' effects started at p50 151 ms.
-- **Cancel latency is the cancel check.** A cancellation committed on a runner without executors reaches the running attempt at the next renewal check: about 20 s at the default (lease 60 s / 3) and about 1 s at `cancelCheck: "1 second"`. One of the five 1-second runs was slow (p50 6.6 s, statements per operation 22.0 against 13.9–15.8) and drives its CV to about 100%; the other four had p50 998–1,166 ms. The default-to-1-second difference (about 17×) is far beyond twice either CV. Differences below twice the CV in these tables, such as start-latency tails, are noise on a shared host.
+- **A capped claim costs about three times the statements of an uncapped one.** 12.3 against 4.5 statements per effect, and about a quarter of the throughput. The cap itself is not the limit here (2 in flight × 20 calls/s per actor would allow far more): each capped claim takes a transaction and an advisory lock per `(actor, tag)` group, so claiming is per group rather than one batch. Claims that group many actors per transaction are the obvious follow-up if capped throughput matters.
+- **A hot actor does not starve cold ones.** With one actor holding 1,000 queued effects at `perActor: 1`, it ran at 16 effects/s (50 ms provider, so near its 20/s ceiling) while the other 1,000 actors' effects started at p50 127 ms after becoming due.
+- **Cancel latency is the cancel check.** A cancellation committed on a runner without executors reaches the running attempt at the next renewal check: about 20 s at the default (lease 60 s / 3) and about 1 s at `cancelCheck: "1 second"`. One of the five 1-second runs was slow (p50 1,953 ms, statements per operation 22.7 against 15.1–16.9) and drives its CV to about 30%; the other four had p50 1,073–1,197 ms. The default-to-1-second difference (about 17×) is far beyond twice either CV. Differences below twice the CV in these tables, such as start-latency tails, are noise on a shared host.
 
 ### Query read path (#77)
 
