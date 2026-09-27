@@ -1,0 +1,120 @@
+{
+  "schema": 2,
+  "label": "m2.8-workflow-check",
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-27T18:41:50.745Z",
+  "finishedAt": "2026-09-27T18:42:14.473Z",
+  "git": {
+    "sha": "395444c7f8939a1d0de63b07e45e505989ec40ca",
+    "shortSha": "395444c",
+    "branch": "feat/52-workflow-compatibility",
+    "mainBase": "eaebfadaea19016c3b956d947b15d9b8e28f5362",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "395444c7f8939a1d0de63b07e45e505989ec40ca",
+        "parents": [
+          "35bec5f33267fe1e29ec77a703aa193ce88361f7",
+          "eaebfadaea19016c3b956d947b15d9b8e28f5362"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "workflow-check",
+      "description": "The workflow deploy check (checkWorkflows, read-only) over open WorkflowProbe executions that each recorded two steps and sleep; one check per operation, sequentially.",
+      "cases": [
+        {
+          "name": "open-100",
+          "parameters": {
+            "workers": 1,
+            "open": 100,
+            "recordedSteps": 2
+          },
+          "operations": 100,
+          "elapsedMs": 389,
+          "throughput": 256.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 3.889,
+            "min": 3.164,
+            "p50": 3.687,
+            "p90": 4.635,
+            "p95": 5.341,
+            "p99": 5.714,
+            "max": 5.734
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 146.8,
+            "server": null,
+            "clientMsPerOperation": 5.716,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "open-1000",
+          "parameters": {
+            "workers": 1,
+            "open": 1000,
+            "recordedSteps": 2
+          },
+          "operations": 100,
+          "elapsedMs": 1690,
+          "throughput": 59.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 100,
+            "mean": 16.894,
+            "min": 16.318,
+            "p50": 16.594,
+            "p90": 17.462,
+            "p95": 18.019,
+            "p99": 20.147,
+            "max": 27.139
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 101.5,
+            "server": null,
+            "clientMsPerOperation": 17.158,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}

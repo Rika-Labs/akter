@@ -1,12 +1,21 @@
 {
   "name": "@durable-actors/cli",
   "private": true,
+  "bin": {
+    "durable": "./src/main.ts"
+  },
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src"
   },
   "dependencies": {
+    "@durable-actors/core": "workspace:*",
+    "@effect/platform-bun": "catalog:",
     "effect": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
   }
 }

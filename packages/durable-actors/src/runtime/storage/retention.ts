@@ -49,7 +49,9 @@ export interface Swept {
  * wait of an open workflow execution of that actor, which still reads past it.
  *
  * A finished workflow execution goes `keepWorkflows` after it finished; its
- * steps went when it finished.
+ * steps went when it finished. A workflow manifest goes once it is neither
+ * the most recently accepted one for its workflow nor the start manifest of
+ * an open execution.
  *
  * The sweep yields after each batch, so a turn waiting for PGlite's one
  * connection runs between batches instead of after the whole sweep.
@@ -175,6 +177,16 @@ export const sweep = Effect.fnUntraced(function* (
       yield* hooks.afterBatch
       yield* Effect.yieldNow
     }
+
+    if (policy.workflows)
+      yield* batch(sql`
+        DELETE FROM actor_workflow_manifests m
+        WHERE m.actor_type = ${policy.actorType}
+          AND m.accepted_at_ms < (SELECT max(l.accepted_at_ms) FROM actor_workflow_manifests l
+            WHERE l.actor_type = m.actor_type AND l.workflow = m.workflow)
+          AND NOT EXISTS (SELECT 1 FROM actor_workflow_executions x
+            WHERE x.actor_type = m.actor_type AND x.workflow = m.workflow
+              AND x.manifest_hash = m.manifest_hash AND x.status <> 'finished')`)
   }
 
   return { receipts, events, workflows } satisfies Swept

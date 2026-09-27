@@ -42,8 +42,16 @@
     },
     "apps/cli": {
       "name": "@durable-actors/cli",
+      "bin": {
+        "durable": "./src/main.ts",
+      },
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
+        "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "vitest": "catalog:",
       },
     },
     "apps/console": {

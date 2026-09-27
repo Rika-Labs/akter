@@ -1,9 +1,8 @@
 import { Crypto, Effect, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
-
-const toJson = <T extends object>(value: T) => JSON.stringify(value)
 
 import type { AnyWorkflow } from "../../members/workflow.ts"
+
+export const toJson = <T extends object>(value: T) => JSON.stringify(value)
 
 /** What an open execution depends on: its steps, the schemas they record, and marker ranges. */
 export interface Manifest {
@@ -14,6 +13,8 @@ export interface Manifest {
     readonly name: string
     readonly kind: string
     readonly fingerprint: string
+    /** The schemas of the value the step records: an activity's success and errors, a wait's event. */
+    readonly result: string
     readonly event: string | null
   }>
   readonly versions: Readonly<Record<string, { readonly current: number; readonly min: number }>>
@@ -46,6 +47,7 @@ export const manifestOf = Effect.fnUntraced(function* (actorType: string, member
       name: step.name,
       kind: step.kind,
       fingerprint: fingerprintOf(step.schemas),
+      result: fingerprintOf(step.kind === "activity" ? step.schemas.slice(1) : step.schemas),
       event: step.event ?? null,
     })),
     versions: member.versions,
@@ -59,32 +61,4 @@ export const manifestOf = Effect.fnUntraced(function* (actorType: string, member
   cache.set(member, entry)
 
   return entry
-})
-
-/** Records each workflow member's manifest as accepted; an unchanged one is already there. */
-export const recordManifests = Effect.fnUntraced(function* (registration: {
-  readonly name: string
-  readonly workflows: ReadonlyMap<string, { readonly member: AnyWorkflow }>
-}) {
-  if (registration.workflows.size === 0) return
-  const sql = yield* SqlClient.SqlClient
-
-  const rows = []
-
-  for (const { member } of registration.workflows.values()) {
-    const { manifest, hash } = yield* manifestOf(registration.name, member)
-    rows.push({
-      actor_type: registration.name,
-      workflow: member.tag,
-      manifest_hash: hash,
-      manifest: toJson(manifest),
-    })
-  }
-
-  yield* sql`INSERT INTO actor_workflow_manifests (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
-    SELECT m.actor_type, m.workflow, m.manifest_hash, m.manifest::jsonb,
-      floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
-    FROM jsonb_to_recordset(${toJson(rows)}::jsonb)
-      AS m (actor_type text, workflow text, manifest_hash text, manifest text)
-    ON CONFLICT DO NOTHING`
 })
