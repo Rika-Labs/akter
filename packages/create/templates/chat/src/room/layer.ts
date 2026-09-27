@@ -13,15 +13,23 @@ export const RoomCommands = Room.toLayer(
         onSome: ({ subject }) => subject,
       })
 
+      const seq = turn.state.posted + 1
+
+      yield* turn.state.set({
+        closed: turn.state.closed,
+        reactions: turn.state.reactions,
+        posted: seq,
+      })
       yield* turn.rows(messages).insert({
         id,
+        seq,
         author,
         body,
         sentAt: DateTime.toDate(yield* DateTime.now),
       })
       yield* turn.emit(MessagePosted.make({ id, author, body }))
 
-      // A declared failure rolls back the row and event written above.
+      // A declared failure rolls back the state, row, and event written above.
       if (turn.state.closed) return yield* RoomClosed.make({})
 
       return id
@@ -29,7 +37,11 @@ export const RoomCommands = Room.toLayer(
 
     Close: Effect.fnUntraced(function* () {
       const turn = yield* Room.Turn
-      yield* turn.state.set({ closed: true, reactions: turn.state.reactions })
+      yield* turn.state.set({
+        closed: true,
+        reactions: turn.state.reactions,
+        posted: turn.state.posted,
+      })
     }),
   }),
 )
@@ -37,9 +49,7 @@ export const RoomCommands = Room.toLayer(
 export const RoomReads = Room.toQueryLayer(
   Effect.succeed({
     Recent: Effect.fnUntraced(function* ({ limit }) {
-      const rows = yield* (yield* Room.Read)
-        .rows(messages)
-        .all({ orderBy: { sentAt: "desc", id: "desc" }, limit })
+      const rows = yield* (yield* Room.Read).rows(messages).all({ orderBy: { seq: "desc" }, limit })
 
       return rows.map(({ id, author, body }) => ({ id, author, body }))
     }),

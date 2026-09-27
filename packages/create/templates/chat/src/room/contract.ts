@@ -1,5 +1,5 @@
 import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
+import { integer, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Effect, Result, Schema } from "effect"
 
 export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
@@ -8,6 +8,7 @@ export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
 export const messages = Actor.table(
   pgTable("chat_messages", {
     id: text("id").primaryKey(),
+    seq: integer("seq").notNull(),
     author: text("author").notNull(),
     body: text("body").notNull(),
     sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
@@ -17,7 +18,7 @@ export const messages = Actor.table(
 /** What drizzle-kit generates for `messages`; the runtime checks its primary key at startup. */
 export const messagesDdl = `CREATE TABLE IF NOT EXISTS chat_messages (
   routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL,
-  id text NOT NULL, author text NOT NULL, body text NOT NULL,
+  id text NOT NULL, seq integer NOT NULL, author text NOT NULL, body text NOT NULL,
   sent_at timestamp with time zone NOT NULL,
   PRIMARY KEY (routing_key, tenant_id, actor_id, id))`
 
@@ -31,6 +32,7 @@ export class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {
 
 export const RoomState = Actor.state({
   closed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  posted: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   reactions: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
