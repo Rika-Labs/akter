@@ -290,10 +290,10 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
-  it("applies 0014_connections to a database that already ran 0010_retention", () => {
+  it("applies 0014_connections to a database that already ran 0013_inspection_views", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
-    const throughRetention = Migrator.make({})({
+    const throughInspectionViews = Migrator.make({})({
       table: "actor_migrations",
       loader: Migrator.fromRecord(
         Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0014")),
@@ -304,7 +304,7 @@ describe("PGlite migrations", () => {
       .runPromise(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
-          yield* throughRetention
+          yield* throughInspectionViews
           expect(yield* sql`SELECT to_regclass('actor_connections')::text AS connections`).toEqual([
             { connections: null },
           ])

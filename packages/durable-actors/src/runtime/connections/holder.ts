@@ -349,7 +349,11 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const previous = connection.resync
 
       const after =
-        previous?.after ?? ((from ?? actor.through) === "0" ? undefined : (from ?? actor.through))
+        previous !== undefined
+          ? previous.after
+          : (from ?? actor.through) === "0"
+            ? undefined
+            : (from ?? actor.through)
 
       connection.resync = {
         after,
