@@ -2,6 +2,7 @@ import { Context, Effect, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
@@ -139,6 +140,8 @@ export interface QueryRegistration {
 export interface Registration {
   readonly name: string
   readonly singleton: boolean
+  /** Unkeyed with `policy.createdBy`: its UUIDv8 ids come only from `turn.mint`. */
+  readonly mintable: boolean
   /** The deployment's default tenant: the ambient `Tenant` when the actor's layer is built. */
   readonly tenant: string
   readonly placement: "tenant" | "actor"
@@ -178,6 +181,8 @@ export class InternalActors extends Context.Service<
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>
+    /** Derives the id a parent turn mints for a child actor. */
+    readonly mintChildId: (input: MintInput) => Effect.Effect<string>
     /** The deployment's command retry window: every id's `expiresAt - issuedAt`. */
     readonly retryWindowMs: number
     /** The database clock in epoch milliseconds, the only clock command ids are checked against. */
