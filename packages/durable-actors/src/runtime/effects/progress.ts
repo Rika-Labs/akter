@@ -213,7 +213,13 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
       )
         return Effect.void
 
-      return (flush === undefined ? Effect.void : Fiber.await(flush)).pipe(
+      // A final frame still sending after the bound is left to finish on its own.
+      const last =
+        flush === undefined
+          ? Effect.void
+          : Fiber.await(flush).pipe(Effect.timeoutOption(PROGRESS_CLOSE_WAIT_MS), Effect.asVoid)
+
+      return last.pipe(
         Effect.andThen(
           sink.closed({ ref: message.ref, effectId: message.effectId, attempt: message.attempt }),
         ),

@@ -154,7 +154,7 @@ it("closes a slot without waiting on or failing with its sink", () =>
                     yield* slot.close
                     yield* pool.closed({ ...attempt("a", 250), attempt: 1 })
                     yield* pool.closed({ ...attempt("b", undefined), attempt: 1 })
-                    yield* Effect.sleep(20)
+                    yield* Effect.sleep(200)
                   }),
                 ),
               ),
@@ -165,8 +165,9 @@ it("closes a slot without waiting on or failing with its sink", () =>
 
       yield* run(() => Effect.die(new Error("sink down")))
       expect(closed).toEqual(["a"])
+      // A send that never completes delays the close message only by the bound.
       yield* run(() => Effect.never)
-      expect(closed).toEqual(["a"])
+      expect(closed).toEqual(["a", "a"])
     }),
   ))
 
@@ -252,12 +253,21 @@ it("closes a slot and its effect within the bound while a send ignores interrupt
   Effect.runPromise(
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>()
+      const started = yield* Deferred.make<void>()
+      const closed: Array<string> = []
 
       const runtime = ManagedRuntime.make(
         Layer.succeed(ProgressSink, {
           wants: () => true,
-          send: () => Effect.uninterruptible(Deferred.await(gate)),
-          closed: () => Effect.void,
+          send: () =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(gate)),
+              Effect.uninterruptible,
+            ),
+          closed: (message) =>
+            Effect.sync(() => {
+              closed.push(message.effectId)
+            }),
         }),
       )
 
@@ -271,7 +281,7 @@ it("closes a slot and its effect within the bound while a send ignores interrupt
                   const pool = yield* progressPool()
                   const slot = yield* pool.open(attempt("a", 250))
                   yield* slot.offer(frame(1))
-                  yield* Effect.sleep(5)
+                  yield* Deferred.await(started)
                   const start = yield* Clock.currentTimeMillis
                   // Closing runs as the attempt's finalizer, where interruption is masked.
                   yield* Effect.void.pipe(
@@ -282,6 +292,8 @@ it("closes a slot and its effect within the bound while a send ignores interrupt
                     ),
                   )
                   const took = (yield* Clock.currentTimeMillis) - start
+                  yield* Effect.sleep(300)
+                  expect(closed).toEqual(["a"])
                   // Lets the stuck send finish so the pool's scope can close.
                   yield* Deferred.succeed(gate, undefined)
 
