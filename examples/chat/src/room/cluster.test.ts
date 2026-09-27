@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor, ActorError, Actors, User } from "@durable-actors/core"
+import { Actor, ActorError, Actors } from "@durable-actors/core"
 import { ActorCluster, ActorTest } from "@durable-actors/core/testing"
 import {
   Config,
@@ -15,6 +15,7 @@ import {
 } from "effect"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
+import { threeRunners } from "./cluster.ts"
 import { Appeal, Room, RoomId, Thread } from "./contract.ts"
 import { RoomLive } from "./layer.ts"
 import { ModerationApi, Moderators } from "./moderation.ts"
@@ -61,15 +62,7 @@ const freshDatabase = Effect.gen(function* () {
 const onCluster = <A, E>(body: Effect.Effect<A, E, ActorCluster>) =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const context = yield* Layer.build(
-        ActorTest.cluster({
-          database: yield* freshDatabase,
-          runners: 3,
-          shardLockExpiration: "3 seconds",
-          actors,
-          as: User.make({ subject: "ada" }),
-        }),
-      )
+      const context = yield* Layer.build(threeRunners({ database: yield* freshDatabase, actors }))
 
       return yield* body.pipe(Effect.provideContext(context))
     }).pipe(Effect.scoped, Effect.orDie),

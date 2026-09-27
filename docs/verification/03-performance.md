@@ -322,7 +322,7 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 
 ### Failure drills (T7)
 
-`TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/drill.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/133-m2-exit` at `d1e7399`; each run prints one `DRILL` line. Postgres 18.6 in Docker, Bun 1.4.2, one 8-vCPU Xeon 8559C machine shared by the five runner processes and Postgres. Workload: three processes, then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
+`TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/133-m2-exit` at `d1e7399`; each run prints one `DRILL` line. Postgres 18.6 in Docker, Bun 1.4.2, one 8-vCPU Xeon 8559C machine shared by the five runner processes and Postgres. Workload: three processes, then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
 
 | Metric                                   | Min    | p50    | Max (≈p95 of 10) |
 | ---------------------------------------- | ------ | ------ | ---------------- |
