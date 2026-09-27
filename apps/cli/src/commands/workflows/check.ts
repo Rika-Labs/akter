@@ -56,7 +56,7 @@ const decodeEntry = Schema.decodeUnknownEffect(Entry)
 const AnySchema = Schema.declare(Schema.isSchema)
 
 /** The fields of a workflow member the check reads. */
-const WorkflowShape = Schema.Struct({
+const WorkflowDefinition = Schema.Struct({
   kind: Schema.Literal("workflow"),
   tag: Schema.String,
   input: AnySchema,
@@ -71,10 +71,9 @@ const WorkflowShape = Schema.Struct({
   }),
 })
 
-const isWorkflowShape = Schema.is(WorkflowShape)
+const isWorkflowDefinition = Schema.is(WorkflowDefinition)
 
-const isWorkflowKind = (member: unknown) =>
-  typeof member === "object" && member !== null && "kind" in member && member.kind === "workflow"
+const isWorkflowKind = Schema.is(Schema.Struct({ kind: Schema.Literal("workflow") }))
 
 /** Imports the entry module at `entry`; a missing or broken module is a usage error. */
 export const loadEntry = (entry: string) =>
@@ -95,7 +94,7 @@ export const actorsOf = ({ module, entry }: { readonly module: object; readonly 
     Effect.flatMap(({ actors }) => {
       for (const actor of actors)
         for (const [name, member] of Object.entries(actor.api))
-          if (isWorkflowKind(member) && !isWorkflowShape(member))
+          if (isWorkflowKind(member) && !isWorkflowDefinition(member))
             return Effect.fail(
               UsageError.make({
                 message: `${entry}: ${actor.name}.${name} is not an Actor.workflow definition`,
