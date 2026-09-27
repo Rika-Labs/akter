@@ -1,12 +1,20 @@
-import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Actor, User } from "@durable-actors/core"
+// Chat over HTTP. Post with an Idempotency-Key minted from POST /command-ids and retry with the same key:
+//   curl -X POST localhost:3000/command-ids -H 'authorization: Bearer ada'
+//   curl -X POST localhost:3000/actors/Room/lobby/Post -H 'authorization: Bearer ada' \
+//     -H 'idempotency-key: <commandId>' -H 'content-type: application/json' -d '{"body":"hello"}'
+//   curl -X POST localhost:3000/actors/Room/lobby/History -H 'authorization: Bearer ada' \
+//     -H 'content-type: application/json' -d '{}'
+//   curl localhost:3000/openapi.json
+import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
+import { User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
-import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
-import { Room, RoomId } from "./room/contract.ts"
+import { Config, Effect, Layer, Redacted, Schema } from "effect"
+import { HttpRouter } from "effect/unstable/http"
 import { RoomLive } from "./room/layer.ts"
 import { ModerationApi } from "./room/moderation.ts"
+import { routes } from "./server.ts"
 
-const live = Layer.unwrap(
+const runtime = Layer.unwrap(
   Effect.gen(function* () {
     const database = yield* Config.String("DATABASE_URL")
 
@@ -23,23 +31,9 @@ const live = Layer.unwrap(
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
 
-const program = Effect.gen(function* () {
-  const room = yield* Room.get(RoomId.make("lobby")).pipe(
-    Actor.tenant("chat-demo"),
-    Actor.as(User.make({ subject: "ada" })),
-  )
-
-  yield* room.Post({ body: "hello" })
-  yield* room.React(1)
-  const history = yield* room.History({})
-  yield* Console.log(
-    history.map(({ cursor, message }) => `${cursor} ${message.author}: ${message.body}`),
-  )
-})
-
-Layer.effectDiscard(program).pipe(
-  Layer.provide(live),
-  Layer.build,
-  Effect.scoped,
+HttpRouter.serve(routes).pipe(
+  Layer.provide(runtime),
+  Layer.provide(BunHttpServer.layer({ port: 3000 })),
+  Layer.launch,
   BunRuntime.runMain,
 )

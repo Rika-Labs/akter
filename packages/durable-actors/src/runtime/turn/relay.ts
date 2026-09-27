@@ -580,74 +580,74 @@ export const outboxRelay = Effect.fnUntraced(function* (
       leaseUntil: () => leaseUntil,
     })
 
-    // Racing stops and awaits the renewal fiber before any settling write, so
-    // a late renewal can't overwrite a failure's backoff with a fresh lease.
-    const outcome = yield* registered
-      .execute(row.payload, {
-        effectId: row.intent_id,
-        attempt,
-        principal: principal(request.caller),
-        ref,
-        report: slot.offer,
-      })
-      .pipe(
-        Effect.result,
-        Effect.raceFirst(renewals),
-        Effect.raceFirst(deadline),
-        Effect.ensuring(
-          Effect.andThen(
-            Effect.sync(() => running.delete(row.intent_id)),
-            slot.close,
-          ),
-        ),
-      )
+    // The lease stays registered until the outcome is written, so a clock jump
+    // between the call's return and its settle can't expire it and start a
+    // second call.
+    return yield* Effect.gen(function* () {
+      // Racing stops and awaits the renewal fiber before any settling write, so
+      // a late renewal can't overwrite a failure's backoff with a fresh lease.
+      const outcome = yield* registered
+        .execute(row.payload, {
+          effectId: row.intent_id,
+          attempt,
+          principal: principal(request.caller),
+          ref,
+          report: slot.offer,
+        })
+        .pipe(
+          Effect.result,
+          Effect.raceFirst(renewals),
+          Effect.raceFirst(deadline),
+          Effect.ensuring(slot.close),
+        )
 
-    if (outcome === "lost")
-      return yield* Effect.logWarning("Effect attempt lost its lease").pipe(
-        Effect.annotateLogs({ attempt }),
-        annotate,
-      )
-
-    if (outcome === "deadline")
-      return yield* Effect.logWarning("Effect attempt outlived its lease; interrupted").pipe(
-        Effect.annotateLogs({ attempt }),
-        annotate,
-      )
-
-    if (Result.isSuccess(outcome)) {
-      yield* hooks.at("afterExecute", request)
-
-      // The first success of any attempt wins; the row stops being an effect.
-      if (yield* closeAfter(attempt, settleTo(outcome.success, effectRow))) return
-
-      const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
-        WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
-
-      if (late.length > 0)
-        yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
+      if (outcome === "lost")
+        return yield* Effect.logWarning("Effect attempt lost its lease").pipe(
           Effect.annotateLogs({ attempt }),
           annotate,
         )
 
-      return
-    }
+      if (outcome === "deadline")
+        return yield* Effect.logWarning("Effect attempt outlived its lease; interrupted").pipe(
+          Effect.annotateLogs({ attempt }),
+          annotate,
+        )
 
-    const { cause, ambiguous, final } = outcome.failure
-    const last = final === true || attempt >= registered.attempts
-    const { baseMs, maxMs } = registered.backoff
+      if (Result.isSuccess(outcome)) {
+        yield* hooks.at("afterExecute", request)
 
-    // The outcome is recorded first, so a failed dead-letter transaction is
-    // retried with this attempt's cause rather than the claim's.
-    yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
-        due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
-      WHERE ${attemptRow(attempt)}`
+        // The first success of any attempt wins; the row stops being an effect.
+        if (yield* closeAfter(attempt, settleTo(outcome.success, effectRow))) return
 
-    if (last) return yield* closeAfter(attempt, exhaust(attempt, cause, ambiguous))
+        const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
+          WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
 
-    yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
-      Effect.annotateLogs({ attempt, ambiguous }),
-      annotate,
-    )
+        if (late.length > 0)
+          yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
+            Effect.annotateLogs({ attempt }),
+            annotate,
+          )
+
+        return
+      }
+
+      const { cause, ambiguous, final } = outcome.failure
+      const last = final === true || attempt >= registered.attempts
+      const { baseMs, maxMs } = registered.backoff
+
+      // The outcome is recorded first, so a failed dead-letter transaction is
+      // retried with this attempt's cause rather than the claim's.
+      yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
+          due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
+        WHERE ${attemptRow(attempt)}`
+
+      if (last) return yield* closeAfter(attempt, exhaust(attempt, cause, ambiguous))
+
+      yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
+        Effect.annotateLogs({ attempt, ambiguous }),
+        annotate,
+      )
+    }).pipe(Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))))
   })
 
   const freed = (kind: "intents" | "effects") =>
