@@ -324,7 +324,9 @@ export const clientOf =
         const text = yield* Effect.tryPromise({ try: () => response.text(), catch: network })
         const now = response.headers.get("durable-now")
 
-        if (now !== null) clock.observe(sentAt, clock.localNow(), Number(now))
+        // A 504 waited out a deadline, so its round trip says little about when it was stamped.
+        if (now !== null && response.status !== 504)
+          clock.observe(sentAt, clock.localNow(), Number(now))
         origin.token.observe(response.headers.get("durable-version"))
 
         const reply: Reply = { status: response.status, headers: response.headers, text }
