@@ -1,8 +1,9 @@
 import { Cause, Effect, Exit, Layer, Option, Predicate, Schedule, Schema, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, User } from "../../index.ts"
-import { type ActorError, SessionEnded, Unauthorized } from "../../errors/actor.ts"
+import { ActorError, ActorUnavailable, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import { type ActorRef, CurrentCaller, System, Tenant } from "../../identity/caller.ts"
+import { connectionHolder, type HeldActorType } from "../../runtime/connections/holder.ts"
 import { ActorTest, type TestConnection, type TestMessage } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -452,6 +453,103 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const slow = reasonOf(yield* endOf(connection))
           expect(Schema.is(SessionEnded)(slow)).toBe(true)
           expect(slow).toMatchObject({ cause: "SlowConsumer", resync: true })
+        }),
+      ),
+  },
+  {
+    name: "an open retried after its reply was lost resyncs from the cursor it opened at",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-recovered")
+          yield* next(connection)
+          yield* room.Post("later")
+          yield* next(connection)
+
+          const sql = yield* SqlClient.SqlClient
+
+          const [row] = yield* sql<{ opened_through: string }>`
+            SELECT opened_through::text AS opened_through FROM actor_connections
+            WHERE connection_id = ${connection.connectionId}`.pipe(Effect.orDie)
+
+          expect(row?.opened_through).toBe(connection.cursor)
+
+          const owner = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" }
+          const resyncs: Array<string | undefined> = []
+          let opens = 0
+
+          const type: HeldActorType = {
+            deliveryMs: 1_000,
+            takeoverMs: 5_000,
+            reauthorizeMs: 60_000,
+            retryWindowMs: 60_000,
+            placement: "actor",
+            hasResync: () => true,
+            hasMember: () => true,
+            routingKey: () => 0n,
+            channel: {
+              open: () =>
+                Effect.suspend(() =>
+                  ++opens === 1
+                    ? Effect.succeed({ _tag: "Opened" as const, ...owner, baseline: "9" })
+                    : opens === 2
+                      ? Effect.fail(
+                          ActorError.make({
+                            reason: ActorUnavailable.make({ cause: new Error("Reply lost") }),
+                          }),
+                        )
+                      : Effect.succeed({
+                          _tag: "Opened" as const,
+                          ...owner,
+                          baseline: "5",
+                          recovered: true,
+                        }),
+                ),
+              frame: () => Effect.die(new Error("No frame is sent")),
+              close: () => Effect.void,
+              resync: (request) =>
+                Effect.sync(() => {
+                  resyncs.push(request.after)
+
+                  return { _tag: "Replayed" as const, ...owner }
+                }),
+            },
+          }
+
+          const holder = yield* connectionHolder({
+            transport: () => ({
+              holder: "recovered-holder",
+              epoch: "recovered-epoch",
+              deliver: () => Effect.die(new Error("No owner delivers")),
+              ping: () => Effect.succeed(true),
+            }),
+            actorType: () => type,
+            authorize: () => Effect.succeed(true),
+          })
+
+          const openHeld = holder.open({
+            ref: { tenant: room.ref.tenant, actor: "Recovered", id: "recovered" },
+            member: Live.tag,
+            caller: System.make({ source: "actor" }),
+            params: "{}",
+          })
+
+          // An earlier connection moved the holder's cursor for this actor past the retried open's.
+          const earlier = yield* openHeld
+          const held = yield* openHeld
+
+          const replay = yield* held.messages.pipe(
+            Stream.takeUntil((message) => Predicate.isTagged(message, "ResyncReplayed")),
+            Stream.runCollect,
+            Effect.timeout("10 seconds"),
+            Effect.orDie,
+          )
+
+          expect(opens).toBe(3)
+          expect([...replay][0]).toMatchObject({ _tag: "Resync", after: "5" })
+          expect(resyncs).toEqual(["5"])
+          yield* held.close
+          yield* earlier.close
         }),
       ),
   },
