@@ -52,6 +52,7 @@ export const outbox: Scenario = {
   name: "outbox",
   description:
     "Outbox intents: send-to-delivery latency, relay drain throughput of a due backlog, and delivery latency beside 10k and 100k sleeping timers.",
+  multiRunner: true,
   run: (context) =>
     Effect.gen(function* () {
       const quick = context.profile === "quick"

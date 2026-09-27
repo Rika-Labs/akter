@@ -120,6 +120,11 @@ const program = Effect.gen(function* () {
       ),
     )
 
+  const runnerCounts = (flag("runners") ?? "1").split(",").map(Number)
+
+  if (runnerCounts.some((count) => !Number.isInteger(count) || count < 1))
+    return yield* Effect.die(new Error("--runners takes positive integers, e.g. 1,2,4"))
+
   const label = flag("label")
   const note = flag("note")
   const external = Option.getOrUndefined(yield* Config.option(Config.String("BENCH_DATABASE_URL")))
@@ -158,15 +163,35 @@ const program = Effect.gen(function* () {
         const scenarios = []
 
         for (const scenario of selected) {
-          yield* Console.log(`${scenario.name} (${profile})`)
+          const cases = []
 
-          const cases = yield* scenario.run({
-            backend,
-            profile: profile === "ci" ? "quick" : profile,
-            withRuntime: withRuntime(backend),
-          })
+          // One runner keeps the embedded runtime and the case names the baselines use.
+          for (const runners of scenario.multiRunner === true ? runnerCounts : [1]) {
+            if (runners > 1 && backend.name !== "postgres") continue
+            yield* Console.log(`${scenario.name} (${profile}, ${runners} runner(s))`)
 
-          for (const result of cases) yield* Console.log(describeCase(scenario.name, result))
+            const measured = yield* scenario.run({
+              backend,
+              profile: profile === "ci" ? "quick" : profile,
+              runners,
+              withRuntime: withRuntime({ backend, runners }),
+            })
+
+            for (const result of measured) {
+              const named =
+                runners === 1
+                  ? result
+                  : {
+                      ...result,
+                      name: `${result.name}-runners-${runners}`,
+                      parameters: { ...result.parameters, runners },
+                    }
+
+              yield* Console.log(describeCase(scenario.name, named))
+              cases.push(named)
+            }
+          }
+
           scenarios.push({ name: scenario.name, description: scenario.description, cases })
         }
 

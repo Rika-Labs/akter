@@ -207,7 +207,7 @@ const program = Effect.gen(function* () {
   const backend: Backend = backendName === "postgres" ? yield* postgres(external) : yield* pglite
   const date = DateTime.formatIso(yield* DateTime.now).slice(0, 10)
 
-  const { profile, cpuMs, elapsedMs } = yield* withRuntime(backend)({}, () =>
+  const { profile, cpuMs, elapsedMs } = yield* withRuntime({ backend, runners: 1 })({}, () =>
     Effect.gen(function* () {
       const probe = yield* Probe.get("hot")
       yield* load({ workers: 1, operations: 500, operation: () => probe.Add(1) })
