@@ -87,7 +87,13 @@ const receiptModel = Effect.fnUntraced(function* (
 
   const stored = new Map<number, { kind: string; amount: number; reply: string }>()
   let count = 0
-  let crashed = false
+
+  const fresh = ops.flatMap((op, index) =>
+    ops.findIndex(({ slot }) => slot === op.slot) === index ? [index] : [],
+  )
+
+  const crashAt =
+    crash === undefined ? -1 : (fresh.find((index) => index >= crash.at) ?? fresh.at(-1)!)
 
   for (const [index, op] of ops.entries()) {
     const receipt = stored.get(op.slot)
@@ -98,10 +104,7 @@ const receiptModel = Effect.fnUntraced(function* (
       expected = op.kind === "Add" ? `ok:${count}` : `refused:${op.amount}`
       stored.set(op.slot, { kind: op.kind, amount: op.amount, reply: expected })
 
-      if (crash !== undefined && !crashed && index >= crash.at) {
-        crashed = true
-        yield* test.crashNext(crash.point)
-      }
+      if (crash !== undefined && index === crashAt) yield* test.crashNext(crash.point)
     } else
       expected =
         receipt.kind === op.kind && receipt.amount === op.amount ? receipt.reply : "CommandConflict"
