@@ -1,72 +1,67 @@
-import { Effect, Exit, Layer, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
-import { Actor, Intent } from "../../index.ts";
-import { routingKey } from "../../runtime/storage/codec.ts";
-import { ActorTest } from "../actor-test.ts";
-import type { ConformanceCase } from "../conformance.ts";
+import { Crypto, Data, Effect, Exit, Layer, Schema } from "effect"
+import { SqlClient } from "effect/unstable/sql"
+import { Actor, Intent } from "../../index.ts"
+import { routingKey } from "../../runtime/storage/codec.ts"
+import { ActorTest } from "../actor-test.ts"
+import type { ConformanceCase } from "../conformance.ts"
 
 class Noted extends Actor.Event<Noted>()("Noted", { body: Schema.String }) {}
 
 class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {}) {}
 
-class Undeliverable extends Schema.TaggedError<Undeliverable>()(
-  "Undeliverable",
-  {},
-) {}
+class Undeliverable extends Schema.TaggedError<Undeliverable>()("Undeliverable", {}) {}
 
 // Every attempt fails, so its one allowed attempt ends in a dead letter.
 class Deliver extends Actor.effect<Deliver>()("Deliver", {
   input: { body: Schema.String },
 }) {}
 
-const Write = Actor.command("Record", { input: Schema.String });
+const Write = Actor.command("Record", { input: Schema.String })
 
 const RecordThenReject = Actor.command("RecordThenReject", {
   input: Schema.String,
   errors: [Rejected],
-});
+})
 
-const RecordThenDie = Actor.command("RecordThenDie", { input: Schema.String });
+const RecordThenDie = Actor.command("RecordThenDie", { input: Schema.String })
 
-const Remind = Actor.command("Remind");
+const Remind = Actor.command("Remind")
 
 const Specimen = Actor.make("Specimen", {
   key: Schema.String,
   state: Actor.state({
-    notes: Schema.Array(Schema.String).pipe(
-      Schema.withDecodingDefault(Effect.succeed([])),
-    ),
+    notes: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   events: [Noted],
   effects: [Deliver],
   api: { Record: Write, RecordThenReject, RecordThenDie },
   internal: { Remind },
   policy: { effects: { Deliver: { retry: { times: 0 } } } },
-});
+})
 
 // One turn that writes every kind of row the inspection views expose.
 const record = Effect.fnUntraced(function* (body: string) {
-  const turn = yield* Specimen.Turn;
-  yield* turn.state.set({ notes: [...turn.state.notes, body] });
-  yield* turn.emit(Noted.make({ body }));
-  const self = yield* Specimen.intents(turn.id);
-  yield* self.Remind().pipe(Intent.after("1 hour"), Intent.key("remind"));
-  yield* turn.perform(Deliver.make({ body }));
-});
+  const turn = yield* Specimen.Turn
+  yield* turn.state.set({ notes: [...turn.state.notes, body] })
+  yield* turn.emit(Noted.make({ body }))
+  const self = yield* Specimen.intents(turn.id)
+  yield* self.Remind().pipe(Intent.after("1 hour"), Intent.key("remind"))
+  yield* turn.perform(Deliver.make({ body }))
+})
 
 export const inspectionViewsLayer = Layer.mergeAll(
   Specimen.toLayer(
     Effect.succeed({
       Record: record,
       RecordThenReject: Effect.fnUntraced(function* (body: string) {
-        yield* record(body);
+        yield* record(body)
 
-        return yield* Rejected.make({});
+        return yield* Rejected.make({})
       }),
       RecordThenDie: Effect.fnUntraced(function* (body: string) {
-        yield* record(body);
+        yield* record(body)
 
-        return yield* Effect.die(new Error("Specimen defect after writing"));
+        return yield* Effect.die(new Error("Specimen defect after writing"))
       }),
       Remind: () => Effect.void,
     }),
@@ -74,11 +69,11 @@ export const inspectionViewsLayer = Layer.mergeAll(
   Specimen.toEffectLayer(
     Effect.succeed({
       Deliver: Effect.fnUntraced(function* () {
-        return yield* Undeliverable.make({});
+        return yield* Undeliverable.make({})
       }),
     }),
   ),
-);
+)
 
 const VIEWS = [
   "actors",
@@ -90,9 +85,9 @@ const VIEWS = [
   "effects",
   "dead_letters",
   "views",
-] as const;
+] as const
 
-type Row = Record<string, unknown>;
+type Row = Record<string, string | number | boolean | null>
 
 const rowsOf = Effect.fnUntraced(function* (
   view: (typeof VIEWS)[number],
@@ -100,36 +95,46 @@ const rowsOf = Effect.fnUntraced(function* (
   id: string,
   columns: string,
 ) {
-  const sql = yield* SqlClient.SqlClient;
+  const sql = yield* SqlClient.SqlClient
 
   return yield* sql.unsafe<Row>(
     `SELECT ${columns} FROM durable.${view}
       WHERE tenant_id = $1 AND actor_type = 'Specimen' AND actor_id = $2 ORDER BY 1`,
     [tenant, id],
-  );
-});
+  )
+})
 
-const COUNTED = VIEWS.filter((name) => name !== "views");
+const COUNTED = VIEWS.filter((name) => name !== "views")
 
 // One statement, so every count reads the same snapshot.
 const counts = Effect.fnUntraced(function* (tenant: string, id: string) {
-  const sql = yield* SqlClient.SqlClient;
+  const sql = yield* SqlClient.SqlClient
+
   const [row] = yield* sql.unsafe<Record<string, number>>(
     `SELECT ${COUNTED.map(
       (view) => `(SELECT count(*)::int FROM durable.${view}
         WHERE tenant_id = $1 AND actor_type = 'Specimen' AND actor_id = $2) AS ${view}`,
     ).join(", ")}`,
     [tenant, id],
-  );
+  )
+
   // The relay may run an effect as soon as its turn commits, moving it from
   // `effects` to `dead_letters` at any point.
-  const { effects = 0, dead_letters = 0, ...rest } = row ?? {};
+  const { effects = 0, dead_letters = 0, ...rest } = row ?? {}
 
-  return { ...rest, effects: effects + dead_letters };
-});
+  return { ...rest, effects: effects + dead_letters }
+})
 
 const rejection = (exit: Exit.Exit<unknown, unknown>) =>
-  Exit.isFailure(exit) ? String(exit.cause) : "succeeded";
+  Exit.isFailure(exit) ? String(exit.cause) : "succeeded"
+
+const matching = (reason: string, pattern: RegExp) => ({ reason, matches: pattern.test(reason) })
+
+class Probed extends Data.TaggedError("Probed")<{
+  readonly visible: Record<string, number>
+  readonly denied: Record<string, string>
+  readonly write: string
+}> {}
 
 export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
   {
@@ -137,10 +142,10 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          const test = yield* ActorTest;
-          const tenant = test.tenant;
-          const specimen = yield* Specimen.get("flow");
-          yield* specimen.Record("first");
+          const test = yield* ActorTest
+          const tenant = test.tenant
+          const specimen = yield* Specimen.get("flow")
+          yield* specimen.Record("first")
 
           expect(yield* counts(tenant, "flow")).toEqual({
             actors: 1,
@@ -150,7 +155,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             outbox: 1,
             timers: 1,
             effects: 1,
-          });
+          })
           expect(
             yield* rowsOf(
               "actors",
@@ -169,26 +174,16 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
               generation: 1,
               last_event_sequence: 1,
             },
-          ]);
+          ])
+          expect(yield* rowsOf("state", tenant, "flow", "key, value_bytes > 0 AS stored")).toEqual([
+            { key: "notes", stored: true },
+          ])
+          expect(yield* rowsOf("receipts", tenant, "flow", "command, outcome_tag")).toEqual([
+            { command: "Record", outcome_tag: "Success" },
+          ])
           expect(
-            yield* rowsOf(
-              "state",
-              tenant,
-              "flow",
-              "key, value_bytes > 0 AS stored",
-            ),
-          ).toEqual([{ key: "notes", stored: true }]);
-          expect(
-            yield* rowsOf("receipts", tenant, "flow", "command, outcome_tag"),
-          ).toEqual([{ command: "Record", outcome_tag: "Success" }]);
-          expect(
-            yield* rowsOf(
-              "events",
-              tenant,
-              "flow",
-              "sequence::int AS sequence, event",
-            ),
-          ).toEqual([{ sequence: 1, event: "Noted" }]);
+            yield* rowsOf("events", tenant, "flow", "sequence::int AS sequence, event"),
+          ).toEqual([{ sequence: 1, event: "Noted" }])
           expect(
             yield* rowsOf(
               "timers",
@@ -204,53 +199,40 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
               command: "Remind",
               dated: true,
             },
-          ]);
+          ])
 
           // A declared failure keeps its receipt and discards every other write.
-          expect(
-            Exit.isFailure(
-              yield* specimen.RecordThenReject("second").pipe(Effect.exit),
-            ),
-          ).toBe(true);
+          expect(Exit.isFailure(yield* specimen.RecordThenReject("second").pipe(Effect.exit))).toBe(
+            true,
+          )
           // A defect commits nothing at all.
-          expect(
-            Exit.isFailure(
-              yield* specimen.RecordThenDie("third").pipe(Effect.exit),
-            ),
-          ).toBe(true);
+          expect(Exit.isFailure(yield* specimen.RecordThenDie("third").pipe(Effect.exit))).toBe(
+            true,
+          )
           expect(yield* counts(tenant, "flow")).toMatchObject({
             receipts: 2,
             events: 1,
             outbox: 1,
             timers: 1,
             effects: 1,
-          });
-          expect(
-            yield* rowsOf("receipts", tenant, "flow", "command, outcome_tag"),
-          ).toEqual([
+          })
+          expect(yield* rowsOf("receipts", tenant, "flow", "command, outcome_tag")).toEqual([
             { command: "Record", outcome_tag: "Success" },
             { command: "RecordThenReject", outcome_tag: "Failure" },
-          ]);
+          ])
 
-          yield* test.advance(0);
-          expect(yield* rowsOf("effects", tenant, "flow", "effect")).toEqual(
-            [],
-          );
+          yield* test.advance(0)
+          expect(yield* rowsOf("effects", tenant, "flow", "effect")).toEqual([])
           expect(
-            yield* rowsOf(
-              "dead_letters",
-              tenant,
-              "flow",
-              "effect, attempts, ambiguous",
-            ),
-          ).toEqual([{ effect: "Deliver", attempts: 1, ambiguous: false }]);
+            yield* rowsOf("dead_letters", tenant, "flow", "effect, attempts, ambiguous"),
+          ).toEqual([{ effect: "Deliver", attempts: 1, ambiguous: false }])
 
-          yield* test.advance("1 hour");
+          yield* test.advance("1 hour")
           expect(yield* counts(tenant, "flow")).toMatchObject({
             outbox: 0,
             timers: 0,
-          });
-          expect(yield* test.receiptsFor(specimen.ref, "Remind")).toBe(1);
+          })
+          expect(yield* test.receiptsFor(specimen.ref, "Remind")).toBe(1)
         }),
       ),
   },
@@ -259,50 +241,37 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          const test = yield* ActorTest;
-          const abroad = `${test.tenant}-b`;
-          yield* (yield* Specimen.get("shared-id")).Record("home");
-          yield* (yield* Specimen.get("shared-id").pipe(
-            Actor.tenant(abroad),
-          )).Record("abroad");
-          yield* (yield* Specimen.get("shared-id").pipe(
-            Actor.tenant(abroad),
-          )).Record("again");
+          const test = yield* ActorTest
+          const abroad = `${test.tenant}-b`
+          yield* (yield* Specimen.get("shared-id")).Record("home")
+          yield* (yield* Specimen.get("shared-id").pipe(Actor.tenant(abroad))).Record("abroad")
+          yield* (yield* Specimen.get("shared-id").pipe(Actor.tenant(abroad))).Record("again")
 
-          const home = yield* counts(test.tenant, "shared-id");
-          const other = yield* counts(abroad, "shared-id");
+          const home = yield* counts(test.tenant, "shared-id")
+          const other = yield* counts(abroad, "shared-id")
 
           expect(home).toMatchObject({
             actors: 1,
             receipts: 1,
             events: 1,
             effects: 1,
-          });
+          })
           expect(other).toMatchObject({
             actors: 1,
             receipts: 2,
             events: 2,
             effects: 2,
-          });
+          })
 
-          const sql = yield* SqlClient.SqlClient;
+          const sql = yield* SqlClient.SqlClient
 
-          for (const view of [
-            "actors",
-            "state",
-            "receipts",
-            "events",
-            "outbox",
-            "timers",
-          ]) {
+          for (const view of ["actors", "state", "receipts", "events", "outbox", "timers"]) {
             const tenants = yield* sql.unsafe<{ tenant_id: string }>(
               `SELECT DISTINCT tenant_id FROM durable.${view}
                 WHERE actor_type = 'Specimen' AND actor_id = 'shared-id' ORDER BY tenant_id`,
-            );
+            )
 
-            expect(tenants.map(({ tenant_id }) => tenant_id)).toEqual(
-              [test.tenant, abroad].sort(),
-            );
+            expect(tenants.map(({ tenant_id }) => tenant_id)).toEqual([test.tenant, abroad].sort())
           }
         }),
       ),
@@ -312,20 +281,18 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient;
-          const test = yield* ActorTest;
-          yield* (yield* Specimen.get("frozen")).Record("kept");
-          const before = yield* counts(test.tenant, "frozen");
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          yield* (yield* Specimen.get("frozen")).Record("kept")
+          const before = yield* counts(test.tenant, "frozen")
 
           expect(
             yield* sql<{ view_name: string; version: number }>`
               SELECT view_name, version FROM durable.views ORDER BY view_name`,
-          ).toEqual(
-            [...VIEWS].sort().map((view_name) => ({ view_name, version: 1 })),
-          );
+          ).toEqual([...VIEWS].sort().map((view_name) => ({ view_name, version: 1 })))
 
           for (const view of VIEWS) {
-            const column = view === "views" ? "view_name" : "tenant_id";
+            const column = view === "views" ? "view_name" : "tenant_id"
 
             for (const statement of [
               `INSERT INTO durable.${view} DEFAULT VALUES`,
@@ -333,11 +300,14 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
               `DELETE FROM durable.${view}`,
             ])
               expect(
-                rejection(yield* sql.unsafe(statement).pipe(Effect.exit)),
-              ).toMatch(/cannot (insert into|update|delete from) view/);
+                matching(
+                  rejection(yield* sql.unsafe(statement).pipe(Effect.exit)),
+                  /cannot (insert into|update|delete from) view/,
+                ),
+              ).toMatchObject({ matches: true })
           }
 
-          expect(yield* counts(test.tenant, "frozen")).toEqual(before);
+          expect(yield* counts(test.tenant, "frozen")).toEqual(before)
         }),
       ),
   },
@@ -346,23 +316,22 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient;
-          const test = yield* ActorTest;
-          yield* (yield* Specimen.get("granted")).Record("visible");
-          const role = `inspector_${crypto.randomUUID().replaceAll("-", "")}`;
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          yield* (yield* Specimen.get("granted")).Record("visible")
+          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+          const role = `inspector_${uuid.replaceAll("-", "")}`
 
           // The whole probe rolls back, so the cluster-wide role never outlives it.
           const probe = yield* sql
             .withTransaction(
               Effect.gen(function* () {
-                yield* sql.unsafe(`CREATE ROLE ${role} NOLOGIN`);
-                yield* sql.unsafe(`GRANT USAGE ON SCHEMA durable TO ${role}`);
-                yield* sql.unsafe(
-                  `GRANT SELECT ON ALL TABLES IN SCHEMA durable TO ${role}`,
-                );
-                yield* sql.unsafe(`SET LOCAL ROLE ${role}`);
-                const visible = yield* counts(test.tenant, "granted");
-                const denied: Record<string, string> = {};
+                yield* sql.unsafe(`CREATE ROLE ${role} NOLOGIN`)
+                yield* sql.unsafe(`GRANT USAGE ON SCHEMA durable TO ${role}`)
+                yield* sql.unsafe(`GRANT SELECT ON ALL TABLES IN SCHEMA durable TO ${role}`)
+                yield* sql.unsafe(`SET LOCAL ROLE ${role}`)
+                const visible = yield* counts(test.tenant, "granted")
+                const denied: Record<string, string> = {}
 
                 for (const table of [
                   "actor_generations",
@@ -376,35 +345,36 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
                     yield* sql
                       .unsafe(`SELECT 1 FROM ${table} LIMIT 1`)
                       .pipe(sql.withTransaction, Effect.exit),
-                  );
+                  )
+
                 const write = rejection(
                   yield* sql
                     .unsafe(`DELETE FROM durable.receipts`)
                     .pipe(sql.withTransaction, Effect.exit),
-                );
+                )
 
-                return yield* Effect.fail({ visible, denied, write });
+                return yield* new Probed({ visible, denied, write })
               }),
             )
-            .pipe(Effect.flip);
+            .pipe(Effect.catchTag("Probed", Effect.succeed))
 
           expect(probe.visible).toMatchObject({
             actors: 1,
             receipts: 1,
             events: 1,
             effects: 1,
-          });
+          })
 
           for (const reason of Object.values(probe.denied))
-            expect(reason).toMatch(/permission denied/);
-          expect(probe.write).toMatch(
-            /permission denied|cannot delete from view/,
-          );
+            expect(matching(reason, /permission denied/)).toMatchObject({ matches: true })
+          expect(matching(probe.write, /permission denied|cannot delete from view/)).toMatchObject({
+            matches: true,
+          })
           expect(
             yield* sql<{ roles: number }>`
               SELECT count(*)::int AS roles FROM pg_roles WHERE rolname = ${role}`,
-          ).toEqual([{ roles: 0 }]);
+          ).toEqual([{ roles: 0 }])
         }),
       ),
   },
-];
+]

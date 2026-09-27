@@ -150,6 +150,17 @@ Declarations, in [`definition.test.ts`](../../packages/durable-actors/src/actor/
 
 **Security review (contract 10), 2026-09-26:** a fresh-machine review of #61 at `912c471` covered `actor_blobs` tenant and actor isolation on every read, write, and compact; the fiber guard and capability escape; size and DoS; and SQL construction, with exploit cases on PGlite and Postgres. Isolation and SQL construction: no issue found. Fixed: an entry of 16 MiB or more could be written but not read, and its read closed a pooled Postgres connection and put the turn into a retry loop (high; now an 8 MiB entry cap enforced on `set` and `append`); 1,024-character names could exceed the btree key size (low; now 512 UTF-8 bytes); a guard defect swallowed by `race` let the turn commit without the write (low; the turn now fails). Open, tracked as a follow-up: no per-actor quota on blob entry count or total bytes, and no statement timeout on query reads (medium).
 
+### CR.4 inspection views
+
+The cases live in [`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts) and check [ADR 0028](../decisions/0028-sql-inspection-views.md) (proposed). The fixture actor `Specimen` writes state, emits an event, schedules a keyed self-timer an hour out, and performs an effect with `retry: { times: 0 }` whose executor always fails. Shared (PGlite and Postgres):
+
+- `inspection views show exactly the rows committed turns wrote` — after one committed turn every view shows its row (actor with generation, routing key, placement, and event sequence; the state key; a `Success` receipt; the event; the timer, also in `outbox`; the effect, in `effects` or already in `dead_letters`); a declared failure after the same writes adds only its `Failure` receipt, and a defect adds nothing; the relay moves the effect to `dead_letters` with one attempt; the fired timer leaves `outbox` and `timers` and its receipt commits.
+- `inspection views carry each row's tenant and never merge tenants` — equal actor ids in two tenants keep separate counts, and each view reports exactly those two tenants.
+- `inspection views reject every write and leave the runtime rows untouched` — the catalog lists the nine views at version 1; `INSERT`, `UPDATE`, and `DELETE` through each fail as writes to a non-updatable view, and every count is unchanged.
+- `a role granted only the durable schema reads the views and no runtime table` — inside a rolled-back transaction a fresh `NOLOGIN` role granted `USAGE` on `durable` and `SELECT` on its views reads them, gets `permission denied` on each `actor_*` table it would otherwise need, and cannot delete through a view; the role does not survive the rollback.
+
+Counts that include effects add `effects` and `dead_letters` in one statement, because the relay may settle an effect at any moment after its commit. Migration, in `pglite.test.ts`: `applies 0013_inspection_views to a database that stopped at 0009_blobs` — `0010` to `0012` belong to other slices, and the gap does not block `0013`.
+
 ### Backend-specific cases
 
 - PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.

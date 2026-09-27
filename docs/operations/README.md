@@ -10,5 +10,6 @@
 - [Observability](03-observability.md)
 - [Backup and restore](04-backup-restore.md)
 - [Retention](retention.md)
+- [Inspection views](inspection-views.md)
 - [Runbooks](runbooks.md)
 - [Backend support matrix](support-matrix.md)
