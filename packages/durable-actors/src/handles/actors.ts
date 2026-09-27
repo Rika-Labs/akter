@@ -92,11 +92,31 @@ export interface RegisteredEffect {
   readonly attempts: number
   /** The wait after failed attempt `n` is `min(baseMs × 2^(n − 1), maxMs)`. */
   readonly backoff: { readonly baseMs: number; readonly maxMs: number }
-  /** Runs one attempt; succeeds with the `onSuccess` route, if declared. */
+  /** Attempts running at once per actor across runners; unlimited when undefined. */
+  readonly perActor: number | undefined
+  /** Whether the effect declares an `onCancelled` route. */
+  readonly routesCancelled: boolean
+  /**
+   * Runs one attempt; succeeds with the `onSuccess` route and the
+   * `onCancelled` route of its result, each if declared.
+   */
   readonly execute: (
     payload: string,
     context: ExecutorContext,
-  ) => Effect.Effect<EffectRoute | undefined, EffectFailure>
+  ) => Effect.Effect<
+    { readonly success: EffectRoute | undefined; readonly cancelled: EffectRoute | undefined },
+    EffectFailure
+  >
+  /** The `onCancelled` route for a cancelled effect without a result, if declared. */
+  readonly cancelled: (
+    payload: string,
+    letter: {
+      readonly effectId: string
+      readonly attempts: number
+      readonly outcome: { readonly _tag: "Failed" | "Unknown"; readonly cause: string }
+      readonly ambiguous: boolean
+    },
+  ) => Effect.Effect<EffectRoute | undefined>
   /** The `onDeadLetter` route for an exhausted effect, if declared. */
   readonly deadLetter: (
     payload: string,
