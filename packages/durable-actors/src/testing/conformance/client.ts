@@ -277,6 +277,47 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "client times out a reducer queued behind a stalled one without sending it",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          const wire = recording()
+          const release = Promise.withResolvers<void>()
+          let held = false
+
+          const stalled = (input: RequestInfo | URL, init?: RequestInit) => {
+            if (held || !urlOf(input).pathname.endsWith("/Add")) return wire.fetch(input, init)
+            held = true
+
+            return release.promise.then(() => wire.fetch(input, init))
+          }
+
+          const tally = HttpTally.client({
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+            fetch: stalled,
+          }).get("queued-timeout")
+
+          tally.state.reconcile({ count: 0 })
+
+          const first = tally.Add({ by: 1 })
+          const second = yield* settle(() => tally.Add({ by: 2 }, { timeoutInMs: 100 }))
+
+          expect(reasonOf(second)).toMatchObject({ tag: "Timeout" })
+          expect(tally.state.current).toEqual({ count: 1 })
+          expect(tally.state.pending).toEqual([{ member: "Add", input: { by: 1 } }])
+
+          release.resolve()
+
+          expect(yield* Effect.promise(() => first)).toEqual({ count: 1 })
+          expect(wire.commands("Add").length).toBe(1)
+          expect(yield* Effect.promise(() => tally.Snapshot())).toEqual({ count: 1 })
+        }),
+      ),
+  },
+  {
     name: "client retries with the body it first sent, even if the caller mutates the input",
     run: ({ expect, environment }) =>
       environment.run(

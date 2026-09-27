@@ -1,4 +1,4 @@
-import { Result, Schema } from "effect"
+import { Predicate, Result, Schema } from "effect"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { OptimisticReducer } from "../actor/served.ts"
 import { Optimistic } from "./optimistic.ts"
@@ -45,6 +45,32 @@ describe("Optimistic", () => {
     const shown = store.state
 
     if (shown !== undefined) Object.assign(shown, { count: 20 })
+
+    store.confirm(entry, undefined)
+
+    expect(store.state).toEqual({ count: 1 })
+  })
+
+  it("never lets a caller-held pending input change what a receipt applies", () => {
+    const bump: OptimisticReducer = {
+      ...reducer,
+      reduce: (state, input) =>
+        Result.succeed({
+          count: Number(state["count"]) + (Predicate.isObject(input) ? Number(input["by"]) : 0),
+        }),
+      commutative: true,
+    }
+
+    const store = new Optimistic(bump)
+    const entry = { member: "Bump", input: { by: 1 }, reducer: bump }
+
+    store.reconcile({ count: 0 })
+    store.add(entry)
+
+    const [pending] = store.pending
+
+    if (pending !== undefined && Predicate.isObject(pending.input))
+      Object.assign(pending.input, { by: 9 })
 
     store.confirm(entry, undefined)
 

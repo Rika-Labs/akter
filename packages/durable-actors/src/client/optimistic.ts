@@ -92,7 +92,7 @@ export class Optimistic {
   }
 
   get pending(): ReadonlyArray<PendingInput> {
-    return this.entries.map(({ member, input }) => ({ member, input }))
+    return this.entries.map(({ member, input }) => ({ member, input: structuredClone(input) }))
   }
 
   /** Nothing pending and nobody listening, so dropping it loses nothing. */

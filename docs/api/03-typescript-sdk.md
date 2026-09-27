@@ -26,7 +26,7 @@ Commands, queries, and optimistic reducers over HTTP are implemented. Feeds, str
 `rooms.get(id)` returns the same handle for the same id while it has pending inputs or listeners. `handle.state` is `{ current, pending, subscribe, reconcile }`:
 
 - Calling a reducer applies its `reduce` to a copy of `current`'s committed state at once and appends its input to `pending`. Until committed state is known, `current` is `undefined`.
-- A handle sends its reducer calls one at a time in call order, each with its own command id and the usual retries, so each non-commutative reply is the committed state before every later pending input.
+- A handle sends its reducer calls one at a time in call order, each with its own command id and the usual retries, so each non-commutative reply is the committed state before every later pending input. A call's `timeoutInMs` and `signal` include its wait behind earlier calls; one stopped while waiting is never sent. `pending` returns copies of its inputs.
 - A success receipt removes the input. A non-commutative reducer's reply replaces committed state; a commutative reducer replies nothing, so its `reduce` is applied to committed state.
 - A failure (a declared error, or any `ActorError`, including `Timeout`) removes the input and rethrows; `current` becomes committed state with the remaining inputs. A timed-out call may still commit; the next reply or `reconcile` shows it.
 - After every change, `current` is recomputed from committed state and `pending` in order, and each `subscribe` listener is called with it. An input whose `reduce` fails, throws, or returns a state the schema rejects is skipped in `current`; the server decides its receipt.

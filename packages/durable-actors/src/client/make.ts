@@ -470,11 +470,15 @@ export const clientOf =
       ),
     )
 
-    /** Runs `attempt` until it succeeds or a stop condition holds, surfacing the last failure. */
+    /**
+     * Runs `attempt` until it succeeds or a stop condition holds, surfacing the last failure.
+     * With `after`, the first attempt waits for it, inside the same timeout and abort.
+     */
     const withRetries = <A>(
       attempt: Effect.Effect<A, Attempted>,
       call: QueryOptions,
       commandId: () => string | undefined,
+      after?: Promise<void>,
     ): Promise<A> => {
       const retry: Retry = { attempts: 0, futureRetried: false, authRetried: false }
 
@@ -528,7 +532,10 @@ export const clientOf =
         return Effect.sync(() => signal.removeEventListener("abort", onAbort))
       })
 
-      const bounded = loop.pipe(
+      const queued =
+        after === undefined ? loop : Effect.promise(() => after).pipe(Effect.andThen(loop))
+
+      const bounded = queued.pipe(
         Effect.timeoutOrElse({
           duration: Duration.millis(call.timeoutInMs ?? options.timeoutInMs ?? DEFAULT_TIMEOUT_MS),
           orElse: () => unanswered,
@@ -634,7 +641,7 @@ export const clientOf =
 
       return {
         input: Exit.isSuccess(body) ? Option.some(input) : Option.none(),
-        send: () => withRetries(attempt, call, () => commandId),
+        send: (after?: Promise<void>) => withRetries(attempt, call, () => commandId, after),
       }
     }
 
@@ -649,11 +656,9 @@ export const clientOf =
         const entry = { member: member.tag, input: input.value, reducer }
 
         // One at a time, so each reply is the committed state before every later pending input.
-        const settled = store.queue.then(send)
-        store.queue = settled.then(
-          () => undefined,
-          () => undefined,
-        )
+        const previous = store.queue
+        const settled = send(previous)
+        store.queue = Promise.allSettled([previous, settled]).then(() => undefined)
 
         // Registered before the caller's own callbacks, so the view has settled when they run.
         void settled.then(
