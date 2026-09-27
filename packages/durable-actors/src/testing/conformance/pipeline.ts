@@ -1,4 +1,4 @@
-import { createServer, connect, type Socket } from "node:net"
+import { createServer, connect, type Socket, type AddressInfo } from "node:net"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Crypto, Effect, Fiber, Layer, Redacted, Schedule, Schema } from "effect"
 import type { Scope } from "effect"
@@ -112,7 +112,9 @@ const relay = (url: URL, probe: Probe) =>
           host: url.hostname,
           port: Number(url.port || 5432),
         })
+
         let answered = true
+
         sockets.add(client)
         sockets.add(upstream)
         client.setNoDelay(true)
@@ -146,7 +148,7 @@ const relay = (url: URL, probe: Probe) =>
         const address = server.address()
         resume(
           Effect.succeed({
-            port: typeof address === "object" && address !== null ? address.port : 0,
+            port: (address as AddressInfo).port,
             close: () => {
               for (const socket of sockets) socket.destroy()
               server.close()
@@ -195,7 +197,7 @@ const withProbe = <A, E>(
             Layer.provide(
               Layer.succeed(TurnPoolSettings, {
                 stream: () => connect({ host: "127.0.0.1", port, noDelay: true }),
-                ...(options.prepare === false ? { prepare: false } : {}),
+                prepare: options.prepare !== false,
               }),
             ),
           ),
@@ -418,7 +420,8 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* meter.Add(1)).toBe(2)
           const context = yield* rival(database)
           const handled = probe.handled
-          let turn: Fiber.Fiber<number, unknown> | undefined
+          const add = meter.Add(10)
+          let turn: Fiber.Fiber<Effect.Success<typeof add>, Effect.Error<typeof add>> | undefined
 
           // The rival holds the generation row while it takes over, so the
           // turn's fenced read waits for the rival to commit and then sees
@@ -429,7 +432,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
               Effect.gen(function* () {
                 yield* sql`SELECT 1 FROM actor_generations
                   WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id} FOR UPDATE`
-                turn = yield* Effect.forkDetach(meter.Add(10))
+                turn = yield* Effect.forkDetach(add)
                 yield* Effect.gen(function* () {
                   const waiting = yield* sql<{ waiting: boolean }>`
                     SELECT count(*) > 0 AS waiting FROM pg_stat_activity

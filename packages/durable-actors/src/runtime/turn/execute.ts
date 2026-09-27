@@ -11,7 +11,7 @@ import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
-import { eventsStatement, notifyEvents } from "../events/append.ts"
+import { eventsStatements, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { FrameworkClock } from "./admission.ts"
@@ -149,8 +149,10 @@ export const executeTurn = Effect.fnUntraced(function* (
 
   const turn = Effect.fnUntraced(function* (session: Session, begin: ReadonlyArray<Statement>) {
     const cold = cache.generation === undefined
+
     const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
       set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)`
+
     const readsState = cold || cache.state === undefined
     let admission: Admission | undefined
     let bumped: string | undefined
@@ -333,7 +335,7 @@ export const executeTurn = Effect.fnUntraced(function* (
     }
 
     if (result.events.length > 0)
-      writes.push(yield* eventsStatement(request, routingKey, result.events))
+      writes.push(...(yield* eventsStatements(request, routingKey, result.events)))
 
     // Re-arming waiting workflows reads their steps, so it runs before the
     // commit group; only an actor with a workflow waiting on an emitted class

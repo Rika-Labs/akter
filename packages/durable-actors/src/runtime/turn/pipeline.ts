@@ -15,7 +15,7 @@ export class TurnConnections extends Context.Service<
     /** Takes a connection out of the pool, so its session never serves another turn. */
     readonly invalidate: (connection: PgConnection.PgConnection) => Effect.Effect<void>
   }
->()("durable-actors/TurnConnections") {}
+>()("@durable-actors/core/runtime/turn/pipeline/TurnConnections") {}
 
 /**
  * Settings merged over the turn pool's own. Tests pass a socket factory here

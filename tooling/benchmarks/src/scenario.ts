@@ -175,6 +175,7 @@ export const measure = Effect.fnUntraced(function* <E, R>(
     yield* instruments.resetStatements
     yield* instruments.resetFlights
   }
+
   const serverCpu = instruments?.serverCpuSeconds
   const serverBefore = serverCpu === undefined ? undefined : yield* serverCpu
   const clientBefore = process.cpuUsage()

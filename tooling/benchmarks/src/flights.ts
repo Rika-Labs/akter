@@ -1,4 +1,4 @@
-import { createServer, connect, type Socket } from "node:net"
+import { createServer, connect, type Socket, type AddressInfo } from "node:net"
 import { Effect, type Scope } from "effect"
 
 /**
@@ -55,7 +55,7 @@ export const flightCounter = (upstream: URL): Effect.Effect<FlightCounter, never
 
         resume(
           Effect.succeed({
-            port: typeof address === "object" && address !== null ? address.port : 0,
+            port: (address as AddressInfo).port,
             reset: Effect.sync(() => {
               flights = 0
             }),

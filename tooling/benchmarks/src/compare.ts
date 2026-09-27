@@ -190,7 +190,7 @@ export const toBaseline = (result: Result): Baseline => {
     entry.roundTripsPerOperation == null ? [] : [[key, entry.roundTripsPerOperation] as const],
   )
 
-  return {
+  const baseline = {
     profile: "ci",
     backend: "postgres",
     sha: result.git.shortSha,
@@ -201,8 +201,11 @@ export const toBaseline = (result: Result): Baseline => {
         return [key, entry.statementsPerOperation]
       }),
     ),
-    ...(roundTrips.length === 0 ? {} : { roundTripsPerOperation: Object.fromEntries(roundTrips) }),
-  }
+  } satisfies Baseline
+
+  if (roundTrips.length === 0) return baseline
+
+  return { ...baseline, roundTripsPerOperation: Object.fromEntries(roundTrips) } satisfies Baseline
 }
 
 const drift = (
