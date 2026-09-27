@@ -549,4 +549,54 @@ describe("singleton activation", () => {
         )
       }).pipe(Effect.scoped),
     ))
+
+  it("keeps a singleton whose hibernateAfter is shorter than a second resident", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const live = yield* Effect.acquireRelease(
+          Effect.promise(() => PGlite.create()),
+          (client) => Effect.promise(() => client.close()),
+        )
+
+        const Ping = Actor.command("Ping", { output: Schema.String })
+
+        const Drowsy = Actor.make("DrowsySingleton", {
+          key: Actor.singleton,
+          api: { Ping },
+          policy: { hibernateAfter: "200 millis" },
+        })
+
+        let builds = 0
+
+        const runtime = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            ManagedRuntime.make(
+              Drowsy.toLayer(
+                Effect.sync(() => {
+                  builds += 1
+
+                  return { Ping: () => Effect.succeed("pong") }
+                }),
+              ).pipe(
+                Layer.provideMerge(ActorTest.layer({ database: { liveClient: live } })),
+                Layer.provideMerge(BunCrypto.layer),
+                Layer.orDie,
+              ),
+            ),
+          ),
+          (runtime) => Effect.promise(() => runtime.dispose()),
+        )
+
+        yield* Effect.promise(() =>
+          runtime.runPromise(
+            Effect.gen(function* () {
+              expect(yield* (yield* Drowsy.get()).Ping()).toBe("pong")
+              yield* Effect.sleep("6 seconds")
+              expect(yield* (yield* Drowsy.get()).Ping()).toBe("pong")
+              expect(builds).toBe(1)
+            }),
+          ),
+        )
+      }).pipe(Effect.scoped),
+    ))
 })

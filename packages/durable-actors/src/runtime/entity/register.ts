@@ -240,12 +240,17 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
     const address = yield* encodeEntityId([registration.tenant, "singleton"]).pipe(Effect.orDie)
     const client = (yield* sharding.makeClient(entity))(address)
 
+    const wakeInterval = Duration.min(
+      SINGLETON_WAKE_INTERVAL,
+      Duration.millis(registration.policy.idleMs / 2),
+    )
+
     yield* sharding.registerSingleton(
       registration.name,
       client.Wake().pipe(
-        Effect.timeoutOrElse({ duration: SINGLETON_WAKE_INTERVAL, orElse: () => Effect.void }),
+        Effect.timeoutOrElse({ duration: wakeInterval, orElse: () => Effect.void }),
         Effect.catchCause((cause) => Effect.logDebug("Singleton wake failed", cause)),
-        Effect.repeat(Schedule.spaced(SINGLETON_WAKE_INTERVAL)),
+        Effect.repeat(Schedule.spaced(wakeInterval)),
       ),
     )
   }
