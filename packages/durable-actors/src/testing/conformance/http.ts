@@ -208,6 +208,7 @@ interface Server {
       readonly key?: string
       readonly body?: Schema.Json
       readonly raw?: string
+      readonly bytes?: Uint8Array
       readonly headers?: Readonly<Record<string, string>>
     },
   ) => Effect.Effect<Reply>
@@ -263,14 +264,14 @@ export const serveHttp = Effect.fnUntraced(function* (
             ? authed
             : HttpClientRequest.setHeader(authed, "idempotency-key", init.key)
 
+        const type = init?.headers?.["content-type"] ?? "application/json"
+
         const request =
-          body === undefined
-            ? keyed
-            : HttpClientRequest.bodyText(
-                keyed,
-                body,
-                init?.headers?.["content-type"] ?? "application/json",
-              )
+          init?.bytes !== undefined
+            ? HttpClientRequest.bodyUint8Array(keyed, init.bytes, type)
+            : body === undefined
+              ? keyed
+              : HttpClientRequest.bodyText(keyed, body, type)
 
         const response = yield* client.execute(request)
         const text = yield* response.text
@@ -1020,6 +1021,17 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               }),
             ),
           )
+
+          const utf8 = yield* server.send("/actors/HttpRoom/body/Post", {
+            token,
+            key: yield* server.mint(),
+            bytes: new Uint8Array([
+              0x7b, 0x22, 0x74, 0x65, 0x78, 0x74, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d,
+            ]),
+          })
+
+          expect(utf8.status).toBe(400)
+          expect(yield* reasonOf(utf8.body)).toEqual({ tag: "InvalidInput", code: "decode" })
 
           const protocol = yield* server.send("/actors/HttpRoom/body/Post", {
             token,

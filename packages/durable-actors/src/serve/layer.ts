@@ -59,6 +59,8 @@ const JSON_TYPE = /^application\/json[ ]*(;.*)?$/i
 // A quoted value is the idempotency-key draft's structured-field string.
 const QUOTED = /^"(.*)"$/
 
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true })
+
 const decodeBody = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
 const decodeSuccess = Schema.decodeUnknownEffect(
@@ -312,9 +314,12 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             offset += chunk.byteLength
           }
 
-          const value = yield* decodeBody(new TextDecoder().decode(body)).pipe(
-            Effect.mapError((error) => undecodable(error)),
-          )
+          const text = yield* Effect.try({
+            try: () => strictUtf8.decode(body),
+            catch: () => invalidInput("decode"),
+          })
+
+          const value = yield* decodeBody(text).pipe(Effect.mapError((error) => undecodable(error)))
 
           return value
         })

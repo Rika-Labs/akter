@@ -257,7 +257,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 - `keeps running a command whose HTTP client disconnected, and replays it on retry` — row **HTTP client disconnects mid-command**: the aborted command commits once.
 - `documents every served route and serves every documented one; the document is deterministic` — OpenAPI 3.1 with `<Actor>.<Member>` operation ids, `Idempotency-Key` on commands only, and two builds byte-identical.
 - `refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin` — 403 before authentication; CORS headers and preflight for a listed origin.
-- `rejects non-JSON and oversized bodies and credentials before any turn` — 415, 413 for body and credentials, 400 with value-free schema issues, and 400 `unsupported_protocol`.
+- `rejects non-JSON and oversized bodies and credentials before any turn` — 415, 413 for body and credentials, 400 with value-free schema issues, 400 `decode` for invalid UTF-8, and 400 `unsupported_protocol`.
 - `answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version`.
 
 These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency.
