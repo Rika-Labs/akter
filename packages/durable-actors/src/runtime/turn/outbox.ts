@@ -5,9 +5,9 @@ import { type ActorRef, Caller } from "../../identity/caller.ts"
 import { databaseTime } from "./admission.ts"
 
 /**
- * The due-work bucket: the top eight bits of `routing_key`. A runner owns a
- * contiguous bucket range and probes each bucket's `(bucket, due_at_ms)` index
- * range, so actors with nothing due are never read.
+ * The due-work bucket: the top eight bits of `routing_key`. Every runner's
+ * relay probes each bucket's `(bucket, kind, due_at_ms)` index range, so actors
+ * with nothing due are never read.
  */
 export const bucketOf = (routingKey: bigint) => Number(routingKey >> 56n)
 
@@ -80,6 +80,7 @@ export const writeOutbox = Effect.fnUntraced(function* (
       kind: "intent",
       bucket: bucketOf(routingKey),
       due_at_ms: dueAt,
+      scheduled_at_ms: dueAt,
       tenant_id: tenant,
       actor_type: actor,
       actor_id: id,
@@ -101,6 +102,7 @@ export const writeOutbox = Effect.fnUntraced(function* (
       kind: "effect",
       bucket: bucketOf(routingKey),
       due_at_ms: now,
+      scheduled_at_ms: now,
       tenant_id: tenant,
       actor_type: actor,
       actor_id: id,

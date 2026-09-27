@@ -4,6 +4,7 @@ import { Actor, Intent, RetentionGap, UnknownCursor } from "../../index.ts"
 import { ActorError, CommandExpired, Timeout } from "../../errors/actor.ts"
 import { databaseTime } from "../../runtime/turn/admission.ts"
 import { ActorTest } from "../actor-test.ts"
+import { CLAIM_LEASE } from "./outbox.ts"
 import type {
   ConformanceCase,
   ConformanceEnvironment,
@@ -336,12 +337,11 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
             WHERE o.tenant_id = ${test.tenant} AND o.actor_id = 'sender'
               AND actor_receipts.tenant_id = ${test.tenant} AND actor_receipts.actor_id = 'bystander'`
 
-          // The first delivery crashes before deleting the sender's row; the
-          // redelivery pauses there, days past the receipt's horizon.
+          // The first delivery crashes before deleting the sender's row, days
+          // past the receipt's horizon, and leaves the row claimed.
           yield* test.crashNext("beforeOutboxDelete")
-          const pause = yield* test.pauseNext("beforeOutboxDelete")
-          const draining = yield* test.advance("10 days").pipe(Effect.forkChild)
-          yield* pause.reached
+          yield* test.crashNext("beforeOutboxDelete")
+          yield* test.advance("10 days")
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
 
@@ -350,13 +350,12 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
           expect(yield* test.receiptsFor(bystander.ref, "Add")).toBe(0)
 
-          // This delivery dies too; the next one comes after another sweep and
-          // replays the receipt that sweep kept.
-          yield* Fiber.interrupt(draining)
-          yield* pause.release
+          // The redelivery after the claim lease dies too; the next one comes
+          // after another sweep and replays the receipt that sweep kept.
+          yield* test.advance(CLAIM_LEASE)
           yield* test.cleanup
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
-          yield* test.advance(0)
+          yield* test.advance(CLAIM_LEASE)
 
           expect(fixture.retention.receives - before).toBe(1)
           expect(yield* receiver.Total()).toBe(1)
