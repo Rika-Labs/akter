@@ -13,7 +13,7 @@ export class ModerationApi extends Context.Service<
     ) => Effect.Effect<boolean>
   }
 >()("@durable-actors/chat/room/moderation/ModerationApi") {
-  /** Flags any message that mentions spam. */
+  /** Demo substitute: flags messages locally and does not claim provider-side idempotency. */
   static readonly layer = Layer.succeed(ModerationApi, {
     check: (body) => Effect.succeed(body.toLowerCase().includes("spam")),
   })

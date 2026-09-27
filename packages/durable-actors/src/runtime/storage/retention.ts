@@ -13,9 +13,10 @@ export interface RetentionPolicy {
 /**
  * How long after its id expires a receipt stays. An id expires one retry
  * window after it is issued (a timer's after its due time), so this keeps
- * receipts `keepReceipts` from issue; it is never less than the delivery
- * timeout, so a command admitted just before expiry can still run and find
- * the receipt of an attempt that committed meanwhile.
+ * receipts `keepReceipts` from issue; equivalently, it retains an expired id
+ * for `max(keepReceipts, retryWindow + deliveryTimeout)` after issue, so a
+ * command admitted just before expiry can still run and find the receipt of an
+ * attempt that committed meanwhile.
  */
 export const receiptMarginMs = (horizon: {
   readonly keepReceiptsMs: number

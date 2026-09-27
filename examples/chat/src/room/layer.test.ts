@@ -148,7 +148,7 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       // The first attempt's result is lost after the provider answered, so the relay runs it again.
       const before = new Set(provider.calls.keys())
       yield* test.crashNext("afterExecute")
-      yield* room.Post({ body: "buy spam" })
+      const id = yield* room.Post({ body: "buy spam", file: bytes })
 
       // The crashed attempt keeps its lease; the relay retries once the lease has passed.
       while (![...provider.calls.keys()].some((key) => !before.has(key)))
@@ -160,6 +160,7 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       expect([...provider.calls].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([2])
       expect(yield* test.receiptsFor(room.ref, "Moderated")).toBe(1)
       expect(yield* room.Recent({ limit: 10 })).toEqual([])
+      expect(yield* room.Attachment(id)).toEqual(Option.none())
     }),
   ))
 

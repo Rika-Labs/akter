@@ -176,7 +176,7 @@ Migration, in `pglite.test.ts`: `applies 0010_retention to a database that alrea
 
 The chat example's own test ([`examples/chat/src/room/layer.test.ts`](../../examples/chat/src/room/room.test.ts)) runs the M1 exit test on PGlite (`test`) and on a fresh Postgres database (`test:integration`): a post with its row, blob, event, moderation and idle timer; `a declared failure commits nothing but its receipt`; `delivers an intent exactly once across a crash after the receiver commits`; `routes a moderation result once, even if the executor succeeds twice`; `replays MessagePosted in order after a cursor, and errors on a retention gap`; receipt pruning with the pruned id refused; and tenant scoping of rows.
 
-EXECUTED_PLACEHOLDER
+**Executed 2026-09-27 (M1.9 retention, replay pages, emit budget, blob quota, and chat on `657183f`):** `bun run check` passed 58/58 tasks (141 durable-actors tests passed and 24 independent-connection cases skipped on PGlite); focused retention conformance passed 7 PGlite and 8 Postgres cases, the Postgres SIGKILL retention recovery passed, and the chat Room suite passed 7/7 on PGlite. PR #104's exact-head Verify and Current SHA evidence checks passed for `657183f34221beae2694356bb8954dc1678c19cb`. The full retention/events benchmark was run on disposable Postgres 18.6 and PGlite; result files are attached in `benchmarks/results/`.
 
 ### Backend-specific cases
 

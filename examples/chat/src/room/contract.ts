@@ -44,6 +44,7 @@ export class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {
 export const RoomState = Actor.state({
   closed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   reactions: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  idleToken: Schema.optional(Schema.String),
 })
 
 /**
@@ -87,7 +88,9 @@ export const Attachment = Actor.query("Attachment", {
 })
 
 // Internal commands: only System callers (the relay and effect routes) reach them.
-export const IdleCheck = Actor.command("IdleCheck")
+export const IdleCheck = Actor.command("IdleCheck", {
+  input: Schema.Struct({ token: Schema.String }),
+})
 
 export const Moderated = Actor.command("Moderated", {
   input: Schema.Struct({ id: Schema.String, flagged: Schema.Boolean }),

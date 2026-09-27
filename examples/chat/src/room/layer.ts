@@ -43,25 +43,35 @@ export const RoomCommands = Room.toLayer(
 
       // The same key replaces the pending timer, so every post pushes it back.
       yield* (yield* Room.intents(turn.id))
-        .IdleCheck()
+        .IdleCheck({ token: turn.commandId })
         .pipe(Intent.after("24 hours"), Intent.key("idle"))
+      yield* turn.state.set({
+        closed: turn.state.closed,
+        reactions: turn.state.reactions,
+        idleToken: turn.commandId,
+      })
 
       return id
     }),
 
     Archive: Effect.fnUntraced(function* () {
       const turn = yield* Room.Turn
-      yield* turn.state.set({ closed: true })
+      yield* turn.state.set({
+        closed: true,
+        reactions: turn.state.reactions,
+        idleToken: turn.state.idleToken,
+      })
       yield* turn.emit(RoomArchived.make({}))
       yield* Intent.cancel("idle")
     }),
 
     // A timer the relay has already claimed still fires once after a cancel,
     // so the check reads state instead of trusting that it was never cancelled.
-    IdleCheck: Effect.fnUntraced(function* () {
+    IdleCheck: Effect.fnUntraced(function* ({ token }) {
       const turn = yield* Room.Turn
 
-      if (!turn.state.closed) yield* (yield* Room.intents(turn.id)).Archive()
+      if (!turn.state.closed && turn.state.idleToken === token)
+        yield* (yield* Room.intents(turn.id)).Archive()
     }),
 
     Moderated: Effect.fnUntraced(function* ({ id, flagged }) {
@@ -92,6 +102,8 @@ export const RoomReads = Room.toQueryLayer(
       return entries.map(({ cursor, event }) => ({ cursor, message: event }))
     }),
     Attachment: Effect.fnUntraced(function* (id: string) {
+      const message = yield* (yield* Room.Read).rows(messages).one({ where: { id } })
+      if (Option.isNone(message) || message.value.attachment !== id) return Option.none()
       return yield* (yield* Room.Read).blob(Attachments).get(id)
     }),
   }),

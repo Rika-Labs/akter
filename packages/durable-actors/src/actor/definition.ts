@@ -180,7 +180,7 @@ type ReducerKeys<Members extends MemberRecord> = {
 }[keyof Members]
 
 /** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
-type QueryReason = "ActorUnavailable" | "Unauthorized"
+type QueryReason = "ActorUnavailable" | "Unauthorized" | "Timeout"
 
 type Reasons<
   M extends AnyMember,
