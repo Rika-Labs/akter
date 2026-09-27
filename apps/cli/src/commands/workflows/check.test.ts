@@ -114,6 +114,7 @@ describe("durable workflows check", () => {
           entry: "./a.ts",
         }),
       )
+
       expect(Exit.isFailure(fake) && Schema.is(UsageError)(Cause.squash(fake.cause))).toBe(true)
       expect(Exit.isFailure(fake) && String(fake.cause)).toContain(
         "Shop.Order is not an Actor.workflow definition",

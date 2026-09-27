@@ -64,7 +64,7 @@ const WorkflowDefinition = Schema.Struct({
   errors: Schema.Array(AnySchema),
   versions: Schema.Record(
     Schema.String,
-    Schema.Struct({ current: Schema.Number, min: Schema.Number }),
+    Schema.Struct({ current: Schema.Finite, min: Schema.Finite }),
   ),
   registry: Schema.Struct({
     steps: Schema.declare((u): u is ReadonlyMap<unknown, unknown> => u instanceof Map),
