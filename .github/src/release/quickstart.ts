@@ -42,12 +42,16 @@ const expected = {
 
 /** A fresh database on the server `TEST_DATABASE_URL` names, dropped when the scope closes. */
 const database = Effect.fn("database")(function* (base: string, name: string) {
-  const admin = new SQL(base)
+  const admin = yield* Effect.acquireRelease(
+    Effect.sync(() => new SQL(base)),
+    (sql) => Effect.promise(() => sql.close()),
+  )
+
   yield* Effect.acquireRelease(
     Effect.promise(() => admin.unsafe(`CREATE DATABASE ${name}`)),
     () =>
-      Effect.promise(() => admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)).pipe(
-        Effect.andThen(Effect.promise(() => admin.close())),
+      Effect.tryPromise(() => admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)).pipe(
+        Effect.ignore,
       ),
   )
   const url = new URL(base)
