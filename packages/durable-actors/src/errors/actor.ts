@@ -12,11 +12,14 @@ export class CommandExpired extends Schema.TaggedError<CommandExpired>()("Comman
  * `malformed`: not a v1 id. `future`: issued after the database clock; the
  * same id is admissible once the clock passes it. `window`: its lifetime is
  * not the deployment's retry window. `version`: a protocol version this
- * runner doesn't serve.
+ * runner doesn't serve. `neverAdmitted`, set only by a client, is true when
+ * that client minted the id and every attempt it sent was refused before any
+ * turn, so no attempt can have committed.
  */
 export class InvalidCommandId extends Schema.TaggedError<InvalidCommandId>()("InvalidCommandId", {
   commandId: Schema.String,
   code: Schema.Literals(["malformed", "future", "window", "version"]),
+  neverAdmitted: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /**
@@ -74,7 +77,7 @@ export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("Ac
 }) {}
 
 export class Timeout extends Schema.TaggedError<Timeout>()("Timeout", {
-  commandId: Schema.String,
+  commandId: Schema.optionalKey(Schema.String),
 }) {}
 
 export class NotCreated extends Schema.TaggedError<NotCreated>()("NotCreated", {}) {}
@@ -195,6 +198,15 @@ const NOMINAL_RETRY_AFTER: Partial<Record<Reason["_tag"], number>> = {
 }
 
 const jittered = new WeakMap<ActorError, number>()
+
+/** Fixes `retryAfter` to a server's already-jittered value, as a client rebuilds a served envelope. */
+export const withRetryAfter =
+  (retryAfterMs: number) =>
+  (error: ActorError): ActorError => {
+    if (NOMINAL_RETRY_AFTER[error.reason._tag] !== undefined) jittered.set(error, retryAfterMs)
+
+    return error
+  }
 
 export namespace ActorError {
   export type Of<Reasons extends Reason["_tag"]> = [Reasons] extends [never]

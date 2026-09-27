@@ -17,7 +17,10 @@ export const PROTOCOL = 1
 const reasonSchemas = {
   CommandConflict: Schema.TaggedStruct("CommandConflict", CommandConflict.fields),
   CommandExpired: Schema.TaggedStruct("CommandExpired", CommandExpired.fields),
-  InvalidCommandId: Schema.TaggedStruct("InvalidCommandId", InvalidCommandId.fields),
+  InvalidCommandId: Schema.TaggedStruct("InvalidCommandId", {
+    commandId: InvalidCommandId.fields.commandId,
+    code: InvalidCommandId.fields.code,
+  }),
   Unauthorized: Schema.TaggedStruct("Unauthorized", Unauthorized.fields),
   // `cause` holds internal errors and never crosses the wire.
   ActorUnavailable: Schema.TaggedStruct("ActorUnavailable", {}),

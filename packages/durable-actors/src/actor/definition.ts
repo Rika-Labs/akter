@@ -91,7 +91,13 @@ import type { AnyEffect, EffectPolicy } from "../members/effect.ts"
 import type { NoDatabase } from "../runtime/effects/isolation.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
-import { checkDeclaredErrors, servedDefinitions, servedMember } from "./served.ts"
+import { type ActorClient, type ClientOptions, clientOf } from "../client/make.ts"
+import {
+  checkDeclaredErrors,
+  type ServedDefinition,
+  servedDefinitions,
+  servedMember,
+} from "./served.ts"
 import {
   type ActorState,
   ActorStates,
@@ -652,6 +658,8 @@ const make = <
       : Schema.String.check(Schema.isUUID(7)).pipe(Schema.brand(name))
 
   const decodeId = Schema.decodeEffect(idSchema)
+
+  const encodeId = Schema.encodeEffect(idSchema)
 
   type Creating = P extends { readonly createdBy: infer C extends AnyCommand } ? C["tag"] : never
 
@@ -2064,6 +2072,17 @@ const make = <
 
   type Id = K extends KeySchema ? K["Type"] : Schema.brand<Schema.String, Name>["Type"]
 
+  const served: ServedDefinition = {
+    name,
+    key: isSingleton ? "singleton" : definition.key === undefined ? "minted" : "keyed",
+    decodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => decodeId(id),
+    encodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => encodeId(id),
+    members: Object.values(api)
+      .filter((member) => member.kind !== "connection" && member.kind !== "workflow")
+      .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
+    deliveryMs: policy.deliveryMs,
+  }
+
   const actor = {
     name,
     state: stateSchema,
@@ -2094,19 +2113,23 @@ const make = <
     intents: (isSingleton ? () => getIntents("singleton") : getIntents) as K extends SingletonKey
       ? () => Effect.Effect<Intents<All>, never, InTurn>
       : (id: string) => Effect.Effect<Intents<All>, never, InTurn>,
+    /**
+     * A Promise client of this actor's public members over `Actor.serve`'s
+     * HTTP protocol, for browsers and other code that doesn't run Effect.
+     */
+    client: (options: ClientOptions) =>
+      clientOf<
+        ActorClient<
+          Omit<Api, WorkflowKeys<Api>>,
+          K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
+          Id
+        >
+      >(served)(options),
   }
 
   for (const member of Object.values(api)) checkDeclaredErrors(member)
 
-  servedDefinitions.set(actor, {
-    name,
-    key: isSingleton ? "singleton" : definition.key === undefined ? "minted" : "keyed",
-    decodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => decodeId(id),
-    members: Object.values(api)
-      .filter((member) => member.kind !== "connection" && member.kind !== "workflow")
-      .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
-    deliveryMs: policy.deliveryMs,
-  })
+  servedDefinitions.set(actor, served)
 
   internalDefinitions.set(actor, {
     handle: (id, tenant, caller) => getHandle(id, true, caller, tenant),
