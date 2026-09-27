@@ -45,6 +45,18 @@ const program = Effect.gen(function* () {
   if (path.relative(stage, root) === "" || !path.relative(stage, root).startsWith(".."))
     return yield* Effect.die(new Error(`--out ${stage} would replace the repository`))
 
+  const inRepository = path.relative(root, stage)
+  const scratch = path.relative(path.join(root, ".local"), stage)
+
+  if (
+    !inRepository.startsWith("..") &&
+    !path.isAbsolute(inRepository) &&
+    (scratch === "" || scratch.startsWith("..") || path.isAbsolute(scratch))
+  )
+    return yield* Effect.die(
+      new Error(`--out ${stage} is inside the repository; use a directory under .local/`),
+    )
+
   yield* fs.remove(path.join(framework, "dist"), { recursive: true, force: true })
   yield* run(["bun", "run", "build"], framework)
 
