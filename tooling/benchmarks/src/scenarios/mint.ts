@@ -7,6 +7,9 @@ import { type CaseResult, measure, type Scenario } from "../scenario.ts"
 
 const COUNTS = [0, 1, 10, 100]
 
+/** Room for every child the creation cases activate, so none waits on `RunnerAtCapacity`. */
+const RESIDENT = 100_000
+
 /** Registers `labels` so the children's creating turns can report them; returns the wait for all. */
 const expectCreations = (labels: ReadonlyArray<string>) =>
   Effect.forEach(labels, (label) =>
@@ -118,7 +121,7 @@ export const mint: Scenario = {
         )
 
         results.push(
-          yield* context.withRuntime({}, (instruments) =>
+          yield* context.withRuntime({ maxResidentActors: RESIDENT }, (instruments) =>
             Effect.gen(function* () {
               const parent = yield* Minter.get(`created-${count}`)
               let next = 0
@@ -147,7 +150,7 @@ export const mint: Scenario = {
         )
 
         results.push(
-          yield* context.withRuntime({}, (instruments) =>
+          yield* context.withRuntime({ maxResidentActors: RESIDENT }, (instruments) =>
             Effect.gen(function* () {
               const direct = () =>
                 Effect.forEach(

@@ -1,4 +1,5 @@
 import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
+import { SqlClient } from "effect/unstable/sql"
 import {
   Actor,
   Actors,
@@ -9,7 +10,7 @@ import {
   Unauthorized,
 } from "../../index.ts"
 import type { Mintable } from "../../contexts/command.ts"
-import type { ActorRef } from "../../identity/caller.ts"
+import type { ActorRef, Caller } from "../../identity/caller.ts"
 import { deriveMintId } from "../../identity/mint.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
@@ -239,6 +240,14 @@ const expected = (parent: ActorRef, commandId: string, ordinal: number, child = 
 const proven = (parent: ActorRef, commandId: string, ordinal = 0) =>
   System.make({ source: "actor", ref: parent, mint: { commandId, ordinal } })
 
+/** Opens a task as `caller`, which the handle binds when it is acquired, and returns its failure. */
+const openAs = (id: string, title: string, caller: Caller) =>
+  task(id).pipe(
+    Effect.flatMap((child) => child.Open(title)),
+    Effect.provideService(CurrentCaller, caller),
+    Effect.flip,
+  )
+
 const created = Effect.fnUntraced(function* (actor: string, id: string) {
   const test = yield* ActorTest
 
@@ -404,12 +413,7 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           const rolledBack = yield* expected(planner.ref, refusedId, 0)
 
           expect(
-            yield* (yield* task(rolledBack))
-              .Open("rolled back")
-              .pipe(
-                Effect.provideService(CurrentCaller, proven(planner.ref, refusedId)),
-                Effect.flip,
-              ),
+            yield* openAs(rolledBack, "rolled back", proven(planner.ref, refusedId)),
           ).toMatchObject({ reason: Unauthorized.make({ code: "access_denied" }) })
 
           const died = yield* planner.PlanThenDie().pipe(Effect.exit)
@@ -448,14 +452,9 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* pause.reached
 
-          expect(
-            yield* (yield* task(id))
-              .Open("early")
-              .pipe(
-                Effect.provideService(CurrentCaller, proven(planner.ref, commandId)),
-                Effect.flip,
-              ),
-          ).toMatchObject({ reason: Unauthorized.make({ code: "access_denied" }) })
+          expect(yield* openAs(id, "early", proven(planner.ref, commandId))).toMatchObject({
+            reason: Unauthorized.make({ code: "access_denied" }),
+          })
           expect(yield* created("MintTask", id)).toBe(0)
 
           yield* pause.release
@@ -517,22 +516,46 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           const uncommitted = yield* (yield* Actors).mintCommandId
 
           expect(
-            yield* (yield* task(yield* expected(planner.ref, uncommitted, 0)))
-              .Open("never planned")
-              .pipe(
-                Effect.provideService(CurrentCaller, proven(planner.ref, uncommitted)),
-                Effect.flip,
-              ),
+            yield* openAs(
+              yield* expected(planner.ref, uncommitted, 0),
+              "never planned",
+              proven(planner.ref, uncommitted),
+            ),
           ).toMatchObject(denied)
 
-          expect(
-            yield* child
-              .Open("proven early")
-              .pipe(
-                Effect.provideService(CurrentCaller, proven(planner.ref, commandId)),
+          expect(yield* openAs(id, "proven early", proven(planner.ref, commandId))).toMatchObject(
+            denied,
+          )
+
+          // Presents the parent's committed row under an id an outside caller
+          // may use, already due by schedule but with its claim clock an hour
+          // out so the relay leaves it: Actor.as with the parent's exact proof,
+          // command id, and payload is still not the relay's delivery.
+          const sql = yield* SqlClient.SqlClient
+
+          const [row] = yield* sql<{ intent_id: string; scheduled: string }>`
+            SELECT intent_id, scheduled_at_ms::text AS scheduled FROM actor_outbox
+            WHERE target_type = 'MintTask' AND target_id = ${id}`.pipe(Effect.orDie)
+
+          const presented = yield* (yield* Actors).mintCommandId
+
+          const move = (from: string, to: string, scheduled: string) =>
+            sql`UPDATE actor_outbox SET intent_id = ${to}, scheduled_at_ms = ${scheduled}::bigint
+              WHERE intent_id = ${from}`.pipe(Effect.orDie)
+
+          yield* move(row!.intent_id, presented, "0")
+
+          for (const title of ["later", "hijacked"])
+            expect(
+              yield* task(id).pipe(
+                Actor.as(proven(planner.ref, commandId)),
+                Effect.flatMap((forger) => forger.Open(title).pipe(Actor.commandId(presented))),
                 Effect.flip,
               ),
-          ).toMatchObject(denied)
+            ).toMatchObject(denied)
+
+          yield* move(presented, row!.intent_id, row!.scheduled)
+
           expect(yield* created("MintTask", id)).toBe(0)
           yield* test.advance("1 hour")
           expect(yield* child.Title()).toBe("later")

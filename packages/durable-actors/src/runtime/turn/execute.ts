@@ -52,7 +52,7 @@ interface Admission {
 /**
  * True when `request` is a minted actor's creating intent: its caller carries
  * the parent's mint proof for the actor's id, and the parent's committed
- * outbox still holds that exact intent.
+ * outbox still holds that exact intent with the same payload.
  */
 const committedMintIntent = Effect.fnUntraced(function* (request: Request) {
   const { caller, ref } = request
@@ -65,7 +65,8 @@ const committedMintIntent = Effect.fnUntraced(function* (request: Request) {
   const rows = yield* sql<{ caller: string }>`SELECT caller FROM actor_outbox
     WHERE intent_id = ${request.commandId} AND kind = 'intent' AND tenant_id = ${ref.tenant}
       AND actor_type = ${caller.ref.actor} AND actor_id = ${caller.ref.id}
-      AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}`
+      AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}
+      AND payload::jsonb = ${request.payload}::jsonb`
 
   if (rows.length === 0) return false
 
@@ -168,16 +169,16 @@ export const executeTurn = Effect.fnUntraced(function* (
     )
       return yield* ActorError.make({ reason: NotCreated.make({}) })
 
-    // A minted actor is created only by the creating intent its parent's turn
-    // staged and committed: the proof binds the id to the parent's command, and
-    // the parent's outbox row, which stays until its delivery commits, proves
-    // that command committed the intent.
+    // A minted actor is created only by the relay delivering the creating
+    // intent its parent's turn staged and committed: the proof binds the id to
+    // the parent's command, and the parent's outbox row, which stays until its
+    // delivery commits, proves that command committed the intent.
     if (
       mintable &&
       policy.createdBy === request.command &&
       !admission.created &&
       isMintedId(id) &&
-      !(yield* committedMintIntent(request))
+      (request.external === true || !(yield* committedMintIntent(request)))
     )
       return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
 
