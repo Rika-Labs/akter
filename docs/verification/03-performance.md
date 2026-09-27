@@ -169,7 +169,7 @@ Two full runs of `hot-actor`, `state-size`, and `blobs` on `feat/30-blobs` at `c
    - **Cause (#41):** the runtime built a new Cluster entity object for every command, and Sharding caches one RPC client per entity object, by identity, until the runtime closes. Every executed command retained one client, about 11 KiB and 95 objects of JavaScript heap. The runtime now reuses one entity per actor type.
    - **Measured** by the `retained-heap` scenario on Postgres after every activation hibernated: 10.94 KiB and 95 objects retained per touched actor before the fix, at both 10k and 100k actors, and 0.09–0.11 KiB and 1 object after it. Sending 10,000 commands to one actor retained the same amount per command, so the growth was per command, including steady-state load.
    - **Remaining, in Effect Cluster:** with `MessageStorage.layerNoop`, Cluster's entity manager records every processed request id in a set that only its storage-read loop clears, and that loop doesn't run without storage. That keeps about 94 bytes per command for the runner's lifetime, roughly 1 GiB per 10 million commands. There's no safe workaround from the framework; it needs an upstream fix (#46).
-   - **Not re-measured:** the fix accounts for about 11 KiB of the 15–50 KiB per resident activation seen during `many-actors` first touch. The rest is heap held while activations are resident, and `many-actors` hasn't been rerun since the fix.
+   - **Re-measured (#59):** a resident activation holds about 19.5 KiB and 263 objects of heap, the same at 10k and 100k actors; see "Activation residency and pools across runners" below. That accounts for the 15–50 KiB per activation seen during first touch together with the retained client the fix removed.
 6. **Not bottlenecks here.**
    - **Generation fence:** its statements cost about 0.02 ms of server time per turn.
    - **Hot actor:** limited by its one-turn-at-a-time serialization and by runtime CPU. 64 callers gain about 30% over one.
@@ -217,6 +217,36 @@ Most of what remains isn't in the runtime's own code: about 40% is Effect's fibe
 
 First touch of 100k actors grew the heap by 1.0–1.8 GiB across the two runs. The run without the change grew it by 0.9 GiB, even though at most 10,000 actors were resident. This fits finding 5: memory follows actors touched, not actors resident. `steady-100000` still started a new activation for 89% of its turns. First touch took about 400 seconds, so most actors had already hibernated under the 60-second `hibernateAfter`. At 10k actors, 50 connections cut p99 by more than half against 10 connections in all three runs, and 25 connections gave no consistent gain. That's why the default is 50.
 
+### Activation residency and pools across runners (#59)
+
+`2026-09-27-fe0f6f6-p2-residency-postgres.json` and its same-VM repeat `2026-09-27-0a55dc6-p2-residency-repeat-postgres.json` run `many-actors`, `retained-heap`, and `multi-runner` on Postgres 18.6; `2026-09-27-0a55dc6-p2-residency-pglite.json` runs the first two on PGlite 0.5.8. The two SHAs differ only in documentation merged from `main`. Bun 1.4.2 on an 8-vCPU Xeon Platinum 8559C VM with 31 GiB, with the benchmark client, runtime, and Postgres sharing its CPUs. The repeat ran slower in most cases, by up to 38% in throughput, so compare latencies within a run, not across them.
+
+**Heap per resident activation.** `retained-heap/resident-<n>` first-touches n `ResidentProbe` actors, which hibernate after an hour, and measures the heap after a forced garbage collection while every activation is still resident:
+
+| Case              | KiB per actor (run, repeat) | Objects per actor | PGlite       |
+| ----------------- | --------------------------: | ----------------: | ------------ |
+| `resident-10000`  |                19.53, 19.53 |             263.0 | 19.43, 261.3 |
+| `resident-100000` |                19.56, 19.57 |             263.0 | not run      |
+
+The per-actor cost is flat from 10k to 100k and within 0.6% between runs and backends. The object types point at per-activation closures and bookkeeping rather than state: per actor, about 85 plain objects, 68 functions, 37 closure environments, and 9 maps and arrays. After hibernation the same runner keeps 0.045–0.078 KiB and under one object per touched actor (`touch-<n>`), and 0.045–0.047 KiB per command sent to one actor (`one-actor-10000`), no more than the 0.09–0.11 KiB recorded after the #41 fix. RSS per actor is not a usable measure here: across the two resident cases it ranged from −19 to +26 KiB, because the allocator returns and reuses pages independently of the heap.
+
+**The `maxResidentActors` default stays 10,000.** At 19.5 KiB each, 10,000 resident activations hold about 190 MiB of heap, and 100,000 hold about 1.9 GiB before the state they cache and the rest of the process. `resident-100000` ran with the limit raised to 101,000 and completed without errors, so the limit is a memory budget, not a throughput ceiling. A higher default would make an out-of-memory crash, instead of the typed, retryable `RunnerAtCapacity`, the failure on a small container. Deployments with the memory can raise it; the API reference says so already.
+
+**Connections and latency across runners.** `multi-runner/runners-<n>` runs 64 callers over 256 actors through `ActorTest.cluster`, whose runners each open a pool of 10 connections:
+
+| Runners | Throughput (op/s) | p50 (ms)    | p95 (ms)      | p99 (ms)      | Peak connections | Per runner |
+| ------: | ----------------: | ----------- | ------------- | ------------- | ---------------: | ---------: |
+|       1 |       1,439 / 966 | 32.5 / 46.8 | 123.1 / 188.1 | 187.5 / 304.0 |               11 |       11.0 |
+|       2 |       1,207 / 818 | 40.1 / 55.1 | 135.5 / 215.1 | 196.6 / 324.5 |               21 |       10.5 |
+|       4 |     1,194 / 1,018 | 53.1 / 60.7 | 90.0 / 108.9  | 105.0 / 135.9 |               41 |       10.3 |
+|       8 |       1,144 / 851 | 55.2 / 72.8 | 97.2 / 139.4  | 110.5 / 173.3 |               81 |       10.1 |
+
+Values are run / repeat. Every runner filled its pool and no more, so peak connections were runners × 10 plus one connection outside the runners' pools, in both runs. That is the sizing rule in [deployment](../operations/01-deployment.md#postgres-connections-across-runners): `runners × maxConnections` plus reserved connections must fit in `max_connections`. Adding runners raised p50, since most calls cross the in-process transport to another runner. It lowered p95 and p99, because more runners bring more pooled connections in total, so fewer callers queue for one. All runners share one process and its CPU, so these numbers show how connections add up, not separate processes' latency. Statements per operation stayed at 7.00–7.02 for every runner count.
+
+**Pool size on one runner.** With 64 callers over 10,000 warm actors, `steady-10000-pool-50` had a p99 of 96 and 130 ms against 179 and 166 ms for `pool-25`, and the default 10 connections gave 822 and 432 ms. The default of 50 stays.
+
+**Statements are unchanged:** 9.00–9.03 per first touch, 7.00 per warm turn, and 8.07–8.11 for `steady-100000`, whose turns mix 53–55% new activations with warm ones.
+
 ### Reducers, capacity, and owned-table ordering (#58)
 
 `2026-09-25-8db29a9-coverage-{postgres,pglite}.json` runs `hot-actor`, `owned-rows`, `reducers`, and `capacity` on `main` `96eb5e1` plus the new scenarios, with Bun 1.3.14 on a 4-vCPU cloud VM. `hot-actor` in the same run is the baseline. `2026-09-25-bcd66a4-coverage-repeat-postgres.json` repeats the Postgres run on the same VM: every statement count matched, capacity throughput moved by at most 7%, and in the repeat reducers with 64 callers ran faster than commands (464 against 432 op/s). The Postgres figures:
@@ -231,11 +261,34 @@ On PGlite, which reports no statement counts, reducers ran at 197–202 op/s aga
 
 [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed. The handler generates the ids, so the payload doesn't grow with n ([`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 33 ms with 256, and 83–86 ms with 1,024. With 16 subscribers it was 8.9 ms in one run and 4.2 ms in the repeat. Statements per turn stay at 8.0–8.2, and runtime CPU per turn tracks the latency, at about 80 µs per staged intent. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
 
+### Multi-runner relay (M2.4, #96)
+
+`2026-09-27-0ba95fc-relay-{postgres,pglite}.json` and the same-SHA repeat `2026-09-27-0ba95fc-relay-repeat-{postgres,pglite}.json` run `bun run bench --scenario outbox,effect-round-trip --runners 1,2,4` (full profile) on `main` `0ba95fc`, which includes the probe widening past locked rows and the backoff cap fix. `2026-09-27-cd74d7e-relay-{postgres,pglite}.json` is the same command on the branch before those fixes. All runs used Postgres 18.6 in Docker, PGlite 0.5.8, Bun 1.4.2, and one 8-vCPU Xeon 8559C machine shared by the client, the runners, and Postgres. The runners are in-process and share those CPUs, so the runner counts measure claim contention, not scale. No run had errors.
+
+| Postgres case                   | Runners | `cd74d7e` p50/p95/p99 ms | `0ba95fc` p50/p95/p99 ms | Repeat p50/p95/p99 ms    | Statements/op (`0ba95fc`) |
+| ------------------------------- | ------- | ------------------------ | ------------------------ | ------------------------ | ------------------------- |
+| outbox/delivery-sequential      | 1       | 5.19 / 8.42 / 11.15      | 5.20 / 8.89 / 12.34      | 5.39 / 8.74 / 11.69      | 14.13                     |
+| outbox/delivery-sequential      | 4       | 4.50 / 6.12 / 8.12       | 5.36 / 6.87 / 7.91       | 5.41 / 7.00 / 8.19       | 14.17                     |
+| outbox/delivery-concurrent-16   | 1       | 19.59 / 31.83 / 39.98    | 22.39 / 34.32 / 41.62    | 22.08 / 35.00 / 41.86    | 13.30                     |
+| outbox/delivery-concurrent-16   | 4       | 24.62 / 31.94 / 39.76    | 23.42 / 30.52 / 36.63    | 23.25 / 29.74 / 35.83    | 13.88                     |
+| outbox/drain-20000              | 1       | 34.58 / 57.27 / 109.46   | 34.05 / 40.65 / 46.04    | 33.93 / 40.59 / 46.02    | 5.20                      |
+| outbox/drain-20000              | 4       | 43.35 / 63.17 / 87.48    | 39.53 / 51.86 / 63.84    | 40.12 / 52.46 / 65.11    | 5.28                      |
+| effect-round-trip/sequential    | 1       | 7.07 / 9.52 / 12.61      | 8.66 / 10.48 / 12.02     | 8.19 / 10.10 / 11.45     | 18.00                     |
+| effect-round-trip/sequential    | 4       | 7.24 / 9.50 / 11.60      | 8.51 / 10.50 / 12.01     | 8.40 / 10.50 / 12.11     | 18.03                     |
+| effect-round-trip/concurrent-64 | 1       | 94.98 / 119.73 / 141.96  | 99.03 / 131.29 / 144.65  | 102.46 / 139.54 / 156.95 | 16.22                     |
+| effect-round-trip/concurrent-64 | 4       | 71.93 / 350.36 / 592.66  | 97.81 / 243.28 / 340.79  | 73.81 / 306.72 / 615.87  | 16.80                     |
+
+- **The fixes add no statements.** Statements per operation match `cd74d7e` in every case to within 0.07, and more runners add at most 0.7 per operation, from claims that find their candidates taken by another runner. The locked-row widening only widens the next claim's probe, and it only applies after a claim leaves capacity free, so the drain cases, which keep every slot busy, didn't change.
+- **Adding runners doesn't speed anything up on one machine.** With 4 runners, a 20,000-intent drain ran at 1,556–1,564 intents/s against 1,746–1,838 with one runner. Sequential latency stays near 5 ms for outbox delivery and 8.5 ms for an effect round trip at every runner count. More runners on one machine split the same CPUs and contend on the same rows.
+- **The effect tail with 64 callers is noise.** At 4 runners, the `concurrent-64` p99 was 593, 341, and 616 ms across the three runs, while its p50 stayed between 72 and 98 ms. The two `0ba95fc` runs disagree as much as either one differs from `cd74d7e`, so this is run-to-run variance in executor-lease contention, not a change from the fixes.
+- **Some single-runner p50s are 0.5–1.6 ms higher than at `cd74d7e`.** The largest is `effect-round-trip/sequential`, at 7.07 ms before and 8.19–8.66 ms after. The same-SHA repeat reproduces it, but the statement counts and the SQL on this path are unchanged. It could be machine drift between runs hours apart; it wasn't isolated further.
+- **PGlite is unchanged within noise.** It runs one runner only: `outbox/delivery-sequential` p50 was 8.82 ms before and 8.96–9.15 ms after, and `effect-round-trip/concurrent-64` 491 ms before and 465–474 ms after.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
 
 - Compute the payload hash and the database time once per command, instead of twice and three times. That removes three to four round trips from every command (#40, done: 14 to 10 round trips per warm turn).
 - Report Cluster's never-cleared processed-request set under `MessageStorage.layerNoop` upstream (#46).
-- Rerun `many-actors` after #41 and measure heap per resident activation before making any claim above 10k actors per runner.
+- Rerun `many-actors` after #41 and measure heap per resident activation before making any claim above 10k actors per runner (#59, done: about 19.5 KiB per resident activation; the default stays 10,000).
 - Add a measured stored-actor overhead case, using relation sizes after N actors, and several-runner cases before testing the per-shard turn hypothesis.
