@@ -101,7 +101,7 @@ const OwnerIdentity = {
 }
 
 export const Opened = Schema.TaggedUnion({
-  Opened: { ...OwnerIdentity, baseline: Schema.String },
+  Opened: { ...OwnerIdentity, baseline: Schema.String, recovered: Schema.optional(Schema.Boolean) },
   Failed: { value: Schema.String },
 })
 

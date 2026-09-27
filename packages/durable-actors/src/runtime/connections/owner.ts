@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Option, Schema, Semaphore } from "effect"
+import { Cause, type Context, Effect, Exit, Option, Schema, Semaphore } from "effect"
 import { Entity } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable, NotCreated, SessionEnded } from "../../errors/actor.ts"
@@ -69,7 +69,10 @@ export interface Activation {
   readonly locks: Map<string, Semaphore.Semaphore>
   /** Connections this activation opened itself; every other one is resumed. */
   readonly opened: Set<string>
-  keptAwake: boolean
+  /** The entity that holds this activation awake, released through its own context. */
+  keptAwake: Context.Context<never> | undefined
+  /** Serializes generation acquisition across the command and connection entities. */
+  readonly acquiring: Semaphore.Semaphore
 }
 
 const ended = (cause: SessionEnded["cause"], resync: boolean) =>
@@ -132,7 +135,8 @@ export const activationOwner = ({
           loading: Semaphore.makeUnsafe(1),
           locks: new Map(),
           opened: new Set(),
-          keptAwake: false,
+          keptAwake: undefined,
+          acquiring: Semaphore.makeUnsafe(1),
         }
 
         activations.set(entityId, created)
@@ -227,6 +231,11 @@ export const activationOwner = ({
 
   /** Fences this activation's generation and loads committed state, as a command turn would. */
   const acquire = (activation: Activation) =>
+    activation.cache.generation !== undefined && activation.cache.state !== undefined
+      ? Effect.void
+      : activation.acquiring.withPermit(acquireOnce(activation))
+
+  const acquireOnce = (activation: Activation) =>
     Effect.gen(function* () {
       if (activation.cache.generation !== undefined && activation.cache.state !== undefined) return
       const sql = yield* SqlClient.SqlClient
@@ -515,9 +524,18 @@ export const activationOwner = ({
       if (registration.policy.connections !== "keepAwake") return
       const open = (activation.rows?.size ?? 0) > 0
 
-      if (open === activation.keptAwake) return
-      activation.keptAwake = open
-      yield* Entity.keepAlive(open)
+      if (open === (activation.keptAwake !== undefined)) return
+
+      if (open) {
+        activation.keptAwake = yield* Effect.context<never>()
+        yield* Entity.keepAlive(true)
+
+        return
+      }
+
+      const holder = activation.keptAwake!
+      activation.keptAwake = undefined
+      yield* Entity.keepAlive(false).pipe(Effect.provideContext(holder))
     })
 
   // A defect in a handler closes only its connection; the activation stays resident.
@@ -557,8 +575,14 @@ export const activationOwner = ({
         yield* load(activation)
         const existing = activation.rows!.get(request.connectionId)
 
+        // A retried open cannot know whether its opening frames reached the holder.
         if (existing !== undefined && existing.holderEpoch === request.holderEpoch)
-          return { _tag: "Opened" as const, ...identity(activation), baseline: activation.through }
+          return {
+            _tag: "Opened" as const,
+            ...identity(activation),
+            baseline: activation.through,
+            recovered: true,
+          }
 
         if (
           [...activation.rows!.values()].filter((row) => row.member === request.member).length >=

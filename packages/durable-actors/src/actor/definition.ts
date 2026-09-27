@@ -764,13 +764,21 @@ const make = <
         return yield* Effect.die(new Error("Actor call in a workflow body outside a step"))
     })
 
-    const callId = Effect.gen(function* () {
-      const phase = yield* CurrentCallPhase
+    const callId = (command: string) =>
+      Effect.gen(function* () {
+        const phase = yield* CurrentCallPhase
 
-      if (CallPhase.$is("Activity")(phase)) return yield* phase.nextCommandId
+        if (CallPhase.$is("Activity")(phase)) return yield* phase.nextCommandId
 
-      return (yield* CurrentCommandId) ?? (yield* actors.mintCommandId)
-    })
+        const explicit = yield* CurrentCommandId
+
+        if (explicit !== undefined) return explicit
+        const connectionCommands = yield* CurrentConnectionCommands
+
+        return connectionCommands === undefined
+          ? yield* actors.mintCommandId
+          : yield* connectionCommands(`${ref.tenant}\u0000${ref.actor}\u0000${ref.id}`, command)
+      })
 
     const methods = Object.fromEntries(
       (includeInternal ? all : Object.values(api))
@@ -787,7 +795,7 @@ const make = <
 
                 const identify = lock.withPermit(
                   Effect.gen(function* () {
-                    if (identity === undefined) identity = yield* callId
+                    if (identity === undefined) identity = yield* callId(member.tag)
 
                     return identity
                   }),
@@ -842,20 +850,7 @@ const make = <
 
               const identify = lock.withPermit(
                 Effect.gen(function* () {
-                  if (identity === undefined) {
-                    const connectionCommands = yield* CurrentConnectionCommands
-                    const phase = yield* CurrentCallPhase
-
-                    identity = CallPhase.$is("Activity")(phase)
-                      ? yield* phase.nextCommandId
-                      : ((yield* CurrentCommandId) ??
-                        (connectionCommands === undefined
-                          ? yield* actors.mintCommandId
-                          : yield* connectionCommands(
-                              `${ref.tenant}\u0000${ref.actor}\u0000${ref.id}`,
-                              member.tag,
-                            )))
-                  }
+                  if (identity === undefined) identity = yield* callId(member.tag)
 
                   return identity
                 }),

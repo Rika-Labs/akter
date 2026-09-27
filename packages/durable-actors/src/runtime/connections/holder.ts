@@ -92,7 +92,7 @@ export interface OwnerChannel {
       readonly commands: ConnectionCommands
     },
   ) => Effect.Effect<
-    | ({ readonly _tag: "Opened"; readonly baseline: string } & Owner)
+    | ({ readonly _tag: "Opened"; readonly baseline: string; readonly recovered?: boolean } & Owner)
     | { readonly _tag: "Failed"; readonly value: string },
     ActorError
   >
@@ -122,6 +122,8 @@ export interface OwnerChannel {
 /** What a holder needs to know about an actor type it holds connections to. */
 export interface HeldActorType {
   readonly deliveryMs: number
+  /** How long a new owner may take to answer a resync: the dead owner's lock plus a wake. */
+  readonly takeoverMs: number
   readonly reauthorizeMs: number
   readonly retryWindowMs: number
   readonly placement: "tenant" | "actor"
@@ -323,42 +325,46 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const at = yield* now
 
       for (const connection of actor.connections.values()) {
-        if (!connection.open) continue
-
-        connection.resyncs = connection.resyncs.filter((time) => at - time < RESYNC_WINDOW_MS)
-        connection.resyncs.push(at)
-
-        if (connection.resyncs.length >= 3) {
-          const retryAfterMs = yield* Random.nextIntBetween(1_000, 5_000)
-          yield* end(connection, ended("OwnerLost", true, retryAfterMs), true)
-
-          continue
-        }
-
-        // A loss during a resync starts it again from the same cursor, keeping the frames it deferred.
-        const previous = connection.resync
-        const after = previous?.after ?? (actor.through === "0" ? undefined : actor.through)
-        connection.resync = {
-          after,
-          replayed: false,
-          sent: false,
-          // The client's deadline starts once the new owner has answered the resync.
-          deadline: Number.POSITIVE_INFINITY,
-          deferred: previous?.deferred ?? [],
-          deferredBytes: previous?.deferredBytes ?? 0,
-          replayedEvents: previous?.replayedEvents ?? new Set(),
-        }
-        yield* push(
-          connection,
-          ClientMessage.cases.Resync.make({
-            after,
-            reason: "OwnerLost",
-            deadlineMs: RESYNC_DEADLINE_MS,
-          }),
-          true,
-        )
-        yield* Queue.offer(connection.wake, undefined)
+        if (connection.open) yield* resync(actor, connection, at)
       }
+    })
+
+  // Asks one connection's client to resync in place from its last proven cursor.
+  const resync = (actor: HeldActor, connection: Held, at: number) =>
+    Effect.gen(function* () {
+      connection.resyncs = connection.resyncs.filter((time) => at - time < RESYNC_WINDOW_MS)
+      connection.resyncs.push(at)
+
+      if (connection.resyncs.length >= 3) {
+        const retryAfterMs = yield* Random.nextIntBetween(1_000, 5_000)
+        yield* end(connection, ended("OwnerLost", true, retryAfterMs), true)
+
+        return
+      }
+
+      // A loss during a resync starts it again from the same cursor, keeping the frames it deferred.
+      const previous = connection.resync
+      const after = previous?.after ?? (actor.through === "0" ? undefined : actor.through)
+      connection.resync = {
+        after,
+        replayed: false,
+        sent: false,
+        // Until the new owner answers, this bounds the takeover; then the client's acknowledgment.
+        deadline: at + connection.type.takeoverMs,
+        deferred: previous?.deferred ?? [],
+        deferredBytes: previous?.deferredBytes ?? 0,
+        replayedEvents: previous?.replayedEvents ?? new Set(),
+      }
+      yield* push(
+        connection,
+        ClientMessage.cases.Resync.make({
+          after,
+          reason: "OwnerLost",
+          deadlineMs: RESYNC_DEADLINE_MS,
+        }),
+        true,
+      )
+      yield* Queue.offer(connection.wake, undefined)
     })
 
   // Records the answering owner; a newer generation over an unsealed older one means the old owner died.
@@ -409,6 +415,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       }
 
       actor.seq = message.seq
+      const at = yield* now
 
       for (const item of message.items)
         yield* HolderItem.match(item, {
@@ -423,6 +430,9 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
                   return Effect.void
                 }
+
+                // Nothing reaches a client past its authorization bound.
+                if (at >= authorizedUntil(connection)) return end(connection, unauthorized, true)
 
                 const out = ClientMessage.cases.Frame.make({
                   frame: frame.frame,
@@ -476,11 +486,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       return { wrongEpoch: false, unknown }
     })
 
-  const retrying = <A>(
-    connection: Held,
-    effect: Effect.Effect<A, ActorError>,
-    deadlineMs: number,
-  ) =>
+  const retried = <A>(connection: Held, effect: Effect.Effect<A, ActorError>) =>
     effect.pipe(
       Effect.retry({
         while: (error) => error.isRetryable && !connection.ended,
@@ -489,6 +495,14 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           Schedule.spaced("250 millis"),
         ]),
       }),
+    )
+
+  const retrying = <A>(
+    connection: Held,
+    effect: Effect.Effect<A, ActorError>,
+    deadlineMs: number,
+  ) =>
+    retried(connection, effect).pipe(
       Effect.timeoutOrElse({
         duration: deadlineMs,
         orElse: () => Effect.fail(ended("ActorUnavailable", true)),
@@ -531,7 +545,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           const answer = yield* retrying(
             connection,
             connection.type.channel.resync({ ...address(connection), after: pending.after }),
-            Math.max(0, authorizedUntil(connection) - (yield* now)),
+            Math.max(0, Math.min(authorizedUntil(connection), pending.deadline) - (yield* now)),
           ).pipe(Effect.exit)
 
           if (connection.ended) return
@@ -800,28 +814,50 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     actor.connections.set(connection.id, connection)
     held.set(connection.id, connection)
 
-    const answer = yield* retrying(
-      connection,
-      type.channel.open({
-        ...address(connection),
-        member: request.member,
-        caller: request.caller,
-        params: request.params,
-        commands: {
-          secret: connection.secret,
-          seq: 0,
-          issuedAt: (yield* now) - COMMAND_SKEW_MS,
-          expiresAt: (yield* now) - COMMAND_SKEW_MS + type.retryWindowMs,
-        },
-      }),
-      type.deliveryMs,
-    ).pipe(
-      Effect.onError(() =>
-        Effect.andThen(
-          Effect.sync(() => release(connection)),
-          deleteRow(connection),
+    const openCall = type.channel.open({
+      ...address(connection),
+      member: request.member,
+      caller: request.caller,
+      params: request.params,
+      commands: {
+        secret: connection.secret,
+        seq: 0,
+        issuedAt: (yield* now) - COMMAND_SKEW_MS,
+        expiresAt: (yield* now) - COMMAND_SKEW_MS + type.retryWindowMs,
+      },
+    })
+
+    // The owner may still commit an open this holder gave up on; such a late row is closed again.
+    const attempt = yield* retried(connection, openCall).pipe(Effect.forkIn(scope))
+
+    const abandon = Effect.gen(function* () {
+      connection.ended = true
+      release(connection)
+      yield* deleteRow(connection)
+
+      yield* Fiber.await(attempt).pipe(
+        Effect.flatMap((exit) =>
+          Exit.isSuccess(exit) && Predicate.isTagged(exit.value, "Opened")
+            ? retrying(
+                connection,
+                type.channel.close({
+                  ...address(connection),
+                  cause: SessionEnded.make({ cause: "ActorUnavailable", resync: true }),
+                }),
+                type.deliveryMs,
+              ).pipe(Effect.catch(() => deleteRow(connection)))
+            : Effect.void,
         ),
-      ),
+        Effect.forkIn(scope),
+      )
+    })
+
+    const answer = yield* Fiber.join(attempt).pipe(
+      Effect.timeoutOrElse({
+        duration: type.deliveryMs,
+        orElse: () => Effect.fail(ended("ActorUnavailable", true)),
+      }),
+      Effect.onError(() => abandon),
     )
 
     if (Predicate.isTagged(answer, "Failed")) {
@@ -837,6 +873,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     // An open handler that closed the connection leaves it already ended with `ServerClosed`.
     if (!connection.ended) {
       connection.open = true
+
+      if (answer.recovered === true) yield* resync(actor, connection, yield* now)
       connection.loop = yield* inboundLoop(connection).pipe(Effect.forkIn(scope))
     }
 

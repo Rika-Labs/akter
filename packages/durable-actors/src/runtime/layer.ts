@@ -228,6 +228,13 @@ export const layer = (options: Options) => {
 
       const heldTypes = new Map<string, HeldActorType>()
 
+      const shardLockMs = Duration.toMillis(
+        Option.match(yield* Effect.serviceOption(ShardingConfig.ShardingConfig), {
+          onNone: () => ShardingConfig.defaults.shardLockExpiration,
+          onSome: (config) => config.shardLockExpiration,
+        }),
+      )
+
       const heldType = (registration: Registration): HeldActorType => {
         const entity = connectionEntity(registration.name)
 
@@ -240,6 +247,7 @@ export const layer = (options: Options) => {
 
         return {
           deliveryMs: registration.policy.deliveryMs,
+          takeoverMs: shardLockMs + registration.policy.deliveryMs,
           reauthorizeMs: registration.policy.reauthorizeMs,
           retryWindowMs,
           placement: registration.placement,
