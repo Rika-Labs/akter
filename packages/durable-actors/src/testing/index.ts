@@ -2,6 +2,16 @@ export { ActorTest, cleanup } from "./actor-test.ts"
 
 export { ActorCluster } from "./cluster.ts"
 
+export { SIMULATION_SEEDS, simulationSeeds } from "./simulate.ts"
+
+export type {
+  Simulation,
+  SimulationFault,
+  SimulationOptions,
+  SimulationReport,
+  SimulationStep,
+} from "./simulate.ts"
+
 export type { ClusterOptions, RunnerServices } from "./cluster.ts"
 
 export { conformance, describeConformance } from "./conformance.ts"

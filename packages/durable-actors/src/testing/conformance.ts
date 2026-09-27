@@ -1,5 +1,6 @@
 import {
   Cause,
+  Clock,
   Crypto,
   Deferred,
   Effect,
@@ -530,6 +531,25 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             state: { count: 23 },
             receipts: 1,
           })
+        }),
+      ),
+  },
+  {
+    name: "keeps retries prompt after many crashed turns of one actor type",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+
+          for (let index = 0; index < 12; index++) {
+            yield* test.crashNext("beforeCommit")
+            yield* (yield* Counter.get(`crash-many-${index}`)).Increment(1)
+          }
+
+          yield* test.crashNext("beforeCommit")
+          const started = yield* Clock.currentTimeMillis
+          expect(yield* (yield* Counter.get("crash-many-last")).Increment(2)).toBe(2)
+          expect((yield* Clock.currentTimeMillis) - started < 2_000).toBe(true)
         }),
       ),
   },

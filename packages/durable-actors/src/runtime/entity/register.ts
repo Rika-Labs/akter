@@ -43,6 +43,9 @@ const EntityId = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.Strin
 
 const encodeEntityIdOf = Schema.encodeEffect(EntityId)
 
+/** A rebuilt handler waits this long after a retryable turn death. */
+const DEFECT_RESTART = Schedule.spaced("50 millis")
+
 export const encodeEntityId = (tenantAndId: readonly [string, string]) =>
   encodeEntityIdOf(tenantAndId)
 
@@ -278,6 +281,10 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
       concurrency: 1,
       maxIdleTime: registration.policy.idleMs,
       mailboxCapacity: registration.policy.mailboxCapacity,
+      // Only retryable causes reach a restart, and Cluster shares one backoff
+      // across every restart of the type without resetting it, so a growing
+      // default would slow every later retry of the type to its cap.
+      defectRetryPolicy: DEFECT_RESTART,
     },
   )
 
