@@ -10,13 +10,17 @@ _An Effect-native actor framework with durable identity, transactional turns, an
 
 **M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
 
-Run the example against a **disposable Postgres database**; startup creates the framework tables:
+## Quickstart
 
 ```sh
-DATABASE_URL=postgres://user:password@localhost:5432/counter bun run --filter @durable-actors/counter start
+bun create @durable-actors my-app   # or: --template chat
+cd my-app && bun install
+bun start   # visits: 1
+bun start   # visits: 2, read back from ./.data
+bun test
 ```
 
-Each run commits one increment and retries the same command Effect. `committed` and `replayed` match; restarting the program increments the persisted counter once more. [Runtime wiring](examples/counter/src/main.ts) uses explicit application authorization, not an HTTP authentication endpoint.
+The generated app stores its data in file-backed [PGlite](https://pglite.dev), so it needs no Docker or database server; `DATABASE_URL=postgres://...` switches it to Postgres. PGlite here is for development and one process per data directory, not production. Neither package is on npm before the `0.1.0-alpha` release, so for now the [quickstart](docs/quickstart.md) runs the scaffolder from a checkout against a locally packed tarball.
 
 ## Install
 
@@ -38,49 +42,63 @@ Changes are listed in the [changelog](packages/durable-actors/CHANGELOG.md). The
 
 ## The API
 
-Define an actor, implement its commands, and get a typed handle. Small values live in database-backed state; relational records stay in ordinary tables. There is one way to do each task. The shape below follows [ADR 0010](docs/decisions/0010-one-way-effect-native-api.md). The command, reducer, state, policy, and `X.Turn` parts run today (see the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and the runnable [counter](examples/counter/src/counter/contract.ts)).
+Define an actor, implement its commands, and get a typed handle. This is the quickstart's counter, and CI runs it on PGlite and Postgres:
 
 ```ts
-import { Effect, Result, Schema } from "effect"
+// src/counter/contract.ts: the actor's public shape
 import { Actor } from "@durable-actors/core"
+import { Effect, Schema } from "effect"
 
-export const CounterState = Actor.state({
-  count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
-})
-
-// A reducer is a pure transition: it runs optimistically in the browser and authoritatively on the server.
-export const Increment = Actor.reducer("Increment", {
-  state: CounterState,
-  input: Schema.Int,
-  reduce: (state, amount) => Result.succeed({ count: state.count + amount }),
-})
-
-export const Reset = Actor.command("Reset")
+export const Increment = Actor.command("Increment", { input: Schema.Int, output: Schema.Int })
 
 export const Counter = Actor.make("Counter", {
-  state: CounterState,
-  api: { Increment, Reset },
-  policy: { hibernateAfter: "30 seconds" },
-})
-
-export const CounterLive = Counter.toLayer(
-  Effect.succeed({
-    Reset: Effect.fn(function* () {
-      const turn = yield* Counter.Turn
-      yield* turn.state.set({ count: 0 })
-    }),
-  }),
-)
-
-const program = Effect.gen(function* () {
-  const counter = yield* Counter.create()
-  return yield* counter.Increment(1)
+  key: Schema.NonEmptyString,
+  state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  api: { Increment },
 })
 ```
 
-Omit `key` for a framework-minted ID and `Counter.create()`. Use an ID schema for `Counter.get(id)`, or `key: Actor.singleton` for `Counter.get()`. Outside a turn every call is request/reply; inside a turn, `Counter.intents(id)` records durable intents that commit with the turn. Acquiring a handle writes nothing; the first command establishes durable state.
+```ts
+// src/counter/layer.ts: the handler runs inside the turn's transaction
+import { Effect } from "effect"
+import { Counter } from "./contract.ts"
 
-In an application, the contract and `CounterLive` belong in separate `contract.ts` and `layer.ts` files. The application supplies the handler layer and `Actors.layer` from `@durable-actors/core/runtime`. See the [server API](docs/api/01-server-api.md) for the full design.
+export const CounterLive = Counter.toLayer(
+  Effect.succeed({
+    Increment: Effect.fnUntraced(function* (amount: number) {
+      const turn = yield* Counter.Turn
+      yield* turn.state.set({ count: turn.state.count + amount })
+
+      return turn.state.count
+    }),
+  }),
+)
+```
+
+```ts
+// src/main.ts: runtime wiring and one call
+const live = CounterLive.pipe(
+  Layer.provideMerge(
+    Actors.layer({
+      authorize: ({ caller, ref }) =>
+        Effect.succeed(Schema.is(User)(caller) && ref.tenant === "quickstart"),
+    }),
+  ),
+  Layer.provide(DatabaseLive), // Database.postgres with DATABASE_URL, else Database.pglite({ dataDir })
+  Layer.provide(BunCrypto.layer),
+)
+
+const program = Effect.gen(function* () {
+  const counter = yield* Counter.get("visits").pipe(
+    Actor.tenant("quickstart"),
+    Actor.as(User.make({ subject: "you" })),
+  )
+
+  yield* Console.log(`visits: ${yield* counter.Increment(1)}`)
+})
+```
+
+Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error, and [`examples/chat`](examples/chat) adds blobs, effects, and retention. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
 
 ## Why Effect for actors?
 
