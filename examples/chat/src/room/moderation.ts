@@ -19,7 +19,11 @@ export class ModerationApi extends Context.Service<
   })
 }
 
-/** Tells moderators about an appeal; an appeal's notify step calls it at least once. */
+/**
+ * Tells moderators about an appeal. An appeal's notify step calls it at least
+ * once, so a real pager deduplicates on `messageId`: each message has one
+ * appeal execution, keyed by that id.
+ */
 export class Moderators extends Context.Service<
   Moderators,
   { readonly notify: (messageId: string) => Effect.Effect<void> }

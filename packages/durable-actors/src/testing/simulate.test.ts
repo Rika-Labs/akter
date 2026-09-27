@@ -189,6 +189,19 @@ describe("ActorTest.simulate", () => {
       }),
     ))
 
+  it("dies with the seed when the program sends no command", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const failure = yield* ActorTest.simulate(
+          { seed: "empty", faults: FAULTS },
+          () => Effect.void,
+        ).pipe(Effect.exit)
+
+        expect(String(failure)).toContain("Simulation failed with seed empty")
+        expect(String(failure)).toContain("the program sent no command")
+      }),
+    ))
+
   it("leaves no fault queued for the next run after a program fails", () =>
     runtime.runPromise(
       Effect.gen(function* () {

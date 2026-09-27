@@ -230,11 +230,13 @@ describe("runner and relay process death with Postgres", () => {
           expect(of("Add")).toBe(of("Send"))
           expect(yield* total("DrillReceiver")).toBe(of("Send"))
 
-          const recovery = Math.max(
-            ...first.process.done
-              .filter(({ started }) => started >= killedAt)
-              .map(({ started, latency }) => started + latency - killedAt),
-          )
+          // The slowest command a survivor started after the kill waited for
+          // the killed runner's shards; its commit marks their takeover.
+          const stalled = first.process.done
+            .filter(({ started }) => started >= killedAt)
+            .reduce((slowest, done) => (done.latency > slowest.latency ? done : slowest))
+
+          const recovery = stalled.started + stalled.latency - killedAt
 
           const worst = Math.max(
             ...survivors.flatMap(({ process }) => process.done.map(({ latency }) => latency)),

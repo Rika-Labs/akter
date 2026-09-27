@@ -99,7 +99,7 @@ export const RoomCommands = Room.toLayer(
         yield* Effect.logWarning("moderation dead-lettered", dead.effectId)
       }),
 
-      // A replay returns the recorded notify step, so moderators hear of an appeal once per commit.
+      // A runner lost mid-notify reruns it; `Moderators` deduplicates by message id.
       Appeal: Effect.fnUntraced(function* ({ messageId }) {
         const wf = yield* Room.Workflow
 

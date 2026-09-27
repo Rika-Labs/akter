@@ -1,4 +1,4 @@
-import { Cause, Config, Duration, Effect } from "effect"
+import { Cause, Config, DateTime, Duration, Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors } from "../index.ts"
 import type { TurnPoint } from "../runtime/turn/hooks.ts"
@@ -8,7 +8,7 @@ import type { ActorTest } from "./actor-test.ts"
  * A fault `ActorTest.simulate` injects into one command:
  * - `crashBeforeCommit`: the turn dies before COMMIT, so it rolls back and the handle retries.
  * - `crashAfterCommit`: the turn commits and the reply is lost, so the retry reads the receipt.
- * - `dropReply`: the caller never sees the reply and sends the same command id again.
+ * - `dropReply`: the caller discards the reply it got and sends the same command id again.
  * - `relayCrash`: the next relay delivery dies before deleting its outbox row, so the row
  *   is redelivered once its claim lease ends. Drawn only for commands marked `relays`.
  * - `clockSkew`: the framework clock jumps ahead of the database clock before the command.
@@ -91,9 +91,10 @@ const SETTLE_ROUNDS = 5
 /**
  * Runs `program` against `test`'s runtime under a fault
  * schedule drawn from `options.seed`, then settles the relay and checks that
- * every command committed exactly one receipt and no due outbox row was left
- * undelivered. Any failure dies with the seed, so rerunning that seed repeats
- * the schedule.
+ * every command committed exactly one receipt and no due or attempted outbox
+ * row was left undelivered. Any failure dies with the seed, so rerunning that
+ * seed repeats the program's choices and the fault on each step; command ids
+ * are minted fresh on every run.
  */
 export const simulate =
   (test: ActorTest["Service"]) =>
@@ -156,20 +157,26 @@ export const simulate =
       const run = Effect.gen(function* () {
         yield* program(simulation)
 
-        // A crashed delivery leaves its row claimed until its lease ends, so
-        // settling waits for every row, not only the ones due now.
-        let stored = Number.POSITIVE_INFINITY
+        if (steps.length === 0) violations.push("the program sent no command")
 
-        for (let round = 0; round < SETTLE_ROUNDS && stored > 0; round++) {
+        // A crashed delivery pushes its row's due time to the end of its claim
+        // lease; a row that was ever attempted is still in flight, while one
+        // never attempted and not yet due is a timer the program scheduled.
+        let unsettled = Number.POSITIVE_INFINITY
+
+        for (let round = 0; round < SETTLE_ROUNDS && unsettled > 0; round++) {
           yield* test.advance(settle)
+          const now = DateTime.toEpochMillis(yield* test.now)
 
           const [pending] = yield* sql<{ count: number }>`
-          SELECT count(*)::integer AS count FROM actor_outbox WHERE tenant_id = ${test.tenant}`
+          SELECT count(*)::integer AS count FROM actor_outbox
+          WHERE tenant_id = ${test.tenant} AND (due_at_ms <= ${now} OR attempts > 0)`
 
-          stored = pending!.count
+          unsettled = pending!.count
         }
 
-        if (stored > 0) violations.push(`${stored} outbox rows were never delivered`)
+        if (unsettled > 0)
+          violations.push(`${unsettled} due or attempted outbox rows were never delivered`)
 
         const left = yield* test.clearFaults
 
