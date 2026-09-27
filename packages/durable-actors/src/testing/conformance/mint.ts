@@ -58,6 +58,8 @@ const Escape = Actor.command("Escape")
 
 const Steal = Actor.command("Steal")
 
+const PlanKeyed = Actor.command("PlanKeyed")
+
 const PlanStagedFirst = Actor.command("PlanStagedFirst", {
   input: Schema.String,
   output: Schema.String,
@@ -77,6 +79,7 @@ const Planner = Actor.make("MintPlanner", {
     Escape,
     Steal,
     PlanStagedFirst,
+    PlanKeyed,
   },
 })
 
@@ -176,6 +179,11 @@ export const mintLayer = Layer.mergeAll(
         escaped = (yield* Planner.Turn).mint(Task)
       }),
       Steal: () => Effect.asVoid(Effect.suspend(() => escaped)),
+      PlanKeyed: Effect.fnUntraced(function* () {
+        const id = yield* (yield* Planner.Turn).mint(Task)
+        runs.push([id])
+        yield* (yield* Task.intents(id)).Open("keyed").pipe(Intent.key("slot"))
+      }),
       PlanStagedFirst: Effect.fnUntraced(function* (known: string) {
         yield* (yield* Task.intents(known as Parameters<typeof Task.intents>[0])).Open(
           "staged first",
@@ -578,7 +586,7 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "rejects a mint capability that escaped its turn and an actor that cannot be minted",
+    name: "rejects a mint capability that escaped its turn, a keyed creating intent, and an actor that cannot be minted",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -589,6 +597,12 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           expect(Exit.isFailure(stolen) && Cause.pretty(stolen.cause)).toContain(
             "Mint capability escaped its turn",
           )
+
+          const keyed = yield* planner.PlanKeyed().pipe(Effect.exit)
+          expect(Exit.isFailure(keyed) && Cause.pretty(keyed.cause)).toContain(
+            `Minted actor MintTask/${runs.at(-1)![0]} has a keyed creating intent`,
+          )
+          expect(yield* (yield* ActorTest).inspect(planner.ref)).toMatchObject({ outbox: 0 })
 
           const unmintable = yield* planner.MintUnmintable().pipe(Effect.exit)
           expect(Exit.isFailure(unmintable) && Cause.pretty(unmintable.cause)).toContain(

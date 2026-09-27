@@ -155,6 +155,21 @@ export const openOutbox = ({
 
       return undefined
     },
+    /**
+     * A minted actor whose creating intent has a key, if any: a later keyed
+     * intent or cancel could remove it before delivery and leave the id uncreated.
+     */
+    keyedCreation: (): ActorRef | undefined => {
+      for (const { child, createdBy } of staging.minted.values())
+        if (
+          staging.intents.some(
+            (intent) => creates(intent, child, createdBy) && intent.key !== undefined,
+          )
+        )
+          return child
+
+      return undefined
+    },
     close: (): StagedOutbox => {
       staging.open = false
 

@@ -883,6 +883,13 @@ const make = <
                   ),
                 )
 
+              const keyed = outbox.keyedCreation()
+
+              if (keyed !== undefined)
+                return yield* Effect.die(
+                  new Error(`Minted actor ${keyed.actor}/${keyed.id} has a keyed creating intent`),
+                )
+
               const value = yield* memberCodec.encodeOutput({ value: output }).pipe(Effect.orDie)
 
               return {

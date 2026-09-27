@@ -1,4 +1,4 @@
-import { DateTime, Deferred, Effect } from "effect"
+import { DateTime, Deferred, Effect, Schedule } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { load } from "../measure.ts"
 import { Sender } from "../probe/contract.ts"
@@ -35,7 +35,12 @@ const committed = (ids: ReadonlyArray<string>) =>
       Effect.orDie,
     )
 
-    yield* count.pipe(Effect.repeat({ until: (created) => created === ids.length }))
+    yield* count.pipe(
+      Effect.repeat({
+        schedule: Schedule.spaced("2 millis"),
+        until: (created) => created === ids.length,
+      }),
+    )
   })
 
 const labelsOf = (label: string, count: number) =>

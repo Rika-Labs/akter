@@ -16,7 +16,7 @@ import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
-import { OutboxRuntime, writeOutbox } from "./outbox.ts"
+import { CallerJson, OutboxRuntime, writeOutbox } from "./outbox.ts"
 import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
 
 const isSystem = Schema.is(System)
@@ -62,12 +62,23 @@ const committedMintIntent = Effect.fnUntraced(function* (request: Request) {
 
   const sql = yield* SqlClient.SqlClient
 
-  const rows = yield* sql`SELECT 1 FROM actor_outbox
+  const rows = yield* sql<{ caller: string }>`SELECT caller FROM actor_outbox
     WHERE intent_id = ${request.commandId} AND kind = 'intent' AND tenant_id = ${ref.tenant}
       AND actor_type = ${caller.ref.actor} AND actor_id = ${caller.ref.id}
       AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}`
 
-  return rows.length > 0
+  if (rows.length === 0) return false
+
+  const committed = yield* Schema.decodeEffect(CallerJson)(rows[0]!.caller).pipe(Effect.orDie)
+
+  return (
+    isSystem(committed) &&
+    committed.ref?.tenant === caller.ref.tenant &&
+    committed.ref.actor === caller.ref.actor &&
+    committed.ref.id === caller.ref.id &&
+    committed.mint?.commandId === caller.mint?.commandId &&
+    committed.mint?.ordinal === caller.mint?.ordinal
+  )
 })
 
 /**
