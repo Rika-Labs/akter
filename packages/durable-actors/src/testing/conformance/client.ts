@@ -544,6 +544,7 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           const peeked = HttpRoom.client({ baseUrl: server.url, headers, fetch: wire.fetch }).get(
             "peek",
           )
+
           expect(yield* settle(() => peeked.Peek())).toEqual({ ok: true, value: undefined })
           expect(yield* settle(() => peeked.Post({ text: "p" }))).toEqual({ ok: true, value: 1 })
           expect(yield* settle(() => peeked.Peek())).toEqual({ ok: true, value: 1 })

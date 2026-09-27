@@ -94,6 +94,8 @@ const MAX_BACKOFF_MS = 2_000
 
 const MINTED_LIMIT = 1_024
 
+const ORIGIN_LIMIT = 64
+
 /** State every client of one base URL shares: the database clock, the retry window, and the token. */
 interface Origin {
   readonly clock: DatabaseClock
@@ -114,7 +116,12 @@ const origins = new Map<string, Origin>()
 const originOf = (baseUrl: string): Origin => {
   const existing = origins.get(baseUrl)
 
-  if (existing !== undefined) return existing
+  if (existing !== undefined) {
+    origins.delete(baseUrl)
+    origins.set(baseUrl, existing)
+
+    return existing
+  }
 
   const origin: Origin = {
     clock: new DatabaseClock(),
@@ -124,6 +131,9 @@ const originOf = (baseUrl: string): Origin => {
   }
 
   origins.set(baseUrl, origin)
+  const oldest = origins.keys().next()
+
+  if (origins.size > ORIGIN_LIMIT && oldest.done !== true) origins.delete(oldest.value)
 
   return origin
 }
@@ -307,8 +317,7 @@ const isVoidInput = (member: ServedMember) =>
 
 /** Decodes a success body the way the server writes it: empty for void, `null` for undefined. */
 const outputDecoder = (member: ServedMember) => {
-  if (SchemaAST.isVoid(member.output.ast))
-    return (_: Schema.Json | undefined) => Effect.succeed(undefined)
+  if (SchemaAST.isVoid(member.output.ast)) return () => Effect.void
 
   const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(member.output))
 
