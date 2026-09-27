@@ -253,6 +253,7 @@ export const layer = (options: Options) => {
           placement: registration.placement,
           routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
           hasResync: (member) => registration.connections.get(member)?.hasResync ?? false,
+          hasMember: (member) => registration.connections.has(member),
           channel: {
             open: (request) =>
               connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),

@@ -217,7 +217,11 @@ export const activationOwner = ({
 
       if (answer.value.wrongEpoch) return yield* dropRows(activation, held)
 
-      yield* dropRows(activation, answer.value.unknown)
+      const mine = new Set(held)
+      yield* dropRows(
+        activation,
+        answer.value.unknown.filter((id) => mine.has(id)),
+      )
     }).pipe(Effect.catchIf(SqlError.isSqlError, () => Effect.void))
 
   const seal = (activation: Activation) =>
@@ -249,7 +253,7 @@ export const activationOwner = ({
       const actor = yield* where(activation)
       const { ref, key } = activation
 
-      yield* sql.withTransaction(
+      const acquired = yield* sql.withTransaction(
         Effect.gen(function* () {
           yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
             VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}) ON CONFLICT DO NOTHING`
@@ -276,12 +280,16 @@ export const activationOwner = ({
           const state = yield* sql<{ key: string; value: Uint8Array }>`
             SELECT key, value FROM actor_state WHERE ${actor}`
 
-          activation.cache.generation = row!.generation
-          activation.cache.state = new Map(state.map(({ key, value }) => [key, decompress(value)]))
-          activation.head = row!.head
-          activation.through = row!.head
+          return { row: row!, state }
         }),
       )
+
+      activation.cache.generation = acquired.row.generation
+      activation.cache.state = new Map(
+        acquired.state.map(({ key, value }) => [key, decompress(value)]),
+      )
+      activation.head = acquired.row.head
+      activation.through = acquired.row.head
     })
 
   /** Loads the actor's connection rows once per activation, excluding holders that are gone. */

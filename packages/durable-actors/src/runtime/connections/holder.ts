@@ -129,6 +129,7 @@ export interface HeldActorType {
   readonly retryWindowMs: number
   readonly placement: "tenant" | "actor"
   readonly hasResync: (member: string) => boolean
+  readonly hasMember: (member: string) => boolean
   readonly channel: OwnerChannel
   readonly routingKey: (ref: ActorRef) => bigint
 }
@@ -332,7 +333,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     })
 
   // Asks one connection's client to resync in place from its last proven cursor.
-  const resync = (actor: HeldActor, connection: Held, at: number) =>
+  const resync = (actor: HeldActor, connection: Held, at: number, fromStart = false) =>
     Effect.gen(function* () {
       connection.resyncs = connection.resyncs.filter((time) => at - time < RESYNC_WINDOW_MS)
       connection.resyncs.push(at)
@@ -346,7 +347,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
       // A loss during a resync starts it again from the same cursor, keeping the frames it deferred.
       const previous = connection.resync
-      const after = previous?.after ?? (actor.through === "0" ? undefined : actor.through)
+      const after =
+        previous?.after ?? (fromStart || actor.through === "0" ? undefined : actor.through)
       connection.resync = {
         after,
         replayed: false,
@@ -774,6 +776,11 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
       })
 
+    if (!type.hasMember(request.member))
+      return yield* ActorError.make({
+        reason: ActorUnavailable.make({ cause: new Error("Connection not declared") }),
+      })
+
     if (utf8.encode(request.params).byteLength > MAX_INBOUND_BYTES)
       return yield* Effect.die(new Error("Connection params exceed 64 KiB"))
 
@@ -881,7 +888,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     if (!connection.ended) {
       connection.open = true
 
-      if (answer.recovered === true) yield* resync(actor, connection, yield* now)
+      // Its opening frames and any broadcasts the lost owner never flushed may be gone.
+      if (answer.recovered === true) yield* resync(actor, connection, yield* now, true)
       connection.loop = yield* inboundLoop(connection).pipe(Effect.forkIn(scope))
     }
 

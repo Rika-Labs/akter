@@ -984,11 +984,11 @@ const make = <
       if (codec === undefined)
         return yield* Effect.die(new Error(`Undeclared connection ${member}`))
 
-      if (isEventEntry(frame))
-        return {
-          frame: yield* codec.encodeServer({ value: frame.event }).pipe(Effect.orDie),
-          event: frame.cursor,
-        }
+      if (isEventEntry(frame)) {
+        const encoded = yield* codec.encodeServer({ value: frame.event }).pipe(Effect.option)
+
+        if (Option.isSome(encoded)) return { frame: encoded.value, event: frame.cursor }
+      }
 
       return { frame: yield* codec.encodeServer({ value: frame }).pipe(Effect.orDie) }
     })
