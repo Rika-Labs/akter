@@ -5,7 +5,7 @@
 **Owner role:** runtime architecture.  
 **Change policy:** any authority change requires security review and adversarial tests.
 
-An actor is addressed by `(tenant, actor, id)` within one deployment. Named actors use the declared id schema, minted actors use a framework-issued UUIDv7, and `key: Actor.singleton` actors use `X.get()` without an id.
+An actor is addressed by `(tenant, actor, id)` within one deployment. Named actors use the declared id schema, minted actors use a framework-issued UUIDv7 from `X.create()` or, as target API from [ADR 0025](../decisions/0025-turn-mint.md) (proposed; M2.15), a UUIDv8 derived by `turn.mint` inside the parent's turn from the tenant, parent identity, command id, call ordinal, and child type; a child minted by `turn.mint` MUST be created only by its parent's same-turn creating intent, and `key: Actor.singleton` actors use `X.get()` without an id.
 
 Exactly one generation MAY commit for an actor at a time. Every command turn MUST lock the generation row with `SELECT ... FOR UPDATE`; on Neki it MUST also set `__neki.tx_mode='single'` on the transaction connection. A lease, process memory, TypeScript types, or routing ownership alone MUST NOT authorize a commit.
 

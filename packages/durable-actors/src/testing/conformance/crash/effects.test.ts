@@ -62,13 +62,16 @@ describe("effect executor process death with Postgres", () => {
               })
 
             const child = yield* spawner.spawn(command(point))
-            yield* child.stdout.pipe(
+
+            const ready = yield* child.stdout.pipe(
               Stream.decodeText(),
               Stream.splitLines,
               Stream.filter((line) => line === "READY"),
               Stream.take(1),
               Stream.runCollect,
             )
+
+            expect(ready, "the child exited before reaching its crash point").toHaveLength(1)
             yield* child.kill({ killSignal: "SIGKILL" })
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
 
