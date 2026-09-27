@@ -1,11 +1,17 @@
 import { Cause, Context, Duration, Effect, Exit, Option, Schedule, Schema, Scope } from "effect"
-import { ClusterSchema, Entity, Sharding } from "effect/unstable/cluster"
+import {
+  ClusterSchema,
+  Entity,
+  EntityId as ClusterEntityId,
+  Sharding,
+} from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { routingKey } from "../storage/codec.ts"
+import { ShardLease } from "../topology/locks.ts"
 import { executeTurn, emptyActivationCache } from "../turn/execute.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 
@@ -66,6 +72,13 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
   // an activation that is already resident can have a full mailbox. A handler
   // rebuilt after a defect can overlap its predecessor, hence the count.
   const resident = new Map<string, number>()
+  const lease = registration.singleton
+    ? Option.getOrUndefined(yield* Effect.serviceOption(ShardLease))
+    : undefined
+
+  const leaseLost = Effect.die(
+    RetryTurn.make({ message: "Singleton runner no longer holds its shard lock" }),
+  )
 
   const register = sharding.registerEntity(
     entity,
@@ -90,10 +103,33 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
 
       if (superseded !== undefined) yield* Scope.close(superseded, Exit.void)
 
+      const shard =
+        lease === undefined
+          ? undefined
+          : String(yield* entity.getShardId(ClusterEntityId.make(entityId)))
+
+      // A singleton starts only on the runner holding its shard's lease, and
+      // its background work stops as soon as the lease lapses.
+      if (lease !== undefined && !(yield* lease.holds(shard!))) return yield* leaseLost
+
       const scope = yield* Scope.fork(activation)
 
       handlerScopes.set(activation, scope)
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+
+      let lost = false
+
+      if (lease !== undefined)
+        yield* lease.holds(shard!).pipe(
+          Effect.repeat({ schedule: Schedule.spaced(lease.interval), until: (held) => !held }),
+          Effect.andThen(
+            Effect.sync(() => {
+              lost = true
+            }),
+          ),
+          Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
+          Effect.forkIn(scope),
+        )
 
       yield* Effect.acquireRelease(
         Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
@@ -108,14 +144,26 @@ export const registerActor = Effect.fnUntraced(function* (registration: Registra
 
       const cache = emptyActivationCache()
 
-      const commands = yield* registration
+      // A singleton builds here, on its owner; a failing build answers every
+      // command with its defect instead of retrying the activation forever.
+      const activated = yield* registration
         .activate(ActorRef.make({ tenant, actor: registration.name, id }))
-        .pipe(Scope.provide(scope))
+        .pipe(Scope.provide(scope), Effect.exit)
+
+      if (Exit.isFailure(activated))
+        yield* Effect.logError("Actor activation failed", activated.cause).pipe(
+          Effect.annotateLogs({ actor: registration.name, id, tenant }),
+        )
 
       return entity.of({
-        Wake: () => Effect.void,
+        Wake: () => Effect.suspend(() => (lost ? leaseLost : Effect.void)),
         Execute: Effect.fnUntraced(function* ({ payload }) {
-          const command = commands.get(payload.command)
+          if (lost) return yield* leaseLost
+
+          if (Exit.isFailure(activated))
+            return Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) })
+
+          const command = activated.value.get(payload.command)
 
           if (command === undefined)
             return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))

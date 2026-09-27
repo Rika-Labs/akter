@@ -186,7 +186,7 @@ export const CounterReads = Counter.toQueryLayer(
 )
 ```
 
-- `X.toLayer(build)` implements commands (public and internal), streams, connections, and workflows. Reducers have no entry. The build Effect runs once per activation: it replaces wake hooks; `Effect.addFinalizer` replaces sleep hooks; `Effect.forkScoped` replaces `run` on singletons; a `Ref` replaces `vars`. There is no defect hook: deterministic defects are recorded in the turn span ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)).
+- `X.toLayer(build)` implements commands (public and internal), streams, connections, and workflows. Reducers have no entry. The build Effect runs once per layer build, and for a singleton once per activation on its owner, so a singleton's failing build fails its commands rather than startup: it replaces wake hooks; `Effect.addFinalizer` replaces sleep hooks; `Effect.forkScoped` replaces `run` on singletons; a `Ref` replaces `vars`. There is no defect hook: deterministic defects are recorded in the turn span ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)).
 - `X.toQueryLayer(build)` implements queries against committed data.
 - `X.toEffectLayer(build)` implements effect executors and may run on separate processes. An executor returns the value routed to its `onSuccess` command (or `void`); the framework delivers it through the outbox with the effect id as the command id, and delivers `onDeadLetter` with `Actor.DeadLetter(Effect)` input when retries are exhausted.
 

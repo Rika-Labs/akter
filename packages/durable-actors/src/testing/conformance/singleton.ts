@@ -33,6 +33,8 @@ const Beacon = Actor.make("Beacon", {
 /** What one background loop did, as seen from inside the (single) process. */
 interface Loop {
   readonly id: string
+  readonly startedAt: number
+  stoppedAt: number | undefined
   live: boolean
   closed: boolean
   attempts: number
@@ -66,6 +68,8 @@ const BeaconLive = Layer.mergeAll(
 
       const loop: Loop = {
         id: `loop-${started.length + 1}`,
+        startedAt: performance.now(),
+        stoppedAt: undefined,
         live: true,
         closed: false,
         attempts: 0,
@@ -81,7 +85,6 @@ const BeaconLive = Layer.mergeAll(
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           loop.attempts += 1
-          // A stale owner's tick fails its fence and is refused; the loop keeps going.
           yield* beacon.Tick(loop.id).pipe(
             Effect.catch(() =>
               Effect.sync(() => {
@@ -94,9 +97,11 @@ const BeaconLive = Layer.mergeAll(
           Effect.ensuring(
             Effect.sync(() => {
               loop.live = false
+              loop.stoppedAt = performance.now()
             }),
           ),
         ),
+        { startImmediately: true },
       )
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
@@ -375,7 +380,7 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "fences a heartbeat-paused singleton owner: no activation commits after its successor has",
+    name: "stops a heartbeat-paused singleton owner's loop before its successor starts and fences its commits",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -400,11 +405,15 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           )
           expect(yield* cluster.owner(ref)).toBe(rival)
 
-          // The zombie still believes it owns the singleton and keeps serving
-          // it: its stale activation fails the fence and is rebuilt, and each
-          // rebuilt activation takes the generation, fencing the one before.
-          // Loops on both runners run, but commits never interleave.
+          // The zombie still believes it owns the singleton's shard, but its
+          // lease in the database lapsed: its loop stopped before the rival's
+          // started, and it built no new activation while paused.
+          expect(zombie.live).toBe(false)
+          expect(zombie.stoppedAt! < successor.startedAt).toBe(true)
           yield* Effect.sleep(`${EXPIRATION_SECONDS} seconds`)
+          expect(loopsOf(ref.tenant).length).toBe(before + 1)
+          expect(liveOf(ref.tenant)).toEqual([successor])
+          expect(peakOf(ref.tenant)).toBe(1)
           const split = yield* logOf(rival)
           expect(unbroken(split)).toBe(true)
           expect(contiguous(split)).toBe(true)
@@ -412,7 +421,6 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           expect(split.slice(moved).some(({ by }) => by === zombie.id)).toBe(false)
 
           yield* heartbeat.resume
-          yield* awaitThat(() => !zombie.live, "the zombie's loop to stop")
           yield* cluster.ready
           // Rebalancing once the runner rejoins may move the singleton again.
           const live = yield* steady(rival, ref.tenant)
