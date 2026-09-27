@@ -61,6 +61,7 @@ import type { AnyEffect, EffectPolicy } from "../members/effect.ts"
 import type { NoDatabase } from "../runtime/effects/isolation.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
+import { checkDeclaredErrors, servedDefinitions, servedMember } from "./served.ts"
 import {
   type ActorState,
   ActorStates,
@@ -1294,6 +1295,18 @@ const make = <
       ? () => Effect.Effect<Intents<All>, never, InTurn>
       : (id: string) => Effect.Effect<Intents<All>, never, InTurn>,
   }
+
+  for (const member of Object.values(api)) checkDeclaredErrors(member)
+
+  servedDefinitions.set(actor, {
+    name,
+    key: isSingleton ? "singleton" : definition.key === undefined ? "minted" : "keyed",
+    decodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => decodeId(id),
+    members: Object.values(api).map((member) =>
+      servedMember({ member, codecs: codecs.get(member.tag)! }),
+    ),
+    deliveryMs: policy.deliveryMs,
+  })
 
   internalDefinitions.set(actor, {
     handle: (id, tenant, caller) => getHandle(id, true, caller, tenant),
