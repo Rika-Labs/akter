@@ -49,7 +49,9 @@ export const keepAcquiredShards = (
           .pipe(
             Effect.map((held) => [
               ...held,
-              ...Array.from(shards).filter((shardId) => !requested.includes(shardId)),
+              ...Array.from(unchecked.get(PrimaryKey.value(address)) ?? []).filter(
+                (shardId) => !requested.includes(shardId),
+              ),
             ]),
           )
       }),
@@ -58,8 +60,11 @@ export const keepAcquiredShards = (
         Effect.andThen(storage.release(address, shardId)),
       ),
     releaseAll: (address) =>
-      Effect.sync(() => unchecked.delete(PrimaryKey.value(address))).pipe(
-        Effect.andThen(storage.releaseAll(address)),
-      ),
+      Effect.sync(() => {
+        const key = PrimaryKey.value(address)
+
+        unchecked.get(key)?.clear()
+        unchecked.delete(key)
+      }).pipe(Effect.andThen(storage.releaseAll(address))),
   }
 }

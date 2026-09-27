@@ -58,13 +58,13 @@ jobs:
           set -u
           case "$RUNS" in
             ''|*[!0-9]*|????*)
-              echo "RUNS must be an integer from 1 to 50" >&2
+              echo "RUNS must be an integer from 1 to 25" >&2
               exit 2
               ;;
           esac
           RUNS=$((10#$RUNS))
-          if [ "$RUNS" -lt 1 ] || [ "$RUNS" -gt 50 ]; then
-            echo "RUNS must be an integer from 1 to 50" >&2
+          if [ "$RUNS" -lt 1 ] || [ "$RUNS" -gt 25 ]; then
+            echo "RUNS must be an integer from 1 to 25" >&2
             exit 2
           fi
           mkdir -p ../../stress
