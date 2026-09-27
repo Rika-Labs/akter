@@ -1,4 +1,14 @@
-import { Deferred, Duration, Effect, Exit, Layer, Option, Schedule, Schema } from "effect"
+import {
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Predicate,
+  Schedule,
+  Schema,
+} from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, InvalidExecutionId, User } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -316,8 +326,10 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           yield* run.interrupt
           const exit = yield* run.result.pipe(Effect.exit)
           expect(Exit.isFailure(exit) && Exit.hasInterrupts(exit)).toBe(true)
+
           const steps = yield* sql<{ count: number }>`SELECT count(*)::int AS count
             FROM actor_workflow_step WHERE execution_id = ${run.executionId}`
+
           expect(steps[0]!.count).toBe(0)
         }),
       ),
@@ -372,25 +384,28 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
               return run.executionId
             }),
           )
+
           yield* on(
             0,
             eventually(
               Effect.gen(function* () {
                 const polled = yield* (yield* Shipper.run(Ship, id)).poll
 
-                return Option.isSome(polled) && polled.value._tag === "Suspended"
+                return Option.isSome(polled) && Predicate.isTagged(polled.value, "Suspended")
               }),
               "the sleep to suspend",
             ),
           )
           const survivor = yield* killOwner("killed-sleep")
           yield* advance(survivor, "11 seconds")
+
           const result = yield* on(
             survivor,
             Effect.gen(function* () {
               return yield* (yield* Shipper.run(Ship, id)).result
             }),
           )
+
           expect(result).toBe("r-sleep-k:v2")
           expect(fixture.workflows.runs.get("reserve:k1")).toBe(1)
         }),
@@ -407,6 +422,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const gate = yield* Deferred.make<void>()
           fixture.workflows.blocked = gate
+
           const id = yield* on(
             0,
             Effect.gen(function* () {
@@ -418,18 +434,21 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
               return run.executionId
             }),
           )
+
           yield* eventually(
             Effect.sync(() => fixture.workflows.runs.get("reserve:k2") === 1),
             "the activity to start",
           )
           const survivor = yield* killOwner("killed-activity")
           yield* advance(survivor, "31 seconds")
+
           const result = yield* on(
             survivor,
             Effect.gen(function* () {
               return yield* (yield* Shipper.run(Ship, id)).result
             }),
           )
+
           expect(result).toBe("r-block:v2")
           expect(fixture.workflows.runs.get("reserve:k2")).toBe(2)
           yield* Deferred.succeed(gate, undefined)

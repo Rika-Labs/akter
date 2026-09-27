@@ -210,6 +210,7 @@ const make = <
       )
 
   const registry: StepRegistry = { steps: new Map() }
+
   const identity = (name: string, kind: StepIdentity["kind"]): StepIdentity => ({
     workflow: tag,
     name,

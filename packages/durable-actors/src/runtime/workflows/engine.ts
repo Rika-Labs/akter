@@ -379,6 +379,7 @@ const derivedUuid = (bytes: Uint8Array) => {
   const hex = Array.from(bytes.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join(
     "",
   )
+
   const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16)
 
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
@@ -755,6 +756,7 @@ export const activationEngine = (options: {
                   const settled = yield* fenced(
                     settle(step, RecordedExit.cases.Success.make({ value: null }), at),
                   )
+
                   const recorded = settled[0]?.exit ?? (yield* readExit(step))
                   remember(step, { exit: recorded })
 
