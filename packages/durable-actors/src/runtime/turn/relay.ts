@@ -14,6 +14,7 @@ import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
+import { progressPool } from "../effects/progress.ts"
 import { TurnHooks } from "./hooks.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
@@ -310,6 +311,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const deliveries = yield* FiberSet.make<unknown, unknown>()
   const attempts = yield* FiberSet.make<unknown, unknown>()
   const hooks = yield* TurnHooks
+  const progress = yield* progressPool()
 
   // Set when a claim saw more due candidates than it took: a freed slot then
   // claims again instead of waiting for the poll.
@@ -318,8 +320,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
   // leaves free capacity although it found more candidates than it took.
   const widen = { intents: 1, effects: 1 }
   let stopping = false
+
   // Attempts this runner is executing, keyed by effect id, with the attempt that holds each lease.
-  const running = new Map<string, { readonly routingKey: bigint; readonly attempt: number }>()
+  const running = new Map<
+    string,
+    {
+      readonly routingKey: bigint
+      readonly attempt: number
+      readonly lease: { until: number }
+    }
+  >()
 
   const backoffMs = (attempts: number) =>
     Math.min(1000 * 2 ** Math.max(attempts - 1, 0), settings.maxBackoffMs)
@@ -460,7 +470,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
               attemptRow(attempts),
             ))
           )
-            return
+            return false
 
           yield* Effect.logWarning("Effect dead-lettered after its last attempt", cause).pipe(
             annotate,
@@ -475,16 +485,41 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const request = yield* requestOf(row, "sender").pipe(Effect.option)
 
           if (Option.isSome(request)) yield* hooks.at("beforeDeadLetterCommit", request.value)
+
+          return true
         }),
+      )
+
+    // A terminal settle closes the effect's progress; a retryable one leaves it open.
+    const closeAfter = <E, R>(attempts: number, settle: Effect.Effect<boolean, E, R>) =>
+      Effect.tap(settle, (settled) =>
+        settled
+          ? requestOf(row, "sender").pipe(
+              Effect.flatMap((request) =>
+                progress.closed({
+                  ref: ActorRef.make(request.ref),
+                  effectId: row.intent_id,
+                  effect: row.command,
+                  attempt: attempts,
+                  everyMs: registered.progressEveryMs,
+                }),
+              ),
+              Effect.ignore,
+            )
+          : Effect.void,
       )
 
     // The last attempt ended without an outcome, or its dead letter failed after recording one.
     if (row.exhausted)
-      return yield* exhaust(row.attempts, row.last_error ?? "No attempt reported", row.ambiguous)
+      return yield* closeAfter(
+        row.attempts,
+        exhaust(row.attempts, row.last_error ?? "No attempt reported", row.ambiguous),
+      )
 
     const attempt = row.attempts
     const request = yield* requestOf(row, "sender").pipe(Effect.orDie)
     const ref = ActorRef.make(request.ref)
+    const lease = running.get(row.intent_id)?.lease ?? { until: Number(row.claimed_until) }
     const leaseNanos = BigInt(settings.executorLeaseMs) * 1_000_000n
     // Measured on this runner from when the last claim or renewal was sent, so
     // the database's lease can only end later than this one.
@@ -513,7 +548,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
           // Never shortens a deadline, so a renewal can't undo a test clock's lease shift.
           return yield* sql`UPDATE actor_outbox
               SET due_at_ms = greatest(due_at_ms, ${(yield* databaseTime) + settings.executorLeaseMs})
-              WHERE ${attemptRow(attempt)} RETURNING 1`.pipe(Effect.uninterruptible)
+              WHERE ${attemptRow(attempt)} RETURNING due_at_ms::text AS due_at_ms`.pipe(
+            Effect.uninterruptible,
+          )
         }).pipe(
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
@@ -529,6 +566,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
         if (renewed.length === 0) return "lost" as const
         confirmed = sent
+        lease.until = Number(renewed[0]!.due_at_ms)
       }
     })
 
@@ -541,63 +579,81 @@ export const outboxRelay = Effect.fnUntraced(function* (
       }
     })
 
-    // Racing stops and awaits the renewal fiber before any settling write, so
-    // a late renewal can't overwrite a failure's backoff with a fresh lease.
-    const outcome = yield* registered
-      .execute(row.payload, {
-        effectId: row.intent_id,
-        attempt,
-        principal: principal(request.caller),
-        ref,
-      })
-      .pipe(Effect.result, Effect.raceFirst(renewals), Effect.raceFirst(deadline))
+    const slot = yield* progress.open({
+      ref,
+      effectId: row.intent_id,
+      effect: row.command,
+      attempt,
+      everyMs: registered.progressEveryMs,
+      leaseUntil: () => lease.until,
+    })
 
-    if (outcome === "lost")
-      return yield* Effect.logWarning("Effect attempt lost its lease").pipe(
-        Effect.annotateLogs({ attempt }),
-        annotate,
-      )
+    return yield* Effect.gen(function* () {
+      // Racing stops and awaits the renewal fiber before any settling write, so
+      // a late renewal can't overwrite a failure's backoff with a fresh lease.
+      const outcome = yield* registered
+        .execute(row.payload, {
+          effectId: row.intent_id,
+          attempt,
+          principal: principal(request.caller),
+          ref,
+          reporting: slot.active,
+          report: slot.offer,
+        })
+        .pipe(
+          Effect.result,
+          Effect.raceFirst(renewals),
+          Effect.raceFirst(deadline),
+          Effect.ensuring(slot.close),
+        )
 
-    if (outcome === "deadline")
-      return yield* Effect.logWarning("Effect attempt outlived its lease; interrupted").pipe(
-        Effect.annotateLogs({ attempt }),
-        annotate,
-      )
-
-    if (Result.isSuccess(outcome)) {
-      yield* hooks.at("afterExecute", request)
-
-      // The first success of any attempt wins; the row stops being an effect.
-      if (yield* settleTo(outcome.success, effectRow)) return
-
-      const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
-        WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
-
-      if (late.length > 0)
-        yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
+      if (outcome === "lost")
+        return yield* Effect.logWarning("Effect attempt lost its lease").pipe(
           Effect.annotateLogs({ attempt }),
           annotate,
         )
 
-      return
-    }
+      if (outcome === "deadline")
+        return yield* Effect.logWarning("Effect attempt outlived its lease; interrupted").pipe(
+          Effect.annotateLogs({ attempt }),
+          annotate,
+        )
 
-    const { cause, ambiguous, final } = outcome.failure
-    const last = final === true || attempt >= registered.attempts
-    const { baseMs, maxMs } = registered.backoff
+      if (Result.isSuccess(outcome)) {
+        yield* hooks.at("afterExecute", request)
 
-    // The outcome is recorded first, so a failed dead-letter transaction is
-    // retried with this attempt's cause rather than the claim's.
-    yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
-        due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
-      WHERE ${attemptRow(attempt)}`
+        // The first success of any attempt wins; the row stops being an effect.
+        if (yield* closeAfter(attempt, settleTo(outcome.success, effectRow))) return
 
-    if (last) return yield* exhaust(attempt, cause, ambiguous)
+        const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
+          WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
 
-    yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
-      Effect.annotateLogs({ attempt, ambiguous }),
-      annotate,
-    )
+        if (late.length > 0)
+          yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
+            Effect.annotateLogs({ attempt }),
+            annotate,
+          )
+
+        return
+      }
+
+      const { cause, ambiguous, final } = outcome.failure
+      const last = final === true || attempt >= registered.attempts
+      const { baseMs, maxMs } = registered.backoff
+
+      // The outcome is recorded first, so a failed dead-letter transaction is
+      // retried with this attempt's cause rather than the claim's.
+      yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
+          due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
+        WHERE ${attemptRow(attempt)}`
+
+      if (last) return yield* closeAfter(attempt, exhaust(attempt, cause, ambiguous))
+
+      yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
+        Effect.annotateLogs({ attempt, ambiguous }),
+        annotate,
+      )
+    }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })
 
   const freed = (kind: "intents" | "effects") =>
@@ -683,6 +739,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
             running.set(row.intent_id, {
               routingKey: BigInt(row.routing_key),
               attempt: row.attempts,
+              lease: { until: Number(row.claimed_until) },
             })
 
             yield* FiberSet.run(
@@ -754,10 +811,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
       .withPermit(
         Effect.forEach(
           [...running],
-          ([intentId, { routingKey, attempt }]) =>
+          ([intentId, { routingKey, attempt, lease }]) =>
             sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
             WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
-              AND kind = 'effect' AND attempts = ${attempt}`,
+              AND kind = 'effect' AND attempts = ${attempt}`.pipe(
+              Effect.tap(
+                Effect.sync(() => {
+                  lease.until += millis
+                }),
+              ),
+            ),
           { discard: true },
         ).pipe(Effect.andThen(jump)),
       )
