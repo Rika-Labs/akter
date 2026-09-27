@@ -1,6 +1,16 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actor, User } from "@durable-actors/core"
-import { Clock, Context, Crypto, Effect, Encoding, Layer, type PlatformError, Schema } from "effect"
+import {
+  type Cause,
+  Clock,
+  Context,
+  Crypto,
+  Effect,
+  Encoding,
+  Layer,
+  type PlatformError,
+  Schema,
+} from "effect"
 import {
   FetchHttpClient,
   HttpClient,
@@ -17,11 +27,22 @@ const ProtocolInfo = Schema.Struct({ retryWindowMs: Schema.Int, now: Schema.Int 
 
 type Failure = HttpClientError.HttpClientError | PlatformError.PlatformError
 
+type CallError = Failure | Cause.UnknownError
+
+interface Caller {
+  readonly command: (id: string, amount: number) => Effect.Effect<unknown, CallError>
+  readonly query: (id: string) => Effect.Effect<unknown, CallError>
+}
+
 interface Served {
   readonly url: string
   readonly command: (id: string, amount: number) => Effect.Effect<string, Failure>
   readonly weigh: (id: string, blob: string) => Effect.Effect<string, Failure>
   readonly query: (id: string) => Effect.Effect<string, Failure>
+  /** The same calls through `@durable-actors/core/client`, which mints ids, decodes replies, and tracks tokens. */
+  readonly client: Caller
+  /** The Promise client over a connection that loses every hundredth command response after the server sent it. */
+  readonly lossy: Caller
 }
 
 interface Auth {
@@ -104,6 +125,24 @@ const callerBytes = new TextEncoder().encode(
 
 const BLOB = "x".repeat(64 * 1024)
 
+const baseFetch = globalThis.fetch.bind(globalThis)
+
+/** Loses every hundredth command response after the server committed and answered it. */
+const losing = () => {
+  let commands = 0
+
+  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input
+    const drop = url.endsWith("/Add") && ++commands % 100 === 0
+
+    return baseFetch(input, init).then((response) =>
+      drop
+        ? response.text().then(() => Promise.reject(new TypeError("connection reset")))
+        : response,
+    )
+  }
+}
+
 /** Serves the probe from a listening Bun server; every request crosses loopback through `fetch`. */
 const serve = Effect.fnUntraced(function* (auth: Auth = none) {
   const services = yield* Effect.context<ActorServices>()
@@ -160,6 +199,9 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
       return yield* (yield* client.execute(request)).text
     })
 
+  const probes = Probe.client({ baseUrl: url })
+  const lossy = Probe.client({ baseUrl: url, fetch: losing() })
+
   return {
     url,
     command: (id, amount) =>
@@ -169,6 +211,14 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
         Effect.flatMap((key) => post(`/actors/Probe/${id}/Weigh`, JSON.stringify(blob), key)),
       ),
     query: (id) => post(`/actors/Probe/${id}/Peek`, "null"),
+    client: {
+      command: (id, amount) => Effect.tryPromise(() => probes.get(id).Add(amount)),
+      query: (id) => Effect.tryPromise(() => probes.get(id).Peek()),
+    },
+    lossy: {
+      command: (id, amount) => Effect.tryPromise(() => lossy.get(id).Add(amount)),
+      query: (id) => Effect.tryPromise(() => lossy.get(id).Peek()),
+    },
   } satisfies Served
 })
 
@@ -176,79 +226,122 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
 export const http: Scenario = {
   name: "http",
   description:
-    "Actor.serve over loopback HTTP/1.1 keep-alive: sequential commands and queries on one actor, 64 concurrent command callers over 1k actors, then sequential commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload.",
+    "Actor.serve over loopback HTTP/1.1 keep-alive: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch and then the @durable-actors/core/client Promise SDK (also with 1% response loss), then sequential commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload.",
   run: (context) =>
     Effect.gen(function* () {
       const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
+      for (const via of ["fetch", "client"] as const) {
+        const prefix = via === "fetch" ? "" : "client-"
+        const pick = (served: Served): Caller => (via === "fetch" ? served : served.client)
+
+        results.push(
+          yield* context.withRuntime({}, (instruments) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const served = yield* serve()
+                yield* load({
+                  workers: 1,
+                  operations: 100,
+                  operation: () => pick(served).command("hot", 1),
+                })
+
+                return yield* measure({
+                  name: `${prefix}command-sequential`,
+                  parameters: { actors: 1, workers: 1, auth: "none", via },
+                  instruments,
+                  workers: 1,
+                  operations: quick ? 300 : 3000,
+                  operation: () => pick(served).command("hot", 1),
+                  listStatements: true,
+                })
+              }),
+            ),
+          ),
+        )
+
+        results.push(
+          yield* context.withRuntime({}, (instruments) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const served = yield* serve()
+                yield* pick(served).command("read", 1).pipe(Effect.orDie)
+                yield* load({
+                  workers: 1,
+                  operations: 100,
+                  operation: () => pick(served).query("read"),
+                })
+
+                return yield* measure({
+                  name: `${prefix}query-sequential`,
+                  parameters: { actors: 1, workers: 1, auth: "none", via },
+                  instruments,
+                  workers: 1,
+                  operations: quick ? 300 : 3000,
+                  operation: () => pick(served).query("read"),
+                  listStatements: true,
+                })
+              }),
+            ),
+          ),
+        )
+
+        results.push(
+          yield* context.withRuntime({}, (instruments) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const served = yield* serve()
+                const actors = 1000
+                yield* load({
+                  workers: 32,
+                  operations: actors,
+                  operation: (actor) => pick(served).command(`hot-${actor}`, 1),
+                })
+
+                return yield* measure({
+                  name: `${prefix}command-concurrent-64`,
+                  parameters: { actors, workers: 64, auth: "none", via },
+                  instruments,
+                  workers: 64,
+                  durationMs: quick ? 2000 : 10_000,
+                  operation: (index) => pick(served).command(`hot-${index % actors}`, 1),
+                })
+              }),
+            ),
+          ),
+        )
+      }
+
       results.push(
         yield* context.withRuntime({}, (instruments) =>
           Effect.scoped(
             Effect.gen(function* () {
               const served = yield* serve()
+              const warmup = 100
+              const operations = quick ? 300 : 3000
               yield* load({
                 workers: 1,
-                operations: 100,
-                operation: () => served.command("hot", 1),
+                operations: warmup,
+                operation: () => served.lossy.command("lossy", 1),
               })
 
-              return yield* measure({
-                name: "command-sequential",
-                parameters: { actors: 1, workers: 1, auth: "none" },
+              const result = yield* measure({
+                name: "client-command-sequential-1pct-loss",
+                parameters: { actors: 1, workers: 1, auth: "none", via: "client", loss: "1%" },
                 instruments,
                 workers: 1,
-                operations: quick ? 300 : 3000,
-                operation: () => served.command("hot", 1),
-                listStatements: true,
-              })
-            }),
-          ),
-        ),
-      )
-
-      results.push(
-        yield* context.withRuntime({}, (instruments) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const served = yield* serve()
-              yield* served.command("read", 1).pipe(Effect.orDie)
-              yield* load({ workers: 1, operations: 100, operation: () => served.query("read") })
-
-              return yield* measure({
-                name: "query-sequential",
-                parameters: { actors: 1, workers: 1, auth: "none" },
-                instruments,
-                workers: 1,
-                operations: quick ? 300 : 3000,
-                operation: () => served.query("read"),
-                listStatements: true,
-              })
-            }),
-          ),
-        ),
-      )
-
-      results.push(
-        yield* context.withRuntime({}, (instruments) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const served = yield* serve()
-              const actors = 1000
-              yield* load({
-                workers: 32,
-                operations: actors,
-                operation: (actor) => served.command(`hot-${actor}`, 1),
+                operations,
+                operation: () => served.lossy.command("lossy", 1),
               })
 
-              return yield* measure({
-                name: "command-concurrent-64",
-                parameters: { actors, workers: 64, auth: "none" },
-                instruments,
-                workers: 64,
-                durationMs: quick ? 2000 : 10_000,
-                operation: (index) => served.command(`hot-${index % actors}`, 1),
-              })
+              const count = yield* served.client.query("lossy").pipe(Effect.orDie)
+
+              // Each lost response is retried with its id; a second turn would count twice.
+              return {
+                ...result,
+                extra: { ...result.extra, duplicateTurns: Number(count) - warmup - operations },
+              }
             }),
           ),
         ),

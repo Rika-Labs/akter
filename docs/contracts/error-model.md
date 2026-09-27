@@ -21,7 +21,7 @@ Effect programs may catch it with `catchTag("ActorError")` or branch with `catch
 
 On pinned Effect `4.0.0-rc.116`, `catchReasons` without an `orElse` retains the full `ActorError` in the error channel; do not claim exhaustive elimination without handling that remainder. Declared errors must be yieldable tagged errors; an error without `httpApiStatus` maps to HTTP 422.
 
-`ActorUnavailable`, `MailboxFull`, `RunnerAtCapacity`, and `Timeout` are retryable according to `isRetryable` and SHOULD reuse the same command id. `CommandConflict`, `NotCreated`, `Unauthorized`, and `InvalidInput` are not retryable without changing caller input or credentials. A timeout means the turn may still commit.
+`ActorUnavailable`, `MailboxFull`, `RunnerAtCapacity`, and `Timeout` are retryable according to `isRetryable` and SHOULD reuse the same command id. `CommandConflict`, `NotCreated`, `Unauthorized`, and `InvalidInput` are not retryable without changing caller input or credentials. A timeout means the turn may still commit. `Timeout.commandId` is present whenever an attempt carried a command id; a Promise client query that stops waiting reports `Timeout` without one.
 
 `Unauthorized.code` MUST carry the stable credential code, accessed as `error.reason.code` when wrapped in `ActorError`. HTTP, WebSocket, Promise client, and Effect client mappings MUST preserve the reason, retry metadata, available command id/request id, and declared-error identity.
 
