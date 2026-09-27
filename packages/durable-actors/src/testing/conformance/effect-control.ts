@@ -1132,6 +1132,56 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "records a late success onSuccess cannot accept after its cancellation settled",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        2,
+        { relay: NO_POLL, executors: SHORT_LEASE },
+        Effect.gen(function* () {
+          const gate = yield* Deferred.make<void>()
+          fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
+          const { owner, other } = yield* ownerAndOther(yield* refOf("late-picky"))
+
+          const renewal = yield* on(
+            owner,
+            ActorTest.use((test) => test.pauseNext("beforeRenew")),
+          )
+
+          yield* on(owner, perform("late-picky", "Picky", ["rejected"], { keyed: true }))
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+          expect(fixture.attempts[0]!.runner).toBe(owner)
+          yield* renewal.reached
+          yield* on(other, cancel("late-picky", ["rejected"]))
+
+          // The other runner's clock passes the lease and settles the cancellation it finds.
+          yield* advance(other, "4 seconds")
+          yield* eventually(
+            on(other, stateOf("late-picky")).pipe(
+              Effect.map((state) => (state.cancelled ?? []).length === 1),
+            ),
+          )
+          yield* Deferred.succeed(gate, undefined)
+          yield* eventually(
+            query(other, deadLetters).pipe(Effect.map((letters) => letters.length === 1)),
+            "10 seconds",
+            "the late success's record",
+          )
+          yield* renewal.release
+
+          expect(yield* query(other, deadLetters)).toMatchObject([
+            { ambiguous: true, cause: "Succeeded after it was cancelled" },
+          ])
+          const state = yield* on(other, stateOf("late-picky"))
+          expect(state.cancelled).toMatchObject([{ outcome: "Unknown", ambiguous: true }])
+          expect(state.done ?? []).toEqual([])
+        }),
+      ),
+  },
+  {
     name: "gives each effect exactly one fate when cancellation races its claim",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,

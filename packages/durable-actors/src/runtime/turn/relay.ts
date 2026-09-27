@@ -271,6 +271,11 @@ export interface CappedGroup {
   readonly command: string
 }
 
+/** A due group, with the due rows the probe read: at `limit` or more it may have hidden others. */
+export interface DueGroup extends CappedGroup {
+  readonly due_rows: number
+}
+
 /**
  * The actors with due rows of capped effects this runner executes, oldest
  * first; at most `limit`. Like the uncapped probe, it reads one index range
@@ -287,7 +292,7 @@ export const cappedGroups = ({
   readonly executors: ReadonlyArray<LocalExecutor>
   readonly limit: number
 }) =>
-  sql<CappedGroup>`WITH mine (actor_type, command) AS (
+  sql<DueGroup>`WITH mine (actor_type, command) AS (
       VALUES ${sql.csv(
         executors.map(({ actor, effect }) => sql`(${actor}::text, ${effect}::text)`),
       )}
@@ -301,7 +306,8 @@ export const cappedGroups = ({
         sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
       )}
     )
-    SELECT o.routing_key::text AS routing_key, o.tenant_id, o.actor_type, o.actor_id, o.command
+    SELECT o.routing_key::text AS routing_key, o.tenant_id, o.actor_type, o.actor_id, o.command,
+      (SELECT count(*) FROM due)::int AS due_rows
     FROM actor_outbox o JOIN due USING (routing_key, intent_id)
     GROUP BY o.routing_key, o.tenant_id, o.actor_type, o.actor_id, o.command
     ORDER BY min(o.due_at_ms) LIMIT ${limit}`
@@ -487,6 +493,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   // Set when a claim saw more due candidates than it took: a freed slot then
   // claims again instead of waiting for the poll.
   const more = { intents: false, effects: false }
+  let cappedTurn = false
   // How many times the base probe the next claim reads; doubled while a claim
   // leaves free capacity although it found more candidates than it took.
   const widen = { intents: 1, effects: 1 }
@@ -642,7 +649,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         return settled.length > 0
       })
 
-    const exhaust = (attempts: number, cause: string, ambiguous: boolean) =>
+    const exhaust = (attempts: number, cause: string, ambiguous: boolean, cancelled: boolean) =>
       sql.withTransaction(
         Effect.gen(function* () {
           const letter = {
@@ -655,10 +662,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
           if (
             !(yield* settleTo(
               yield* registered.deadLetter(row.payload, letter),
-              attemptRow(attempts),
+              sql`${attemptRow(attempts)} AND cancelled_at_ms IS ${sql.literal(
+                cancelled ? "NOT NULL" : "NULL",
+              )}`,
             ))
           )
-            return
+            return false
 
           yield* Effect.logWarning("Effect dead-lettered after its last attempt", cause).pipe(
             annotate,
@@ -673,6 +682,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const request = yield* requestOf(row, "sender").pipe(Effect.option)
 
           if (Option.isSome(request)) yield* hooks.at("beforeDeadLetterCommit", request.value)
+
+          return true
         }),
       )
 
@@ -698,7 +709,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           if (route !== undefined) return yield* settleTo(route, guard)
         }
 
-        if (ambiguous) return yield* exhaust(attempts, cause, true).pipe(Effect.as(true))
+        if (ambiguous) return yield* exhaust(attempts, cause, true, true)
 
         const dropped = yield* settleTo(undefined, guard)
 
@@ -713,6 +724,23 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
     const cancelledCause = (attempts: number) =>
       `Cancelled while attempt ${attempts} was running; the provider may have applied it`
+
+    // A cancellation that commits before the last attempt's dead letter
+    // settles the row as cancelled instead.
+    const exhaustUnlessCancelled = (attempts: number, cause: string, ambiguous: boolean) =>
+      Effect.gen(function* () {
+        if (yield* exhaust(attempts, cause, ambiguous, false)) return
+
+        const [cancelled] = yield* sql<{ maybe_applied: boolean }>`SELECT maybe_applied
+          FROM actor_outbox WHERE ${attemptRow(attempts)} AND cancelled_at_ms IS NOT NULL`
+
+        if (cancelled !== undefined)
+          yield* settleCancelled(
+            attempts,
+            ambiguous || cancelled.maybe_applied ? "Unknown" : "Failed",
+            cause,
+          )
+      })
 
     // A cancelled row whose attempt ended without settling it, or that was
     // backing off: never attempted again, only settled with what is known.
@@ -730,7 +758,11 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
     // The last attempt ended without an outcome, or its dead letter failed after recording one.
     if (row.exhausted)
-      return yield* exhaust(row.attempts, row.last_error ?? "No attempt reported", row.ambiguous)
+      return yield* exhaustUnlessCancelled(
+        row.attempts,
+        row.last_error ?? "No attempt reported",
+        row.ambiguous,
+      )
 
     const attempt = row.attempts
     const request = yield* requestOf(row, "sender").pipe(Effect.orDie)
@@ -835,6 +867,50 @@ export const outboxRelay = Effect.fnUntraced(function* (
       return yield* settleCancelled(attempt, "Unknown", cancelledCause(attempt))
     }
 
+    // A success no settle matched: the effect already ended without it.
+    const recordLate = (routes: {
+      readonly cancelled?: { readonly command: string } | undefined
+    }) =>
+      Effect.gen(function* () {
+        const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
+        WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
+
+        if (late.length > 0)
+          return yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
+            Effect.annotateLogs({ attempt }),
+            annotate,
+          )
+
+        // A cancellation already reported without this result: keep an
+        // ambiguous record of it instead of routing a second outcome.
+        const reported = routes.cancelled?.command
+
+        if (registered.routesCancelled && reported !== undefined) {
+          const recorded = yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id,
+            tenant_id, actor_type, actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
+          SELECT ${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
+            ${row.actor_id}, ${row.command}, ${row.payload}, ${attempt},
+            'Succeeded after it was cancelled', true, ${yield* databaseTime}
+          WHERE EXISTS (
+            SELECT 1 FROM actor_outbox WHERE ${sql`routing_key = ${routingKey}`}
+              AND intent_id = ${row.intent_id} AND kind = 'intent' AND command = ${reported}
+            UNION ALL
+            SELECT 1 FROM actor_receipts WHERE routing_key = ${routingKey}
+              AND tenant_id = ${row.tenant_id} AND actor_type = ${row.actor_type}
+              AND actor_id = ${row.actor_id} AND command_id = ${row.intent_id}
+              AND command = ${reported}
+          )
+          ON CONFLICT (routing_key, effect_id) DO UPDATE SET ambiguous = true
+          RETURNING 1`
+
+          if (recorded.length > 0)
+            yield* Effect.logWarning("Effect succeeded after its cancellation settled").pipe(
+              Effect.annotateLogs({ attempt }),
+              annotate,
+            )
+        }
+      })
+
     const rejected = Result.isSuccess(outcome) ? outcome.success.rejected : undefined
 
     // A result onSuccess rejects still reaches onCancelled if the effect was cancelled.
@@ -866,45 +942,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       )
         return
 
-      const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
-        WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
-
-      if (late.length > 0)
-        return yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
-          Effect.annotateLogs({ attempt }),
-          annotate,
-        )
-
-      // A cancellation already reported without this result: keep an
-      // ambiguous record of it instead of routing a second outcome.
-      const reported = routes.cancelled?.command
-
-      if (registered.routesCancelled && reported !== undefined) {
-        const recorded = yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id,
-            tenant_id, actor_type, actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
-          SELECT ${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
-            ${row.actor_id}, ${row.command}, ${row.payload}, ${attempt},
-            'Succeeded after it was cancelled', true, ${yield* databaseTime}
-          WHERE EXISTS (
-            SELECT 1 FROM actor_outbox WHERE ${sql`routing_key = ${routingKey}`}
-              AND intent_id = ${row.intent_id} AND kind = 'intent' AND command = ${reported}
-            UNION ALL
-            SELECT 1 FROM actor_receipts WHERE routing_key = ${routingKey}
-              AND tenant_id = ${row.tenant_id} AND actor_type = ${row.actor_type}
-              AND actor_id = ${row.actor_id} AND command_id = ${row.intent_id}
-              AND command = ${reported}
-          )
-          ON CONFLICT (routing_key, effect_id) DO UPDATE SET ambiguous = true
-          RETURNING 1`
-
-        if (recorded.length > 0)
-          yield* Effect.logWarning("Effect succeeded after its cancellation settled").pipe(
-            Effect.annotateLogs({ attempt }),
-            annotate,
-          )
-      }
-
-      return
+      return yield* recordLate(routes)
     }
 
     const failure = Result.isFailure(outcome) ? outcome.failure : rejected
@@ -926,6 +964,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
       WHERE ${attemptRow(attempt)}
       RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`
 
+    if (recorded.length === 0 && rejected !== undefined && Result.isSuccess(outcome))
+      return yield* recordLate(outcome.success)
+
     // A cancellation that committed after the check above still takes the known result.
     if (
       recorded[0]?.cancelled === true &&
@@ -946,7 +987,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         cause,
       )
 
-    if (last) return yield* exhaust(attempt, cause, ambiguous)
+    if (last) return yield* exhaustUnlessCancelled(attempt, cause, ambiguous)
 
     yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
       Effect.annotateLogs({ attempt, ambiguous }),
@@ -1004,9 +1045,57 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const claimSignal = cancelChecks
           const clock = yield* FrameworkClock
 
+          const now = outboxNow(sql, clock.offsetMillis())
+
+          // Capped effects are claimed per actor, each under its group's lock.
+          const claimGroups = (limit: number) =>
+            Effect.gen(function* () {
+              const claimed: Array<ClaimedEffect> = []
+              const groups = yield* cappedGroups({ sql, now, executors: capped, limit })
+
+              for (const group of groups) {
+                const left = limit - claimed.length
+
+                if (left <= 0) break
+
+                const { registered } = capped.find(
+                  ({ actor, effect }) => actor === group.actor_type && effect === group.command,
+                )!
+
+                claimed.push(
+                  ...(yield* claimCapped({
+                    sql,
+                    now,
+                    group,
+                    cap: registered.perActor!,
+                    maxAttempts: registered.attempts,
+                    permits: left,
+                    leaseMs: settings.executorLeaseMs,
+                  })),
+                )
+              }
+
+              const backlog = groups.length === limit || (groups[0]?.due_rows ?? 0) >= limit
+
+              return { claimed, backlog }
+            })
+
+          // With both kinds due, passes alternate which claims first, so a
+          // steady stream of either can't take every permit.
+          const cappedFirst = capped.length > 0 && local.length > 0 && cappedTurn
+
+          if (capped.length > 0 && local.length > 0) cappedTurn = !cappedTurn
+
+          const early =
+            cappedFirst && permits > 0
+              ? yield* claimGroups(permits)
+              : { claimed: [], backlog: false }
+
+          const localPermits = permits - early.claimed.length
+
           const rows = yield* claimDue({
             sql,
-            now: outboxNow(sql, clock.offsetMillis()),
+            now,
             intents:
               slots > 0
                 ? {
@@ -1017,51 +1106,26 @@ export const outboxRelay = Effect.fnUntraced(function* (
                   }
                 : undefined,
             effects:
-              permits > 0 && local.length > 0
+              localPermits > 0 && local.length > 0
                 ? {
-                    permits,
+                    permits: localPermits,
                     leaseMs: settings.executorLeaseMs,
                     executors: local,
-                    probe: 2 * permits * widen.effects,
+                    probe: 2 * localPermits * widen.effects,
                   }
                 : undefined,
           })
 
           const intents = rows.filter((row) => row.kind === "intent")
-          const effects = rows.filter((row) => row.kind === "effect")
-          let cappedBacklog = false
+          const uncapped = rows.filter((row) => row.kind === "effect")
 
-          // Capped effects are claimed per actor, each under its group's lock,
-          // with the permits the uncapped claim left.
-          if (capped.length > 0 && permits - effects.length > 0) {
-            const now = outboxNow(sql, clock.offsetMillis())
-            const limit = permits - effects.length
+          const late =
+            !cappedFirst && capped.length > 0 && localPermits - uncapped.length > 0
+              ? yield* claimGroups(localPermits - uncapped.length)
+              : { claimed: [], backlog: false }
 
-            const groups = yield* cappedGroups({ sql, now, executors: capped, limit })
-            cappedBacklog = groups.length === limit
-
-            for (const group of groups) {
-              const left = permits - effects.length
-
-              if (left <= 0) break
-
-              const { registered } = capped.find(
-                ({ actor, effect }) => actor === group.actor_type && effect === group.command,
-              )!
-
-              effects.push(
-                ...(yield* claimCapped({
-                  sql,
-                  now,
-                  group,
-                  cap: registered.perActor!,
-                  maxAttempts: registered.attempts,
-                  permits: left,
-                  leaseMs: settings.executorLeaseMs,
-                })),
-              )
-            }
-          }
+          const effects = [...early.claimed, ...uncapped, ...late.claimed]
+          const cappedBacklog = early.backlog || late.backlog
 
           if (slots > 0) {
             more.intents = intents.length > 0 && intents[0]!.candidates > intents.length
@@ -1070,8 +1134,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           if (permits > 0 && all.length > 0) {
             more.effects =
-              cappedBacklog || (effects.length > 0 && effects[0]!.candidates > effects.length)
-            widen.effects = widened(widen.effects, rows, "effect", permits)
+              cappedBacklog || (uncapped.length > 0 && uncapped[0]!.candidates > uncapped.length)
+            widen.effects = widened(widen.effects, rows, "effect", localPermits)
           }
 
           for (const row of intents)
