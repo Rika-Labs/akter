@@ -388,6 +388,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
       environment.run(
         Effect.gen(function* () {
           const database = yield* environment.freshDatabase
+
           const open = yield* deploy(
             database,
             Base.layer,
