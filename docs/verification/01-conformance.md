@@ -440,6 +440,12 @@ Not yet covered by an executable case: cross-runner wake of a parked actor by an
 
 **Executed 2026-09-27 (M2.10 part 1, branch `feat/53-connections` merged with `main` at `0ba95fc`):** Bun 1.4.2 and disposable Postgres 18.6. The connection cases pass on PGlite and Postgres; see the pull request for the full `bun run check` and `test:integration` counts. `benchmarks/results/2026-09-27-8fa18f1-connections-*.json` hold the `connections` scenario.
 
+### Quickstart scaffolder (CR.2)
+
+[`.github/src/release/quickstart.ts`](../../.github/src/release/quickstart.ts), run as `@durable-actors/create#test:integration`, packs `@durable-actors/core` and `@durable-actors/create` into local tarballs, installs the scaffolder from its tarball, and generates the `counter` and `chat` templates into a fresh temporary directory. Each generated app is installed against the local core tarball (never npm), checked for a single Effect copy, typechecked, and tested, then started twice to prove state survives a restart. This runs once on file-backed PGlite (`DATA_DIR`) and once on Postgres (`DATABASE_URL`); CI requires `TEST_DATABASE_URL`. The generated tests cover receipt replay after a retry, crash before and after COMMIT, declared-failure rollback of owned rows, and restart persistence. PGlite evidence here is single-process only; lock, contention, multi-runner, and process-kill claims still come from the Postgres suites. `packages/create/src/scaffold.test.ts` pins the generated dependency versions to the root catalog and the core version.
+
+**Executed 2026-09-27 (CR.2, branch `feat/86-quickstart`):** Bun 1.4.2 and disposable Postgres 18.6. `bun run check` passed 62/62 tasks. `bun run test:integration` passed, including the four scaffold/install/test/restart combinations (counter and chat on PGlite and Postgres; 3 counter and 4 chat generated tests each).
+
 ## Faithful test boundary
 
 `ActorTest` MUST exercise the real turn, Cluster entity, SQL tables, serialization, receipts, and outbox. There is no handler-only fake-context runtime. Only the database, transport, clock, executor implementations, and caller are substituted. Use production `SqlMessageStorage` on the test transaction connection, not in-memory message storage whose writes could survive a rolled-back turn. On PGlite, Cluster runner bookkeeping additionally moves to memory because `SqlRunnerStorage` would reserve the sole connection; message storage, migrations, and receipts stay in SQL and this substitution is only valid under `SingleRunner`.
