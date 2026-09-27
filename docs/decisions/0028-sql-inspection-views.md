@@ -12,7 +12,7 @@
 
 ## Context
 
-Operators and tools (`psql`, Grafana, Metabase, and the planned `durable dev` inspector) need to see actors, receipts, events, pending intents and timers, effects, and dead letters. Today the only way is to read the `actor_*` tables directly. Those tables are private runtime storage: their columns change with migrations (`0003_routing_state` rebuilt them, `0008_effects` added `kind` to the outbox, `0011_relay` changes the due index and adds `scheduled_at_ms`), some columns are encodings (`bucket`, `payload_hash`, `caller_key`), and a tool that reads or, worse, writes them couples itself to internals and can break fencing, receipts, or relay leases.
+Operators and tools (`psql`, Grafana, Metabase, and the planned `durable dev` inspector) need to see actors, receipts, events, pending intents and timers, effects, and dead letters. Today the only way is to read the `actor_*` tables directly. Those tables are private runtime storage: their columns change with migrations (`0003_routing_state` rebuilt them, `0008_effects` added `kind` to the outbox, `0011_relay` changes the due index and adds `scheduled_at_ms`), some columns are encodings (`bucket`, `payload_hash`), and a tool that reads or, worse, writes them couples itself to internals and can break fencing, receipts, or relay leases.
 
 These facts from the shipped code shape the answer:
 
@@ -50,7 +50,7 @@ A column that appears in a view is stable: its name, meaning, and SQL type do no
 
 Adding a column at the end of a view is compatible and keeps its version. Removing, renaming, retyping, or changing the meaning of a column, or changing which rows a view returns, requires a new view (for example `durable.receipts_v2`) and a catalog row; the old view keeps working until an ADR retires it.
 
-Derived columns are cheap and SQL-only: `outcome_tag` (the receipt outcome's `_tag`), `value_bytes` (compressed size), and a `timestamptz` beside each `*_ms` column. State and event values stay compressed `bytea`; the reference documents how to decode them. Payloads, callers, and outcomes stay the runtime's JSON text.
+Derived columns are cheap and SQL-only: `outcome_tag` (the receipt outcome's `_tag`), `value_bytes` (compressed size), and a `timestamptz` beside each `*_ms` column. State and event values stay compressed `bytea`; the reference documents how to decode them. Payloads, callers, and outcomes stay the runtime's JSON text. Receipts expose `caller_key`, the caller's replay identity (a JSON array such as `["User","alice"]`), under that name rather than as `caller`, because it is not the tagged caller object the outbox views show; its shape is contract, since changing it would already break receipt replay.
 
 ### 3. Read-only by construction
 
@@ -80,7 +80,7 @@ The migration adds no index, so the views cost nothing on the turn path. Point l
 
 ### 7. Workflows and cron
 
-`durable.timers` already shows cron entries (`timer_key LIKE '$cron:%'`), and `durable.receipts` shows each tick. Workflow views (`durable.workflows`, `durable.workflow_steps`) are not in version 1: `0013` must apply on databases without `0012_workflows`, and a view cannot reference a table that does not exist. They ship with, or right after, the workflow slice as additive views with their own catalog rows.
+This narrows the M2 plan, which put workflow views and a cron run-history view into `0013`. Cron (M2.5) is not on `main`; once it lands, `durable.timers` shows its entries (`timer_key LIKE '$cron:%'`) and `durable.receipts` its ticks, and a dedicated run-history view is an additive follow-up. Workflow views (`durable.workflows`, `durable.workflow_steps`) are not in version 1: `0013` must apply on databases without `0012_workflows`, and a view cannot reference a table that does not exist. They ship with, or right after, the workflow slice as additive views with their own catalog rows.
 
 ## Open questions for Dallen
 

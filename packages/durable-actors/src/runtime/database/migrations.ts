@@ -205,11 +205,8 @@ export const migrations = {
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
   }),
-  // Read-only views in the `durable` schema are the supported way to inspect
-  // runtime rows from SQL. Every column they expose is public; base-table
-  // columns they leave out stay private. Each view joins its actor type's
-  // placement, so Postgres never treats one as an automatically updatable
-  // single-table view, and a write through it fails before touching a row.
+  // The placement join keeps every view from being automatically updatable,
+  // so writes fail without triggers or rules to maintain.
   "0013_inspection_views": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE SCHEMA durable`
@@ -225,7 +222,7 @@ export const migrations = {
       LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
     yield* sql`CREATE VIEW durable.receipts AS
       SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
-        r.command_id, r.command, r.caller_key AS caller,
+        r.command_id, r.command, r.caller_key,
         r.outcome::jsonb ->> '_tag' AS outcome_tag, r.outcome,
         r.expires_at_ms, to_timestamp(r.expires_at_ms::float8 / 1000) AS expires_at
       FROM actor_receipts r

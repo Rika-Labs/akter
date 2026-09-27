@@ -35,13 +35,15 @@ Every view except `durable.views` starts with the actor's ownership columns: `te
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `actors`       | `generation` (`bigint`, activations that took authority), `created` (`boolean`, the creation command committed), `last_event_sequence` (`bigint`)                            |
 | `state`        | `key` (`text`), `value` (`bytea`, zstd-compressed JSON), `value_bytes` (`integer`)                                                                                           |
-| `receipts`     | `command_id`, `command`, `caller` (JSON), `outcome_tag` (`'Success'` or `'Failure'`), `outcome` (JSON), `expires_at_ms`, `expires_at`                                        |
+| `receipts`     | `command_id`, `command`, `caller_key` (JSON array, below), `outcome_tag` (`'Success'` or `'Failure'`), `outcome` (JSON), `expires_at_ms`, `expires_at`                       |
 | `events`       | `sequence` (`bigint`), `event` (tag), `command_id`, `value` (`bytea`, zstd-compressed JSON), `value_bytes`, `emitted_at_ms`, `emitted_at`                                    |
 | `outbox`       | `intent_id`, `timer_key` (null for plain intents), `target_type`, `target_id`, `command`, `payload` (JSON), `caller` (JSON), `attempts`, `last_error`, `due_at_ms`, `due_at` |
 | `timers`       | `timer_key`, `intent_id`, `target_type`, `target_id`, `command`, `payload`, `caller`, `attempts`, `due_at_ms`, `due_at`                                                      |
 | `effects`      | `effect_id`, `effect` (effect name), `payload`, `caller`, `attempts`, `last_error`, `ambiguous` (last attempt's outcome unknown), `due_at_ms`, `due_at`                      |
 | `dead_letters` | `effect_id`, `effect`, `payload`, `attempts`, `cause`, `ambiguous`, `dead_at_ms`, `dead_at`                                                                                  |
 | `views`        | `view_name`, `version`                                                                                                                                                       |
+
+A receipt's `caller_key` is the caller's replay identity, not the tagged caller object that `outbox`, `timers`, and `effects` show as `caller`: `["User", subject]`, `["Anonymous"]`, or `["System", source, [tenant, actor_type, actor_id] or null, on-behalf-of subject or null]`. Read the subject of a user command with `caller_key::jsonb ->> 1` where `caller_key::jsonb ->> 0 = 'User'`.
 
 While a relay attempt holds a row, its `due_at` is the end of that attempt's lease, not the original due time. A settled effect leaves `effects` and appears in `outbox` as an intent to its `onSuccess` or `onDeadLetter` route (and, when exhausted, in `dead_letters`).
 
