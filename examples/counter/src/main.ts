@@ -1,6 +1,6 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Actor, User } from "durable-actors"
-import { Actors, Database } from "durable-actors/runtime"
+import { Actor, User } from "@durable-actors/core"
+import { Actors, Database } from "@durable-actors/core/runtime"
 import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
 import { Counter } from "./counter/contract.ts"
 import { CounterLive } from "./counter/layer.ts"

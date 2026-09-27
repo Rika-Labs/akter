@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { ActorCluster, ActorTest } from "durable-actors/testing"
+import { ActorCluster, ActorTest } from "@durable-actors/core/testing"
 import { Effect, Fiber, Layer, Schedule } from "effect"
 import type { Activity } from "../backend.ts"
 import { load, now } from "../measure.ts"

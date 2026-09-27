@@ -48,7 +48,7 @@ export const emptyOutbox: StagedOutbox = { intents: [], replaced: [], effects: [
  * command turn leave an unsatisfiable requirement.
  */
 export class InTurn extends Context.Service<InTurn, { readonly turn: symbol }>()(
-  "durable-actors/handles/intents/InTurn",
+  "@durable-actors/core/handles/intents/InTurn",
 ) {}
 
 interface Staging {

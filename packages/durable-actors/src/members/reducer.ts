@@ -39,7 +39,7 @@ export type AnyReducer = Reducer<
 >
 
 /** `Actor.reducer`: a commutative reducer replies `void` and cannot fail; any other replies the new state. */
-interface MakeReducer {
+export interface MakeReducer {
   <const Tag extends string, const F extends Fields, Input extends ValueSchema = Schema.Void>(
     tag: Tag,
     options: {

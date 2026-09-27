@@ -1,6 +1,15 @@
 import { DateTime, Deferred, Effect, Layer } from "effect"
-import { Intent } from "durable-actors"
-import { EventProbe, Probe, ResidentProbe, Sender, Sink, SleepyProbe, Ticked } from "./contract.ts"
+import { Intent } from "@durable-actors/core"
+import {
+  EventProbe,
+  Probe,
+  ResidentProbe,
+  RetentionProbe,
+  Sender,
+  Sink,
+  SleepyProbe,
+  Ticked,
+} from "./contract.ts"
 import { EffectProbeLive } from "./effects.ts"
 import { ArchiveLive } from "./archive.ts"
 import { LedgerLive } from "./ledger.ts"
@@ -56,6 +65,18 @@ const EventProbeCommands = EventProbe.toLayer(
   Effect.succeed({
     Emit: Effect.fnUntraced(function* (count: number) {
       const turn = yield* EventProbe.Turn
+
+      for (let n = 0; n < count; n++) yield* turn.emit(Ticked.make({ n }))
+
+      return count
+    }),
+  }),
+)
+
+const RetentionProbeCommands = RetentionProbe.toLayer(
+  Effect.succeed({
+    Emit: Effect.fnUntraced(function* (count: number) {
+      const turn = yield* RetentionProbe.Turn
 
       for (let n = 0; n < count; n++) yield* turn.emit(Ticked.make({ n }))
 
@@ -123,6 +144,7 @@ export const ProbeLive = Layer.mergeAll(
   ResidentProbeCommands,
   EventProbeCommands,
   EventProbeReads,
+  RetentionProbeCommands,
   SinkCommands,
   SenderCommands,
   LedgerLive,
