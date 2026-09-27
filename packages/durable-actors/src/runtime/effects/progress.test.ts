@@ -216,3 +216,34 @@ it("resends on close a frame whose send the close interrupted", () =>
       expect(delivered).toEqual([1])
     }),
   ))
+
+it("spends no token on a wakeup whose frame was already sent", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const sent = yield* record((sent) =>
+        Effect.gen(function* () {
+          const pool = yield* progressPool({ perSecond: 2 })
+          const a = yield* pool.open(attempt("a", 250))
+          yield* a.offer(frame(1))
+          yield* TestClock.adjust(0)
+          yield* a.offer(frame(2))
+          yield* TestClock.adjust(0)
+          // Replaces frame 2 while its sender waits, leaving a second wakeup behind.
+          yield* a.offer(frame(3))
+          yield* TestClock.adjust(250)
+          expect(sent.map((message) => message.seq)).toEqual([1, 3])
+          yield* TestClock.adjust(350)
+          const b = yield* pool.open(attempt("b", 250))
+          yield* b.offer(frame(1))
+          yield* TestClock.adjust(0)
+          expect(sent.map((message) => [message.effectId, message.seq])).toEqual([
+            ["a", 1],
+            ["a", 3],
+            ["b", 1],
+          ])
+        }),
+      )
+
+      expect(sent.length).toBe(3)
+    }),
+  ))

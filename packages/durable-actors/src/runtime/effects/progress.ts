@@ -149,6 +149,8 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
           if (wait > 0) yield* Effect.sleep(wait)
         }
 
+        // A signal left by a frame already sent must not spend a token.
+        if (pending === undefined) continue
         yield* token
         const next = pending
         pending = undefined
