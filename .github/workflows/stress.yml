@@ -67,6 +67,7 @@ jobs:
               timeout --kill-after=30s 20m bun run "$suite" --reporter=default --reporter=json \
                 --outputFile.json="stress/${suite/:/-}-$run.json" \
                 > "../../stress/${suite/:/-}-$run.log" 2>&1 || status=$?
+              echo "$status" > "../../stress/${suite/:/-}-$run.status"
               echo "run $run $suite exited $status"
             done
           done

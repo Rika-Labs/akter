@@ -3,11 +3,14 @@ import { stressSummary, tallyFlakes, type StressRun } from "./stress.ts"
 
 const run = (name: string, results: ReadonlyArray<[string, string]>): StressRun => ({
   run: name,
+  status: results.some(([, status]) => status === "failed") ? 1 : 0,
+  unhandledErrors: false,
   report: {
     success: results.every(([, status]) => status !== "failed"),
     testResults: [
       {
         name: "suite.test.ts",
+        message: "",
         status: results.some(([, status]) => status === "failed") ? "failed" : "passed",
         assertionResults: results.map(([fullName, status]) => ({ fullName, status })),
       },
@@ -39,9 +42,9 @@ describe("stress tally", () => {
   })
 
   it("counts a run without a report as a failure", () => {
-    expect(tallyFlakes([{ run: "4", report: undefined }])).toEqual([
-      { name: "(no report: the run died before Vitest finished)", failed: ["4"] },
-    ])
+    expect(
+      tallyFlakes([{ run: "4", report: undefined, status: 124, unhandledErrors: false }]),
+    ).toEqual([{ name: "(no report: the run died before Vitest finished)", failed: ["4"] }])
   })
 
   it("counts a file that failed outside its cases and a run that failed outside any file", () => {
@@ -49,19 +52,26 @@ describe("stress tally", () => {
       tallyFlakes([
         {
           run: "5",
+          status: 1,
+          unhandledErrors: false,
           report: {
             success: false,
-            testResults: [{ name: "broken.test.ts", status: "failed", assertionResults: [] }],
+            testResults: [
+              { name: "broken.test.ts", status: "failed", message: "import", assertionResults: [] },
+            ],
           },
         },
         {
           run: "6",
+          status: 1,
+          unhandledErrors: false,
           report: {
-            success: false,
+            success: true,
             testResults: [
               {
                 name: "suite.test.ts",
                 status: "passed",
+                message: "",
                 assertionResults: [{ fullName: "a", status: "passed" }],
               },
             ],
@@ -71,6 +81,33 @@ describe("stress tally", () => {
     ).toEqual([
       { name: "(run failed without a failing case: see its log)", failed: ["6"] },
       { name: "broken.test.ts (file failed)", failed: ["5"] },
+    ])
+  })
+
+  it("keeps unhandled errors and file errors beside the failed cases of the same run", () => {
+    expect(
+      tallyFlakes([
+        {
+          run: "7",
+          status: 1,
+          unhandledErrors: true,
+          report: {
+            success: false,
+            testResults: [
+              {
+                name: "suite.test.ts",
+                status: "failed",
+                message: "afterAll hook failed",
+                assertionResults: [{ fullName: "a", status: "failed" }],
+              },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([
+      { name: "(unhandled errors: see its log)", failed: ["7"] },
+      { name: "suite.test.ts (file failed)", failed: ["7"] },
+      { name: "suite.test.ts > a", failed: ["7"] },
     ])
   })
 
