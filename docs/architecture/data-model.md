@@ -7,18 +7,19 @@
 
 Framework-private records include:
 
-| Record               | Purpose                                                                                                                                          | Authority                            |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
-| Generation           | fenced current writer                                                                                                                            | turn admission                       |
-| Receipt              | command id, input identity, stored exit                                                                                                          | retry safety                         |
-| `actor_state`        | compressed keyed schema values                                                                                                                   | small actor state                    |
-| Actor table row      | relational actor-owned data                                                                                                                      | application state                    |
-| Event                | ordered committed publication                                                                                                                    | replay and waits                     |
-| Effect / dead letter | post-commit external consequence                                                                                                                 | effect recovery                      |
-| Workflow step        | recorded activity, clock, and deferred exits on the owner's shard                                                                                | workflow recovery                    |
-| `actor_connections`  | open connection: member, holder and epoch, caller, session, frame sequence                                                                       | socket resumption, broadcast routing |
-| Blob                 | large actor-scoped bytes                                                                                                                         | application state                    |
-| `actor_outbox`       | intents, timers, workflow starts, effects; target `running`, `cancelled_at_ms`, `maybe_applied`, `ready_at_ms` (`0015_effect_control`, ADR 0024) | delivery and recovery                |
+| Record               | Purpose                                                                                                                                                                           | Authority                            |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Generation           | fenced current writer                                                                                                                                                             | turn admission                       |
+| Receipt              | command id, input identity, stored exit                                                                                                                                           | retry safety                         |
+| `actor_state`        | compressed keyed schema values                                                                                                                                                    | small actor state                    |
+| Actor table row      | relational actor-owned data                                                                                                                                                       | application state                    |
+| Event                | ordered committed publication                                                                                                                                                     | replay and waits                     |
+| Effect / dead letter | post-commit external consequence                                                                                                                                                  | effect recovery                      |
+| Workflow step        | recorded activity, clock, and deferred exits on the owner's shard                                                                                                                 | workflow recovery                    |
+| `actor_connections`  | open connection: member, holder and epoch, caller, session, frame sequence                                                                                                        | socket resumption, broadcast routing |
+| Blob                 | large actor-scoped bytes                                                                                                                                                          | application state                    |
+| Subscription         | per-source subscription row with settled cursor on the source's shard; applied cursor on the subscriber's shard                                                                   | subscription delivery                |
+| `actor_outbox`       | intents, timers, workflow starts, effects, subscription feeds and controls; target `running`, `cancelled_at_ms`, `maybe_applied`, `ready_at_ms` (`0015_effect_control`, ADR 0024) | delivery and recovery                |
 
 One Postgres database belongs to each deployment region. Commands are direct: the receipt is their only durable record, and there is no command message table. `tenant_id` appears on every framework and actor-owned table, with optional RLS. Actor state, tables, events, effects, blobs, and receipts share the actor ownership key and transaction boundary.
 

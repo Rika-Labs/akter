@@ -20,6 +20,7 @@
 - **Home region:** the deployment region whose database holds a tenant's actors and rows; assigned only by an operator.
 - **Query tier:** local (one actor), group (one placement key, one shard), or fleet (declared `Fleet.view`, eventually consistent, outside turns).
 - **Command:** authenticated request addressed to one actor, delivered directly and implemented by a server handler.
+- **Subscription:** an `Actor.subscription` member through which an actor follows another actor type's committed events, delivered as System command turns in source cursor order; routed by the event, or dynamic per source id.
 - **Reducer:** pure state transition declared in the contract; runs optimistically in browser handles and may merge commutatively.
 - **Context service:** the typed per-phase context (`X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`) a handler obtains with `yield*`.
 - **Receipt:** durable record of one logical command identity and outcome; the only durable admission record of a direct command.
