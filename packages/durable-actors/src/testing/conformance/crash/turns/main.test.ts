@@ -4,8 +4,8 @@ import { SqlClient } from "effect/unstable/sql"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { migrate } from "../../../runtime/database/migrations.ts"
-import { Database } from "../../../runtime/index.ts"
+import { migrate } from "../../../../runtime/database/migrations.ts"
+import { Database } from "../../../../runtime/index.ts"
 
 describe("process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
