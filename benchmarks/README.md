@@ -73,6 +73,7 @@ Every feature ships with a scenario. A pull request that adds a durable mechanis
 | Multi-runner relay and executor pool (M2.4)    | #96          | `outbox`, `effect-round-trip` with `--runners 1,2,4` |
 | Blobs                                          | #61          | `blobs`, which lands with #61                        |
 | Retention, replay pages, emit budget           | #17          | `retention`, `events`                                |
+| Served HTTP (`Actor.serve`)                    | #92          | `http`                                               |
 
 ### Adding a scenario
 

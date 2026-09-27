@@ -175,6 +175,12 @@ export class InternalActors extends Context.Service<
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     readonly mintActorId: Effect.Effect<string>
+    /** The deployment's command retry window: every id's `expiresAt - issuedAt`. */
+    readonly retryWindowMs: number
+    /** The database clock in epoch milliseconds, the only clock command ids are checked against. */
+    readonly databaseNow: Effect.Effect<number, ActorError>
+    /** A fresh command id issued at the database clock, as `Actors.mintCommandId` returns. */
+    readonly mintCommandId: Effect.Effect<string, ActorError>
     /**
      * Binds owned-table capabilities to the calling fiber's turn or query.
      * Writable access requires the turn transaction and never opens its own.
@@ -184,6 +190,11 @@ export class InternalActors extends Context.Service<
     readonly shardId: (ref: ActorRef) => Effect.Effect<string>
     /** Binds blob capabilities the same way; writable access requires the turn transaction. */
     readonly blobs: (scope: BlobScope, write: boolean) => Effect.Effect<BlobAccess>
+    /** Which layers of an actor type this process registered. */
+    readonly registered: (actor: string) => {
+      readonly commands: boolean
+      readonly queries: boolean
+    }
     /** The blob names a registered actor type declares, for test inspection. */
     readonly declaredBlobs: (actor: string) => ReadonlyArray<string>
   }
