@@ -1330,6 +1330,96 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "saturates intent backoff at the largest accepted maxBackoff",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const maxBackoffMs = 2_147_483_647
+
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (1, 'saturate', 'Ghost', 'saturate')`
+          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+              scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
+              payload, caller, kind, attempts)
+            VALUES (1, 'saturate', 0, 0, 0, 'saturate', 'Ghost', 'saturate', 'Ghost', 'saturate',
+              'Haunt', '{}', '{}', 'intent', 30)`
+
+          const claimed = yield* claimIntents({
+            sql,
+            now: 1,
+            limit: 1,
+            leaseMs: 37_000,
+            maxBackoffMs,
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                yield* sql`DELETE FROM actor_outbox WHERE tenant_id = 'saturate'`
+                yield* sql`DELETE FROM actor_generations WHERE tenant_id = 'saturate'`
+              }).pipe(Effect.orDie),
+            ),
+          )
+
+          expect(claimed.map((row) => [row.attempts, Number(row.claimed_until)])).toEqual([
+            [31, 1 + maxBackoffMs],
+          ])
+        }),
+      ),
+  },
+  {
+    name: "claims later due intents while other transactions hold the earliest rows locked",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        1,
+        { relay: { deliveryConcurrency: 1, poll: "100 millis" } },
+        Effect.gen(function* () {
+          const ids = ["locked-1", "locked-2", "locked-3", "unlocked-4"]
+
+          for (const [index, id] of ids.entries())
+            yield* stage(0, [id], { afterMs: 60_000 + index * 1000 })
+
+          const locked = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          // Three rows locked where one free slot probes two candidates.
+          const holder = yield* query(0, (sql) =>
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT intent_id FROM actor_outbox WHERE kind = 'intent'
+                  ORDER BY due_at_ms LIMIT 3 FOR UPDATE`
+                yield* Deferred.succeed(locked, undefined)
+                yield* Deferred.await(release)
+              }),
+            ),
+          ).pipe(Effect.forkChild)
+          yield* Deferred.await(locked)
+
+          yield* advance(0, "2 minutes")
+          yield* eventually(
+            Effect.sync(() => fixture.taken.get("unlocked-4") === 1),
+            "20 seconds",
+            "the unlocked intent",
+          )
+          expect(ids.slice(0, 3).map((id) => fixture.taken.get(id))).toEqual([
+            undefined,
+            undefined,
+            undefined,
+          ])
+
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(holder)
+          yield* eventually(
+            Effect.sync(() => takenOnce(fixture, ids)),
+            "20 seconds",
+            "every intent",
+          )
+        }),
+      ),
+  },
+  {
     name: "dead-letters an already exhausted row with its recorded outcome",
     run: ({ expect, environment, fixture: { relay: fixture } }) =>
       environment.run(

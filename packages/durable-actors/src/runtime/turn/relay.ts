@@ -50,7 +50,8 @@ export interface LocalExecutor {
 }
 
 interface ClaimedRow {
-  readonly kind: "intent" | "effect"
+  /** `skipped-*` rows claim nothing; they report a probe whose candidates were all taken or locked. */
+  readonly kind: "intent" | "effect" | "skipped-intent" | "skipped-effect"
   readonly routing_key: string
   readonly intent_id: string
   readonly attempts: number
@@ -104,6 +105,8 @@ export interface IntentClaim {
   readonly limit: number
   readonly leaseMs: number
   readonly maxBackoffMs: number
+  /** Due candidates probed before locking; defaults to twice `limit`. */
+  readonly probe?: number | undefined
 }
 
 /** Effects to claim in one statement: up to `permits`, only for local executors. */
@@ -111,6 +114,8 @@ export interface EffectClaim {
   readonly permits: number
   readonly leaseMs: number
   readonly executors: ReadonlyArray<LocalExecutor>
+  /** Due candidates probed before locking; defaults to twice `permits`. */
+  readonly probe?: number | undefined
 }
 
 /**
@@ -125,7 +130,9 @@ export interface EffectClaim {
  * `max(lease, backoff(attempts))` instead of sorting ahead of newer work. An
  * effect with no executor on this runner is never claimed here; it stays due
  * for a runner that has one. The two kinds never share a row, so the two
- * updates are disjoint.
+ * updates are disjoint. A kind that claims nothing although its probe found
+ * candidates returns one `skipped-*` row with the candidate count, so the
+ * relay can widen the next probe past rows other transactions hold locked.
  */
 export const claimDue = ({
   sql,
@@ -142,10 +149,10 @@ export const claimDue = ({
   const results: Array<Statement.Fragment> = []
 
   if (intents !== undefined) {
-    const { limit, leaseMs, maxBackoffMs } = intents
+    const { limit, leaseMs, maxBackoffMs, probe = 2 * limit } = intents
     parts.push(sql`intent_candidates AS (
-        ${candidates(sql, "intent", now, 2 * limit)}
-        ORDER BY o.due_at_ms LIMIT ${2 * limit}
+        ${candidates(sql, "intent", now, probe)}
+        ORDER BY o.due_at_ms LIMIT ${probe}
       ),
       intent_locked AS (
         SELECT o.routing_key, o.intent_id FROM actor_outbox o
@@ -157,17 +164,17 @@ export const claimDue = ({
       intent_claimed AS (
         UPDATE actor_outbox o SET attempts = o.attempts + 1,
           due_at_ms = ${now} + greatest(${leaseMs}::bigint,
-            least(1000 * power(2, least(o.attempts, 20)), ${maxBackoffMs}::bigint))::bigint
+            least(1000 * power(2, least(o.attempts, 31)), ${maxBackoffMs}::bigint))::bigint
         FROM intent_locked c
         WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
         RETURNING ${claimedColumns(sql)},
           (SELECT count(*) FROM intent_candidates)::int AS candidates, false AS exhausted
       )`)
-    results.push(sql`SELECT * FROM intent_claimed`)
+    results.push(sql`SELECT * FROM intent_claimed`, skipped(sql, "intent"))
   }
 
   if (effects !== undefined && effects.executors.length > 0) {
-    const { permits, leaseMs, executors } = effects
+    const { permits, leaseMs, executors, probe = 2 * permits } = effects
     parts.push(sql`mine (actor_type, command, max_attempts) AS (
         VALUES ${sql.csv(
           executors.map(
@@ -181,12 +188,12 @@ export const claimDue = ({
           sql,
           "effect",
           now,
-          2 * permits,
+          probe,
           // Filtered inside each bucket's probe, so due rows no runner here can
           // execute never fill the per-bucket limit ahead of rows it can.
           sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
         )}
-        ORDER BY o.due_at_ms LIMIT ${2 * permits}
+        ORDER BY o.due_at_ms LIMIT ${probe}
       ),
       effect_locked AS (
         SELECT o.routing_key, o.intent_id, o.attempts AS previous, m.max_attempts
@@ -212,13 +219,23 @@ export const claimDue = ({
           (SELECT count(*) FROM effect_candidates)::int AS candidates,
           c.previous >= c.max_attempts AS exhausted
       )`)
-    results.push(sql`SELECT * FROM effect_claimed`)
+    results.push(sql`SELECT * FROM effect_claimed`, skipped(sql, "effect"))
   }
 
   if (results.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedEffect>)
 
   return sql<ClaimedEffect>`WITH ${sql.csv(parts)}
     ${sql.join(" UNION ALL ", false)(results)}`
+}
+
+/** One row reporting `kind`'s candidates when its claim took none of them. */
+const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
+  const claimed = sql.literal(`${kind}_claimed`)
+  const found = sql.literal(`${kind}_candidates`)
+
+  return sql`SELECT ${`skipped-${kind}`}::text, NULL, NULL, 0, NULL, false, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, (SELECT count(*) FROM ${found})::int, false
+    WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
 
 /** The outbox clock inside a statement: its start time on the database plus the test offset. */
@@ -236,6 +253,26 @@ export const claimIntents = ({
     now: sql`${now}::bigint`,
     intents,
   }) as Statement.Statement<ClaimedEffect>
+
+/** The widest probe, as a multiple of twice the free capacity. */
+const MAX_WIDEN = 64
+
+/**
+ * The next probe multiple: doubled when a claim left capacity free although
+ * it found more due candidates than it took, which happens when other
+ * transactions hold the earliest rows locked; reset otherwise.
+ */
+const widened = (
+  current: number,
+  rows: ReadonlyArray<ClaimedRow>,
+  kind: "intent" | "effect",
+  capacity: number,
+) => {
+  const taken = rows.filter((row) => row.kind === kind)
+  const found = (taken[0] ?? rows.find((row) => row.kind === `skipped-${kind}`))?.candidates ?? 0
+
+  return taken.length < capacity && found > taken.length ? Math.min(current * 2, MAX_WIDEN) : 1
+}
 
 const logFailure =
   (message: string) =>
@@ -277,6 +314,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
   // Set when a claim saw more due candidates than it took: a freed slot then
   // claims again instead of waiting for the poll.
   const more = { intents: false, effects: false }
+  // How many times the base probe the next claim reads; doubled while a claim
+  // leaves free capacity although it found more candidates than it took.
+  const widen = { intents: 1, effects: 1 }
   let stopping = false
   // Attempts this runner is executing, keyed by effect id, with the attempt that holds each lease.
   const running = new Map<string, { readonly routingKey: bigint; readonly attempt: number }>()
@@ -604,22 +644,32 @@ export const outboxRelay = Effect.fnUntraced(function* (
                     limit: slots,
                     leaseMs: settings.claimLeaseMs(),
                     maxBackoffMs: settings.maxBackoffMs,
+                    probe: 2 * slots * widen.intents,
                   }
                 : undefined,
             effects:
               permits > 0
-                ? { permits, leaseMs: settings.executorLeaseMs, executors: local }
+                ? {
+                    permits,
+                    leaseMs: settings.executorLeaseMs,
+                    executors: local,
+                    probe: 2 * permits * widen.effects,
+                  }
                 : undefined,
           })
 
           const intents = rows.filter((row) => row.kind === "intent")
           const effects = rows.filter((row) => row.kind === "effect")
 
-          if (slots > 0)
+          if (slots > 0) {
             more.intents = intents.length > 0 && intents[0]!.candidates > intents.length
+            widen.intents = widened(widen.intents, rows, "intent", slots)
+          }
 
-          if (permits > 0 && local.length > 0)
+          if (permits > 0 && local.length > 0) {
             more.effects = effects.length > 0 && effects[0]!.candidates > effects.length
+            widen.effects = widened(widen.effects, rows, "effect", permits)
+          }
 
           for (const row of intents)
             yield* FiberSet.run(
@@ -645,7 +695,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           }
 
           return {
-            claimed: rows.length,
+            claimed: intents.length + effects.length,
             backlog: more.intents || more.effects,
             quiet,
           }
