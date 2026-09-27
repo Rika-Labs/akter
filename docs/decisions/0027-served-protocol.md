@@ -1,6 +1,6 @@
 # ADR 0027: The served protocol: HTTP, WebSocket, SSE, and OpenAPI
 
-**Status:** proposed (2026-09-26)
+**Status:** accepted (2026-09-26, Dallen, with every recommended default; proposed 2026-09-26)
 
 ## Context
 
@@ -31,7 +31,7 @@ const ChatServer = Actor.serve({
     issuer: "https://auth.example.com/",
     audience: "chat",
     jwks: new URL("https://auth.example.com/.well-known/jwks.json"),
-    tenant: (claims) => claims.org_id, // optional; default "default"
+    tenant: (claims) => claims.org_id, // required; a single-tenant app writes () => "default"
   }),
   basePath: "/api",
   openapi: { path: "/openapi.json" }, // off unless given
@@ -52,19 +52,19 @@ BunRuntime.runMain(
 
 Routes, under `basePath`:
 
-| Member                          | Method and path                                                        | Body          | Response                                        |
-| ------------------------------- | ---------------------------------------------------------------------- | ------------- | ----------------------------------------------- |
-| Command, reducer                | `POST /actors/{Actor}/{id}/{Member}`                                   | encoded input | encoded output (a reducer: the committed state) |
-| Query                           | `POST /actors/{Actor}/{id}/{Member}`                                   | encoded input | encoded output                                  |
-| Workflow start                  | `POST /actors/{Actor}/{id}/{Workflow}`                                 | encoded input | `{ executionId }`                               |
-| Workflow run                    | `GET /actors/{Actor}/{id}/{Workflow}/runs/{executionId}?wait=<0–30>`   | –             | `{ status: "running" }` or the encoded `Exit`   |
-| Workflow interrupt              | `POST /actors/{Actor}/{id}/{Workflow}/runs/{executionId}/interrupt`    | –             | `204`; a command with its own `Idempotency-Key` |
-| Event feed                      | `GET /actors/{Actor}/{id}/events?event={Event}&event=…&after={cursor}` | –             | `text/event-stream` (section 7)                 |
-| Stream (`Actor.stream`)         | `POST /actors/{Actor}/{id}/{Stream}` with `accept: text/event-stream`  | encoded input | `text/event-stream` (section 7)                 |
-| Connection (`Actor.connection`) | `GET /actors/{Actor}/{id}/{Connection}`, WebSocket upgrade             | –             | WebSocket (section 8)                           |
-| Protocol discovery              | `GET /protocol`                                                        | –             | `{ protocol, retryWindowMs, now }` (section 2)  |
-| Command id mint                 | `POST /command-ids`                                                    | –             | `{ commandId }` (section 2)                     |
-| OpenAPI                         | `GET {openapi.path}`                                                   | –             | OpenAPI 3.1 document (section 6)                |
+| Member                          | Method and path                                                        | Body          | Response                                                                  |
+| ------------------------------- | ---------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------- |
+| Command, reducer                | `POST /actors/{Actor}/{id}/{Member}`                                   | encoded input | encoded output (a reducer: the committed state, or `void` if commutative) |
+| Query                           | `POST /actors/{Actor}/{id}/{Member}`                                   | encoded input | encoded output                                                            |
+| Workflow start                  | `POST /actors/{Actor}/{id}/{Workflow}`                                 | encoded input | `{ executionId }`                                                         |
+| Workflow run                    | `GET /actors/{Actor}/{id}/{Workflow}/runs/{executionId}?wait=<0–30>`   | –             | `{ status: "running" }` or the encoded `Exit`                             |
+| Workflow interrupt              | `POST /actors/{Actor}/{id}/{Workflow}/runs/{executionId}/interrupt`    | –             | `204`; a command with its own `Idempotency-Key`                           |
+| Event feed                      | `GET /actors/{Actor}/{id}/events?event={Event}&event=…&after={cursor}` | –             | `text/event-stream` (section 7)                                           |
+| Stream (`Actor.stream`)         | `POST /actors/{Actor}/{id}/{Stream}` with `accept: text/event-stream`  | encoded input | `text/event-stream` (section 7)                                           |
+| Connection (`Actor.connection`) | `GET /actors/{Actor}/{id}/{Connection}`, WebSocket upgrade             | –             | WebSocket (section 8)                                                     |
+| Protocol discovery              | `GET /protocol`                                                        | –             | `{ protocol, retryWindowMs, now }` (section 2)                            |
+| Command id mint                 | `POST /command-ids`                                                    | –             | `{ commandId }` (section 2)                                               |
+| OpenAPI                         | `GET {openapi.path}`                                                   | –             | OpenAPI 3.1 document (section 6)                                          |
 
 - **Actor and member names** appear verbatim and case-sensitive. `Actor.serve` fails at startup if a served actor's name or member tag is not `[A-Za-z][A-Za-z0-9_]*`, or if a member is named `events`, which the feed route reserves.
 - **The id segment** is the key schema's encoded string, percent-encoded as one RFC 3986 path segment; `/` in an id is `%2F`. The server decodes the segment exactly once after routing and never normalizes it. The key schema then decodes it, and a decode failure is `InvalidInput`. Two kinds of id can't survive real URLs: the WHATWG URL parser (and so `fetch`) removes `.` and `..` segments, even percent-encoded, and many proxies (nginx, AWS ALB, Apache by default) decode or reject `%2F`. So the server answers an id of `.` or `..` with `400 InvalidInput { code: "unservable_id" }`, and M3.2's deployment guide lists the proxy settings that pass `%2F` through. Applications that key on free text should use a key schema that encodes it (for example base64url).
@@ -91,7 +91,7 @@ Routes, under `basePath`:
 **Minting without the database clock.** Clients mint ids against the server's clock, never their own:
 
 1. `GET /protocol` returns `{ protocol: 1, retryWindowMs, now }`, where `now` is the database clock in milliseconds. Every other response also carries `durable-now: <ms>`. Neither reads the database: each runner keeps an offset from its monotonic clock to the database clock, sampled every 10 seconds with `SELECT` of the clock, and keeps the sample whose round trip was shortest in each period, so `now` is off by at most that round trip (typically under a millisecond). `/protocol` needs no credentials, reveals nothing tenant-specific, runs no turn, and costs no more than a static response.
-2. The client keeps `offset = now − (sent + received) / 2` from the response with the smallest round trip it has seen in the last minute, measured on a monotonic clock (`performance.now()`), so a wall-clock step or a laptop sleep doesn't skew it. It mints `issuedAt = monotonicNow + offset − max(1000, rtt)`, where `rtt` is that same sample's round trip, and `expiresAt = issuedAt + retryWindowMs`, with a fresh UUIDv4. The subtracted margin absorbs the estimate's error; the id loses at most that much of its retry window. A slow response (a 30-second `504`) is never the sample.
+2. The client keeps `offset = now − (sent + received) / 2` from the response with the smallest round trip it has seen in the last minute, measured on a monotonic clock (`performance.now()`), so a wall-clock step or a laptop sleep doesn't skew it. It mints `issuedAt = monotonicNow + offset − max(1000, rtt)`, where `rtt` is that same sample's round trip, and `expiresAt = issuedAt + retryWindowMs`, with a fresh UUIDv4. The subtracted margin absorbs the estimate's error; the id loses at most that much of its retry window. `Actor.serve` fails at startup when the runtime's `retryWindowMs` is below 60 seconds: the margin (at least 1 s, more on a slow link) and the client's `expiresAt − 1 s` retry cutoff would otherwise leave a served id little or no time to arrive before it expires. A slow response (a 30-second `504`) is never the sample.
 3. A client that can't keep a clock offset (a shell script, a generated client) calls `POST /command-ids`, which returns an id minted from the database clock in one round trip and writes nothing. It requires the same credentials as a command, so it isn't an anonymous oracle.
 
 `InvalidCommandId` gains `code`: `malformed`, `future`, `window`, or `version`.
@@ -157,7 +157,7 @@ A failure body is one of three things, told apart by `_tag`:
 
 **The `ActorError` wire schema is not the in-process class.** Each reason has a wire form with only its public fields: `ActorUnavailable`'s `cause` (a `Schema.Defect` that today holds SQL errors and internal messages) is dropped and never serialized, and the other reasons keep their fields (`commandId`, `code`). `isRetryable` and `retryAfter` are getters on the class, not schema fields, so the server computes them when encoding: `isRetryable` is a boolean, and `retryAfter` is a number of milliseconds, omitted when the reason has none. Clients rebuild an `ActorError` from the wire form, so `retryAfter` is an `Option` again on their side.
 
-`Actor.make` already rejects declared errors that aren't tagged. For served actors it also rejects a declared error tagged `ActorError` or `Defect`, and a declared `httpApiStatus` outside `4xx` or equal to one the framework uses for its own reasons (`401`, `403`, `409`, `410`, `413`, `415`, `429`), because generated clients and gateways key retries on status. The two boundary-only reasons get fields:
+`Actor.make` already rejects declared errors that aren't tagged. For served actors it also rejects a declared error tagged `ActorError` or `Defect`, and a declared `httpApiStatus` outside `4xx` or equal to one the framework uses for its own reasons (`400`, `401`, `403`, `404`, `409`, `410`, `413`, `415`, `429`; `500`, `503`, and `504` are already outside `4xx`), because generated clients and gateways key retries on status. The two boundary-only reasons get fields:
 
 - `InvalidInput { code, issues? }`, where `code` is `decode`, `missing_command_id`, `too_large`, `unsupported_media_type`, `unsupported_protocol`, `unknown_route`, `unservable_id`, `origin_not_allowed`, `unknown_event`, or `too_many_filters`, and `issues` lists schema issues by path and message, never the offending values.
 - `TransportError { code, status?, retryable }`, produced only by clients, for any response that isn't a success, a declared failure, or an `ActorError`: `network` (no response; the request may or may not have reached the server; retryable), `status` (a non-envelope `502`, `503`, or `504` from a proxy is retryable, any other non-envelope status is not), `decode` (a body that doesn't decode; not retryable), or `defect` (the server's `Defect` body, which has no in-process counterpart that can cross the wire; not retryable, because a defect writes no receipt and would run again).
@@ -187,7 +187,7 @@ A failure body is one of three things, told apart by `_tag`:
 | Socket or stream drops with no `end`                                              | –                                                                              | the client reports `SessionEnded { cause: "HolderLost", resync: true }` |
 
 - The body, or the `end` frame, is authoritative. Status and close codes are coarse, for proxies, logs, and tools; clients decode the body.
-- **`retryAfter`** is populated for the first time, in milliseconds, on the envelope and as `retry-after` in whole seconds (rounded up): 250 ms for `ActorUnavailable`, 1,000 ms for `RunnerAtCapacity`, 100 ms for `MailboxFull`, each with ±50% jitter, and ADR 0023's jittered value on a third resync. Proposed, not decided: the in-process handle adopts the same values as the start of its own backoff, so `ActorError.retryAfter` means the same thing everywhere. That changes [ADR 0019](0019-runner-capacity-and-pool-size.md)'s rule that `RunnerAtCapacity` backs off like `ActorUnavailable` (today exponential from 10 ms, capped at 500 ms), so it is Q12.
+- **`retryAfter`** is populated for the first time, in milliseconds, on the envelope and as `retry-after` in whole seconds (rounded up): 250 ms for `ActorUnavailable`, 1,000 ms for `RunnerAtCapacity`, 100 ms for `MailboxFull`, each with ±50% jitter, and ADR 0023's jittered value on a third resync. The in-process handle adopts the same values as the start of its own backoff, so `ActorError.retryAfter` means the same thing everywhere (Q12). That amends [ADR 0019](0019-runner-capacity-and-pool-size.md)'s rule that `RunnerAtCapacity` backs off like `ActorUnavailable` (today exponential from 10 ms, capped at 500 ms).
 - `R3` holds over the wire: a replayed declared failure has the same `_tag`, fields, and status as the first.
 
 ### 5. Queries and read-your-writes tokens
@@ -201,7 +201,7 @@ A failure body is one of three things, told apart by `_tag`:
 ### 6. OpenAPI from the same definitions
 
 - `Actor.serve` builds each served actor type as an Effect `HttpApiGroup`, and each public member as an `HttpApiEndpoint` whose payload, success, and error schemas are the member's own runtime schemas. The server and the document come from the same `HttpApi` value, so a route can't be documented without being served or served without being documented. `/openapi.json` is `OpenApi.fromApi` of that value, served only when `openapi` is configured.
-- The document is OpenAPI 3.1 (JSON Schema 2020-12). Each operation has `operationId` `<Actor>.<Member>`, the `Idempotency-Key` header as a required parameter on commands, reducers, and workflow starts, the declared errors under their statuses, and `ActorError` under the statuses in section 4. The auth provider contributes its security scheme (`bearer` with format `JWT` for `Actor.auth.jwt`, none for `Actor.auth.none`).
+- The document is OpenAPI 3.1 (JSON Schema 2020-12). Each operation has `operationId` `<Actor>.<Member>`; a workflow's run and interrupt routes are `<Actor>.<Member>.run` and `<Actor>.<Member>.interrupt`, and an actor's event feed is `<Actor>.events`. Startup fails if two operations share an id. Each operation has the `Idempotency-Key` header as a required parameter on commands, reducers, and workflow starts, the declared errors under their statuses, and `ActorError` under the statuses in section 4. The auth provider contributes its security scheme (`bearer` with format `JWT` for `Actor.auth.jwt`, none for `Actor.auth.none`).
 - Internal members, executors, routes, and connection internals never appear (the **Internal section** check). Connections, feeds, and streams appear as operations with `x-durable-transport: websocket | sse` and their frame schemas under `components`, so tools can find them, but OpenAPI can't describe their message flow; AsyncAPI is deferred (Q10).
 - The document is generated at startup, is deterministic for a given set of definitions (stable key order, no timestamps), and is covered by a snapshot test in each example, so a schema change shows up in review.
 - M3.2 ships a guide to generating clients in other languages from `/openapi.json` with standard generators; it covers minting ids through `POST /command-ids` and retrying with the same `Idempotency-Key`.
@@ -211,7 +211,7 @@ A failure body is one of three things, told apart by `_tag`:
 **Event feeds** follow an actor's durable events: `GET /actors/Room/r1/events?event=MessagePosted&after=42`.
 
 - **Framing.** Each event is one SSE message: `id` is its cursor, `event` is its tag, and `data` is `{ event, commandId, timestamp }` with the event schema-encoded. A comment line every 15 seconds keeps idle proxies from closing the stream.
-- **Resume.** `after` is exclusive, like every event cursor ([contract 07](../contracts/07-realtime.md)). On reconnect, `Last-Event-ID` overrides `after`, so a browser's own reconnect resumes where it stopped. `UnknownCursor` and `RetentionGap` detected at the start answer `404` and `410` with the error body before any stream starts, which also stops `EventSource` from reconnecting in a loop. Pruning is only ever detected when the holder reads `actor_events`, at the start and on every reread (step 3 below). A reread that finds a gap ends the feed with an `end` message carrying `RetentionGap`, and the next reconnect gets the `410`.
+- **Resume.** `after` is exclusive, like every event cursor ([contract 07](../contracts/07-realtime.md)). On reconnect, `Last-Event-ID` overrides `after`, so a browser's own reconnect resumes where it stopped. `UnknownCursor` and `RetentionGap` detected at the start answer `404` and `410` with the error body before any stream starts, which also stops `EventSource` from reconnecting in a loop: a non-`200` response fails a native `EventSource` for good (`readyState` becomes `CLOSED`), though it can't read the body, so a browser that must tell a gap from other failures uses the fetch-based feed of `durable-actors/client`. Pruning is only ever detected when the holder reads `actor_events`, at the start and on every reread (step 3 below). A reread that finds a gap ends the feed with an `end` message carrying `RetentionGap`, and the next reconnect gets the `410`.
 - **Declared feeds only.** Only events the actor type lists in its `feeds` definition section are served (Q11). Any other `event` is `404 InvalidInput { code: "unknown_event" }`, exactly like an event that doesn't exist.
 - **Filters.** At least one `event` and at most 16 are required; there is no wildcard, so `authorize` sees every event tag a caller reads. More than 16 is `400 InvalidInput { code: "too_many_filters" }`.
 - **Authorization.** The hook is called with `kind: "feed"` and `command` set to each event tag before anything is read, then reauthorized every `reauthorizeEvery` with `kind: "reauthorize"` and `of: "feed"` (ADR 0023; this ADR adds `of`, which says what a reauthorization is for: `"open"`, `"stream"`, or `"feed"`, so a feed's event tag can't be mistaken for a connection member with the same tag). SSE can't carry a `reauthenticate` frame back, so a feed ends with `Unauthorized { code: "expired" }` at its credential's `expiresAt`, and the client reconnects with a fresh credential and its last cursor. Nothing is lost.
@@ -311,23 +311,24 @@ We're behind on wire encodings (no CBOR) and on AsyncAPI, and both are cheap add
 
 ## Amendments
 
-| Document                                                                         | Was                                                                         | Becomes                                                                                                                                                                                                                                       |
-| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Protocol](../contracts/protocol.md)                                             | transport-neutral frames; `x-request-id` echo                               | Adds the served mapping: routes, `Idempotency-Key`, `/protocol` and `/command-ids`, tokens, the WebSocket envelope, and SSE framing, by reference to this ADR.                                                                                |
-| [Error model](../contracts/error-model.md)                                       | 410, 400, 403 reserved; `retryAfter` never populated                        | The status and close-code table; fields of `InvalidInput` and `TransportError`; `InvalidCommandId.code`; `Unauthorized`'s credential codes; `retryAfter` values.                                                                              |
-| [TypeScript SDK](../api/03-typescript-sdk.md)                                    | "identity format, expiry metadata, and error mappings still require design" | Minting against the server clock, the retry table, header functions, and the read-your-writes token.                                                                                                                                          |
-| [Server API](../api/01-server-api.md)                                            | `Actor.serve` requires auth                                                 | `Actor.serve({ actors, auth, basePath?, openapi?, origins?, limits? })` and the `Actor.auth` providers.                                                                                                                                       |
-| [10 security](../contracts/10-security.md)                                       | per-call callers; `Actor.auth.none`                                         | Tenant only from the provider; no System callers from providers; the principal limit; credentials never in URLs; the origin check on upgrades.                                                                                                |
-| `authorize` hook ([ADR 0023](0023-connections-parking-and-streams.md) section 8) | `kind` is `command`, `query`, `open`, `stream`, or `reauthorize`            | Adds `feed`, with `command` set to the event tag, and `of` on `reauthorize`. `kind` becomes a required field of the hook's request type, so a hook that ignores it still compiles but M3.2's migration note tells every hook to switch on it. |
-| [ADR 0019](0019-runner-capacity-and-pool-size.md), if Q12's default is accepted  | `RunnerAtCapacity` backs off like `ActorUnavailable`, from 10 ms            | Both start from their `retryAfter` (1,000 ms and 250 ms), with jitter.                                                                                                                                                                        |
-| `Actor.make` ([server API](../api/01-server-api.md))                             | `events` lists an actor type's events                                       | Adds `feeds`: the events served as SSE feeds (Q11).                                                                                                                                                                                           |
-| [Failure matrix](../verification/02-failure-matrix.md)                           | –                                                                           | Adds the served-protocol rows listed under Evidence.                                                                                                                                                                                          |
+| Document                                                                         | Was                                                                          | Becomes                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Protocol](../contracts/protocol.md)                                             | transport-neutral frames; `x-request-id` echo                                | Adds the served mapping: routes, `Idempotency-Key`, `/protocol` and `/command-ids`, tokens, the WebSocket envelope, and SSE framing, by reference to this ADR.                                                                                                                                                                                                                                                        |
+| [Error model](../contracts/error-model.md)                                       | 410, 400, 403 reserved; `retryAfter` never populated                         | The status and close-code table; fields of `InvalidInput` and `TransportError`; `InvalidCommandId.code`; `Unauthorized`'s credential codes; `retryAfter` values.                                                                                                                                                                                                                                                      |
+| [TypeScript SDK](../api/03-typescript-sdk.md)                                    | "identity format, expiry metadata, and error mappings still require design"  | Minting against the server clock, the retry table, header functions, and the read-your-writes token.                                                                                                                                                                                                                                                                                                                  |
+| [Server API](../api/01-server-api.md)                                            | `Actor.serve` requires auth                                                  | `Actor.serve({ actors, auth, basePath?, openapi?, origins?, limits? })` and the `Actor.auth` providers.                                                                                                                                                                                                                                                                                                               |
+| [10 security](../contracts/10-security.md)                                       | per-call callers; `Actor.auth.none`                                          | Tenant only from the provider; no System callers from providers; the principal limit; credentials never in URLs; the origin check on upgrades.                                                                                                                                                                                                                                                                        |
+| `authorize` hook ([ADR 0023](0023-connections-parking-and-streams.md) section 8) | `kind` is `command`, `query`, `open`, `stream`, or `reauthorize`             | Adds `feed`, with `command` set to the event tag, and `of` on `reauthorize`. `kind` becomes a required field of the hook's request type, so a hook that ignores it still compiles but M3.2's migration note tells every hook to switch on it.                                                                                                                                                                         |
+| [ADR 0007](0007-foundation-command-protocol.md)                                  | `InvalidCommandId` is a terminal reason; admission has no future-clock grace | Admission is unchanged: still no future-clock grace, and every `InvalidCommandId` answers `isRetryable: false`. `InvalidCommandId` gains `code`. A client may resend the **same** id after code `future` once `durable-now` passes `issuedAt`: the id was never admitted, so the resend is the same operation, not a retry of a failure, and nothing is reminted. `window`, `version`, and `malformed` stay terminal. |
+| [ADR 0019](0019-runner-capacity-and-pool-size.md) (Q12)                          | `RunnerAtCapacity` backs off like `ActorUnavailable`, from 10 ms             | Both start from their `retryAfter` (1,000 ms and 250 ms), with jitter.                                                                                                                                                                                                                                                                                                                                                |
+| `Actor.make` ([server API](../api/01-server-api.md))                             | `events` lists an actor type's events                                        | Adds `feeds`: the events served as SSE feeds (Q11).                                                                                                                                                                                                                                                                                                                                                                   |
+| [Failure matrix](../verification/02-failure-matrix.md)                           | –                                                                            | Adds the served-protocol rows listed under Evidence.                                                                                                                                                                                                                                                                                                                                                                  |
 
-## Open questions and recommended defaults
+## Decided questions
 
-These need Dallen's decision. Each has a default that M3.2, M3.3, and M3.4 build if nobody objects, the cases that prove it, and the benchmark that measures it.
+**Resolution (2026-09-26).** Dallen accepted every recommended default below. Each is a decision that M3.2, M3.3, and M3.4 build, with the cases that prove it and the benchmark that measures it. The rejected alternatives stay listed for the record.
 
-**Q1. Route shape: one path per member, or one RPC endpoint?** Default: one path per member (section 1). OpenAPI describes it naturally, proxies and access logs see which member ran, and per-route metrics and rate limits need no body parsing. The alternative, `POST /rpc` with `{ actor, id, member, input }` in the body, is simpler to route but opaque to every HTTP tool.
+**Q1. Route shape: one path per member, or one RPC endpoint?** **Decision:** one path per member (section 1). OpenAPI describes it naturally, proxies and access logs see which member ran, and per-route metrics and rate limits need no body parsing. The alternative, `POST /rpc` with `{ actor, id, member, input }` in the body, is simpler to route but opaque to every HTTP tool.
 
 ```sh
 curl -X POST https://chat.example.com/api/actors/Room/r1/Post \
@@ -338,7 +339,7 @@ curl -X POST https://chat.example.com/api/actors/Room/r1/Post \
 - Cases: `routes keyed, singleton, and minted actors to the right ref`; `treats ids containing /, %, and non-ASCII as one opaque segment`; `answers an id of . or .. with unservable_id`; `answers an internal member exactly like an unknown one`.
 - Benchmark: `http` measures routing cost within transport overhead.
 
-**Q2. How does a client without the database clock mint a valid v1 id?** Default: it learns the database clock from `/protocol` and `durable-now`, subtracts a margin, and thin clients use `POST /command-ids` (section 2). The alternatives are a future-clock grace at admission, which supersedes ADR 0007's "no future-clock grace" and lets a fast clock mint ids that live past the retry window, or a server-minted id when the header is missing, which can't be retried after a lost response.
+**Q2. How does a client without the database clock mint a valid v1 id?** **Decision:** it learns the database clock from `/protocol` and `durable-now`, subtracts a margin, and thin clients use `POST /command-ids` (section 2). The alternatives are a future-clock grace at admission, which supersedes ADR 0007's "no future-clock grace" and lets a fast clock mint ids that live past the retry window, or a server-minted id when the header is missing, which can't be retried after a lost response.
 
 ```ts
 const { now, retryWindowMs } = await (await fetch("/api/protocol")).json()
@@ -352,7 +353,7 @@ const commandId = `v1.${issuedAt}.${issuedAt + retryWindowMs}.${crypto.randomUUI
 - Cases: `admits ids minted by a client whose clock is 10 minutes fast or slow`; `retries a future id with the same id once durable-now passes issuedAt, and never mints a replacement`; `never mints a new id on its own after InvalidCommandId code window or version, and reports whether every attempt was answered`; `keeps its clock offset across a wall-clock step`; `rejects a command without Idempotency-Key before any turn`; `mints ids from the database clock at /command-ids without writing`.
 - Benchmark: `client` reports the cost of the first `/protocol` call and of the minting path.
 
-**Q3. Which header carries the id?** Default: `Idempotency-Key` in, `x-request-id` out (section 2). A custom `durable-command-id` would avoid depending on an IETF draft, but generators, gateways, and API consoles already know `Idempotency-Key`, and the header's meaning (one key per logical operation) is ours. Its status codes differ: the draft uses `422` for a reused key with a different payload and `409` for a concurrent request, while we answer `409 CommandConflict` for reuse (contract 04) and serialize concurrent duplicates. We keep ours and document the difference; the draft expired in April 2026, so we accept its quoted value form but don't claim conformance.
+**Q3. Which header carries the id?** **Decision:** `Idempotency-Key` in, `x-request-id` out (section 2). A custom `durable-command-id` would avoid depending on an IETF draft, but generators, gateways, and API consoles already know `Idempotency-Key`, and the header's meaning (one key per logical operation) is ours. Its status codes differ: the draft uses `422` for a reused key with a different payload and `409` for a concurrent request, while we answer `409 CommandConflict` for reuse (contract 04) and serialize concurrent duplicates. We keep ours and document the difference; the draft expired in April 2026, so we accept its quoted value form but don't claim conformance.
 
 ```http
 POST /api/actors/Room/r1/Post
@@ -366,7 +367,7 @@ x-request-id: v1.1790000000000.1790086400000.9b2f0c1e-2a4d-4c61-8e7a-3f1d2c0b9a7
 - Cases: `echoes the command id as x-request-id on success, declared failure, and every ActorError`; `ignores an x-request-id request header injected by a proxy`.
 - Benchmark: none beyond `http`; a header adds no statement.
 
-**Q4. One auth provider per server, or per actor?** Default: one per `Actor.serve`; an application with public and private actors mounts two servers at two base paths. A per-actor map is flexible, but it puts the choice of which actors are public far from the routes, and a missing entry would have to default to something.
+**Q4. One auth provider per server, or per actor?** **Decision:** one per `Actor.serve`; an application with public and private actors mounts two servers at two base paths. A per-actor map is flexible, but it puts the choice of which actors are public far from the routes, and a missing entry would have to default to something.
 
 ```ts
 const Public = Actor.serve({ actors: [Status], auth: Actor.auth.none, basePath: "/public" })
@@ -381,7 +382,7 @@ HttpRouter.serve(Layer.mergeAll(Public, Private))
 - Cases: `gives concurrent requests with different tokens different principals` (H1); `fails missing, invalid, and expired credentials with their codes before any turn and never as Anonymous`; `ignores an authorization header under Actor.auth.none`; `takes the tenant only from the provider`; `refuses a provider that returns a System caller`.
 - Benchmark: `http` with `Actor.auth.jwt` (ES256) against `Actor.auth.none`, to price verification per request.
 
-**Q5. Principal size limit.** Default: `subject` at most 512 UTF-8 bytes and the encoded caller at most 1 KiB (section 3). The limit protects the Cluster envelope header on every command, so it is fixed rather than a policy.
+**Q5. Principal size limit.** **Decision:** `subject` at most 512 UTF-8 bytes and the encoded caller at most 1 KiB (section 3). The limit protects the Cluster envelope header on every command, so it is fixed rather than a policy.
 
 ```ts
 Actor.auth.jwt({
@@ -396,7 +397,7 @@ Actor.auth.jwt({
 - Cases: `serializes a 512-byte subject through a cross-runner command` (harness, the **Cluster header size** gate); `fails a 513-byte subject with invalid_credentials and logs no credential`.
 - Benchmark: T9's largest-principal run, with a 1 KiB caller on the `http` scenario.
 
-**Q6. Where does a WebSocket carry its credential?** Default: in the first `hello` frame, or on the upgrade for non-browser clients and cookie providers (section 8). A query-string token works with every browser API but lands in access logs and `Referer`; `Sec-WebSocket-Protocol` smuggling is a hack that some proxies rewrite.
+**Q6. Where does a WebSocket carry its credential?** **Decision:** in the first `hello` frame, or on the upgrade for non-browser clients and cookie providers (section 8). A query-string token works with every browser API but lands in access logs and `Referer`; `Sec-WebSocket-Protocol` smuggling is a hack that some proxies rewrite.
 
 ```ts
 const socket = new WebSocket(
@@ -412,7 +413,7 @@ socket.onopen = () =>
 - Cases: `wakes nothing before hello authenticates`; `ends with InvalidInput when hello does not arrive in 10 seconds`; `refuses an upgrade from an origin not listed`; `ends with Unauthorized expired at the credential's expiry without a reauthenticate reply`; `accepts reauthenticate for the same caller and ends the session for a different one`.
 - Benchmark: `ws` measures `hello`-to-`open` latency and `reauthenticate` load at 10^4 sessions.
 
-**Q7. May commands travel over an open WebSocket?** Default: no. Commands are HTTP requests even while a socket is open, so there is one way to send a command, one retry story, and one place where `Idempotency-Key` is enforced. Rivet sends actions over its connection; the saving is a request's headers, which HTTP/2 mostly removes. Revisit if `ws` shows the difference matters.
+**Q7. May commands travel over an open WebSocket?** **Decision:** no. Commands are HTTP requests even while a socket is open, so there is one way to send a command, one retry story, and one place where `Idempotency-Key` is enforced. Rivet sends actions over its connection; the saving is a request's headers, which HTTP/2 mostly removes. Revisit if `ws` shows the difference matters.
 
 ```ts
 const presence = await room.Presence.connect({ user: me }) // frames only
@@ -422,7 +423,7 @@ await room.Post({ body: "hi" }) // always HTTP, with its own command id
 - Cases: `answers a command-shaped message on a socket as InvalidInput and runs nothing`.
 - Benchmark: `ws` compares a command over HTTP/2 with a frame round trip on an open socket.
 
-**Q8. Event feeds: a parked framework connection over SSE, or something else?** Default: SSE, one response per feed, backed by a framework connection that parks and that its holder resyncs from `actor_events` by itself (section 7). An `Actor.stream` with `read.follow` would keep its actor resident for as long as anyone watches (ADR 0023 Q7). Multiplexing every feed and connection over one WebSocket avoids HTTP/1.1's six-connection limit, but adds a session layer and loses `EventSource` and `Last-Event-ID`.
+**Q8. Event feeds: a parked framework connection over SSE, or something else?** **Decision:** SSE, one response per feed, backed by a framework connection that parks and that its holder resyncs from `actor_events` by itself (section 7). An `Actor.stream` with `read.follow` would keep its actor resident for as long as anyone watches (ADR 0023 Q7). Multiplexing every feed and connection over one WebSocket avoids HTTP/1.1's six-connection limit, but adds a session layer and loses `EventSource` and `Last-Event-ID`.
 
 ```ts
 for await (const entry of room.events(MessagePosted, { after: cursor })) render(entry) // M3.5, over fetch-based SSE
@@ -436,7 +437,7 @@ curl -N -H "authorization: Bearer $TOKEN" -H "last-event-id: 42" \
 - Cases: contract 07's four transport tests over SSE (snapshot and live race, loss, replay, revocation); `resumes from Last-Event-ID with no gap or repeat`; `answers RetentionGap with 410 before streaming`; `keeps an idle feed parked, then delivers an event from a timer that woke the actor on another runner` (harness); `resyncs a feed at its holder after an owner kill with no client-visible gap` (harness, C4); `ends a feed at credential expiry and resumes after reconnect with nothing lost`.
 - Benchmark: `sse`: fan-out to 10^4 feeds on one actor across two runners, commit-to-last-delivery p99, a reconnect wave of 10^4 `Last-Event-ID` clients, and the extra pipelined statement in a cold activation's first turn for an actor type with `feeds`.
 
-**Q9. Wire encoding.** Default: JSON only, through the persistence codec (section 1). CBOR or MessagePack would shrink binary payloads and parse faster, but every client, proxy log, and generator reads JSON, and a second encoding doubles the conformance matrix. Revisit when a benchmark shows encoding dominating latency.
+**Q9. Wire encoding.** **Decision:** JSON only, through the persistence codec (section 1). CBOR or MessagePack would shrink binary payloads and parse faster, but every client, proxy log, and generator reads JSON, and a second encoding doubles the conformance matrix. Revisit when a benchmark shows encoding dominating latency.
 
 ```http
 content-type: application/json
@@ -446,7 +447,7 @@ content-type: application/json
 - Cases: `round-trips Uint8Array, DateTimeUtc, and tagged classes over HTTP exactly as receipts store them`; `answers another content type with 415`.
 - Benchmark: `http` reports encode and decode time per request for a 64 KiB payload.
 
-**Q10. OpenAPI only, or AsyncAPI too?** Default: OpenAPI 3.1 now, with feeds, streams, and connections listed and their frame schemas under `components`; AsyncAPI waits for a user who needs it. Rivet ships both.
+**Q10. OpenAPI only, or AsyncAPI too?** **Decision:** OpenAPI 3.1 now, with feeds, streams, and connections listed and their frame schemas under `components`; AsyncAPI waits for a user who needs it. Rivet ships both.
 
 ```ts
 Actor.serve({ actors: [Room], auth, openapi: { path: "/openapi.json" } })
@@ -456,7 +457,7 @@ Actor.serve({ actors: [Room], auth, openapi: { path: "/openapi.json" } })
 - Cases: `omits internal members, executors, and routes from the document` (**Internal section**); `documents every served route and serves every documented one`; `produces a byte-identical document for the same definitions`.
 - Benchmark: none; generation runs once at startup, and `http` reports startup time.
 
-**Q11. Should an actor type's events be served by default?** Default: no. An actor type lists the events it serves as feeds in a `feeds` definition section, and `authorize` with `kind: "feed"` then decides who reads each. Serving every event by default would expose it to any hook written before `kind` existed: the shipped hook type has no `kind`, and the counter example's hook ignores both `kind` and `command`, so it would authorize every feed. Declaring `feeds` in the definition also makes the feed cost (section 7) a property every runner agrees on.
+**Q11. Should an actor type's events be served by default?** **Decision:** no. An actor type lists the events it serves as feeds in a `feeds` definition section, and `authorize` with `kind: "feed"` then decides who reads each. Serving every event by default would expose it to any hook written before `kind` existed: the shipped hook type has no `kind`, and the counter example's hook ignores both `kind` and `command`, so it would authorize every feed. Declaring `feeds` in the definition also makes the feed cost (section 7) a property every runner agrees on.
 
 ```ts
 export const Room = Actor.make("Room", {
@@ -477,7 +478,7 @@ const authorize = ({ kind, caller, ref, command }) =>
 - Cases: `calls authorize with kind feed for each requested event before reading`; `answers an event not in feeds exactly like an unknown event`; `pays no feed statement for an actor type without feeds`.
 - Benchmark: covered by `sse`.
 
-**Q12. Does the in-process handle adopt the wire `retryAfter`?** Default: yes. The handle's backoff for `ActorUnavailable`, `RunnerAtCapacity`, and `MailboxFull` starts from the same jittered `retryAfter` it would send over the wire, so a served caller and an embedded caller back off alike, and [ADR 0019](0019-runner-capacity-and-pool-size.md)'s "same backoff as `ActorUnavailable`" is amended to "each from its own `retryAfter`". The alternative keeps today's exponential schedule from 10 ms, capped at 500 ms, in process and uses `retryAfter` only on the wire; it retries faster at capacity, when retrying is least likely to help.
+**Q12. Does the in-process handle adopt the wire `retryAfter`?** **Decision:** yes. The handle's backoff for `ActorUnavailable`, `RunnerAtCapacity`, and `MailboxFull` starts from the same jittered `retryAfter` it would send over the wire, so a served caller and an embedded caller back off alike, and [ADR 0019](0019-runner-capacity-and-pool-size.md)'s "same backoff as `ActorUnavailable`" is amended to "each from its own `retryAfter`". The alternative keeps today's exponential schedule from 10 ms, capped at 500 ms, in process and uses `retryAfter` only on the wire; it retries faster at capacity, when retrying is least likely to help.
 
 ```ts
 // in process, after Q12: the first retry of RunnerAtCapacity waits about 1 s (±50%), then backs off exponentially to Delivery.timeout
@@ -502,7 +503,7 @@ const result = yield * room.Post({ body: "hi" })
 - **M3.2 is buildable now.** Sections 1 to 6 need nothing from M2, so HTTP serving and OpenAPI can ship before M2.10. Streams and workflows appear on the wire only once their members exist.
 - **Statements per operation.** A served command runs exactly the embedded turn, so for actor types without `feeds` `http` must show the same statement count as the embedded path, which T2's gate can enforce. An actor type with `feeds` adds one pipelined statement to a cold activation's first turn, embedded or served, in the same round trip, and the baseline records it.
 - **Clients learn one clock.** Every client pays one `/protocol` request per `baseUrl` before its first command, or one `/command-ids` request per command if it can't keep a clock offset.
-- **`retryAfter` becomes real.** `ActorError.retryAfter` returns a value for three reasons. Whether the in-process handle's backoff changes to match is Q12.
+- **`retryAfter` becomes real.** `ActorError.retryAfter` returns a value for three reasons, and the in-process handle's backoff starts from the same values (Q12).
 - **Error schemas grow.** `InvalidInput` and `TransportError` gain fields; `InvalidCommandId` gains `code`; `Unauthorized.code` gains `missing_credentials`, `invalid_credentials`, and `expired`. These are additive for existing embedded callers.
 - **`authorize` hooks see new fields.** `kind` and `of` reach every hook; feeds stay closed until an actor type declares `feeds`, so an old hook can't open one by accident.
 - **Decisions still open elsewhere.** Signed assertions (ADR 0031), MCP and generated clients (M6.6), and offline commands (M6) build on this wire without changing it.
@@ -533,7 +534,9 @@ M3.2 puts its cases in `conformance/http.ts`, M3.4 in `conformance/client.ts`, a
 - `carries no ActorUnavailable cause over HTTP, and computes isRetryable and retryAfter on the wire`
 - `refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin`
 - `requires Idempotency-Key on a workflow interrupt`
-- `rejects a declared error whose httpApiStatus the framework reserves, at Actor.make`
+- `rejects a declared error whose httpApiStatus the framework reserves, including 400 and 404, at Actor.make`
+- `gives a workflow's start, run, and interrupt routes distinct operationIds, and fails startup on a duplicate`
+- `fails Actor.serve at startup when retryWindowMs is below 60 seconds, and admits ids minted at exactly 60 seconds`
 - the failure-matrix row "HTTP credentials absent/changed"
 
 **M3.4 (`client`):**
@@ -551,6 +554,7 @@ M3.2 puts its cases in `conformance/http.ts`, M3.4 in `conformance/client.ts`, a
 
 - contract 07's four transport tests over SSE feeds and WebSocket connections
 - `resumes a feed from Last-Event-ID with no gap or repeat`, and `answers RetentionGap and UnknownCursor before streaming`
+- `closes a native EventSource for good on an initial 410 RetentionGap` (browser)
 - `resyncs a feed at its holder after an owner kill with no client-visible gap` (harness, C4)
 - `carries Resync, ResyncReplayed, and ResyncDone in their own envelope, and treats an application frame tagged Resync as a member frame`
 - `reauthenticates a session before its credential expires, and ends it with Unauthorized expired when the client doesn't answer`
