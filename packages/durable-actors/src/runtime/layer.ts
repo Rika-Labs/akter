@@ -52,6 +52,7 @@ import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
+import { keepAcquiredShards } from "./topology/locks.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -492,11 +493,15 @@ export const layer = (options: Options) => {
         Layer.provideMerge(MessageStorage.layerNoop),
         Layer.provide([
           runnerStorage === "memory"
-            ? RunnerStorage.layerMemory
+            ? Layer.effect(
+                RunnerStorage.RunnerStorage,
+                Effect.map(RunnerStorage.makeMemory, keepAcquiredShards),
+              )
             : Layer.effect(
                 RunnerStorage.RunnerStorage,
                 SqlRunnerStorage.make({}).pipe(
                   Effect.map(wiring?.storage ?? ((storage) => storage)),
+                  Effect.map(keepAcquiredShards),
                 ),
               ).pipe(Layer.orDie),
           RunnerHealth.layerNoop,

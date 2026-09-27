@@ -5,7 +5,7 @@
 **Owner role:** runtime architecture.
 **Change policy:** a change that alters a contract guarantee requires an ADR.
 
-The runtime is Effect Cluster sharding backed by one Postgres database per deployment region. A hosted deployment may span regions, each with its own database and runner pool; `apps/edge` routes each request to its tenant's home region, and singletons run in the primary region ([ADR 0005](../decisions/0005-turn-latency-batching-and-regional-placement.md)). `Actors.layer` from `durable-actors/runtime` assembles topology, database, turn, entity, workflow, connection, effect, event, cron, and serialization internals. `shardGroup` controls compute placement; every durable row remains tenant-scoped in the deployment database.
+The runtime is Effect Cluster sharding backed by one Postgres database per deployment region. A hosted deployment may span regions, each with its own database and runner pool; `apps/edge` routes each request to its tenant's home region, and singletons run in the primary region ([ADR 0005](../decisions/0005-turn-latency-batching-and-regional-placement.md)). `Actors.layer` from `durable-actors/runtime` assembles topology, database, turn, entity, workflow, connection, effect, event, cron, and serialization internals. `shardGroup` controls compute placement; every durable row remains tenant-scoped in the deployment database. The runtime wraps Cluster's runner storage so a shard acquired while a lock refresh is in flight is not mistaken for a lost lock; the next refresh that asks about the shard checks it.
 
 There are three run modes:
 
