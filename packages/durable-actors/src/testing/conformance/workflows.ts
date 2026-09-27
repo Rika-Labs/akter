@@ -322,6 +322,65 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "workflows: durable.workflows and durable.workflow_steps show a suspended then finished execution",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const shipper = yield* Shipper.get("inspected")
+          const run = yield* shipper.Ship({ orderId: "o-inspect", sku: "sleep" })
+
+          const execution = () =>
+            sql<{
+              execution_id: string
+              tenant_id: string
+              workflow: string
+              workflow_key: string
+              status: string
+              finished: boolean
+              stored: boolean | null
+            }>`SELECT execution_id, tenant_id, workflow, workflow_key, status,
+                finished_at IS NOT NULL AS finished, result_bytes > 0 AS stored
+              FROM durable.workflows
+              WHERE tenant_id = ${test.tenant} AND actor_type = 'Shipper' AND actor_id = 'inspected'`
+
+          const steps = () =>
+            sql<{ step: string; kind: string; settled: boolean; dated: boolean }>`
+              SELECT step, kind, exit IS NOT NULL AS settled,
+                due_at IS NOT DISTINCT FROM to_timestamp(due_at_ms::float8 / 1000) AS dated
+              FROM durable.workflow_steps
+              WHERE tenant_id = ${test.tenant} AND execution_id = ${run.executionId}
+                AND kind IN ('activity', 'clock')
+              ORDER BY started_at_ms, step`
+
+          yield* suspendedRow(run.executionId)
+          expect(yield* execution()).toEqual([
+            {
+              execution_id: run.executionId,
+              tenant_id: test.tenant,
+              workflow: "Ship",
+              workflow_key: "o-inspect",
+              status: "suspended",
+              finished: false,
+              stored: null,
+            },
+          ])
+          expect(yield* steps()).toEqual([
+            { step: "reserve", kind: "activity", settled: true, dated: true },
+            { step: "cool-off", kind: "clock", settled: false, dated: true },
+          ])
+          yield* test.advance("11 seconds")
+          expect(yield* run.result).toBe("r-sleep:v2")
+          expect(yield* execution()).toMatchObject([
+            { status: "finished", finished: true, stored: true },
+          ])
+          expect(yield* steps()).toEqual([])
+        }),
+      ),
+  },
+  {
     name: "workflows: a wait sees a matching owner event appended after it registered",
     run: ({ expect, environment, fixture }) =>
       environment.run(
