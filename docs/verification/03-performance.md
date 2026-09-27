@@ -320,6 +320,19 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 - **Some single-runner p50s are 0.5–1.6 ms higher than at `cd74d7e`.** The largest is `effect-round-trip/sequential`, at 7.07 ms before and 8.19–8.66 ms after. The same-SHA repeat reproduces it, but the statement counts and the SQL on this path are unchanged. It could be machine drift between runs hours apart; it wasn't isolated further.
 - **PGlite is unchanged within noise.** It runs one runner only: `outbox/delivery-sequential` p50 was 8.82 ms before and 8.96–9.15 ms after, and `effect-round-trip/concurrent-64` 491 ms before and 465–474 ms after.
 
+### Failure drills (T7)
+
+`TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/drill.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/133-m2-exit` at `d1e7399`; each run prints one `DRILL` line. Postgres 18.6 in Docker, Bun 1.4.2, one 8-vCPU Xeon 8559C machine shared by the five runner processes and Postgres. Workload: three processes, then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
+
+| Metric                                   | Min    | p50    | Max (≈p95 of 10) |
+| ---------------------------------------- | ------ | ------ | ---------------- |
+| Recovery, kill to survivor's next commit | 3.66 s | 3.78 s | 4.65 s           |
+| Slowest single operation on a survivor   | 3.06 s | 3.37 s | 3.41 s           |
+| Committed operations per run             | 300    | 305    | 321              |
+| Lost / duplicated operations             | 0 / 0  | 0 / 0  | 0 / 0            |
+
+Recovery is bounded by the 3 s shard-lock expiry plus Cluster's shard refresh; the slowest survivor operation is a command routed to a killed runner's shard that waits for the takeover. With 10 samples, p99 is not meaningful. Committed operations vary because a runner killed mid-operation may commit an `Increment` without its `Send`; those are counted as committed, never lost.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
