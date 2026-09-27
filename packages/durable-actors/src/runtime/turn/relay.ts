@@ -837,16 +837,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const rejected = Result.isSuccess(outcome) ? outcome.success.rejected : undefined
 
       // A result onSuccess rejects still reaches onCancelled if the effect was cancelled.
-      if (
-        rejected !== undefined &&
-        registered.routesCancelled &&
-        Result.isSuccess(outcome) &&
-        (yield* settleTo(
-          outcome.success.cancelled,
-          sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
-        ))
-      )
-        return
+      if (rejected !== undefined && registered.routesCancelled && Result.isSuccess(outcome)) {
+        yield* hooks.at("afterExecute", request)
+
+        if (
+          yield* settleTo(
+            outcome.success.cancelled,
+            sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
+          )
+        )
+          return
+      }
 
       if (Result.isSuccess(outcome) && rejected === undefined) {
         yield* hooks.at("afterExecute", request)
