@@ -169,8 +169,11 @@ export class InternalActors extends Context.Service<
     readonly drainOutbox: Effect.Effect<void>
     /** Runs one retention sweep now; used by `ActorTest.cleanup`. */
     readonly cleanup: Effect.Effect<Swept>
-    /** Moves the leases of this runner's running effect attempts forward; used by `ActorTest.advance`. */
-    readonly extendOutboxLeases: (millis: number) => Effect.Effect<void>
+    /**
+     * Moves the leases of this runner's running effect attempts forward and
+     * runs `jump`, with no relay pass between them; used by `ActorTest.advance`.
+     */
+    readonly extendOutboxLeases: (millis: number, jump: Effect.Effect<void>) => Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
