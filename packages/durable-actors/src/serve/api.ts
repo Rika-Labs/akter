@@ -162,7 +162,11 @@ export const document = ({ api, auth, title, version }: DocumentOptions) => {
           Array.isArray(operation)
             ? operation
             : Object.assign({}, operation, {
-                security: secured && !path.endsWith("/protocol") ? [{ [SECURITY_NAME]: [] }] : [],
+                security:
+                  secured &&
+                  !("operationId" in operation && operation.operationId === "durable.protocol")
+                    ? [{ [SECURITY_NAME]: [] }]
+                    : [],
               }),
         ]),
       ),

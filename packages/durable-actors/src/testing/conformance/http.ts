@@ -868,6 +868,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
                 {
                   readonly operationId: string
                   readonly parameters: ReadonlyArray<{ readonly name: string; readonly in: string }>
+                  readonly security: ReadonlyArray<Record<string, ReadonlyArray<string>>>
                 }
               >
             >
@@ -902,6 +903,9 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
             expect(headers.map((parameter) => parameter.name)).toEqual(
               isCommand ? ["idempotency-key"] : [],
+            )
+            expect(operation.security.length === 0).toBe(
+              operation.operationId === "durable.protocol",
             )
 
             if (path === "/actors/HttpRoom/{id}/Crash" || path === "/actors/HttpRoom/{id}/Hold")
@@ -963,6 +967,14 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           expect(same.status).toBe(200)
+
+          const otherScheme = yield* server.send("/actors/HttpRoom/origin/Whoami", {
+            token,
+            key: yield* server.mint(),
+            headers: { origin: server.url.replace(/^http:/, "https:") },
+          })
+
+          expect(otherScheme.status).toBe(403)
 
           const bare = yield* server.send("/actors/HttpRoom/origin/Whoami", {
             token,

@@ -211,13 +211,23 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           : stamped
       }
 
+      const serverScheme = (request: HttpServerRequest.HttpServerRequest) => {
+        if (URL.canParse(request.originalUrl)) return new URL(request.originalUrl).protocol
+
+        const forwarded = Headers.get(request.headers, "x-forwarded-proto")
+
+        return Option.isSome(forwarded) && forwarded.value === "https" ? "https:" : "http:"
+      }
+
       const isSameOrigin = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
         const host = Headers.get(request.headers, "host")
 
         if (Option.isNone(host)) return false
 
         try {
-          return new URL(origin).host === host.value
+          const parsed = new URL(origin)
+
+          return parsed.host === host.value && parsed.protocol === serverScheme(request)
         } catch {
           return false
         }
@@ -322,14 +332,19 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const unframed =
             Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
 
+          let received = 0
+
           const chunks = yield* request.stream.pipe(
-            Stream.catch(() => (unframed ? Stream.empty : Stream.fail(invalidInput("decode")))),
+            Stream.catch(() =>
+              unframed && received === 0 ? Stream.empty : Stream.fail(invalidInput("decode")),
+            ),
             Stream.runFoldEffect(
               () => ({ size: 0, chunks: [] as Array<Uint8Array> }),
               (acc, chunk) => {
                 const size = acc.size + chunk.byteLength
 
                 if (size > requestBytes) return Effect.fail(invalidInput("too_large"))
+                received = size
                 acc.chunks.push(chunk)
 
                 return Effect.succeed({ size, chunks: acc.chunks })
