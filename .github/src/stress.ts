@@ -20,6 +20,8 @@ export const VitestReport = Schema.fromJsonString(
 
 export interface StressRun {
   readonly run: string
+  /** The suite the run executed; it names failures that no file or case accounts for. */
+  readonly suite: string
   /** Undefined when the run died before Vitest wrote its report. */
   readonly report: typeof VitestReport.Type | undefined
   /** The suite's exit status, or undefined when it was not recorded. */
@@ -39,15 +41,17 @@ export function tallyFlakes(runs: ReadonlyArray<StressRun>): ReadonlyArray<Flake
 
   const record = (name: string, run: string) => failed.set(name, [...(failed.get(name) ?? []), run])
 
-  for (const { run, report, status, unhandledErrors } of runs) {
+  for (const { run, suite, report, status, unhandledErrors } of runs) {
     const before = [...failed.values()].flat().length
 
-    if (unhandledErrors) record("(unhandled errors: see its log)", run)
+    if (unhandledErrors) record(`${suite} (unhandled errors: see its log)`, run)
 
     if (report === undefined) {
-      record("(no report: the run died before Vitest finished)", run)
+      record(`${suite} (no report: the run died before Vitest finished)`, run)
       continue
     }
+
+    if (status === undefined) record(`${suite} (no exit status: the run was cut off)`, run)
 
     for (const file of report.testResults) {
       const cases = file.assertionResults.filter((test) => test.status === "failed")
@@ -61,8 +65,8 @@ export function tallyFlakes(runs: ReadonlyArray<StressRun>): ReadonlyArray<Flake
 
     const nothingRecorded = [...failed.values()].flat().length === before
 
-    if (nothingRecorded && (!report.success || (status !== undefined && status !== 0)))
-      record("(run failed without a failing case: see its log)", run)
+    if (nothingRecorded && (!report.success || status !== 0))
+      record(`${suite} (run failed without a failing case: see its log)`, run)
   }
 
   return [...failed]

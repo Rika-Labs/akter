@@ -14,9 +14,9 @@ try {
 
       const reports = yield* Effect.forEach(
         Array.from({ length: runs }, (_, i) => i + 1).flatMap((run) =>
-          suites.map((suite) => `${suite}-${run}`),
+          suites.map((suite) => ({ suite, run: `${suite}-${run}` })),
         ),
-        (run) =>
+        ({ suite, run }) =>
           Effect.all({
             report: fs
               .readFileString(`${directory}/${run}.json`)
@@ -30,6 +30,7 @@ try {
           }).pipe(
             Effect.map(({ report, status, log }) => ({
               run,
+              suite,
               report: Option.getOrUndefined(report),
               status: Option.getOrUndefined(status),
               unhandledErrors: Option.exists(log, (text) =>

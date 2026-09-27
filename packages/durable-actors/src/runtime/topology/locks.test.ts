@@ -1,4 +1,4 @@
-import { Clock, Effect, Layer, Schema } from "effect"
+import { Clock, Deferred, Effect, Fiber, Layer, Schema } from "effect"
 import {
   Entity,
   MessageStorage,
@@ -92,5 +92,39 @@ describe("shard locks", () => {
       yield* storage.releaseAll(address)
 
       expect(yield* storage.refresh(address, [])).toEqual([])
+    }).pipe(Effect.runPromise))
+
+  it("reports a shard only to the runner that acquired it", () =>
+    Effect.gen(function* () {
+      const storage = yield* lostLocks
+      const other = RunnerAddress.make("localhost", 34432)
+      yield* storage.acquire(other, [shard])
+
+      expect(yield* storage.refresh(address, [])).toEqual([])
+      expect(yield* storage.refresh(other, [])).toEqual([shard])
+
+      yield* storage.releaseAll(address)
+
+      expect(yield* storage.refresh(other, [])).toEqual([shard])
+    }).pipe(Effect.runPromise))
+  it("stops reporting shards released while a refresh is in flight", () =>
+    Effect.gen(function* () {
+      const answered = yield* Deferred.make<void>()
+
+      const storage = yield* Effect.map(RunnerStorage.makeMemory, (memory) =>
+        keepAcquiredShards({
+          ...memory,
+          refresh: () => Deferred.await(answered).pipe(Effect.as([])),
+        }),
+      )
+
+      yield* storage.acquire(address, [shard])
+
+      const refresh = yield* Effect.forkChild(storage.refresh(address, []))
+      yield* Effect.yieldNow
+      yield* storage.releaseAll(address)
+      yield* Deferred.succeed(answered, undefined)
+
+      expect(yield* Fiber.join(refresh)).toEqual([])
     }).pipe(Effect.runPromise))
 })
