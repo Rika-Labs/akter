@@ -685,8 +685,18 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
       if (actor.owner === transport.holder && actor.ownerEpoch === transport.epoch) continue
 
-      yield* transport.ping(actor.owner, actor.ownerEpoch).pipe(
-        Effect.flatMap((alive) => (alive ? Effect.void : ownerLost(actor))),
+      const { owner, ownerEpoch, generation } = actor
+
+      // A ping answered after a newer owner was observed says nothing about that owner.
+      yield* transport.ping(owner, ownerEpoch).pipe(
+        Effect.flatMap((alive) =>
+          alive ||
+          actor.generation !== generation ||
+          actor.owner !== owner ||
+          actor.ownerEpoch !== ownerEpoch
+            ? Effect.void
+            : ownerLost(actor),
+        ),
         Effect.forkIn(scope),
       )
     }
