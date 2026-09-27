@@ -73,6 +73,7 @@ Every feature ships with a scenario. A pull request that adds a durable mechanis
 | Blobs                                          | #61          | `blobs`, which lands with #61                        |
 | SQL inspection views                           | CR.4 (#88)   | `inspection-views`                                   |
 | Retention, replay pages, emit budget           | #17          | `retention`, `events`                                |
+| Served HTTP (`Actor.serve`)                    | #92          | `http`                                               |
 
 ### Adding a scenario
 
