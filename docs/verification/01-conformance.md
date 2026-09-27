@@ -273,7 +273,7 @@ These cases are in-process. They exercise Cluster's lock expiry, shard movement,
 
 The cases live in [`conformance/singleton.ts`](../../packages/durable-actors/src/testing/conformance/singleton.ts) and run on the M2.1 harness: Postgres only, a fresh database per case, and a `shardLockExpiration` of 3 seconds. The fixture `Beacon` is an `Actor.singleton` whose build forks a loop with `Effect.forkScoped`; the loop calls the singleton's own `Tick` command every 50 ms, and each tick commits a state change and a `Ticked` event naming the loop that sent it and the activation (by its loop) that committed it. Loops are observed only through committed events; the in-process loop records serve to count live loops.
 
-**Executed 2026-09-27 (M2.2, branch `feat/50-singleton` merged with `main` at `c01a20f`):** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, and Postgres 18.6. `bun run test:integration` passed (194 `@durable-actors/core` tests, three of them the singleton cases); the heartbeat-paused case also passed eight repeat runs in a row.
+**Executed 2026-09-27 (M2.2, branch `feat/50-singleton` merged with `main` at `67ab136`):** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, and Postgres 18.6. `bun run test:integration` passed (220 `@durable-actors/core` tests, three of them the multi-runner singleton cases); the three singleton cases also passed three repeat runs in a row with the lease check.
 
 Postgres only (independent connections):
 
