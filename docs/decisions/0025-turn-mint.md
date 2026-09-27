@@ -101,6 +101,11 @@ No migration. `turn.mint` writes nothing; the creating intent uses the existing 
 - `turn()` still never mints a command id. The creating intent's command id is derived from its intent id, like every intent.
 - Workflow bodies ([ADR 0022](0022-workflow-engine-storage-and-version-markers.md)) do not get `mint` in this ADR; a workflow step that needs a child sends a command whose turn mints it.
 
+### 7. Subscriptions and the served protocol
+
+- **Subscription deliveries** ([ADR 0026](0026-cross-actor-event-subscriptions.md), accepted) run in `X.Turn` with a command id derived from the subscription, epoch, subscriber, source, and source cursor. `turn.mint` accepts that id as it accepts any other. A redelivery of the same event reuses the id, and its receipt replays. A redelivery that runs again after receipt pruning is stopped by the applied cursor. Either way the same child ids and no new children result. The mint ordinal counts per delivery command, and a delivery of several events is one command with one counter. The creating intent's caller is still `System({ source: "actor", ref: parent, … })`, never `source: "subscription"`: the parent sends it, and the subscription delivery only triggered the parent's turn.
+- **The served protocol** ([ADR 0027](0027-served-protocol.md), accepted) routes minted actors through the keyed form and accepts only a UUIDv7 in that segment. This ADR amends ADR 0027 so that the segment also accepts a UUIDv8 of the shape in [section 2](#2-identity-derivation): lowercase, version 8, RFC 9562 variant. Without the amendment, a turn-minted child cannot be reached over HTTP. As in ADR 0027, the id is input, not authority. `authorize` decides who may reach the child. A client request to the child's `createdBy` command has no System caller and no mint proof, so it fails `Unauthorized` without a receipt, as in section 4. `POST /command-ids` still mints only command ids.
+
 ## Alternatives rejected
 
 - **Random id inside the turn.** A rerun after a crash before commit returns a different id, and nothing links the id to the turn.
@@ -120,13 +125,14 @@ No migration. `turn.mint` writes nothing; the creating intent uses the existing 
 
 ## Behaviour changes against existing contracts
 
-| Where                                                                                              | Change                                                                                                     |
-| -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| [contract 01](../contracts/01-actor-authority.md)                                                  | minted ids are UUIDv7 from `X.create()` or UUIDv8 from `turn.mint`; `X.create()` is no longer the only way |
-| [contract 04](../contracts/04-receipts.md)                                                         | an actor id minted by `turn.mint` is not a command id; `turn()` still mints no command id                  |
-| [contract 05](../contracts/05-messaging.md)                                                        | the creating intent carries `mint` on its System caller                                                    |
-| [ADR 0010](0010-one-way-effect-native-api.md), [ADR 0013](0013-m0-reconciliation.md)               | amended here, not edited: `X.create()` is one of two minting paths                                         |
-| [server API](../api/01-server-api.md), [context](../api/02-context.md), [glossary](../GLOSSARY.md) | `turn.mint` on `X.Turn`; "Minted actor" covers both paths                                                  |
+| Where                                                                                              | Change                                                                                                                                                     |
+| -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [contract 01](../contracts/01-actor-authority.md)                                                  | minted ids are UUIDv7 from `X.create()` or UUIDv8 from `turn.mint`; `X.create()` is no longer the only way                                                 |
+| [ADR 0027](0027-served-protocol.md) (accepted; amended here, not edited)                           | the minted-actor route segment accepts a UUIDv7 or a UUIDv8 of section 2's shape; a turn-minted child's `createdBy` command stays unreachable from clients |
+| [contract 04](../contracts/04-receipts.md)                                                         | an actor id minted by `turn.mint` is not a command id; `turn()` still mints no command id                                                                  |
+| [contract 05](../contracts/05-messaging.md)                                                        | the creating intent carries `mint` on its System caller                                                                                                    |
+| [ADR 0010](0010-one-way-effect-native-api.md), [ADR 0013](0013-m0-reconciliation.md)               | amended here, not edited: `X.create()` is one of two minting paths                                                                                         |
+| [server API](../api/01-server-api.md), [context](../api/02-context.md), [glossary](../GLOSSARY.md) | `turn.mint` on `X.Turn`; "Minted actor" covers both paths                                                                                                  |
 
 ## Verification required of M2.15
 
