@@ -54,6 +54,13 @@ export class DatabaseClock {
     return this.samples.length > 0
   }
 
+  /** Whether a sample from the last minute exists; an older offset may have drifted. */
+  get isFresh(): boolean {
+    const now = this.local()
+
+    return this.samples.some((sample) => now - sample.at < SAMPLE_WINDOW_MS)
+  }
+
   /** Estimated database time; the local clock alone until a sample exists. */
   now(): number {
     return this.local() + (this.best()?.offset ?? 0)

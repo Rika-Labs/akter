@@ -28,6 +28,19 @@ describe("DatabaseClock", () => {
     expect(clock.now()).toBe(local)
   })
 
+  it("is fresh only while a sample from the last minute remains", () => {
+    let local = 1_000_000
+    const clock = new DatabaseClock(() => local)
+
+    expect(clock.isFresh).toBe(false)
+    clock.observe(local - 10, local, local + 5_000)
+    expect(clock.isFresh).toBe(true)
+
+    local += 60_000
+    expect(clock.isFresh).toBe(false)
+    expect(clock.isSampled).toBe(true)
+  })
+
   it("mints ids behind the database clock with the deployment's window", () => {
     const local = 1_000_000
     const clock = new DatabaseClock(() => local)

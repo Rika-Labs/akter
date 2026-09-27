@@ -336,10 +336,11 @@ export const clientOf =
 
     const isOk = (reply: Reply) => reply.status >= 200 && reply.status < 300
 
+    // `/protocol` is read again when no recent clock sample remains, since the offset may have drifted.
     const retryWindow = Effect.suspend(() => {
       const cached = origin.window
 
-      if (cached !== undefined) return Effect.succeed(cached)
+      if (cached !== undefined && clock.isFresh) return Effect.succeed(cached)
 
       return send({ method: "GET", path: "/protocol", body: undefined, headers: {} }).pipe(
         Effect.flatMap((reply) =>
@@ -400,6 +401,14 @@ export const clientOf =
         Effect.catch((attempted) =>
           Effect.gen(function* () {
             last = attempted.failure
+
+            // A deployment at this URL may have changed its window; the next mint asks again.
+            if (
+              isFramework(attempted.failure) &&
+              isInvalidCommandId(attempted.failure.reason) &&
+              attempted.failure.reason.code === "window"
+            )
+              origin.window = undefined
             const delay = yield* retryDelay(retry, clock)(attempted)
             retry.attempts += 1
             const id = commandId()
@@ -423,10 +432,9 @@ export const clientOf =
         const id = commandId()
 
         return Effect.fail(
-          last ??
-            (id === undefined
-              ? network()
-              : ActorError.make({ reason: Timeout.make({ commandId: id }) })),
+          id === undefined
+            ? (last ?? network())
+            : ActorError.make({ reason: Timeout.make({ commandId: id }) }),
         )
       })
 

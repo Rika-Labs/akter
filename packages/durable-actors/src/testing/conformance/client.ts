@@ -249,11 +249,16 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           const tenant = yield* tenantOf
 
           // A protocol answer with the wrong window makes the client mint an id the server refuses.
-          const wire = recording((sent) =>
-            sent.path === "/protocol"
+          let protocols = 0
+
+          const wire = recording((sent) => {
+            if (sent.path !== "/protocol") return undefined
+            protocols += 1
+
+            return protocols === 1
               ? json(200, { protocol: 1, retryWindowMs: 1_000, now: Math.round(monotonic()) })
-              : undefined,
-          )
+              : undefined
+          })
 
           const room = HttpRoom.client({
             baseUrl: server.url,
@@ -269,6 +274,13 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
             neverAdmitted: true,
           })
           expect(wire.commands("Post").length).toBe(1)
+
+          // The refusal drops the cached window, so the next command learns the real one.
+          const next = yield* settle(() => room.Post({ text: "b" }))
+          expect(next).toEqual({ ok: true, value: 1 })
+          expect(protocols).toBe(2)
+          const keys = keysOf(wire.commands("Post"))
+          expect(keys[1]).not.toBe(keys[0])
         }),
       ),
   },
@@ -465,7 +477,7 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "client stops waiting at its timeout or abort, and the same id later returns the committed receipt",
+    name: "client stops waiting at its timeout or abort, even between retries, and the same id later returns the committed receipt",
     run: ({ expect, environment }) => {
       const controllers = { timeout: new AbortController(), abort: new AbortController() }
 
@@ -473,7 +485,16 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const server = yield* serveHttp()
           const tenant = yield* tenantOf
-          const wire = recording()
+
+          // Each first Hold meets a gateway error, so the wait is stopped during a retry.
+          const failed = new Set<string>()
+
+          const wire = recording((sent) => {
+            if (!sent.path.endsWith("/Hold") || failed.has(sent.path)) return undefined
+            failed.add(sent.path)
+
+            return new Response("bad gateway", { status: 502 })
+          })
 
           const rooms = HttpRoom.client({
             baseUrl: server.url,
