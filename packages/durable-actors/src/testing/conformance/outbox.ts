@@ -3,7 +3,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { Actor, Caller, Intent, System } from "../../index.ts"
 import type { InTurn } from "../../handles/intents.ts"
 import { CommandId } from "../../identity/command.ts"
-import { scanDue } from "../../runtime/turn/relay.ts"
+import { claimIntents } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
@@ -179,31 +179,40 @@ const inboxLog = Effect.fnUntraced(function* (to: string) {
 export const receivedBodies = (to: string) =>
   inboxLog(to).pipe(Effect.map((log) => log.map(({ body }) => body)))
 
-interface PlanNode {
+export interface PlanNode {
   readonly "Node Type": string
   readonly "Relation Name"?: string | undefined
   readonly "Index Name"?: string | undefined
   readonly "Actual Rows": number
   readonly "Shared Hit Blocks": number
   readonly "Shared Read Blocks": number
+  readonly "Rows Removed by Filter"?: number | undefined
   readonly Plans?: ReadonlyArray<PlanNode> | undefined
 }
 
-const PlanNode: Schema.Codec<PlanNode> = Schema.Struct({
+export const PlanNode: Schema.Codec<PlanNode> = Schema.Struct({
   "Node Type": Schema.String,
   "Relation Name": Schema.optional(Schema.String),
   "Index Name": Schema.optional(Schema.String),
   "Actual Rows": Schema.Finite,
   "Shared Hit Blocks": Schema.Finite,
   "Shared Read Blocks": Schema.Finite,
+  "Rows Removed by Filter": Schema.optional(Schema.Finite),
   Plans: Schema.optional(Schema.Array(Schema.suspend(() => PlanNode))),
 })
 
-const ExplainOutput = Schema.Tuple([Schema.Struct({ Plan: PlanNode })])
+export const ExplainOutput = Schema.Tuple([Schema.Struct({ Plan: PlanNode })])
 
 const explainScan = Effect.fnUntraced(function* (now: number) {
   const sql = yield* SqlClient.SqlClient
-  const [text, parameters] = scanDue({ sql, now, limit: 256 }).compile()
+
+  const [text, parameters] = claimIntents({
+    sql,
+    now,
+    limit: 16,
+    leaseMs: 37_000,
+    maxBackoffMs: 256_000,
+  }).compile()
 
   const [row] = yield* sql.unsafe<{ readonly "QUERY PLAN": unknown }>(
     `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${text}`,
@@ -217,7 +226,7 @@ const explainScan = Effect.fnUntraced(function* (now: number) {
   return output.Plan
 })
 
-const planNodes = (node: PlanNode): ReadonlyArray<PlanNode> => [
+export const planNodes = (node: PlanNode): ReadonlyArray<PlanNode> => [
   node,
   ...(node.Plans ?? []).flatMap(planNodes),
 ]
@@ -248,10 +257,17 @@ const measureScan = Effect.fnUntraced(function* (now: number) {
     seqScans: outbox.filter((node) => node["Node Type"] === "Seq Scan").length,
     indexes: [...new Set(outbox.flatMap((node) => node["Index Name"] ?? []))],
     rows: root["Actual Rows"],
+    // Index entries the due index returned: sleeping timers must never be among them.
+    indexRows: outbox
+      .filter((node) => node["Index Name"] === "actor_outbox_due_kind")
+      .reduce((total, node) => total + node["Actual Rows"], 0),
     // A plan node's buffer counts include its children, so the root is the query total.
     blocks: root["Shared Hit Blocks"] + root["Shared Read Blocks"],
   }
 })
+
+/** The default claim lease for these actors: 30 s `commandTimeout` + 2 s `lockWait` + 5 s. */
+export const CLAIM_LEASE = "37 seconds"
 
 export const outboxConformance: ReadonlyArray<ConformanceCase> = [
   {
@@ -422,10 +438,13 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const before = fixture.outbox.receives
           yield* sender.Schedule({ to: "relay-crash-inbox", body: "once", afterMs: 60_000 })
 
-          // The first delivery crashes before deleting the row; the redelivery pauses there.
+          // The first delivery crashes before deleting the row, whose claim then holds it
+          // until the lease ends; the redelivery after that pauses there.
           yield* test.crashNext("beforeOutboxDelete")
           const pause = yield* test.pauseNext("beforeOutboxDelete")
-          const draining = yield* test.advance("1 minute").pipe(Effect.forkChild)
+          yield* test.advance("1 minute")
+          expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
+          const draining = yield* test.advance(CLAIM_LEASE).pipe(Effect.forkChild)
           yield* pause.reached
           // The receiver committed once; the crashed pass left the sender's row pending.
           expect(fixture.outbox.receives - before).toBe(1)
@@ -553,9 +572,19 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
             yield* seedSleepers(5_001, 50_000, tomorrow)
             const large = yield* measureScan(now)
 
-            expect(large).toMatchObject({ seqScans: 0, indexes: ["actor_outbox_due"], rows: 0 })
-            // Ten times the sleeping actors adds at most one index level per bucket probe.
-            expect(large.blocks <= small.blocks + 256).toBe(true)
+            for (const scan of [small, large]) {
+              expect(scan).toMatchObject({ seqScans: 0, rows: 0, indexRows: 0 })
+              // The primary key or intent id index only locates claimed rows, and there are none.
+              expect(
+                scan.indexes.filter(
+                  (index) => index !== "actor_outbox_pkey" && index !== "actor_outbox_intent",
+                ),
+              ).toEqual(["actor_outbox_due_kind"])
+            }
+
+            // The planner may skip the per-bucket probe when no intent is due at all, so the
+            // bound is absolute: at most three index levels for each of the 256 bucket probes.
+            expect(large.blocks <= 3 * 256).toBe(true)
           }).pipe(
             Effect.ensuring(
               Effect.gen(function* () {
