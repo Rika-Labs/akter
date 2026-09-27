@@ -237,6 +237,46 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "client sends a reducer a listener calls after the one it is reacting to, and keeps caller-held state private",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+
+          const tally = HttpTally.client({
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+          }).get("reentrant")
+
+          const committed = { count: 0 }
+          tally.state.reconcile(committed)
+          committed.count = 5
+
+          const shown = tally.state.current
+
+          if (shown !== undefined) Object.assign(shown, { count: 5 })
+
+          let nested: Promise<{ readonly count: number }> | undefined
+
+          tally.state.subscribe((state) => {
+            if (nested === undefined && state?.count === 1) nested = tally.Add({ by: 2 })
+          })
+
+          const outer = tally.Add({ by: 1 })
+
+          expect(tally.state.current).toEqual({ count: 3 })
+          expect(yield* Effect.promise(() => outer)).toEqual({ count: 1 })
+          expect(
+            yield* Effect.promise(() => nested ?? Promise.reject(new Error("no nested call"))),
+          ).toEqual({
+            count: 3,
+          })
+          expect(tally.state.current).toEqual({ count: 3 })
+        }),
+      ),
+  },
+  {
     name: "client retries with the body it first sent, even if the caller mutates the input",
     run: ({ expect, environment }) =>
       environment.run(

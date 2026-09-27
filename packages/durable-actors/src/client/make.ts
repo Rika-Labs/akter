@@ -647,7 +647,6 @@ export const clientOf =
         if (reducer === undefined || Option.isNone(input)) return send()
 
         const entry = { member: member.tag, input: input.value, reducer }
-        store.add(entry)
 
         // One at a time, so each reply is the committed state before every later pending input.
         const settled = store.queue.then(send)
@@ -669,6 +668,9 @@ export const clientOf =
           },
         )
 
+        // Last, so a listener that calls another reducer queues it behind this one.
+        store.add(entry)
+
         return settled
       }
 
@@ -686,7 +688,9 @@ export const clientOf =
         return existing
       }
 
-      const store = new Optimistic()
+      const store = new Optimistic(
+        definition.members.find((member) => member.reducer !== undefined)?.reducer,
+      )
 
       const created = {
         ...Object.fromEntries(
@@ -709,10 +713,10 @@ export const clientOf =
       handles.set(id, created)
       stores.set(id, store)
 
-      // Past the limit, the least recently used handle with nothing pending and no listener goes.
+      // Past the limit, the least recently used other handle with nothing pending and no listener goes.
       if (handles.size > HANDLE_LIMIT)
         for (const key of handles.keys())
-          if (stores.get(key)?.isIdle === true) {
+          if (key !== id && stores.get(key)?.isIdle === true) {
             handles.delete(key)
             stores.delete(key)
             break

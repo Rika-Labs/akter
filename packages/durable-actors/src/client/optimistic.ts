@@ -26,7 +26,13 @@ const copierOf = (reducer: OptimisticReducer): Copy => {
   const json = Schema.toCodecJson(reducer.state)
   const encode = Schema.encodeEffect(json)
   const decode = Schema.decodeEffect(json)
-  const copy: Copy = (state) => encode(state).pipe(Effect.flatMap(decode))
+
+  const copy: Copy = (state) =>
+    encode(state).pipe(
+      Effect.map((encoded) => structuredClone(encoded)),
+      Effect.flatMap(decode),
+    )
+
   copiers.set(reducer, copy)
 
   return copy
@@ -57,6 +63,15 @@ const apply = (entry: Entry, state: StateValue): Option.Option<StateValue> => {
 const applyOrKeep = (state: StateValue, entry: Entry) =>
   Option.getOrElse(apply(entry, state), () => state)
 
+/** A private copy of `state`, or `state` itself when it does not fit the schema. */
+const own = (reducer: OptimisticReducer | undefined, state: StateValue): StateValue => {
+  if (reducer === undefined) return state
+
+  const exit = Effect.runSyncExit(copierOf(reducer)(state))
+
+  return Exit.isSuccess(exit) ? exit.value : state
+}
+
 /**
  * One actor's state as a client sees it: the committed state it last learned
  * and the reducer inputs still waiting for receipts, applied in call order.
@@ -68,6 +83,9 @@ export class Optimistic {
   private readonly listeners = new Set<(state: StateValue | undefined) => void>()
   /** Settles when the last reducer call queued here has; reducer calls send one at a time. */
   queue: Promise<void> = Promise.resolve()
+
+  /** `reducer` is any of the actor's reducers; its state schema copies what goes in and out. */
+  constructor(private readonly reducer: OptimisticReducer | undefined) {}
 
   get state(): StateValue | undefined {
     return this.view
@@ -91,7 +109,7 @@ export class Optimistic {
   }
 
   reconcile(committed: StateValue): void {
-    this.committed = Option.some(committed)
+    this.committed = Option.some(own(this.reducer, committed))
     this.publish()
   }
 
@@ -108,7 +126,7 @@ export class Optimistic {
     this.entries = this.entries.filter((pending) => pending !== entry)
     this.committed =
       reply !== undefined
-        ? Option.some(reply)
+        ? Option.some(own(this.reducer, reply))
         : Option.map(this.committed, (committed) => applyOrKeep(committed, entry))
     this.publish()
   }
@@ -121,9 +139,17 @@ export class Optimistic {
 
   private publish(): void {
     this.view = Option.getOrUndefined(
-      Option.map(this.committed, (committed) => this.entries.reduce(applyOrKeep, committed)),
+      Option.map(this.committed, (committed) =>
+        own(this.reducer, this.entries.reduce(applyOrKeep, committed)),
+      ),
     )
 
-    for (const listener of this.listeners) listener(this.view)
+    // A throwing listener goes to `reportError`, as a DOM event listener's would; the rest still run.
+    for (const listener of this.listeners)
+      try {
+        listener(this.view)
+      } catch (error) {
+        reportError(error)
+      }
   }
 }

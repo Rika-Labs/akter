@@ -44,7 +44,7 @@ interface Served {
   readonly client: Caller
   /** The Promise client over a connection that loses every hundredth command response after the server sent it. */
   readonly lossy: Caller
-  /** A reducer through the Promise client; `visible` counts the nanoseconds until its optimistic state showed. */
+  /** A reducer through the Promise client; `visible` gets the nanoseconds until `state.current` showed it. */
   readonly reduce: (
     id: string,
     visible: Array<bigint>,
@@ -229,9 +229,18 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
     reduce: (id, visible) =>
       Effect.gen(function* () {
         const handle = reducers.get(id)
+        const before = handle.state.current?.count
         const started = yield* Clock.currentTimeNanos
         const reply = handle.Add(1)
-        visible.push((yield* Clock.currentTimeNanos) - started)
+        const shown = handle.state.current?.count
+        const elapsed = (yield* Clock.currentTimeNanos) - started
+
+        if (before !== undefined) {
+          if (shown !== before + 1)
+            return yield* Effect.die(new Error("Optimistic state not shown"))
+
+          visible.push(elapsed)
+        }
 
         return yield* Effect.tryPromise(() => reply)
       }),
@@ -391,7 +400,7 @@ export const http: Scenario = {
               const at = (q: number) =>
                 sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!
 
-              // The reducer's optimistic state is visible when the call returns, before the round trip.
+              // Read from `state.current` as the call returns, before the round trip.
               return {
                 ...result,
                 extra: {
