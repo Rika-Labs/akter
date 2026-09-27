@@ -246,6 +246,7 @@ it("retracts a message and settles its moderation call once", () =>
       const settled =
         (yield* test.receiptsFor(room.ref, "Moderated")) +
         (yield* test.receiptsFor(room.ref, "ModerationCancelled"))
+
       expect(settled <= 1).toBe(true)
       expect(yield* room.Recent({ limit: 10 })).toEqual([])
     }),
