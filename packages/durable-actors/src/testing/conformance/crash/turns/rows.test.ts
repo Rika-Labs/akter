@@ -8,9 +8,17 @@ describe("owned rows across process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  for (const point of ["beforeCommit", "afterCommit"] as const) {
+  // `AppendThenRefuse` inserts a row and then fails with a declared error, so
+  // only its terminal receipt may commit.
+  for (const [handler, point] of (["Append", "AppendThenRefuse"] as const).flatMap((handler) =>
+    (["beforeCommit", "afterCommit"] as const).map((point) => [handler, point] as const),
+  )) {
+    const refused = handler === "AppendThenRefuse"
+
     it(
-      `leaves ${point === "beforeCommit" ? "no" : "one"} owned row after SIGKILL ${point} and retries to exactly one`,
+      refused
+        ? `rolls back an owned row before a declared failure across SIGKILL ${point} and replays the failure`
+        : `leaves ${point === "beforeCommit" ? "no" : "one"} owned row after SIGKILL ${point} and retries to exactly one`,
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
@@ -51,6 +59,7 @@ describe("owned rows across process death with Postgres", () => {
                   CRASH_DATABASE_URL: database.href,
                   CRASH_POINT: mode,
                   CRASH_COMMAND_ID: commandId,
+                  CRASH_COMMAND: handler,
                 },
                 extendEnv: true,
                 stderr: "inherit",
@@ -76,10 +85,16 @@ describe("owned rows across process death with Postgres", () => {
             expect(
               (yield* Effect.promise(() =>
                 pool.query(
-                  "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM crash_entries) AS rows",
+                  "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM crash_entries) AS rows, (SELECT json_agg(command_id) FROM actor_receipts) AS ids",
                 ),
               )).rows,
-            ).toEqual([{ receipts: committed, rows: committed }])
+            ).toEqual([
+              {
+                receipts: committed,
+                rows: refused ? 0 : committed,
+                ids: committed === 1 ? [commandId] : null,
+              },
+            ])
 
             const recovery = yield* spawner.spawn(command("recover"))
             const output = yield* recovery.stdout.pipe(Stream.decodeText(), Stream.mkString)
@@ -89,7 +104,9 @@ describe("owned rows across process death with Postgres", () => {
                 .split("\n")
                 .filter((line) => line.startsWith("RESULT "))
                 .map((line) => line.slice("RESULT ".length)),
-            ).toEqual(['{"value":1,"receipts":1,"rows":1}'])
+            ).toEqual([
+              `{"reply":"${refused ? "Refused" : "1"}","handled":${committed === 1 ? 0 : 1},"receipts":1,"rows":${refused ? 0 : 1}}`,
+            ])
           }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
         ),
       25_000,
