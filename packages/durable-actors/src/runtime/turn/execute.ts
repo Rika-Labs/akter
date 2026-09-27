@@ -59,6 +59,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   cache: ActivationCache,
   routingKey: bigint,
   policy: TurnPolicy,
+  waited: ReadonlySet<string> = new Set(),
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
@@ -174,7 +175,7 @@ export const executeTurn = Effect.fnUntraced(function* (
         }
     }
 
-    yield* appendEvents(request, routingKey, result.events)
+    const notified = yield* appendEvents(request, routingKey, result.events, waited)
 
     const creates =
       Outcome.guards.Success(result.outcome) &&
@@ -182,7 +183,7 @@ export const executeTurn = Effect.fnUntraced(function* (
       !admission.created
 
     if (creates) yield* sql`UPDATE actor_generations SET created = true WHERE ${actorRow}`
-    const wake = yield* writeOutbox(routingKey, request.ref, result.outbox)
+    const wake = (yield* writeOutbox(routingKey, request.ref, result.outbox)) || notified
     const encoded = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
     yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
       VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${request.commandId}, ${request.command}, ${hash}, ${callerKey(request.caller)}, ${encoded}, ${commandTimes(request.commandId).expiresAt})`

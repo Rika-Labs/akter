@@ -53,6 +53,7 @@ export class InTurn extends Context.Service<InTurn, { readonly turn: symbol }>()
 
 interface Staging {
   readonly sender: ActorRef
+  readonly commandId: string
   readonly onBehalfOf: Principal | undefined
   open: boolean
   intents: Array<StagedIntent>
@@ -66,15 +67,18 @@ const stagings = new WeakMap<InTurn["Service"], Staging>()
 /** Opens the outbox of one command turn; `close` returns what it staged and seals it. */
 export const openOutbox = ({
   sender,
+  commandId,
   onBehalfOf,
 }: {
   readonly sender: ActorRef
+  readonly commandId: string
   readonly onBehalfOf: Principal | undefined
 }) => {
   const marker = InTurn.of({ turn: Symbol() })
 
   const staging: Staging = {
     sender,
+    commandId,
     onBehalfOf,
     open: true,
     intents: [],

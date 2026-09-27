@@ -10,11 +10,13 @@ import { DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
 import { blob } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
+import { WorkflowMember } from "./members/workflow.ts"
 
 export const Actor = {
   make: Definition.make,
   command: Command.make,
   query: Query.make,
+  workflow: WorkflowMember.make,
   Event: Event.make,
   reducer: Reducer.make,
   effect,
@@ -72,13 +74,25 @@ export {
 
 export { RetentionGap, UnknownCursor } from "./errors/events.ts"
 
+export {
+  ActivityOutcomeUnknown,
+  InvalidExecutionId,
+  InvalidExecutionKey,
+} from "./errors/workflow.ts"
+
+export type { WorkflowContext } from "./contexts/workflow.ts"
+
+export type { WorkflowRun } from "./handles/workflow.ts"
+
+export type { Race, Sleep, Step, Wait, Workflow } from "./members/workflow.ts"
+
 export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/command.ts"
 
 export type { ExecutorContext, PerformContext } from "./contexts/effect.ts"
 
 export type { EffectClass, EffectPolicy } from "./members/effect.ts"
 
-export type { Executors, Handle, Intents } from "./actor/definition.ts"
+export type { Executors, Handle, Intents, WorkflowHandlers } from "./actor/definition.ts"
 
 export type { Commutative, Reducer } from "./members/reducer.ts"
 
