@@ -30,6 +30,14 @@ export const SleepyProbe = Actor.make("SleepyProbe", {
   policy: { hibernateAfter: "250 millis" },
 })
 
+/** Stays resident for the whole run, so its activations can be counted in the heap. */
+export const ResidentProbe = Actor.make("ResidentProbe", {
+  key: Schema.NonEmptyString,
+  state,
+  api: { Add },
+  policy: { hibernateAfter: "1 hour" },
+})
+
 export class Ticked extends Actor.Event<Ticked>()("Ticked", { n: Schema.Int }) {}
 
 export const Emit = Actor.command("Emit", { input: Schema.Int, output: Schema.Int })
