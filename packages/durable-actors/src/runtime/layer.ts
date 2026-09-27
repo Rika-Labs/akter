@@ -1,6 +1,17 @@
 import { PgClient, PgTypes } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Cause, Context, Crypto, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
+import {
+  Cause,
+  Context,
+  Crypto,
+  Duration,
+  Effect,
+  Fiber,
+  Layer,
+  Option,
+  Result,
+  Schema,
+} from "effect"
 import {
   ClusterError,
   EntityId,
@@ -66,7 +77,44 @@ export interface Options {
    * process.
    */
   readonly maxResidentActors?: number
+  /** The outbox relay of this runner; every default equals the single-runner M1 behaviour. */
+  readonly relay?: {
+    /** Durable polling interval, jittered by ±10% per wait. Default 1 second. */
+    readonly poll?: Duration.Input
+    /** Intent rows one claim takes at most. Default 256. */
+    readonly passLimit?: number
+    /** Intents delivered at once. Default 16. */
+    readonly deliveryConcurrency?: number
+    /**
+     * How long a claimed intent stays out of every runner's scans. Default:
+     * the largest `commandTimeout + lockWait` of the registered actor types,
+     * plus 5 seconds.
+     */
+    readonly claimLease?: Duration.Input
+    /** Cap on intent redelivery backoff. Default 256 seconds. */
+    readonly maxBackoff?: Duration.Input
+  }
+  /** The effect executor pool of this runner. */
+  readonly executors?: {
+    /** Effect attempts running at once. Default 64. */
+    readonly concurrency?: number
+    /** An attempt's claim, renewed every third of it; at least 3 seconds. Default 60 seconds. */
+    readonly lease?: Duration.Input
+  }
 }
+
+const Count = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000 }))
+
+const Millis = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }))
+
+const millis = (duration: Duration.Input) =>
+  Millis.make(Math.floor(Duration.toMillis(Duration.fromInputUnsafe(duration))))
+
+/** Added to the longest turn a claimed intent's receiver may take. */
+const CLAIM_MARGIN_MS = 5000
+
+/** The claim lease when no actor type is registered: default policies' 30 s + 2 s + margin. */
+const DEFAULT_CLAIM_LEASE_MS = 37_000
 
 /**
  * How a runtime joins a cluster of runners instead of running as the embedded
@@ -109,6 +157,23 @@ export const layer = (options: Options) => {
   const maxResidentActors = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }),
   ).make(options.maxResidentActors ?? 10_000)
+
+  const executorLeaseMs = millis(options.executors?.lease ?? "60 seconds")
+
+  // Renewals every third of the lease stay at least a second apart.
+  if (executorLeaseMs < 3000) throw new Error("executors.lease must be at least 3 seconds")
+
+  const claimLeaseMs =
+    options.relay?.claimLease === undefined ? undefined : millis(options.relay.claimLease)
+
+  const relaySettings = {
+    pollMs: millis(options.relay?.poll ?? "1 second"),
+    passLimit: Count.make(options.relay?.passLimit ?? 256),
+    deliveryConcurrency: Count.make(options.relay?.deliveryConcurrency ?? 16),
+    maxBackoffMs: millis(options.relay?.maxBackoff ?? "256 seconds"),
+    executorConcurrency: Count.make(options.executors?.concurrency ?? 64),
+    executorLeaseMs,
+  }
 
   const runtime = Layer.effectContext(
     Effect.gen(function* () {
@@ -307,20 +372,31 @@ export const layer = (options: Options) => {
         ),
       )
 
+      // A claimed intent's lease covers the longest turn its receiver may take here.
+      const leaseForTurns = () => {
+        let longest = 0
+
+        for (const { policy } of registrations.values())
+          longest = Math.max(longest, policy.executionMs + policy.lockWaitMs)
+
+        return longest === 0 ? DEFAULT_CLAIM_LEASE_MS : longest + CLAIM_MARGIN_MS
+      }
+
       const relay = yield* outboxRelay(
         (request) => dispatch(request, false),
-        (actor, effect) => {
-          const registration = effectRegistrations.get(actor)
-          const registered = registration?.effects.get(effect)
-
-          if (registration === undefined || registered === undefined) return undefined
-
-          return {
-            ...registered,
-            execute: (payload, context) =>
-              registered.execute(payload, context).pipe(withoutDatabase(registration.services)),
-          }
-        },
+        () =>
+          [...effectRegistrations.values()].flatMap((registration) =>
+            [...registration.effects].map(([effect, registered]) => ({
+              actor: registration.name,
+              effect,
+              registered: {
+                ...registered,
+                execute: (payload: string, context: Parameters<typeof registered.execute>[1]) =>
+                  registered.execute(payload, context).pipe(withoutDatabase(registration.services)),
+              },
+            })),
+          ),
+        { ...relaySettings, claimLeaseMs: () => claimLeaseMs ?? leaseForTurns() },
       )
 
       yield* relay.run.pipe(Effect.forkIn(scope))
@@ -519,6 +595,7 @@ export const layer = (options: Options) => {
         deliver: (request) => dispatch(request, false),
         drainOutbox: relay.drain,
         cleanup: cleanup.pipe(Effect.orDie),
+        extendOutboxLeases: relay.extendLeases,
         shardId: (ref) =>
           entityId(ref).pipe(
             Effect.flatMap((id) => commandEntity(ref.actor).getShardId(EntityId.make(id))),

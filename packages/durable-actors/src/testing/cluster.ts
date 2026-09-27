@@ -48,6 +48,8 @@ export interface ClusterOptions<ROut, E, RIn> extends TestOptions {
   readonly shardLockExpiration: Duration.Input
   /** Application layers (`X.toLayer`, `X.toQueryLayer`, ...) that every runner builds. */
   readonly actors: Layer.Layer<ROut, E, RIn>
+  /** Layers only some runners build, such as an effect layer one runner lacks. */
+  readonly runnerActors?: (runner: number) => Layer.Layer<never, never, RunnerServices>
 }
 
 export class ActorCluster extends Context.Service<
@@ -325,7 +327,10 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         const scope = yield* Scope.make()
         runner.scope = scope
 
-        const layer = options.actors.pipe(
+        const layer = Layer.merge(
+          options.actors,
+          options.runnerActors?.(runners.indexOf(runner)) ?? Layer.empty,
+        ).pipe(
           Layer.provideMerge(
             ActorTest.layer(options).pipe(
               Layer.provide([
