@@ -474,7 +474,21 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect([...replay].at(-1)?._tag).toBe("ResyncReplayed")
           expect([...replay].filter(isFrame)).toEqual([])
 
+          // A live broadcast committed before the client acknowledges the resync waits for it.
+          yield* cluster.on(0)(
+            Room.get(target.id).pipe(Effect.flatMap((room) => room.Post("during"))),
+          )
+          const early = yield* connection.messages.pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.timeout("1 second"),
+            Effect.option,
+          )
+          expect(early._tag).toBe("None")
+
           yield* connection.resyncDone
+          const [during] = yield* next(connection)
+          expect(frameOf(during)).toEqual(Said.make({ text: "during" }))
           yield* connection.send(Say.make({ text: "whoami" }))
           const [resumed] = yield* next(connection)
           expect(frameOf(resumed)).toEqual(Hello.make({ name: "alice", resumed: true, frames: 1 }))

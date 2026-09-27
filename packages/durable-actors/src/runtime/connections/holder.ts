@@ -164,6 +164,8 @@ interface Held {
         replayed: boolean
         sent: boolean
         readonly deadline: number
+        readonly deferred: Array<ClientMessage>
+        readonly replayedEvents: Set<string>
       }
     | undefined
   resyncs: Array<number>
@@ -334,6 +336,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           replayed: false,
           sent: false,
           deadline: at + RESYNC_DEADLINE_MS,
+          deferred: [],
+          replayedEvents: new Set(),
         }
         yield* push(
           connection,
@@ -408,15 +412,26 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
                   return Effect.void
                 }
 
-                return push(
-                  connection,
-                  ClientMessage.cases.Frame.make({
-                    frame: frame.frame,
-                    cursor: frame.stamp ? message.through : undefined,
-                    event: frame.event,
-                  }),
-                  false,
-                )
+                const out = ClientMessage.cases.Frame.make({
+                  frame: frame.frame,
+                  cursor: frame.stamp ? message.through : undefined,
+                  event: frame.event,
+                })
+                const pending = connection.resync
+
+                // Live frames wait until the resync's replay is acknowledged, so replay always comes first.
+                if (pending !== undefined && frame.replay !== true) {
+                  if (pending.deferred.length >= MAX_OUTBOUND_FRAMES)
+                    return end(connection, ended("SlowConsumer", true), true)
+                  pending.deferred.push(out)
+
+                  return Effect.void
+                }
+
+                if (pending !== undefined && frame.event !== undefined)
+                  pending.replayedEvents.add(frame.event)
+
+                return push(connection, out, false)
               },
               { discard: true },
             ),
@@ -805,6 +820,14 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         if (pending === undefined || (type.hasResync(connection.member) && !pending.replayed))
           return
         connection.resync = undefined
+
+        for (const message of pending.deferred)
+          if (
+            !ClientMessage.guards.Frame(message) ||
+            message.event === undefined ||
+            !pending.replayedEvents.has(message.event)
+          )
+            yield* push(connection, message, false)
         yield* Queue.offer(connection.wake, undefined)
       }),
       close: Effect.gen(function* () {

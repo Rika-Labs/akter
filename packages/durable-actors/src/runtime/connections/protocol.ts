@@ -12,6 +12,7 @@ export const HolderItem = Schema.TaggedUnion({
     frame: Schema.String,
     event: Schema.optional(Schema.String),
     stamp: Schema.Boolean,
+    replay: Schema.optional(Schema.Boolean),
   },
   Flushed: { through: Schema.String },
   End: { connectionId: Schema.String, ended: SessionEnded },

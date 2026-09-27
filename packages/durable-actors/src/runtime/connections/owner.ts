@@ -345,6 +345,7 @@ export const activationOwner = ({
       readonly connectionId: string
       readonly member: string
       readonly frames: ConnectionResult["sends"]
+      readonly replay?: boolean
     },
   ) =>
     activation.flush.withPermit(
@@ -413,6 +414,7 @@ export const activationOwner = ({
                 frame: frame.frame,
                 event: frame.event,
                 stamp,
+                ...(own.replay === true ? { replay: true } : {}),
               }),
             )
         }
@@ -786,6 +788,7 @@ export const activationOwner = ({
             connectionId: request.connectionId,
             member: row.member,
             frames: result.sends,
+            replay: true,
           })
 
           return { _tag: "Replayed" as const, ...identity(activation) }
