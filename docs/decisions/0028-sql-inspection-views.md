@@ -21,7 +21,7 @@ These facts from the shipped code shape the answer:
 - The outbox holds intents, keyed timers (`timer_key IS NOT NULL`), and effects (`kind = 'effect'`) in one table. A settled effect becomes an intent to its route in the same row.
 - There is no separate cron table: cron entries are keyed timers with `timer_key = '$cron:<expression>'` (ADR 0021), and each tick leaves a receipt.
 - Workflow tables arrive with `0012_workflows` (ADR 0022), which is not on `main` yet.
-- The Effect migrator applies ids in order and skips any id at or below the latest applied, so `0013` applies on a database that has no `0010`–`0012`.
+- The Effect migrator applies ids in order and skips any id at or below the latest applied, so `0013` applies on a database that has no `0010`–`0012`. The framework refuses to start a database where a registered id below the latest applied one is missing, so a database that applied `0013` first fails loudly instead of skipping `0010`–`0012` without a word. That is why this migration merges after them.
 - RLS is optional and per table (contract 10); M4.5 will add the framework's policies.
 
 ## Decision
@@ -84,6 +84,8 @@ This narrows the M2 plan, which put workflow views and a cron run-history view i
 
 ## Open questions for Dallen
 
+Each question has a proposed default. Migration `0013_inspection_views` already implements every default, so any question left unanswered at acceptance takes its default. Choosing an alternative later needs a new ADR, and a new view version where §2 requires one.
+
 1. **Schema name.** Proposed default: `durable`. Alternative: `durable_inspect`, which leaves `durable` free for future writable APIs.
 2. **Should the migration create the role?** Proposed default: no, document the grant script (§5). Alternative: create `durable_inspector NOLOGIN` when the migration user may, and skip otherwise, which makes migration behavior depend on privileges.
 3. **Should `durable.state` and `durable.events` expose compressed values?** Proposed default: yes, as `bytea` with `value_bytes`, decoded client-side. Alternative: omit values until a `pg` zstd extension is a supported deployment requirement.
@@ -109,7 +111,7 @@ This narrows the M2 plan, which put workflow views and a cron run-history view i
 ## Evidence
 
 - Conformance ([`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts)), shared by PGlite and Postgres: committed turns appear in every view, declared failures leave only their receipt, defects leave nothing, effects move to `dead_letters`, fired timers leave the outbox; rows keep their tenant; every write through every view fails and leaves the rows untouched; a role granted only the schema reads the views and is denied every runtime table.
-- Migration, in `pglite.test.ts`: `0013` applies to a database that stopped at `0009`.
+- Migration, in `pglite.test.ts`: `0013` applies to a database that stopped at `0009`, and a database that applied `0013` without a registered lower id refuses to migrate, naming that id.
 - Benchmark `inspection-views` (see the [reference](../operations/inspection-views.md#cost) and `benchmarks/results/`).
 
 ## Revisit when
