@@ -542,21 +542,30 @@ export const layer = (options: Options) => {
                 key: string | null
                 value: Uint8Array | null
               }>`
-                SELECT g.event_sequence::text AS head, s.key, s.value
-                FROM (VALUES (1)) AS one (x)
-                LEFT JOIN actor_generations g ON g.routing_key = ${key} AND g.tenant_id = ${request.ref.tenant}
-                  AND g.actor_type = ${request.ref.actor} AND g.actor_id = ${request.ref.id}
-                LEFT JOIN actor_state s ON s.routing_key = g.routing_key AND s.tenant_id = g.tenant_id
-                  AND s.actor_type = g.actor_type AND s.actor_id = g.actor_id`
+                SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
+                FROM actor_generations
+                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
+                UNION ALL
+                SELECT NULL, key, value
+                FROM actor_state
+                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
 
-              const head = rows[0]?.head ?? "0"
+              let head: string | undefined
               const state: Array<readonly [string, string]> = []
 
               for (const row of rows)
-                if (row.key !== null) state.push([row.key, decompress(row.value!)])
+                if (row.head !== null) head = row.head
+                else state.push([row.key!, decompress(row.value!)])
 
-              return yield* query.run(request, state, head, (tag, after, limit) =>
-                replayEvents(request.ref, key, tag, after, BigInt(head), limit).pipe(
+              // State counts only alongside its generation row, which carries the head.
+              if (head === undefined) state.length = 0
+
+              const cursor = head ?? "0"
+
+              return yield* query.run(request, state, cursor, (tag, after, limit) =>
+                replayEvents(request.ref, key, tag, after, BigInt(cursor), limit).pipe(
                   Effect.catchIf(SqlError.isSqlError, Effect.die),
                   Effect.provideContext(services),
                 ),
