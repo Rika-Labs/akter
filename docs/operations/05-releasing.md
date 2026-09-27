@@ -50,5 +50,5 @@ The dist-tag is the first prerelease identifier: `0.1.0-alpha.1` publishes to `a
 ## Limits
 
 - The workflow cannot publish a package name that does not exist on npm yet; each new package needs the bootstrap above.
-- A tag whose version is already on npm fails at `npm publish`; npm versions are immutable, so bump the version rather than retagging.
+- A tag whose version is already on npm runs every check and the smoke test, then skips `npm publish`; npm versions are immutable, so a changed build needs a new version, not a retag.
 - The first alpha supports one runner per database, as the package README says.
