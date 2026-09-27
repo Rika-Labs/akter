@@ -1,7 +1,8 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { ActorTest } from "@durable-actors/core/testing"
-import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
+import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schedule } from "effect"
 import { Pool } from "pg"
+import { SqlClient } from "effect/unstable/sql"
 import { afterAll, expect, it } from "vitest"
 import { Counter } from "./contract.ts"
 import { CounterLive } from "./layer.ts"
@@ -46,5 +47,29 @@ it("recovers the runnable counter across pre-commit and post-commit faults", () 
       }
 
       expect(yield* test.inspect(counter.ref)).toMatchObject({ state: { count: 10 }, receipts: 2 })
+    }),
+  ))
+
+it("resumes a sleeping workflow on the framework clock and replays its result", () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const sql = yield* SqlClient.SqlClient
+      const counter = yield* Counter.get("workflow")
+      const run = yield* counter.Double({ value: 21 })
+
+      // The pause's due time is recorded when the body reaches it, so advance only after it suspends.
+      yield* sql<{ status: string }>`SELECT status FROM actor_workflow_executions
+        WHERE execution_id = ${run.executionId}`.pipe(
+        Effect.repeat({
+          schedule: Schedule.spaced("20 millis"),
+          until: (rows) => rows[0]?.status === "suspended",
+        }),
+      )
+      yield* test.advance("61 seconds")
+      expect(yield* run.result).toBe(42)
+      const again = yield* counter.Double({ value: 21 })
+      expect(again.executionId).toBe(run.executionId)
+      expect(yield* again.result).toBe(42)
     }),
   ))

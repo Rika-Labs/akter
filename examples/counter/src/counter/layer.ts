@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { Counter } from "./contract.ts"
+import { Compute, Counter, Pause } from "./contract.ts"
 
 export const CounterLive = Counter.toLayer(
   Effect.succeed({
@@ -8,6 +8,11 @@ export const CounterLive = Counter.toLayer(
       yield* turn.state.set({ count: turn.state.count + amount })
 
       return turn.state.count
+    }),
+    Double: Effect.fnUntraced(function* ({ value }: { readonly value: number }) {
+      yield* Pause("1 minute")
+
+      return yield* Compute.run(value, (input) => Effect.succeed(input * 2))
     }),
   }),
 )
