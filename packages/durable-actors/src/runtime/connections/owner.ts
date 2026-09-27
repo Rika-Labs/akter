@@ -37,6 +37,8 @@ interface Row {
   readonly caller: Caller
   session: string | undefined
   frameSeq: number
+  /** Broadcasts committed while the connection is still opening, sent after its open frames. */
+  buffered?: Array<{ readonly frame: string; readonly event?: string | undefined }>
 }
 
 interface Channel {
@@ -327,7 +329,7 @@ export const activationOwner = ({
   const list = (activation: Activation) => (member: string) =>
     Effect.sync((): ReadonlyArray<OpenConnection> =>
       [...(activation.rows?.values() ?? [])]
-        .filter((row) => row.member === member)
+        .filter((row) => row.member === member && row.buffered === undefined)
         .slice(0, 1_000)
         .map((row) => ({
           connectionId: row.connectionId,
@@ -368,7 +370,8 @@ export const activationOwner = ({
             last?._tag === "Frame" &&
             last.frame === item.frame &&
             last.member === item.member &&
-            last.event === item.event
+            last.event === item.event &&
+            !last.to.includes(item.to[0]!)
           )
             perChannel.set(channel, [
               ...items.slice(0, -1),
@@ -388,16 +391,19 @@ export const activationOwner = ({
               (to === undefined || to.has(row.connectionId)) &&
               !except.has(row.connectionId)
             )
-              add(
-                row,
-                HolderItem.cases.Frame.make({
-                  member: row.member,
-                  to: [row.connectionId],
-                  frame: broadcast.frame,
-                  event: broadcast.event,
-                  stamp,
-                }),
-              )
+              if (row.buffered !== undefined)
+                row.buffered.push({ frame: broadcast.frame, event: broadcast.event })
+              else
+                add(
+                  row,
+                  HolderItem.cases.Frame.make({
+                    member: row.member,
+                    to: [row.connectionId],
+                    frame: broadcast.frame,
+                    event: broadcast.event,
+                    stamp,
+                  }),
+                )
         }
 
         const self = own === undefined ? undefined : activation.rows.get(own.connectionId)
@@ -442,6 +448,22 @@ export const activationOwner = ({
 
     return created
   }
+
+  // A connection's lock lives only as long as its row.
+  const withLock = <A, E, R>(
+    activation: Activation,
+    connectionId: string,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    lockOf(activation, connectionId)
+      .withPermit(effect)
+      .pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (activation.rows?.has(connectionId) !== true) activation.locks.delete(connectionId)
+          }),
+        ),
+      )
 
   const events =
     (activation: Activation, sql: SqlClient.SqlClient) =>
@@ -518,7 +540,9 @@ export const activationOwner = ({
       readonly commands: ConnectionCommands
     },
   ) =>
-    lockOf(activation, request.connectionId).withPermit(
+    withLock(
+      activation,
+      request.connectionId,
       Effect.gen(function* () {
         const connection = registration.connections.get(request.member)
 
@@ -559,6 +583,7 @@ export const activationOwner = ({
         }
 
         const baseline = activation.through
+        activation.rows!.set(request.connectionId, { ...row, frameSeq: 0, buffered: [] })
 
         const result = yield* run(
           activation,
@@ -604,13 +629,14 @@ export const activationOwner = ({
           return yield* unavailable("Stale actor generation")
         }
 
+        const buffered = activation.rows!.get(request.connectionId)?.buffered ?? []
         activation.rows!.set(request.connectionId, { ...row, session: result.session, frameSeq: 0 })
         activation.opened.add(request.connectionId)
         yield* setKeepAwake(activation)
         yield* flush(activation, result.broadcasts, activation.head, {
           connectionId: request.connectionId,
           member: request.member,
-          frames: result.sends,
+          frames: [...result.sends, ...buffered],
         })
 
         if (result.close)
@@ -618,6 +644,12 @@ export const activationOwner = ({
 
         return { _tag: "Opened" as const, ...identity(activation), baseline }
       }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (activation.rows?.get(request.connectionId)?.buffered !== undefined)
+              activation.rows.delete(request.connectionId)
+          }),
+        ),
         Effect.catchIf(SqlError.isSqlError, (cause) =>
           Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
         ),
@@ -659,7 +691,9 @@ export const activationOwner = ({
       readonly commands: ConnectionCommands
     },
   ) =>
-    lockOf(activation, request.connectionId).withPermit(
+    withLock(
+      activation,
+      request.connectionId,
       Effect.gen(function* () {
         yield* acquire(activation)
         yield* load(activation)
@@ -730,7 +764,9 @@ export const activationOwner = ({
     )
 
   const close = (activation: Activation, request: Address & { readonly cause: SessionEnded }) =>
-    lockOf(activation, request.connectionId).withPermit(
+    withLock(
+      activation,
+      request.connectionId,
       Effect.gen(function* () {
         yield* acquire(activation)
         yield* load(activation)
@@ -766,7 +802,9 @@ export const activationOwner = ({
     activation: Activation,
     request: Address & { readonly after?: string | undefined },
   ) =>
-    lockOf(activation, request.connectionId).withPermit(
+    withLock(
+      activation,
+      request.connectionId,
       Effect.gen(function* () {
         yield* acquire(activation)
         yield* load(activation)

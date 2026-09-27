@@ -313,12 +313,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const at = yield* now
 
       for (const connection of actor.connections.values()) {
-        if (!connection.open || connection.resync !== undefined) {
-          // A second loss during a resync starts it again from the same cursor.
-          if (connection.resync !== undefined) connection.resync.sent = false
-
-          continue
-        }
+        if (!connection.open) continue
 
         connection.resyncs = connection.resyncs.filter((time) => at - time < RESYNC_WINDOW_MS)
         connection.resyncs.push(at)
@@ -330,14 +325,16 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           continue
         }
 
-        const after = actor.through === "0" ? undefined : actor.through
+        // A loss during a resync starts it again from the same cursor, keeping the frames it deferred.
+        const previous = connection.resync
+        const after = previous?.after ?? (actor.through === "0" ? undefined : actor.through)
         connection.resync = {
           after,
           replayed: false,
           sent: false,
           deadline: at + RESYNC_DEADLINE_MS,
-          deferred: [],
-          replayedEvents: new Set(),
+          deferred: previous?.deferred ?? [],
+          replayedEvents: previous?.replayedEvents ?? new Set(),
         }
         yield* push(
           connection,
@@ -386,6 +383,9 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
       // Late messages from a dead or superseded generation are dropped.
       if (!(yield* observe(actor, message))) return { wrongEpoch: false, unknown }
+
+      // A redelivered message was already applied.
+      if (message.seq <= actor.seq) return { wrongEpoch: false, unknown }
 
       if (message.seq !== actor.seq + 1) {
         // A gap means frames were lost: every connection must replay from its cursor.

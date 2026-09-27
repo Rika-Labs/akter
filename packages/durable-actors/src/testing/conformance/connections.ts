@@ -486,7 +486,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             Effect.option,
           )
 
-          expect(early._tag).toBe("None")
+          expect(Option.getOrUndefined(early)).toEqual(undefined)
 
           yield* connection.resyncDone
           const [during] = yield* next(connection)
