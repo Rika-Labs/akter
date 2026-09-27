@@ -1,0 +1,37 @@
+import { BunCrypto, BunRuntime } from "@effect/platform-bun"
+import { Actor, User } from "@durable-actors/core"
+import { Actors } from "@durable-actors/core/runtime"
+import { Console, Effect, Layer, Schema } from "effect"
+import { DatabaseLive } from "./database.ts"
+import { Room, RoomId } from "./room/contract.ts"
+import { RoomLive } from "./room/layer.ts"
+
+const live = RoomLive.pipe(
+  Layer.provideMerge(
+    Actors.layer({
+      authorize: ({ caller, ref }) =>
+        Effect.succeed(Schema.is(User)(caller) && ref.tenant === "quickstart"),
+    }),
+  ),
+  Layer.provide(DatabaseLive),
+  Layer.provide(BunCrypto.layer),
+)
+
+const program = Effect.gen(function* () {
+  const room = yield* Room.get(RoomId.make("lobby")).pipe(
+    Actor.tenant("quickstart"),
+    Actor.as(User.make({ subject: "ada" })),
+  )
+
+  yield* room.Post({ body: "hello" })
+
+  for (const { cursor, message } of yield* room.History({}))
+    yield* Console.log(`${cursor} ${message.author}: ${message.body}`)
+})
+
+Layer.effectDiscard(program).pipe(
+  Layer.provide(live),
+  Layer.build,
+  Effect.scoped,
+  BunRuntime.runMain,
+)
