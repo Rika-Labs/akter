@@ -216,7 +216,7 @@ Postgres SIGKILL, in [`crash/effects.test.ts`](../../packages/durable-actors/src
 
 The declaration test `types effects, executors, and routes against the executor's return type` is the compile-time part of the **Effect routes** check: an `onSuccess` command whose input does not accept the executor's return type, an `onDeadLetter` command whose input does not accept `Actor.DeadLetter(E)`, a route to another actor's command, a `policy.effects` key that is not a declared effect, an executor returning the wrong type, and performing an undeclared effect all fail to compile; `perform` is absent from `X.Read`. `rejects an executor that requires the SQL client` (in `runtime/effects/isolation.test.ts`) checks that an effect layer whose executors, or whose build Effect, require `SqlClient` does not compile.
 
-These cases cover a single runner. Executors on separate processes, effect cancellation, and per-actor concurrency caps are not implemented.
+These cases cover a single runner. Executors on separate processes, effect cancellation, and per-actor concurrency caps are not implemented. [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md) (proposed) lists the cases M2.13 must add in `conformance/effect-control.ts`; they are required tests, not recorded results.
 
 `turn.mint` is not implemented. [ADR 0025](../decisions/0025-turn-mint.md) (proposed) lists the cases M2.15 must add in `conformance/mint.ts`, including fixed derivation vectors; they are required tests, not recorded results.
 
