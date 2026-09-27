@@ -9,6 +9,7 @@ import {
 } from "durable-actors"
 import { ActorTest } from "durable-actors/testing"
 import { Config, Crypto, Effect, Layer, ManagedRuntime, Option, Redacted, Schema } from "effect"
+import { SqlClient } from "effect/unstable/sql"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { Room, RoomClosed, RoomId } from "./contract.ts"
@@ -161,6 +162,11 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       expect(yield* test.receiptsFor(room.ref, "Moderated")).toBe(1)
       expect(yield* room.Recent({ limit: 10 })).toEqual([])
       expect(yield* room.Attachment(id)).toEqual(Option.none())
+      const sql = yield* SqlClient.SqlClient
+      expect(
+        yield* sql<{ bytes: number }>`SELECT COALESCE(sum(octet_length(bytes)), 0)::float8 AS bytes
+          FROM actor_blobs WHERE actor_id = ${room.ref.id} AND name = ${id}`,
+      ).toEqual([{ bytes: 0 }])
       expect((yield* room.History({})).map(({ message }) => [message.id, message.body])).toEqual([
         [id, ""],
       ])

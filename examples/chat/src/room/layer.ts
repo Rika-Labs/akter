@@ -77,7 +77,14 @@ export const RoomCommands = Room.toLayer(
     Moderated: Effect.fnUntraced(function* ({ id, flagged }) {
       const turn = yield* Room.Turn
 
-      if (flagged) yield* turn.rows(messages).delete().where({ id })
+      if (!flagged) return
+
+      // An emptied entry holds no bytes against the room's blob quota.
+      const attached = yield* turn.rows(messages).one({ where: { id } })
+      yield* turn.rows(messages).delete().where({ id })
+
+      if (Option.isSome(attached) && attached.value.attachment === id)
+        yield* turn.blob(Attachments).set(id, new Uint8Array())
     }),
 
     ModerationFailed: Effect.fnUntraced(function* (dead) {
