@@ -411,7 +411,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
 
               expect(
                 yield* acceptWorkflows(declaredOf(BaseAgain.Versioned)).pipe(Effect.orDie),
-              ).toEqual({ checked: false, incompatibilities: [] })
+              ).toEqual({ checked: false, incompatibilities: [], retained: true })
               expect(yield* finish(BaseAgain, open)).toBe("r-o:label:v0")
             }),
           )
@@ -541,6 +541,48 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(
             yield* deploy(database, Audited.layer, checkWorkflows([Audited.Versioned])),
           ).toEqual([])
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
+    name: "workflow versions: retention still prunes finished executions after an actor type drops its last workflow",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          yield* deploy(
+            database,
+            Base.layer,
+            Effect.gen(function* () {
+              expect(yield* finish(Base, yield* sleeping(Base, "o"))).toBe("r-o:label:v0")
+            }),
+          )
+
+          const executions = Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            const [row] = yield* sql<{ count: number }>`SELECT count(*)::integer AS count
+              FROM actor_workflow_executions WHERE actor_type = 'Versioned'`
+
+            return row!.count
+          }).pipe(Effect.orDie)
+
+          // A second restart without workflows no longer finds accepted manifests.
+          for (const sweeps of [false, true])
+            yield* deploy(
+              database,
+              UnworkflowedLive,
+              Effect.gen(function* () {
+                const test = yield* ActorTest
+                expect(yield* executions).toBe(1)
+
+                if (!sweeps) return
+                yield* test.advance("8 days")
+                expect((yield* test.cleanup).workflows).toBe(1)
+                expect(yield* executions).toBe(0)
+              }),
+            )
         }),
       ),
   },

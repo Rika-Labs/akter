@@ -336,15 +336,18 @@ export const formatIncompatibility = (incompatibility: Incompatibility) =>
  * workflow's manifest is already the most recently accepted one and no
  * accepted workflow is gone; otherwise it compares, and a passing deployment
  * becomes the most recently accepted one, so a rollback is compared again.
+ * `retained`: the actor type has workflows or workflow rows retention sweeps.
  */
 export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor) {
   const sql = yield* SqlClient.SqlClient
 
   if (actor.workflows.length === 0) {
-    const accepted = yield* sql`SELECT 1 FROM actor_workflow_manifests
-      WHERE actor_type = ${actor.name} LIMIT 1`
+    const [history] = yield* sql<{ accepted: boolean; executions: boolean }>`SELECT
+      EXISTS (SELECT 1 FROM actor_workflow_manifests WHERE actor_type = ${actor.name}) AS accepted,
+      EXISTS (SELECT 1 FROM actor_workflow_executions WHERE actor_type = ${actor.name}) AS executions`
 
-    if (accepted.length === 0) return { checked: false, incompatibilities: [] }
+    if (!history!.accepted)
+      return { checked: false, incompatibilities: [], retained: history!.executions }
   }
 
   return yield* sql.withTransaction(
@@ -382,11 +385,11 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
           ),
         )
 
-      if (unchanged) return { checked: false, incompatibilities: [] }
+      if (unchanged) return { checked: false, incompatibilities: [], retained: true }
 
       const incompatibilities = yield* findIncompatibilities([actor], { everyActorType: false })
 
-      if (incompatibilities.length > 0) return { checked: true, incompatibilities }
+      if (incompatibilities.length > 0) return { checked: true, incompatibilities, retained: true }
 
       if (rows.length > 0)
         yield* sql`INSERT INTO actor_workflow_manifests AS a (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
@@ -403,7 +406,7 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
       yield* sql`DELETE FROM actor_workflow_manifests WHERE actor_type = ${actor.name}
         AND workflow NOT IN (SELECT jsonb_array_elements_text(${toJson(rows.map((row) => row.workflow))}::jsonb))`
 
-      return { checked: true, incompatibilities: [] }
+      return { checked: true, incompatibilities: [], retained: true }
     }),
   )
 })

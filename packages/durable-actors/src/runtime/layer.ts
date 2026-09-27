@@ -185,6 +185,8 @@ export const layer = (options: Options) => {
       const sharding = yield* Sharding.Sharding
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
+      // Actor types whose workflow rows retention sweeps, removed workflows included.
+      const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
       const effectRegistrations = new Map<string, EffectRegistration>()
 
@@ -428,13 +430,13 @@ export const layer = (options: Options) => {
 
       const cleanup = Effect.suspend(() =>
         sweep(
-          Array.from(registrations.values(), ({ name, policy, workflows }) => ({
+          Array.from(registrations.values(), ({ name, policy }) => ({
             actorType: name,
             keepReceiptsMs: policy.keepReceiptsMs,
             keepEventsMs: policy.keepEventsMs,
             deliveryMs: policy.deliveryMs,
             keepWorkflowsMs: policy.keepWorkflowsMs,
-            workflows: workflows.size > 0,
+            workflows: sweepsWorkflows.has(name),
           })),
           retryWindowMs,
         ),
@@ -513,7 +515,7 @@ export const layer = (options: Options) => {
               ),
             )
 
-          const { incompatibilities } = yield* acceptWorkflows({
+          const { incompatibilities, retained } = yield* acceptWorkflows({
             name: registration.name,
             workflows: Array.from(registration.workflows.values(), ({ member }) => member),
           }).pipe(Effect.provideContext(services), Effect.orDie)
@@ -535,10 +537,12 @@ export const layer = (options: Options) => {
 
           registrations.set(registration.name, registration)
           residency.set(registration.name, isResident)
+          if (retained) sweepsWorkflows.add(registration.name)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               registrations.delete(registration.name)
               residency.delete(registration.name)
+              sweepsWorkflows.delete(registration.name)
             }),
           )
         }),
