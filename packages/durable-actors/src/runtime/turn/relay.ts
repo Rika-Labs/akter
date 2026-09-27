@@ -166,7 +166,8 @@ export const claimDue = ({
           "intent",
           now,
           probe,
-          sql`AND (timer_key IS NULL OR left(timer_key, 6) <> ${CRON_PREFIX}${local})`,
+          sql`AND (timer_key IS NULL OR left(timer_key, 6) <> ${CRON_PREFIX}
+            OR caller NOT LIKE '%"source":"cron"%'${local})`,
         )}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
@@ -399,7 +400,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       })
 
     return yield* Effect.gen(function* () {
-      const tick = ticks.isTick(row)
+      const tick = yield* ticks.isTick(row)
       const route = tick ? yield* ticks.settleUnfired(row, claim, backoffMs(row.attempts)) : row
 
       if (route === undefined) return

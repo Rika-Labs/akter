@@ -123,6 +123,7 @@ export const cron: Scenario = {
                   )
 
                 const from = cronFires.length
+                yield* Effect.sleep(Math.max(0, scheduled - (yield* databaseNow)))
 
                 const result = yield* measure({
                   name: `tick-${actors}`,
@@ -130,11 +131,7 @@ export const cron: Scenario = {
                   instruments,
                   workers: 1,
                   operations: 1,
-                  operation: () =>
-                    Effect.gen(function* () {
-                      yield* Effect.sleep(Math.max(0, scheduled - (yield* databaseNow)))
-                      yield* drained(from, scheduled, actors)
-                    }),
+                  operation: () => drained(from, scheduled, actors),
                   listStatements: true,
                 })
 

@@ -484,6 +484,42 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "delivers a pending keyed intent staged under a `$cron:` key before the key was reserved",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sql = yield* SqlClient.SqlClient
+          const heartbeat = yield* Heartbeat.get("legacy-key")
+          yield* heartbeat.Open()
+          const { ref } = heartbeat
+          const now = yield* nowMs
+          const id = `v1.${now}.${now}.00000000-0000-4000-8000-000000000001`
+
+          const caller = yield* Schema.encodeEffect(CallerJson)(
+            System.make({ source: "timer", ref }),
+          ).pipe(Effect.orDie)
+
+          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+              scheduled_at_ms, tenant_id, actor_type, actor_id, timer_key, target_type,
+              target_id, command, payload, caller)
+            SELECT routing_key, ${id}, bucket, ${now}, ${now}, tenant_id,
+              actor_type, actor_id, '$cron:reminder', target_type, target_id, command, payload,
+              ${caller}
+            FROM actor_outbox WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor}
+              AND actor_id = ${ref.id} AND timer_key = ${EVERY_MINUTE}`.pipe(Effect.orDie)
+
+          yield* test.advance(1)
+
+          expect(firedFor("legacy-key").filter((run) => run.commandId === id)).toEqual([
+            { actor: ref.actor, id: ref.id, commandId: id, source: "timer" },
+          ])
+          expect((yield* ticksOf(ref)).map((row) => row.timer_key)).toEqual([YEARLY, EVERY_MINUTE])
+        }),
+      ),
+  },
+  {
     name: "restores a missing entry's tick on the actor's next activation",
     run: ({ expect, environment }) =>
       withRuntime(

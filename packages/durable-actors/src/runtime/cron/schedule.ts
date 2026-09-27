@@ -165,6 +165,7 @@ export interface ClaimedTick {
   readonly intent_id: string
   readonly command: string
   readonly payload: string
+  readonly caller: string
   readonly timer_key: string | null
   readonly scheduled_at: string | null
   readonly claimed_until: string
@@ -210,7 +211,16 @@ export const cronTicks = ({
   })
 
   return {
-    isTick: (row: ClaimedTick) => row.timer_key?.startsWith(CRON_PREFIX) === true,
+    /** A tick is a `$cron:` row the runtime wrote, which names a cron caller. */
+    isTick: (row: ClaimedTick) =>
+      row.timer_key?.startsWith(CRON_PREFIX) === true
+        ? Schema.decodeEffect(CallerJson)(row.caller).pipe(
+            Effect.match({
+              onFailure: () => false,
+              onSuccess: (caller) => Schema.is(System)(caller) && caller.source === "cron",
+            }),
+          )
+        : Effect.succeed(false),
     /**
      * Settles a tick that must not fire and returns undefined, or returns the
      * command and payload the relay delivers on this claim.

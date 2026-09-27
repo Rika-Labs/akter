@@ -435,6 +435,7 @@ Shared (PGlite and Postgres):
 - `writes no tick for a turn rejected NotCreated` — a rejected command commits no generation and writes no tick.
 - `schedules a first tick from the time the first turn writes it, not from its admission` — `CronSecondly` (`* * * * * *`) pauses its first turn at `beforeHandler` for 1.2 s; its first tick is scheduled after that pause, so it cannot fire for a time before the actor committed.
 - `retargets a pending tick to the entry's current command and fires it once` — a pending row naming a removed command delivers the entry's command on the same claim, keeping its intent id, so two runners with different targets cannot bounce it.
+- `delivers a pending keyed intent staged under a \`$cron:\` key before the key was reserved`— only rows whose caller is`System({ source: "cron" })` are ticks; an older keyed intent under the prefix delivers as an ordinary intent.
 - `advances a retargeted tick that already fired under its old command without firing it again` — a tick whose receipt committed before the crash, then retargeted, is rewritten to its next time instead of conflicting with its receipt.
 - `fires a due tick once as System cron and rewrites its row to the next scheduled time` — the handler runs once with `System({ source: "cron", ref })` and the row's intent id as its command id; the row is rewritten with a fresh intent id, zero attempts, and the next minute.
 - `fires once after downtime inside the skip window and skips a tick older than it` — failure-matrix row **Deployment down longer than `cronSkipIfOlderThan`**.
