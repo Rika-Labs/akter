@@ -263,10 +263,13 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
         deadline: message.deadlineMs,
       }),
     ResyncReplayed: () => Effect.succeed<ServerWireMessage>({ t: "resyncReplayed" }),
+    Progress: () => Effect.die(new Error("Progress has no wire message")),
   })
 
   // The holder's messages, then its ending as the last message and close code.
   const outbound = held.messages.pipe(
+    // The wire has no progress message yet, so WebSocket clients get none.
+    Stream.filter((message) => !ClientMessage.guards.Progress(message)),
     Stream.runForEach((message) => wire(message).pipe(Effect.flatMap(send))),
     Effect.matchEffect({
       onFailure: (error) =>

@@ -105,6 +105,8 @@ import {
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
 import {
+  progressDeliveryConformance,
+  studioLayer,
   progressConformance,
   progressFixture,
   progressLayer,
@@ -406,6 +408,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...workflowsConformance,
   ...connectionsConformance,
   ...streamsConformance,
+  ...progressDeliveryConformance,
   ...transportsConformance,
   ...workflowVersionsConformance,
   ...subscriptionsConformance,
@@ -1444,6 +1447,7 @@ export const describeConformance = (options: {
     workflowsLive(fixture.workflows),
     connectionsLayer(fixture.connections),
     streamsLayer,
+    studioLayer,
     transportsLayer,
     mintLayer,
     subscriptionsLayer(fixture.subscriptions),

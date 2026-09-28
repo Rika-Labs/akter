@@ -58,6 +58,19 @@ type Ask = Step<
 
 export const CodingAgentCommands = CodingAgent.toLayer(
   Effect.succeed({
+    // The reply's deltas for one turn, from the moment of subscribing.
+    Streaming: ({ turnId }) =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const read = yield* CodingAgent.Read
+
+          return read.progress(RunPrompt).pipe(
+            Stream.filter((entry) => entry.effect.turnId === turnId),
+            Stream.map((entry) => entry.frame.delta),
+          )
+        }),
+      ),
+
     // Starting again is a no-op, so a repeated Start never boots a second sandbox.
     Start: Effect.fnUntraced(function* ({ repo }) {
       const turn = yield* CodingAgent.Turn
