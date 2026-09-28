@@ -386,15 +386,13 @@ export class ActorTest extends Context.Service<
                   value: decompress(value),
                 }))
 
-                const receipts = yield* sql<{
-                  count: number
-                }>`SELECT count(*)::integer AS count FROM actor_receipts
-            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
-
-                const events = yield* sql<{
-                  count: number
-                }>`SELECT count(*)::integer AS count FROM actor_events
-            WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+                // One statement, so a turn committing meanwhile can't be counted
+                // in one table and not the other.
+                const [counted] = yield* sql<{ receipts: number; events: number }>`SELECT
+                  (SELECT count(*)::integer FROM actor_receipts
+                    WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}) AS receipts,
+                  (SELECT count(*)::integer FROM actor_events
+                    WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}) AS events`
 
                 const outbox = yield* sql<{
                   intents: number
@@ -446,8 +444,8 @@ export class ActorTest extends Context.Service<
                       }),
                     ),
                   ),
-                  receipts: receipts[0]!.count,
-                  events: events[0]!.count,
+                  receipts: counted!.receipts,
+                  events: counted!.events,
                   outbox: outbox[0]!.intents,
                   effects: outbox[0]!.effects,
                 }
