@@ -14,7 +14,12 @@ import {
 } from "effect"
 import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
-import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
+import {
+  MAX_EFFECT_ATTEMPTS,
+  Outcome,
+  type RegisteredEffect,
+  Request,
+} from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { progressPool } from "../effects/progress.ts"
 import { TurnHooks } from "./hooks.ts"
@@ -1041,9 +1046,11 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 
-      // A final failure also raises `attempts` to the retry limit, so a runner
-      // that predates `final_attempt` treats the row as exhausted too.
-      const count = last ? Math.max(attempt, registered.attempts) : attempt
+      // A failure that is final before the retries run out also raises
+      // `attempts` past any runner's retry limit, so a runner that predates
+      // `final_attempt` treats the row as exhausted whatever its retry policy.
+      const early = final === true && attempt < registered.attempts
+      const count = early ? MAX_EFFECT_ATTEMPTS : attempt
 
       // The outcome is recorded first, so a failed dead-letter transaction is
       // retried with this attempt's cause rather than the claim's, and a final
@@ -1053,7 +1060,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         maybe_applied: boolean
       }>`UPDATE actor_outbox
         SET last_error = ${cause}, ambiguous = ${ambiguous}, running = false,
-          attempts = ${count}, final_attempt = ${last ? attempt : null},
+          attempts = ${count}, final_attempt = ${early ? attempt : null},
           due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
         WHERE ${attemptRow(attempt)}
         RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`

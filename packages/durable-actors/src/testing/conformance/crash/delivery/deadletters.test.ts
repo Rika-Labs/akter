@@ -25,7 +25,7 @@ describe("effect dead-letter process death with Postgres", () => {
   // the row is already the route's intent, which stays until the route's
   // receiver has committed and the row is deleted. A gauge's rejected result
   // is final with two retries left, which recovery must not spend on the
-  // provider; its row's attempts are raised to the limit so older runners
+  // provider; its row's attempts are raised past any retry limit so older runners
   // also see it exhausted.
   for (const [name, effect, point, letters, routed, row, letter] of [
     [
@@ -70,7 +70,7 @@ describe("effect dead-letter process death with Postgres", () => {
       "beforeDeadLetterCommit",
       null,
       0,
-      ["effect", "Gauge", 3],
+      ["effect", "Gauge", 101],
       [1, true, true],
     ],
   ] as const) {
