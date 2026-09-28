@@ -44,6 +44,8 @@ const Grow = Actor.command("Grow", {
   input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
 })
 
+const Drop = Actor.command("Drop", { input: Schema.String })
+
 /** Replaces an entry and swallows the defect, so the turn commits whatever the write left. */
 const PutCaught = Actor.command("PutCaught", {
   input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
@@ -70,12 +72,13 @@ const Journal = Actor.make("Journal", {
   state: Actor.state({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   events: [Noted],
   blobs: [files],
-  api: { Note, NoteMany, Add, Forward, Put, Grow, PutCaught, History, Size, Total },
+  api: { Note, NoteMany, Add, Forward, Put, Grow, PutCaught, Drop, History, Size, Total },
   internal: { Receive },
   policy: {
     keepReceipts: "2 days",
     keepEvents: "1 day",
     maxBlobBytes: 1024,
+    maxBlobEntries: 3,
     commandTimeout: "2 seconds",
   },
 })
@@ -135,6 +138,9 @@ export const retentionLayer = (fixture: RetentionFixture) =>
         }),
         Grow: Effect.fnUntraced(function* ({ name, bytes }) {
           yield* (yield* Journal.Turn).blob(files).append(name, new Uint8Array(bytes))
+        }),
+        Drop: Effect.fnUntraced(function* (name: string) {
+          yield* (yield* Journal.Turn).blob(files).delete(name)
         }),
         PutCaught: Effect.fnUntraced(function* ({ name, bytes }) {
           return yield* (yield* Journal.Turn)
@@ -547,6 +553,44 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* journal.PutCaught({ name: "b", bytes: 100 })).toBe(true)
           expect(yield* journal.Size("b")).toBe(100)
           expect(yield* test.inspect(journal.ref)).toMatchObject({ blobs: { files: 2 } })
+        }),
+      ),
+  },
+  {
+    name: "refuses a new blob entry past policy.maxBlobEntries and frees one on delete",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const journal = yield* Journal.get("entries")
+          yield* journal.Put({ name: "a", bytes: 0 })
+          yield* journal.Put({ name: "b", bytes: 0 })
+          yield* journal.Grow({ name: "c", bytes: 0 })
+
+          expect(defect(yield* journal.Put({ name: "d", bytes: 0 }).pipe(Effect.exit))).toContain(
+            "One actor's blobs hold at most 3 entries (policy.maxBlobEntries)",
+          )
+          expect(defect(yield* journal.Grow({ name: "d", bytes: 1 }).pipe(Effect.exit))).toContain(
+            "policy.maxBlobEntries",
+          )
+          // A refused new entry caught in the handler leaves no row behind.
+          expect(yield* journal.PutCaught({ name: "d", bytes: 1 })).toBe(false)
+          expect(yield* journal.Size("d")).toBe(-1)
+
+          // Existing entries stay writable at the maximum.
+          yield* journal.Put({ name: "a", bytes: 10 })
+          yield* journal.Grow({ name: "b", bytes: 5 })
+          yield* journal.Grow({ name: "b", bytes: 5 })
+          expect([yield* journal.Size("a"), yield* journal.Size("b")]).toEqual([10, 10])
+          expect(yield* test.inspect(journal.ref)).toMatchObject({ blobs: { files: 3 } })
+
+          // Deleting an entry removes every chunk and frees its slot.
+          yield* journal.Drop("b")
+          yield* journal.Drop("missing")
+          expect(yield* journal.Size("b")).toBe(-1)
+          yield* journal.Put({ name: "d", bytes: 4 })
+          expect(yield* journal.Size("d")).toBe(4)
+          expect(yield* test.inspect(journal.ref)).toMatchObject({ blobs: { files: 3 } })
         }),
       ),
   },

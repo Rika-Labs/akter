@@ -12,6 +12,7 @@ import {
   Schema,
   Scope,
 } from "effect"
+import type { HttpServer } from "effect/unstable/http"
 import { SqlClient, Statement } from "effect/unstable/sql"
 import { Actor, Actors, CurrentCaller, User } from "../index.ts"
 import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
@@ -61,6 +62,7 @@ import {
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import { connectionsConformance, connectionsLayer } from "./conformance/connections.ts"
+import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import {
   outboxConformance,
@@ -84,6 +86,7 @@ import {
   type EffectsFixture,
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
+import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
 import {
   progressConformance,
   progressFixture,
@@ -164,6 +167,8 @@ export interface ConformanceEnvironment {
    * when the backend advertises `independentConnections`.
    */
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+  /** A fresh listening HTTP server that supports WebSocket upgrades; each build listens anew. */
+  readonly httpServer: Layer.Layer<HttpServer.HttpServer>
 }
 
 export interface ConformanceBackend {
@@ -171,6 +176,12 @@ export interface ConformanceBackend {
   readonly independentConnections: boolean
   /** Extra services merged into every test runtime, e.g. BunCrypto.layer. */
   readonly services: Layer.Layer<Crypto.Crypto, never, never>
+  /**
+   * A listening HTTP server on an ephemeral loopback port that supports
+   * WebSocket upgrades, e.g. `BunHttpServer.layerServer({ port: 0 })`; the
+   * served-transport cases build one per case.
+   */
+  readonly httpServer: Layer.Layer<HttpServer.HttpServer>
   readonly open: () => Promise<{
     readonly database: ConformanceDatabase
     readonly freshDatabase: Effect.Effect<ConformanceDatabase>
@@ -328,10 +339,10 @@ const makeFixture = (): ConformanceFixture => ({
 
 /**
  * The shared durable-turn conformance cases. Cases flagged
- * `requiresIndependentConnections` need a real second database connection —
- * either to read committed state while a turn holds its transaction open, or
- * to take a competing row lock — and never run on single-connection backends
- * such as PGlite.
+ * `requiresIndependentConnections` need real Postgres: a second database
+ * connection to read committed state while a turn holds its transaction open
+ * or to take a competing row lock, or a database outside the JavaScript heap
+ * they measure. They never run on single-connection backends such as PGlite.
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
@@ -352,9 +363,11 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...singletonConformance,
   ...blobsConformance,
   ...inspectionViewsConformance,
+  ...inspectorConformance,
   ...retentionConformance,
   ...workflowsConformance,
   ...connectionsConformance,
+  ...transportsConformance,
   ...workflowVersionsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
@@ -1379,12 +1392,14 @@ export const describeConformance = (options: {
     progressLayer(fixture.progress),
     blobsLayer(fixture.blobs),
     inspectionViewsLayer,
+    inspectorLayer,
     relayLayer(fixture.relay),
     relayEffects(fixture.relay),
     retentionLayer(fixture.retention),
     propertiesLayer,
     workflowsLive(fixture.workflows),
     connectionsLayer,
+    transportsLayer,
     mintLayer,
   )
 
@@ -1444,6 +1459,7 @@ export const describeConformance = (options: {
     get connect() {
       return store?.connect
     },
+    httpServer: backend.httpServer,
   }
 
   registrar.describe(name, () => {
