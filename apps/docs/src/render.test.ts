@@ -28,6 +28,8 @@ const serverBody = [
   "",
   "```md",
   "[not a link](02-context.md) and [contract 02](../contracts/02-command-turns.md),",
+  "```ts",
+  "[still code](../contracts/02-command-turns.md)",
   "```",
   "",
   "[ref]: ../quickstart.md",
@@ -122,8 +124,27 @@ describe("renderMarkdownCopy", () => {
       expect(copy).toContain('[a titled link](02-context.md "Context")')
       expect(copy).toContain(`[ref]: ${blob}/docs/quickstart.md`)
       expect(copy).toContain(
-        "```md\n[not a link](02-context.md) and [contract 02](../contracts/02-command-turns.md),\n```",
+        [
+          "```md",
+          "[not a link](02-context.md) and [contract 02](../contracts/02-command-turns.md),",
+          "```ts",
+          "[still code](../contracts/02-command-turns.md)",
+          "```",
+        ].join("\n"),
       )
+    }),
+  )
+  it.effect("still rewrites links after a fenced block in a file with CRLF line endings", () =>
+    Effect.gen(function* () {
+      const { server, published } = yield* fixture
+
+      const page = { ...server, markdown: server.markdown.replaceAll("\n", "\r\n") }
+
+      const copy = yield* renderMarkdownCopy({ page, published })
+
+      expect(copy).toContain(`[ref]: ${blob}/docs/quickstart.md`)
+      expect(copy).toContain("```md\n[not a link](02-context.md) and")
+      expect(copy).not.toContain("\r")
     }),
   )
 })

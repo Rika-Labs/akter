@@ -55,6 +55,12 @@ export interface Policy<
    */
   readonly maxBlobBytes?: number
   /**
+   * Maximum entries across all of one actor's blobs; a write that would
+   * create an entry past it is a defect of the turn, while existing entries
+   * stay writable. Default 10,000.
+   */
+  readonly maxBlobEntries?: number
+  /**
    * How long a finished workflow execution keeps its result for `poll` after
    * it finishes. Must be at least the deployment's retry window. Default 7 days.
    */
@@ -97,6 +103,7 @@ export interface TurnPolicy {
   readonly keepReceiptsMs: number
   readonly keepEventsMs: number
   readonly blobMaxBytes: number
+  readonly blobMaxEntries: number
   readonly connections: "park" | "keepAwake"
   readonly reauthorizeMs: number
   readonly keepWorkflowsMs: number
@@ -126,6 +133,7 @@ export const resolvePolicy = (policy: {
     keepReceiptsMs: horizon(declared?.keepReceipts ?? "7 days"),
     keepEventsMs: horizon(declared?.keepEvents ?? "30 days"),
     blobMaxBytes: Positive.make(declared?.maxBlobBytes ?? 67_108_864),
+    blobMaxEntries: Positive.make(declared?.maxBlobEntries ?? 10_000),
     connections: declared?.connections ?? "park",
     reauthorizeMs: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 3_600_000 })).make(
       Duration.toMillis(declared?.reauthorizeEvery ?? "60 seconds"),

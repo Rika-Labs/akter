@@ -61,7 +61,12 @@ import {
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
-import { connectionsConformance, connectionsLayer } from "./conformance/connections.ts"
+import {
+  connectionsConformance,
+  connectionsFixture,
+  type ConnectionsFixture,
+  connectionsLayer,
+} from "./conformance/connections.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
@@ -203,6 +208,7 @@ export interface ConformanceFixture {
   readonly relay: RelayFixture
   readonly retention: RetentionFixture
   readonly workflows: WorkflowsFixture
+  readonly connections: ConnectionsFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -328,6 +334,7 @@ const makeFixture = (): ConformanceFixture => ({
   relay: relayFixture(),
   retention: retentionFixture(),
   workflows: workflowsFixture(),
+  connections: connectionsFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -1401,7 +1408,7 @@ export const describeConformance = (options: {
     retentionLayer(fixture.retention),
     propertiesLayer,
     workflowsLive(fixture.workflows),
-    connectionsLayer,
+    connectionsLayer(fixture.connections),
     transportsLayer,
     mintLayer,
   )
