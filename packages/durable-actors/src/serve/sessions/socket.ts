@@ -11,14 +11,14 @@ import {
   Stream,
 } from "effect"
 import { Socket } from "effect/unstable/socket"
-import type { ServedConnection } from "../actor/served.ts"
-import { ActorError, SessionEnded, Unauthorized } from "../errors/actor.ts"
-import { type ActorRef, callerKey } from "../identity/caller.ts"
-import { type Holder, MAX_INBOUND_BYTES } from "../runtime/connections/holder.ts"
-import { ClientMessage } from "../runtime/connections/protocol.ts"
-import type { Authenticated } from "./auth.ts"
-import { ClientWireMessage, ServerWireMessage } from "./frames.ts"
-import { actorErrorBody, closeCodeOf, invalidInput, undecodable } from "./wire.ts"
+import type { ServedConnection } from "../../actor/served.ts"
+import { ActorError, SessionEnded, Unauthorized } from "../../errors/actor.ts"
+import { type ActorRef, callerKey } from "../../identity/caller.ts"
+import { type Holder, MAX_INBOUND_BYTES } from "../../runtime/connections/holder.ts"
+import { ClientMessage } from "../../runtime/connections/protocol.ts"
+import type { Authenticated } from "../auth.ts"
+import { ClientWireMessage, ServerWireMessage } from "../frames.ts"
+import { actorErrorBody, closeCodeOf, invalidInput, undecodable } from "../wire.ts"
 
 /** How long a socket may wait after its upgrade for `hello`. */
 export const HELLO_TIMEOUT_MS = 10_000

@@ -30,9 +30,9 @@ import { build, document, memberPath, PROTOCOL_OPERATIONS, schemeName } from "./
 import { type AuthProvider, type Authenticated, readsCookies, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
-import { feedStream, MAX_FEED_FILTERS, openFeed } from "./feed.ts"
-import { MAX_AWAITING_HELLO, socketSession } from "./socket.ts"
-import { streamResponse } from "./stream.ts"
+import { feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
+import { MAX_AWAITING_HELLO, socketSession } from "./sessions/socket.ts"
+import { streamResponse } from "./sessions/stream.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
 
 export interface ServeOptions<R> {

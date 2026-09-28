@@ -1,7 +1,7 @@
 import { Effect, Schema, Stream } from "effect"
-import { ActorError } from "../errors/actor.ts"
+import { ActorError } from "../../errors/actor.ts"
 import { FEED_KEEPALIVE_MS } from "./feed.ts"
-import { actorErrorBody } from "./wire.ts"
+import { actorErrorBody } from "../wire.ts"
 
 const decodeElement = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ value: Schema.optionalKey(Schema.Json) })),
