@@ -46,6 +46,8 @@ export interface FakeSandboxes {
   readonly prompts: Map<string, number>
   /** When set, the next prompt waits for it before replying. */
   gate: Deferred.Deferred<void> | undefined
+  /** Milliseconds between reply pieces, as a model streams; 0 replies at once. */
+  paceMs: number
   /** The provider clock, in epoch milliseconds. */
   now: () => number
 }
@@ -54,6 +56,7 @@ export const fakeSandboxes = (now: () => number = Date.now): FakeSandboxes => ({
   sandboxes: new Map(),
   prompts: new Map(),
   gate: undefined,
+  paceMs: 0,
   now,
 })
 
@@ -86,7 +89,11 @@ export const fakeLayer = (fake: FakeSandboxes) =>
 
           if (gate !== undefined) yield* Deferred.await(gate)
 
-          return Stream.fromIterable(["Done: ", text])
+          const pace = fake.paceMs
+
+          return Stream.fromIterable(["Done: ", text]).pipe(
+            Stream.tap(() => (pace === 0 ? Effect.void : Effect.sleep(pace))),
+          )
         }),
       ),
     pause: (sandboxId) =>
