@@ -6,6 +6,7 @@ import {
   Fiber,
   Layer,
   Predicate,
+  Schedule,
   Schema,
   Scope,
   Stream,
@@ -397,10 +398,30 @@ const Percent = Actor.stream("Percent", {
   progress: { effects: [Render] },
 })
 
+/** Receives every Render frame; each client frame `n` makes the owner send it `n` frames. */
+const Busy = Actor.connection("Busy", {
+  server: Rendered,
+  client: Schema.Finite,
+  progress: { effects: [Render], to: "all" },
+})
+
+/** Broadcasts one frame to `Busy`, from a turn of whichever activation owns the actor. */
+const Announce = Actor.command("Announce", { input: Schema.String })
+
 const Studio = Actor.make("Studio", {
   key: Schema.String,
   effects: [Render],
-  api: { Render: Render_, RenderKeyed, CancelRender, Mine, Everyone, Quiet, Percent },
+  api: {
+    Render: Render_,
+    RenderKeyed,
+    CancelRender,
+    Mine,
+    Everyone,
+    Quiet,
+    Percent,
+    Busy,
+    Announce,
+  },
   internal: { Finished },
   policy: {
     effects: { Render: { onSuccess: Finished, retry: { times: 0 }, progressEvery: "50 millis" } },
@@ -427,10 +448,23 @@ const studioCommands = Studio.toLayer(
       yield* turn.broadcast(Mine, Rendered.make({ output }))
       yield* turn.broadcast(Everyone, Rendered.make({ output }))
       yield* turn.broadcast(Quiet, Rendered.make({ output }))
+      yield* turn.broadcast(Busy, Rendered.make({ output }))
     }),
     Mine: handlers,
     Everyone: handlers,
     Quiet: handlers,
+    Busy: {
+      open: () => Effect.void,
+      frame: Effect.fnUntraced(function* (count: number) {
+        const conn = yield* Studio.Connection
+
+        for (let index = 0; index < count; index++)
+          yield* conn.send(Rendered.make({ output: `flood-${index}` }))
+      }),
+    },
+    Announce: Effect.fnUntraced(function* (output: string) {
+      yield* (yield* Studio.Turn).broadcast(Busy, Rendered.make({ output }))
+    }),
     Percent: (job: string) =>
       Stream.unwrap(
         Effect.gen(function* () {
@@ -525,6 +559,26 @@ const withStudioCluster = <A, E>(
     }),
   )
 
+/** Waits until the pool sent `count` progress frames for actor `id`, then for them to reach the holder. */
+const sentFor = (id: string, count: number) =>
+  Effect.gen(function* () {
+    const test = yield* ActorTest
+
+    const sent = Effect.map(
+      test.progress,
+      (records) =>
+        records.filter((record) => record.ref.id === id && ProgressRecord.$is("Progress")(record))
+          .length,
+    )
+
+    yield* sent.pipe(
+      Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (found) => found >= count }),
+      Effect.timeout(WAIT),
+      Effect.orDie,
+    )
+    yield* Effect.sleep("300 millis")
+  })
+
 export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps an effect's progress in order when its first frames on an activation arrive together",
@@ -604,6 +658,138 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.resendProgress({ ...sent, seq: sent.seq + 2 })
           expect(yield* quietFor(mine, "1 second")).toEqual([])
           yield* test.dropProgress(() => false)
+          yield* Deferred.succeed(job.finish, undefined)
+        }),
+      ),
+  },
+  {
+    name: "coalesces a paused client's progress per effect at the holder, newest in place",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("coalesce")
+          const busy = yield* test.connect(studio.ref, Busy, undefined)
+          const job = yield* plan("coalesce", [10, 20, 30, 40])
+          yield* studio.Render("coalesce")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          // The client reads nothing while four frames reach its holder.
+          yield* sentFor("coalesce", 4)
+
+          expect(progressOf(yield* nextOf(busy))).toMatchObject({ seq: 4, frame: { percent: 40 } })
+          yield* Deferred.succeed(job.finish, undefined)
+          expect(frameOf(yield* nextOf(busy))).toEqual(Rendered.make({ output: "coalesce.png" }))
+        }),
+      ),
+  },
+  {
+    name: "discards a paused client's buffered progress at the effect's route",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("ended")
+          const busy = yield* test.connect(studio.ref, Busy, undefined)
+          const job = yield* plan("ended", [10])
+          yield* studio.Render("ended")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          yield* sentFor("ended", 1)
+          yield* Deferred.succeed(job.finish, undefined)
+
+          yield* test.receiptsFor(studio.ref, "Finished").pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced("20 millis"),
+              until: (found) => found === 1,
+            }),
+            Effect.timeout(WAIT),
+            Effect.orDie,
+          )
+          yield* Effect.sleep("300 millis")
+
+          // The frame waited behind nothing the client read; the route's end took it back.
+          expect((yield* quietFor(busy, "1 second")).map(frameOf)).toEqual([
+            Rendered.make({ output: "ended.png" }),
+          ])
+        }),
+      ),
+  },
+  {
+    name: "evicts progress before member frames overflow, and drops progress instead of ending a full session",
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("evict")
+          const busy = yield* test.connect(studio.ref, Busy, undefined)
+
+          const jobs = yield* Effect.forEach(["evict-a", "evict-b", "evict-c", "evict-d"], (job) =>
+            plan(job, [1]),
+          )
+
+          yield* Effect.forEach(
+            jobs.map((_, index) => `evict-${"abcd"[index]}`),
+            studio.Render,
+            {
+              discard: true,
+            },
+          )
+          yield* test.advance(0).pipe(Effect.forkChild)
+
+          // Three effects' progress waits at the holder: three of its 1,024 outbound frames.
+          for (const job of jobs.slice(0, 3)) yield* Deferred.succeed(job.go, undefined)
+          yield* sentFor("evict", 3)
+
+          // 1,022 member frames need one more slot than is free: the oldest progress goes.
+          yield* busy.send(1022)
+          yield* Effect.sleep("1500 millis")
+
+          // The buffer is full, so a fourth effect's frame is dropped and the session stays open.
+          yield* Deferred.succeed(jobs[3]!.go, undefined)
+          yield* sentFor("evict", 4)
+
+          const drained = yield* quietFor(busy, "2 seconds")
+
+          const progress = drained.flatMap((message) => {
+            const found = progressOf(message)
+
+            return found === undefined ? [] : [found.effectId]
+          })
+
+          expect(drained.length).toBe(1024)
+          expect(progress.length).toBe(2)
+          expect(drained.filter((message) => frameOf(message) !== undefined).length).toBe(1022)
+
+          yield* busy.send(1)
+          expect(frameOf(yield* nextOf(busy))).toEqual(Rendered.make({ output: "flood-0" }))
+
+          for (const job of jobs) yield* Deferred.succeed(job.finish, undefined)
+        }),
+      ),
+  },
+  {
+    name: "discards an older owner's buffered progress once a newer owner sends",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("moved")
+          const busy = yield* test.connect(studio.ref, Busy, undefined)
+          const job = yield* plan("moved", [10])
+          yield* studio.Render("moved")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          yield* sentFor("moved", 1)
+
+          // A new activation takes a newer generation; its first broadcast retires the old progress.
+          yield* test.hibernate(studio.ref)
+          yield* studio.Announce("moved-on")
+
+          expect((yield* quietFor(busy, "1 second")).map(frameOf)).toEqual([
+            Rendered.make({ output: "moved-on" }),
+          ])
           yield* Deferred.succeed(job.finish, undefined)
         }),
       ),
