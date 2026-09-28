@@ -1,6 +1,6 @@
 # ADR 0030: Executor progress frames
 
-**Status:** proposed (2026-09-27)
+**Status:** accepted (2026-09-28, Dallen, with every proposed default; proposed 2026-09-27). The executor side is implemented; delivery to owners, holders, connections, and streams is M2.18. The amendments listed under [behaviour changes](#behaviour-changes-against-existing-contracts) have landed as labelled targets, and the [decided questions](#decided-questions) record the defaults.
 
 ## Context
 
@@ -280,21 +280,23 @@ This ADR is documentation only; there is nothing to measure until M2.18. M2.18 a
 - **Repeats.** Five runs per workload after one warm-up; report the median of each percentile and the coefficient of variation, and treat a difference under 2 × CoV as noise.
 - **Statements gate.** Turn statement counts in `benchmarks/baselines/statements.json` must not change. Any change is explained in the M2.18 PR.
 
-## Open questions for Dallen, with proposed defaults
+## Decided questions
 
-**Q1. API spelling.** Default: `exec.progress(Transcode, frame)` with the class as a type witness. Alternative: `Transcode.progress(frame)`, a static on the effect class that reads the running `X.Executor`; shorter, but it hides the dependency on the executor context.
+Dallen accepted every proposed default on 2026-09-28.
 
-**Q2. Default audience.** Default: `to: "performer"`. Alternative: `"all"`, simpler for single-user actors but a disclosure risk on shared ones.
+**Q1. API spelling.** `exec.progress(Transcode, frame)` with the class as a type witness. `Transcode.progress(frame)`, a static on the effect class that reads the running `X.Executor`, was rejected because it hides the dependency on the executor context.
 
-**Q3. Does accepted progress keep an actor resident?** Default: yes, counted as activity, so a reporting effect does not wake the actor on every tick after `hibernateAfter`. Alternative: no, and accept a wake per frame for long effects.
+**Q2. Default audience.** `to: "performer"`. `"all"` stays an explicit choice; as the default it would be a disclosure risk on shared actors.
 
-**Q4. Rate and size defaults.** Default: `progressEvery` 250 ms (50 ms to 1 minute), 20 frames/s per actor, 2,000 messages/s per runner pool, 4 KiB per frame.
+**Q3. Does accepted progress keep an actor resident?** Yes, it counts as activity, so a reporting effect does not wake the actor on every tick after `hibernateAfter`.
 
-**Q5. Effect check.** Default: one indexed single-row `actor_outbox` read per effect id per activation, to keep "no progress after the route" true across owner moves. Alternative: skip it and accept a window, bounded by message delivery time, where a new activation may deliver a stale frame after the route.
+**Q4. Rate and size defaults.** `progressEvery` 250 ms (50 ms to 1 minute), 20 frames/s per actor, 2,000 messages/s per runner pool, 4 KiB per frame.
 
-**Q6. Progress to workflows and other actors.** Default: out of scope; only the owner's own connections and streams. A workflow step or another actor that needs progress reads committed state or uses a cross-actor subscription on committed events.
+**Q5. Effect check.** One indexed single-row `actor_outbox` read per effect id per activation, to keep "no progress after the route" true across owner moves. Skipping it and accepting a stale-frame window after the route was rejected.
 
-**Q7. Late joiners.** Default: no latest-value cache; a new connection sees progress from the next frame. Alternative: the owner activation keeps the last accepted frame per open effect in memory and sends it on `open`; cheap, non-durable, and could be added later without changing semantics.
+**Q6. Progress to workflows and other actors.** Out of scope; only the owner's own connections and streams. A workflow step or another actor that needs progress reads committed state or uses a cross-actor subscription on committed events.
+
+**Q7. Late joiners.** No latest-value cache; a new connection sees progress from the next frame. An in-memory last frame per open effect, sent on `open`, can be added later without changing semantics.
 
 ## Revisit conditions
 

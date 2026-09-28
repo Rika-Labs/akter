@@ -11,6 +11,7 @@ export type Template = typeof Template.Type
 export const versions = {
   "@durable-actors/core": "0.1.0-alpha.0",
   "@effect/platform-bun": "4.0.0-rc.116",
+  "@effect/platform-node-shared": "4.0.0-rc.116",
   "@effect/sql-pg": "4.0.0-rc.116",
   "@effect/sql-pglite": "4.0.0-rc.116",
   "drizzle-orm": "1.0.0-rc.5-5935859",
@@ -73,9 +74,13 @@ export const parseArguments = Effect.fn("parseArguments")(function* (args: Reado
   return { help: false, template, directory: positionals[0] ?? "durable-actors-app" } as const
 })
 
+// `@effect/platform-node-shared` is listed although nothing imports it: `@effect/platform-bun`
+// depends on it with a caret range, which admits later release candidates built against a
+// newer `effect`, so the app pins it to the same candidate.
 const runtimeDependencies = [
   "@durable-actors/core",
   "@effect/platform-bun",
+  "@effect/platform-node-shared",
   "@effect/sql-pg",
   "@effect/sql-pglite",
   "drizzle-orm",
