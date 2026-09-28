@@ -1,4 +1,4 @@
-# ADR 0044: The billing example is `examples/subscriptions`
+# ADR 0047: The billing example is `examples/subscriptions`
 
 **Status:** proposed (2026-09-28).
 
