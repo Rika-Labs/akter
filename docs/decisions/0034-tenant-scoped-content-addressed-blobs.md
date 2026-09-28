@@ -74,7 +74,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 
 ### 4. Garbage collection: mark and sweep, gated by grants
 
-- Every grant raises the content row's `granted_until_ms` to at least its own expiry before the grant is returned. That covers uploads, re-uploads of the same bytes, and `read.blob(C).grant`. It's a single-row write of framework metadata on the tenant's shard. It never touches business data, and `BlobRead` still exposes no mutation.
+- Every grant raises the content row's `granted_until_ms` to at least its own expiry before the grant is returned. That covers uploads, re-uploads of the same bytes, and `read.blob(C).grant`. It's a single-row write of framework metadata on the tenant's shard. It never touches business data, and `BlobRead` still exposes no mutation. The raise is one `UPDATE … RETURNING` on the tenant's row, and a grant is returned only if that statement found the row. `read.blob(C).grant(name)` first resolves the name through this actor's reference, then runs the raise. If a detach and a sweep deleted the content in between, the raise finds no row, and `grant` fails as it would for a name that doesn't exist, never with a grant for deleted content. If the raise runs first, it moves `granted_until_ms` past `sweep_start`, and the sweep's re-check keeps the content. The row lock orders the raise and the delete.
 - A per-tenant sweep, under an advisory lock, runs at most once an hour:
   1. It takes `now` from the database as `sweep_start`, and computes the horizon `H = grace + T`. The grace defaults to 24 hours. `T` is the longest a turn transaction may stay open for any actor type that declares a content blob: its `commandTimeout`, which the runtime already enforces as the transaction's hard timeout, turn batches included. It picks candidates whose `granted_until_ms` is older than `sweep_start − H`.
   2. For a batch of candidates, it looks for any reference with that tenant and hash through the `(tenant_id, hash)` index on `actor_content_refs`. On Neki this is an explicit fleet-tier scatter on a dedicated connection. It is maintenance, never a turn path.
@@ -153,6 +153,7 @@ In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
 - `never deletes content attached concurrently with a sweep` (Postgres, independent connections: the attach commits between the reference scan and the delete)
 - `never deletes content whose attach checked its grant just before expiry and commits up to commandTimeout later` (Postgres, with the turn held open by a pause hook past the grant's expiry)
 - `hands a fresh grant from one actor's reference to another actor's attach`
+- `never returns a grant for content a concurrent detach and sweep deleted` (Postgres, independent connections: the sweep deletes between the reference read and the raise)
 - `verifies grants under the previous key for one grant lifetime after rotation`
 - `applies 0019_content_blobs to a database that ran the previous migration`
 
