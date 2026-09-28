@@ -457,6 +457,15 @@ export const migrations = {
         PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id),
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
+    // The routed declarations of the deployment, by source type: a runner
+    // that serves a source must register every subscriber type routing from
+    // it, because the publishing turn creates the routed rows.
+    yield* sql`CREATE TABLE actor_routed_subscriptions (
+        source_type text NOT NULL,
+        subscriber_type text NOT NULL,
+        subscription text NOT NULL,
+        PRIMARY KEY (source_type, subscriber_type, subscription)
+      )`
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),

@@ -219,37 +219,40 @@ const record = <A extends { readonly id: string; readonly caller: Caller }>(
     if (behaviour === "refuse") return yield* Refused.make({})
   })
 
+/** The source alone, as a runner that serves orders but none of their subscribers would. */
+const subOrderLayer = SubOrder.toLayer(
+  Effect.succeed({
+    Place: Effect.fnUntraced(function* ({ customerId, amount }) {
+      yield* (yield* SubOrder.Turn).emit(OrderPlaced.make({ customerId, amount }))
+    }),
+    PlaceMany: Effect.fnUntraced(function* ({ customerId, count }) {
+      const turn = yield* SubOrder.Turn
+
+      for (let index = 0; index < count; index++)
+        yield* turn.emit(OrderPlaced.make({ customerId, amount: index }))
+    }),
+    CancelOrder: Effect.fnUntraced(function* (customerId: string) {
+      yield* (yield* SubOrder.Turn).emit(OrderCancelled.make({ customerId }))
+    }),
+    Note: Effect.fnUntraced(function* (note: string) {
+      yield* (yield* SubOrder.Turn).emit(OrderNoted.make({ note }))
+    }),
+    PlaceThenRefuse: Effect.fnUntraced(function* (customerId: string) {
+      yield* (yield* SubOrder.Turn).emit(OrderPlaced.make({ customerId, amount: 1 }))
+
+      return yield* Refused.make({})
+    }),
+    PlaceThenDie: Effect.fnUntraced(function* (customerId: string) {
+      yield* (yield* SubOrder.Turn).emit(OrderPlaced.make({ customerId, amount: 1 }))
+
+      return yield* Effect.die(new Error("Publisher defect after emitting"))
+    }),
+  }),
+)
+
 export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
   Layer.mergeAll(
-    SubOrder.toLayer(
-      Effect.succeed({
-        Place: Effect.fnUntraced(function* ({ customerId, amount }) {
-          yield* (yield* SubOrder.Turn).emit(OrderPlaced.make({ customerId, amount }))
-        }),
-        PlaceMany: Effect.fnUntraced(function* ({ customerId, count }) {
-          const turn = yield* SubOrder.Turn
-
-          for (let index = 0; index < count; index++)
-            yield* turn.emit(OrderPlaced.make({ customerId, amount: index }))
-        }),
-        CancelOrder: Effect.fnUntraced(function* (customerId: string) {
-          yield* (yield* SubOrder.Turn).emit(OrderCancelled.make({ customerId }))
-        }),
-        Note: Effect.fnUntraced(function* (note: string) {
-          yield* (yield* SubOrder.Turn).emit(OrderNoted.make({ note }))
-        }),
-        PlaceThenRefuse: Effect.fnUntraced(function* (customerId: string) {
-          yield* (yield* SubOrder.Turn).emit(OrderPlaced.make({ customerId, amount: 1 }))
-
-          return yield* Refused.make({})
-        }),
-        PlaceThenDie: Effect.fnUntraced(function* (customerId: string) {
-          yield* (yield* SubOrder.Turn).emit(OrderPlaced.make({ customerId, amount: 1 }))
-
-          return yield* Effect.die(new Error("Publisher defect after emitting"))
-        }),
-      }),
-    ),
+    subOrderLayer,
     SubSummary.toLayer(
       Effect.succeed({
         Touch: () => Effect.void,
@@ -1687,6 +1690,55 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           ),
         )
       }).pipe(Effect.runPromise),
+  },
+  {
+    name: "fails registration of a source served without a subscriber type that routes from it",
+    // Two runtimes share one fresh database, which PGlite can't give two layer builds.
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          const runtime = <A>(record: Effect.Effect<A, never, SqlClient.SqlClient>) =>
+            Layer.build(
+              // Fresh, so this runtime registers the source itself rather than
+              // reusing the build the shared runtime already made.
+              Layer.fresh(subOrderLayer).pipe(
+                Layer.provideMerge(
+                  ActorTest.layer({ database, authorize: () => Effect.succeed(true) }),
+                ),
+              ),
+            ).pipe(
+              Effect.flatMap((context) => record.pipe(Effect.provideContext(context))),
+              Effect.scoped,
+              Effect.exit,
+            )
+
+          // With no routed declaration recorded, the source registers alone.
+          const alone = yield* runtime(
+            // A subscriber type on another runner records its routed declaration.
+            query(
+              (
+                sql,
+              ) => sql`INSERT INTO actor_routed_subscriptions (source_type, subscriber_type, subscription)
+                VALUES ('SubOrder', 'SubSummary', 'CustomerOrders')`,
+            ),
+          )
+
+          expect(Exit.isSuccess(alone)).toBe(true)
+
+          const partial = yield* runtime(Effect.void)
+
+          expect(
+            Exit.isFailure(partial) &&
+              Cause.pretty(partial.cause).includes(
+                "Actor SubOrder is registered without the subscriber types that route from it",
+              ),
+          ).toBe(true)
+        }),
+      ),
+    timeoutMs: 60_000,
   },
   {
     name: "keeps the tag summary equal to the rows after every insert, widen, and delete",
