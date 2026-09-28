@@ -57,7 +57,7 @@ const rate = (result: CaseResult, events: number): CaseResult => ({
 export const subscriptions: Scenario = {
   name: "subscriptions",
   description:
-    "Cross-actor subscriptions: the hand-rolled intent fan-out baseline; the publisher's turn beside 1 to 1,024 subscriptions; commit-to-delivery latency, awake and hibernated; one pair's throughput; fan-in; subscribe churn; a backlog drain across 64 subscribers; lag beside one poison row; and the retention pass beside 10,000 subscriptions.",
+    "Cross-actor subscriptions: the hand-rolled intent fan-out baseline; the publisher's turn beside 1 to 1,024 subscriptions; commit-to-delivery latency, awake and hibernated; one pair's throughput; fan-in; subscribe churn; a backlog drain across 64 subscribers; the retention pass beside 10,000 subscriptions; and lag beside one poison row.",
   run: (context) =>
     Effect.gen(function* () {
       const quick = context.profile === "quick"
@@ -370,6 +370,41 @@ export const subscriptions: Scenario = {
             .pipe(Effect.orDie),
         )
 
+      // The retention pass beside a source's lagging subscriptions: each
+      // batch reads the lowest settled position among them, and the hold has
+      // ended, so every event is pruned either way.
+      for (const rows of [0, 10_000])
+        results.push(
+          yield* context
+            .withRuntime({ subscriptions: true }, (instruments) =>
+              Effect.gen(function* () {
+                const events = quick ? 1000 : 10_000
+                const source = yield* PruneSource.get("pruned")
+                yield* source.EmitMany(1)
+
+                if (rows > 0) yield* seedSubscriptions("pruned", rows, "PruneSource")
+
+                for (let emitted = 0; emitted < events; emitted += 1000)
+                  yield* source.EmitMany(1000)
+
+                yield* Effect.sleep("2500 millis")
+
+                return rate(
+                  yield* measure({
+                    name: `prune-beside-${rows}-subscriptions`,
+                    parameters: { subscriptions: rows, events },
+                    instruments,
+                    workers: 1,
+                    operations: 1,
+                    operation: () => cleanup,
+                  }),
+                  events,
+                )
+              }),
+            )
+            .pipe(Effect.orDie),
+        )
+
       // One source's backlog to 63 healthy followers, beside a 64th whose
       // handler always dies, against the same backlog without it: the poison
       // row backs off on its own and must not hold the others back.
@@ -420,41 +455,6 @@ export const subscriptions: Scenario = {
                     operation: lag,
                   }),
                   perFollower * followers,
-                )
-              }),
-            )
-            .pipe(Effect.orDie),
-        )
-
-      // The retention pass beside a source's lagging subscriptions: each
-      // batch reads the lowest settled position among them, and the hold has
-      // ended, so every event is pruned either way.
-      for (const rows of [0, 10_000])
-        results.push(
-          yield* context
-            .withRuntime({ subscriptions: true }, (instruments) =>
-              Effect.gen(function* () {
-                const events = quick ? 1000 : 10_000
-                const source = yield* PruneSource.get("pruned")
-                yield* source.EmitMany(1)
-
-                if (rows > 0) yield* seedSubscriptions("pruned", rows, "PruneSource")
-
-                for (let emitted = 0; emitted < events; emitted += 1000)
-                  yield* source.EmitMany(1000)
-
-                yield* Effect.sleep("2500 millis")
-
-                return rate(
-                  yield* measure({
-                    name: `prune-beside-${rows}-subscriptions`,
-                    parameters: { subscriptions: rows, events },
-                    instruments,
-                    workers: 1,
-                    operations: 1,
-                    operation: () => cleanup,
-                  }),
-                  events,
                 )
               }),
             )
