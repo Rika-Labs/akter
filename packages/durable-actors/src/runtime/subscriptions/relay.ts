@@ -421,12 +421,12 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       // claim pass; the rest become due for any runner.
       const leasable =
         free === 0
-          ? sql`leasable AS (
+          ? sql`leasable AS MATERIALIZED (
               SELECT NULL::text AS subscriber_type, NULL::text AS subscription,
                 NULL::text AS subscriber_id WHERE false)`
           : sql`subscribed (subscriber_type, subscription, known) AS (
               VALUES ${subscribedValues(local)}),
-            leasable AS (
+            leasable AS MATERIALIZED (
               SELECT p.subscriber_type, p.subscription, p.subscriber_id
               FROM page p JOIN subscribed m ON m.subscriber_type = p.subscriber_type
                 AND m.subscription = p.subscription AND m.known @> p.events, head
@@ -441,6 +441,13 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
                     AND e.event = ANY(p.events) OFFSET 0)
               LIMIT ${free})`
 
+      // The page's key range, read from the key index. The updates below bound
+      // their rows by it rather than joining the page, so a planner working
+      // from stale row counts can't rescan the page for every stored row.
+      const inPage = sql`(s.subscriber_type, s.subscription, s.subscriber_id) > (${after[0]!}, ${after[1]!}, ${after[2]!})
+        AND (s.subscriber_type, s.subscription, s.subscriber_id)
+          <= (SELECT subscriber_type, subscription, subscriber_id FROM last)`
+
       const leaseEnd = sql`(${now()} + greatest(${lease}::bigint,
         least(1000 * power(2, least(s.attempts, 31)), ${settings.maxBackoffMs}::bigint))::bigint)`
 
@@ -448,7 +455,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         WITH head AS (
           SELECT event_sequence AS h FROM actor_generations g
           WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}),
-        page AS (
+        page AS MATERIALIZED (
           SELECT s.subscriber_type, s.subscription, s.subscriber_id, s.due_at_ms, s.marked,
             s.delivered, s.events
           FROM actor_subscriptions s
@@ -456,6 +463,9 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             AND (s.subscriber_type, s.subscription, s.subscriber_id) > (${after[0]!}, ${after[1]!}, ${after[2]!})
           ORDER BY s.subscriber_type, s.subscription, s.subscriber_id
           LIMIT ${EXPANSION_PAGE}),
+        last AS (
+          SELECT subscriber_type, subscription, subscriber_id FROM page
+          ORDER BY subscriber_type DESC, subscription DESC, subscriber_id DESC LIMIT 1),
         ${leasable},
         -- Leased only while still unclaimed in the version this updates, so a
         -- row another runner claimed meanwhile is left to the marking below.
@@ -463,19 +473,18 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           UPDATE actor_subscriptions s SET marked = greatest(s.marked, head.h),
             due_at_ms = ${leaseEnd}, attempts = s.attempts + 1
           FROM leasable l, head
-          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
+          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)} AND ${inPage}
             AND s.subscriber_type = l.subscriber_type AND s.subscription = l.subscription
             AND s.subscriber_id = l.subscriber_id AND s.due_at_ms IS NULL
           RETURNING s.subscriber_type, s.subscription, s.subscriber_id, ${claimedRow}::text AS work),
         marked AS (
           UPDATE actor_subscriptions s SET marked = greatest(s.marked, head.h),
             due_at_ms = coalesce(s.due_at_ms, ${now()})
-          FROM page, head
+          FROM head
           WHERE NOT EXISTS (SELECT 1 FROM leased x WHERE x.subscriber_type = s.subscriber_type
               AND x.subscription = s.subscription AND x.subscriber_id = s.subscriber_id)
-            AND ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
-            AND s.subscriber_type = page.subscriber_type AND s.subscription = page.subscription
-            AND s.subscriber_id = page.subscriber_id AND s.marked < head.h
+            AND ${sourceWhere("s", key, source.tenant, source.actor, source.id)} AND s.active
+            AND ${inPage} AND s.marked < head.h
             -- A row due and unclaimed since its last settle reads through the
             -- head when it is claimed, so it needs no write.
             AND NOT (s.due_at_ms IS NOT NULL AND s.due_at_ms <= ${now()} AND s.attempts = 0)
@@ -486,8 +495,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           RETURNING 1)
         SELECT (SELECT count(*) FROM page)::int AS rows,
           (SELECT json_agg(work)::text FROM leased) AS leased,
-          (SELECT json_build_array(subscriber_type, subscription, subscriber_id)::text FROM page
-            ORDER BY subscriber_type DESC, subscription DESC, subscriber_id DESC LIMIT 1) AS last`
+          (SELECT json_build_array(subscriber_type, subscription, subscriber_id)::text FROM last) AS last`
 
       if (page!.leased !== null)
         for (const work of yield* decodeStrings(page!.leased))
