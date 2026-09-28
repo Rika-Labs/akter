@@ -1,14 +1,16 @@
 import type { Step } from "@durable-actors/core"
-import { DateTime, Effect, Layer } from "effect"
+import { DateTime, Effect, Layer, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import {
   Account,
   AccountId,
+  Approved,
   AttachCard,
   CardUpdated,
   Charge,
   ChargeOutcome,
   ChargeRequest,
+  Declined,
   FirstCard,
   FirstRetry,
   InvoiceFailed,
@@ -21,7 +23,9 @@ import {
   SecondCard,
   SecondRetry,
 } from "./contract.ts"
-import { PaymentGateway } from "./gateway.ts"
+import { ChargeResult, PaymentGateway } from "./gateway.ts"
+
+const isApproved = Schema.is(Approved)
 
 /** Each retry waits this long for a newer card before charging again. */
 const RETRY_AFTER = "3 days"
@@ -120,7 +124,10 @@ export const AccountCommands = Account.toLayer(
                 idempotencyKey: `${wf.executionId}:${step.name}`,
               })
 
-              return { ...result, cardVersion }
+              return ChargeResult.$match(result, {
+                Approved: ({ chargeId }) => Approved.make({ chargeId, cardVersion }),
+                Declined: ({ reason }) => Declined.make({ reason, cardVersion }),
+              })
             }),
           )
 
@@ -131,7 +138,7 @@ export const AccountCommands = Account.toLayer(
           [FirstCard, FirstRetry],
           [SecondCard, SecondRetry],
         ] as const) {
-          if (outcome._tag === "Approved") break
+          if (isApproved(outcome)) break
           const declined = outcome.cardVersion
 
           // A card newer than the declined one ends the wait early.
@@ -140,7 +147,7 @@ export const AccountCommands = Account.toLayer(
           attempts += 1
         }
 
-        const paid = outcome._tag === "Approved"
+        const paid = isApproved(outcome)
 
         yield* Report.run({ invoiceId: request.invoiceId, paid, attempts }, (settlement) =>
           Effect.gen(function* () {

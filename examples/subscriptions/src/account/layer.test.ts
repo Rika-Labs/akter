@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { ActorError, User } from "@durable-actors/core"
+import { ActorError, Unauthorized, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import {
   Config,
@@ -7,7 +7,7 @@ import {
   Effect,
   Layer,
   ManagedRuntime,
-  Option,
+  Predicate,
   Redacted,
   Schedule,
   Schema,
@@ -114,7 +114,7 @@ const charges = Effect.fnUntraced(function* (invoiceId: string) {
 
   return {
     calls: keys.reduce((sum, key) => sum + (book.calls.get(key) ?? 0), 0),
-    approved: keys.filter((key) => book.results.get(key)?._tag === "Approved").length,
+    approved: keys.filter((key) => Predicate.isTagged(book.results.get(key), "Approved")).length,
   }
 })
 
@@ -225,7 +225,7 @@ it("refuses collections and settlements from anyone but the account itself", () 
         yield* account.Collect({ invoiceId: "a6-9", amountCents: 1 }).pipe(Effect.flip),
         yield* account.Settle({ invoiceId: "a6-1", paid: false, attempts: 1 }).pipe(Effect.flip),
       ])
-        expect(Schema.is(ActorError)(forged) && forged.reason._tag).toBe("Unauthorized")
+        expect(Schema.is(ActorError)(forged) && forged.reason).toBeInstanceOf(Unauthorized)
 
       expect(yield* account.Invoices()).toMatchObject([{ id: "a6-1", status: "paid" }])
     }),

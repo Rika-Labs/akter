@@ -30,9 +30,7 @@ const database = Effect.gen(function* () {
 
 const live = Layer.unwrap(
   Effect.gen(function* () {
-    return CounterLive.pipe(
-      Layer.provideMerge(ActorTest.layer({ database: yield* database })),
-    )
+    return CounterLive.pipe(Layer.provideMerge(ActorTest.layer({ database: yield* database })))
   }),
 ).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)
 

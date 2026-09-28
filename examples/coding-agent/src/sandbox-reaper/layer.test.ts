@@ -63,6 +63,7 @@ it("kills only sandboxes older than a day, and records a rerun sweep once", () =
       yield* test.crashNext("afterExecute")
       const reaper = yield* SandboxReaper.get()
       yield* reaper.Sweep()
+
       while (fake.sandboxes.has("old")) yield* Effect.sleep("20 millis")
       yield* test.advance("2 minutes")
 

@@ -63,10 +63,17 @@ export const AccountState = Actor.state({
 })
 
 /** The provider's answer to one charge, with the card version it was made against. */
-export const ChargeOutcome = Schema.Union([
-  Schema.TaggedStruct("Approved", { chargeId: Schema.String, cardVersion: Schema.Int }),
-  Schema.TaggedStruct("Declined", { reason: Schema.String, cardVersion: Schema.Int }),
-])
+export const Approved = Schema.TaggedStruct("Approved", {
+  chargeId: Schema.String,
+  cardVersion: Schema.Int,
+})
+
+export const Declined = Schema.TaggedStruct("Declined", {
+  reason: Schema.String,
+  cardVersion: Schema.Int,
+})
+
+export const ChargeOutcome = Schema.Union([Approved, Declined])
 
 export const ChargeRequest = Schema.Struct({ invoiceId: Schema.String, amountCents: Schema.Int })
 
@@ -81,9 +88,13 @@ export const Collect = Actor.workflow("Collect", {
 })
 
 export const Charge = Collect.step("charge", { input: ChargeRequest, success: ChargeOutcome })
+
 export const FirstRetry = Collect.step("retry-1", { input: ChargeRequest, success: ChargeOutcome })
+
 export const SecondRetry = Collect.step("retry-2", { input: ChargeRequest, success: ChargeOutcome })
+
 export const FirstCard = Collect.wait("card-1", CardUpdated)
+
 export const SecondCard = Collect.wait("card-2", CardUpdated)
 
 export const Settlement = Schema.Struct({

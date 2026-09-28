@@ -686,29 +686,23 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture.workflows)
+
           const shipper = yield* Shipper.get("acting").pipe(
             Actor.as(User.make({ subject: "carol" })),
           )
-          const run = yield* shipper.Ship({ orderId: "c2", sku: "charge" })
-          yield* run.result
-          expect(fixture.workflows.charges).toEqual([
-            {
-              caller: System.make({
-                source: "workflow",
-                ref: shipper.ref,
-                onBehalfOf: { subject: "carol" },
-              }),
-              tenant: shipper.ref.tenant,
-            },
-            {
-              caller: System.make({
-                source: "workflow",
-                ref: shipper.ref,
-                onBehalfOf: { subject: "carol" },
-              }),
-              tenant: shipper.ref.tenant,
-            },
-          ])
+
+          yield* (yield* shipper.Ship({ orderId: "c2", sku: "charge" })).result
+
+          const charge = {
+            caller: System.make({
+              source: "workflow",
+              ref: shipper.ref,
+              onBehalfOf: { subject: "carol" },
+            }),
+            tenant: shipper.ref.tenant,
+          }
+
+          expect(fixture.workflows.charges).toEqual([charge, charge])
         }),
       ),
   },

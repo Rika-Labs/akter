@@ -1,10 +1,20 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { type ActorRef, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
-import { Config, Crypto, Effect, Layer, ManagedRuntime, Queue, Redacted, Stream } from "effect"
+import {
+  Config,
+  Crypto,
+  Effect,
+  Layer,
+  ManagedRuntime,
+  Queue,
+  Redacted,
+  Schema,
+  Stream,
+} from "effect"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
-import { Cursor, DocId, Live } from "./contract.ts"
+import { Cursor, DocId, Here, Joined, Left, Live, Moved } from "./contract.ts"
 import { CursorLive } from "./layer.ts"
 
 // The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
@@ -64,45 +74,40 @@ it("shows who is here, relays moves, and announces joins and leaves, across hibe
     Effect.gen(function* () {
       const test = yield* ActorTest
       const doc = yield* Cursor.get(DocId.make("d1"))
+      const peer = (connectionId: string, color: string) => ({ connectionId, user: "ada", color })
 
       const red = yield* open(doc.ref, "red")
-      expect(yield* red.next).toEqual({ _tag: "Here", peers: [] })
+      expect(yield* red.next).toEqual(Here.make({ peers: [] }))
 
       const blue = yield* open(doc.ref, "blue")
-      expect(yield* blue.next).toEqual({
-        _tag: "Here",
-        peers: [{ connectionId: red.connectionId, user: "ada", color: "red" }],
-      })
-      expect(yield* red.next).toEqual({
-        _tag: "Joined",
-        peer: { connectionId: blue.connectionId, user: "ada", color: "blue" },
-      })
+      expect(yield* blue.next).toEqual(Here.make({ peers: [peer(red.connectionId, "red")] }))
+      expect(yield* red.next).toEqual(Joined.make({ peer: peer(blue.connectionId, "blue") }))
 
       // A parked document wakes for the frame and relays it to everyone else.
       yield* test.hibernate(doc.ref)
       yield* red.send({ x: 10, y: 20 })
-      expect(yield* blue.next).toEqual({
-        _tag: "Moved",
-        connectionId: red.connectionId,
-        at: { x: 10, y: 20 },
-      })
+      expect(yield* blue.next).toEqual(
+        Moved.make({ connectionId: red.connectionId, at: { x: 10, y: 20 } }),
+      )
 
       // A late joiner sees the last position of each cursor.
       const green = yield* open(doc.ref, "green")
       const here = yield* green.next
-      expect(here._tag === "Here" && byColor(here.peers)).toEqual([
-        { connectionId: blue.connectionId, user: "ada", color: "blue" },
-        { connectionId: red.connectionId, user: "ada", color: "red", at: { x: 10, y: 20 } },
+      expect(Schema.is(Here)(here) && byColor(here.peers)).toEqual([
+        peer(blue.connectionId, "blue"),
+        { ...peer(red.connectionId, "red"), at: { x: 10, y: 20 } },
       ])
-      expect(yield* red.next).toMatchObject({ _tag: "Joined", peer: { color: "green" } })
-      expect(yield* blue.next).toMatchObject({ _tag: "Joined", peer: { color: "green" } })
+
+      const joined = Joined.make({ peer: peer(green.connectionId, "green") })
+      expect(yield* red.next).toEqual(joined)
+      expect(yield* blue.next).toEqual(joined)
 
       yield* blue.close
-      expect(yield* red.next).toEqual({ _tag: "Left", connectionId: blue.connectionId })
-      expect(yield* green.next).toEqual({ _tag: "Left", connectionId: blue.connectionId })
+      expect(yield* red.next).toEqual(Left.make({ connectionId: blue.connectionId }))
+      expect(yield* green.next).toEqual(Left.make({ connectionId: blue.connectionId }))
 
       yield* red.close
-      expect(yield* green.next).toEqual({ _tag: "Left", connectionId: red.connectionId })
+      expect(yield* green.next).toEqual(Left.make({ connectionId: red.connectionId }))
       yield* green.close
     }).pipe(Effect.scoped),
   ))

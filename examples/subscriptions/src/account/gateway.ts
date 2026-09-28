@@ -1,8 +1,11 @@
-import { Context, Effect, Layer } from "effect"
+import { Context, Data, Effect, Layer } from "effect"
 
-export type ChargeResult =
-  | { readonly _tag: "Approved"; readonly chargeId: string }
-  | { readonly _tag: "Declined"; readonly reason: string }
+export type ChargeResult = Data.TaggedEnum<{
+  Approved: { readonly chargeId: string }
+  Declined: { readonly reason: string }
+}>
+
+export const ChargeResult = Data.taggedEnum<ChargeResult>()
 
 /**
  * The payment provider. Both calls take an idempotency key: the provider
@@ -47,12 +50,12 @@ export const fakeGateway = (book: Ledger) =>
         if (first !== undefined) return first
         const card = book.cards.get(customer)
 
-        const result: ChargeResult =
+        const result =
           card === undefined
-            ? { _tag: "Declined", reason: "no card" }
+            ? ChargeResult.Declined({ reason: "no card" })
             : card === "tok_declined"
-              ? { _tag: "Declined", reason: "card declined" }
-              : { _tag: "Approved", chargeId: `ch_${book.results.size + 1}_${amountCents}` }
+              ? ChargeResult.Declined({ reason: "card declined" })
+              : ChargeResult.Approved({ chargeId: `ch_${book.results.size + 1}_${amountCents}` })
 
         book.results.set(idempotencyKey, result)
 

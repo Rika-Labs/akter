@@ -1,7 +1,16 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { type ActorRef, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
-import { Config, Crypto, Deferred, Effect, Layer, ManagedRuntime, Redacted } from "effect"
+import {
+  Config,
+  Crypto,
+  Deferred,
+  Effect,
+  Layer,
+  ManagedRuntime,
+  Predicate,
+  Redacted,
+} from "effect"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { AgentId, CodingAgent, NoActiveTurn, TurnInProgress } from "./contract.ts"
@@ -86,10 +95,11 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
 
       // The reply's deltas left the executor as progress frames; none are stored.
       const frames = (yield* test.progress).flatMap((record) =>
-        record._tag === "Progress" && record.ref.id === "g1" && !record.dropped
+        Predicate.isTagged(record, "Progress") && record.ref.id === "g1" && !record.dropped
           ? [new TextDecoder().decode(record.frame)]
           : [],
       )
+
       expect(frames.length).toBeGreaterThan(0)
       expect(frames.every((frame) => frame.includes(turnId))).toBe(true)
     }),
