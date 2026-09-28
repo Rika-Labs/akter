@@ -51,7 +51,7 @@ const scanMeanMs = (result: CaseResult) =>
 export const outbox: Scenario = {
   name: "outbox",
   description:
-    "Outbox intents: send-to-delivery latency, relay drain throughput of a due backlog, and delivery latency beside 10k and 100k sleeping timers.",
+    "Outbox intents: send-to-delivery latency, relay drain throughput of a due backlog, and delivery latency beside 10k, 100k, and (full profile) 10^6 sleeping timers.",
   multiRunner: true,
   run: (context) =>
     Effect.gen(function* () {
@@ -142,7 +142,8 @@ export const outbox: Scenario = {
         ),
       )
 
-      for (const sleepers of [10_000, 100_000])
+      // The quick counts are the ones the statement gate checks.
+      for (const sleepers of quick ? [10_000, 100_000] : [10_000, 100_000, 1_000_000])
         results.push(
           yield* context.withRuntime({}, (instruments) =>
             Effect.gen(function* () {

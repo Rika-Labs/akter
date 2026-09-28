@@ -3,7 +3,7 @@ import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/u
 import { SqlClient } from "effect/unstable/sql"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { Anonymous, User } from "../../identity/caller.ts"
-import { type AuthProvider, withinLimits } from "../../serve/auth.ts"
+import { type AuthProvider, readsCookies, withinLimits } from "../../serve/auth.ts"
 import { actorErrorResponse, Defect, undecodable } from "../../serve/wire.ts"
 import * as Queries from "./queries.ts"
 
@@ -83,7 +83,7 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
           const authenticated = yield* options.auth
             .authenticate({
               headers: request.headers,
-              cookies: options.auth.cookies ? request.cookies : {},
+              cookies: readsCookies(options.auth) ? request.cookies : {},
             })
             .pipe(
               Effect.provideContext(context),
