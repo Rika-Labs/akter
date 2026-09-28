@@ -76,11 +76,11 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 
 - Every grant raises the content row's `granted_until_ms` to at least its own expiry before the grant is returned. That covers uploads, re-uploads of the same bytes, and `read.blob(C).grant`. It's a single-row write of framework metadata on the tenant's shard. It never touches business data, and `BlobRead` still exposes no mutation.
 - A per-tenant sweep, under an advisory lock, runs at most once an hour:
-  1. It takes `now` from the database as `sweep_start`, and picks candidates whose `granted_until_ms` is older than `sweep_start − grace` (grace defaults to 24 hours).
+  1. It takes `now` from the database as `sweep_start`, and computes the horizon `H = grace + T`. The grace defaults to 24 hours. `T` is the longest a turn transaction may stay open for any actor type that declares a content blob: its `commandTimeout`, which the runtime already enforces as the transaction's hard timeout, turn batches included. It picks candidates whose `granted_until_ms` is older than `sweep_start − H`.
   2. For a batch of candidates, it looks for any reference with that tenant and hash through the `(tenant_id, hash)` index on `actor_content_refs`. On Neki this is an explicit fleet-tier scatter on a dedicated connection. It is maintenance, never a turn path.
-  3. It deletes candidates with no reference found, in a statement that re-checks `granted_until_ms < sweep_start`, and their chunks.
-- **Why this is safe under concurrent attach and detach.** A reference the scan saw keeps its content. A reference committed after its shard was scanned needed a grant valid at its commit time, which is after `sweep_start`. That grant's expiry is at most the row's `granted_until_ms`, so the row's `granted_until_ms > sweep_start`, and the re-check refuses the delete. A grant minted during the sweep raises `granted_until_ms` past `sweep_start` in the same way. Detaching can only make content collectable later, never earlier. The grace also covers clock skew between shards.
-- **Retention of unreferenced content.** Content that no actor references is deleted once its last grant is more than `grace` old. An upload that is never attached lives for about 25 hours (one hour of grant plus the grace).
+  3. It deletes candidates with no reference found, in a statement that re-checks `granted_until_ms < sweep_start − T`, and their chunks.
+- **Why this is safe under concurrent attach and detach.** A reference the scan saw keeps its content. Take a reference committed after its shard was scanned, at time `c > sweep_start`. `attach` checked its grant at some time `t` in the same turn, so the grant's expiry was after `t`. The turn's transaction can't stay open longer than `T`, so `c < t + T`. The grant's expiry is at most the row's `granted_until_ms`, so `granted_until_ms > t > c − T > sweep_start − T`, and the re-check refuses the delete. A grant minted during the sweep raises `granted_until_ms` past `sweep_start` in the same way. Detaching can only make content collectable later, never earlier. The grace also covers clock skew between shards.
+- **Retention of unreferenced content.** Content that no actor references is deleted once its last grant is more than `H` old. With the default 30-second `commandTimeout`, an upload that is never attached lives for about 25 hours (one hour of grant plus the grace). An actor type with a very long `commandTimeout` delays collection for its whole tenant by that much.
 
 ### 5. Isolation and limits
 
@@ -101,7 +101,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 ## Consequences
 
 - Attaching a shared file costs one row on the actor's shard, whatever the file's size.
-- Serving bytes costs an extra single-shard statement, and handlers that need bytes run off-turn: in a query, a stream, or an effect.
+- Serving bytes costs an extra single-shard statement, and handlers that need bytes run off-turn, in a query, a stream, or a connection handler, or clients fetch them through the served download route. Effect executors get no content access in this ADR, because `X.Executor` has no actor read context and executors may not require a database client ([contract 08](../contracts/08-background-work.md)). An effect that needs the bytes receives a grant in its payload and downloads through the served route, like any other client.
 - Collection is eventually consistent and bounded by the grace. Storage for unreferenced content lags by about a day.
 - The sweep is the first framework maintenance job that scatters on Neki by design. It must be rate-limited and measured.
 
@@ -150,6 +150,7 @@ In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
 - `keeps content referenced by one actor after another detaches it`
 - `collects unattached uploads after grant plus grace and never before`
 - `never deletes content attached concurrently with a sweep` (Postgres, independent connections: the attach commits between the reference scan and the delete)
+- `never deletes content whose attach checked its grant just before expiry and commits up to commandTimeout later` (Postgres, with the turn held open by a pause hook past the grant's expiry)
 - `hands a fresh grant from one actor's reference to another actor's attach`
 - `verifies grants under the previous key for one grant lifetime after rotation`
 - `applies 0019_content_blobs to a database that ran the previous migration`
