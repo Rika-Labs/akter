@@ -1906,6 +1906,7 @@ const make = <
               outbox.perform({
                 effect: instance._tag,
                 payload: yield* declared(instance).pipe(Effect.orDie),
+                capped: effectPolicies[instance._tag]?.concurrency !== undefined,
                 ...scheduled,
               })
             })
