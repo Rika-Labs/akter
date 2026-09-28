@@ -290,7 +290,7 @@ Executor progress frames are implemented on the executor side only; delivery to 
 - `loses dropped progress frames without changing the effect's durable outcome` (`ActorTest.dropProgress`).
 - `sends no progress for an effect that declares no progress schema`.
 
-`runtime/effects/progress.test.ts` checks the pool on `TestClock`: latest-wins coalescing at `progressEvery`, the close flush and later offers ignored, no sends without a sink, recipient, or progress schema, and the runner-wide messages-per-second cap. `definition.test.ts` rejects `progressEvery` outside 50 ms to one minute. The remaining [ADR 0030](../decisions/0030-executor-progress-frames.md) cases, which need connections (owner admission, audiences, holder coalescing, `ProgressEnd`, authorization, owner moves, cross-runner delivery), are required tests, not recorded results.
+`runtime/effects/progress.test.ts` checks the pool on `TestClock`: latest-wins coalescing at `progressEvery`, the close flush and later offers ignored, no sends without a sink, recipient, or progress schema, and the runner-wide messages-per-second cap, which each attempt's last frame borrows against at close instead of being dropped, so the next send waits out the debt ([ADR 0048](../decisions/0048-mint-progress-and-inspection-record-corrections.md)). `definition.test.ts` rejects `progressEvery` outside 50 ms to one minute. The remaining [ADR 0030](../decisions/0030-executor-progress-frames.md) cases, which need connections (owner admission, audiences, holder coalescing, `ProgressEnd`, authorization, owner moves, cross-runner delivery), are required tests, not recorded results.
 
 ### Multi-runner harness (M2.1)
 
