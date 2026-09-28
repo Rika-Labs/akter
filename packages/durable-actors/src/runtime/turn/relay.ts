@@ -14,7 +14,12 @@ import {
 } from "effect"
 import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
-import { Outcome, type RegisteredEffect, Request } from "../../handles/actors.ts"
+import {
+  MAX_EFFECT_ATTEMPTS,
+  Outcome,
+  type RegisteredEffect,
+  Request,
+} from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { progressPool } from "../effects/progress.ts"
 import { TurnHooks } from "./hooks.ts"
@@ -89,6 +94,8 @@ interface ClaimedRow {
   readonly cancelled: boolean
   /** An earlier attempt of the effect may have applied the call. */
   readonly maybe_applied: boolean
+  /** The attempt whose failure ended the effect before its retries ran out. */
+  readonly final_attempt: number | null
   readonly candidates: number
   readonly work: string | null
 }
@@ -101,7 +108,7 @@ const claimedColumns = (sql: SqlClient.SqlClient) =>
   sql`o.kind, o.routing_key::text AS routing_key, o.intent_id, o.attempts, o.last_error,
     o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.target_id, o.command,
     o.payload, o.caller, o.due_at_ms::text AS claimed_until,
-    o.cancelled_at_ms IS NOT NULL AS cancelled, o.maybe_applied`
+    o.cancelled_at_ms IS NOT NULL AS cancelled, o.maybe_applied, o.final_attempt`
 
 /**
  * The due-work probe: one `(bucket, kind, due_at_ms)` index range per bucket,
@@ -250,7 +257,7 @@ export const claimDue = ({
     for (const result of subscriptions.results)
       results.push(sql`SELECT 'work'::text, NULL::text, NULL::text, 0, NULL::text, false,
           NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text,
-          NULL::text, NULL::text, false, false, 0, false, claimed.work
+          NULL::text, NULL::text, false, false, NULL::int, 0, false, claimed.work
         FROM (${result}) AS claimed`)
   }
 
@@ -263,8 +270,8 @@ export const claimDue = ({
 /**
  * Claims the effect rows `locked` names. A cancelled row is claimed only to
  * be settled, so it keeps its attempts; any other row starts its next attempt
- * and runs, unless its last attempt already ended without an outcome, which
- * exhausts it. `maybe_applied` then covers every attempt before this one.
+ * and runs, unless its last attempt already ended without an outcome or an
+ * attempt's failure was final, either of which exhausts it. `maybe_applied` then covers every attempt before this one.
  * RETURNING sees the updated row, so exhaustion is judged on the attempts
  * before this claim.
  */
@@ -275,7 +282,8 @@ const claimEffects = (
   locked: Statement.Fragment,
   candidates: Statement.Fragment,
 ) => {
-  const attempting = sql`o.cancelled_at_ms IS NULL AND o.attempts < c.max_attempts`
+  const attempting = sql`o.cancelled_at_ms IS NULL AND o.attempts < c.max_attempts
+    AND o.final_attempt IS NULL`
 
   return sql`UPDATE actor_outbox o SET
       due_at_ms = ${now} + ${leaseMs}::bigint,
@@ -291,7 +299,8 @@ const claimEffects = (
     FROM ${locked} c
     WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
     RETURNING ${claimedColumns(sql)}, ${candidates} AS candidates,
-      o.cancelled_at_ms IS NULL AND c.previous >= c.max_attempts AS exhausted`
+      o.cancelled_at_ms IS NULL
+        AND (c.previous >= c.max_attempts OR o.final_attempt IS NOT NULL) AS exhausted`
 }
 
 /** One effect type of one actor whose attempts run under a per-actor cap. */
@@ -445,8 +454,8 @@ const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
   const found = sql.literal(`${kind}_candidates`)
 
   return sql`SELECT ${`skipped-${kind}`}::text, NULL, NULL, 0, NULL, false, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, false, false, (SELECT count(*) FROM ${found})::int, false,
-      NULL::text
+      NULL, NULL, NULL, NULL, NULL, NULL, false, false, NULL, (SELECT count(*) FROM ${found})::int,
+      false, NULL::text
     WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
 
@@ -743,7 +752,15 @@ export const outboxRelay = Effect.fnUntraced(function* (
         return settled.length > 0
       })
 
-    const exhaust = (attempts: number, cause: string, ambiguous: boolean, cancelled: boolean) =>
+    // `attempts` is what the letter reports; `recorded` is the row's count,
+    // which a final failure raises to the retry limit.
+    const exhaust = (
+      attempts: number,
+      cause: string,
+      ambiguous: boolean,
+      cancelled: boolean,
+      recorded = attempts,
+    ) =>
       sql.withTransaction(
         Effect.gen(function* () {
           const letter = {
@@ -756,7 +773,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           if (
             !(yield* settleTo(
               yield* registered.deadLetter(row.payload, letter),
-              sql`${attemptRow(attempts)} AND cancelled_at_ms IS ${sql.literal(
+              sql`${attemptRow(recorded)} AND cancelled_at_ms IS ${sql.literal(
                 cancelled ? "NOT NULL" : "NULL",
               )}`,
             ))
@@ -787,9 +804,14 @@ export const outboxRelay = Effect.fnUntraced(function* (
      * `onCancelled` route, an unknown outcome is dead-lettered as ambiguous
      * and a failed one is dropped with a log line.
      */
-    const settleCancelled = (attempts: number, known: "Failed" | "Unknown", cause: string) =>
+    const settleCancelled = (
+      attempts: number,
+      known: "Failed" | "Unknown",
+      cause: string,
+      recorded = attempts,
+    ) =>
       Effect.gen(function* () {
-        const guard = sql`${attemptRow(attempts)} AND cancelled_at_ms IS NOT NULL`
+        const guard = sql`${attemptRow(recorded)} AND cancelled_at_ms IS NOT NULL`
         const ambiguous = known === "Unknown"
 
         if (registered.routesCancelled) {
@@ -803,7 +825,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           if (route !== undefined) return yield* settleTo(route, guard)
         }
 
-        if (ambiguous) return yield* exhaust(attempts, cause, true, true)
+        if (ambiguous) return yield* exhaust(attempts, cause, true, true, recorded)
 
         const dropped = yield* settleTo(undefined, guard)
 
@@ -821,18 +843,24 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
     // A cancellation that commits before the last attempt's dead letter
     // settles the row as cancelled instead.
-    const exhaustUnlessCancelled = (attempts: number, cause: string, ambiguous: boolean) =>
+    const exhaustUnlessCancelled = (
+      attempts: number,
+      cause: string,
+      ambiguous: boolean,
+      recorded = attempts,
+    ) =>
       Effect.gen(function* () {
-        if (yield* exhaust(attempts, cause, ambiguous, false)) return
+        if (yield* exhaust(attempts, cause, ambiguous, false, recorded)) return
 
         const [cancelled] = yield* sql<{ maybe_applied: boolean }>`SELECT maybe_applied
-          FROM actor_outbox WHERE ${attemptRow(attempts)} AND cancelled_at_ms IS NOT NULL`
+          FROM actor_outbox WHERE ${attemptRow(recorded)} AND cancelled_at_ms IS NOT NULL`
 
         if (cancelled !== undefined)
           yield* settleCancelled(
             attempts,
             ambiguous || cancelled.maybe_applied ? "Unknown" : "Failed",
             cause,
+            recorded,
           )
       })
 
@@ -842,20 +870,22 @@ export const outboxRelay = Effect.fnUntraced(function* (
       if (row.attempts === 0) return yield* settleTo(undefined, sql`${attemptRow(0)}`)
 
       return yield* settleCancelled(
-        row.attempts,
+        row.final_attempt ?? row.attempts,
         row.ambiguous || row.maybe_applied ? "Unknown" : "Failed",
         row.ambiguous || row.maybe_applied
           ? (row.last_error ?? cancelledCause(row.attempts))
           : (row.last_error ?? "Failed before it was cancelled"),
+        row.attempts,
       )
     }
 
     // The last attempt ended without an outcome, or its dead letter failed after recording one.
     if (row.exhausted)
       return yield* exhaustUnlessCancelled(
-        row.attempts,
+        row.final_attempt ?? row.attempts,
         row.last_error ?? "No attempt reported",
         row.ambiguous,
+        row.attempts,
       )
 
     const attempt = row.attempts
@@ -1095,13 +1125,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 
+      // A failure that is final before the retries run out also raises
+      // `attempts` past any runner's retry limit, so a runner that predates
+      // `final_attempt` treats the row as exhausted whatever its retry policy.
+      const early = final === true && attempt < registered.attempts
+      const count = early ? MAX_EFFECT_ATTEMPTS : attempt
+
       // The outcome is recorded first, so a failed dead-letter transaction is
-      // retried with this attempt's cause rather than the claim's.
+      // retried with this attempt's cause rather than the claim's, and a final
+      // failure is never followed by another attempt.
       const recorded = yield* sql<{
         cancelled: boolean
         maybe_applied: boolean
       }>`UPDATE actor_outbox
         SET last_error = ${cause}, ambiguous = ${ambiguous}, running = false,
+          attempts = ${count}, final_attempt = ${early ? attempt : null},
           due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
         WHERE ${attemptRow(attempt)}
         RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`
@@ -1127,9 +1165,14 @@ export const outboxRelay = Effect.fnUntraced(function* (
           attempt,
           ambiguous || recorded[0].maybe_applied ? "Unknown" : "Failed",
           cause,
+          count,
         )
 
-      if (last) return yield* exhaustUnlessCancelled(attempt, cause, ambiguous)
+      // A stale attempt records nothing, and its raised count must not settle a newer attempt.
+      if (last)
+        return recorded.length === 0
+          ? undefined
+          : yield* exhaustUnlessCancelled(attempt, cause, ambiguous, count)
 
       yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
         Effect.annotateLogs({ attempt, ambiguous }),
