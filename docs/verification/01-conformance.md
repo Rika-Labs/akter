@@ -360,7 +360,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 
 `waits at least retryAfter before retrying RunnerAtCapacity in process` (`runtime/retry.test.ts`) checks that in-process retries of `RunnerAtCapacity` and `ActorUnavailable` start from each error's own `retryAfter`; the existing `conformance/capacity.ts` cases still pass.
 
-These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency over HTTP/1.1 keep-alive for commands and queries with `Actor.auth.none`, 64 concurrent command callers, and commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload; HTTP/2 is not measured, since the harness serves through `Bun.serve` over plain HTTP/1.1.
+These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency over HTTP/1.1 keep-alive for commands and queries with `Actor.auth.none`, 64 concurrent command callers, and commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload; its `h2-*` cases repeat the command, query, 64-caller, JWT, largest-principal, and 64 KiB cases over cleartext HTTP/2 from Bun's `node:http2` server, with every caller's requests multiplexed on one connection ([performance](03-performance.md#served-http2-beside-http11-122)). HTTP/2 is benchmarked, not covered by conformance cases, and HTTP/2 over TLS is not exercised.
 
 ### Promise client (M3.4)
 
