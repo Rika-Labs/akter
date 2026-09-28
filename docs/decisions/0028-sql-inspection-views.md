@@ -1,6 +1,6 @@
 # ADR 0028: SQL inspection views over runtime tables
 
-**Status:** proposed (2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements the proposed defaults below; the [open questions](#open-questions-for-dallen) need Dallen's decision before this ADR is accepted.
+**Status:** accepted (2026-09-28, Dallen, with the recommended answer to every open question; proposed 2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements it; the [decided questions](#decided-questions) record the answers.
 
 **Responsibility:** define a stable, documented, read-only SQL surface for inspecting committed runtime state, which rows and columns it exposes, how it is tenant scoped, and which privileges read it.
 
@@ -84,16 +84,16 @@ The migration adds no index, so the views cost nothing on the turn path. Point l
 
 Cron (M2.5) is not on `main`; once it lands, `durable.timers` shows its entries (`timer_key LIKE '$cron:%'`) and `durable.receipts` its ticks, and a dedicated run-history view is an additive follow-up. `0012_workflows` precedes `0013`, so version 1 includes `durable.workflows` (every retained execution, with `status`, `interrupt`, `payload` and `result` as compressed `bytea` with their byte counts, and start and finish times) and `durable.workflow_steps` (the steps recorded for open executions: `step`, `attempt`, `kind`, the compressed `exit` once settled, a clock's `due_at`, a wait's `wait_event`, a version marker's `version`, and start and settle times). A finished execution has no step rows, because the engine deletes them when it records the result.
 
-## Open questions for Dallen
+## Decided questions
 
-Each question has a proposed default. Migration `0013_inspection_views` already implements every default, so any question left unanswered at acceptance takes its default. Choosing an alternative later needs a new ADR, and a new view version where §2 requires one.
+Dallen took the recommended answer to every question on 2026-09-28. Migration `0013_inspection_views` already implements each one. Choosing an alternative later needs a new ADR, and a new view version where §2 requires one.
 
-1. **Schema name.** Proposed default: `durable`. Alternative: `durable_inspect`, which leaves `durable` free for future writable APIs.
-2. **Should the migration create the role?** Proposed default: no, document the grant script (§5). Alternative: create `durable_inspector NOLOGIN` when the migration user may, and skip otherwise, which makes migration behavior depend on privileges.
-3. **Should `durable.state` and `durable.events` expose compressed values?** Proposed default: yes, as `bytea` with `value_bytes`, decoded client-side. Alternative: omit values until a `pg` zstd extension is a supported deployment requirement.
-4. **Secondary index for identity lookups.** Proposed default: none; use the two-step pattern. Alternative: `actor_generations (tenant_id, actor_type, actor_id)`, one extra index write per new actor, which the benchmark suggests is not needed below millions of actors.
-5. **Workflow views.** Decided by merge order: `0012_workflows` merged first, so `0013` includes `durable.workflows` and `durable.workflow_steps` (§7). Alternative: move them to a later migration, which would only delay them.
-6. **When RLS lands, switch to `security_invoker`.** Proposed default: yes (§4). Alternative: keep owner-rights views and add per-view tenant predicates driven by a session setting.
+1. **Schema name:** `durable`. `durable_inspect`, which would leave `durable` free for future writable APIs, was rejected.
+2. **The migration does not create the role.** Operators run the grant script (§5). Creating `durable_inspector NOLOGIN` when the migration user may, and skipping otherwise, was rejected because it makes migration behavior depend on privileges.
+3. **`durable.state` and `durable.events` expose compressed values** as `bytea` with `value_bytes`, decoded client-side. Omitting values until a `pg` zstd extension is a supported deployment requirement was rejected.
+4. **No secondary index for identity lookups;** use the two-step pattern. `actor_generations (tenant_id, actor_type, actor_id)`, one extra index write per new actor, was rejected; the benchmark suggests it is not needed below millions of actors.
+5. **Workflow views are in `0013`** (`durable.workflows` and `durable.workflow_steps`, §7), because `0012_workflows` merged first. Moving them to a later migration would only have delayed them.
+6. **When RLS lands, the views switch to `security_invoker`** (§4). Keeping owner-rights views with per-view tenant predicates driven by a session setting was rejected.
 
 ## Alternatives considered
 

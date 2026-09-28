@@ -182,7 +182,7 @@ The chat example's own test ([`examples/chat/src/room/layer.test.ts`](../../exam
 
 ### CR.4 inspection views
 
-The cases live in [`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts) and check [ADR 0028](../decisions/0028-sql-inspection-views.md) (proposed). The fixture actor `Specimen` writes state, emits an event, schedules a keyed self-timer an hour out, and performs an effect with `retry: { times: 0 }` whose executor always fails. Shared (PGlite and Postgres):
+The cases live in [`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts) and check [ADR 0028](../decisions/0028-sql-inspection-views.md). The fixture actor `Specimen` writes state, emits an event, schedules a keyed self-timer an hour out, and performs an effect with `retry: { times: 0 }` whose executor always fails. Shared (PGlite and Postgres):
 
 - `inspection views show exactly the rows committed turns wrote` — after one committed turn every view shows its row (actor with generation, routing key, placement, and event sequence; the state key; a `Success` receipt; the event; the timer, also in `outbox`; the effect, in `effects` or already in `dead_letters`); a declared failure after the same writes adds only its `Failure` receipt, and a defect adds nothing; the relay moves the effect to `dead_letters` with one attempt; the fired timer leaves `outbox` and `timers` and its receipt commits.
 - `inspection views carry each row's tenant and never merge tenants` — equal actor ids in two tenants keep separate counts, and each view reports exactly those two tenants.
@@ -261,7 +261,7 @@ These cases cover a single runner. Executors on separate processes, effect cance
 
 ### `turn.mint` (M2.15)
 
-The cases live in [`conformance/mint.ts`](../../packages/durable-actors/src/testing/conformance/mint.ts), registered with `describeConformance`, and run on PGlite and real Postgres, single runner. They implement [ADR 0025](../decisions/0025-turn-mint.md)'s proposed defaults. The fixture `MintPlanner` mints `MintTask` and `MintNote` children, both unkeyed with `policy.createdBy: Open`.
+The cases live in [`conformance/mint.ts`](../../packages/durable-actors/src/testing/conformance/mint.ts), registered with `describeConformance`, and run on PGlite and real Postgres, single runner. They implement [ADR 0025](../decisions/0025-turn-mint.md). The fixture `MintPlanner` mints `MintTask` and `MintNote` children, both unkeyed with `policy.createdBy: Open`.
 
 - `mints ids from the command id and ordinal and creates each child once from its intent`: ids equal the derivation from the parent, command id, and ordinals 0 and 1; the parent commits one receipt and two outbox rows; after delivery each child has one `Open` receipt and its state; retrying the command id returns the same ids.
 - `mints distinct ids per parent, per ordinal, and per child type from one command id`: one command id at two parents mints four distinct ids; the ordinal counts across child types.
@@ -290,7 +290,7 @@ Executor progress frames are implemented on the executor side only; delivery to 
 - `loses dropped progress frames without changing the effect's durable outcome` (`ActorTest.dropProgress`).
 - `sends no progress for an effect that declares no progress schema`.
 
-`runtime/effects/progress.test.ts` checks the pool on `TestClock`: latest-wins coalescing at `progressEvery`, the close flush and later offers ignored, no sends without a sink, recipient, or progress schema, and the runner-wide messages-per-second cap. `definition.test.ts` rejects `progressEvery` outside 50 ms to one minute. The remaining [ADR 0030](../decisions/0030-executor-progress-frames.md) (proposed) cases, which need connections (owner admission, audiences, holder coalescing, `ProgressEnd`, authorization, owner moves, cross-runner delivery), are required tests, not recorded results.
+`runtime/effects/progress.test.ts` checks the pool on `TestClock`: latest-wins coalescing at `progressEvery`, the close flush and later offers ignored, no sends without a sink, recipient, or progress schema, and the runner-wide messages-per-second cap. `definition.test.ts` rejects `progressEvery` outside 50 ms to one minute. The remaining [ADR 0030](../decisions/0030-executor-progress-frames.md) cases, which need connections (owner admission, audiences, holder coalescing, `ProgressEnd`, authorization, owner moves, cross-runner delivery), are required tests, not recorded results.
 
 ### Multi-runner harness (M2.1)
 
