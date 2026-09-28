@@ -310,6 +310,18 @@ export const registerActor = Effect.fnUntraced(function* (
             owner.hasConnections ? owner.list(owned) : undefined,
           )
 
+          // A route turn's command id is its effect id: its progress stops
+          // before the route's broadcasts, as does the progress of every
+          // running effect the batch cancelled.
+          if (owner.hasProgress) {
+            for (const [index, settled] of done.settled.entries())
+              if (Result.isSuccess(settled) && !Outcome.guards.Defect(settled.success))
+                yield* owner.closeProgress(owned, batch[index]!.request.commandId)
+
+            for (const effectId of done.cancelledEffects)
+              yield* owner.closeProgress(owned, effectId)
+          }
+
           // Stream followers wake when a commit advances the activation's head.
           if (owner.hasConnections || owner.hasStreams) {
             for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
@@ -565,6 +577,10 @@ export const registerActor = Effect.fnUntraced(function* (
         yield* Effect.addFinalizer(() => owner.endStreams(owned))
 
         return connections.of({
+          Progress: ({ payload }) =>
+            owner.progress(owned, payload).pipe(Effect.provideContext(connectionServices)),
+          ProgressClosed: ({ payload }) =>
+            owner.progressClosed(owned, payload).pipe(Effect.provideContext(connectionServices)),
           Subscribe: ({ payload }) =>
             owner.subscribe(owned, payload).pipe(Stream.provideContext(connectionServices)),
           Open: ({ payload }) =>

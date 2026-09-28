@@ -801,6 +801,8 @@ export const executeBatch = Effect.fnUntraced(function* (
       ...entry,
       emittedAtMs: done.emitted[index]!.emittedAtMs,
     })),
+    /** Started effects the batch's commands cancelled. */
+    cancelledEffects: done.outbox.flatMap((replies) => replies.cancelledIds),
   }
 })
 

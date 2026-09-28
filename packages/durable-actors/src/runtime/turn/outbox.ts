@@ -83,6 +83,8 @@ export interface OutboxReplies {
   wake: boolean
   /** The turn cancelled an effect attempt that is running. */
   cancelled: boolean
+  /** Started effects the turn cancelled; their owner stops showing their progress. */
+  cancelledIds: Array<string>
 }
 
 /**
@@ -105,7 +107,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   const clock = yield* FrameworkClock
   const { tenant, actor, id } = sender
   const statements: Array<Effect.Effect<void, SqlError.SqlError>> = []
-  const replies: OutboxReplies = { wake: false, cancelled: false }
+  const replies: OutboxReplies = { wake: false, cancelled: false, cancelledIds: [] }
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant}
     AND actor_type = ${actor} AND actor_id = ${id}`
@@ -136,13 +138,14 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     // or, once its lease ends, by any runner.
     statements.push(
       Effect.map(
-        sql<{ running: boolean }>`UPDATE actor_outbox
+        sql<{ running: boolean; intent_id: string }>`UPDATE actor_outbox
           SET cancelled_at_ms = stamp.at, timer_key = NULL, waiting = false,
             due_at_ms = CASE WHEN running THEN due_at_ms ELSE least(due_at_ms, stamp.at) END
           FROM (SELECT ${statementNow} AS at) AS stamp
           WHERE ${actorRow} AND kind = 'effect' AND timer_key IN ${keys}
-          RETURNING running`,
+          RETURNING running, intent_id`,
         (marked) => {
+          replies.cancelledIds.push(...marked.map((row) => row.intent_id))
           replies.cancelled ||= marked.some((row) => row.running)
           replies.wake ||= marked.some((row) => !row.running)
         },

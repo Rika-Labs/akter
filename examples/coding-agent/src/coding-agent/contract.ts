@@ -141,6 +141,13 @@ export const PromptFailed = Actor.command("PromptFailed", { input: Actor.DeadLet
 
 export const Idle = Actor.command("Idle", { input: Schema.Struct({ token: Schema.String }) })
 
+/** One turn's reply as the executor writes it: live, never stored, and lossy under load. */
+export const Streaming = Actor.stream("Streaming", {
+  input: Schema.Struct({ turnId: Schema.String }),
+  output: Schema.String,
+  progress: { effects: [RunPrompt] },
+})
+
 /**
  * One coding agent with its own sandbox. The sandbox pauses when the agent is
  * idle and resumes on the next prompt; the transcript is durable.
@@ -151,7 +158,7 @@ export const CodingAgent = Actor.make("CodingAgent", {
   tables: [turns],
   events: [SandboxStarted, Prompted, TurnEnded, SandboxPaused],
   effects: [StartSandbox, RunPrompt, PauseSandbox],
-  api: { Start, Prompt, Abort, Sandbox, Transcript, Ship },
+  api: { Start, Prompt, Abort, Sandbox, Transcript, Ship, Streaming },
   internal: { SandboxReady, Replied, PromptFailed, Idle },
   policy: {
     createdBy: Start,
