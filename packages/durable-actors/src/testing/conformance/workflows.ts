@@ -1,4 +1,5 @@
 import {
+  DateTime,
   Deferred,
   Duration,
   Effect,
@@ -8,12 +9,32 @@ import {
   Predicate,
   Schedule,
   Schema,
+  type Scope,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
+import { WorkflowEngine } from "effect/unstable/workflow"
 import { Actor, InvalidExecutionId, Unauthorized, User } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import { encodeExecutionId } from "../../identity/execution.ts"
+import type {
+  ConformanceCase,
+  ConformanceEnvironment,
+  ConformanceServices,
+} from "../conformance.ts"
+import {
+  type EngineFixture,
+  engineCases,
+  engineFixture,
+  type EnginePrimitives,
+  type EngineRun,
+  eventually as eventuallyEngine,
+  Flake,
+  probeBody,
+  ProbeInput,
+  type Scenario,
+  type WorkflowEngineDriver,
+} from "./workflow-engine.ts"
 
 /** Shared by the workflow actors and every workflow case. */
 export interface WorkflowsFixture {
@@ -21,9 +42,15 @@ export interface WorkflowsFixture {
   readonly runs: Map<string, number>
   /** Holds the first run of a `block` activity until the case releases it. */
   blocked: Deferred.Deferred<void> | undefined
+  /** The shared engine suite's counters and gates. */
+  readonly engine: EngineFixture
 }
 
-export const workflowsFixture = (): WorkflowsFixture => ({ runs: new Map(), blocked: undefined })
+export const workflowsFixture = (): WorkflowsFixture => ({
+  runs: new Map(),
+  blocked: undefined,
+  engine: engineFixture(),
+})
 
 class Paid extends Actor.Event<Paid>()("Paid", { orderId: Schema.String, amount: Schema.Int }) {}
 
@@ -81,6 +108,36 @@ const Shipper = Actor.make("Shipper", {
   api: { Ship, Quote, Pay, Begin },
 })
 
+// The shared engine suite's workflow, compiled to typed step constructors.
+const Probe = Actor.workflow("Probe", {
+  input: ProbeInput,
+  output: Schema.String,
+  errors: [Flake],
+  key: ({ scenario, key }) => `${scenario}/${key}`,
+})
+
+const probeSteps = {
+  once: Probe.step("once", { success: Schema.String, errors: [Flake] }),
+  fast: Probe.step("fast", { success: Schema.String, errors: [Flake] }),
+  hold: Probe.step("hold", { success: Schema.String, errors: [Flake] }),
+  flaky: Probe.step("flaky", { success: Schema.String, errors: [Flake] }),
+}
+
+const Nap = Probe.sleep("nap")
+
+const Pick = Probe.race("pick", { success: Schema.String })
+
+/** Reports whether a body can reach an Effect `WorkflowEngine`, as `DurableDeferred.done` needs. */
+const Inspect = Actor.workflow("Inspect", { output: Schema.String })
+
+const EngineProbe = Actor.make("EngineProbe", { key: Schema.String, api: { Probe, Inspect } })
+
+const probePrimitives: EnginePrimitives<never> = {
+  activity: (name, execute) => probeSteps[name].run(undefined, () => execute),
+  sleep: (_, duration) => Nap(duration),
+  race: (_, effects) => Pick.run(effects),
+}
+
 const bump = (fixture: WorkflowsFixture, key: string) =>
   Effect.sync(() => fixture.runs.set(key, (fixture.runs.get(key) ?? 0) + 1))
 
@@ -98,6 +155,16 @@ const LedgerLive = Ledger.toLayer(
 export const workflowsLayer = (fixture: WorkflowsFixture) =>
   Layer.mergeAll(
     LedgerLive,
+    EngineProbe.toLayer(
+      Effect.succeed({
+        Probe: (input: { readonly scenario: string; readonly key: string }) =>
+          probeBody({ primitives: probePrimitives, fixture: fixture.engine, input }),
+        Inspect: () =>
+          Effect.serviceOption(WorkflowEngine.WorkflowEngine).pipe(
+            Effect.map((engine) => (Option.isSome(engine) ? "present" : "absent")),
+          ),
+      }),
+    ),
     Shipper.toLayer(
       Effect.succeed({
         Begin: Effect.fnUntraced(function* (input: {
@@ -266,7 +333,122 @@ const suspendedRow = (executionId: string) =>
     "the execution to suspend",
   )
 
+/**
+ * The shared engine suite's driver for the framework engine, on the
+ * conformance environment's database. Every call pins the first runtime's
+ * tenant, so an execution stays reachable across `restart`.
+ */
+const frameworkDriver = (environment: ConformanceEnvironment) =>
+  Effect.gen(function* () {
+    const tenant = yield* Effect.promise(() =>
+      environment.run(Effect.map(Effect.service(ActorTest), (test) => test.tenant)),
+    )
+
+    const inTenant = <A, E>(effect: Effect.Effect<A, E, ConformanceServices | Scope.Scope>) =>
+      Effect.promise(() => environment.run(effect.pipe(Actor.tenant(tenant))))
+
+    const runOf = (scenario: Scenario, key: string) =>
+      Effect.gen(function* () {
+        const executionId = yield* encodeExecutionId({
+          tenant,
+          actor: "EngineProbe",
+          id: key,
+          workflow: "Probe",
+          key: `${scenario}/${key}`,
+        }).pipe(Effect.orDie)
+
+        const reattach = EngineProbe.run(Probe, executionId).pipe(Effect.orDie)
+
+        return {
+          executionId,
+          poll: inTenant(Effect.flatMap(reattach, (run) => run.poll).pipe(Effect.orDie)),
+          interrupt: inTenant(Effect.flatMap(reattach, (run) => run.interrupt).pipe(Effect.orDie)),
+        } satisfies EngineRun
+      })
+
+    const start = (scenario: Scenario, key: string) =>
+      inTenant(
+        Effect.flatMap(EngineProbe.get(key), (probe) => probe.Probe({ scenario, key })).pipe(
+          Effect.orDie,
+        ),
+      )
+
+    const driver: WorkflowEngineDriver = {
+      pollWhileRunning: "Suspended",
+      execute: (scenario, key) =>
+        start(scenario, key).pipe(Effect.flatMap((run) => inTenant(Effect.exit(run.result)))),
+      start: (scenario, key) => Effect.andThen(start(scenario, key), runOf(scenario, key)),
+      attach: runOf,
+      awaitSuspended: (run) =>
+        eventuallyEngine({
+          check: inTenant(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+
+              const rows = yield* sql<{
+                status: string
+              }>`SELECT status FROM actor_workflow_executions
+                WHERE execution_id = ${run.executionId}`
+
+              return rows[0]?.status === "suspended"
+            }).pipe(Effect.orDie),
+          ),
+          what: `${run.executionId} to suspend`,
+        }),
+      advance: (duration) =>
+        inTenant(
+          ActorTest.use((test) =>
+            test.advance(Duration.sum(Duration.fromInputUnsafe(duration), Duration.seconds(1))),
+          ),
+        ),
+      // A restarted runtime's test clock starts at database time again; move
+      // it back to where the old one stood, as real time would be.
+      restart: Effect.gen(function* () {
+        const now = (test: ActorTest["Service"]) => test.now.pipe(Effect.map(DateTime.toEpochMillis))
+        const before = yield* inTenant(Effect.flatMap(Effect.service(ActorTest), now))
+        yield* environment.restart
+        const after = yield* inTenant(Effect.flatMap(Effect.service(ActorTest), now))
+
+        if (before > after) yield* inTenant(ActorTest.use((test) => test.advance(before - after)))
+      }),
+    }
+
+    return driver
+  })
+
+/** The shared engine suite on the framework engine, plus its ours-only divergences. */
+const engineConformance: ReadonlyArray<ConformanceCase> = [
+  ...engineCases.map((engineCase, index): ConformanceCase => ({
+    name: `workflow engine: ${engineCase.name}`,
+    timeoutMs: 60_000,
+    run: ({ expect, environment, fixture }) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const driver = yield* frameworkDriver(environment)
+
+          yield* engineCase.run({
+            driver,
+            fixture: fixture.workflows.engine,
+            expect,
+            key: `engine-${index}`,
+          })
+        }),
+      ),
+  })),
+  {
+    name: "workflow engine: a body reaches no Effect WorkflowEngine, so external DurableDeferred completion is unsupported",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const probe = yield* EngineProbe.get("inspect")
+          expect(yield* (yield* probe.Inspect({})).result).toBe("absent")
+        }),
+      ),
+  },
+]
+
 export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
+  ...engineConformance,
   {
     name: "workflows: a start returns a stable execution id, records the activity once, and finishes",
     run: ({ expect, environment, fixture }) =>

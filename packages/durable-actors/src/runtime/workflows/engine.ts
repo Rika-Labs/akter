@@ -8,9 +8,10 @@ import {
   Fiber,
   Option,
   Schema,
-  type Scope,
+  Scope,
 } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
+import { Activity, Workflow as EffectWorkflow, WorkflowEngine } from "effect/unstable/workflow"
 import {
   CallPhase,
   CurrentCallPhase,
@@ -376,6 +377,9 @@ const encodeRecorded = (exit: RecordedExit) => compress(JSON.stringify(exit))
 
 const encodeResult = (result: StoredResult) => compress(JSON.stringify(result))
 
+/** A step row's key in a run's replay map; only activities have attempts past 1. */
+const slot = (step: string, attempt: number) => `${attempt}/${step}`
+
 const callIdentity = (executionId: string, step: string, attempt: number, ordinal: number) =>
   JSON.stringify([executionId, step, attempt, ordinal])
 
@@ -415,6 +419,20 @@ export const activationEngine = (options: {
     const services = yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>()
     const ownerRow = owner(sql, routingKey, ref)
 
+    const instanceWorkflows = new Map<string, EffectWorkflow.Any>()
+
+    // Effect's workflow instance names a workflow; compensation never reads more of it.
+    const instanceWorkflow = (tag: string) => {
+      let found = instanceWorkflows.get(tag)
+
+      if (found === undefined) {
+        found = EffectWorkflow.make(tag, { payload: {}, idempotencyKey: () => tag })
+        instanceWorkflows.set(tag, found)
+      }
+
+      return found
+    }
+
     const live = new Map<
       string,
       { rerun: boolean; activities: number; body: Fiber.Fiber<unknown, unknown> | undefined }
@@ -446,7 +464,7 @@ export const activationEngine = (options: {
     const coversStartManifest = (
       workflow: RegisteredWorkflow,
       hash: string,
-      recorded: ReadonlyMap<string, StepRow>,
+      settled: ReadonlySet<string>,
     ) =>
       Effect.gen(function* () {
         const own = yield* manifestOf(ref.actor, workflow.member)
@@ -486,7 +504,7 @@ export const activationEngine = (options: {
           startManifests.set(hash, known)
         }
 
-        return known.covered && known.changed.every((name) => recorded.get(name)?.exit == null)
+        return known.covered && known.changed.every((name) => !settled.has(name))
       })
 
     const runOnce = (executionId: string) =>
@@ -520,8 +538,10 @@ export const activationEngine = (options: {
             }),
           ).pipe(Effect.as("finished" as const))
 
-        if (execution.interrupt) return yield* finish(StoredResult.cases.Interrupt.make({}))
-
+        // An interrupted execution replays to its first unsettled step and
+        // stops there, so the compensation finalizers of the steps it
+        // completed run before the interrupt is recorded.
+        const interrupting = execution.interrupt
         const workflow = registration.workflows.get(execution.workflow)
 
         const rows = yield* sql<StepRow>`
@@ -531,12 +551,18 @@ export const activationEngine = (options: {
           WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
           ORDER BY step, attempt`
 
+        // Keyed by step and attempt: each `Activity.retry` attempt is its own row.
         const steps = new Map<string, StepRow>()
         const markers = new Map<string, number>()
+        const settledSteps = new Set<string>()
 
         for (const row of rows)
           if (row.kind === "version") markers.set(row.step, row.version!)
-          else steps.set(row.step, row)
+          else {
+            steps.set(slot(row.step, row.attempt), row)
+
+            if (row.exit !== null) settledSteps.add(row.step)
+          }
 
         // A runner without this workflow, whose markers exclude the
         // execution's, that lacks a recorded step or a step of the start
@@ -544,7 +570,7 @@ export const activationEngine = (options: {
         // differently, leaves it for a compatible runner.
         const compatible =
           workflow !== undefined &&
-          (yield* coversStartManifest(workflow, execution.manifest_hash, steps)) &&
+          (yield* coversStartManifest(workflow, execution.manifest_hash, settledSteps)) &&
           Object.entries(workflow.member.versions).every(([name, range]) => {
             const value = markers.get(name) ?? 0
 
@@ -590,8 +616,8 @@ export const activationEngine = (options: {
             ? Effect.void
             : Effect.die(new Error(`Unregistered workflow step ${step.name}`))
 
-        const recordedOf = (step: StepIdentity) => {
-          const row = steps.get(step.name)
+        const recordedOf = (step: StepIdentity, attempt = 1) => {
+          const row = steps.get(slot(step.name, attempt))
 
           if (row !== undefined && row.kind !== step.kind)
             return Effect.die(new Error(`Step ${step.name} was recorded as a ${row.kind}`))
@@ -599,7 +625,7 @@ export const activationEngine = (options: {
           return Effect.succeed(row)
         }
 
-        const insertStep = (step: StepIdentity, fields: StepFields, at: number) =>
+        const insertStep = (step: StepIdentity, fields: StepFields, at: number, attempt = 1) =>
           sql`INSERT INTO actor_workflow_step ${sql.insert({
             routing_key: routingKey,
             execution_id: executionId,
@@ -607,7 +633,7 @@ export const activationEngine = (options: {
             actor_type: ref.actor,
             actor_id: ref.id,
             step: step.name,
-            attempt: 1,
+            attempt,
             kind: step.kind,
             started_at_ms: at,
             ...fields,
@@ -617,26 +643,26 @@ export const activationEngine = (options: {
           step: StepIdentity,
           exit: RecordedExit,
           at: number,
-          extra?: { matched: bigint },
+          extra?: { readonly matched?: bigint; readonly attempt?: number },
         ) =>
           sql<{ exit: Uint8Array }>`
             UPDATE actor_workflow_step SET exit = ${encodeRecorded(exit)}, settled_at_ms = ${at},
               matched = ${extra?.matched ?? null}
             WHERE routing_key = ${routingKey} AND execution_id = ${executionId} AND step = ${step.name}
-              AND attempt = 1 AND exit IS NULL
+              AND attempt = ${extra?.attempt ?? 1} AND exit IS NULL
             RETURNING exit`
 
-        const readExit = (step: StepIdentity) =>
+        const readExit = (step: StepIdentity, attempt = 1) =>
           sql<{ exit: Uint8Array | null }>`
             SELECT exit FROM actor_workflow_step WHERE routing_key = ${routingKey}
-              AND execution_id = ${executionId} AND step = ${step.name} AND attempt = 1`.pipe(
+              AND execution_id = ${executionId} AND step = ${step.name} AND attempt = ${attempt}`.pipe(
             Effect.map((found) => found[0]?.exit ?? null),
           )
 
-        const remember = (step: StepIdentity, row: Partial<StepRow>) =>
-          steps.set(step.name, {
+        const remember = (step: StepIdentity, row: Partial<StepRow>, attempt = 1) =>
+          steps.set(slot(step.name, attempt), {
             step: step.name,
-            attempt: 1,
+            attempt,
             kind: step.kind,
             exit: null,
             due_at_ms: null,
@@ -644,7 +670,7 @@ export const activationEngine = (options: {
             scanned: null,
             version: null,
             started_at_ms: "0",
-            ...steps.get(step.name),
+            ...steps.get(slot(step.name, attempt)),
             ...row,
           })
 
@@ -659,10 +685,14 @@ export const activationEngine = (options: {
             guarded(
               Effect.gen(function* () {
                 yield* registered(step)
-                let row = yield* recordedOf(step)
+                // `Activity.retry` numbers its attempts; each records its own exit.
+                const attempt = yield* Activity.CurrentAttempt
+                let row = yield* recordedOf(step, attempt)
 
                 if (row?.exit !== null && row?.exit !== undefined)
                   return yield* decodeRecorded(row.exit)
+
+                if (interrupting) return yield* Effect.interrupt
 
                 // The pending row is committed before the activity runs, so a
                 // rerun after a crash reuses its attempt and derived ids.
@@ -670,12 +700,12 @@ export const activationEngine = (options: {
                   const at = yield* now
                   yield* fenced(
                     Effect.gen(function* () {
-                      yield* insertStep(step, {}, at)
+                      yield* insertStep(step, {}, at, attempt)
                       yield* armTimer(routingKey, ref, executionId, at + RECOVERY_MS, onBehalfOf)
                     }),
                   )
-                  remember(step, { started_at_ms: String(at) })
-                  row = steps.get(step.name)!
+                  remember(step, { started_at_ms: String(at) }, attempt)
+                  row = steps.get(slot(step.name, attempt))!
                 }
 
                 const issuedAt = Number(row.started_at_ms)
@@ -713,11 +743,11 @@ export const activationEngine = (options: {
                 )
 
                 const at = yield* now
-                const settled = yield* fenced(settle(step, exit, at))
-                const recorded = settled[0]?.exit ?? (yield* readExit(step))
+                const settled = yield* fenced(settle(step, exit, at, { attempt }))
+                const recorded = settled[0]?.exit ?? (yield* readExit(step, attempt))
 
                 if (recorded === null) return yield* Effect.die(new Error("Activity exit missing"))
-                remember(step, { exit: recorded })
+                remember(step, { exit: recorded }, attempt)
 
                 return yield* decodeRecorded(recorded)
               }),
@@ -730,6 +760,8 @@ export const activationEngine = (options: {
                 const row = yield* recordedOf(step)
 
                 if (row?.exit !== null && row?.exit !== undefined) return
+
+                if (interrupting) return yield* Effect.interrupt
 
                 const at = yield* now
                 let dueAt: number
@@ -769,6 +801,8 @@ export const activationEngine = (options: {
                 if (row?.exit !== null && row?.exit !== undefined)
                   return yield* settledValue(row.exit)
 
+                if (interrupting) return yield* Effect.interrupt
+
                 if (row === undefined) {
                   const at = yield* now
                   const dueAt = timeoutMs === undefined ? null : at + timeoutMs
@@ -786,7 +820,7 @@ export const activationEngine = (options: {
                     due_at_ms: dueAt === null ? null : String(dueAt),
                     started_at_ms: String(at),
                   })
-                  row = steps.get(step.name)!
+                  row = steps.get(slot(step.name, 1))!
                 }
 
                 let scanned = BigInt(row.scanned!)
@@ -869,6 +903,8 @@ export const activationEngine = (options: {
                 if (row?.exit !== null && row?.exit !== undefined)
                   return yield* decodeRecorded(row.exit)
 
+                if (interrupting) return yield* Effect.interrupt
+
                 const exit = yield* run
                 const at = yield* now
                 yield* fenced(
@@ -883,6 +919,14 @@ export const activationEngine = (options: {
             ),
         }
 
+        // `Workflow.withCompensation` and `Workflow.addFinalizer` register on
+        // this run's instance scope. Only a run that records a result closes
+        // it; a replay registers them again, so they run once per execution.
+        const instance = WorkflowEngine.WorkflowInstance.initial(
+          instanceWorkflow(workflow.member.tag),
+          executionId,
+        )
+
         const exit = yield* workflow
           .run(decompress(execution.payload), {
             id: ref.id,
@@ -895,10 +939,14 @@ export const activationEngine = (options: {
           .pipe(
             Effect.provideService(CurrentWorkflow, engine),
             Effect.provideService(CurrentCallPhase, CallPhase.Body()),
+            Effect.provideService(WorkflowEngine.WorkflowInstance, instance),
+            Effect.scoped,
           )
 
+        const interrupted = Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
+
         if (Exit.isFailure(exit)) {
-          if (stale(exit.cause) || Cause.hasInterruptsOnly(exit.cause)) return "abandoned" as const
+          if (stale(exit.cause) || (interrupted && !interrupting)) return "abandoned" as const
 
           if (suspended(exit.cause)) {
             yield* fenced(
@@ -934,6 +982,14 @@ export const activationEngine = (options: {
             return "suspended" as const
           }
         }
+
+        if (interrupted) {
+          yield* Scope.close(instance.scope, Exit.interrupt())
+
+          return yield* finish(StoredResult.cases.Interrupt.make({}))
+        }
+
+        yield* Scope.close(instance.scope, exit)
 
         return yield* finish(yield* workflow.encodeExit(exit))
       }).pipe(

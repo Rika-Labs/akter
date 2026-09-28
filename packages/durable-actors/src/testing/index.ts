@@ -23,6 +23,25 @@ export type {
   ConformanceServices,
 } from "./conformance.ts"
 
+export {
+  describeWorkflowEngine,
+  engineCases,
+  engineFixture,
+  Flake,
+  probeBody,
+  ProbeInput,
+} from "./conformance/workflow-engine.ts"
+
+export type {
+  EngineCase,
+  EngineCaseContext,
+  EngineFixture,
+  EnginePrimitives,
+  EngineRun,
+  Scenario,
+  WorkflowEngineDriver,
+} from "./conformance/workflow-engine.ts"
+
 export { CleanupHooks, TurnHooks } from "../runtime/turn/hooks.ts"
 
 export type { TurnPoint } from "../runtime/turn/hooks.ts"
