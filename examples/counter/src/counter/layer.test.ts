@@ -7,24 +7,31 @@ import { afterAll, expect, it } from "vitest"
 import { Counter, Snapshot } from "./contract.ts"
 import { CounterLive } from "./layer.ts"
 
+// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+const database = Effect.gen(function* () {
+  if ((yield* Config.String("COUNTER_BACKEND")) === "pglite") return undefined
+
+  const base = new URL(yield* Config.String("TEST_DATABASE_URL"))
+  const name = `counter_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+
+  const admin = yield* Effect.acquireRelease(
+    Effect.sync(() => new Pool({ connectionString: base.href })),
+    (pool) => Effect.promise(() => pool.end()),
+  )
+
+  yield* Effect.acquireRelease(
+    Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
+    () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
+  )
+  base.pathname = `/${name}`
+
+  return Redacted.make(base.href)
+})
+
 const live = Layer.unwrap(
   Effect.gen(function* () {
-    const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-    const name = `counter_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-    const pool = yield* Effect.acquireRelease(
-      Effect.sync(() => new Pool({ connectionString: database.href })),
-      (db) => Effect.promise(() => db.end()),
-    )
-
-    yield* Effect.acquireRelease(
-      Effect.promise(() => pool.query(`CREATE DATABASE "${name}"`)),
-      () => Effect.promise(() => pool.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-    )
-    database.pathname = `/${name}`
-
     return CounterLive.pipe(
-      Layer.provideMerge(ActorTest.layer({ database: Redacted.make(database.href) })),
+      Layer.provideMerge(ActorTest.layer({ database: yield* database })),
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)

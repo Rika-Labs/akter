@@ -1,17 +1,18 @@
 {
-  "name": "@durable-actors/counter",
+  "name": "@durable-actors/subscriptions",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "COUNTER_BACKEND=pglite bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/counter/src",
-    "test:integration": "COUNTER_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/counter/src"
+    "test": "SUBSCRIPTIONS_BACKEND=pglite bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/subscriptions/src",
+    "test:integration": "SUBSCRIPTIONS_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/subscriptions/src"
   },
   "dependencies": {
     "@durable-actors/core": "workspace:*",
     "@effect/platform-bun": "catalog:",
+    "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {

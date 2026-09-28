@@ -116,6 +116,20 @@
         "vitest": "catalog:",
       },
     },
+    "examples/subscriptions": {
+      "name": "@durable-actors/subscriptions",
+      "dependencies": {
+        "@durable-actors/core": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
+      },
+    },
     "infra": {
       "name": "@durable-actors/infra",
       "dependencies": {
@@ -530,6 +544,8 @@
     "@durable-actors/postgres": ["@durable-actors/postgres@workspace:packages/postgres"],
 
     "@durable-actors/structure": ["@durable-actors/structure@workspace:tooling/structure"],
+
+    "@durable-actors/subscriptions": ["@durable-actors/subscriptions@workspace:examples/subscriptions"],
 
     "@durable-actors/ui": ["@durable-actors/ui@workspace:packages/ui"],
 
