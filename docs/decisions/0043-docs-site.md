@@ -1,4 +1,4 @@
-# ADR 0042: The docs site, its Markdown copies, and `llms.txt`
+# ADR 0043: The docs site, its Markdown copies, and `llms.txt`
 
 **Status:** proposed (2026-09-28).
 
