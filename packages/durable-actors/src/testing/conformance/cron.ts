@@ -50,6 +50,7 @@ const Heartbeat = Actor.make("CronHeartbeat", {
     stopped: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   }),
   api: { Open, Refuse, Stop, Hijack },
+  // Cron targets are internal: a tick's System caller may reach them.
   internal: { Beat, Yearly },
   policy: {
     // Extra whitespace is normalized out of the timer key.
@@ -612,6 +613,67 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           expect(firedFor("legacy-key").filter((run) => run.commandId === id)).toEqual([
             { actor: ref.actor, id: ref.id, commandId: id, source: "timer" },
           ])
+          expect((yield* ticksOf(ref)).map((row) => row.timer_key)).toEqual([YEARLY, EVERY_MINUTE])
+        }),
+      ),
+  },
+  {
+    name: "schedules an entry whose exact key a pending pre-reservation keyed intent holds",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sql = yield* SqlClient.SqlClient
+          const heartbeat = yield* Heartbeat.get("legacy-canonical")
+          yield* heartbeat.Open()
+          const { ref } = heartbeat
+          const now = yield* nowMs
+          const legacyDue = now + 5 * MINUTE
+          const id = `v1.${now}.${legacyDue + RETRY_WINDOW_MS}.00000000-0000-4000-8000-000000000002`
+
+          const caller = yield* Schema.encodeEffect(CallerJson)(
+            System.make({ source: "timer", ref }),
+          ).pipe(Effect.orDie)
+
+          // An older deployment's `Intent.key("$cron:UTC * * * * *")` holds the
+          // entry's canonical key, and the actor has no cron tick for it.
+          yield* sql`DELETE FROM actor_outbox WHERE tenant_id = ${ref.tenant}
+            AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
+            AND timer_key = ${EVERY_MINUTE}`.pipe(Effect.orDie)
+          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+              scheduled_at_ms, tenant_id, actor_type, actor_id, timer_key, target_type,
+              target_id, command, payload, caller)
+            SELECT routing_key, ${id}, bucket, ${legacyDue}, ${legacyDue}, tenant_id,
+              actor_type, actor_id, ${EVERY_MINUTE}, target_type, target_id, 'Beat', payload,
+              ${caller}
+            FROM actor_outbox WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor}
+              AND actor_id = ${ref.id} AND timer_key = ${YEARLY}`.pipe(Effect.orDie)
+
+          const legacy = sql<{ timer_key: string | null; due: string }>`
+            SELECT timer_key, due_at_ms::text AS due FROM actor_outbox
+            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor}
+              AND actor_id = ${ref.id} AND intent_id = ${id}`.pipe(Effect.orDie)
+
+          // The next generation's first turn schedules the entry and leaves the
+          // legacy intent due as a plain intent.
+          yield* test.invalidate(ref)
+          yield* heartbeat.Open()
+          const [, tick] = yield* ticksOf(ref)
+          expect(tick).toMatchObject({ timer_key: EVERY_MINUTE, command: "Beat" })
+          expect(tick!.intent_id).not.toBe(id)
+          expect(nextMinuteAfter(tick, yield* nowMs)).toBe(true)
+          const tickCaller = yield* Schema.decodeEffect(CallerJson)(tick!.caller)
+          expect(Schema.is(System)(tickCaller) && tickCaller.source).toBe("cron")
+          expect(yield* legacy).toEqual([{ timer_key: null, due: String(legacyDue) }])
+
+          // The legacy intent fires once as its own caller, and the entry keeps ticking.
+          yield* test.advance("6 minutes")
+          expect(firedFor("legacy-canonical").filter((run) => run.commandId === id)).toEqual([
+            { actor: ref.actor, id: ref.id, commandId: id, source: "timer" },
+          ])
+          expect(yield* legacy).toEqual([])
+          expect(firedFor("legacy-canonical").some((run) => run.source === "cron")).toBe(true)
           expect((yield* ticksOf(ref)).map((row) => row.timer_key)).toEqual([YEARLY, EVERY_MINUTE])
         }),
       ),

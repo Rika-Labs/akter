@@ -589,6 +589,14 @@ describe("actor declarations", () => {
     expect(() =>
       Actor.make("Spaced", { api: { Tick, Tock }, policy: { cron: { " 0  8 * * * ": Tick } } }),
     ).not.toThrow()
+    // A tick's caller is System, so its target need not be publicly callable.
+    expect(() =>
+      Actor.make("InternalTarget", {
+        api: { Tock },
+        internal: { Tick },
+        policy: { cron: { "0 8 * * *": Tick } },
+      }),
+    ).not.toThrow()
     const Hourly = Actor.command("Hourly")
     const Secondly = Actor.command("Secondly")
     const Weekdays = Actor.command("Weekdays")
