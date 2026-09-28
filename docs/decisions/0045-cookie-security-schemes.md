@@ -49,4 +49,4 @@ const sessions = Actor.auth.make({
 ## Revisit when
 
 - A user needs a header API key or another credential location in the document.
-- WebSocket and SSE are served (M3.3): a cookie provider authenticates the upgrade and feed requests the same way, and the AsyncAPI question (ADR 0027 Q10) may need the same schemes.
+- SSE feeds are served (M3.3), or the AsyncAPI question (ADR 0027 Q10) is reopened: feeds and an AsyncAPI document would need the same schemes. WebSocket upgrades already hand a cookie provider the upgrade's cookies, and connection operations carry the same `security` as other authenticated operations.

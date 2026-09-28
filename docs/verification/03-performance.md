@@ -340,6 +340,22 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 - **Some single-runner p50s are 0.5–1.6 ms higher than at `cd74d7e`.** The largest is `effect-round-trip/sequential`, at 7.07 ms before and 8.19–8.66 ms after. The same-SHA repeat reproduces it, but the statement counts and the SQL on this path are unchanged. It could be machine drift between runs hours apart; it wasn't isolated further.
 - **PGlite is unchanged within noise.** It runs one runner only: `outbox/delivery-sequential` p50 was 8.82 ms before and 8.96–9.15 ms after, and `effect-round-trip/concurrent-64` 491 ms before and 465–474 ms after.
 
+### Orders example (CR.8, #95)
+
+`2026-09-28-ed00421-cr.8-orders-{postgres,pglite}.json` runs `bun run bench --scenario orders --label cr.8-orders` (full profile, one run per backend) with Bun 1.4.2 and Postgres 18.6 on one 16-vCPU Xeon VM shared by the client, the runtime, and Postgres. The scenario calls `examples/orders`' own `Order.Place` with two lines in two packages against an in-process fake provider, on a fresh order id each time. Each order is six turns on three new actors: `Place`, two shipment `Open`s, `Charged`, and two `Release`s, plus one executor call. The relay's work overlaps the next order in every case, so statements per operation count the whole order, not one turn.
+
+| Postgres case         | op/s  | p50 / p95 / p99 ms   | stmts/op | client CPU/op ms |
+| --------------------- | ----- | -------------------- | -------- | ---------------- |
+| `place`               | 58.8  | 15.8 / 26.6 / 36.3   | 79.9     | 26.2             |
+| `place-to-paid`       | 41.5  | 21.5 / 38.7 / 52.1   | 80.0     | 25.8             |
+| `place-concurrent-16` | 214.8 | 60.5 / 176.9 / 240.4 | 23.8     | 6.1              |
+
+- **The effect round trip adds about 6 ms at p50.** `place-to-paid` waits for the executor and the `Charged` turn, which the relay runs after `Place` commits; 21.5 ms against 15.8 ms for the acknowledged `Place`.
+- **An order is about 80 statements on six turns.** Every order activates three actors it has never seen, so each turn pays a cold activation (generation insert, state read) on top of its receipt and state writes. `place-concurrent-16` counts 23.8 statements per order, most likely because the relay falls behind 16 callers and much of the orders' shipment and charge work is still queued when the window closes; this run did not confirm that.
+- **PGlite's single connection sets its pace:** 18.3 op/s for `place` (p50 51.6 ms), 15.6 for `place-to-paid`, and 45.5 with 16 callers.
+
+The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault point, the time from the SIGKILL until the order was paid on the replacement runner: under 1 s when nothing was claimed (`beforeHandler:Place`, `beforeCommit:Place`, and both `beforeOutboxDelete` points), and about 3.1 s when the killed runner held a claim (`afterCommit:Place`, `afterClaim`, and both executor points), bounded by the drill's 3-second relay and executor leases. Every run applied one charge per order; at `afterExecute:Charge` the provider saw two calls for the key.
+
 ### Failure drills (T7)
 
 `TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/133-m2-exit` at `801336e`; each run prints one `DRILL` line. Postgres 18.6 in Docker, Bun 1.4.2, one 8-vCPU Xeon 8559C machine shared by the five runner processes and Postgres. Workload: three processes, then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
