@@ -145,7 +145,8 @@ describe("actor declarations", () => {
 
     type Served = ReturnType<ReturnType<typeof Room.client>["get"]>
 
-    expectTypeOf<keyof Served & "Feed">().toEqualTypeOf<never>()
+    expectTypeOf<keyof Served & "Feed">().toEqualTypeOf<"Feed">()
+    expectTypeOf<ReturnType<Served["Feed"]>>().toEqualTypeOf<AsyncIterable<string>>()
   })
 
   it("lets a turn mint only unkeyed actors that declare createdBy", () => {

@@ -32,6 +32,7 @@ import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
 import { feedStream, MAX_FEED_FILTERS, openFeed } from "./feed.ts"
 import { MAX_AWAITING_HELLO, socketSession } from "./socket.ts"
+import { streamResponse } from "./stream.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
 
 export interface ServeOptions<R> {
@@ -174,7 +175,7 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
   if (!NAME.test(definition.name))
     throw new Error(`Actor.serve: actor name ${definition.name} is not [A-Za-z][A-Za-z0-9_]*`)
 
-  for (const member of [...definition.members, ...definition.connections]) {
+  for (const member of [...definition.members, ...definition.connections, ...definition.streams]) {
     if (!NAME.test(member.tag) || RESERVED_MEMBERS.has(member.tag))
       throw new Error(`Actor.serve: ${definition.name}.${member.tag} can't be served`)
   }
@@ -199,9 +200,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return yield* Effect.die(new Error(`Actor.serve: ${definition.name} is listed twice`))
         names.add(definition.name)
 
-        const collision = [...definition.members, ...definition.connections].find((member) =>
-          PROTOCOL_OPERATIONS.has(`${definition.name}.${member.tag}`),
-        )
+        const collision = [
+          ...definition.members,
+          ...definition.connections,
+          ...definition.streams,
+        ].find((member) => PROTOCOL_OPERATIONS.has(`${definition.name}.${member.tag}`))
 
         if (collision !== undefined)
           return yield* Effect.die(
@@ -250,7 +253,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           definition.members.some((member) =>
             member.kind === "query" ? !registered.queries : !registered.commands,
           ) ||
-          (definition.connections.length > 0 && !registered.commands)
+          (definition.connections.length + definition.streams.length > 0 && !registered.commands)
 
         if (missing)
           return yield* Effect.die(
@@ -501,6 +504,33 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return yield* outcomeResponse(member, exit.value)
         })
 
+      // A stream subscribes on the actor's owner and answers its elements over SSE until it ends.
+      const streamHandler = (definition: ServedDefinition, member: ServedMember) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const authenticated = yield* authenticate(request)
+          const body = yield* readBody(request)
+
+          const payload = yield* member
+            .payload(body)
+            .pipe(Effect.mapError((error) => undecodable(error)))
+
+          const elements = actors.subscribe(
+            Request.make({
+              ref: ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id }),
+              caller: authenticated.caller,
+              command: member.tag,
+              commandId: "",
+              payload,
+            }),
+          )
+
+          return HttpServerResponse.stream(streamResponse(elements), {
+            contentType: "text/event-stream",
+            headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
+          })
+        })
+
       const awaiting = awaitingHello.get(actors) ?? { count: 0 }
       awaitingHello.set(actors, awaiting)
 
@@ -629,6 +659,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             "POST",
             `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
             respond(memberHandler(definition, member), requestId(member)),
+          )
+
+      for (const definition of definitions)
+        for (const member of definition.streams)
+          yield* router.add(
+            "POST",
+            `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
+            respond(streamHandler(definition, member)),
           )
 
       for (const definition of definitions)

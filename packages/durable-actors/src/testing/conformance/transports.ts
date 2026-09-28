@@ -123,12 +123,27 @@ const Note = Actor.command("Note", { input: Schema.String })
 
 const Burst = Actor.command("Burst", { input: Schema.Int })
 
+class Refused extends Schema.TaggedError<Refused>()("Refused", { at: Schema.Finite }) {}
+
+/** `count` numbers, then its own end; a count over 100 is refused after the first element. */
+const Count = Actor.stream("Count", {
+  input: Schema.Finite,
+  output: Schema.Finite,
+  errors: [Refused],
+})
+
+/** Committed `Said` texts after `after`, then each new one as it commits. */
+const Heard = Actor.stream("Heard", {
+  input: Schema.Struct({ after: Schema.optional(Schema.String) }),
+  output: Schema.String,
+})
+
 /** The actor served as an event feed: `Said` is served, `Noted` is declared but not a feed. */
 const FeedRoom = Actor.make("FeedRoom", {
   key: Schema.String,
   events: [Said, Noted],
   feeds: [Said],
-  api: { Tell, Note, Burst },
+  api: { Tell, Note, Burst, Count, Heard },
   policy: { reauthorizeEvery: "2 seconds" },
 })
 
@@ -140,6 +155,16 @@ const feedLayer = FeedRoom.toLayer(
     Note: Effect.fnUntraced(function* (text: string) {
       yield* (yield* FeedRoom.Turn).emit(Noted.make({ text }))
     }),
+    Count: (count: number) =>
+      count > 100
+        ? Stream.concat(Stream.make(1), Stream.fail(Refused.make({ at: 1 })))
+        : Stream.range(1, count),
+    Heard: ({ after }: { readonly after?: string | undefined }) =>
+      Stream.unwrap(
+        Effect.map(FeedRoom.Read, (read) =>
+          read.follow(Said, { after }).pipe(Stream.map((entry) => entry.event.text)),
+        ),
+      ).pipe(Stream.orDie),
     Burst: Effect.fnUntraced(function* (count: number) {
       const turn = yield* FeedRoom.Turn
 
@@ -227,7 +252,7 @@ const WireReason = Schema.Struct({
 
 const decodeReason = Schema.decodeUnknownEffect(WireReason)
 
-const ClientFailure = Schema.Union([ActorError, RetentionGap, UnknownCursor, Banned])
+const ClientFailure = Schema.Union([ActorError, RetentionGap, UnknownCursor, Banned, Refused])
 
 /** What a Promise client call or iteration rejected with, typed; anything else is a test defect. */
 const asFailure = flow(
@@ -1800,6 +1825,80 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.gen(function* () {
             while ((yield* rows(ref)).connections > 0) yield* Effect.sleep("20 millis")
           }).pipe(Effect.timeout("10 seconds"), Effect.orDie)
+        }),
+      ),
+  },
+  {
+    name: "serves a stream over SSE: element messages, then end, with a declared failure in its end message",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          yield* (yield* FeedRoom.get("sse-stream")).Tell("x")
+
+          const client = Context.get(
+            yield* Layer.build(FetchHttpClient.layer),
+            HttpClient.HttpClient,
+          )
+
+          const subscribe = (body: string) =>
+            client
+              .execute(
+                HttpClientRequest.post(`http://${host}/api/actors/FeedRoom/sse-stream/Count`, {
+                  headers: { authorization: token(), accept: "text/event-stream" },
+                }).pipe(HttpClientRequest.bodyText(body, "application/json")),
+              )
+              .pipe(
+                Effect.flatMap((response) => response.text),
+                Effect.orDie,
+              )
+
+          expect(yield* subscribe("3")).toBe(
+            "event: element\ndata: 1\n\nevent: element\ndata: 2\n\nevent: element\ndata: 3\n\nevent: end\ndata: null\n\n",
+          )
+          expect(yield* subscribe("101")).toBe(
+            'event: element\ndata: 1\n\nevent: end\ndata: {"_tag":"Refused","at":1}\n\n',
+          )
+        }),
+      ),
+  },
+  {
+    name: "client subscribes to a stream as an AsyncIterable, and gets its declared failure as its class",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("client-stream")
+          yield* room.Tell("one")
+
+          const handle = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: { authorization: token() },
+          }).get("client-stream")
+
+          const counted = yield* Stream.fromAsyncIterable(handle.Count(3), asFailure).pipe(
+            Stream.runCollect,
+          )
+
+          expect([...counted]).toEqual([1, 2, 3])
+
+          const refused = yield* Stream.fromAsyncIterable(handle.Count(101), asFailure).pipe(
+            Stream.runDrain,
+            Effect.flip,
+          )
+
+          expect(refused).toBeInstanceOf(Refused)
+
+          // A live stream: the committed text, then one committed while subscribed.
+          const heard = yield* Stream.fromAsyncIterable(handle.Heard({}), asFailure).pipe(
+            Stream.tap((text) => (text === "one" ? room.Tell("two") : Effect.void)),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.timeout("20 seconds"),
+            Effect.orDie,
+          )
+
+          expect([...heard]).toEqual(["one", "two"])
         }),
       ),
   },

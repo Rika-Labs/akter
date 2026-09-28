@@ -2507,6 +2507,9 @@ const make = <
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     connections: connectionMembers.map(servedConnection),
     feeds: [...feeds],
+    streams: Object.values(api)
+      .filter((member) => member.kind === "stream")
+      .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     deliveryMs: policy.deliveryMs,
   }
 
@@ -2547,7 +2550,7 @@ const make = <
     client: (options: ClientOptions) =>
       clientOf<
         ActorClient<
-          Omit<Api, WorkflowKeys<Api> | StreamKeys<Api>>,
+          Omit<Api, WorkflowKeys<Api>>,
           K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
           Id,
           StateOf<Fields>,
