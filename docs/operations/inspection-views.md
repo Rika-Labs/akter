@@ -81,7 +81,7 @@ Every row names its tenant, and filtering on `tenant_id` returns exactly that te
 durable dev --entry src/app.ts [--database-url <url> | --data-dir <dir>] [--port 3000] [--hostname 127.0.0.1] [--tenant default]
 ```
 
-Without `--database-url` the app runs on PGlite, in memory unless `--data-dir` names a directory. The app's routes and the inspector share one server; the inspector's JSON API is under `/_durable/inspector/api`. The server listens on loopback unless `--hostname` says otherwise, and every inspector request reads the one tenant `--tenant` names.
+Without `--database-url` the app runs on PGlite, in memory unless `--data-dir` names a directory. The app's routes and the inspector share one server: the inspector page is `/_durable/inspector` and its JSON API is under `/_durable/inspector/api`. The page shows the tenant's counts, actors by type, one actor's state, receipts (each linking the events it committed), event timeline, outbox and timers, effects, dead letters, and workflow executions with their step history, plus tenant-wide outbox, effect, dead-letter, and workflow lists. It re-reads on **Refresh**, or every two seconds with **live** on, and renders every stored value as text, never as markup. The server listens on loopback unless `--hostname` says otherwise, and every inspector request reads the one tenant `--tenant` names.
 
 The API is `Inspector.serve({ auth, basePath? })` from `@durable-actors/core/runtime`, a layer of `HttpRouter` routes like `Actor.serve`. Every route is `GET`, answers JSON with `cache-control: no-store`, and takes `limit` (1 to 500, default 50):
 

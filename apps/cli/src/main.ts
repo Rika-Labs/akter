@@ -68,7 +68,7 @@ const dev = (args: ReadonlyArray<string>) =>
       [
         `durable dev: ${options.entry} on ${options.databaseUrl === undefined ? `PGlite (${options.dataDir ?? "in memory"})` : "Postgres"}`,
         `  app        ${origin}`,
-        `  inspector  ${origin}${INSPECTOR_PATH}/api (tenant ${options.tenant})`,
+        `  inspector  ${origin}${INSPECTOR_PATH} (tenant ${options.tenant})`,
       ].join("\n"),
     )
 
