@@ -188,6 +188,7 @@
       },
       "dependencies": {
         "@effect/platform-bun": "catalog:",
+        "@effect/platform-node-shared": "catalog:",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -325,6 +326,7 @@
     "@effect/platform-browser": "4.0.0-rc.116",
     "@effect/platform-bun": "4.0.0-rc.116",
     "@effect/platform-node": "4.0.0-rc.116",
+    "@effect/platform-node-shared": "4.0.0-rc.116",
     "@effect/sql-pg": "4.0.0-rc.116",
     "@effect/sql-pglite": "4.0.0-rc.116",
     "@effect/vitest": "4.0.0-rc.116",
