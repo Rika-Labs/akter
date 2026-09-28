@@ -278,7 +278,11 @@ export const registerActor = Effect.fnUntraced(function* (
 
             // Stream followers wake when a commit advances the activation's head.
             if (owner.hasConnections || owner.hasStreams)
-              yield* owner.flush(owned, done.broadcasts, done.head)
+              yield* owner.flush(
+                owned,
+                [...done.broadcasts, ...(yield* owner.feedBroadcasts(done.committed))],
+                done.head,
+              )
 
             return done.outcome
           }).pipe(

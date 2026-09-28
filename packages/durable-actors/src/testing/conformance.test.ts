@@ -1,5 +1,5 @@
-import { BunCrypto } from "@effect/platform-bun"
-import { Config, Crypto, Effect, ManagedRuntime, Redacted } from "effect"
+import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
+import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
 import { Pool } from "pg"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { describeConformance, type ConformanceBackend } from "./conformance.ts"
@@ -25,6 +25,7 @@ const createDatabase = Effect.fnUntraced(function* (
 const backend: ConformanceBackend = {
   independentConnections: true,
   services: BunCrypto.layer,
+  httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>
     harness.runPromise(
       Effect.gen(function* () {

@@ -35,8 +35,19 @@ import type { ConnectionCommands } from "../../identity/command.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { FrameworkClock } from "../turn/admission.ts"
-import { type ActivationCache, emptyActivationCache } from "../turn/execute.ts"
-import { type Deliver, HolderItem, StreamFailed, StreamItem } from "./protocol.ts"
+import {
+  type ActivationCache,
+  type CommittedEvents,
+  emptyActivationCache,
+} from "../turn/execute.ts"
+import {
+  type Deliver,
+  FEED_MEMBER,
+  FeedFrame,
+  HolderItem,
+  StreamFailed,
+  StreamItem,
+} from "./protocol.ts"
 import { HolderUnreachable, type Transport } from "./transport.ts"
 
 /** Encoded bytes one connection's session may hold. */
@@ -103,6 +114,8 @@ export type Authorize = (request: {
   readonly ref: ActorRef
   readonly command: string
   readonly kind: "stream" | "reauthorize"
+  /** What a reauthorization renews, so a stream tag is never read as a feed's event tag. */
+  readonly of?: "stream"
 }) => Effect.Effect<boolean>
 
 /**
@@ -137,6 +150,14 @@ export interface Activation {
   readonly acquiring: Semaphore.Semaphore
 }
 
+const emptyResult: ConnectionResult = {
+  session: undefined,
+  changed: false,
+  sends: [],
+  broadcasts: [],
+  close: false,
+}
+
 const ended = (cause: SessionEnded["cause"], resync: boolean) =>
   SessionEnded.make({ cause, resync })
 
@@ -167,7 +188,9 @@ export const activationOwner = ({
   readonly clock: { readonly offsetMillis: () => number }
 }) => {
   const activations = new Map<string, Activation>()
-  const hasConnections = registration.connections.size > 0
+  // Feeds are framework connections, so an actor type with feeds loads its rows like one with members.
+  const hasConnections = registration.connections.size > 0 || registration.feeds.size > 0
+
   const hasStreams = registration.streams.size > 0
 
   const now = Effect.map(Clock.currentTimeMillis, (millis) => millis + clock.offsetMillis())
@@ -180,6 +203,28 @@ export const activationOwner = ({
     activation.advanced = Deferred.makeUnsafe<void>()
     Deferred.doneUnsafe(previous, Exit.void)
   }
+
+  const encodeFeedFrame = Schema.encodeEffect(Schema.fromJsonString(FeedFrame))
+
+  /** A committed turn's feed events, broadcast to every open feed of the actor. */
+  const feedBroadcasts = (committed: CommittedEvents) =>
+    Effect.forEach(
+      committed.events.flatMap((event, index) =>
+        registration.feeds.has(event.tag)
+          ? [{ event, cursor: String(BigInt(committed.after) + BigInt(index) + 1n) }]
+          : [],
+      ),
+      ({ event, cursor }) =>
+        encodeFeedFrame({
+          tag: event.tag,
+          value: event.value,
+          commandId: committed.commandId,
+          timestampMs: committed.emittedAtMs,
+        }).pipe(
+          Effect.orDie,
+          Effect.map((frame): Broadcast => ({ member: FEED_MEMBER, frame, event: cursor })),
+        ),
+    )
 
   const where = (activation: Activation) =>
     Effect.gen(function* () {
@@ -579,7 +624,14 @@ export const activationOwner = ({
   const events =
     (activation: Activation, sql: SqlClient.SqlClient) =>
     (tag: string, after: string | undefined, limit: number) =>
-      replayEvents(activation.ref, activation.key, tag, after, BigInt(activation.head), limit).pipe(
+      replayEvents(
+        activation.ref,
+        activation.key,
+        [tag],
+        after,
+        BigInt(activation.head),
+        limit,
+      ).pipe(
         Effect.catchIf(SqlError.isSqlError, Effect.die),
         Effect.provideService(SqlClient.SqlClient, sql),
       )
@@ -664,9 +716,9 @@ export const activationOwner = ({
       activation,
       request.connectionId,
       Effect.gen(function* () {
-        const connection = registration.connections.get(request.member)
+        const feed = request.member === FEED_MEMBER
 
-        if (connection === undefined)
+        if (feed ? registration.feeds.size === 0 : !registration.connections.has(request.member))
           return yield* Effect.die(new Error(`Unregistered connection ${request.member}`))
 
         yield* acquire(activation)
@@ -686,7 +738,9 @@ export const activationOwner = ({
           [...activation.rows!.values()].filter((row) => row.member === request.member).length >=
           MAX_MEMBER_CONNECTIONS
         )
-          return yield* unavailable("Actor is at its connection limit for this member")
+          return yield* feed
+            ? ActorError.make({ reason: RunnerAtCapacity.make({}) })
+            : unavailable("Actor is at its connection limit for this member")
 
         const sql = yield* SqlClient.SqlClient
         const actor = yield* where(activation)
@@ -713,11 +767,16 @@ export const activationOwner = ({
 
         activation.rows!.set(request.connectionId, { ...row, frameSeq: 0, buffered: [] })
 
-        const result = yield* run(
-          activation,
-          row,
-          ConnectionPhase.cases.Open.make({ params: request.params }),
-          request.commands,
+        // A feed has no handler: its open only inserts the row and fixes its baseline.
+        const result = yield* (
+          feed
+            ? Effect.succeed<ConnectionResult>(emptyResult)
+            : run(
+                activation,
+                row,
+                ConnectionPhase.cases.Open.make({ params: request.params }),
+                request.commands,
+              )
         ).pipe(
           Effect.catchDefect((cause) =>
             Effect.gen(function* () {
@@ -964,7 +1023,8 @@ export const activationOwner = ({
           return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
         }
 
-        if (!registration.connections.get(row.member)!.hasResync)
+        // A feed's holder rereads the events itself once the new owner answers.
+        if (row.member === FEED_MEMBER || !registration.connections.get(row.member)!.hasResync)
           return { _tag: "Replayed" as const, ...identity(activation) }
 
         return yield* Effect.gen(function* () {
@@ -1017,7 +1077,7 @@ export const activationOwner = ({
           const page = yield* replayEvents(
             activation.ref,
             activation.key,
-            tag,
+            [tag],
             cursor,
             BigInt(head),
             FOLLOW_PAGE,
@@ -1184,6 +1244,7 @@ export const activationOwner = ({
         ref: activation.ref,
         command: subscription.member,
         kind: "reauthorize",
+        of: "stream",
       }).pipe(Effect.timeout(Math.min(10_000, every / 2)), Effect.exit)
 
       subscription.checking = false
@@ -1257,6 +1318,7 @@ export const activationOwner = ({
     activations,
     hasConnections,
     hasStreams,
+    feedBroadcasts,
     hibernate,
     subscribe,
     endStreams,
