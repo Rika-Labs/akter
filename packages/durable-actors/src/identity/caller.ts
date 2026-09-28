@@ -25,7 +25,7 @@ export const MintProof = Schema.Struct({
 export type MintProof = typeof MintProof.Type
 
 export const System = Schema.TaggedStruct("System", {
-  source: Schema.Literals(["actor", "timer", "cron", "workflow", "effect"]),
+  source: Schema.Literals(["actor", "timer", "cron", "workflow", "effect", "subscription"]),
   ref: Schema.optional(ActorRef),
   onBehalfOf: Schema.optional(Principal),
   mint: Schema.optional(MintProof),
