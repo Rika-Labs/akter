@@ -614,6 +614,9 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
           if (connection.ended) return
 
+          // An owner that answers past the bound closes the session; the client learns the bound lapsed.
+          if (yield* expired(connection)) return
+
           if (Exit.isFailure(answer)) {
             yield* end(connection, ended("OwnerLost", true), true)
 
@@ -887,6 +890,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
     if (!allowed)
       return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+
+    // The credential may have expired while `authorize` ran; nothing opens on it then.
+    if (request.expiresAt !== undefined && (yield* now) >= request.expiresAt)
+      return yield* credentialExpired
 
     const connection: Held = {
       id: yield* crypto.randomUUIDv7.pipe(Effect.orDie),
