@@ -33,6 +33,16 @@ export const BeatSource = Actor.make("BeatSource", {
   api: { Emit },
 })
 
+const EmitMany = Actor.command("EmitMany", { input: Schema.Int })
+
+/** A source whose events expire after a second, and whose subscribers hold them a second more. */
+export const PruneSource = Actor.make("PruneSource", {
+  key: Schema.NonEmptyString,
+  events: [Beat],
+  api: { EmitMany },
+  policy: { keepEvents: "1 second", holdEventsForSubscribers: "1 second" },
+})
+
 const Applied = Schema.Struct({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
@@ -136,6 +146,15 @@ export const SubscriptionProbeLive = Layer.mergeAll(
 
         for (let index = 0; index < count; index++)
           yield* turn.emit(Pulsed.make({ reader, key: `${prefix}-${index}` }))
+      }),
+    }),
+  ),
+  PruneSource.toLayer(
+    Effect.succeed({
+      EmitMany: Effect.fnUntraced(function* (count: number) {
+        const turn = yield* PruneSource.Turn
+
+        for (let n = 0; n < count; n++) yield* turn.emit(Beat.make({ n }))
       }),
     }),
   ),

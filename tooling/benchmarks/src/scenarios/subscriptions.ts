@@ -2,7 +2,14 @@ import { DateTime, Effect, Option } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { load } from "../measure.ts"
 import { Sender } from "../probe/contract.ts"
-import { awaitApplied, BeatFollower, BeatSource, PulseSource } from "../probe/subscriptions.ts"
+import {
+  awaitApplied,
+  BeatFollower,
+  BeatSource,
+  PruneSource,
+  PulseSource,
+} from "../probe/subscriptions.ts"
+import { cleanup } from "@durable-actors/core/testing"
 import { type CaseResult, measure, type Scenario } from "../scenario.ts"
 
 /**
@@ -10,22 +17,26 @@ import { type CaseResult, measure, type Scenario } from "../scenario.ts"
  * registers, so its commits pay the full publish path and the relay expands
  * its feed, but no delivery turn competes with the publisher being timed.
  */
-const seedSubscriptions = Effect.fnUntraced(function* (source: string, rows: number) {
+const seedSubscriptions = Effect.fnUntraced(function* (
+  source: string,
+  rows: number,
+  sourceType = "BeatSource",
+) {
   const sql = yield* SqlClient.SqlClient
 
   yield* sql`
     WITH source AS (
       SELECT routing_key, tenant_id, event_sequence FROM actor_generations
-      WHERE actor_type = 'BeatSource' AND actor_id = ${source}),
+      WHERE actor_type = ${sourceType} AND actor_id = ${source}),
     subscribed AS (
       INSERT INTO actor_subscriptions (routing_key, tenant_id, source_type, source_id,
         subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket)
-      SELECT s.routing_key, s.tenant_id, 'BeatSource', ${source}, 'BeatRemote', 'Beats',
+      SELECT s.routing_key, s.tenant_id, ${sourceType}, ${source}, 'BeatRemote', 'Beats',
         'remote-' || n, ARRAY['Beat'], 1, true, s.event_sequence, (s.routing_key >> 56)::int
       FROM source s, generate_series(1, ${rows}) AS n
       RETURNING 1)
     INSERT INTO actor_subscription_tags (routing_key, tenant_id, source_type, source_id, event, rows)
-    SELECT routing_key, tenant_id, 'BeatSource', ${source}, 'Beat', (SELECT count(*) FROM subscribed)
+    SELECT routing_key, tenant_id, ${sourceType}, ${source}, 'Beat', (SELECT count(*) FROM subscribed)
     FROM source`.pipe(Effect.orDie)
 })
 
@@ -298,6 +309,41 @@ export const subscriptions: Scenario = {
                     operation: drain,
                   }),
                   backlog,
+                )
+              }),
+            )
+            .pipe(Effect.orDie),
+        )
+
+      // The retention pass beside a source's lagging subscriptions: each
+      // batch reads the lowest settled position among them, and the hold has
+      // ended, so every event is pruned either way.
+      for (const rows of [0, 10_000])
+        results.push(
+          yield* context
+            .withRuntime({ subscriptions: true }, (instruments) =>
+              Effect.gen(function* () {
+                const events = quick ? 1000 : 10_000
+                const source = yield* PruneSource.get("pruned")
+                yield* source.EmitMany(1)
+
+                if (rows > 0) yield* seedSubscriptions("pruned", rows, "PruneSource")
+
+                for (let emitted = 0; emitted < events; emitted += 1000)
+                  yield* source.EmitMany(1000)
+
+                yield* Effect.sleep("2500 millis")
+
+                return rate(
+                  yield* measure({
+                    name: `prune-beside-${rows}-subscriptions`,
+                    parameters: { subscriptions: rows, events },
+                    instruments,
+                    workers: 1,
+                    operations: 1,
+                    operation: () => cleanup,
+                  }),
+                  events,
                 )
               }),
             )

@@ -1736,6 +1736,7 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(handlerRuns(fixture, "SubFollower/forged-follower")).toBe(0)
           expect(yield* (yield* SubFollower.get("forged-follower")).IntentKeys()).toEqual([
             "Follow",
+            "FollowJournal",
             "FollowThenRefuse",
             "IntentKeys",
             "Touch",
