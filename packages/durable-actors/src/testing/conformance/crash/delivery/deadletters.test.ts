@@ -16,13 +16,16 @@ describe("effect dead-letter process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  // At each point: the dead letters and outbox row the killed process leaves.
-  // Inside the dead-letter transaction nothing of it commits; after it, the
-  // letter is recorded and the row is already the route's intent.
-  for (const [point, letters, row] of [
-    ["beforeDeadLetterCommit", null, ["effect", "Charge", 1]],
-    ["beforeDelivery", [[1, false, true]], ["intent", "ChargeFailed", 1]],
-    ["beforeCommit", [[1, false, true]], ["intent", "ChargeFailed", 1]],
+  // At each point: the dead letters, route receipts, and outbox row the killed
+  // process leaves. Inside the dead-letter transaction nothing of it commits;
+  // after it, the letter is recorded and the row is already the route's
+  // intent, which stays until the route's receiver has committed and the row
+  // is deleted.
+  for (const [point, letters, routed, row] of [
+    ["beforeDeadLetterCommit", null, 0, ["effect", "Charge", 1]],
+    ["beforeDelivery", [[1, false, true]], 0, ["intent", "ChargeFailed", 1]],
+    ["beforeCommit", [[1, false, true]], 0, ["intent", "ChargeFailed", 1]],
+    ["beforeOutboxDelete", [[1, false, true]], 1, ["intent", "ChargeFailed", 1]],
   ] as const) {
     it(
       `recovers a SIGKILL ${point} of an exhausted effect with one dead letter and one route`,
@@ -79,7 +82,7 @@ describe("effect dead-letter process death with Postgres", () => {
 
             // The buyer committed its effect and the provider saw its only attempt.
             expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
-              { ordered: 1, routed: 0, calls: 1, letters, outbox: [row] },
+              { ordered: 1, routed, calls: 1, letters, outbox: [row] },
             ])
 
             const recovery = yield* spawner.spawn(command("recover"))
@@ -91,7 +94,9 @@ describe("effect dead-letter process death with Postgres", () => {
             )).rows.map(({ idempotency_key }) => idempotency_key)
 
             // Recovery settles from the recorded outcome without calling the
-            // provider again, and the route's command id is the effect id.
+            // provider again, and the route's command id is the effect id. A
+            // route that had committed replays its receipt, so the state
+            // counts one failure either way.
             expect(
               output
                 .split("\n")
