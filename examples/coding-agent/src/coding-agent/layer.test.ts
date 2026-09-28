@@ -158,9 +158,13 @@ it("records a reply once when the executor's result is lost and the prompt runs 
       yield* test.crashNext("afterExecute")
       yield* agent.Prompt({ text: "retry me" })
 
+      // Waits, without moving the clock, until the first attempt has run and crashed after the
+      // provider answered. Advancing while it still ran would move its lease with the clock.
+      yield* test.advance(0)
+      expect([...fake.prompts].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([1])
+      expect(yield* test.receiptsFor(agent.ref, "Replied")).toBe(0)
+
       // The crashed attempt keeps its lease; the relay runs it again once the lease has passed.
-      while (![...fake.prompts.keys()].some((key) => !before.has(key)))
-        yield* Effect.sleep("20 millis")
       yield* test.advance("2 minutes")
 
       expect([...fake.prompts].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([2])
