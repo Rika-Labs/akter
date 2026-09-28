@@ -48,6 +48,17 @@ const EntityId = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.Strin
 
 const encodeEntityIdOf = Schema.encodeEffect(EntityId)
 
+// A handler rebuilt after a retryable death waits `RESTART_BASE × 2^n`, capped
+// at `RESTART_CAP`, where `n` counts the activation's rebuilds since its last
+// settled turn: prompt after a one-off death, bounded for a handler that dies
+// on every attempt.
+const RESTART_BASE = Duration.millis(50)
+
+const RESTART_CAP = Duration.seconds(5)
+
+const restartDelay = (restarts: number) =>
+  Duration.min(Duration.times(RESTART_BASE, 2 ** restarts), RESTART_CAP)
+
 export const encodeEntityId = (tenantAndId: readonly [string, string]) =>
   encodeEntityIdOf(tenantAndId)
 
@@ -66,6 +77,10 @@ const entityScope = () =>
 
 // The current handler's scope within each entity scope.
 const handlerScopes = new WeakMap<Scope.Scope, Scope.Closeable>()
+
+// Rebuilds of each entity scope's handler since its last settled turn; absent
+// until the first build, so only a rebuild waits.
+const restarts = new WeakMap<Scope.Scope, number>()
 
 const commandEntities = new Map<string, ReturnType<typeof makeCommandEntity>>()
 
@@ -152,9 +167,6 @@ export const registerActor = Effect.fnUntraced(function* (
   const register = sharding.registerEntity(
     entity,
     Effect.gen(function* () {
-      const { entityId } = yield* Entity.CurrentAddress
-      const [tenant, id] = yield* decodeEntityId(entityId).pipe(Effect.orDie)
-
       // A defect restart rebuilds the handler, and a defect while the entity
       // shuts down can drop the superseded handler's scope. Each handler's
       // resources live in a child of the entity's own scope instead, closed
@@ -167,6 +179,17 @@ export const registerActor = Effect.fnUntraced(function* (
           }),
         ),
       )
+
+      // Cluster's own restart backoff is shared by every entity of the type
+      // and never resets, so the wait is kept per activation here instead.
+      const rebuilt = restarts.get(activation)
+
+      restarts.set(activation, rebuilt === undefined ? 0 : rebuilt + 1)
+
+      if (rebuilt !== undefined) yield* Effect.sleep(restartDelay(rebuilt))
+
+      const { entityId } = yield* Entity.CurrentAddress
+      const [tenant, id] = yield* decodeEntityId(entityId).pipe(Effect.orDie)
 
       const superseded = handlerScopes.get(activation)
 
@@ -297,6 +320,9 @@ export const registerActor = Effect.fnUntraced(function* (
             ),
           )
 
+          // The turn settled, so the next retryable death waits the base delay again.
+          restarts.set(activation, 0)
+
           const hooks = yield* TurnHooks
 
           if (!Outcome.guards.Defect(outcome)) yield* hooks.at("afterCommit", payload)
@@ -325,6 +351,9 @@ export const registerActor = Effect.fnUntraced(function* (
       concurrency: 1,
       maxIdleTime: registration.policy.idleMs,
       mailboxCapacity: registration.policy.mailboxCapacity,
+      // The handler build waits each activation's own backoff; Cluster's
+      // shared one would slow every later restart of the type to its cap.
+      defectRetryPolicy: Schedule.forever,
     },
   )
 
