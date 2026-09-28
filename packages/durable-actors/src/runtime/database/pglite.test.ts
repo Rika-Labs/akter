@@ -350,8 +350,8 @@ describe("PGlite migrations", () => {
               'effect', 1, 'typed')`
           expect(yield* migrate).toEqual([[16, "final_effect_failures"]])
           // A row written before the column retries by its attempt count, as it did.
-          expect(yield* sql`SELECT intent_id, attempts, exhausted FROM actor_outbox`).toEqual([
-            { intent_id: "failed", attempts: 1, exhausted: false },
+          expect(yield* sql`SELECT intent_id, attempts, final_attempt FROM actor_outbox`).toEqual([
+            { intent_id: "failed", attempts: 1, final_attempt: null },
           ])
           expect(yield* migrate).toEqual([])
         }),

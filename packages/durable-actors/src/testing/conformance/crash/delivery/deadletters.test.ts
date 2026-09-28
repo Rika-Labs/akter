@@ -23,7 +23,8 @@ describe("effect dead-letter process death with Postgres", () => {
   // then the letter recovery writes. Inside the dead-letter transaction
   // nothing of it commits; after it, the letter is recorded and the row is
   // already the route's intent. A gauge's rejected result is final with two
-  // retries left, which recovery must not spend on the provider.
+  // retries left, which recovery must not spend on the provider; its row's
+  // attempts are raised to the limit so older runners also see it exhausted.
   for (const [name, effect, point, letters, row, letter] of [
     [
       "an exhausted effect",
@@ -54,7 +55,7 @@ describe("effect dead-letter process death with Postgres", () => {
       "Gauge",
       "beforeDeadLetterCommit",
       null,
-      ["effect", "Gauge", 1],
+      ["effect", "Gauge", 3],
       [1, true, true],
     ],
   ] as const) {

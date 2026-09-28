@@ -73,6 +73,8 @@ interface ClaimedRow {
 
 interface ClaimedEffect extends ClaimedRow {
   readonly exhausted: boolean
+  /** The attempt whose failure ended the effect early, when one did. */
+  readonly final_attempt: number | null
 }
 
 const claimedColumns = (sql: SqlClient.SqlClient) =>
@@ -169,7 +171,8 @@ export const claimDue = ({
         FROM intent_locked c
         WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
         RETURNING ${claimedColumns(sql)},
-          (SELECT count(*) FROM intent_candidates)::int AS candidates, false AS exhausted
+          (SELECT count(*) FROM intent_candidates)::int AS candidates, false AS exhausted,
+          NULL::int AS final_attempt
       )`)
     results.push(sql`SELECT * FROM intent_claimed`, skipped(sql, "intent"))
   }
@@ -198,8 +201,8 @@ export const claimDue = ({
       ),
       -- A row whose last attempt was final is exhausted whatever attempts remain.
       effect_locked AS (
-        SELECT o.routing_key, o.intent_id,
-          o.exhausted OR o.attempts >= m.max_attempts AS exhausted
+        SELECT o.routing_key, o.intent_id, o.final_attempt,
+          o.final_attempt IS NOT NULL OR o.attempts >= m.max_attempts AS exhausted
         FROM actor_outbox o
         JOIN effect_candidates USING (routing_key, intent_id)
         JOIN mine m ON m.actor_type = o.actor_type AND m.command = o.command
@@ -218,7 +221,8 @@ export const claimDue = ({
         FROM effect_locked c
         WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
         RETURNING ${claimedColumns(sql)},
-          (SELECT count(*) FROM effect_candidates)::int AS candidates, c.exhausted
+          (SELECT count(*) FROM effect_candidates)::int AS candidates, c.exhausted,
+          c.final_attempt
       )`)
     results.push(sql`SELECT * FROM effect_claimed`, skipped(sql, "effect"))
   }
@@ -235,7 +239,7 @@ const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
   const found = sql.literal(`${kind}_candidates`)
 
   return sql`SELECT ${`skipped-${kind}`}::text, NULL, NULL, 0, NULL, false, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, (SELECT count(*) FROM ${found})::int, false
+      NULL, NULL, NULL, NULL, NULL, NULL, (SELECT count(*) FROM ${found})::int, false, NULL
     WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
 
@@ -454,7 +458,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
         return settled.length > 0
       })
 
-    const exhaust = (attempts: number, cause: string, ambiguous: boolean) =>
+    // `attempts` is the attempt the letter reports; `recorded` is the row's
+    // count, which a final failure raises to the retry limit.
+    const exhaust = (attempts: number, recorded: number, cause: string, ambiguous: boolean) =>
       sql.withTransaction(
         Effect.gen(function* () {
           const letter = {
@@ -467,7 +473,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           if (
             !(yield* settleTo(
               yield* registered.deadLetter(row.payload, letter),
-              attemptRow(attempts),
+              attemptRow(recorded),
             ))
           )
             return false
@@ -512,8 +518,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
     // The last attempt ended without an outcome, or its dead letter failed after recording one.
     if (row.exhausted)
       return yield* closeAfter(
-        row.attempts,
-        exhaust(row.attempts, row.last_error ?? "No attempt reported", row.ambiguous),
+        row.final_attempt ?? row.attempts,
+        exhaust(
+          row.final_attempt ?? row.attempts,
+          row.attempts,
+          row.last_error ?? "No attempt reported",
+          row.ambiguous,
+        ),
       )
 
     const attempt = row.attempts
@@ -641,15 +652,23 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 
+      // A final failure also raises `attempts` to the retry limit, so a runner
+      // that predates `final_attempt` treats the row as exhausted too.
+      const recorded = last ? Math.max(attempt, registered.attempts) : attempt
+
       // The outcome is recorded first, so a failed dead-letter transaction is
       // retried with this attempt's cause rather than the claim's, and a final
       // failure is never followed by another attempt.
-      yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
-          exhausted = ${last},
+      const current = yield* sql`UPDATE actor_outbox SET last_error = ${cause},
+          ambiguous = ${ambiguous}, attempts = ${recorded}, final_attempt = ${last ? attempt : null},
           due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
-        WHERE ${attemptRow(attempt)}`
+        WHERE ${attemptRow(attempt)} RETURNING 1`
 
-      if (last) return yield* closeAfter(attempt, exhaust(attempt, cause, ambiguous))
+      // A stale attempt records nothing, and must not dead-letter the attempt that replaced it.
+      if (last)
+        return current.length === 0
+          ? undefined
+          : yield* closeAfter(attempt, exhaust(attempt, recorded, cause, ambiguous))
 
       yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
         Effect.annotateLogs({ attempt, ambiguous }),
