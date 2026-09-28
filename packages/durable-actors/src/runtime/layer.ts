@@ -61,7 +61,7 @@ import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
-import { OutboxRuntime } from "./turn/outbox.ts"
+import { OutboxRuntime, textArray } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import {
   type LocalSubscription,
@@ -170,6 +170,9 @@ export class RunnerWiring extends Context.Service<
     ) => RunnerStorage.RunnerStorage["Service"]
   }
 >()("@durable-actors/core/runtime/layer/RunnerWiring") {}
+
+/** How long registering a source waits for the subscriber types routing from it to register. */
+const ROUTED_SUBSCRIBER_WAIT_MS = 5000
 
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
@@ -344,6 +347,66 @@ export const layer = (options: Options) => {
       })
 
       const entityId = (ref: ActorRef) => encodeEntityId([ref.tenant, ref.id]).pipe(Effect.orDie)
+
+      // Records this type's routed declarations for every runner of the
+      // deployment, and drops the ones it no longer declares.
+      const recordRouted = Effect.fnUntraced(function* (registration: Registration) {
+        const sql = yield* SqlClient.SqlClient
+
+        const routed = registration.subscriptions.filter(
+          (declared) => declared.routed !== undefined,
+        )
+
+        for (const declared of routed)
+          yield* sql`INSERT INTO actor_routed_subscriptions (source_type, subscriber_type, subscription)
+            VALUES (${declared.sourceType}, ${registration.name}, ${declared.tag})
+            ON CONFLICT DO NOTHING`
+
+        yield* sql`DELETE FROM actor_routed_subscriptions
+          WHERE subscriber_type = ${registration.name}
+            AND NOT (source_type, subscription) IN (
+              SELECT * FROM unnest(${textArray({ sql, values: routed.map((declared) => declared.sourceType) })},
+                ${textArray({ sql, values: routed.map((declared) => declared.tag) })}))`
+      })
+
+      /**
+       * A publishing turn creates a routed subscription's source-side rows
+       * only from the routed declarations its runner registers, so a runner
+       * that serves a source without a subscriber type routing from it would
+       * lose those events silently. Registering the source fails instead.
+       * Layers of one runtime register concurrently, so the subscriber gets
+       * a short window to register first.
+       */
+      const requireRoutedSubscribers = Effect.fnUntraced(function* (sourceType: string) {
+        const sql = yield* SqlClient.SqlClient
+
+        const missing = Effect.map(
+          sql<{ subscriber_type: string; subscription: string }>`
+            SELECT subscriber_type, subscription FROM actor_routed_subscriptions
+            WHERE source_type = ${sourceType}`,
+          (rows) =>
+            rows.filter(
+              (row) =>
+                row.subscriber_type !== sourceType && !registrations.has(row.subscriber_type),
+            ),
+        )
+
+        for (let waited = 0; waited < ROUTED_SUBSCRIBER_WAIT_MS; waited += 100) {
+          if ((yield* missing).length === 0) return
+          yield* Effect.sleep("100 millis")
+        }
+
+        const unregistered = yield* missing
+
+        if (unregistered.length > 0)
+          return yield* Effect.die(
+            new Error(
+              `Actor ${sourceType} is registered without the subscriber types that route from it (${unregistered
+                .map((row) => `${row.subscriber_type}.${row.subscription}`)
+                .join(", ")}); register their layers on every runner that serves ${sourceType}`,
+            ),
+          )
+      })
 
       const publicActors = Actors.of({
         mintCommandId: Effect.gen(function* () {
@@ -711,6 +774,12 @@ export const layer = (options: Options) => {
           const { isResident, owner } = yield* registerActor(registration, transport).pipe(
             Effect.provideContext(services),
             Effect.provideService(OutboxRuntime, outbox),
+          )
+
+          yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
+          yield* requireRoutedSubscribers(registration.name).pipe(
+            Effect.provideContext(services),
+            Effect.orDie,
           )
 
           // A deploy may add an event class to a dynamic subscription; its
