@@ -51,7 +51,7 @@ client ──TLS──► edge ────────────────�
 The assertion is a compact JWS.
 
 - **Header.** `alg` is `EdDSA` with Ed25519 and nothing else, `typ` is `durable-assertion+jwt`, and `kid` names the signing key. Any other algorithm, `none` included, is refused.
-- **Claims.** `iss` is the edge issuer. `aud` is the deployment id. `region` is the region the edge routed to, and a runner refuses an assertion for any other region. `iat` and `exp` are set, with `exp − iat` at most 60 seconds (default 30). `tenant` and `caller` carry the verified attribution, within ADR 0027's limits: a tenant of 1 to 128 bytes, and an encoded caller of at most 1 KiB. `actor`, `id`, `member`, and `cid` (the command id, when there is one) are there for logs and direct checks.
+- **Claims.** `iss` is the edge issuer. `aud` is the deployment id. `region` is the region the edge routed to, and a runner refuses an assertion for any other region. `iat` and `exp` are set, with `exp − iat` at most 60 seconds (ADR 0027's cap) and 10 seconds by default. `tenant` and `caller` carry the verified attribution, within ADR 0027's limits: a tenant of 1 to 128 bytes, and an encoded caller of at most 1 KiB. `actor`, `id`, `member`, and `cid` (the command id, when there is one) are there for logs and direct checks. `sid` appears only on streaming assertions (§4).
 - **Canonical request binding.** `req` is the lowercase hex SHA-256 of this UTF-8 string, lines joined by `\n`:
 
   ```text
@@ -74,13 +74,13 @@ The assertion is a compact JWS.
 - **Where keys live.** Signing keys exist only in the edge's secret store. Runners get the public key set (`kid`, public key, `nbf`, `exp`) from the control plane, at startup and then by polling every 5 minutes. An unknown `kid` triggers a refetch at most once a minute, as `Actor.auth.jwt` already does for JWKS (ADR 0027 §3).
 - **Rotation.** A new key is published at least one polling interval before the edge signs with it. A retired key stays published for the longest assertion lifetime plus skew after its last use. Keys rotate every 30 days.
 - **Revoking a signing key.** The control plane removes the key from the set and pushes a refresh to runners. A runner that misses the push stops accepting the key within one polling interval, so the revocation bound is 5 minutes (open question 2).
-- **Revoking a caller or API key.** This happens at the edge. Assertions already issued stay valid until they expire, at most 60 seconds later. As [ADR 0004](0004-receipt-access-revocation-and-expiry.md) requires, admitted work continues.
+- **Revoking a caller or API key** happens at the edge, and it blocks every new request from that moment, as contract 10 requires. An assertion never reaches the client: the edge signs it immediately before forwarding one request and uses it only for that request's forwarding attempts. A revoked caller therefore has no assertion to present, and cannot make a new admission. The only admissions after revocation are requests the edge authenticated before it and was still forwarding, and the assertion's lifetime bounds them (10 seconds by default). The runner's own resource authorization still runs on every request, so an application that tracks revocation itself refuses even those. As [ADR 0004](0004-receipt-access-revocation-and-expiry.md) requires, work admitted before revocation continues.
 
 ### 4. Streaming sessions
 
 - **Holders stay in runners in M4.** The edge proxies WebSocket and SSE bytes. It does not hold or park sockets, so [ADR 0023](0023-connections-parking-and-streams.md)'s holders are unchanged (open question 5).
-- **Open.** On an upgrade, and on the `hello` frame, the edge authenticates and signs an assertion that binds the upgrade request's canonical string plus a `session` nonce it generates. The runner's holder verifies it before opening the session.
-- **Reauthentication.** ADR 0027 has the holder ask the client for a fresh credential with `reauthenticate`. On a hosted edge, the edge verifies the client's answer and replaces the credential in that frame with a fresh assertion bound to the same `session` nonce. The holder verifies it and requires the same caller and tenant. The revocation bound is unchanged: `policy.reauthorizeEvery`, capped by the credential's expiry.
+- **Open.** On an upgrade, and on the `hello` frame, the edge authenticates, generates a session id of 128 random bits, and signs an assertion that binds the upgrade request's canonical string and carries the id in the `sid` claim (base64url, compared byte for byte). The runner's holder verifies the assertion before opening the session and stores `sid` with the session.
+- **Reauthentication.** ADR 0027 has the holder ask the client for a fresh credential with `reauthenticate`. On a hosted edge, the edge verifies the client's answer and replaces the credential in that frame with a fresh assertion. Its canonical string is `durable-assertion/v1`, then `REAUTHENTICATE`, then the session's upgrade path, then the `sid`, and it carries the same `sid` claim. The holder verifies the assertion, requires the `sid` it stored at open, and requires the same caller and tenant. An assertion for another session is refused like any misbound assertion. The revocation bound is unchanged: `policy.reauthorizeEvery`, capped by the credential's expiry.
 - **Edge loss.** A socket through a dead edge process is lost, and the client reconnects, as for any transport loss ([contract 07](../contracts/07-realtime.md)).
 
 ### 5. The tenant directory
@@ -159,7 +159,7 @@ None in the framework for M4. The directory lives in the control-plane database 
 ## Open questions for Dallen, with recommended defaults
 
 1. **Custom auth code in hosted deployments.** Recommended default: not supported in M4. Hosted deployments use hosted API keys and declarative JWT settings. Alternatives: run `Actor.auth.make` providers on runners and route every request to the primary region, which gives up regions; or sandbox providers at the edge, which needs a threat-model review.
-2. **How fast a revoked signing key stops working.** Recommended default: a push on revocation, plus polling every 5 minutes as the bound. Alternative: 1-minute polling, which costs more control-plane reads.
+2. **How fast a revoked signing key stops working, and the assertion lifetime.** Recommended default: a push on revocation, plus polling every 5 minutes as the bound. Alternative: 1-minute polling, which costs more control-plane reads. The assertion lifetime defaults to 10 seconds, which bounds how long a request authenticated just before a caller's revocation can still be admitted. Alternative: ADR 0027's 60-second cap, which tolerates slower forwarding.
 3. **A replay cache.** Recommended default: none, because receipts and request binding cover replay. Alternative: a per-runner `jti` cache for 60 seconds.
 4. **When to build the directory.** Recommended default: in M4.8 with only the primary region, so the lookup, the absent-row rule, and the cache are exercised before L.1. Alternative: wait for L.1 and route everything to the one region until then.
 5. **Edge-held sockets.** Recommended default: not in M4; the edge proxies and holders stay in runners. Alternative: move parking to the edge, which needs its own ADR amending ADR 0023.
@@ -172,6 +172,8 @@ For M4.8, in `conformance/assertions.ts` on the served HTTP harness:
 - `refuses forged, unknown-kid, wrong-algorithm, and none-algorithm assertions before admission`
 - `refuses expired assertions, assertions issued in the future beyond skew, and assertions for another deployment or region`
 - `refuses an assertion moved to another method, path, query, idempotency key, or body`
+- `refuses a reauthentication assertion whose sid belongs to another session`
+- `refuses new requests from a revoked caller at the edge, and admits in-flight ones only within the assertion lifetime`
 - `strips a client-supplied durable-assertion and takes the caller only from the assertion`
 - `keeps admitted work running after its assertion expires, and replays its receipt to a newly authenticated retry`
 - `accepts a rotated key during overlap and refuses a revoked key within the polling bound`
