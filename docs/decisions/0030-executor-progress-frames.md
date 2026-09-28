@@ -1,6 +1,6 @@
 # ADR 0030: Executor progress frames
 
-**Status:** accepted (2026-09-28, Dallen, with every proposed default; proposed 2026-09-27). The executor side is implemented; delivery to owners, holders, connections, and streams is M2.18. The amendments listed under [behaviour changes](#behaviour-changes-against-existing-contracts) have landed as labelled targets, and the [decided questions](#decided-questions) record the defaults.
+**Status:** accepted (2026-09-28, Dallen, with every proposed default; proposed 2026-09-27). The executor side is implemented; delivery to owners, holders, connections, and streams is M2.18. The amendments listed under [behaviour changes](#behaviour-changes-against-existing-contracts) have landed as labelled targets, and the [decided questions](#decided-questions) record the defaults. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) amends the close bound, the final frame under the runner-wide cap, and what `seq` counts.
 
 ## Context
 
