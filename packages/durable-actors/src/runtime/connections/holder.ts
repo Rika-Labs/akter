@@ -357,7 +357,12 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const waiting = connection.progress.get(message.effectId)
 
       if (waiting !== undefined) {
-        if (heldBytes - waiting.bytes + bytes > MAX_HELD_BYTES) return
+        // A newer frame that would not fit is dropped; the waiting one stays.
+        if (
+          connection.outBytes - waiting.bytes + bytes > MAX_OUTBOUND_BYTES ||
+          heldBytes - waiting.bytes + bytes > MAX_HELD_BYTES
+        )
+          return
         connection.outBytes += bytes - waiting.bytes
         heldBytes += bytes - waiting.bytes
         waiting.message = message
