@@ -1,11 +1,11 @@
 {
   "profile": "ci",
   "backend": "postgres",
-  "sha": "30b34c8",
+  "sha": "1c86f1c",
   "statementsPerOperation": {
     "hot-actor/sequential": 7,
-    "hot-actor/concurrent-8": 4,
-    "hot-actor/concurrent-64": 3.2,
+    "hot-actor/concurrent-8": 4.35,
+    "hot-actor/concurrent-64": 3.29,
     "turn-batches/waiting-32": 107.03,
     "cold-activation/new-actor": 9,
     "cold-activation/after-hibernation": 9,
@@ -33,9 +33,9 @@
   },
   "roundTripsPerOperation": {
     "hot-actor/sequential": 2,
-    "hot-actor/concurrent-8": 0.5,
-    "hot-actor/concurrent-64": 0.1,
-    "turn-batches/waiting-32": 4,
+    "hot-actor/concurrent-8": 0.36,
+    "hot-actor/concurrent-64": 0.07,
+    "turn-batches/waiting-32": 3,
     "cold-activation/new-actor": 2,
     "cold-activation/after-hibernation": 2,
     "query-latency/sequential": 0,
