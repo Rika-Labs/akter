@@ -183,3 +183,15 @@ export const Room = Actor.make("Room", {
     },
   },
 })
+
+/** Sends the daily digest. Only its cron tick calls it, so it stays out of the public API. */
+export const Send = Actor.command("Send")
+
+/** One per deployment: the digest goes out at 08:00 UTC once, however many runners serve it. */
+export const Digest = Actor.make("Digest", {
+  key: Actor.singleton,
+  state: Actor.state({ sent: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  api: {},
+  internal: { Send },
+  policy: { cron: { "0 8 * * *": Send }, cronSkipIfOlderThan: "1 hour" },
+})

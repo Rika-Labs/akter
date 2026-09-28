@@ -546,9 +546,10 @@ Ten runs on 2026-09-27: 0 lost and 0 duplicated operations every time, 306–321
 
 - `resumes an appeal on another runner and resolves it from the owner's event, through a runner kill` — an `Appeal` workflow notifies moderators in an activity step and waits for `AppealDecided`. The room's owner is killed while the appeal is suspended; on a survivor, a non-matching decision is ignored, the matching one resolves the appeal to `true`, and moderators were notified once.
 - `mints one thread per reply thread and replays its id after the room's runner is killed` — `StartThread` mints a `Thread` child and sends its creating `Open` intent. After the owner is killed, a retry under the same command id with another payload conflicts instead of minting again, the intent is redelivered once the dead runner's claim lapses, and the thread is created once and takes replies.
+- `runs one digest per day across three runners, through a runner kill` — the `Digest` singleton declares `0 8 * * *` to its internal `Send` with a one-hour `cronSkipIfOlderThan`. Every runner's clock moves one day in hourly steps, so the 08:00 tick fires inside its skip window, and one `Send` commits. The singleton's owner is killed and the two survivors move another day: a second `Send` commits and, after a settle, there are exactly two `Send` receipts and `sent` is 2.
 - `wakes a parked room on another runner when a typing frame arrives` — two `Presence` connections are held by the two runners that do not own the room, and the owner hibernates the room. A typing frame from one wakes the room on its owner, whose generation rises, and the other receives it with the user name stored in the session at open.
 
-Pending, as `it.todo` cases in the same file: the cron digest (M2.5, [#132](https://github.com/Rika-Labs/durable-actors/pull/132)) and per-room moderation caps (M2.13, [#125](https://github.com/Rika-Labs/durable-actors/pull/125)).
+Pending, as an `it.todo` case in the same file: per-room moderation caps (M2.13, [#125](https://github.com/Rika-Labs/durable-actors/pull/125)).
 
 ### Connections and parking (M2.10)
 
