@@ -131,7 +131,7 @@ interface Plan {
   readonly committed: Omit<CommittedEvents, "emittedAtMs">
   /** Filled in as the commit group replies, so read only after it has. */
   readonly outbox: OutboxReplies
-  readonly emitted: { atMs: number }
+  readonly emitted: { readonly emittedAtMs: number }
 }
 
 class RolledBack {
@@ -266,7 +266,7 @@ export const executeTurn = Effect.fnUntraced(function* (
         head: admitted.head,
         committed: { after: admitted.head, events: [], commandId: request.commandId },
         outbox: { wake: false, cancelled: false },
-        emitted: { atMs: 0 },
+        emitted: { emittedAtMs: 0 },
       } satisfies Plan
     }
 
@@ -362,14 +362,12 @@ export const executeTurn = Effect.fnUntraced(function* (
         )
     }
 
-    const emitted = { atMs: 0 }
+    const events =
+      result.events.length > 0
+        ? yield* eventsStatement(request, routingKey, result.events)
+        : { statement: undefined, stamp: { emittedAtMs: 0 } }
 
-    if (result.events.length > 0)
-      writes.push(
-        Effect.map(yield* eventsStatement(request, routingKey, result.events), (atMs) => {
-          emitted.atMs = atMs
-        }),
-      )
+    if (events.statement !== undefined) writes.push(events.statement)
 
     // Re-arming waiting workflows reads their steps, so it runs before the
     // commit group; only an actor with a workflow waiting on an emitted class
@@ -410,7 +408,7 @@ export const executeTurn = Effect.fnUntraced(function* (
       head: String(BigInt(admitted.head) + BigInt(result.events.length)),
       committed: { after: admitted.head, events: result.events, commandId: request.commandId },
       outbox: outbox.replies,
-      emitted,
+      emitted: events.stamp,
     } satisfies Plan
   })
 
@@ -465,7 +463,10 @@ export const executeTurn = Effect.fnUntraced(function* (
     outcome: done.outcome,
     broadcasts: done.broadcasts,
     head: done.head,
-    committed: { ...done.committed, emittedAtMs: done.emitted.atMs } satisfies CommittedEvents,
+    committed: {
+      ...done.committed,
+      emittedAtMs: done.emitted.emittedAtMs,
+    } satisfies CommittedEvents,
   }
 })
 
