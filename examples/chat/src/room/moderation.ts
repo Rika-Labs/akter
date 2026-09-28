@@ -18,3 +18,18 @@ export class ModerationApi extends Context.Service<
     check: (body) => Effect.succeed(body.toLowerCase().includes("spam")),
   })
 }
+
+/**
+ * Tells moderators about an appeal. An appeal's notify step calls it at least
+ * once, so a real pager deduplicates on `messageId`: each message has one
+ * appeal execution, keyed by that id.
+ */
+export class Moderators extends Context.Service<
+  Moderators,
+  { readonly notify: (messageId: string) => Effect.Effect<void> }
+>()("@durable-actors/chat/room/moderation/Moderators") {
+  /** Demo substitute: logs the appeal instead of paging anyone. */
+  static readonly layer = Layer.succeed(Moderators, {
+    notify: (messageId) => Effect.logInfo("appeal awaiting a moderator", messageId),
+  })
+}
