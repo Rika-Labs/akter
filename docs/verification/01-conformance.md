@@ -591,7 +591,7 @@ The runnable [counter's own test](../../examples/counter/src/counter/layer.test.
 
 Run `bun run --filter @durable-actors/core test` for declaration, identity, and the PGlite suite; run `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/core test:integration` and `TEST_DATABASE_URL=<disposable-admin-url> bun run --filter @durable-actors/counter test:integration` for Postgres and crash coverage. The role must create/drop temporary databases; tests never use application data. The existing CI `check:ci` task runs these and records the tested revision in `evidence/sha.txt`, logs in `evidence/check.log`, and the `evidence-<head-sha>` artifact. The PR links its actual current-revision run; this ledger is a map to tests, not a replacement for that artifact.
 
-This completes M0 evidence plus M1.1–M1.3 (placement and `routing_key`, queries, and state migrations), M1.4 owned tables, M1.5 events (invariant E1 on one runner; the multi-runner feed case waits for M2), M1.6 outbox, intents, and timers on one runner, and M1.8 server reducers, not full backend certification. Unimplemented gates below remain required for their later milestones, including the remaining [M1](../milestones/M1.md) members, multi-process runner ownership, singleton failover/run/cron, cleanup/restore, bounded drain, and provider behavior.
+This completes M0 evidence plus M1.1–M1.3 (placement and `routing_key`, queries, and state migrations), M1.4 owned tables, M1.5 events (invariant E1 on one runner; the multi-runner feed case is under [Streams](#streams-m210)), M1.6 outbox, intents, and timers on one runner, and M1.8 server reducers, not full backend certification. Unimplemented gates below remain required for their later milestones, including the remaining [M1](../milestones/M1.md) members, multi-process runner ownership, singleton failover/run/cron, cleanup/restore, bounded drain, and provider behavior.
 
 ### Process death by consequence type (T4b)
 
@@ -645,7 +645,7 @@ Pending, as an `it.todo` case in the same file: the cron digest (M2.5, [#132](ht
 
 ### Connections and parking (M2.10)
 
-The cases live in [`conformance/connections.ts`](../../packages/durable-actors/src/testing/conformance/connections.ts). Connections open through `ActorTest.connect`, which the runner's in-process holder holds; the owner keeps each session in `actor_connections` (migration `0014_connections`) under the actor's generation fence. `Actor.stream` and `read.follow` are the second M2.10 pull request and have no cases yet.
+The cases live in [`conformance/connections.ts`](../../packages/durable-actors/src/testing/conformance/connections.ts). Connections open through `ActorTest.connect`, which the runner's in-process holder holds; the owner keeps each session in `actor_connections` (migration `0014_connections`) under the actor's generation fence. `Actor.stream` and `read.follow` have their own cases under [Streams](#streams-m210).
 
 Shared (PGlite and Postgres):
 
@@ -702,6 +702,32 @@ Not covered by an executable case, each for the reason given:
 - An owner drops only the unknown connection ids that belong to the answering holder. A holder reports only ids it was sent, so this needs a holder that forges ids, which the in-process transport cannot be.
 
 **Executed 2026-09-27 (M2.10 part 1, branch `feat/53-connections` merged with `main` at `0ba95fc`):** Bun 1.4.2 and disposable Postgres 18.6. The connection cases pass on PGlite and Postgres; see the pull request for the full `bun run check` and `test:integration` counts. `benchmarks/results/2026-09-27-8fa18f1-connections-*.json` hold the `connections` scenario.
+
+### Streams (M2.10)
+
+The cases live in [`conformance/streams.ts`](../../packages/durable-actors/src/testing/conformance/streams.ts). A subscription is a streaming request from the subscriber's runner to the actor's connection entity, which runs the handler on the owner's activation; it uses no holder, `actor_connections` row, or broadcast channel, and adds no migration. The owner sends `Started` first, then elements through a 256-element window, then `Done` when the handler's stream ends by itself; the subscriber treats any other end, a second `Started` (Cluster resent the request to a new owner), or an owner runner that stops answering its liveness ping as `SessionEnded` cause `ActivationEnded`. `read.follow` pages `actor_events` after the cursor up to the activation's committed head, then waits for the next commit that advances it, so each page starts where the last stopped.
+
+Shared (PGlite and Postgres):
+
+- `follows events from a cursor with no gap or repeat between replay and live` — invariant **E1** across replay and live: three events, then a follow after the first replays two and receives three more committed while and after it replays, in strictly increasing cursor order.
+- `fails a follow from a cursor the actor never issued with its declared UnknownCursor` — a declared failure reaches the subscriber typed.
+- `completes a subscription whose handler's stream ends by itself`.
+- `ends a stream with ActivationEnded when its activation stops, and keeps the activation resident while subscribed` — failure-matrix row **Stream's activation ends**: with `hibernateAfter: 1 second`, 3.5 idle seconds leave the generation unchanged while a subscription is open; `test.hibernate` then ends it with `SessionEnded { cause: "ActivationEnded", resync: false }` (retryable), and subscribing again from the last cursor receives the next event and nothing before it.
+- `rejects a subscription its caller may not open, and ends one whose reauthorization is denied` — H2 for streams: a denied `authorize` refuses the subscription with `Unauthorized` `access_denied`; a denial at the owner's periodic reauthorization ends an open one the same way.
+- `ends a subscription with reauthorization_unavailable at its bound`.
+- `ends a stream with SlowConsumer after its window stays full for 30 seconds` — a subscriber that stops reading; after `advance("31 seconds")` the owner ends it with `SessionEnded { cause: "SlowConsumer", resync: true }`.
+- `refuses a subscription past 256 open on one actor with RunnerAtCapacity`.
+
+Postgres only (on the harness, 3-second shard locks):
+
+- `delivers a stream from an owner on another runner and ends it with ActivationEnded when that runner is killed` — runner 0 subscribes to an actor runner 1 owns; after `cluster.kill(1)` the subscriber receives `ActivationEnded`, and a new subscription from its last cursor through the survivor receives the next event.
+- `keeps cursor order in a followed stream written through turns on different runners over time` — invariant **E1**'s multi-runner half (M2.4): three runners; three events committed by each of three successive owners, two of them killed; a follow from the start returns all nine in commit order with cursors 1 to 9.
+
+Declaration test (`actor/definition.test.ts`): a stream handle returns a `Stream` typed by the member's output and declared errors plus the four framework reasons; a handler that lets `read.follow`'s `UnknownCursor` or `RetentionGap` escape undeclared does not compile; a query layer that calls `read.follow` requires `Actor.InStream`; and streams are left off the Promise client.
+
+Without an executable case: a stream on an activation whose heartbeat is paused while another runner takes the actor keeps its subscription until the stale runner loses its shard (its `read.follow` receives no commits from the new owner in the meantime, so it stalls rather than skipping); a stream handler defect ends the subscription with `SessionEnded { cause: "Defect" }`; an authorization check that answers past the bound ends the subscription with `reauthorization_unavailable`; a subscription whose reply reaches the owner past its `authorizedUntil` is refused; and Cluster's resend of a subscription after a runner death is ended by the second `Started`. Streams are not served over WebSocket until M3.3, whose transport cases cover them.
+
+**Executed 2026-09-28 (M2.10 part 2, branch `feat/53-actor-stream`):** Bun 1.4.2 and Postgres 18.6 (`postgres:18.6-bookworm`, as in `compose.yaml`). The eight shared cases pass on PGlite and all ten on Postgres; see the pull request for the full `bun run check` and `test:integration` counts. The `connections` scenario gains `stream-subscribe` and `stream-follow`.
 
 ### Quickstart scaffolder (CR.2)
 

@@ -68,6 +68,7 @@ import {
   type ConnectionsFixture,
   connectionsLayer,
 } from "./conformance/connections.ts"
+import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import {
@@ -388,6 +389,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...retentionConformance,
   ...workflowsConformance,
   ...connectionsConformance,
+  ...streamsConformance,
   ...transportsConformance,
   ...workflowVersionsConformance,
   {
@@ -1422,6 +1424,7 @@ export const describeConformance = (options: {
     propertiesLayer,
     workflowsLive(fixture.workflows),
     connectionsLayer(fixture.connections),
+    streamsLayer,
     transportsLayer,
     mintLayer,
   )
