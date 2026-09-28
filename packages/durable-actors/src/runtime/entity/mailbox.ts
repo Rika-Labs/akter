@@ -9,9 +9,31 @@ import type { Request } from "../../handles/actors.ts"
 export const BATCH_CAP = 32
 
 /**
+ * The most calls of one commutative reducer that one merged turn combines.
+ * Merging never waits for calls: it takes only those already waiting.
+ */
+export const MERGE_CAP = 1024
+
+/** A waiting command, and whether its reducer merges with its neighbours. */
+export interface Mergeable {
+  readonly request: Request
+  readonly command: { readonly merge?: unknown }
+}
+
+/** True when `next` joins a merged turn of `previous`'s commutative reducer. */
+export const merges = ({
+  previous,
+  next,
+}: {
+  readonly previous: Mergeable
+  readonly next: Mergeable
+}) => next.command.merge !== undefined && next.request.command === previous.request.command
+
+/**
  * Removes the next batch from the front of `waiting`, in delivery order: the
  * first command, then each command behind it that is already waiting, up to
- * `BATCH_CAP`. Nothing waits for more to arrive.
+ * `BATCH_CAP` turns. Consecutive calls of one commutative reducer are one
+ * merged turn of up to `MERGE_CAP` calls. Nothing waits for more to arrive.
  *
  * A batch stops before a command id it already holds, so a retry queued
  * behind its original resolves through the receipt the original commits. It
@@ -19,7 +41,7 @@ export const BATCH_CAP = 32
  * batch of its own, once: these are the commands of a batch that failed, run
  * one per transaction until each has been processed.
  */
-export const takeBatch = <W extends { readonly request: Request }>({
+export const takeBatch = <W extends Mergeable>({
   waiting,
   alone,
 }: {
@@ -34,11 +56,24 @@ export const takeBatch = <W extends { readonly request: Request }>({
 
   const batch = [first]
   const ids = new Set([first.request.commandId])
+  let turns = 1
+  let merged = first.command.merge === undefined ? 0 : 1
 
-  while (batch.length < BATCH_CAP && waiting.length > 0) {
-    const { commandId } = waiting[0]!.request
+  while (waiting.length > 0) {
+    const next = waiting[0]!
+    const { commandId } = next.request
 
     if (ids.has(commandId) || alone.has(commandId)) break
+
+    const joins = merged > 0 && merged < MERGE_CAP && merges({ previous: batch.at(-1)!, next })
+
+    if (!joins && turns === BATCH_CAP) break
+
+    if (joins) merged += 1
+    else {
+      turns += 1
+      merged = next.command.merge === undefined ? 0 : 1
+    }
 
     ids.add(commandId)
     batch.push(waiting.shift()!)

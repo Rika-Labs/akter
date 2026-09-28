@@ -1,4 +1,4 @@
-import { Effect, Fiber, Layer, Schedule, Schema } from "effect"
+import { Effect, Fiber, Layer, Result, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, User } from "../../index.ts"
 import { InternalActors } from "../../handles/actors.ts"
@@ -17,11 +17,30 @@ const Log = Actor.query("Log", {
   output: Schema.Array(Schema.Struct({ cursor: Schema.String, commandId: Schema.String })),
 })
 
+const TallyState = Actor.state({
+  count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+})
+
+// Calls of `reduce`, so the merging case can count merged turns.
+const tickReductions = { count: 0 }
+
+/** A commutative reducer: calls already waiting on the owner merge into one turn. */
+export const Tick = Actor.reducer("Tick", {
+  state: TallyState,
+  input: Schema.Finite,
+  reduce: (state, amount) => {
+    tickReductions.count += 1
+
+    return Result.succeed({ count: state.count + amount })
+  },
+  commutative: { combine: (first, second) => first + second },
+})
+
 const Tally = Actor.make("Tally", {
   key: Schema.String,
-  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  state: TallyState,
   events: [Tallied],
-  api: { Add, Whoami, Log },
+  api: { Add, Whoami, Log, Tick },
 })
 
 const TallyLive = Layer.mergeAll(
@@ -215,6 +234,98 @@ const killDuringTurn = (expect: ConformanceExpect, point: "beforeCommit" | "afte
   })
 
 export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "merges commutative calls from three runners on the owner into one turn with one receipt per command id",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withCluster(
+        environment,
+        3,
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const id = "merged-ticks"
+          const ref = yield* refOf(id)
+          expect(yield* add(0, id, 1)).toBe(1)
+          const owner = (yield* cluster.owner(ref))!
+          const onOwner = cluster.on(owner)
+
+          // The owner holds one turn open, and each runner's calls queue
+          // behind it, one arrival at a time.
+          const held = yield* onOwner(ActorTest.use((test) => test.pauseNext("beforeCommit")))
+          const first = yield* add((owner + 1) % 3, id, 1).pipe(Effect.forkChild)
+          yield* held.reached
+
+          const calls: Array<{ readonly runner: number; readonly commandId: string }> = []
+          const ticks = []
+
+          for (let runner = 0; runner < 3; runner++)
+            for (let call = 0; call < 4; call++) {
+              const commandId = yield* cluster.on(runner)(
+                Effect.gen(function* () {
+                  return yield* (yield* Actors).mintCommandId
+                }),
+              )
+
+              const queued = yield* onOwner(ActorTest.use((test) => test.pauseNext("queued")))
+
+              ticks.push(
+                yield* cluster
+                  .on(runner)(
+                    Tally.get(id).pipe(
+                      Effect.flatMap((tally) => tally.Tick(1).pipe(Actor.commandId(commandId))),
+                    ),
+                  )
+                  .pipe(Effect.forkChild),
+              )
+
+              yield* queued.reached
+              yield* queued.release
+              calls.push({ runner, commandId })
+            }
+
+          const before = tickReductions.count
+          yield* held.release
+          expect(yield* Fiber.join(first)).toBe(2)
+          expect(yield* Effect.forEach(ticks, Fiber.join)).toEqual(calls.map(() => undefined))
+
+          // One reduce for twelve calls from three runners, one transaction,
+          // and a receipt under every original id.
+          expect(tickReductions.count - before).toBe(1)
+
+          const receipts = yield* cluster.on(owner)(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+
+              return yield* sql<{ command_id: string; tx: string }>`
+                SELECT command_id, xmin::text AS tx FROM actor_receipts
+                WHERE tenant_id = ${ref.tenant} AND actor_type = 'Tally' AND actor_id = ${ref.id}
+                  AND command = 'Tick'`
+            }).pipe(Effect.orDie),
+          )
+
+          expect(receipts.map((row) => row.command_id).sort()).toEqual(
+            calls.map((call) => call.commandId).sort(),
+          )
+          expect(new Set(receipts.map((row) => row.tx)).size).toBe(1)
+          expect(yield* inspect((owner + 2) % 3, ref)).toMatchObject({
+            state: { count: 14 },
+            receipts: 14,
+          })
+
+          // A retry from another runner replays its own receipt.
+          const retried = calls[5]!
+          expect(
+            yield* cluster.on((retried.runner + 1) % 3)(
+              Tally.get(id).pipe(
+                Effect.flatMap((tally) => tally.Tick(1).pipe(Actor.commandId(retried.commandId))),
+              ),
+            ),
+          ).toBe(undefined)
+          expect(tickReductions.count - before).toBe(1)
+        }),
+      ),
+  },
   {
     name: "places each actor on exactly one of three runners, reachable through every runner",
     requiresIndependentConnections: true,

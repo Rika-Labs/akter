@@ -1,9 +1,9 @@
 import { pgTable, text } from "drizzle-orm/pg-core"
-import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Result, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
-import { BATCH_CAP } from "../../runtime/entity/mailbox.ts"
+import { BATCH_CAP, MERGE_CAP } from "../../runtime/entity/mailbox.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
@@ -25,13 +25,43 @@ const Noted = Actor.command("Noted", {})
  * Each handler writes state and an owned row, so a batch of its commands
  * takes a savepoint per handler and threads state from one to the next.
  */
+const LedgerState = Actor.state({
+  log: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+})
+
+// Calls of `reduce`, so a case can tell one merged turn from one turn per call.
+export const reductions = { count: 0 }
+
+/** Adds to the count; merged calls combine by summing. */
+export const Bump = Actor.reducer("Bump", {
+  state: LedgerState,
+  input: Schema.Int,
+  reduce: (state, amount) => {
+    reductions.count += 1
+
+    return Result.succeed({ ...state, count: state.count + amount })
+  },
+  commutative: { combine: (first, second) => first + second },
+})
+
+/** Like `Bump`, but models a reducer bug: an input above 10 throws. */
+export const Fragile = Actor.reducer("Fragile", {
+  state: LedgerState,
+  input: Schema.Int,
+  reduce: (state, amount) => {
+    if (amount > 10) throw new Error("Fragile reducer bug")
+
+    return Result.succeed({ ...state, count: state.count + amount })
+  },
+  commutative: { combine: (first, second) => first + second },
+})
+
 const Ledger = Actor.make("BatchLedger", {
   key: Schema.String,
-  state: Actor.state({
-    log: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
-  }),
+  state: LedgerState,
   tables: [marks],
-  api: { Append, Refuse, Explode },
+  api: { Append, Refuse, Explode, Bump, Fragile },
   internal: { Noted },
 })
 
@@ -382,6 +412,122 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Fiber.join(retry!)).toEqual(reply)
           expect(runs.get("duplicate-x")).toBe(1)
           expect(yield* test.inspect(ledger.ref)).toMatchObject({ receipts: 2 })
+        }),
+      ),
+  },
+  {
+    name: "merged turn: commutative calls already waiting commit in one turn with one receipt per command id",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const ledger = yield* Ledger.get("merged")
+          const ids = yield* mint(5)
+          const first = yield* holding(ledger.Append("merged-first"))
+
+          const waiting = yield* enqueue(
+            ids.map((id, index) => ledger.Bump(index + 1).pipe(Actor.commandId(id), Effect.orDie)),
+          )
+
+          const before = reductions.count
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+          expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual(ids.map(() => undefined))
+
+          // Five calls, one reduce over their combined input, one transaction,
+          // and a receipt under every original id.
+          expect(reductions.count - before).toBe(1)
+          const committed = yield* transactions(ledger.ref)
+          expect(ids.every((id) => committed.has(id))).toBe(true)
+          expect(new Set(ids.map((id) => committed.get(id))).size).toBe(1)
+          expect(yield* test.inspect(ledger.ref)).toMatchObject({
+            state: { log: ["merged-first"], count: 15 },
+            receipts: 6,
+          })
+
+          // Each id replays its own receipt without reducing again.
+          expect(yield* ledger.Bump(3).pipe(Actor.commandId(ids[2]!))).toBe(undefined)
+          expect(reductions.count - before).toBe(1)
+          expect((yield* test.inspect(ledger.ref)).receipts).toBe(6)
+        }),
+      ),
+  },
+  {
+    name: "merged turn: never combines more than 1,024 calls",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const ledger = yield* Ledger.get("merge-cap")
+          const ids = yield* mint(MERGE_CAP + 6)
+          const first = yield* holding(ledger.Append("merge-cap-first"))
+
+          const waiting = yield* enqueue(
+            ids.map((id) => ledger.Bump(1).pipe(Actor.commandId(id), Effect.orDie)),
+          )
+
+          const before = reductions.count
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+          yield* Effect.forEach(waiting, Fiber.join)
+
+          // Two merged turns in one batch: the first 1,024 calls, then the 6
+          // behind them.
+          expect(reductions.count - before).toBe(2)
+          const committed = yield* transactions(ledger.ref)
+          expect(new Set(ids.map((id) => committed.get(id))).size).toBe(1)
+
+          const [state] = yield* SqlClient.SqlClient.pipe(
+            Effect.flatMap(
+              (sql) => sql<{ receipts: number }>`SELECT count(*)::integer AS receipts
+                FROM actor_receipts WHERE actor_type = 'BatchLedger' AND actor_id = ${ledger.ref.id}
+                  AND command = 'Bump'`,
+            ),
+            Effect.orDie,
+          )
+
+          expect(state!.receipts).toBe(MERGE_CAP + 6)
+        }),
+      ),
+  },
+  {
+    name: "merged turn: a failing merged turn commits none of its calls, and each then runs alone",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const ledger = yield* Ledger.get("merge-fails")
+          const [one, bad, two] = yield* mint(3)
+          const first = yield* holding(ledger.Append("merge-fails-first"))
+
+          const [a, x, b] = yield* enqueue([
+            ledger.Fragile(1).pipe(Actor.commandId(one!), Effect.exit),
+            ledger.Fragile(13).pipe(Actor.commandId(bad!), Effect.exit),
+            ledger.Fragile(2).pipe(Actor.commandId(two!), Effect.exit),
+          ])
+
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+
+          // The combined input 16 made the merged reduce throw; alone, only
+          // the call carrying 13 does.
+          expect(yield* Fiber.join(a!)).toEqual(Exit.succeed(undefined))
+          const failed = yield* Fiber.join(x!)
+          expect(Exit.isFailure(failed) && Cause.hasDies(failed.cause)).toBe(true)
+          expect(yield* Fiber.join(b!)).toEqual(Exit.succeed(undefined))
+
+          const committed = yield* transactions(ledger.ref)
+          expect(committed.has(bad!)).toBe(false)
+          expect(committed.get(one!)).not.toBe(committed.get(two!))
+          expect(yield* test.inspect(ledger.ref)).toMatchObject({
+            state: { count: 3 },
+            receipts: 3,
+          })
         }),
       ),
   },

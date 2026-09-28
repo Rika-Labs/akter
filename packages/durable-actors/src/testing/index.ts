@@ -4,6 +4,8 @@ export type { TestConnection, TestMessage } from "./actor-test.ts"
 
 export { ActorCluster } from "./cluster.ts"
 
+export { checkMergeLaw } from "./property.ts"
+
 export type { ClusterOptions, RunnerServices } from "./cluster.ts"
 
 export { conformance, describeConformance } from "./conformance.ts"

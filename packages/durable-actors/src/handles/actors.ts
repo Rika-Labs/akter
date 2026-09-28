@@ -99,6 +99,15 @@ export interface RegisteredCommand {
     state: ReadonlyArray<readonly [string, string]>,
     connections?: ConnectionLister,
   ) => Effect.Effect<BusinessResult, BusinessResult>
+  /**
+   * A commutative reducer's merged turn: the inputs of `requests`, combined
+   * in order, reduced once. Every request's outcome is the one `outcome`, and
+   * the merge law makes the state equal to applying them one at a time.
+   */
+  readonly merge?: (
+    requests: ReadonlyArray<Request>,
+    state: ReadonlyArray<readonly [string, string]>,
+  ) => Effect.Effect<BusinessResult>
 }
 
 /** What one connection handler is asked to do. */

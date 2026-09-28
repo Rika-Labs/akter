@@ -29,6 +29,7 @@ import {
   sequential,
   TurnConnections,
 } from "./pipeline.ts"
+import { MERGE_CAP, merges } from "../entity/mailbox.ts"
 import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
 
 const isSystem = Schema.is(System)
@@ -343,7 +344,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         retryWindowMs,
       })
 
-      const settled: Array<Settled> = []
+      const settled: Array<Settled> = Array.from({ length: batch.length })
       // State after every handler so far, loaded only once a handler runs.
       let next: Map<string, string> | undefined
       const dirty = new Map<string, string>()
@@ -359,7 +360,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       const broadcasts: Array<Broadcast> = []
       let events = 0
 
-      for (const [index, { request, command }] of batch.entries()) {
+      // Resolves one command's receipt and admission checks; undefined when
+      // the command is answered without running, with its payload hash when
+      // it runs.
+      const admitOne = Effect.fnUntraced(function* (index: number) {
+        const { request, command } = batch[index]!
         const admitted = admissions[index]!
         const hash = yield* hashCanonical(admitted.canonical)
 
@@ -369,8 +374,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           )
 
           replayed ||= Result.isSuccess(replay)
-          settled.push(replay)
-          continue
+          settled[index] = replay
+
+          return undefined
         }
 
         // Admitted work still runs past expiry, but not once cleanup may have
@@ -380,20 +386,20 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           request.external === true &&
           now >= commandTimes(request.commandId).expiresAt + expiryMarginMs
         ) {
-          settled.push(
-            Result.fail(
-              ActorError.make({ reason: CommandExpired.make({ commandId: request.commandId }) }),
-            ),
+          settled[index] = Result.fail(
+            ActorError.make({ reason: CommandExpired.make({ commandId: request.commandId }) }),
           )
-          continue
+
+          return undefined
         }
 
         if (command.internal && !isSystem(request.caller))
           return yield* Effect.die(new Error("Internal commands require a System caller"))
 
         if (policy.createdBy !== undefined && !created && policy.createdBy !== request.command) {
-          settled.push(Result.fail(ActorError.make({ reason: NotCreated.make({}) })))
-          continue
+          settled[index] = Result.fail(ActorError.make({ reason: NotCreated.make({}) }))
+
+          return undefined
         }
 
         // A minted actor is created only by the relay delivering the creating
@@ -407,10 +413,44 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           isMintedId(id) &&
           (request.external === true || !(yield* committedMintIntent(request)))
         ) {
-          settled.push(
-            Result.fail(ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })),
+          settled[index] = Result.fail(
+            ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
           )
+
+          return undefined
+        }
+
+        return hash
+      })
+
+      let index = 0
+
+      while (index < batch.length) {
+        const { request, command } = batch[index]!
+        const hash = yield* admitOne(index)
+
+        if (hash === undefined) {
+          index += 1
           continue
+        }
+
+        const start = index
+        const members = [{ index, request, hash }]
+        index += 1
+
+        // Calls of a commutative reducer already waiting right behind this
+        // one merge into its turn: their inputs are combined and reduced once.
+        while (
+          index < batch.length &&
+          members.length < MERGE_CAP &&
+          merges({ previous: batch[start]!, next: batch[index]! })
+        ) {
+          const joined = yield* admitOne(index)
+
+          if (joined !== undefined)
+            members.push({ index, request: batch[index]!.request, hash: joined })
+
+          index += 1
         }
 
         next ??= readsState
@@ -423,12 +463,17 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         // one's goes out with that handler's first statement, if it has one.
         const savepoint = `SAVEPOINT ${HANDLER_SAVEPOINT}`
 
-        if (statements && index > 0) yield* session.defer(savepoint)
+        if (statements && start > 0) yield* session.defer(savepoint)
 
         const business = yield* Effect.gen(function* () {
           yield* hooks.at("beforeHandler", request)
 
-          return yield* command.run(request, [...given], connections)
+          return members.length === 1
+            ? yield* command.run(request, [...given], connections)
+            : yield* command.merge!(
+                members.map((member) => member.request),
+                [...given],
+              )
         }).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
 
         const result: BusinessResult = Result.isSuccess(business)
@@ -439,7 +484,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         // unsent savepoint is dropped. Rolling back to a savepoint keeps it, so
         // each failed handler leaves one open until commit: a batch never holds
         // more savepoints than its cap of commands.
-        if (statements && (index === 0 || !session.withdraw(savepoint)))
+        if (statements && (start === 0 || !session.withdraw(savepoint)))
           yield* session.defer(
             Result.isSuccess(business)
               ? `RELEASE SAVEPOINT ${HANDLER_SAVEPOINT}`
@@ -497,20 +542,26 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         if (outbox.dueNow) wake = true
 
-        receipts.push({
-          routing_key: routingKey,
-          tenant_id: tenant,
-          actor_type: actor,
-          actor_id: id,
-          command_id: request.commandId,
-          command: request.command,
-          payload_hash: hash,
-          caller_key: callerKey(request.caller),
-          outcome: yield* encodeOutcome(result.outcome).pipe(Effect.orDie),
-          expires_at_ms: commandTimes(request.commandId).expiresAt,
-        })
-        yield* hooks.at("beforeCommit", request)
-        settled.push(Result.succeed(result.outcome))
+        const outcome = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
+
+        // A merged turn commits one receipt per original command id, each
+        // with its own payload hash and caller.
+        for (const member of members) {
+          receipts.push({
+            routing_key: routingKey,
+            tenant_id: tenant,
+            actor_type: actor,
+            actor_id: id,
+            command_id: member.request.commandId,
+            command: member.request.command,
+            payload_hash: member.hash,
+            caller_key: callerKey(member.request.caller),
+            outcome,
+            expires_at_ms: commandTimes(member.request.commandId).expiresAt,
+          })
+          yield* hooks.at("beforeCommit", member.request)
+          settled[member.index] = Result.succeed(result.outcome)
+        }
       }
 
       // Nothing ran and nothing replays on a newly acquired generation, so
