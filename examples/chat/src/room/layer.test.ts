@@ -260,3 +260,23 @@ it("relays typing frames to the room's other connections, across hibernation", (
       yield* watcher.close
     }),
   ))
+
+it("retracts a message and settles its moderation call once", () =>
+  run(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const room = yield* Room.get(RoomId.make("r8"))
+      const id = yield* room.Post({ body: "oops" })
+      yield* room.Retract(id)
+
+      while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
+
+      // Deleted before its claim, reported cancelled mid-call, or already moderated: one fate.
+      const settled =
+        (yield* test.receiptsFor(room.ref, "Moderated")) +
+        (yield* test.receiptsFor(room.ref, "ModerationCancelled"))
+
+      expect(settled <= 1).toBe(true)
+      expect(yield* room.Recent({ limit: 10 })).toEqual([])
+    }),
+  ))

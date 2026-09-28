@@ -124,6 +124,13 @@ export interface Options {
     readonly concurrency?: number
     /** An attempt's claim, renewed every third of it; at least 3 seconds. Default 60 seconds. */
     readonly lease?: Duration.Input
+    /**
+     * How often a running attempt checks whether a turn on another runner
+     * cancelled its effect; at least 1 second, at most a third of the lease.
+     * Default a third of the lease. A cancellation committed on the attempt's
+     * own runner reaches it at once.
+     */
+    readonly cancelCheck?: Duration.Input
   }
 }
 
@@ -184,6 +191,15 @@ export const layer = (options: Options) => {
   // Renewals every third of the lease stay at least a second apart.
   if (executorLeaseMs < 3000) throw new Error("executors.lease must be at least 3 seconds")
 
+  const cancelCheckMs = Math.min(
+    options.executors?.cancelCheck === undefined
+      ? executorLeaseMs / 3
+      : millis(options.executors.cancelCheck),
+    executorLeaseMs / 3,
+  )
+
+  if (cancelCheckMs < 1000) throw new Error("executors.cancelCheck must be at least 1 second")
+
   const claimLeaseMs =
     options.relay?.claimLease === undefined ? undefined : millis(options.relay.claimLease)
 
@@ -194,6 +210,7 @@ export const layer = (options: Options) => {
     maxBackoffMs: millis(options.relay?.maxBackoff ?? "256 seconds"),
     executorConcurrency: Count.make(options.executors?.concurrency ?? 64),
     executorLeaseMs,
+    cancelCheckMs,
   }
 
   const runtime = Layer.effectContext(
@@ -556,7 +573,7 @@ export const layer = (options: Options) => {
           Effect.forever,
           Effect.forkIn(scope),
         )
-      const outbox = { retryWindowMs, wake: relay.wake }
+      const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled }
 
       const databaseNow = databaseTime.pipe(
         Effect.provideContext(services),
