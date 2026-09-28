@@ -1,5 +1,6 @@
 import {
   Cause,
+  Clock,
   Crypto,
   Deferred,
   Effect,
@@ -11,6 +12,7 @@ import {
   Schema,
   Scope,
 } from "effect"
+import type { HttpServer } from "effect/unstable/http"
 import { SqlClient, Statement } from "effect/unstable/sql"
 import { Actor, Actors, CurrentCaller, User } from "../index.ts"
 import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
@@ -59,7 +61,13 @@ import {
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
-import { connectionsConformance, connectionsLayer } from "./conformance/connections.ts"
+import {
+  connectionsConformance,
+  connectionsFixture,
+  type ConnectionsFixture,
+  connectionsLayer,
+} from "./conformance/connections.ts"
+import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import {
   outboxConformance,
@@ -83,6 +91,7 @@ import {
   type EffectsFixture,
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
+import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
 import {
   progressConformance,
   progressFixture,
@@ -163,6 +172,8 @@ export interface ConformanceEnvironment {
    * when the backend advertises `independentConnections`.
    */
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+  /** A fresh listening HTTP server that supports WebSocket upgrades; each build listens anew. */
+  readonly httpServer: Layer.Layer<HttpServer.HttpServer>
 }
 
 export interface ConformanceBackend {
@@ -170,6 +181,12 @@ export interface ConformanceBackend {
   readonly independentConnections: boolean
   /** Extra services merged into every test runtime, e.g. BunCrypto.layer. */
   readonly services: Layer.Layer<Crypto.Crypto, never, never>
+  /**
+   * A listening HTTP server on an ephemeral loopback port that supports
+   * WebSocket upgrades, e.g. `BunHttpServer.layerServer({ port: 0 })`; the
+   * served-transport cases build one per case.
+   */
+  readonly httpServer: Layer.Layer<HttpServer.HttpServer>
   readonly open: () => Promise<{
     readonly database: ConformanceDatabase
     readonly freshDatabase: Effect.Effect<ConformanceDatabase>
@@ -190,6 +207,7 @@ export interface ConformanceFixture {
   readonly relay: RelayFixture
   readonly retention: RetentionFixture
   readonly workflows: WorkflowsFixture
+  readonly connections: ConnectionsFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -315,6 +333,7 @@ const makeFixture = (): ConformanceFixture => ({
   relay: relayFixture(),
   retention: retentionFixture(),
   workflows: workflowsFixture(),
+  connections: connectionsFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -327,10 +346,10 @@ const makeFixture = (): ConformanceFixture => ({
 
 /**
  * The shared durable-turn conformance cases. Cases flagged
- * `requiresIndependentConnections` need a real second database connection —
- * either to read committed state while a turn holds its transaction open, or
- * to take a competing row lock — and never run on single-connection backends
- * such as PGlite.
+ * `requiresIndependentConnections` need real Postgres: a second database
+ * connection to read committed state while a turn holds its transaction open
+ * or to take a competing row lock, or a database outside the JavaScript heap
+ * they measure. They never run on single-connection backends such as PGlite.
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
@@ -351,9 +370,11 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...singletonConformance,
   ...blobsConformance,
   ...inspectionViewsConformance,
+  ...inspectorConformance,
   ...retentionConformance,
   ...workflowsConformance,
   ...connectionsConformance,
+  ...transportsConformance,
   ...workflowVersionsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
@@ -532,6 +553,64 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
             state: { count: 23 },
             receipts: 1,
           })
+        }),
+      ),
+  },
+  {
+    name: "keeps retries prompt after many crashed turns of one actor type",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+
+          for (let index = 0; index < 12; index++) {
+            yield* test.crashNext("beforeCommit")
+            yield* (yield* Counter.get(`crash-many-${index}`)).Increment(1)
+          }
+
+          yield* test.crashNext("beforeCommit")
+          const started = yield* Clock.currentTimeMillis
+          expect(yield* (yield* Counter.get("crash-many-last")).Increment(2)).toBe(2)
+          expect((yield* Clock.currentTimeMillis) - started < 2_000).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "backs off an actor whose turn dies on every attempt, and only that actor",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const crashing = yield* Counter.get("crash-always")
+
+          const elapsed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.gen(function* () {
+              const started = yield* Clock.currentTimeMillis
+              const value = yield* effect
+
+              return { value, ms: (yield* Clock.currentTimeMillis) - started }
+            })
+
+          // Five deaths in a row wait 50 + 100 + 200 + 400 + 800 ms before the
+          // sixth attempt commits; a flat delay would retry in a quarter second.
+          for (let crash = 0; crash < 5; crash++) yield* test.crashNext("beforeCommit")
+          const before = fixture.executions
+          const backedOff = yield* elapsed(crashing.Increment(1))
+          expect(backedOff.value).toBe(1)
+          expect(fixture.executions - before).toBe(6)
+          expect(backedOff.ms >= 1_500).toBe(true)
+
+          // Another actor of the type restarts at the base delay.
+          yield* test.crashNext("beforeCommit")
+          const other = yield* elapsed((yield* Counter.get("crash-always-other")).Increment(2))
+          expect(other.value).toBe(2)
+          expect(other.ms < 1_000).toBe(true)
+
+          // A settled turn resets the crashing actor's own backoff.
+          yield* test.crashNext("beforeCommit")
+          const reset = yield* elapsed(crashing.Increment(1))
+          expect(reset.value).toBe(2)
+          expect(reset.ms < 1_000).toBe(true)
         }),
       ),
   },
@@ -1320,12 +1399,14 @@ export const describeConformance = (options: {
     progressLayer(fixture.progress),
     blobsLayer(fixture.blobs),
     inspectionViewsLayer,
+    inspectorLayer,
     relayLayer(fixture.relay),
     relayEffects(fixture.relay),
     retentionLayer(fixture.retention),
     propertiesLayer,
     workflowsLive(fixture.workflows),
-    connectionsLayer,
+    connectionsLayer(fixture.connections),
+    transportsLayer,
     mintLayer,
   )
 
@@ -1385,6 +1466,7 @@ export const describeConformance = (options: {
     get connect() {
       return store?.connect
     },
+    httpServer: backend.httpServer,
   }
 
   registrar.describe(name, () => {

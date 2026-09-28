@@ -1,7 +1,13 @@
 import { Cause, Clock, type Context, Effect, Exit, Option, Schema, Semaphore } from "effect"
 import { Entity, type Sharding } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { ActorError, ActorUnavailable, NotCreated, SessionEnded } from "../../errors/actor.ts"
+import {
+  ActorError,
+  ActorUnavailable,
+  NotCreated,
+  RunnerAtCapacity,
+  SessionEnded,
+} from "../../errors/actor.ts"
 import {
   type Broadcast,
   ConnectionPhase,
@@ -14,8 +20,12 @@ import type { ConnectionCommands } from "../../identity/command.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { FrameworkClock } from "../turn/admission.ts"
-import { type ActivationCache, emptyActivationCache } from "../turn/execute.ts"
-import { type Deliver, HolderItem } from "./protocol.ts"
+import {
+  type ActivationCache,
+  type CommittedEvents,
+  emptyActivationCache,
+} from "../turn/execute.ts"
+import { type Deliver, FEED_MEMBER, FeedFrame, HolderItem } from "./protocol.ts"
 import { HolderUnreachable, type Transport } from "./transport.ts"
 
 /** Encoded bytes one connection's session may hold. */
@@ -25,6 +35,10 @@ export const MAX_SESSION_BYTES = 16_384
 export const MAX_MEMBER_CONNECTIONS = 10_000
 
 const utf8 = new TextEncoder()
+
+/** A session is stored inside its codec's `{"value":…}` envelope, which the limit does not count. */
+const SESSION_ENVELOPE_BYTES =
+  utf8.encode(JSON.stringify({ value: null })).byteLength - utf8.encode("null").byteLength
 
 const encodeCaller = Schema.encodeEffect(Schema.fromJsonString(Caller))
 
@@ -78,6 +92,14 @@ export interface Activation {
   readonly acquiring: Semaphore.Semaphore
 }
 
+const emptyResult: ConnectionResult = {
+  session: undefined,
+  changed: false,
+  sends: [],
+  broadcasts: [],
+  close: false,
+}
+
 const ended = (cause: SessionEnded["cause"], resync: boolean) =>
   SessionEnded.make({ cause, resync })
 
@@ -104,7 +126,30 @@ export const activationOwner = ({
   readonly transport: Transport
 }) => {
   const activations = new Map<string, Activation>()
-  const hasConnections = registration.connections.size > 0
+  // Feeds are framework connections, so an actor type with feeds loads its rows like one with members.
+  const hasConnections = registration.connections.size > 0 || registration.feeds.size > 0
+
+  const encodeFeedFrame = Schema.encodeEffect(Schema.fromJsonString(FeedFrame))
+
+  /** A committed turn's feed events, broadcast to every open feed of the actor. */
+  const feedBroadcasts = (committed: CommittedEvents) =>
+    Effect.forEach(
+      committed.events.flatMap((event, index) =>
+        registration.feeds.has(event.tag)
+          ? [{ event, cursor: String(BigInt(committed.after) + BigInt(index) + 1n) }]
+          : [],
+      ),
+      ({ event, cursor }) =>
+        encodeFeedFrame({
+          tag: event.tag,
+          value: event.value,
+          commandId: committed.commandId,
+          timestampMs: committed.emittedAtMs,
+        }).pipe(
+          Effect.orDie,
+          Effect.map((frame): Broadcast => ({ member: FEED_MEMBER, frame, event: cursor })),
+        ),
+    )
 
   const where = (activation: Activation) =>
     Effect.gen(function* () {
@@ -243,6 +288,16 @@ export const activationOwner = ({
       )
       .pipe(Effect.timeout("2 seconds"), Effect.ignore)
 
+  // Drops what belongs to a generation: whatever runs next acquires a new one,
+  // reloads the rows, and numbers each holder's messages from 1 again, which a
+  // holder requires of every new generation.
+  const forget = (activation: Activation) => {
+    activation.cache.generation = undefined
+    activation.cache.state = undefined
+    activation.rows = undefined
+    activation.channels.clear()
+  }
+
   /** Fences this activation's generation and loads committed state, as a command turn would. */
   const acquire = (activation: Activation) =>
     activation.cache.generation !== undefined && activation.cache.state !== undefined
@@ -274,8 +329,7 @@ export const activationOwner = ({
             activation.cache.generation !== undefined &&
             activation.cache.generation !== row!.generation
           ) {
-            activation.cache.generation = undefined
-            activation.cache.state = undefined
+            forget(activation)
 
             return yield* unavailable("Stale actor generation")
           }
@@ -502,7 +556,14 @@ export const activationOwner = ({
   const events =
     (activation: Activation, sql: SqlClient.SqlClient) =>
     (tag: string, after: string | undefined, limit: number) =>
-      replayEvents(activation.ref, activation.key, tag, after, BigInt(activation.head), limit).pipe(
+      replayEvents(
+        activation.ref,
+        activation.key,
+        [tag],
+        after,
+        BigInt(activation.head),
+        limit,
+      ).pipe(
         Effect.catchIf(SqlError.isSqlError, Effect.die),
         Effect.provideService(SqlClient.SqlClient, sql),
       )
@@ -536,7 +597,8 @@ export const activationOwner = ({
     })
 
   const checkSession = (result: ConnectionResult) =>
-    result.session !== undefined && utf8.encode(result.session).byteLength > MAX_SESSION_BYTES
+    result.session !== undefined &&
+    utf8.encode(result.session).byteLength - SESSION_ENVELOPE_BYTES > MAX_SESSION_BYTES
       ? Effect.die(new Error("Connection session exceeds 16 KiB"))
       : Effect.void
 
@@ -587,9 +649,9 @@ export const activationOwner = ({
       activation,
       request.connectionId,
       Effect.gen(function* () {
-        const connection = registration.connections.get(request.member)
+        const feed = request.member === FEED_MEMBER
 
-        if (connection === undefined)
+        if (feed ? registration.feeds.size === 0 : !registration.connections.has(request.member))
           return yield* Effect.die(new Error(`Unregistered connection ${request.member}`))
 
         yield* acquire(activation)
@@ -609,7 +671,9 @@ export const activationOwner = ({
           [...activation.rows!.values()].filter((row) => row.member === request.member).length >=
           MAX_MEMBER_CONNECTIONS
         )
-          return yield* unavailable("Actor is at its connection limit for this member")
+          return yield* feed
+            ? ActorError.make({ reason: RunnerAtCapacity.make({}) })
+            : unavailable("Actor is at its connection limit for this member")
 
         const sql = yield* SqlClient.SqlClient
         const actor = yield* where(activation)
@@ -636,11 +700,16 @@ export const activationOwner = ({
 
         activation.rows!.set(request.connectionId, { ...row, frameSeq: 0, buffered: [] })
 
-        const result = yield* run(
-          activation,
-          row,
-          ConnectionPhase.cases.Open.make({ params: request.params }),
-          request.commands,
+        // A feed has no handler: its open only inserts the row and fixes its baseline.
+        const result = yield* (
+          feed
+            ? Effect.succeed<ConnectionResult>(emptyResult)
+            : run(
+                activation,
+                row,
+                ConnectionPhase.cases.Open.make({ params: request.params }),
+                request.commands,
+              )
         ).pipe(
           Effect.catchDefect((cause) =>
             Effect.gen(function* () {
@@ -674,8 +743,7 @@ export const activationOwner = ({
           RETURNING connection_id`
 
         if (inserted.length === 0) {
-          activation.cache.generation = undefined
-          activation.cache.state = undefined
+          forget(activation)
 
           return yield* unavailable("Stale actor generation")
         }
@@ -796,9 +864,7 @@ export const activationOwner = ({
               RETURNING c.connection_id`
 
             if (written.length === 0) {
-              activation.cache.generation = undefined
-              activation.cache.state = undefined
-              activation.rows = undefined
+              forget(activation)
 
               return yield* unavailable("Stale actor generation")
             }
@@ -887,7 +953,8 @@ export const activationOwner = ({
           return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
         }
 
-        if (!registration.connections.get(row.member)!.hasResync)
+        // A feed's holder rereads the events itself once the new owner answers.
+        if (row.member === FEED_MEMBER || !registration.connections.get(row.member)!.hasResync)
           return { _tag: "Replayed" as const, ...identity(activation) }
 
         return yield* Effect.gen(function* () {
@@ -928,10 +995,7 @@ export const activationOwner = ({
 
       if (activation === undefined) return
       yield* seal(activation)
-      activation.cache.generation = undefined
-      activation.cache.state = undefined
-      activation.rows = undefined
-      activation.channels.clear()
+      forget(activation)
       activation.opened.clear()
       activation.head = "0"
       activation.through = "0"
@@ -940,6 +1004,7 @@ export const activationOwner = ({
   return {
     activations,
     hasConnections,
+    feedBroadcasts,
     hibernate,
     enter,
     prepare,

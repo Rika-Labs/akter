@@ -24,7 +24,7 @@ import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { Presence, Room, RoomClosed, RoomId } from "./contract.ts"
 import { RoomLive } from "./layer.ts"
-import { ModerationApi } from "./moderation.ts"
+import { ModerationApi, Moderators } from "./moderation.ts"
 
 /** Provider calls per idempotency key. */
 const provider = { calls: new Map<string, number>() }
@@ -62,7 +62,7 @@ const database = Effect.gen(function* () {
 const live = Layer.unwrap(
   Effect.gen(function* () {
     return RoomLive.pipe(
-      Layer.provide(CountingModeration),
+      Layer.provide([CountingModeration, Moderators.layer]),
       Layer.provideMerge(
         ActorTest.layer({ database: yield* database, as: User.make({ subject: "ada" }) }),
       ),
@@ -174,9 +174,9 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       expect(yield* room.Attachment(id)).toEqual(Option.none())
       const sql = yield* SqlClient.SqlClient
       expect(
-        yield* sql<{ bytes: number }>`SELECT COALESCE(sum(octet_length(bytes)), 0)::float8 AS bytes
+        yield* sql<{ chunks: number }>`SELECT count(*)::float8 AS chunks
           FROM actor_blobs WHERE actor_id = ${room.ref.id} AND name = ${id}`,
-      ).toEqual([{ bytes: 0 }])
+      ).toEqual([{ chunks: 0 }])
       expect((yield* room.History({})).map(({ message }) => [message.id, message.body])).toEqual([
         [id, ""],
       ])

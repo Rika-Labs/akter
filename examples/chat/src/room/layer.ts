@@ -2,120 +2,170 @@ import { Intent } from "@durable-actors/core"
 import { DateTime, Effect, Layer, Option } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import {
+  AppealDecided,
   Attachments,
+  AwaitDecision,
   MessagePosted,
   messages,
   messagesDdl,
   ModerateMessage,
+  Notify,
   Room,
   RoomArchived,
   RoomClosed,
+  Thread,
 } from "./contract.ts"
-import { ModerationApi } from "./moderation.ts"
+import { ModerationApi, Moderators } from "./moderation.ts"
 
 export const RoomCommands = Room.toLayer(
-  Effect.succeed({
-    Post: Effect.fnUntraced(function* ({ body, file }) {
-      const turn = yield* Room.Turn
+  Effect.gen(function* () {
+    const moderators = yield* Moderators
 
-      // A declared failure rolls back everything the turn wrote.
-      if (turn.state.closed) return yield* RoomClosed.make({})
+    return {
+      Post: Effect.fnUntraced(function* ({ body, file }) {
+        const turn = yield* Room.Turn
 
-      const id = turn.commandId
+        // A declared failure rolls back everything the turn wrote.
+        if (turn.state.closed) return yield* RoomClosed.make({})
 
-      const author = Option.match(turn.principal, {
-        onNone: () => "anonymous",
-        onSome: ({ subject }) => subject,
-      })
+        const id = turn.commandId
 
-      if (file !== undefined) yield* turn.blob(Attachments).set(id, file)
-
-      yield* turn.rows(messages).insert({
-        id,
-        author,
-        body,
-        sentAt: DateTime.toDate(yield* DateTime.now),
-        attachment: file === undefined ? null : id,
-      })
-
-      yield* turn.emit(MessagePosted.make({ id, author, body }))
-      yield* turn.perform(ModerateMessage.make({ id, body }))
-
-      // The same key replaces the pending timer, so every post pushes it back.
-      yield* (yield* Room.intents(turn.id))
-        .IdleCheck({ token: turn.commandId })
-        .pipe(Intent.after("24 hours"), Intent.key("idle"))
-      yield* turn.state.set({
-        closed: turn.state.closed,
-        reactions: turn.state.reactions,
-        idleToken: turn.commandId,
-      })
-
-      return id
-    }),
-
-    Archive: Effect.fnUntraced(function* () {
-      const turn = yield* Room.Turn
-      yield* turn.state.set({
-        closed: true,
-        reactions: turn.state.reactions,
-        idleToken: turn.state.idleToken,
-      })
-      yield* turn.emit(RoomArchived.make({}))
-      yield* Intent.cancel("idle")
-    }),
-
-    // A timer the relay has already claimed still fires once after a cancel,
-    // so the check reads state instead of trusting that it was never cancelled.
-    IdleCheck: Effect.fnUntraced(function* ({ token }) {
-      const turn = yield* Room.Turn
-
-      if (!turn.state.closed && turn.state.idleToken === token)
-        yield* (yield* Room.intents(turn.id)).Archive()
-    }),
-
-    Moderated: Effect.fnUntraced(function* ({ id, flagged }) {
-      const turn = yield* Room.Turn
-
-      if (!flagged) return
-
-      // An emptied entry holds no bytes against the room's blob quota.
-      const attached = yield* turn.rows(messages).one({ where: { id } })
-      yield* turn.rows(messages).delete().where({ id })
-
-      if (Option.isSome(attached) && attached.value.attachment === id)
-        yield* turn.blob(Attachments).set(id, new Uint8Array())
-    }),
-
-    ModerationFailed: Effect.fnUntraced(function* (dead) {
-      yield* Room.Turn
-      yield* Effect.logWarning("moderation dead-lettered", dead.effectId)
-    }),
-
-    // The connection parks between frames: the room hibernates while members stay connected.
-    Presence: {
-      open: Effect.fnUntraced(function* () {
-        const conn = yield* Room.Connection
-
-        const user = Option.match(conn.principal, {
+        const author = Option.match(turn.principal, {
           onNone: () => "anonymous",
           onSome: ({ subject }) => subject,
         })
 
-        yield* conn.session.set({ user })
-      }),
-      frame: Effect.fnUntraced(function* ({ typing }: { readonly typing: boolean }) {
-        const conn = yield* Room.Connection
-        const session = yield* conn.session.get
+        if (file !== undefined) yield* turn.blob(Attachments).set(id, file)
 
-        const user = Option.match(session, {
-          onNone: () => "anonymous",
-          onSome: (stored) => stored.user,
+        yield* turn.rows(messages).insert({
+          id,
+          author,
+          body,
+          sentAt: DateTime.toDate(yield* DateTime.now),
+          attachment: file === undefined ? null : id,
         })
 
-        yield* conn.broadcast({ user, typing }, { except: [conn.connectionId] })
+        yield* turn.emit(MessagePosted.make({ id, author, body }))
+        yield* turn.perform(ModerateMessage.make({ id, body }))
+
+        // The same key replaces the pending timer, so every post pushes it back.
+        yield* (yield* Room.intents(turn.id))
+          .IdleCheck({ token: turn.commandId })
+          .pipe(Intent.after("24 hours"), Intent.key("idle"))
+        yield* turn.state.set({
+          closed: turn.state.closed,
+          reactions: turn.state.reactions,
+          idleToken: turn.commandId,
+        })
+
+        return id
       }),
-    },
+
+      Archive: Effect.fnUntraced(function* () {
+        const turn = yield* Room.Turn
+        yield* turn.state.set({
+          closed: true,
+          reactions: turn.state.reactions,
+          idleToken: turn.state.idleToken,
+        })
+        yield* turn.emit(RoomArchived.make({}))
+        yield* Intent.cancel("idle")
+      }),
+
+      // A timer the relay has already claimed still fires once after a cancel,
+      // so the check reads state instead of trusting that it was never cancelled.
+      IdleCheck: Effect.fnUntraced(function* ({ token }) {
+        const turn = yield* Room.Turn
+
+        if (!turn.state.closed && turn.state.idleToken === token)
+          yield* (yield* Room.intents(turn.id)).Archive()
+      }),
+
+      Moderated: Effect.fnUntraced(function* ({ id, flagged }) {
+        const turn = yield* Room.Turn
+
+        if (!flagged) return
+
+        // Deleting the entry frees its bytes and its slot in the room's blob quotas.
+        const attached = yield* turn.rows(messages).one({ where: { id } })
+        yield* turn.rows(messages).delete().where({ id })
+
+        if (Option.isSome(attached) && attached.value.attachment === id)
+          yield* turn.blob(Attachments).delete(id)
+      }),
+
+      ModerationFailed: Effect.fnUntraced(function* (dead) {
+        yield* Room.Turn
+        yield* Effect.logWarning("moderation dead-lettered", dead.effectId)
+      }),
+
+      // A runner lost mid-notify reruns it; `Moderators` deduplicates by message id.
+      Appeal: Effect.fnUntraced(function* ({ messageId }) {
+        const wf = yield* Room.Workflow
+
+        if ((yield* wf.version("notify-moderators")) >= 1)
+          yield* Notify.run(messageId, moderators.notify)
+
+        const decided = yield* AwaitDecision({
+          where: (event) => event.messageId === messageId,
+          timeout: "3 days",
+        })
+
+        return Option.match(decided, { onNone: () => false, onSome: ({ restore }) => restore })
+      }),
+
+      DecideAppeal: Effect.fnUntraced(function* ({ messageId, restore }) {
+        yield* (yield* Room.Turn).emit(AppealDecided.make({ messageId, restore }))
+      }),
+
+      // A replayed turn mints the same id, and the thread is created after the room commits.
+      StartThread: Effect.fnUntraced(function* ({ messageId }) {
+        const turn = yield* Room.Turn
+        const id = yield* turn.mint(Thread)
+        yield* (yield* Thread.intents(id)).Open({ room: turn.id, messageId })
+
+        return id
+      }),
+
+      // The connection parks between frames: the room hibernates while members stay connected.
+      Presence: {
+        open: Effect.fnUntraced(function* () {
+          const conn = yield* Room.Connection
+
+          const user = Option.match(conn.principal, {
+            onNone: () => "anonymous",
+            onSome: ({ subject }) => subject,
+          })
+
+          yield* conn.session.set({ user })
+        }),
+        frame: Effect.fnUntraced(function* ({ typing }: { readonly typing: boolean }) {
+          const conn = yield* Room.Connection
+          const session = yield* conn.session.get
+
+          const user = Option.match(session, {
+            onNone: () => "anonymous",
+            onSome: (stored) => stored.user,
+          })
+
+          yield* conn.broadcast({ user, typing }, { except: [conn.connectionId] })
+        }),
+      },
+    }
+  }),
+)
+
+export const ThreadCommands = Thread.toLayer(
+  Effect.succeed({
+    Open: Effect.fnUntraced(function* ({ room, messageId }) {
+      yield* (yield* Thread.Turn).state.set({ room, messageId, replies: 0 })
+    }),
+    Reply: Effect.fnUntraced(function* () {
+      const turn = yield* Thread.Turn
+      yield* turn.state.set({ replies: turn.state.replies + 1 })
+
+      return turn.state.replies
+    }),
   }),
 )
 
@@ -175,6 +225,6 @@ export const RoomLive = Layer.unwrap(
   Effect.gen(function* () {
     yield* (yield* SqlClient.SqlClient).unsafe(messagesDdl)
 
-    return Layer.mergeAll(RoomCommands, RoomReads, RoomEffects)
+    return Layer.mergeAll(RoomCommands, ThreadCommands, RoomReads, RoomEffects)
   }).pipe(Effect.orDie),
 )

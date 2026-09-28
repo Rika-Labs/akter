@@ -5,7 +5,7 @@
 **Owner role:** operations.
 **Change policy:** a change requires operator review; a breaking change ships as a new view name ([ADR 0028](../decisions/0028-sql-inspection-views.md)).
 
-Migration `0013_inspection_views` creates the `durable` schema. Its views are the supported way for `psql`, Grafana, Metabase, or any SQL tool to read committed runtime state. The `actor_*` tables underneath are private runtime storage: read the views, never the tables, and never write to either. ADR 0028 is proposed; the views exist on any database that ran `0013`, and their shape may still change before the ADR is accepted.
+Migration `0013_inspection_views` creates the `durable` schema. Its views are the supported way for `psql`, Grafana, Metabase, or any SQL tool to read committed runtime state. The `actor_*` tables underneath are private runtime storage: read the views, never the tables, and never write to either. Version 1 of every view is public contract under ADR 0028: a column it exposes keeps its name, meaning, and type, and any other change ships as a new view.
 
 Everything a view shows is committed. A turn that rolls back (a defect, a crash before commit, lost authority) leaves no row in any view; a declared failure leaves only its receipt.
 
@@ -71,7 +71,38 @@ That role reads every view and gets `permission denied` on every `actor_*` table
 
 A role also holds every privilege granted to `PUBLIC`, and these grants are not limited to `durable`: `EXECUTE` on functions by default, `USAGE` on schema `public`, and any table grant made to `PUBLIC`. To keep the role view-only, audit and revoke those grants, for example `REVOKE ALL ON SCHEMA public FROM PUBLIC` and `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`, or point the tool at a database where `PUBLIC` holds nothing else.
 
-Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows, but nothing enforces the filter yet: until the framework's RLS policies ship (M4.5), treat view access as operator access to every tenant in the database.
+Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows, but nothing enforces the filter yet: until the framework's RLS policies ship (M4.5), treat view access as operator access to every tenant in the database. When those policies ship, the views are recreated with `security_invoker = true`, so the base-table policies apply to the reading role; the columns and version 1 stay the same.
+
+## The local inspector
+
+`durable dev --entry <module>` runs an application locally and serves a read-only inspector over these views (CR.5). The entry module exports `app`: its routes, usually `Actor.serve`, with the actor layers and `Actors.layer` provided, leaving the database to the command (see `examples/chat/src/app.ts`).
+
+```sh
+durable dev --entry src/app.ts [--database-url <url> | --data-dir <dir>] [--port 3000] [--hostname 127.0.0.1] [--tenant default]
+```
+
+Without `--database-url` the app runs on PGlite, in memory unless `--data-dir` names a directory. The app's routes and the inspector share one server: the inspector page is `/_durable/inspector` and its JSON API is under `/_durable/inspector/api`. The page shows the tenant's counts, actors by type, one actor's state, receipts (each linking the events it committed), event timeline, outbox and timers, effects, dead letters, and workflow executions with their step history, plus tenant-wide outbox, effect, dead-letter, and workflow lists. It re-reads on **Refresh**, or every two seconds with **live** on, and renders every stored value as text, never as markup. The server listens on loopback unless `--hostname` says otherwise, and every inspector request reads the one tenant `--tenant` names.
+
+The API is `Inspector.serve({ auth, basePath? })` from `@durable-actors/core/runtime`, a layer of `HttpRouter` routes like `Actor.serve`. Every route is `GET`, answers JSON with `cache-control: no-store`, and takes `limit` (1 to 500, default 50):
+
+| Route                            | Returns                                                                                                                                                                                                                          |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/overview`                      | `tenant`, the view catalog, and the tenant's row count in each view                                                                                                                                                              |
+| `/actors?type&afterType&afterId` | the tenant's actors in `(actor_type, actor_id)` order, and `next`, the cursor of the following page                                                                                                                              |
+| `/actor?type&id`                 | one actor: generation, decoded state, newest receipts with the event sequences each committed, newest events decoded, pending outbox rows and effects, dead letters, workflow executions with their recorded steps, and `totals` |
+| `/outbox`, `/effects`            | the tenant's pending intents and timers, and pending effects, soonest first                                                                                                                                                      |
+| `/dead-letters`                  | the tenant's dead letters, newest first                                                                                                                                                                                          |
+| `/workflows?status`              | the tenant's workflow executions with their steps, newest first; `status=open` (the default) omits finished ones, `status=all` keeps them                                                                                        |
+
+Compressed values (state, event values, workflow payloads, results, and step exits) and JSON text columns come back as `{ "json": <value> }`, or `{ "undecodable": <reason> }` for a row that is not zstd or not JSON. An unknown actor is `404 { "_tag": "NotFound" }`; a failed authentication is the served `ActorError` envelope with `401`.
+
+The inspector adds no access of its own:
+
+- **Tenant.** The tenant comes only from the authenticated principal, never from the request, and every statement filters on it. A tenant named in the query string is ignored. Inside that tenant the inspector reads every actor, so `auth` must authenticate operators, not the end users `Actor.serve` authenticates.
+- **Read-only.** It reads only the `durable` views, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and Postgres refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)).
+- **Step history.** Steps are shown while an execution is open; the engine deletes a finished execution's steps, so a finished execution shows its result and no steps.
+
+Connections are not shown: no inspection view covers `actor_connections` yet. Retrying a dead letter waits for M4.6's audited repair.
 
 ## Example queries
 

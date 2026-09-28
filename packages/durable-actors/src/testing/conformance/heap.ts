@@ -1,5 +1,5 @@
 import { Crypto, Effect, Layer, ManagedRuntime, Schedule, Schema } from "effect"
-import { Actor, User } from "../../index.ts"
+import { Actor, Actors, User } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
@@ -24,6 +24,10 @@ const SleeperLive = Sleeper.toLayer(
 )
 
 const ACTORS = 1000
+
+const COMMANDS = 4_096
+
+const HOT_ACTORS = 32
 
 /**
  * Live JavaScript heap after a full collection. ArrayBuffer memory is left
@@ -132,6 +136,93 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
           // Under 10 objects and 1 KiB per touched actor; a retained Cluster
           // client per command was about 95 objects and 11 KiB.
           expect({ ...growth, bounded: growth.objects < 10 && growth.bytes < 1024 }).toMatchObject({
+            bounded: true,
+          })
+        }),
+      ),
+  },
+  {
+    name: "retains bounded heap per command once Cluster forgets processed request ids",
+    // PGlite's heap shrinks by about one object per command from one round to
+    // the next for several rounds, as much as the leak this case detects; on
+    // Postgres the rounds agree to within a twentieth of an object.
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          const runtime = yield* Effect.acquireRelease(
+            Effect.map(Crypto.Crypto, (crypto) =>
+              ManagedRuntime.make(
+                SleeperLive.pipe(
+                  Layer.provideMerge(
+                    ActorTest.layer({ database, as: User.make({ subject: "alice" }) }),
+                  ),
+                  Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
+                  Layer.orDie,
+                ),
+              ),
+            ),
+            (runtime) => Effect.promise(() => runtime.dispose()),
+          )
+
+          const touch = (id: string) =>
+            Sleeper.get(id).pipe(Effect.flatMap((sleeper) => sleeper.Touch()))
+
+          // The same few actors every time, so only per-command memory can grow.
+          const touchMany = Effect.forEach(
+            Array.from({ length: COMMANDS }, (_, index) => `hot-${index % HOT_ACTORS}`),
+            touch,
+            { concurrency: HOT_ACTORS, discard: true },
+          )
+
+          // Cluster forgets processed request ids on its 10-second message
+          // poll; waiting past one poll leaves only what is retained for good.
+          const forget = Effect.andThen(Effect.sleep("11 seconds"), retained)
+
+          const { growth, first, replayed, count } = yield* Effect.promise(() =>
+            runtime.runPromise(
+              Effect.gen(function* () {
+                const id = yield* (yield* Actors).mintCommandId
+
+                const saved = Sleeper.get("hot-0").pipe(
+                  Effect.flatMap((sleeper) => sleeper.Touch().pipe(Actor.commandId(id))),
+                )
+
+                const first = yield* saved
+                // A first round warms caches and compiled code, which the heap
+                // keeps whatever the fix; only the next two rounds compare.
+                yield* touchMany
+                yield* forget
+                yield* touchMany
+                const before = yield* forget
+                yield* touchMany
+                const after = yield* forget
+                // Cluster no longer remembers any request; the receipt still
+                // answers the saved command id without running it again.
+                const replayed = yield* saved
+                const count = yield* touch("hot-0")
+
+                return {
+                  growth: {
+                    objects: (after.objects - before.objects) / COMMANDS,
+                    bytes: (after.bytes - before.bytes) / COMMANDS,
+                  },
+                  first,
+                  replayed,
+                  count,
+                }
+              }),
+            ),
+          )
+
+          expect({ first, replayed }).toEqual({ first: 1, replayed: 1 })
+          expect(count).toBe((3 * COMMANDS) / HOT_ACTORS + 2)
+          // A processed request id held forever costs one object and about
+          // 94 bytes per command.
+          expect({ ...growth, bounded: growth.objects < 0.5 && growth.bytes < 64 }).toMatchObject({
             bounded: true,
           })
         }),
