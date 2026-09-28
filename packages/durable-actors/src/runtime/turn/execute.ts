@@ -2,7 +2,9 @@ import { Effect, Exit, Option, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
+  type Broadcast,
   type BusinessResult,
+  type ConnectionLister,
   Outcome,
   type RegisteredCommand,
   type Request,
@@ -54,6 +56,7 @@ interface Admission {
   readonly command: string | null
   readonly payload_hash: string | null
   readonly outcome: string | null
+  readonly head: string
 }
 
 /**
@@ -110,6 +113,10 @@ interface Plan {
   readonly generation: string
   readonly state: ReadonlyMap<string, string> | undefined
   readonly wake: boolean
+  /** Broadcasts a committed success publishes to the actor's connections. */
+  readonly broadcasts: ReadonlyArray<Broadcast>
+  /** The actor's event sequence once this turn commits. */
+  readonly head: string
 }
 
 class RolledBack {
@@ -139,6 +146,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   mintable: boolean,
   statements: boolean,
   waited: ReadonlySet<string> = new Set(),
+  connections?: ConnectionLister,
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
@@ -177,7 +185,7 @@ export const executeTurn = Effect.fnUntraced(function* (
           SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
             g.generation::text AS generation, g.created,
             ${request.payload}::jsonb::text AS canonical,
-            r.caller_key, r.command, r.payload_hash, r.outcome
+            r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
           FROM actor_generations g
           LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
             AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = ${request.commandId}
@@ -239,6 +247,8 @@ export const executeTurn = Effect.fnUntraced(function* (
         generation: current,
         state: cold ? undefined : cache.state,
         wake: false,
+        broadcasts: [],
+        head: admitted.head,
       } satisfies Plan
     }
 
@@ -287,7 +297,7 @@ export const executeTurn = Effect.fnUntraced(function* (
     const business = yield* Effect.gen(function* () {
       yield* hooks.at("beforeHandler", request)
 
-      return yield* command.run(request, [...committed])
+      return yield* command.run(request, [...committed], connections)
     }).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
 
     const result: BusinessResult = Result.isSuccess(business) ? business.success : business.failure
@@ -372,6 +382,8 @@ export const executeTurn = Effect.fnUntraced(function* (
       generation: current,
       state: next,
       wake: outbox.dueNow || notified,
+      broadcasts: Outcome.guards.Success(result.outcome) ? (result.broadcasts ?? []) : [],
+      head: String(BigInt(admitted.head) + BigInt(result.events.length)),
     } satisfies Plan
   })
 
@@ -420,7 +432,7 @@ export const executeTurn = Effect.fnUntraced(function* (
 
   if (done.wake) yield* (yield* OutboxRuntime).wake
 
-  return done.outcome
+  return { outcome: done.outcome, broadcasts: done.broadcasts, head: done.head }
 })
 
 /**

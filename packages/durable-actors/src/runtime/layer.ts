@@ -48,7 +48,15 @@ import { migrate } from "./database/migrations.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
-import { commandEntity, encodeEntityId, registerActor } from "./entity/register.ts"
+import {
+  commandEntity,
+  connectionEntity,
+  encodeEntityId,
+  registerActor,
+} from "./entity/register.ts"
+import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
+import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
+import type { Owner } from "./connections/owner.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
@@ -72,8 +80,8 @@ export interface Options {
     readonly caller: Caller
     readonly ref: ActorRef
     readonly command: string
-    /** `command` for commands and reducers, `query` for queries. */
-    readonly kind: "command" | "query"
+    /** What is being authorized: `command` for commands and reducers, `query` for queries; hooks should deny kinds they do not know. */
+    readonly kind: "command" | "query" | "open" | "stream" | "reauthorize"
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
@@ -186,6 +194,7 @@ export const layer = (options: Options) => {
       const sharding = yield* Sharding.Sharding
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
+      const owners = new Map<string, Owner>()
       // Actor types whose workflow rows retention sweeps, removed workflows included.
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
@@ -196,6 +205,76 @@ export const layer = (options: Options) => {
       >()
 
       const database = yield* rowsDatabase
+
+      // The holder and transport refer to each other: the transport delivers
+      // to this runner's holder, which answers through the transport.
+      let holder: Holder | undefined
+
+      const transport: Transport = yield* holderTransport((message) =>
+        Effect.suspend(() => holder!.deliver(message)),
+      )
+
+      const connectionCall = <A, E>(effect: Effect.Effect<A, E>) =>
+        Effect.suspend(() => effect.pipe(Effect.forkIn(scope))).pipe(
+          Effect.flatMap(Fiber.join),
+          Effect.catchCause((cause) => {
+            const failure = Cause.findErrorOption(cause)
+
+            if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
+              return Effect.fail(failure.value)
+
+            return Effect.fail(
+              ActorError.make({ reason: ActorUnavailable.make({ cause: Cause.squash(cause) }) }),
+            )
+          }),
+        )
+
+      const heldTypes = new Map<string, HeldActorType>()
+
+      const shardLockMs = Duration.toMillis(
+        Option.match(yield* Effect.serviceOption(ShardingConfig.ShardingConfig), {
+          onNone: () => ShardingConfig.defaults.shardLockExpiration,
+          onSome: (config) => config.shardLockExpiration,
+        }),
+      )
+
+      const heldType = (registration: Registration): HeldActorType => {
+        const entity = connectionEntity(registration.name)
+
+        const client = (ref: ActorRef) =>
+          Effect.gen(function* () {
+            const make = yield* sharding.makeClient(entity)
+
+            return make(yield* entityId(ref))
+          })
+
+        return {
+          deliveryMs: registration.policy.deliveryMs,
+          takeoverMs: shardLockMs + registration.policy.deliveryMs,
+          reauthorizeMs: registration.policy.reauthorizeMs,
+          retryWindowMs,
+          placement: registration.placement,
+          routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
+          hasResync: (member) => registration.connections.get(member)?.hasResync ?? false,
+          hasMember: (member) => registration.connections.has(member),
+          channel: {
+            open: (request) =>
+              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
+            frame: (request) =>
+              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Frame(request))),
+            close: (request) =>
+              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Close(request))),
+            resync: (request) =>
+              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Resync(request))),
+          },
+        }
+      }
+
+      holder = yield* connectionHolder({
+        transport: () => transport,
+        actorType: (name) => heldTypes.get(name),
+        authorize: (request) => options.authorize(request),
+      })
 
       // Tables that passed the startup check for an actor type of this runtime;
       // group reads may only touch these, never other Actor.table values.
@@ -220,7 +299,7 @@ export const layer = (options: Options) => {
       })
 
       const authorize = Effect.fnUntraced(function* (request: Request) {
-        yield* allow(request)
+        yield* allow(request, "command")
         yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
       })
 
@@ -284,7 +363,7 @@ export const layer = (options: Options) => {
                 reason: Unauthorized.make({ code: "access_denied" }),
               })
 
-            if (external) yield* allow(request)
+            if (external) yield* allow(request, "command")
 
             // Postgres rejects some malformed ids and payloads outright; they
             // still fail as terminal identity errors, checked as before.
@@ -531,13 +610,17 @@ export const layer = (options: Options) => {
               ),
             )
 
-          const isResident = yield* registerActor(registration).pipe(
+          const { isResident, owner } = yield* registerActor(registration, transport).pipe(
             Effect.provideContext(services),
             Effect.provideService(OutboxRuntime, outbox),
           )
 
           registrations.set(registration.name, registration)
           residency.set(registration.name, isResident)
+          owners.set(registration.name, owner)
+
+          if (registration.connections.size > 0)
+            heldTypes.set(registration.name, heldType(registration))
 
           if (retained) sweepsWorkflows.add(registration.name)
 
@@ -545,6 +628,8 @@ export const layer = (options: Options) => {
             Effect.sync(() => {
               registrations.delete(registration.name)
               residency.delete(registration.name)
+              owners.delete(registration.name)
+              heldTypes.delete(registration.name)
               sweepsWorkflows.delete(registration.name)
             }),
           )
@@ -658,6 +743,13 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
+        transport,
+        holder,
+        hibernate: (ref) =>
+          Effect.flatMap(
+            entityId(ref),
+            (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void,
+          ).pipe(Effect.provideContext(services)),
         pollWorkflow: Effect.fnUntraced(
           function* (request: Request) {
             const registration =
@@ -760,12 +852,13 @@ export const layer = (options: Options) => {
               ).pipe(Layer.orDie),
           RunnerHealth.layerNoop,
         ]),
-        Layer.provide(
+        Layer.provideMerge(
           ShardingConfig.layer({
             shardsPerGroup: 1,
             simulateRemoteSerialization: true,
             maxResidentEntities: maxResidentActors,
             ...wiring?.config,
+            ...holderShardGroups(wiring?.config ?? {}),
           }),
         ),
       )
