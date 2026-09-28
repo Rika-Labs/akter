@@ -418,7 +418,7 @@ The cases live in [`conformance/client.ts`](../../packages/durable-actors/src/te
 
 [`crash/client.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/client.test.ts) runs on real Postgres only. It serves a counter from a child process, blocks the turn at `beforeCommit` or `afterCommit`, SIGKILLs the process while the client waits, and starts a replacement on the same port. The pending call then returns its output, with one receipt, one event, and the same `Idempotency-Key` on every attempt.
 
-These cases cover one runtime process on loopback with Bun's `fetch`. Browsers, proxies, and TLS are not exercised; the browser claim rests on the import-graph and `target: "browser"` build test, and the Playwright e2e test M3.5 asks for is still to come. The `http` benchmark scenario reports client latency beside raw `fetch`, and duplicate turns under 1% response loss.
+These cases cover one runtime process on loopback with Bun's `fetch`; proxies and TLS are not exercised. The browser claim rests on the import-graph and `target: "browser"` build test, and on M3.5's Playwright tests below. The `http` benchmark scenario reports client latency beside raw `fetch`, and duplicate turns under 1% response loss.
 
 ### Served WebSocket connections (M3.3)
 
@@ -465,6 +465,22 @@ Not covered by an executable case yet:
 - The 10,000-feeds-per-actor cap.
 - The 15-second keepalive comment.
 - The extra statement a cold activation of an actor type with feeds pays. The feed rows load with the connection rows; the `sse` benchmark is not written yet.
+
+### Client feeds and connections, and the browser (M3.5)
+
+The client cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) and use the same served fixtures as the transport cases, through `FeedRoom.client` and `SocketRoom.client`:
+
+- `client reads an event feed as an AsyncIterable and resumes from its cursor after the response drops` — a `fetch` that cuts the first feed response after one event. The client reopens with `Last-Event-ID: 1` and delivers `1:one`, `2:two`, `3:three` with no repeat.
+- `client feed fails with RetentionGap for a pruned cursor and UnknownCursor for one never issued` — both are thrown as their classes.
+- `client opens a connection with typed frames both ways, rejects a declared open failure as its class, and ends on close` — `Banned` is rejected as its class, and `cursor` is the baseline. The greeting, a sent frame's echo, and a normal end all arrive in order.
+- `client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates` (Postgres, two runners) — `Resync { after: "1" }`, `onResync` with `"1"`, then `ResyncReplayed`, then the next live frame.
+
+The Playwright tests live in [`apps/e2e/chat.e2e.ts`](../../apps/e2e/chat.e2e.ts). They run in Chromium against `examples/chat` served to a browser page (`examples/chat/src/web/`) on in-memory PGlite. The page follows the room's `MessagePosted` feed, posts through the Promise client, runs `React` optimistically, and shows Presence typing frames.
+
+- `replays events after a dropped connection and never shows a gap as continuous` — the M3 exit test. The page connects through a TCP proxy the test can cut, because Chromium's offline mode leaves an open stream up. The test sets the context offline and cuts every connection; two messages commit while the page is away and are not shown. After the connection is restored, the page shows all three messages with cursors `1`, `2`, `3`, and its feed has opened twice.
+- `rolls back an optimistic reaction the server rejects` — the failure-matrix row **Optimistic reducer rejected by the server** and invariant C3's client half. The room is archived behind the page's back, so the page's committed state still says it's open. A reaction shows `2` at once, the server refuses it with `RoomClosed`, and the count rolls back to `1`.
+- `keeps the original command id across a retried POST after a lost response` — the first response to a committed post is dropped. The retry carries the same `Idempotency-Key`, and the message shows once.
+- `rejects a request with no credentials before any turn runs` — `401 missing_credentials`, and the room's history stays empty.
 
 ### Multi-runner relay (M2.4)
 

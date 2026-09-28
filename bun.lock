@@ -85,6 +85,7 @@
     "apps/e2e": {
       "name": "@durable-actors/e2e",
       "devDependencies": {
+        "@durable-actors/chat": "workspace:*",
         "@durable-actors/console": "workspace:*",
         "@playwright/test": "1.63.0",
       },

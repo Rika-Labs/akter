@@ -92,13 +92,18 @@ export const RoomState = Actor.state({
 })
 
 /**
- * A pure transition with no server handler, which the client can later run
- * optimistically. Typing indicators are connection frames, not state.
+ * A pure transition with no server handler, which a browser runs
+ * optimistically; an archived room refuses it, and the browser rolls it back.
+ * Typing indicators are connection frames, not state.
  */
 export const React = Actor.reducer("React", {
   state: RoomState,
   input: Schema.Int,
-  reduce: (state, n) => Result.succeed({ ...state, reactions: state.reactions + n }),
+  errors: [RoomClosed],
+  reduce: (state, n) =>
+    state.closed
+      ? Result.fail(RoomClosed.make({}))
+      : Result.succeed({ ...state, reactions: state.reactions + n }),
 })
 
 /** Who is typing. Frames reach connected clients only; nothing is stored. */

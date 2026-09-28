@@ -1582,4 +1582,97 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
+  {
+    name: "client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          const context = yield* Layer.build(
+            ActorTest.cluster({
+              database,
+              runners: 2,
+              shardLockExpiration: "3 seconds",
+              actors: transportsLayer,
+              as: User.make({ subject: "alice" }),
+            }),
+          )
+
+          yield* Effect.gen(function* () {
+            const cluster = yield* ActorCluster
+            yield* cluster.ready
+            let target: ActorRef | undefined
+
+            for (let index = 0; target === undefined && index < 200; index++) {
+              const candidate = (yield* cluster.on(0)(SocketRoom.get(`client-crash-${index}`))).ref
+
+              if ((yield* cluster.owner(candidate)) === 1) target = candidate
+            }
+
+            if (target === undefined)
+              return yield* Effect.die(new Error("Runner 1 owns no probed actor"))
+
+            const ref = target
+
+            const post = (text: string) =>
+              cluster.on(0)(SocketRoom.get(ref.id).pipe(Effect.flatMap((room) => room.Post(text))))
+
+            const host = yield* cluster.on(0)(serveSockets(environment))
+            const resyncs: Array<string | undefined> = []
+
+            const handle = SocketRoom.client({
+              baseUrl: `http://${host}/api`,
+              headers: { authorization: `Bearer ${ref.tenant}:alice` },
+            }).get(ref.id)
+
+            const connection = yield* Effect.promise(() =>
+              handle.Chat.connect(
+                { name: "alice" },
+                { onResync: ({ after }) => void resyncs.push(after) },
+              ),
+            )
+
+            const iterator = connection.messages[Symbol.asyncIterator]()
+
+            const next = Effect.promise(() => iterator.next()).pipe(
+              Effect.map((result) => (result.done === true ? undefined : result.value)),
+              Effect.timeoutOrElse({
+                duration: "60 seconds",
+                orElse: () => Effect.die(new Error("No connection message arrived")),
+              }),
+            )
+
+            // Each message as its tag and what it carries, for comparison.
+            const seen = next.pipe(
+              Effect.map((message) =>
+                message === undefined
+                  ? undefined
+                  : Predicate.isTagged(message, "Frame")
+                    ? { tag: message._tag, frame: message.frame }
+                    : Predicate.isTagged(message, "Resync")
+                      ? { tag: message._tag, after: message.after, reason: message.reason }
+                      : { tag: message._tag },
+              ),
+            )
+
+            expect((yield* seen)?.tag).toBe("Frame")
+            yield* post("before")
+            expect(yield* seen).toEqual({ tag: "Frame", frame: Said.make({ text: "before" }) })
+
+            yield* cluster.kill(1)
+            expect(yield* seen).toEqual({ tag: "Resync", after: "1", reason: "OwnerLost" })
+
+            // The member's resync handler replays nothing new; the replay is reported, and the client acknowledged it.
+            expect(yield* seen).toEqual({ tag: "ResyncReplayed" })
+            yield* post("after")
+            expect(yield* seen).toEqual({ tag: "Frame", frame: Said.make({ text: "after" }) })
+            expect(resyncs).toEqual(["1"])
+            yield* Effect.promise(() => connection.close())
+          }).pipe(Effect.provideContext(context))
+        }),
+      ),
+  },
 ]
