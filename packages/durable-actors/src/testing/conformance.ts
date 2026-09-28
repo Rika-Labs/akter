@@ -92,6 +92,7 @@ import {
 import {
   subscriptionsClusterConformance,
   subscriptionsConformance,
+  subscriptionsRetentionConformance,
   subscriptionsFixture,
   subscriptionsLayer,
   type SubscriptionsFixture,
@@ -366,6 +367,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...connectionsConformance,
   ...workflowVersionsConformance,
   ...subscriptionsConformance,
+  ...subscriptionsRetentionConformance,
   ...subscriptionsClusterConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",

@@ -588,11 +588,26 @@ export const layer = (options: Options) => {
             actorType: name,
             keepReceiptsMs: policy.keepReceiptsMs,
             keepEventsMs: policy.keepEventsMs,
+            holdEventsMs: policy.holdEventsMs,
             deliveryMs: policy.deliveryMs,
             keepWorkflowsMs: policy.keepWorkflowsMs,
             workflows: sweepsWorkflows.has(name),
           })),
           retryWindowMs,
+        ).pipe(
+          // Rows of a subscription a registered subscriber type no longer
+          // declares go a day after they fall due.
+          Effect.tap(() =>
+            Effect.forEach(
+              [...registrations.values()],
+              (registration) =>
+                subscriptions.cleanupRemoved(
+                  registration.name,
+                  registration.subscriptions.map((declared) => declared.tag),
+                ),
+              { discard: true },
+            ),
+          ),
         ),
       ).pipe(
         Effect.provideContext(services),
