@@ -6,8 +6,14 @@ import {
   HttpApiSchema,
   OpenApi,
 } from "effect/unstable/httpapi"
-import { declaredStatus, type ServedDefinition, type ServedMember } from "../actor/served.ts"
+import {
+  declaredStatus,
+  type ServedConnection,
+  type ServedDefinition,
+  type ServedMember,
+} from "../actor/served.ts"
 import type { AuthProvider } from "./auth.ts"
+import { SUBPROTOCOL } from "./frames.ts"
 import { Defect, envelope, type WireTag } from "./wire.ts"
 
 const COMMAND_ERRORS = {
@@ -42,7 +48,19 @@ const errorSchemas = (errors: Readonly<Record<number, ReadonlyArray<WireTag>>>, 
     }),
   )
 
+/** A refused upgrade; once upgraded, a session ends with an `end` message instead. */
+const UPGRADE_ERRORS = {
+  400: ["InvalidInput"],
+  401: ["Unauthorized"],
+  403: ["InvalidInput"],
+  404: ["InvalidInput"],
+  413: ["InvalidInput"],
+  503: ["RunnerAtCapacity"],
+} as const
+
 const commandErrors = errorSchemas(COMMAND_ERRORS, "Command")
+
+const upgradeErrors = errorSchemas(UPGRADE_ERRORS, "Upgrade")
 
 const queryErrors = errorSchemas(QUERY_ERRORS, "Query")
 
@@ -65,7 +83,7 @@ const IdempotencyKey = Schema.String.annotate({
 /** The path of one served member, with `:id` for keyed and minted actors. */
 export interface ServedRoute {
   readonly definition: ServedDefinition
-  readonly member: ServedMember
+  readonly member: { readonly tag: string }
 }
 
 export const memberPath = ({ definition, member }: ServedRoute) =>
@@ -91,6 +109,59 @@ const endpoint = (basePath: string, definition: ServedDefinition, member: Served
     error: [...declared, ...(isQuery ? queryErrors : commandErrors), defect],
   })
 }
+
+const frameSchemaName = (
+  definition: ServedDefinition,
+  connection: ServedConnection,
+  part: string,
+) => `${definition.name}.${connection.tag}.${part}`
+
+/** The schemas a connection's messages carry: `hello` params, and frames each way. */
+const frameParts = (connection: ServedConnection) => ({
+  params: connection.params,
+  server: connection.server,
+  client: connection.client,
+})
+
+// OpenAPI can't describe a socket's message flow, so a connection is an upgrade
+// operation that names its frame schemas; the envelope is the served protocol's.
+const connectionEndpoint = (
+  basePath: string,
+  definition: ServedDefinition,
+  connection: ServedConnection,
+) =>
+  HttpApiEndpoint.get(
+    connection.tag,
+    `${basePath}${memberPath({ definition, member: connection })}` as `/${string}`,
+    {
+      params: definition.key === "singleton" ? undefined : { id: Schema.String },
+      error: [...upgradeErrors, defect],
+    },
+  ).annotate(OpenApi.Transform, (operation) => {
+    const { 204: _, ...refusals }: { readonly [status: string]: Schema.Json } =
+      operation.responses ?? {}
+
+    return {
+      ...operation,
+      responses: {
+        101: { description: `WebSocket upgrade with subprotocol ${SUBPROTOCOL}` },
+        ...refusals,
+      },
+      "x-durable-transport": "websocket",
+      "x-durable-subprotocol": SUBPROTOCOL,
+      "x-durable-frames": Object.fromEntries(
+        Object.keys(frameParts(connection)).map((part) => [
+          part,
+          { $ref: `#/components/schemas/${frameSchemaName(definition, connection, part)}` },
+        ]),
+      ),
+    }
+  })
+
+const frameSchemas = (definition: ServedDefinition, connection: ServedConnection) =>
+  Object.entries(frameParts(connection)).map(([part, schema]) =>
+    schema.annotate({ identifier: frameSchemaName(definition, connection, part) }),
+  )
 
 /** Protocol routes live in their own group. */
 const PROTOCOL_GROUP = "durable"
@@ -123,16 +194,25 @@ export const build = ({ definitions, basePath }: ServedRoutes) => {
   ]
 
   for (const definition of definitions) {
-    const endpoints = definition.members.map((member) => endpoint(basePath, definition, member))
+    const endpoints = [
+      ...definition.members.map((member) => endpoint(basePath, definition, member)),
+      ...definition.connections.map((connection) =>
+        connectionEndpoint(basePath, definition, connection),
+      ),
+    ]
 
     if (endpoints.length > 0)
       groups.push(HttpApiGroup.make(definition.name).add(endpoints[0]!, ...endpoints.slice(1)))
   }
 
-  const api: HttpApi.HttpApi<string, HttpApiGroup.Constraint> = HttpApi.make("durable-actors").add(
-    groups[0]!,
-    ...groups.slice(1),
-  )
+  const api: HttpApi.HttpApi<string, HttpApiGroup.Constraint> = HttpApi.make("durable-actors")
+    .add(groups[0]!, ...groups.slice(1))
+    .annotate(
+      HttpApi.AdditionalSchemas,
+      definitions.flatMap((definition) =>
+        definition.connections.flatMap((connection) => frameSchemas(definition, connection)),
+      ),
+    )
 
   return api
 }
