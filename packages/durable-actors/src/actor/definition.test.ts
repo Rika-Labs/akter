@@ -12,6 +12,7 @@ import {
 } from "../index.ts"
 import type { InternalActors } from "../handles/actors.ts"
 import type { BlobRead, BlobWrite } from "../state/blob.ts"
+import { resolveCron } from "../runtime/cron/schedule.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 
 describe("actor declarations", () => {
@@ -705,6 +706,78 @@ describe("actor declarations", () => {
       // @ts-expect-error blobs takes Actor.blob values
       Actor.make("Fake", { blobs: [{ name: "files" }], api: { Put } }),
     ).toThrow("Actor.blob")
+  })
+  it("parses cron schedules and rejects bad expressions, duplicates, and targets", () => {
+    const Tick = Actor.command("Tick")
+    const Tock = Actor.command("Tock")
+    const Set = Actor.command("Set", { input: Schema.Finite })
+    const Foreign = Actor.command("Foreign")
+
+    expect(() =>
+      Actor.make("Spaced", { api: { Tick, Tock }, policy: { cron: { " 0  8 * * * ": Tick } } }),
+    ).not.toThrow()
+    // A tick's caller is System, so its target need not be publicly callable.
+    expect(() =>
+      Actor.make("InternalTarget", {
+        api: { Tock },
+        internal: { Tick },
+        policy: { cron: { "0 8 * * *": Tick } },
+      }),
+    ).not.toThrow()
+    const Hourly = Actor.command("Hourly")
+    const Secondly = Actor.command("Secondly")
+    const Weekdays = Actor.command("Weekdays")
+
+    expect(
+      resolveCron({
+        declared: {
+          " 0  8 * * 1-5 ": Weekdays,
+          "*/15 * * * *": Tick,
+          "0-59 0-23 * 1-12 *": Tock,
+          "0 * * * SUN": Hourly,
+          "30 * * * * *": Secondly,
+        },
+        commands: [Tick, Tock, Hourly, Secondly, Weekdays],
+      }).map((entry) => entry.key),
+    ).toEqual([
+      "$cron:0 8 * * 1,2,3,4,5",
+      "$cron:0,15,30,45 * * * *",
+      "$cron:* * * * *",
+      "$cron:0 * * * 0",
+      "$cron:30 * * * * *",
+    ])
+    expect(() =>
+      Actor.make("Unparsable", { api: { Tick }, policy: { cron: { "61 * * * *": Tick } } }),
+    ).toThrow("does not parse")
+    expect(() =>
+      Actor.make("Equal", {
+        api: { Tick, Tock },
+        policy: { cron: { "0 8 * * *": Tick, "0  8 * * *": Tock } },
+      }),
+    ).toThrow("repeats the schedule")
+    expect(() =>
+      Actor.make("Equivalent", {
+        api: { Tick, Tock },
+        policy: { cron: { "0 8 * * 1-5": Tick, "0 8 * * 1,2,3,4,5": Tock } },
+      }),
+    ).toThrow("repeats the schedule")
+    expect(() =>
+      // @ts-expect-error a cron target must be a command of this actor
+      Actor.make("Foreigner", { api: { Tick }, policy: { cron: { "0 8 * * *": Foreign } } }),
+    ).toThrow("command of this actor")
+    expect(() =>
+      Actor.make("WithInput", {
+        api: { Set },
+        // @ts-expect-error a cron target takes no input
+        policy: { cron: { "0 8 * * *": Set } },
+      }),
+    ).toThrow("without input")
+    expect(() =>
+      Actor.make("BadSkip", {
+        api: { Tick },
+        policy: { cron: { "0 8 * * *": Tick }, cronSkipIfOlderThan: -1 },
+      }),
+    ).toThrow()
   })
 
   it("types subscriptions, their handlers, and turn.subscribe, and rejects bad declarations", () => {

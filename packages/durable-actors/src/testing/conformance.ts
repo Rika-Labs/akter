@@ -74,6 +74,7 @@ import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
 import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
+import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
 import {
   outboxConformance,
   outboxFixture,
@@ -403,6 +404,8 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...effectControlConformance,
   ...effectControlClusterConformance,
   ...singletonConformance,
+  ...cronConformance,
+  ...cronClusterConformance,
   ...blobsConformance,
   ...inspectionViewsConformance,
   ...inspectorConformance,

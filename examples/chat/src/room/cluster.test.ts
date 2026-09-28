@@ -18,7 +18,7 @@ import {
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { threeRunners } from "./cluster.ts"
-import { Appeal, Presence, Room, RoomId, Thread } from "./contract.ts"
+import { Appeal, Digest, Presence, Room, RoomId, Thread } from "./contract.ts"
 import { RoomEffects, RoomHandlers, RoomLive } from "./layer.ts"
 import { ModerationApi, Moderators } from "./moderation.ts"
 
@@ -214,7 +214,62 @@ clusterCase(
   }),
 )
 
-it.todo("runs one digest per day across three runners, through a runner kill (cron, #132)")
+/** Moves the given runners' clocks one day in hourly steps, so each 08:00 tick fires inside its one-hour skip window. */
+const aDay = (runners: ReadonlyArray<number>) =>
+  Effect.forEach(
+    Array.from({ length: 24 }),
+    () =>
+      Effect.forEach(
+        runners,
+        (runner) =>
+          on(
+            runner,
+            ActorTest.use((test) => test.advance("1 hour")),
+          ),
+        { concurrency: "unbounded", discard: true },
+      ),
+    { discard: true },
+  )
+
+clusterCase(
+  "runs one digest per day across three runners, through a runner kill",
+
+  Effect.gen(function* () {
+    const cluster = yield* ActorCluster
+    yield* cluster.ready
+    const ref = (yield* on(0, Digest.get())).ref
+
+    const sent = (runner: number) =>
+      on(
+        runner,
+        ActorTest.use((test) => test.receiptsFor(ref, "Send")),
+      )
+
+    yield* aDay([0, 1, 2])
+    yield* eventually(sent(0).pipe(Effect.map((count) => count === 1)), "the first digest")
+
+    const owner = (yield* cluster.owner(ref))!
+    yield* cluster.kill(owner)
+    yield* cluster.ready
+    const survivors = [0, 1, 2].filter((runner) => runner !== owner)
+
+    yield* aDay(survivors)
+    yield* eventually(
+      sent(survivors[0]!).pipe(Effect.map((count) => count === 2)),
+      "the second digest",
+    )
+
+    // One per day, never two: a short settle would reveal a duplicate tick.
+    yield* Effect.sleep("1 second")
+    expect(yield* sent(survivors[1]!)).toBe(2)
+    expect(
+      (yield* on(
+        survivors[0]!,
+        ActorTest.use((test) => test.inspect(ref)),
+      )).state,
+    ).toMatchObject({ sent: 2 })
+  }),
+)
 
 /** One moderation call as the provider saw it; `endedAt` stays unset while it runs. */
 interface ModerationCall {
