@@ -1,6 +1,7 @@
 import {
   type Cause,
   Context,
+  flow,
   DateTime,
   Deferred,
   Effect,
@@ -22,7 +23,8 @@ import {
 } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, User } from "../../index.ts"
-import { Unauthorized } from "../../errors/actor.ts"
+import { ActorError, TransportError, Unauthorized } from "../../errors/actor.ts"
+import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import { InternalActors } from "../../handles/actors.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { type Authenticated, bearerToken } from "../../serve/auth.ts"
@@ -221,6 +223,16 @@ const WireReason = Schema.Struct({
 })
 
 const decodeReason = Schema.decodeUnknownEffect(WireReason)
+
+const ClientFailure = Schema.Union([ActorError, RetentionGap, UnknownCursor, Banned])
+
+/** What a Promise client call or iteration rejected with, typed; anything else is a test defect. */
+const asFailure = flow(
+  Schema.decodeUnknownOption(ClientFailure),
+  Option.getOrElse(() =>
+    ActorError.make({ reason: TransportError.make({ code: "defect", retryable: false }) }),
+  ),
+)
 
 /** A client frame saying `text`, as the socket carries it. */
 const say = (text: string) =>
@@ -1426,6 +1438,147 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             expect(next!.id).toBe("2")
             expect(yield* textOf(next!)).toBe("after")
           }).pipe(Effect.provideContext(context))
+        }),
+      ),
+  },
+  {
+    name: "client reads an event feed as an AsyncIterable and resumes from its cursor after the response drops",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("client-feed")
+          yield* room.Tell("one")
+          yield* room.Tell("two")
+          const requests: Array<string | null> = []
+          const send = yield* FetchHttpClient.Fetch
+          let dropped = false
+
+          // The first feed response is cut after its first event, as a lost connection would be.
+          const flaky = (input: RequestInfo | URL, init?: RequestInit) =>
+            send(input, init).then((response) => {
+              requests.push(new Headers(init?.headers).get("last-event-id"))
+
+              if (dropped || response.body === null) return response
+
+              dropped = true
+              const reader = response.body.getReader()
+
+              const cut = new ReadableStream<Uint8Array>({
+                pull: (controller) =>
+                  reader.read().then((chunk) => {
+                    if (chunk.done) return controller.close()
+
+                    const text = new TextDecoder().decode(chunk.value)
+                    const end = text.indexOf("\n\n")
+
+                    if (end === -1) return controller.enqueue(chunk.value)
+
+                    // Only the first complete message gets through.
+                    controller.enqueue(new TextEncoder().encode(text.slice(0, end + 2)))
+                    void reader.cancel()
+                    controller.error(new Error("connection lost"))
+                  }),
+              })
+
+              return new Response(cut, { status: response.status, headers: response.headers })
+            })
+
+          const handle = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () => ({ authorization: token() }),
+            fetch: flaky,
+          }).get("client-feed")
+
+          const iterated = Stream.fromAsyncIterable(handle.events(Said), asFailure).pipe(
+            Stream.map((entry) => `${entry.cursor}:${entry.event.text}`),
+          )
+
+          const [first, second] = yield* iterated.pipe(Stream.take(2), Stream.runCollect)
+
+          // A later event reaches a new iteration from the cursor it resumes after.
+          const resumed = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: { authorization: token() },
+          })
+            .get("client-feed")
+            .events(Said, { after: "2" })
+
+          yield* room.Tell("three")
+
+          const [third] = yield* Stream.fromAsyncIterable(resumed, asFailure).pipe(
+            Stream.map((entry) => `${entry.cursor}:${entry.event.text}`),
+            Stream.take(1),
+            Stream.runCollect,
+          )
+
+          const received = [first, second, third]
+          expect(received).toEqual(["1:one", "2:two", "3:three"])
+          // The reopened request resumed after the one event it had delivered.
+          expect(requests.slice(0, 2)).toEqual([null, "1"])
+        }),
+      ),
+  },
+  {
+    name: "client feed fails with RetentionGap for a pruned cursor and UnknownCursor for one never issued",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("client-gap")
+          yield* room.Tell("a")
+          yield* room.Tell("b")
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`DELETE FROM actor_events WHERE tenant_id = ${room.ref.tenant}
+            AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id} AND sequence = 1`.pipe(
+            Effect.orDie,
+          )
+
+          const handle = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: { authorization: token() },
+          }).get("client-gap")
+
+          const first = (after: string) =>
+            Stream.fromAsyncIterable(handle.events(Said, { after }), asFailure).pipe(
+              Stream.runHead,
+              Effect.flip,
+            )
+
+          expect(yield* first("0")).toBeInstanceOf(RetentionGap)
+          expect(yield* first("99")).toBeInstanceOf(UnknownCursor)
+        }),
+      ),
+  },
+  {
+    name: "client opens a connection with typed frames both ways, rejects a declared open failure as its class, and ends on close",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+
+          const handle = SocketRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () => ({ authorization: token() }),
+          }).get("client-socket")
+
+          const refused = yield* Effect.tryPromise({
+            try: () => handle.Chat.connect({ name: "mallory" }),
+            catch: asFailure,
+          }).pipe(Effect.flip)
+
+          expect(refused).toBeInstanceOf(Banned)
+
+          const connection = yield* Effect.promise(() => handle.Chat.connect({ name: "alice" }))
+          expect(connection.cursor).toBe("0")
+          const iterator = connection.frames[Symbol.asyncIterator]()
+          const next = Effect.promise(() => iterator.next())
+
+          expect((yield* next).value).toEqual(Hello.make({ name: "alice", resumed: false }))
+          yield* Effect.promise(() => connection.send(Say.make({ text: "hi" })))
+          expect((yield* next).value).toEqual(Said.make({ text: "hi" }))
+          yield* Effect.promise(() => connection.close())
+          expect((yield* next).done).toBe(true)
         }),
       ),
   },

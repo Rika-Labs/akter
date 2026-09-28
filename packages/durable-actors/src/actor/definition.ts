@@ -2363,10 +2363,11 @@ const make = <
     client: (options: ClientOptions) =>
       clientOf<
         ActorClient<
-          Omit<Api, WorkflowKeys<Api> | ConnectionKeys<Api>>,
+          Omit<Api, WorkflowKeys<Api>>,
           K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
           Id,
-          StateOf<Fields>
+          StateOf<Fields>,
+          Events[number]
         >
       >(served)(options),
   }

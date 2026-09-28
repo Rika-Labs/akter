@@ -5,11 +5,16 @@ export type {
   ClientOptions,
   ClientState,
   CommandOptions,
+  ConnectionClient,
   HeadersProvider,
   QueryOptions,
 } from "./make.ts"
 
 export type { PendingInput } from "./optimistic.ts"
+
+export type { ClientConnection, ConnectionMessage, ConnectOptions } from "./connection.ts"
+
+export type { FeedEntry, FeedOptions } from "./feed.ts"
 
 export type { Failure } from "./transport.ts"
 
@@ -23,7 +28,10 @@ export {
   MailboxFull,
   NotCreated,
   RunnerAtCapacity,
+  SessionEnded,
   Timeout,
   TransportError,
   Unauthorized,
 } from "../errors/actor.ts"
+
+export { RetentionGap, UnknownCursor } from "../errors/events.ts"

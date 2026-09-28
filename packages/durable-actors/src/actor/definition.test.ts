@@ -70,7 +70,7 @@ describe("actor declarations", () => {
     const _unbranded = A.get("not-a-minted-id")
   })
 
-  it("leaves connection members off the Promise client", () => {
+  it("serves connection members on the Promise client through connect", () => {
     const Ping = Actor.command("Ping")
     const Live = Actor.connection("Live", { client: Schema.String, server: Schema.String })
     const Served = Actor.make("Served", { key: Schema.String, api: { Ping, Live } })
@@ -78,7 +78,7 @@ describe("actor declarations", () => {
     type Handle = ReturnType<ReturnType<typeof Served.client>["get"]>
 
     expectTypeOf<keyof Handle & "Ping">().toEqualTypeOf<"Ping">()
-    expectTypeOf<keyof Handle & "Live">().toEqualTypeOf<never>()
+    expectTypeOf<keyof Handle["Live"]>().toEqualTypeOf<"connect">()
   })
 
   it("lets a turn mint only unkeyed actors that declare createdBy", () => {
