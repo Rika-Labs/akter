@@ -178,7 +178,15 @@ interface Held {
     | undefined
   resyncs: Array<number>
   loop: Fiber.Fiber<void> | undefined
+  /**
+   * The undelivered progress frame of each effect, newest only. Its place in
+   * `outbound` is a marker that takes whatever frame is here when the client
+   * reaches it, so newer frames replace older ones in place.
+   */
+  readonly progress: Map<string, { message: ProgressMessage; bytes: number }>
 }
+
+type ProgressMessage = Extract<ClientMessage, { readonly _tag: "Progress" }>
 
 interface HeldActor {
   generation: bigint
@@ -268,6 +276,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     connection.outBytes = 0
     connection.inBytes = 0
     connection.inbound.length = 0
+    connection.progress.clear()
     held.delete(connection.id)
     const actor = actors.get(connection.key)
     actor?.connections.delete(connection.id)
@@ -292,10 +301,62 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       if (deleteOwnRow) yield* deleteRow(connection)
     })
 
+  // Removes one undelivered progress frame; its marker in `outbound` then delivers nothing.
+  const discardProgress = (connection: Held, effectId: string) => {
+    const pending = connection.progress.get(effectId)
+
+    if (pending === undefined) return
+    connection.progress.delete(effectId)
+    connection.outFrames -= 1
+    connection.outBytes -= pending.bytes
+    heldBytes -= pending.bytes
+  }
+
+  const fits = (connection: Held, bytes: number) =>
+    connection.outFrames + 1 <= MAX_OUTBOUND_FRAMES &&
+    connection.outBytes + bytes <= MAX_OUTBOUND_BYTES &&
+    heldBytes + bytes <= MAX_HELD_BYTES
+
+  /**
+   * Buffers a progress frame. A newer frame of the same effect replaces the
+   * waiting one in place; one that does not fit is dropped. Progress never
+   * ends a session.
+   */
+  const pushProgress = (connection: Held, message: ProgressMessage) =>
+    Effect.gen(function* () {
+      if (connection.ended || connection.resync !== undefined) return
+      const bytes = utf8.encode(message.frame).byteLength
+      const waiting = connection.progress.get(message.effectId)
+
+      if (waiting !== undefined) {
+        if (heldBytes - waiting.bytes + bytes > MAX_HELD_BYTES) return
+        connection.outBytes += bytes - waiting.bytes
+        heldBytes += bytes - waiting.bytes
+        waiting.message = message
+        waiting.bytes = bytes
+
+        return
+      }
+
+      if (!fits(connection, bytes)) return
+      connection.progress.set(message.effectId, { message, bytes })
+      connection.outFrames += 1
+      connection.outBytes += bytes
+      heldBytes += bytes
+      yield* Queue.offer(connection.outbound, message)
+    })
+
   const push = (connection: Held, message: ClientMessage, control: boolean) =>
     Effect.gen(function* () {
       if (connection.ended) return
       const bytes = ClientMessage.guards.Frame(message) ? utf8.encode(message.frame).byteLength : 0
+
+      // A member frame evicts buffered progress, oldest first, before it counts as a slow consumer.
+      if (!control)
+        for (const effectId of connection.progress.keys()) {
+          if (fits(connection, bytes)) break
+          discardProgress(connection, effectId)
+        }
 
       if (
         !control &&
@@ -309,6 +370,17 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       connection.outBytes += bytes
       heldBytes += bytes
       yield* Queue.offer(connection.outbound, message)
+    })
+
+  // A progress marker delivers the newest frame of its effect, or nothing if it was discarded.
+  const takenProgress = (connection: Held, marker: ProgressMessage) =>
+    Effect.sync((): Option.Option<ClientMessage> => {
+      const pending = connection.progress.get(marker.effectId)
+
+      if (connection.ended || pending === undefined) return Option.none()
+      discardProgress(connection, marker.effectId)
+
+      return Option.some(pending.message)
     })
 
   const taken = (connection: Held, message: ClientMessage) =>
@@ -386,6 +458,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       if (generation < actor.generation) return false
 
       if (generation > actor.generation) {
+        // An older owner's progress never reaches a client after a newer owner's messages.
+        for (const connection of actor.connections.values())
+          for (const effectId of connection.progress.keys()) discardProgress(connection, effectId)
+
         if (actor.generation > 0n) yield* ownerLost(actor)
         actor.generation = generation
         actor.seq = 0
@@ -491,6 +567,39 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           Seal: () =>
             Effect.sync(() => {
               actor.sealed = true
+            }),
+          Progress: (item) =>
+            Effect.forEach(
+              item.to,
+              (id) => {
+                const connection = actor.connections.get(id)
+
+                if (connection === undefined || connection.member !== item.member) {
+                  unknown.push(id)
+
+                  return Effect.void
+                }
+
+                // Nothing reaches a client past its authorization bound.
+                if (at >= authorizedUntil(connection)) return end(connection, unauthorized, true)
+
+                return pushProgress(
+                  connection,
+                  ClientMessage.cases.Progress.make({
+                    effect: item.effect,
+                    effectId: item.effectId,
+                    attempt: item.attempt,
+                    seq: item.seq,
+                    frame: item.frame,
+                  }),
+                )
+              },
+              { discard: true },
+            ),
+          ProgressEnd: (item) =>
+            Effect.sync(() => {
+              for (const connection of actor.connections.values())
+                discardProgress(connection, item.effectId)
             }),
         })
 
@@ -834,6 +943,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       resync: undefined,
       resyncs: [],
       loop: undefined,
+      progress: new Map(),
     }
 
     // Registered before the owner commits, so frames flushed after that commit find it.
@@ -912,7 +1022,13 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       connectionId: connection.id,
       cursor: answer.baseline,
       messages: Stream.fromQueue(connection.outbound).pipe(
-        Stream.tap((message) => taken(connection, message)),
+        Stream.mapEffect((message) =>
+          ClientMessage.guards.Progress(message)
+            ? takenProgress(connection, message)
+            : Effect.as(taken(connection, message), Option.some(message)),
+        ),
+        Stream.filter(Option.isSome),
+        Stream.map((message) => message.value),
       ),
       send: (frame) =>
         Effect.gen(function* () {

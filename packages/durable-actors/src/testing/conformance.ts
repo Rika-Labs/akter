@@ -85,6 +85,8 @@ import {
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import {
+  progressDeliveryConformance,
+  studioLayer,
   progressConformance,
   progressFixture,
   progressLayer,
@@ -356,6 +358,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...workflowsConformance,
   ...connectionsConformance,
   ...streamsConformance,
+  ...progressDeliveryConformance,
   ...workflowVersionsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
@@ -1329,6 +1332,7 @@ export const describeConformance = (options: {
     workflowsLive(fixture.workflows),
     connectionsLayer,
     streamsLayer,
+    studioLayer,
     mintLayer,
   )
 

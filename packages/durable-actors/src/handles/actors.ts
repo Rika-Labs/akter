@@ -1,5 +1,6 @@
 import type { Transport } from "../runtime/connections/transport.ts"
 import type { Holder } from "../runtime/connections/holder.ts"
+import type { ProgressMessage } from "../runtime/effects/progress.ts"
 import { Context, Effect, type Exit, Schema, Scope, type Stream } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
@@ -139,6 +140,10 @@ export interface ConnectionResult {
 
 export interface RegisteredConnection {
   readonly stampCursor: boolean
+  /** Effect tags whose progress this member receives, and its audience. */
+  readonly progress:
+    | { readonly effects: ReadonlySet<string>; readonly to: "performer" | "all" }
+    | undefined
   readonly hasResync: boolean
   /** Fails with an encoded declared error only while opening. */
   readonly run: (
@@ -160,9 +165,24 @@ export interface StreamInput {
     tag: string,
     after: string | undefined,
   ) => Stream.Stream<StoredEvent, UnknownCursor | RetentionGap>
+  /** Accepted progress of one effect tag from now on; empty for a tag the member does not list. */
+  readonly progress: (tag: string, effectId: string | undefined) => Stream.Stream<StoredProgress>
+}
+
+/** One accepted progress frame, still encoded. */
+export interface StoredProgress {
+  readonly effectId: string
+  /** The effect's encoded input, as performed. */
+  readonly effect: string
+  readonly attempt: number
+  readonly seq: number
+  /** The frame, JSON-encoded under the effect's progress schema. */
+  readonly frame: string
 }
 
 export interface RegisteredStream {
+  /** Effect tags whose progress the handler may read. */
+  readonly progress: ReadonlySet<string>
   /** Encoded elements; a declared failure is encoded, anything else is a defect. */
   readonly run: (
     payload: string,
@@ -219,6 +239,8 @@ export interface RegisteredEffect {
 
 export interface EffectRegistration {
   readonly name: string
+  /** Effect tags some connection or stream member of the actor receives progress of. */
+  readonly progress: ReadonlySet<string>
   /** The effect layer's build context; executor attempts run in it. */
   readonly services: Context.Context<never>
   readonly effects: ReadonlyMap<string, RegisteredEffect>
@@ -318,6 +340,8 @@ export class InternalActors extends Context.Service<
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /** Sends one progress message to its actor's owner as an executor pool would; for tests. */
+    readonly deliverProgress: (message: ProgressMessage) => Effect.Effect<void>
     /**
      * Subscribes to a stream member on the actor's owner: `request.command`
      * is the member and `request.payload` its encoded input. Elements arrive

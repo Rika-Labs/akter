@@ -62,6 +62,7 @@ import {
 import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
 import { StreamFailed, StreamItem } from "./connections/protocol.ts"
+import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
 import type { Owner } from "./connections/owner.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
@@ -168,6 +169,9 @@ const OWNER_CHECK_INTERVAL = "1 second"
 
 const activationEnded = () =>
   ActorError.make({ reason: SessionEnded.make({ cause: "ActivationEnded", resync: false }) })
+
+/** How long a progress send may take before it is given up as a lost frame. */
+const PROGRESS_SEND_TIMEOUT = "5 seconds"
 
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
@@ -497,6 +501,55 @@ export const layer = (options: Options) => {
         return longest === 0 ? DEFAULT_CLAIM_LEASE_MS : longest + CLAIM_MARGIN_MS
       }
 
+      // Executor progress goes to the performing actor's connection entity,
+      // fire-and-forget: no retry, no acknowledgment, and a lost message is a
+      // lost frame. Actor types with no member that receives an effect's
+      // progress get no messages at all.
+      const progressTap = yield* ProgressTap
+      const utf8Decoder = new TextDecoder()
+
+      const ownerOf = (ref: ActorRef) =>
+        Effect.gen(function* () {
+          const make = yield* sharding.makeClient(connectionEntity(ref.actor))
+
+          return make(yield* entityId(ref))
+        })
+
+      const fireAndForget = <E>(send: Effect.Effect<void, E>) =>
+        send.pipe(
+          Effect.timeout(PROGRESS_SEND_TIMEOUT),
+          Effect.ignoreCause,
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        )
+
+      // Sends one progress message to its owner as the pool does, past the tap.
+      const deliverProgress = (message: ProgressMessage) =>
+        Effect.flatMap(ownerOf(message.ref), (client) =>
+          client.Progress(
+            { ...message, frame: utf8Decoder.decode(message.frame) },
+            { discard: true },
+          ),
+        )
+
+      const progressSink = ProgressSink.of({
+        wants: (actor, effect) => effectRegistrations.get(actor)?.progress.has(effect) === true,
+        send: (message) =>
+          Effect.flatMap(progressTap.send(message), (deliver) =>
+            deliver ? fireAndForget(deliverProgress(message)) : Effect.void,
+          ),
+        closed: (message) =>
+          Effect.flatMap(progressTap.closed(message), (deliver) =>
+            deliver
+              ? fireAndForget(
+                  Effect.flatMap(ownerOf(message.ref), (client) =>
+                    client.ProgressClosed(message, { discard: true }),
+                  ),
+                )
+              : Effect.void,
+          ),
+      })
+
       const relay = yield* outboxRelay(
         (request) => dispatch(request, false),
         () =>
@@ -512,7 +565,7 @@ export const layer = (options: Options) => {
             })),
           ),
         { ...relaySettings, claimLeaseMs: () => claimLeaseMs ?? leaseForTurns() },
-      )
+      ).pipe(Effect.provideService(ProgressSink, progressSink))
 
       yield* relay.run.pipe(Effect.forkIn(scope))
 
@@ -855,6 +908,8 @@ export const layer = (options: Options) => {
                 )
             }).pipe(Effect.provideContext(services)),
           ),
+        deliverProgress: (message) =>
+          deliverProgress(message).pipe(Effect.ignoreCause, Effect.provideContext(services)),
         transport,
         holder,
         hibernate: (ref) =>

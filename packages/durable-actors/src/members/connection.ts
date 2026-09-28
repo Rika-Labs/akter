@@ -1,5 +1,6 @@
 import { Schema, SchemaAST } from "effect"
 import type { DeclaredError, Member, ValueSchema } from "./command.ts"
+import type { ProgressEffect } from "./effect.ts"
 
 /** Tags reserved for framework control frames, which travel in their own envelope variant. */
 const CONTROL_TAGS = new Set(["Resync", "ResyncReplayed", "ResyncDone"])
@@ -22,6 +23,18 @@ export interface Connection<
   readonly session: Session
   /** Stamp member frames with the flushed-through cursor and event cursor. Default true. */
   readonly stampCursor: boolean
+  /** Executor progress this member's connections receive, if any. */
+  readonly progress: ConnectionProgress | undefined
+}
+
+/**
+ * The effects whose executor progress a connection member receives, and to
+ * whom: `"performer"` (the default) only connections whose caller has the
+ * performing turn's principal, `"all"` every open connection of the member.
+ */
+export interface ConnectionProgress {
+  readonly effects: ReadonlyArray<ProgressEffect>
+  readonly to: "performer" | "all"
 }
 
 export type AnyConnection = Connection<
@@ -63,6 +76,10 @@ const make = <
     readonly session?: Session
     readonly errors?: Errors
     readonly stampCursor?: boolean
+    readonly progress?: {
+      readonly effects: ReadonlyArray<ProgressEffect>
+      readonly to?: "performer" | "all"
+    }
   },
 ): Connection<Tag, Params, Server, Client, Session, Errors> => {
   for (const schema of [options.server, options.client])
@@ -81,6 +98,10 @@ const make = <
     client: (options.client ?? Schema.Never) as Client,
     session: options.session as Session,
     stampCursor: options.stampCursor ?? true,
+    progress:
+      options.progress === undefined
+        ? undefined
+        : { effects: options.progress.effects, to: options.progress.to ?? "performer" },
   }
 }
 

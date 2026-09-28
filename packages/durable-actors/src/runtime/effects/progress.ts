@@ -44,6 +44,18 @@ export class ProgressSink extends Context.Service<
   }
 >()("@durable-actors/core/runtime/effects/progress/ProgressSink") {}
 
+/**
+ * Sees every message a runner's pool sends before the runtime delivers it;
+ * `false` drops it. Tests record and drop progress here, between the pool and
+ * the owner.
+ */
+export const ProgressTap = Context.Reference<{
+  readonly send: (message: ProgressMessage) => Effect.Effect<boolean>
+  readonly closed: (message: ProgressClosed) => Effect.Effect<boolean>
+}>("@durable-actors/core/runtime/effects/progress/ProgressTap", {
+  defaultValue: () => ({ send: () => Effect.succeed(true), closed: () => Effect.succeed(true) }),
+})
+
 /** One attempt's progress slot: latest wins, sent at most once per `everyMs`. */
 export interface ProgressSlot {
   /** False once nothing more will be sent, so a caller can skip encoding frames. */

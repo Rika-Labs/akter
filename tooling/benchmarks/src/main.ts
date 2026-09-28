@@ -16,6 +16,7 @@ import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { blobs } from "./scenarios/storage/blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { connections } from "./scenarios/connections.ts"
+import { progress } from "./scenarios/progress.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
 import { retention } from "./scenarios/retention.ts"
@@ -62,6 +63,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   subscriptions,
   workflows,
   connections,
+  progress,
   workflowCheck,
   mint,
 ]
