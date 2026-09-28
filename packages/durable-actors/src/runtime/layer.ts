@@ -636,7 +636,8 @@ export const layer = (options: Options) => {
           concurrency: subscriptionConcurrency,
           claim: subscriptions.claim,
           decode: subscriptions.decode,
-          run: (work) => subscriptions.run(work).pipe(Effect.provideContext(services)),
+          run: (work, handoff) =>
+            subscriptions.run(work, handoff).pipe(Effect.provideContext(services)),
         },
       )
 

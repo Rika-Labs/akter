@@ -1174,6 +1174,49 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "leases the rows an expansion makes due and starts their delivery without a claim pass",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          yield* (yield* SubFollower.get("lease-follower")).Follow({ source: "lease-order" })
+          yield* drain
+
+          // Expansion waits, briefly, for the follower's delivery to start: a
+          // leased row starts before its feed's expansion ends, a row left due
+          // only after a later claim pass.
+          const order: Array<string> = []
+          const claimed = yield* Deferred.make<void>()
+          fixture.hook = (point, request) => {
+            if (point === "afterClaim" && request.commandId === "lease-follower") {
+              order.push("delivery")
+
+              return Deferred.succeed(claimed, undefined).pipe(Effect.asVoid)
+            }
+
+            if (point === "afterExpand" && request.ref.id === "lease-order")
+              return Deferred.await(claimed).pipe(
+                Effect.timeout("2 seconds"),
+                Effect.ignore,
+                Effect.andThen(Effect.sync(() => order.push("expanded"))),
+              )
+
+            return Effect.void
+          }
+
+          yield* (yield* SubOrder.get("lease-order")).Place({ customerId: "l", amount: 1 })
+          yield* drain
+
+          expect(order).toEqual(["delivery", "expanded"])
+          expect(yield* followerLog("lease-follower")).toEqual(["lease-order#1:OrderPlaced"])
+          expect(yield* sourceRows("lease-order")).toMatchObject([
+            { delivered: "1", due: false, attempts: 0 },
+          ])
+        }),
+      ),
+  },
+  {
     name: "loses no wake when a commit races a settle or an expansion",
     run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
       run(

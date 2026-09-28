@@ -89,6 +89,7 @@ export interface SubscriptionRelay {
   readonly decode: (work: string) => Effect.Effect<SubscriptionWork>
   readonly run: (
     work: SubscriptionWork,
+    handoff: Handoff,
   ) => Effect.Effect<void, SubscriptionError, SqlClient.SqlClient>
   /** Deletes rows of a subscription this runner no longer declares after a day due. */
   readonly cleanupRemoved: (
@@ -100,6 +101,15 @@ export interface SubscriptionRelay {
     subscriberType: string,
     declared: RegisteredSubscription,
   ) => Effect.Effect<void, SubscriptionError, SqlClient.SqlClient>
+}
+
+/**
+ * How an expansion hands the rows it leased to the relay: its free
+ * subscription-delivery slots now, and starting one leased row's delivery.
+ */
+export interface Handoff {
+  readonly free: Effect.Effect<number>
+  readonly start: (work: SubscriptionWork) => Effect.Effect<void>
 }
 
 /** How many of each kind of subscription work a runner has room to claim now. */
@@ -225,6 +235,26 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       )`
   }
 
+  // The subscriptions this runner delivers, with the event tags each knows.
+  const subscribedValues = (local: ReadonlyArray<LocalSubscription>) =>
+    sql.csv(
+      local.map(
+        ({ subscriberType, subscription }) =>
+          sql`(${subscriberType}::text, ${subscription.tag}::text, ${textArray({
+            sql,
+            values: [...subscription.events, ...subscription.retired],
+          })})`,
+      ),
+    )
+
+  // A claimed subscription row as the relay decodes it, from alias `s` after its update.
+  const claimedRow = sql`jsonb_build_object('kind', 'subscription', 'routing_key', s.routing_key::text,
+    'tenant_id', s.tenant_id, 'source_type', s.source_type, 'source_id', s.source_id,
+    'subscriber_type', s.subscriber_type, 'subscription', s.subscription,
+    'subscriber_id', s.subscriber_id, 'events', to_jsonb(s.events),
+    'epoch', s.epoch::text, 'delivered', s.delivered::text, 'attempts', s.attempts,
+    'claimed_until', s.due_at_ms::text)`
+
   /**
    * Claims due feed and control rows and due subscription rows, each up to
    * its free slots, as parts of the relay's claim statement. Subscription
@@ -252,15 +282,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       const lease = settings.claimLeaseMs()
 
       parts.push(sql`subscribed (subscriber_type, subscription, known) AS (
-            VALUES ${sql.csv(
-              local.map(
-                ({ subscriberType, subscription }) =>
-                  sql`(${subscriberType}::text, ${subscription.tag}::text, ${textArray({
-                    sql,
-                    values: [...subscription.events, ...subscription.retired],
-                  })})`,
-              ),
-            )}
+            VALUES ${subscribedValues(local)}
           ),
           subscription_candidates AS (
             SELECT s.* FROM generate_series(-128, 127) AS b(bucket)
@@ -298,12 +320,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
               AND s.source_type = c.source_type AND s.source_id = c.source_id
               AND s.subscriber_type = c.subscriber_type AND s.subscription = c.subscription
               AND s.subscriber_id = c.subscriber_id
-            RETURNING jsonb_build_object('kind', 'subscription', 'routing_key', s.routing_key::text,
-              'tenant_id', s.tenant_id, 'source_type', s.source_type, 'source_id', s.source_id,
-              'subscriber_type', s.subscriber_type, 'subscription', s.subscription,
-              'subscriber_id', s.subscriber_id, 'events', to_jsonb(s.events),
-              'epoch', s.epoch::text, 'delivered', s.delivered::text, 'attempts', s.attempts,
-              'claimed_until', s.due_at_ms::text)::text AS work
+            RETURNING ${claimedRow}::text AS work
           )`)
       results.push(sql`SELECT work FROM subscription_claimed`)
     }
@@ -387,15 +404,46 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
    * due after its settle. The feed row goes only if no commit reset its
    * `attempts` meanwhile; otherwise it stays due and is expanded again.
    */
-  const expand = Effect.fnUntraced(function* (row: OutboxWork) {
+  const expand = Effect.fnUntraced(function* (row: OutboxWork, handoff: Handoff) {
     const key = BigInt(row.routing_key)
     const source = { tenant: row.tenant_id, actor: row.actor_type, id: row.actor_id }
     yield* hooks.at("afterClaim", hookRequest(source, "$feed", row.intent_id))
 
+    const local = options.local()
     let after: ReadonlyArray<string> = ["", "", ""]
 
     for (;;) {
-      const [page] = yield* sql<{ rows: number; last: string | null }>`
+      const free = local.length === 0 ? 0 : Math.max(0, yield* handoff.free)
+      const lease = settings.claimLeaseMs()
+
+      // Rows this runner can deliver that the expansion makes due are leased
+      // at once, up to its free delivery slots, and delivered without a
+      // claim pass; the rest become due for any runner.
+      const leasable =
+        free === 0
+          ? sql`leasable AS (
+              SELECT NULL::text AS subscriber_type, NULL::text AS subscription,
+                NULL::text AS subscriber_id WHERE false)`
+          : sql`subscribed (subscriber_type, subscription, known) AS (
+              VALUES ${subscribedValues(local)}),
+            leasable AS (
+              SELECT s.subscriber_type, s.subscription, s.subscriber_id
+              FROM actor_subscriptions s JOIN page USING (subscriber_type, subscription, subscriber_id), head
+              WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
+                AND s.due_at_ms IS NULL AND s.marked < head.h
+                AND EXISTS (SELECT 1 FROM subscribed m WHERE m.subscriber_type = s.subscriber_type
+                  AND m.subscription = s.subscription AND m.known @> s.events)
+                AND EXISTS (
+                  SELECT 1 FROM actor_events e
+                  WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
+                    AND e.sequence > s.delivered AND e.sequence <= head.h
+                    AND e.event = ANY(s.events))
+              LIMIT ${free})`
+
+      const leaseEnd = sql`(${now()} + greatest(${lease}::bigint,
+        least(1000 * power(2, least(s.attempts, 31)), ${settings.maxBackoffMs}::bigint))::bigint)`
+
+      const [page] = yield* sql<{ rows: number; last: string | null; leased: string | null }>`
         WITH head AS (
           SELECT event_sequence AS h FROM actor_generations g
           WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}),
@@ -405,11 +453,24 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             AND (s.subscriber_type, s.subscription, s.subscriber_id) > (${after[0]!}, ${after[1]!}, ${after[2]!})
           ORDER BY s.subscriber_type, s.subscription, s.subscriber_id
           LIMIT ${EXPANSION_PAGE}),
+        ${leasable},
+        -- Leased only while still unclaimed in the version this updates, so a
+        -- row another runner claimed meanwhile is left to the marking below.
+        leased AS (
+          UPDATE actor_subscriptions s SET marked = greatest(s.marked, head.h),
+            due_at_ms = ${leaseEnd}, attempts = s.attempts + 1
+          FROM leasable l, head
+          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
+            AND s.subscriber_type = l.subscriber_type AND s.subscription = l.subscription
+            AND s.subscriber_id = l.subscriber_id AND s.due_at_ms IS NULL
+          RETURNING s.subscriber_type, s.subscription, s.subscriber_id, ${claimedRow}::text AS work),
         marked AS (
           UPDATE actor_subscriptions s SET marked = greatest(s.marked, head.h),
             due_at_ms = coalesce(s.due_at_ms, ${now()})
           FROM page, head
-          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
+          WHERE NOT EXISTS (SELECT 1 FROM leased x WHERE x.subscriber_type = s.subscriber_type
+              AND x.subscription = s.subscription AND x.subscriber_id = s.subscriber_id)
+            AND ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
             AND s.subscriber_type = page.subscriber_type AND s.subscription = page.subscription
             AND s.subscriber_id = page.subscriber_id AND s.marked < head.h
             -- A row due and unclaimed since its last settle reads through the
@@ -421,8 +482,13 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
                   AND e.sequence > s.delivered AND e.sequence <= head.h AND e.event = ANY(s.events)))
           RETURNING 1)
         SELECT (SELECT count(*) FROM page)::int AS rows,
+          (SELECT json_agg(work)::text FROM leased) AS leased,
           (SELECT json_build_array(subscriber_type, subscription, subscriber_id)::text FROM page
             ORDER BY subscriber_type DESC, subscription DESC, subscriber_id DESC LIMIT 1) AS last`
+
+      if (page!.leased !== null)
+        for (const work of yield* decodeStrings(page!.leased))
+          yield* handoff.start(yield* decode(work))
 
       if (page!.rows < EXPANSION_PAGE || page!.last === null) break
       after = yield* decodeStrings(page!.last)
@@ -1027,14 +1093,14 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     )
   })
 
-  const run = (work: SubscriptionWork) => {
+  const run = (work: SubscriptionWork, handoff: Handoff) => {
     const claim = { lease: BigInt(work.claimed_until) }
 
     const running: Effect.Effect<void, SubscriptionError, SqlClient.SqlClient> =
       work.kind === "subscription"
         ? deliverRow(work, claim)
         : Match.value(work.kind).pipe(
-            Match.when("feed", () => expand(work)),
+            Match.when("feed", () => expand(work, handoff)),
             Match.orElse(() => register(work)),
           )
 

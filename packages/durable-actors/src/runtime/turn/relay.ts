@@ -19,6 +19,7 @@ import { TurnHooks } from "./hooks.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
 import type {
+  Handoff,
   SubscriptionError,
   SubscriptionClaim,
   SubscriptionSlots,
@@ -344,7 +345,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
     readonly concurrency: number
     readonly claim: (slots: SubscriptionSlots) => SubscriptionClaim | undefined
     readonly decode: (work: string) => Effect.Effect<SubscriptionWork>
-    readonly run: (work: SubscriptionWork) => Effect.Effect<void, SubscriptionError>
+    readonly run: (
+      work: SubscriptionWork,
+      handoff: Handoff,
+    ) => Effect.Effect<void, SubscriptionError>
   },
 ) {
   const sql = yield* SqlClient.SqlClient
@@ -364,6 +368,29 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
   const hooks = yield* TurnHooks
   const progress = yield* progressPool()
+
+  // Starts one item of subscription work in its slots; an expansion also
+  // starts the rows it leased this way, without a claim pass.
+  const startWork = (work: SubscriptionWork): Effect.Effect<void> =>
+    subscriptions === undefined
+      ? Effect.void
+      : FiberSet.run(
+          subscriptionWork[work.kind],
+          subscriptions
+            .run(work, handoff)
+            .pipe(
+              logFailure("Subscription relay work failed"),
+              Effect.ensuring(freed("subscriptions")),
+            ),
+        ).pipe(Effect.asVoid)
+
+  const handoff: Handoff = {
+    free: Effect.map(
+      FiberSet.size(subscriptionWork.subscription),
+      (running) => (subscriptions?.concurrency ?? 0) - running,
+    ),
+    start: startWork,
+  }
 
   // Set when a claim saw more due candidates than it took: a freed slot then
   // claims again instead of waiting for the poll.
@@ -806,16 +833,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
                 work.filter((item) => item.kind === kind).length >= workSlots[kind],
             )
 
-            for (const item of work)
-              yield* FiberSet.run(
-                subscriptionWork[item.kind],
-                subscriptions
-                  .run(item)
-                  .pipe(
-                    logFailure("Subscription relay work failed"),
-                    Effect.ensuring(freed("subscriptions")),
-                  ),
-              )
+            for (const item of work) yield* startWork(item)
           }
 
           for (const row of intents)
