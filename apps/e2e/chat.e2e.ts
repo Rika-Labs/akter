@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { once } from "node:events"
 import {
   type AddressInfo,
@@ -85,7 +86,8 @@ const proxy = async () => {
 }
 
 // Each test uses its own room, so tests share the server without sharing state.
-const roomOf = (name: string) => `${name}-${test.info().testId}-${test.info().retry}`
+// Rooms are unique per run too: the server may keep rooms across runs when DATABASE_URL names Postgres.
+const roomOf = (name: string) => `${name}-${randomUUID()}`
 
 test("replays events after a dropped connection and never shows a gap as continuous", async ({
   page,
