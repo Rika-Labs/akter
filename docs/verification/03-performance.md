@@ -415,8 +415,26 @@ The `subscriptions` scenario now also runs the built feature ([`b63a32a-m3.7-sub
 | `drain-8192` (64 subscribers)                             | —                        | 513 deliveries/s     | —                        |
 
 - **The publisher's turn is flat in subscriber count.** p50 stays at 3.1–3.9 ms from 1 to 1,024 subscriptions, where hand-rolled fan-out grows from 3.1 to 56 ms. The statements per publish above the T2 `events/append-1` baseline of 8 are the relay's feed claims and expansions that run during the window, not the publisher's; the publishing turn itself keeps its statement count. The 1,024 case's p99 is the expansion of 1,024 rows competing for the same CPU.
-- **Delivery costs several relay passes.** A commit wakes the relay, which claims the feed, expands it, claims the now-due row, delivers the turn, and settles; commit-to-delivery p50 is about 22 ms here, and one pair runs at about 70 events per second, as ADR 0026 expects of a sequential pair. The ADR's lease-in-expansion step, not built yet, would save one claim pass.
+- **Delivery costs several relay passes.** A commit wakes the relay, which claims the feed, expands it, claims the now-due row, delivers the turn, and settles; commit-to-delivery p50 is about 22 ms here, and one pair runs at about 70 events per second, as ADR 0026 expects of a sequential pair. The ADR's lease-in-expansion step saves one claim pass; see the follow-up below.
 - **Fan-in is bounded by the subscriber's turn rate,** as ADR 0026 notes; turn batches (P5) raise it.
+
+### Cross-actor subscriptions: lease-in-expansion, wake, and a poison row (M3.7, #94)
+
+[`7a69c3b-m3.7-subscription-followups`](../../benchmarks/results/2026-09-28-7a69c3b-m3.7-subscription-followups-postgres.json) reruns the scenario after lease-in-expansion, on main's pipelined turn (full profile, Postgres 18.6, same orb VM). The expansion now leases the rows it makes due that this runner delivers, up to its free delivery slots, and starts them without a claim pass.
+
+| Case                                                                 | p50 / p99 (ms)                | Rate             | Statements per operation |
+| -------------------------------------------------------------------- | ----------------------------- | ---------------- | ------------------------ |
+| `commit-to-delivery` (one routed subscriber)                         | 13.8 / 24.6 (was 21.6 / 46.0) | 68/s (was 43/s)  | 33                       |
+| `commit-to-delivery-hibernated` (`hibernateAfter: 100 ms`)           | 13.6 / 23.9                   | 67/s             | 35.5                     |
+| `lag-without-poison-row` (63 followers × 128 events)                 | —                             | 582 deliveries/s | —                        |
+| `lag-with-one-poison-row` (the same, plus one always-dying follower) | —                             | 551 deliveries/s | —                        |
+| `prune-beside-0-subscriptions` / `-10000` (10^4 events)              | 79 / 131 (one pass)           | —                | 174 / 175                |
+
+- **Lease-in-expansion cuts commit-to-delivery by a third.** p50 falls from about 22 to 14 ms and p99 from 46 to 25 ms: the delivery starts from the expansion instead of waiting for the relay's next claim.
+- **Waking a hibernated subscriber adds nothing measurable** at this scale: the trip, including the new activation, stays at about 14 ms.
+- **A poison row doesn't hold its neighbours back.** Beside one follower whose handler always dies, the other 63 drain the same backlog about 5% slower. The poison row backs off on its own, as the per-row hold requires.
+- **An expansion page is bounded by its key range.** A first run of the full profile stalled in `prune-beside-10000-subscriptions`. With 10^4 freshly seeded rows and no statistics yet, the planner joined the expansion page to `actor_subscriptions` as a nested loop and rescanned the page for every stored row, about 10^7 comparisons per statement. The updates now bound their rows by the page's key range, and the page and leased set are materialized.
+- **Metrics:** the subscription metrics ADR 0026 names are not emitted yet; they wait for the M4.3 observability layer.
 
 ### Effect cancellation and per-actor caps (M2.13)
 
