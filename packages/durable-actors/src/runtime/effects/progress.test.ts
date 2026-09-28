@@ -96,7 +96,7 @@ it("sends nothing without a sink, a recipient, or a progress schema", () =>
     }),
   ))
 
-it("caps a runner's progress messages per second across attempts", () =>
+it("caps a runner's progress messages per second across attempts and still sends each last frame", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const sent = yield* record((sent) =>
@@ -112,13 +112,28 @@ it("caps a runner's progress messages per second across attempts", () =>
           expect(sent.length).toBe(2)
           yield* TestClock.adjust(1000)
           expect(sent.length).toBe(4)
-          // The bucket is empty again, so closing drops the frames still pending.
+          // The bucket is empty again, yet closing still sends each last frame.
           yield* Effect.forEach(slots, (slot) => slot.offer(frame(2)))
           yield* Effect.forEach(slots, (slot) => slot.close)
+          yield* TestClock.adjust(0)
+          expect(sent.length).toBe(8)
+          // Those four frames were borrowed, so the next send waits them out.
+          const late = yield* pool.open(attempt("e", 250))
+          yield* late.offer(frame(3))
+          yield* TestClock.adjust(2000)
+          expect(sent.length).toBe(8)
+          yield* TestClock.adjust(500)
+          expect(sent.length).toBe(9)
         }),
       )
 
-      expect(sent.length).toBe(4)
+      expect(sent.slice(4).map((message) => [message.effectId, message.frame[0]])).toEqual([
+        ["a", 2],
+        ["b", 2],
+        ["c", 2],
+        ["d", 2],
+        ["e", 3],
+      ])
     }),
   ))
 

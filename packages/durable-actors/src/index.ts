@@ -7,7 +7,7 @@ import { Command, Query } from "./members/command.ts"
 import { Connection } from "./members/connection.ts"
 import { Event } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
-import { DeadLetter, effect } from "./members/effect.ts"
+import { Cancelled, DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
 import { blob } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
@@ -26,6 +26,7 @@ export const Actor = {
   reducer: Reducer.make,
   effect,
   DeadLetter,
+  Cancelled,
   state: ActorStates.make,
   table,
   blob,
@@ -98,7 +99,7 @@ export type { Race, Sleep, Step, Wait, Workflow } from "./members/workflow.ts"
 
 export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/command.ts"
 
-export type { ExecutorContext, PerformContext } from "./contexts/effect.ts"
+export type { ExecutorContext, PerformContext, PerformOptions } from "./contexts/effect.ts"
 
 export type {
   BroadcastContext,

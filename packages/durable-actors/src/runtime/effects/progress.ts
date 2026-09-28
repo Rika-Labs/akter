@@ -50,8 +50,9 @@ export interface ProgressSlot {
   readonly active: () => boolean
   readonly offer: (frame: Uint8Array) => Effect.Effect<void>
   /**
-   * Ignores every later offer, then sends the pending frame if the runner has
-   * a token free. It never fails with the sink and waits on it only briefly.
+   * Ignores every later offer, then sends the pending frame, borrowing a
+   * token when none is free. It never fails with the sink and waits on it
+   * only briefly.
    */
   readonly close: Effect.Effect<void>
 }
@@ -65,7 +66,8 @@ const closedSlot: ProgressSlot = {
 /**
  * A runner's progress pool. It holds one slot per running attempt and a
  * runner-wide token bucket; a frame that finds no token stays in its slot,
- * where newer frames replace it, until one is free.
+ * where newer frames replace it, until one is free. A closing slot's last
+ * frame borrows a token instead of waiting.
  */
 export const progressPool = Effect.fnUntraced(function* (options?: {
   readonly perSecond?: number
@@ -101,6 +103,12 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
 
   // Each effect's last flush, so its close is sent after that attempt's final frame.
   const flushes = new Map<string, Fiber.Fiber<void>>()
+
+  // An attempt's last frame is sent even when the bucket is empty; the debt
+  // delays later sends, so the runner still averages `perSecond`.
+  const borrow = Effect.map(refill, () => {
+    tokens -= 1
+  })
 
   const token: Effect.Effect<void> = Effect.gen(function* () {
     while (!(yield* tryToken)) yield* Effect.sleep(Math.ceil(((1 - tokens) * 1000) / perSecond))
@@ -186,7 +194,7 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
 
               if (last === undefined) return Effect.void
 
-              return Effect.flatMap(tryToken, (free) => (free ? send(last) : Effect.void))
+              return Effect.andThen(borrow, send(last))
             }),
           ),
           detached,
