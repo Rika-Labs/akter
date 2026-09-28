@@ -244,6 +244,7 @@ export const layer = (options: Options) => {
     maxBackoffMs: millis(options.relay?.maxBackoff ?? "256 seconds"),
     executorConcurrency: Count.make(options.executors?.concurrency ?? 64),
     executorLeaseMs,
+    retryWindowMs,
     cancelCheckMs,
   }
 
@@ -752,6 +753,13 @@ export const layer = (options: Options) => {
           run: (work, handoff) =>
             subscriptions.run(work, handoff).pipe(Effect.provideContext(services)),
         },
+        () =>
+          new Map(
+            Array.from(registrations.values(), ({ name, cron, policy }) => [
+              name,
+              { entries: cron, skipMs: policy.cronSkipMs },
+            ]),
+          ),
       ).pipe(Effect.provideService(ProgressSink, progressSink))
 
       yield* relay.run.pipe(Effect.forkIn(scope))

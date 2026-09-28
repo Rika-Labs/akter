@@ -1,6 +1,7 @@
 import {
   Cause,
   Clock,
+  Crypto,
   Deferred,
   Effect,
   Exit,
@@ -22,6 +23,8 @@ import {
 } from "../../handles/actors.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { progressPool } from "../effects/progress.ts"
+import { CRON_CALLER, CRON_PREFIX } from "../cron/key.ts"
+import { type CronSchedule, cronTicks } from "../cron/schedule.ts"
 import { TurnHooks } from "./hooks.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
@@ -55,6 +58,8 @@ export interface RelaySettings {
   readonly executorConcurrency: number
   /** An attempt's claim; renewed every third of it while the attempt runs. */
   readonly executorLeaseMs: number
+  /** How long after its due time a relay-written command id stays retryable. */
+  readonly retryWindowMs: number
   /**
    * How often a running attempt renews its claim and checks for a
    * cancellation committed on another runner; at most a third of the lease.
@@ -90,6 +95,8 @@ interface ClaimedRow {
   readonly caller: string
   /** The claim's `due_at_ms`, which every settling write of an intent names. */
   readonly claimed_until: string
+  readonly timer_key: string | null
+  readonly scheduled_at: string | null
   /** Cancelled by a turn: settled with what is known, never attempted again. */
   readonly cancelled: boolean
   /** An earlier attempt of the effect may have applied the call. */
@@ -107,8 +114,9 @@ interface ClaimedEffect extends ClaimedRow {
 const claimedColumns = (sql: SqlClient.SqlClient) =>
   sql`o.kind, o.routing_key::text AS routing_key, o.intent_id, o.attempts, o.last_error,
     o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.target_id, o.command,
-    o.payload, o.caller, o.due_at_ms::text AS claimed_until,
-    o.cancelled_at_ms IS NOT NULL AS cancelled, o.maybe_applied, o.final_attempt`
+    o.payload, o.caller, o.due_at_ms::text AS claimed_until, o.timer_key,
+    o.scheduled_at_ms::text AS scheduled_at, o.cancelled_at_ms IS NOT NULL AS cancelled,
+    o.maybe_applied, o.final_attempt`
 
 /**
  * The due-work probe: one `(bucket, kind, due_at_ms)` index range per bucket,
@@ -144,6 +152,8 @@ export interface IntentClaim {
   readonly maxBackoffMs: number
   /** Due candidates probed before locking; defaults to twice `limit`. */
   readonly probe?: number | undefined
+  /** Actor types registered here; `$cron:` ticks of any other type are left for their runners. */
+  readonly cronActors?: ReadonlyArray<string> | undefined
 }
 
 /** Effects to claim in one statement: up to `permits`, only for local executors. */
@@ -188,9 +198,17 @@ export const claimDue = ({
   const results: Array<Statement.Fragment> = []
 
   if (intents !== undefined) {
-    const { limit, leaseMs, maxBackoffMs, probe = 2 * limit } = intents
+    const { limit, leaseMs, maxBackoffMs, probe = 2 * limit, cronActors = [] } = intents
+    const local = cronActors.length === 0 ? sql`` : sql` OR actor_type IN ${sql.in(cronActors)}`
     parts.push(sql`intent_candidates AS (
-        ${candidates({ sql, kind: "intent", now, limit: probe })}
+        ${candidates({
+          sql,
+          kind: "intent",
+          now,
+          limit: probe,
+          only: sql`AND (timer_key IS NULL OR left(timer_key, 6) <> ${CRON_PREFIX}
+            OR strpos(caller, ${CRON_CALLER}) = 0${local})`,
+        })}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
       intent_locked AS (
@@ -257,7 +275,8 @@ export const claimDue = ({
     for (const result of subscriptions.results)
       results.push(sql`SELECT 'work'::text, NULL::text, NULL::text, 0, NULL::text, false,
           NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text,
-          NULL::text, NULL::text, false, false, NULL::int, 0, false, claimed.work
+          NULL::text, NULL::text, NULL::text, NULL::text, false, false, NULL::int, 0, false,
+          claimed.work
         FROM (${result}) AS claimed`)
   }
 
@@ -454,7 +473,7 @@ const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
   const found = sql.literal(`${kind}_candidates`)
 
   return sql`SELECT ${`skipped-${kind}`}::text, NULL, NULL, 0, NULL, false, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, false, false, NULL, (SELECT count(*) FROM ${found})::int,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, false, NULL, (SELECT count(*) FROM ${found})::int,
       false, NULL::text
     WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
@@ -539,6 +558,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       handoff: Handoff,
     ) => Effect.Effect<void, SubscriptionError>
   },
+  schedules: () => ReadonlyMap<string, CronSchedule> = () => new Map(),
 ) {
   const sql = yield* SqlClient.SqlClient
   const services = yield* Effect.context<SqlClient.SqlClient>()
@@ -559,6 +579,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const progress = yield* progressPool()
   // Effects whose row a settle in the current attempt removed or routed.
   const ended = new Set<string>()
+
+  const ticks = cronTicks({
+    sql,
+    crypto: yield* Crypto.Crypto,
+    schedules,
+    retryWindowMs: settings.retryWindowMs,
+  })
 
   // Starts one item of subscription work in its slots; an expansion also
   // starts the rows it leased this way, without a claim pass.
@@ -653,8 +680,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
       })
 
     return yield* Effect.gen(function* () {
+      const tick = ticks.isTick(row)
+      const route = tick ? yield* ticks.settleUnfired(row, claim, backoffMs(row.attempts)) : row
+
+      if (route === undefined) return
+
       // A row that cannot form a request backs off like a failed delivery instead of dying on every claim.
-      const decoded = yield* requestOf(row, "receiver").pipe(Effect.result)
+      const decoded = yield* requestOf({ ...row, ...route }, "receiver").pipe(Effect.result)
 
       if (Result.isFailure(decoded)) return yield* retryLater("UnreadableRow", decoded.failure)
 
@@ -671,7 +703,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
         return yield* retryLater("Defect", delivered.success.cause)
 
       yield* hooks.at("beforeOutboxDelete", request)
-      yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
+
+      if (tick) yield* ticks.settleFired(row, claim)
+      else yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
     }).pipe(
       // An interrupted delivery (shutdown) makes its row due at once; a receiver
       // that already committed it replays the receipt on redelivery.
@@ -1329,6 +1363,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
                     leaseMs: settings.claimLeaseMs(),
                     maxBackoffMs: settings.maxBackoffMs,
                     probe: 2 * slots * widen.intents,
+                    cronActors: [...schedules().keys()],
                   }
                 : undefined,
             effects:
