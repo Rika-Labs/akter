@@ -1224,17 +1224,6 @@ export const activationOwner = ({
 
         if (!allowed) return yield* unauthorized("access_denied")
 
-        if (activation.streams.size >= MAX_ACTOR_STREAMS)
-          return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
-
-        yield* acquire(activation).pipe(
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        )
-
-        const sql = yield* SqlClient.SqlClient
-
         const queue = yield* Queue.bounded<
           StreamItem,
           ActorError | typeof StreamFailed.Type | Cause.Done
@@ -1262,7 +1251,15 @@ export const activationOwner = ({
             }),
         }
 
-        activation.streams.add(subscription)
+        // Checked and taken in one step: concurrent subscriptions cannot all pass the limit.
+        const admitted = yield* Effect.sync(() => {
+          if (activation.streams.size >= MAX_ACTOR_STREAMS) return false
+          activation.streams.add(subscription)
+
+          return true
+        })
+
+        if (!admitted) return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -1272,6 +1269,14 @@ export const activationOwner = ({
             if (producer !== undefined) yield* Fiber.interrupt(producer)
           }),
         )
+
+        yield* acquire(activation).pipe(
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        )
+
+        const sql = yield* SqlClient.SqlClient
 
         const offer = (item: StreamItem) =>
           Effect.gen(function* () {
