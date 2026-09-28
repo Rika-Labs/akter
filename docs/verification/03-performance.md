@@ -336,6 +336,19 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 
 The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault point, the time from the SIGKILL until the order was paid on the replacement runner: under 1 s when nothing was claimed (`beforeHandler:Place`, `beforeCommit:Place`, and both `beforeOutboxDelete` points), and about 3.1 s when the killed runner held a claim (`afterCommit:Place`, `afterClaim`, and both executor points), bounded by the drill's 3-second relay and executor leases. Every run applied one charge per order; at `afterExecute:Charge` the provider saw two calls for the key.
 
+### Failure drills (T7)
+
+`TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/133-m2-exit` at `801336e`; each run prints one `DRILL` line. Postgres 18.6 in Docker, Bun 1.4.2, one 8-vCPU Xeon 8559C machine shared by the five runner processes and Postgres. Workload: three processes, then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
+
+| Metric                                         | Min    | p50    | Max (≈p95 of 10) |
+| ---------------------------------------------- | ------ | ------ | ---------------- |
+| Recovery, kill to the stalled command's commit | 3.36 s | 3.43 s | 4.38 s           |
+| Slowest single operation on a survivor         | 3.36 s | 3.41 s | 3.44 s           |
+| Committed operations per run                   | 306    | 318    | 321              |
+| Lost / duplicated operations                   | 0 / 0  | 0 / 0  | 0 / 0            |
+
+Recovery runs from the kill to the commit of the slowest command the surviving runner started after it: that command was routed to a killed runner's shard and waited for the takeover, so its commit marks the shard serving again. It is bounded by the 3 s shard-lock expiry plus Cluster's shard refresh. With 10 samples, p99 is not meaningful. Committed operations vary because a runner killed mid-operation may commit an `Increment` without its `Send`; those are counted as committed, never lost.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
