@@ -240,11 +240,16 @@ export const RoomEffects = Room.toEffectLayer(
   }),
 )
 
-/** Creates the table as a drizzle-kit migration would, then registers the room. */
-export const RoomLive = Layer.unwrap(
+/**
+ * Creates the table as a drizzle-kit migration would, then registers the
+ * room's commands and reads; its executors are `RoomEffects`.
+ */
+export const RoomHandlers = Layer.unwrap(
   Effect.gen(function* () {
     yield* (yield* SqlClient.SqlClient).unsafe(messagesDdl)
 
-    return Layer.mergeAll(RoomCommands, ThreadCommands, RoomReads, RoomEffects)
+    return Layer.mergeAll(RoomCommands, ThreadCommands, RoomReads)
   }).pipe(Effect.orDie),
 )
+
+export const RoomLive = Layer.merge(RoomHandlers, RoomEffects)

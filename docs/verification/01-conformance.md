@@ -552,7 +552,9 @@ Ten runs on 2026-09-27: 0 lost and 0 duplicated operations every time, 306–321
 - `mints one thread per reply thread and replays its id after the room's runner is killed` — `StartThread` mints a `Thread` child and sends its creating `Open` intent. After the owner is killed, a retry under the same command id with another payload conflicts instead of minting again, the intent is redelivered once the dead runner's claim lapses, and the thread is created once and takes replies.
 - `wakes a parked room on another runner when a typing frame arrives` — two `Presence` connections are held by the two runners that do not own the room, and the owner hibernates the room. A typing frame from one wakes the room on its owner, whose generation rises, and the other receives it with the user name stored in the session at open.
 
-Pending, as `it.todo` cases in the same file: the cron digest (M2.5, [#132](https://github.com/Rika-Labs/durable-actors/pull/132)) and per-room moderation caps (M2.13, [#125](https://github.com/Rika-Labs/durable-actors/pull/125)).
+- `holds each room to two moderation calls in flight across three runners (caps, #125)` — `ModerateMessage` declares `concurrency: { perActor: 2 }`, and each runner has its own fake provider, which records every call's runner, effect id, and start and end time. One room's first moderation call never returns, and the next three posts share the other slot: two calls are in flight at most. Once their `Moderated` receipts commit, the runner holding the hung call is killed and four more posts go through a survivor. They run one at a time while the dead attempt's lease still counts, the hung effect is retried on a survivor under the same effect id at least two thirds of a lease after the kill, and all eight posts route `Moderated` once, from nine provider calls.
+
+Pending, as an `it.todo` case in the same file: the cron digest (M2.5, [#132](https://github.com/Rika-Labs/durable-actors/pull/132)).
 
 ### Connections and parking (M2.10)
 
