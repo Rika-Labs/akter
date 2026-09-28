@@ -9,6 +9,9 @@ const MINUTE = 60_000
 
 const WORKERS = 64
 
+/** How the relay claim statement begins; stored query text is cut at 160 characters, before its `SKIP LOCKED`. */
+const RELAY_CLAIM = "WITH intent_candidates"
+
 const databaseNow = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
@@ -41,7 +44,8 @@ const drained = (from: number, scheduled: number, count: number) =>
       until: (done) => done,
     }),
     Effect.timeoutOrElse({
-      duration: "5 minutes",
+      // One runner drains about 300 ticks a second on a 16-vCPU VM, so 10^5 take over 5 minutes.
+      duration: "15 minutes",
       orElse: () =>
         Effect.die(
           new Error(`Only ${firstFires(from, scheduled).size} of ${count} cron ticks fired`),
@@ -84,7 +88,7 @@ const round = (actors: number) =>
   })
 
 const scanMeanMs = (result: CaseResult) =>
-  result.statements?.find((statement) => statement.query.includes("SKIP LOCKED"))?.meanMs ?? -1
+  result.statements?.find((statement) => statement.query.startsWith(RELAY_CLAIM))?.meanMs ?? -1
 
 /**
  * `policy.cron` at scale: every actor has a minutely entry, and all their
@@ -138,7 +142,7 @@ export const cron: Scenario = {
                       yield* Effect.sleep(waitedMs)
                       yield* drained(from, scheduled, actors)
                     }),
-                  listStatements: true,
+                  listStatements: { including: RELAY_CLAIM },
                 })
 
                 // A short settle catches a tick whose handler ran twice.
@@ -176,6 +180,13 @@ export const cron: Scenario = {
           },
           operations: lateness.length,
           elapsedMs: drainMs,
+          // Each round measures one drain; count its statements per tick instead.
+          statementsPerOperation:
+            Math.round(
+              (rounds.reduce((total, result) => total + (result.statementsPerOperation ?? 0), 0) /
+                Math.max(1, lateness.length)) *
+                100,
+            ) / 100,
           // Ticks per second of drain, as other scenarios divide operations by elapsed time.
           throughput: Math.round((lateness.length * 1000) / Math.max(1, drainMs)),
           latencyMs: summary,

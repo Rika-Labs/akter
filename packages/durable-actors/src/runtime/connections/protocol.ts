@@ -33,6 +33,18 @@ export const HolderItem = Schema.TaggedUnion({
   Flushed: { through: Schema.String },
   End: { connectionId: Schema.String, ended: SessionEnded },
   Seal: {},
+  /** Executor progress: replaces an undelivered frame of the same effect, never closes a session. */
+  Progress: {
+    member: Schema.String,
+    to: Schema.Array(Schema.String),
+    effect: Schema.String,
+    effectId: Schema.String,
+    attempt: Schema.Finite,
+    seq: Schema.Finite,
+    frame: Schema.String,
+  },
+  /** The effect's route or settle committed: undelivered progress of it is discarded. */
+  ProgressEnd: { effectId: Schema.String },
 })
 
 export type HolderItem = typeof HolderItem.Type
@@ -50,6 +62,13 @@ export const ClientMessage = Schema.TaggedUnion({
     deadlineMs: Schema.Finite,
   },
   ResyncReplayed: {},
+  Progress: {
+    effect: Schema.String,
+    effectId: Schema.String,
+    attempt: Schema.Finite,
+    seq: Schema.Finite,
+    frame: Schema.String,
+  },
 })
 
 export type ClientMessage = typeof ClientMessage.Type
@@ -131,7 +150,25 @@ export const Replayed = Schema.TaggedUnion({
   Closed: { ended: SessionEnded },
 })
 
-/** Messages a holder sends an actor's owner; they bypass the command mailbox. */
+/** What a stream subscription receives from the owner, after which the owner's errors follow. */
+export const StreamItem = Schema.TaggedUnion({
+  /** The activation that runs the handler; a second one means the request was sent again. */
+  Started: { owner: Schema.String, ownerEpoch: Schema.String },
+  Element: { value: Schema.String },
+  /** The handler's stream ended by itself. */
+  Done: {},
+})
+
+export type StreamItem = typeof StreamItem.Type
+
+/** A stream handler's declared failure, encoded. */
+export const StreamFailed = Schema.TaggedStruct("StreamFailed", { value: Schema.String })
+
+/**
+ * Messages a holder or a stream subscriber sends an actor's owner; they
+ * bypass the command mailbox. A subscription is interruptible, so a
+ * subscriber that stops ends the handler on the owner.
+ */
 export const connectionsEntity = (name: string) =>
   Entity.make(`${name}/Connections`, [
     Rpc.make("Open", {
@@ -144,7 +181,7 @@ export const connectionsEntity = (name: string) =>
       },
       success: Opened,
       error: ActorError,
-    }),
+    }).annotate(ClusterSchema.Uninterruptible, true),
     Rpc.make("Frame", {
       payload: {
         ...ConnectionAddress,
@@ -155,11 +192,11 @@ export const connectionsEntity = (name: string) =>
       },
       success: Acked,
       error: ActorError,
-    }),
+    }).annotate(ClusterSchema.Uninterruptible, true),
     Rpc.make("Close", {
       payload: { ...ConnectionAddress, cause: SessionEnded },
       error: ActorError,
-    }),
+    }).annotate(ClusterSchema.Uninterruptible, true),
     Rpc.make("Resync", {
       payload: {
         ...ConnectionAddress,
@@ -168,5 +205,30 @@ export const connectionsEntity = (name: string) =>
       },
       success: Replayed,
       error: ActorError,
+    }).annotate(ClusterSchema.Uninterruptible, true),
+    Rpc.make("Progress", {
+      payload: {
+        ref: ActorRef,
+        effectId: Schema.String,
+        effect: Schema.String,
+        attempt: Schema.Finite,
+        seq: Schema.Finite,
+        leaseUntil: Schema.Finite,
+        frame: Schema.String,
+      },
+    }).annotate(ClusterSchema.Uninterruptible, true),
+    Rpc.make("ProgressClosed", {
+      payload: { ref: ActorRef, effectId: Schema.String, attempt: Schema.Finite },
+    }).annotate(ClusterSchema.Uninterruptible, true),
+    Rpc.make("Subscribe", {
+      payload: {
+        member: Schema.String,
+        caller: Caller,
+        input: Schema.String,
+        authorizedUntil: Schema.Finite,
+      },
+      success: StreamItem,
+      error: Schema.Union([ActorError, StreamFailed]),
+      stream: true,
     }),
-  ]).annotateRpcs(ClusterSchema.Uninterruptible, true)
+  ])

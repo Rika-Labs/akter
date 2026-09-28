@@ -1,0 +1,399 @@
+{
+  "schema": 2,
+  "label": "m2.13-run3",
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-27T18:35:23.821Z",
+  "finishedAt": "2026-09-27T18:37:30.799Z",
+  "git": {
+    "sha": "7dd0260439e5af77f69c3cf51e04e855b7fb90e8",
+    "shortSha": "7dd0260",
+    "branch": "feat/67-effect-control",
+    "mainBase": "768f420f700dd024f6551c5986e609fd215803b5",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "e1c7e4930a4a165858fd2bf72581762f473ce33c",
+        "parents": [
+          "a03f09002ea8cea2a1f09474c18eff6810f59af1",
+          "768f420f700dd024f6551c5986e609fd215803b5"
+        ]
+      },
+      {
+        "commit": "a03f09002ea8cea2a1f09474c18eff6810f59af1",
+        "parents": [
+          "5984a25de1a5476e392979f0bb7f2baa0fbc4c25",
+          "bf047c032d0203e49dfe84aa0fa97a9d47b45276"
+        ]
+      },
+      {
+        "commit": "5984a25de1a5476e392979f0bb7f2baa0fbc4c25",
+        "parents": [
+          "8fd4965c65d62ee9391faa27e34d4d3d2e32c412",
+          "b357a084145100b6d90aba62385c8ce7c586f8e4"
+        ]
+      },
+      {
+        "commit": "2fa84208f34ea7f74a46d13825b07edaad1e07f7",
+        "parents": [
+          "50158145e21e6770bc4a5b4ad0426d290b289aad",
+          "7642488b8351f7515a951e06080ff6cac20a8c7d"
+        ]
+      },
+      {
+        "commit": "63202b7ea79851717567c9411c0ee2155d578904",
+        "parents": [
+          "f1480c340c7925209efb9705308eb9f0c8cfd6c5",
+          "7835029f1402a223acedda3c536ddaf5c90fab19"
+        ]
+      },
+      {
+        "commit": "fa78d08dce6d6ae23a4177b98ea52e6d179664c4",
+        "parents": [
+          "579db0b7944d72248df6f583309f1befe40d848f",
+          "c01a20f7ec9d38184a2e76737ca1563e11669f48"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "INTEL(R) XEON(R) PLATINUM 8559C",
+    "logicalCpus": 8,
+    "memoryGiB": 31.3,
+    "os": "Linux 6.8.0-1061-aws",
+    "hostname": "devin-box",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "effect-concurrency",
+      "description": "Three in-process runners on one Postgres, a 50 ms fake provider: effect throughput uncapped and at concurrency.perActor 2, a hot actor at perActor 1 beside cold actors, and cancel-to-interrupt latency of running effects cancelled from turns on a runner that executes none of them, at the default and a 1 second executors.cancelCheck. The runners share one process and its CPU.",
+      "cases": [
+        {
+          "name": "throughput-uncapped",
+          "parameters": {
+            "runners": 3,
+            "actors": 1000,
+            "effectsPerActor": 10,
+            "providerMs": 50,
+            "perActor": "none",
+            "workers": 64
+          },
+          "operations": 1000,
+          "elapsedMs": 5292,
+          "throughput": 189,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 328.947,
+            "min": 151.712,
+            "p50": 323.601,
+            "p90": 384.703,
+            "p95": 414.484,
+            "p99": 529.293,
+            "max": 673.291
+          },
+          "statementsPerOperation": 44.61,
+          "statements": null,
+          "activity": {
+            "samples": 179,
+            "connections": {
+              "idle:Client/ClientRead": 19.49,
+              "idle in transaction:Client/ClientRead": 8.65,
+              "active": 0.93,
+              "active:LWLock/WALWrite": 0.8,
+              "idle": 0.41,
+              "active:Client/ClientRead": 0.36,
+              "active:IO/WalSync": 0.25,
+              "active:IO/WalWrite": 0.02,
+              "idle:LWLock/WALWrite": 0.01,
+              "active:IO/WalInitWrite": 0.01,
+              "idle in transaction": 0.01,
+              "active:IO/WalInitSync": 0.01
+            },
+            "peakConnections": 31
+          },
+          "cpu": {
+            "client": 159.9,
+            "server": 142.2,
+            "clientMsPerOperation": 8.461,
+            "serverMsPerOperation": 7.527
+          },
+          "extra": {
+            "effects": 10000,
+            "effectsPerSecond": 1889.6,
+            "statementsPerEffect": 4.461,
+            "startP50Ms": 207.4,
+            "startP95Ms": 249.3,
+            "startP99Ms": 267.7,
+            "maxInFlightPerActor": 10,
+            "rssMb": 444
+          }
+        },
+        {
+          "name": "throughput-per-actor-2",
+          "parameters": {
+            "runners": 3,
+            "actors": 1000,
+            "effectsPerActor": 10,
+            "providerMs": 50,
+            "perActor": 2,
+            "workers": 64
+          },
+          "operations": 1000,
+          "elapsedMs": 19275,
+          "throughput": 51.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 1209.762,
+            "min": 815.339,
+            "p50": 1182.41,
+            "p90": 1516.624,
+            "p95": 1626.457,
+            "p99": 1719.634,
+            "max": 1810.301
+          },
+          "statementsPerOperation": 123.49,
+          "statements": null,
+          "activity": {
+            "samples": 735,
+            "connections": {
+              "idle:Client/ClientRead": 24.51,
+              "idle in transaction:Client/ClientRead": 2.55,
+              "active": 1.54,
+              "active:Lock/advisory": 0.48,
+              "active:LWLock/WALWrite": 0.39,
+              "active:IO/WalSync": 0.33,
+              "active:Client/ClientRead": 0.19,
+              "idle in transaction": 0.18,
+              "idle": 0.14,
+              "active:Lock/transactionid": 0.04,
+              "idle in transaction:LWLock/WALWrite": 0.01,
+              "active:IO/WalWrite": 0.01,
+              "idle in transaction:Lock/advisory": 0.01,
+              "active:LWLock/BufferContent": 0.01,
+              "idle in transaction:IO/WalWrite": 0,
+              "active:IO/DataFileExtend": 0,
+              "idle:LWLock/WALWrite": 0,
+              "idle in transaction:IO/WalSync": 0,
+              "active:IO/WalInitWrite": 0,
+              "active:LWLock/LockManager": 0
+            },
+            "peakConnections": 31
+          },
+          "cpu": {
+            "client": 94.6,
+            "server": 193,
+            "clientMsPerOperation": 18.232,
+            "serverMsPerOperation": 37.205
+          },
+          "extra": {
+            "effects": 10000,
+            "effectsPerSecond": 518.8,
+            "statementsPerEffect": 12.349,
+            "startP50Ms": 674.8,
+            "startP95Ms": 1310.6,
+            "startP99Ms": 1565.5,
+            "maxInFlightPerActor": 2,
+            "rssMb": 413.8
+          }
+        },
+        {
+          "name": "hot-actor-per-actor-1",
+          "parameters": {
+            "runners": 3,
+            "hotEffects": 1000,
+            "coldActors": 1000,
+            "providerMs": 50,
+            "perActor": 1,
+            "workers": 64
+          },
+          "operations": 1001,
+          "elapsedMs": 61944,
+          "throughput": 16.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1001,
+            "mean": 293.544,
+            "min": 114.999,
+            "p50": 207.524,
+            "p90": 309.541,
+            "p95": 455.379,
+            "p99": 535.756,
+            "max": 61943.569
+          },
+          "statementsPerOperation": 42.52,
+          "statements": null,
+          "activity": {
+            "samples": 2393,
+            "connections": {
+              "idle:Client/ClientRead": 10.97,
+              "idle in transaction:Client/ClientRead": 0.36,
+              "active": 0.21,
+              "active:IO/WalSync": 0.03,
+              "active:Lock/advisory": 0.03,
+              "idle": 0.02,
+              "active:Client/ClientRead": 0.02,
+              "idle in transaction": 0.01,
+              "active:LWLock/WALWrite": 0.01,
+              "active:IO/WalWrite": 0,
+              "idle in transaction:IO/WalSync": 0,
+              "idle in transaction:IO/WalWrite": 0,
+              "idle in transaction:Lock/advisory": 0,
+              "idle in transaction:LWLock/WALWrite": 0
+            },
+            "peakConnections": 31
+          },
+          "cpu": {
+            "client": 16.5,
+            "server": 25.4,
+            "clientMsPerOperation": 10.239,
+            "serverMsPerOperation": 15.712
+          },
+          "extra": {
+            "coldStartP50Ms": 126.5,
+            "coldStartP95Ms": 368.7,
+            "coldStartP99Ms": 472.7,
+            "hotEffectsPerSecond": 16.2,
+            "hotMaxInFlight": 1,
+            "coldMaxInFlight": 1,
+            "rssMb": 302.4
+          }
+        },
+        {
+          "name": "cancel-default-check",
+          "parameters": {
+            "runners": 3,
+            "runningEffects": 1000,
+            "cancelCheck": "default (lease / 3 = 20 s)",
+            "workers": 1000
+          },
+          "operations": 1000,
+          "elapsedMs": 20110,
+          "throughput": 49.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 19481.83,
+            "min": 18881.429,
+            "p50": 19195.243,
+            "p90": 20024.703,
+            "p95": 20049.473,
+            "p99": 20079.766,
+            "max": 20095.319
+          },
+          "statementsPerOperation": 17.04,
+          "statements": null,
+          "activity": {
+            "samples": 774,
+            "connections": {
+              "idle:Client/ClientRead": 11.2,
+              "idle in transaction:Client/ClientRead": 0.32,
+              "active": 0.09,
+              "active:LWLock/WALWrite": 0.04,
+              "active:IO/WalSync": 0.03,
+              "active:Client/ClientRead": 0.02,
+              "idle": 0.01,
+              "idle in transaction": 0.01,
+              "idle in transaction:LWLock/WALWrite": 0
+            },
+            "peakConnections": 30
+          },
+          "cpu": {
+            "client": 14.9,
+            "server": 13.9,
+            "clientMsPerOperation": 2.987,
+            "serverMsPerOperation": 2.798
+          },
+          "extra": {
+            "cancelToInterruptP50Ms": 19195.2,
+            "cancelToInterruptP95Ms": 20049.5,
+            "cancelToInterruptP99Ms": 20079.8,
+            "cancelToInterruptMaxMs": 20095.3,
+            "rssMb": 433.8
+          }
+        },
+        {
+          "name": "cancel-1s-check",
+          "parameters": {
+            "runners": 3,
+            "runningEffects": 1000,
+            "cancelCheck": "1 second",
+            "workers": 1000
+          },
+          "operations": 1000,
+          "elapsedMs": 1495,
+          "throughput": 668.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 1129.008,
+            "min": 87.48,
+            "p50": 1094.967,
+            "p90": 1393.27,
+            "p95": 1435.882,
+            "p99": 1476.36,
+            "max": 1491.35
+          },
+          "statementsPerOperation": 15.74,
+          "statements": null,
+          "activity": {
+            "samples": 55,
+            "connections": {
+              "idle:Client/ClientRead": 23.78,
+              "idle in transaction:Client/ClientRead": 4.6,
+              "active": 0.8,
+              "active:LWLock/WALWrite": 0.6,
+              "active:IO/WalSync": 0.47,
+              "idle": 0.25,
+              "active:Client/ClientRead": 0.18,
+              "idle in transaction": 0.18,
+              "idle in transaction:LWLock/WALWrite": 0.02
+            },
+            "peakConnections": 31
+          },
+          "cpu": {
+            "client": 133.3,
+            "server": 143.8,
+            "clientMsPerOperation": 1.993,
+            "serverMsPerOperation": 2.15
+          },
+          "extra": {
+            "cancelToInterruptP50Ms": 1095,
+            "cancelToInterruptP95Ms": 1435.9,
+            "cancelToInterruptP99Ms": 1476.4,
+            "cancelToInterruptMaxMs": 1491.3,
+            "rssMb": 443.4
+          }
+        }
+      ]
+    }
+  ]
+}

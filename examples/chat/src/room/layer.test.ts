@@ -161,9 +161,12 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       yield* test.crashNext("afterExecute")
       const id = yield* room.Post({ body: "buy spam", file: bytes })
 
+      // Waits, without moving the clock, until the first attempt has crashed; advancing while it
+      // still ran would move its lease with the clock.
+      yield* test.advance(0)
+      expect([...provider.calls].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([1])
+
       // The crashed attempt keeps its lease; the relay retries once the lease has passed.
-      while (![...provider.calls.keys()].some((key) => !before.has(key)))
-        yield* Effect.sleep("20 millis")
       yield* test.advance("2 minutes")
       yield* moderated(room, 1)
 
@@ -258,5 +261,25 @@ it("relays typing frames to the room's other connections, across hibernation", (
 
       yield* typist.close
       yield* watcher.close
+    }),
+  ))
+
+it("retracts a message and settles its moderation call once", () =>
+  run(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const room = yield* Room.get(RoomId.make("r8"))
+      const id = yield* room.Post({ body: "oops" })
+      yield* room.Retract(id)
+
+      while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
+
+      // Deleted before its claim, reported cancelled mid-call, or already moderated: one fate.
+      const settled =
+        (yield* test.receiptsFor(room.ref, "Moderated")) +
+        (yield* test.receiptsFor(room.ref, "ModerationCancelled"))
+
+      expect(settled <= 1).toBe(true)
+      expect(yield* room.Recent({ limit: 10 })).toEqual([])
     }),
   ))

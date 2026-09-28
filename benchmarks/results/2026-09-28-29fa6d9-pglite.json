@@ -1,0 +1,238 @@
+{
+  "schema": 2,
+  "label": null,
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-28T01:45:29.156Z",
+  "finishedAt": "2026-09-28T01:46:11.352Z",
+  "git": {
+    "sha": "29fa6d97f4d96ba75738f6ed73c0fda257ca3800",
+    "shortSha": "29fa6d9",
+    "branch": "feat/53-actor-stream",
+    "mainBase": "5e7a9acc09cf5fa623171a3a1845da56ef050840",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+    "logicalCpus": 16,
+    "memoryGiB": 31.4,
+    "os": "Linux 6.1.158+",
+    "hostname": "e2b.local",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "connections",
+      "description": "Connection round trips through the in-process holder: a frame echoed by a warm owner, a frame that wakes a hibernated owner, and a turn's broadcast reaching 1 and 64 parked connections; stream subscriptions, and a commit reaching a read.follow subscriber.",
+      "cases": [
+        {
+          "name": "frame-warm",
+          "parameters": {
+            "connections": 1,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 833,
+          "throughput": 2402.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 0.414,
+            "min": 0.273,
+            "p50": 0.38,
+            "p90": 0.511,
+            "p95": 0.558,
+            "p99": 0.67,
+            "max": 14.873
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 159,
+            "server": null,
+            "clientMsPerOperation": 0.662,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "frame-parked",
+          "parameters": {
+            "connections": 1,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 3280,
+          "throughput": 304.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 3.277,
+            "min": 2.542,
+            "p50": 2.929,
+            "p90": 3.894,
+            "p95": 4.63,
+            "p99": 8.493,
+            "max": 27.085
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 177.4,
+            "server": null,
+            "clientMsPerOperation": 5.818,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "broadcast-1",
+          "parameters": {
+            "connections": 1,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 4966,
+          "throughput": 201.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 4.962,
+            "min": 3.961,
+            "p50": 4.488,
+            "p90": 5.988,
+            "p95": 6.745,
+            "p99": 13.34,
+            "max": 23.481
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 143.3,
+            "server": null,
+            "clientMsPerOperation": 7.118,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "broadcast-64",
+          "parameters": {
+            "connections": 64,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 6828,
+          "throughput": 146.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 6.824,
+            "min": 5.459,
+            "p50": 6.104,
+            "p90": 7.789,
+            "p95": 10.075,
+            "p99": 17.093,
+            "max": 41.776
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 131.8,
+            "server": null,
+            "clientMsPerOperation": 9.002,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "stream-subscribe",
+          "parameters": {
+            "subscriptions": 1,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 1754,
+          "throughput": 1140.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 0.874,
+            "min": 0.588,
+            "p50": 0.737,
+            "p90": 1.227,
+            "p95": 1.365,
+            "p99": 1.828,
+            "max": 17.036
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 145.6,
+            "server": null,
+            "clientMsPerOperation": 1.277,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "stream-follow",
+          "parameters": {
+            "subscriptions": 1,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 13449,
+          "throughput": 148.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 6.721,
+            "min": 5.781,
+            "p50": 6.419,
+            "p90": 7.286,
+            "p95": 8.186,
+            "p99": 14.16,
+            "max": 28.989
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 116.7,
+            "server": null,
+            "clientMsPerOperation": 7.847,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}

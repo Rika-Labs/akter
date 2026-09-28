@@ -12,6 +12,11 @@ const SET_ONLY = [16 * KIB, 32 * KIB]
 
 const CHUNKS = 16
 
+/** The runtime's cap on one entry's bytes. */
+const MAX_ENTRY_BYTES = 8 * 1024 * KIB
+
+const APPEND_WARMUP = 20
+
 /**
  * Blob cost by entry size on one warm actor per case: replacing an entry,
  * appending a chunk, reading a one-chunk and a 16-chunk entry from a query,
@@ -59,9 +64,28 @@ export const blobs: Scenario = {
 
               if (setOnly) return cases
 
-              const appender = yield* Archive.get("append")
-              const add = (index: number) => appender.Add({ name: "log", size, variant: index % 8 })
-              yield* load({ workers: 1, operations: 20, operation: add })
+              // An entry holds at most 8 MiB, so the growing entry moves to a fresh
+              // actor when it is full; each of those is warmed before the case.
+              const perEntry = MAX_ENTRY_BYTES / size
+
+              const appenders = yield* Effect.forEach(
+                Array.from({ length: Math.ceil((APPEND_WARMUP + writes) / perEntry) }),
+                (_, index) => Archive.get(`append-${index}`),
+              )
+
+              yield* Effect.forEach(appenders, (appender) =>
+                appender.Put({ name: "warm", size: 1, variant: 0 }).pipe(Effect.orDie),
+              )
+
+              const append = (position: number) =>
+                appenders[Math.floor(position / perEntry)]!.Add({
+                  name: "log",
+                  size,
+                  variant: position % 8,
+                })
+
+              yield* load({ workers: 1, operations: APPEND_WARMUP, operation: append })
+              const add = (index: number) => append(APPEND_WARMUP + index)
 
               cases.push(
                 yield* measure({

@@ -47,7 +47,7 @@ export const RoomCommands = Room.toLayer(
         })
 
         yield* turn.emit(MessagePosted.make({ id, author, body }))
-        yield* turn.perform(ModerateMessage.make({ id, body }))
+        yield* turn.perform(ModerateMessage.make({ id, body }), { key: `moderate:${id}` })
 
         // The same key replaces the pending timer, so every post pushes it back.
         yield* (yield* Room.intents(turn.id))
@@ -71,6 +71,18 @@ export const RoomCommands = Room.toLayer(
         })
         yield* turn.emit(RoomArchived.make({}))
         yield* Intent.cancel("idle")
+      }),
+
+      Retract: Effect.fnUntraced(function* (id: string) {
+        const turn = yield* Room.Turn
+        const attached = yield* turn.rows(messages).one({ where: { id } })
+        yield* turn.rows(messages).delete().where({ id })
+
+        if (Option.isSome(attached) && attached.value.attachment === id)
+          yield* turn.blob(Attachments).set(id, new Uint8Array())
+
+        // A call that already reached the provider is reported to ModerationCancelled, not undone.
+        yield* turn.cancelEffect(`moderate:${id}`)
       }),
 
       // A timer the relay has already claimed still fires once after a cancel,
@@ -98,6 +110,14 @@ export const RoomCommands = Room.toLayer(
       ModerationFailed: Effect.fnUntraced(function* (dead) {
         yield* Room.Turn
         yield* Effect.logWarning("moderation dead-lettered", dead.effectId)
+      }),
+
+      // The message is already gone; an ambiguous outcome means the provider may have seen it.
+      ModerationCancelled: Effect.fnUntraced(function* (cancelled) {
+        yield* Room.Turn
+        yield* Effect.logInfo("moderation cancelled", cancelled.effectId).pipe(
+          Effect.annotateLogs({ outcome: cancelled.outcome._tag, ambiguous: cancelled.ambiguous }),
+        )
       }),
 
       // A runner lost mid-notify reruns it; `Moderators` deduplicates by message id.
@@ -221,7 +241,6 @@ export const RoomEffects = Room.toEffectLayer(
   }),
 )
 
-/** Creates the table as a drizzle-kit migration would, then registers the room. */
 export const DigestCommands = Digest.toLayer(
   Effect.succeed({
     Send: Effect.fnUntraced(function* () {
@@ -231,10 +250,16 @@ export const DigestCommands = Digest.toLayer(
   }),
 )
 
-export const RoomLive = Layer.unwrap(
+/**
+ * Creates the table as a drizzle-kit migration would, then registers the
+ * room's commands and reads; its executors are `RoomEffects`.
+ */
+export const RoomHandlers = Layer.unwrap(
   Effect.gen(function* () {
     yield* (yield* SqlClient.SqlClient).unsafe(messagesDdl)
 
-    return Layer.mergeAll(RoomCommands, ThreadCommands, DigestCommands, RoomReads, RoomEffects)
+    return Layer.mergeAll(RoomCommands, ThreadCommands, DigestCommands, RoomReads)
   }).pipe(Effect.orDie),
 )
+
+export const RoomLive = Layer.merge(RoomHandlers, RoomEffects)
