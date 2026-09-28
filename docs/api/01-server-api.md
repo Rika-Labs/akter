@@ -5,7 +5,7 @@
 **Owner role:** API/Effect.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-The Effect-native server API is one package, `@durable-actors/core`. Its root entry exports `Actor`, `Actors`, `Intent`, errors, identity (`ActorRef`, `Caller`, `User`, `System`, `Anonymous`, `Principal`, `CurrentCaller`, `Tenant`), and the `Policy`, `Handle`, `Intents`, and context types. `Actor.serve` and `Actor.auth` are exported for HTTP commands and queries (M3.2); `Fleet` is a target API and is not exported yet. Runtime construction is imported separately as `Actors.layer` from `@durable-actors/core/runtime`.
+The Effect-native server API is one package, `@durable-actors/core`. Its root entry exports `Actor`, `Actors`, `Intent`, errors, identity (`ActorRef`, `Caller`, `User`, `System`, `Anonymous`, `Principal`, `CurrentCaller`, `Tenant`), and the `Policy`, `Handle`, `Intents`, and context types. `Actor.serve` and `Actor.auth` are exported for HTTP commands and queries (M3.2); `Fleet` is a target API and is not exported yet. Runtime construction is imported separately as `Actors.layer` from `@durable-actors/core/runtime`. The same entry exports `Inspector.serve({ auth, basePath? })`, read-only routes over the `durable` inspection views for the authenticated principal's tenant, which `durable dev` serves ([inspection views](../operations/inspection-views.md#the-local-inspector)).
 
 ## Implemented foundation subset
 
