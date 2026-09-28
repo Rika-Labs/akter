@@ -490,6 +490,11 @@ The client cases live in [`conformance/transports.ts`](../../packages/durable-ac
 - `client opens a connection with typed frames both ways, rejects a declared open failure or a failing headers provider, and ends on close` — `Banned` is rejected as its class, and `cursor` is the baseline. The greeting, a sent frame's echo, and a normal end all arrive in order. A `headers` provider that rejects fails `connect` with its own error, read before the socket opens, instead of leaving it pending.
 - `client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates` (Postgres, two runners) — `Resync { after: "1" }`, `onResync` with `"1"` (which throws, and the resync is still acknowledged), then `ResyncReplayed`, then the next live frame.
 
+[`client/connection.test.ts`](../../packages/durable-actors/src/client/connection.test.ts) runs the client against a stand-in WebSocket server that sends what it likes:
+
+- `ends with a decode failure on a frame whose event cursor is not a position` — the frames iterator rejects with `TransportError` `decode` instead of hanging.
+- `keeps the connection when the headers provider fails a renewal` — a `reauthenticate` request whose provider rejects sends nothing, and the next frame still arrives.
+
 The Playwright tests live in [`apps/e2e/chat.e2e.ts`](../../apps/e2e/chat.e2e.ts). They run in Chromium against `examples/chat` served to a browser page (`examples/chat/src/web/`) on in-memory PGlite. The page follows the room's `MessagePosted` feed, posts through the Promise client, runs `React` optimistically, and shows Presence typing frames.
 
 - `replays events after a dropped connection and never shows a gap as continuous` — the M3 exit test. The page connects through a TCP proxy the test can cut, because Chromium's offline mode leaves an open stream up. The test sets the context offline and cuts every connection; two messages commit while the page is away and are not shown. After the connection is restored, the page shows all three messages with cursors `1`, `2`, `3`, and its feed has opened twice.
