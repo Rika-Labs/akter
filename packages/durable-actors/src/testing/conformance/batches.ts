@@ -3,7 +3,7 @@ import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
-import { BATCH_CAP } from "../../runtime/turn/batch.ts"
+import { BATCH_CAP } from "../../runtime/entity/mailbox.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 

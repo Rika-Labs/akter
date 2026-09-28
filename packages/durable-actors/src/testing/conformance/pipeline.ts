@@ -615,9 +615,11 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             probe,
             Effect.gen(function* () {
               const first = yield* holding(meter.Tap())
+
               const waiting = yield* enqueue(
                 Array.from({ length: 8 }, () => Effect.orDie(meter.Tap())),
               )
+
               const before = probe.flights
               yield* first.release
               yield* Fiber.join(first.fiber)
@@ -638,9 +640,11 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           // round trip, and each savepoint rides with its handler's first
           // statement or the commit group.
           const first = yield* holding(meter.Tap())
+
           const waiting = yield* enqueue(
             ["m1", "m2", "m3", "m4"].map((id) => Effect.orDie(meter.Mark(id))),
           )
+
           const before = probe.flights
           yield* first.release
           yield* Fiber.join(first.fiber)
