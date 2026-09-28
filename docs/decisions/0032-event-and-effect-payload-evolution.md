@@ -97,7 +97,7 @@ With several runners on one database, a new runner's events would reach old runn
 
 - **In scope:** event values, effect payloads, and the effect inside a dead letter.
 - **Out of scope:** command inputs in pending intents and timers, command outputs and declared failures in receipts, workflow step exits, and connection sessions. Command inputs and outputs follow the additive rules in [versioning](../api/versioning.md). Workflow exits keep ADR 0022's manifest check, which refuses a changed step result while an open execution recorded it. A workflow wait records the event as the current class decodes it, so changing an event's schema still waits for open executions that recorded a wait on it.
-- **Tag renames and removals.** A tag is the event's identity. Renaming it is a new event class; the old class stays declared while its events are retained. Removing a class whose events are still retained is allowed: nothing reads them by that tag, and retention removes them.
+- **Tag renames and removals.** A tag is the event's identity. Renaming it is a new event class; the old class stays declared while its events are retained. Removing a class whose events are still retained is allowed only when no durable consumer can still read them. Startup refuses the removal while any subscription row still follows that tag and has undelivered events of it (ADR 0026's `retired` form drains a subscription first), or while an open workflow execution's manifest waits on it (ADR 0022's check already refuses this). Otherwise nothing reads those events by that tag, and retention removes them. The same check covers shortening a chain below a version that a pending subscription delivery still has to decode.
 
 ## Alternatives rejected
 
@@ -163,6 +163,7 @@ In `conformance/payload-migrations.ts`, on PGlite and Postgres:
 - `refuses a shortened chain after the retention horizon until durable payloads clear finds no row of the dropped version, and refuses again after restoring a snapshot taken before the clear`
 - `records the writeVersion, not the chain's last version, while a two-phase deploy is in its first phase`
 - `writes the old version under writeVersion and reads both versions on one runtime`
+- `refuses removing an event class while a subscription has undelivered events of that tag or an open workflow waits on it`
 - `replays a subscription receipt after a schema change without CommandConflict`
 
 On Postgres only: `applies the migration to a database that ran the previous one`, and a two-runner case where one runner has the new chain and both keep reading under `writeVersion`.
