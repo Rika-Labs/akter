@@ -12,34 +12,68 @@ class ProviderDown extends Schema.TaggedError<ProviderDown>()("ProviderDown", {}
 
 class Charge extends Actor.effect<Charge>()("Charge", { input: { amount: Schema.Finite } }) {}
 
+// Its success type is wider than its route's input, so its only result is final.
+class Gauge extends Actor.effect<Gauge>()("Gauge", {
+  input: { value: Schema.Finite },
+  success: Schema.Finite,
+}) {}
+
 const Order = Actor.command("Order", { input: Schema.Finite })
 
 const Charged = Actor.command("Charged")
 
 const ChargeFailed = Actor.command("ChargeFailed", { input: Actor.DeadLetter(Charge) })
 
+const Measure = Actor.command("Measure", { input: Schema.Finite })
+
+const Gauged = Actor.command("Gauged", { input: Schema.Int })
+
+const GaugeFailed = Actor.command("GaugeFailed", { input: Actor.DeadLetter(Gauge) })
+
 const Buyer = Actor.make("ProcessBuyer", {
   key: Schema.String,
   state: Actor.state({
     failures: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  effects: [Charge],
-  api: { Order },
-  internal: { Charged, ChargeFailed },
+  effects: [Charge, Gauge],
+  api: { Order, Measure },
+  internal: { Charged, ChargeFailed, Gauged, GaugeFailed },
   policy: {
-    effects: { Charge: { retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed } },
+    effects: {
+      Charge: { retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed },
+      // Retries remain after its final failure, which recovery must not use.
+      Gauge: { retry: { times: 2 }, onSuccess: Gauged, onDeadLetter: GaugeFailed },
+    },
   },
 })
 
 const runtime = Layer.unwrap(
   Effect.gen(function* () {
     const mode = yield* Config.String("CRASH_POINT")
+    const effect = yield* Config.String("CRASH_EFFECT")
     const database = yield* Config.String("CRASH_DATABASE_URL")
 
     // The fake provider counts every call it receives under its idempotency
-    // key, then refuses, so the single attempt dead-letters.
+    // key, then refuses a charge, so its single attempt dead-letters, and
+    // returns a gauge's result that its route rejects.
     const provider = new Pool({ connectionString: database, max: 1 })
     yield* Effect.addFinalizer(() => Effect.promise(() => provider.end()))
+
+    const call = Effect.fnUntraced(function* () {
+      const exec = yield* Buyer.Executor
+      yield* Effect.promise(() =>
+        provider.query(
+          `INSERT INTO provider_calls (idempotency_key, calls) VALUES ($1, 1)
+           ON CONFLICT (idempotency_key) DO UPDATE SET calls = provider_calls.calls + 1`,
+          [exec.effectId],
+        ),
+      )
+    })
+
+    const fail = Effect.fnUntraced(function* () {
+      const turn = yield* Buyer.Turn
+      yield* turn.state.set({ failures: turn.state.failures + 1 })
+    })
 
     const live = Layer.mergeAll(
       Buyer.toLayer(
@@ -48,26 +82,18 @@ const runtime = Layer.unwrap(
             yield* (yield* Buyer.Turn).perform(Charge.make({ amount }))
           }),
           Charged: () => Effect.void,
-          ChargeFailed: Effect.fnUntraced(function* () {
-            const turn = yield* Buyer.Turn
-            yield* turn.state.set({ failures: turn.state.failures + 1 })
+          ChargeFailed: fail,
+          Measure: Effect.fnUntraced(function* (value: number) {
+            yield* (yield* Buyer.Turn).perform(Gauge.make({ value }))
           }),
+          Gauged: () => Effect.void,
+          GaugeFailed: fail,
         }),
       ),
       Buyer.toEffectLayer(
         Effect.succeed({
-          Charge: Effect.fnUntraced(function* () {
-            const exec = yield* Buyer.Executor
-            yield* Effect.promise(() =>
-              provider.query(
-                `INSERT INTO provider_calls (idempotency_key, calls) VALUES ($1, 1)
-                 ON CONFLICT (idempotency_key) DO UPDATE SET calls = provider_calls.calls + 1`,
-                [exec.effectId],
-              ),
-            )
-
-            return yield* ProviderDown.make({})
-          }),
+          Charge: () => call().pipe(Effect.andThen(ProviderDown.make({}))),
+          Gauge: ({ value }) => call().pipe(Effect.as(value)),
         }),
       ),
     )
@@ -76,7 +102,7 @@ const runtime = Layer.unwrap(
     // buyer's turn commits first.
     const hooks = Layer.succeed(TurnHooks, {
       at: (point, request) =>
-        point === mode && (request.command === "Charge" || request.command === "ChargeFailed")
+        point === mode && (request.command === effect || request.command === `${effect}Failed`)
           ? Console.log("READY").pipe(Effect.andThen(Effect.never))
           : Effect.void,
     })
@@ -101,10 +127,12 @@ const runtime = Layer.unwrap(
 // actor_outbox; a fresh process must settle it into one letter and one route.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
+  const effect = yield* Config.String("CRASH_EFFECT")
   const sql = yield* SqlClient.SqlClient
 
   if (mode !== "recover") {
-    yield* (yield* Buyer.get("buyer")).Order(12)
+    const buyer = yield* Buyer.get("buyer")
+    yield* effect === "Gauge" ? buyer.Measure(1.5) : buyer.Order(12)
 
     return yield* Effect.never
   }
@@ -116,7 +144,7 @@ const program = Effect.gen(function* () {
   const rows = yield* sql<{
     routed_id: string
     state_bytes: Uint8Array
-  }>`SELECT (SELECT command_id FROM actor_receipts WHERE command = 'ChargeFailed') AS routed_id,
+  }>`SELECT (SELECT command_id FROM actor_receipts WHERE command = ${`${effect}Failed`}) AS routed_id,
       (SELECT value FROM actor_state WHERE actor_type = 'ProcessBuyer' AND key = 'failures') AS state_bytes`
 
   const result = yield* Schema.encodeEffect(

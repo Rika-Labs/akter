@@ -556,8 +556,12 @@ export const registerActor = Effect.fnUntraced(function* (
           return Rpc.fork(
             Effect.gen(function* () {
               entry.context = yield* Effect.context<never>()
-              ready.openUnsafe()
-              yield* (yield* TurnHooks).at("queued", payload)
+
+              // An idle worker waits for this signal, so the hook runs while
+              // the command is waiting but not yet taken.
+              yield* (yield* TurnHooks)
+                .at("queued", payload)
+                .pipe(Effect.ensuring(Effect.sync(() => ready.openUnsafe())))
 
               return yield* Deferred.await(entry.reply)
             }).pipe(Effect.provideContext(services)),
