@@ -85,3 +85,16 @@ A call rejects with:
 `InvalidCommandId` from the client carries `neverAdmitted: true` only when the client minted the id itself, every attempt with it was answered with that refusal, and no other call with the id is still waiting, so no turn can have run under it. Only then is resending under a new id a retry rather than a second operation.
 
 Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or branch with `Effect.catchReasons`. On Effect `4.0.0-rc.116`, omitting `orElse` retains the full `ActorError` in `E`; branching is not automatically exhaustive error-channel elimination. See the [error contract](../contracts/error-model.md). OpenAPI is the intended input for external client and tool generators.
+
+## React (CR.6)
+
+`@durable-actors/react` wraps the Promise client in hooks. Every hook talks to the server only from effects and event handlers, so rendering on a server does no I/O: state hooks return `undefined` and feeds and connections start empty.
+
+- `useActor(client, id)` returns `client.get(id)`, stable while `client` and `id` are.
+- `useCommand(client, (input, options) => handle.Member(input, options))` holds one user intent. `run(input)` mints a command id with `client.commandId()` before sending and passes it in `options`. `retry()` sends the same input under the same id, so a retry after a lost response or a timeout replays the receipt instead of running the command twice. `state` is `idle`, `pending`, `success` with `data`, or `error` with the failure and `expired`. `expired` is true for `CommandExpired`: `retry` cannot help, and a new `run` is a new operation. `reset()` forgets the intent.
+- `useQuery(query, deps)` runs `query({ signal })` on mount and when `deps` change. Only the latest read updates `{ data, error, loading }`; `refetch()` reads again.
+- `useEventFeed(handle, Event, { after?, storageKey? })` follows `handle.events`. It returns the `entries` delivered since mount, the last `cursor`, the `error` that ended the feed, and `gap` when that error is `RetentionGap`, which is never skipped. With `storageKey`, each delivered cursor is written to `sessionStorage`, and a remount or reload resumes after it. A feed of an actor no command has created yet (`NotCreated`) is asked for again every 500 ms.
+- `useConnection(handle.Member, params, { onResync?, keep? })` holds one connection while mounted with the same params (compared by their JSON). It returns `status` (`connecting`, `open`, or `closed`), the latest `keep` frames (default 100), the `error` that ended it, and `send`. A closed connection is not reopened by itself, because a new one is a new session.
+- `useActorState(handle)` is the handle's `state`: committed state with pending optimistic reducer inputs applied, through `useSyncExternalStore`.
+
+The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
