@@ -775,8 +775,7 @@ export const activationEngine = (options: {
               const settled = yield* fenced(settle(step, exit, at, { attempt }))
               const recorded = settled[0]?.exit ?? (yield* readExit(step, attempt))
 
-              if (recorded === null)
-                return yield* Effect.die(new Error("Activity exit missing"))
+              if (recorded === null) return yield* Effect.die(new Error("Activity exit missing"))
               remember(step, { exit: recorded }, attempt)
 
               return yield* decodeRecorded(recorded)
