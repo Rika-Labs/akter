@@ -63,6 +63,12 @@ import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
 import { outboxRelay } from "./turn/relay.ts"
+import {
+  type LocalSubscription,
+  type SubscriptionRelay,
+  subscriptionRelay,
+} from "./subscriptions/relay.ts"
+import type { Placement } from "./storage/codec.ts"
 import { sweep } from "./storage/retention.ts"
 import { acceptWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
 import { decodeResult } from "./workflows/engine.ts"
@@ -105,8 +111,16 @@ export interface Options {
      * plus 5 seconds.
      */
     readonly claimLease?: Duration.Input
-    /** Cap on intent redelivery backoff. Default 256 seconds. */
+    /** Cap on intent and subscription redelivery backoff. Default 256 seconds. */
     readonly maxBackoff?: Duration.Input
+    /**
+     * Subscription deliveries in flight at once, separate from intent
+     * slots; feed expansions and control registrations each get as many.
+     * Default 16.
+     */
+    readonly subscriptionConcurrency?: number
+    /** Matching events one claimed subscription row delivers before it settles. Default 16. */
+    readonly subscriptionBatch?: number
   }
   /** The effect executor pool of this runner. */
   readonly executors?: {
@@ -185,6 +199,9 @@ export const layer = (options: Options) => {
     executorConcurrency: Count.make(options.executors?.concurrency ?? 64),
     executorLeaseMs,
   }
+
+  const subscriptionConcurrency = Count.make(options.relay?.subscriptionConcurrency ?? 16)
+  const subscriptionBatch = Count.make(options.relay?.subscriptionBatch ?? 16)
 
   const runtime = Layer.effectContext(
     Effect.gen(function* () {
@@ -356,8 +373,14 @@ export const layer = (options: Options) => {
 
           return yield* Effect.gen(function* () {
             // Only the relay presents a mint proof, as the delivery of the
-            // parent's committed creating intent.
-            if (external && Schema.is(System)(request.caller) && request.caller.mint !== undefined)
+            // parent's committed creating intent, and only the relay delivers
+            // a subscription, with its envelope.
+            if (
+              external &&
+              (request.delivery !== undefined ||
+                (Schema.is(System)(request.caller) &&
+                  (request.caller.mint !== undefined || request.caller.source === "subscription")))
+            )
               return yield* ActorError.make({
                 reason: Unauthorized.make({ code: "access_denied" }),
               })
@@ -485,6 +508,52 @@ export const layer = (options: Options) => {
         return longest === 0 ? DEFAULT_CLAIM_LEASE_MS : longest + CLAIM_MARGIN_MS
       }
 
+      // Every subscription this runner registers, by subscriber type.
+      const localSubscriptions = (): ReadonlyArray<LocalSubscription> =>
+        [...registrations.values()].flatMap((registration) =>
+          registration.subscriptions.map((subscription) => ({
+            subscriberType: registration.name,
+            subscription,
+          })),
+        )
+
+      const placements = new Map<string, Placement>()
+
+      // A source may be registered only on other runners; its recorded
+      // placement is fixed once written, so it is cached.
+      const placementOf = (actorType: string) =>
+        Effect.gen(function* () {
+          const known =
+            registrations.get(actorType)?.placement ??
+            queryRegistrations.get(actorType)?.placement ??
+            placements.get(actorType)
+
+          if (known !== undefined) return known
+
+          const sql = yield* SqlClient.SqlClient
+
+          const [recorded] = yield* sql<{ placement: Placement }>`
+            SELECT placement FROM actor_placements WHERE actor_type = ${actorType}`
+
+          if (recorded !== undefined) placements.set(actorType, recorded.placement)
+
+          return recorded?.placement
+        }).pipe(Effect.provideContext(services), Effect.orDie)
+
+      const subscriptions: SubscriptionRelay = yield* subscriptionRelay({
+        deliver: (request) => dispatch(request, false),
+        local: localSubscriptions,
+        placementOf,
+        wake: Effect.suspend(() => relay.wake),
+        settings: {
+          concurrency: subscriptionConcurrency,
+          batch: subscriptionBatch,
+          claimLeaseMs: () => claimLeaseMs ?? leaseForTurns(),
+          maxBackoffMs: relaySettings.maxBackoffMs,
+          retryWindowMs,
+        },
+      })
+
       const relay = yield* outboxRelay(
         (request) => dispatch(request, false),
         () =>
@@ -500,6 +569,12 @@ export const layer = (options: Options) => {
             })),
           ),
         { ...relaySettings, claimLeaseMs: () => claimLeaseMs ?? leaseForTurns() },
+        {
+          concurrency: subscriptionConcurrency,
+          claim: subscriptions.claim,
+          decode: subscriptions.decode,
+          run: (work) => subscriptions.run(work).pipe(Effect.provideContext(services)),
+        },
       )
 
       yield* relay.run.pipe(Effect.forkIn(scope))
@@ -541,7 +616,16 @@ export const layer = (options: Options) => {
           Effect.forever,
           Effect.forkIn(scope),
         )
-      const outbox = { retryWindowMs, wake: relay.wake }
+      // Routed subscriptions registered here, by source type.
+
+      const routed = (sourceType: string) =>
+        localSubscriptions().flatMap(({ subscriberType, subscription }) =>
+          subscription.routed !== undefined && subscription.sourceType === sourceType
+            ? [{ ...subscription, subscriberType }]
+            : [],
+        )
+
+      const outbox = { retryWindowMs, wake: relay.wake, routed }
 
       const databaseNow = databaseTime.pipe(
         Effect.provideContext(services),
@@ -613,6 +697,14 @@ export const layer = (options: Options) => {
             Effect.provideContext(services),
             Effect.provideService(OutboxRuntime, outbox),
           )
+
+          // A deploy may add an event class to a dynamic subscription; its
+          // caught-up rows must wake for it.
+          for (const declared of registration.subscriptions)
+            if (declared.routed === undefined)
+              yield* subscriptions
+                .widen(registration.name, declared)
+                .pipe(Effect.provideContext(services), Effect.orDie)
 
           registrations.set(registration.name, registration)
           residency.set(registration.name, isResident)

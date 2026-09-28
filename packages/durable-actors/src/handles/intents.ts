@@ -37,6 +37,20 @@ export interface StagedEffect {
 }
 
 /**
+ * A dynamic subscription change a turn staged: `subscribe` from a position,
+ * or `remove`. The last change a turn stages for one source wins.
+ */
+export interface StagedSubscription {
+  readonly subscription: string
+  readonly source: ActorRef
+  readonly op: "subscribe" | "remove"
+  /** `"now"`, `"start"`, or an exclusive source cursor; unused by `remove`. */
+  readonly from: string
+  /** The declaration's event tags, which decide which of the source's commits wake the row. */
+  readonly events: ReadonlyArray<string>
+}
+
+/**
  * Everything one turn asked the outbox to do. `replaced` lists keys whose
  * committed rows the turn deletes before inserting `intents`.
  */
@@ -44,9 +58,22 @@ export interface StagedOutbox {
   readonly intents: ReadonlyArray<StagedIntent>
   readonly replaced: ReadonlyArray<string>
   readonly effects: ReadonlyArray<StagedEffect>
+  readonly subscriptions: ReadonlyArray<StagedSubscription>
 }
 
-export const emptyOutbox: StagedOutbox = { intents: [], replaced: [], effects: [] }
+export const emptyOutbox: StagedOutbox = {
+  intents: [],
+  replaced: [],
+  effects: [],
+  subscriptions: [],
+}
+
+/**
+ * Outbox keys the framework writes: `$`-prefixed keys and JSON arrays whose
+ * first element is `$`-prefixed. An application key of that shape could
+ * replace or cancel a framework row of the same actor.
+ */
+export const isFrameworkKey = (key: string) => key.startsWith("$") || key.startsWith('["$')
 
 /**
  * Marks a command turn. Only the runtime provides it, and `X.toLayer` removes
@@ -72,6 +99,7 @@ interface Staging {
   intents: Array<StagedIntent>
   readonly replaced: Set<string>
   readonly effects: Array<StagedEffect>
+  readonly subscriptions: Map<string, StagedSubscription>
 }
 
 // Keyed by the provided marker, so a hand-built `InTurn` value stages nothing.
@@ -107,6 +135,7 @@ export const openOutbox = ({
     intents: [],
     replaced: new Set(),
     effects: [],
+    subscriptions: new Map(),
   }
 
   stagings.set(marker, staging)
@@ -172,10 +201,22 @@ export const openOutbox = ({
 
       return undefined
     },
+    /** Stages a subscription change; a later change for the same source replaces it. */
+    subscribe: (change: StagedSubscription) => {
+      staging.subscriptions.set(
+        JSON.stringify([change.subscription, change.source.actor, change.source.id]),
+        change,
+      )
+    },
     close: (): StagedOutbox => {
       staging.open = false
 
-      return { intents: staging.intents, replaced: [...staging.replaced], effects: staging.effects }
+      return {
+        intents: staging.intents,
+        replaced: [...staging.replaced],
+        effects: staging.effects,
+        subscriptions: [...staging.subscriptions.values()],
+      }
     },
   }
 }
@@ -259,11 +300,16 @@ export const Intent = {
   key: (key: string) => {
     if (key.length === 0 || key.length > 200) throw new Error("Intent.key must be 1-200 characters")
 
+    if (isFrameworkKey(key)) throw new Error("Intent.key values starting with $ are reserved")
+
     return configure({ key })
   },
   /** Removes the sending actor's pending intent with `key` when this turn commits. */
   cancel: (key: string): Effect.Effect<void, never, InTurn> =>
     Effect.gen(function* () {
+      if (isFrameworkKey(key))
+        return yield* Effect.die(new Error("Intent.key values starting with $ are reserved"))
+
       const { staging } = yield* currentStaging()
       replaceKey(staging, key)
     }),

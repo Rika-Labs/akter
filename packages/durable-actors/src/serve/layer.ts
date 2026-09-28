@@ -399,6 +399,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
                 return HttpServerResponse.jsonUnsafe(body, { status })
               }).pipe(Effect.orDie),
             Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
+            // Only subscription deliveries, which never come from HTTP, are acknowledged.
+            Acknowledged: (acknowledged) =>
+              Effect.die(new Error(`Unexpected ${acknowledged.reason} acknowledgement`)),
           }),
         )
 

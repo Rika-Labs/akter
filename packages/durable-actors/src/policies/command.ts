@@ -64,6 +64,12 @@ export interface Policy<
   readonly connections?: "park" | "keepAwake"
   /** Longest time a connection runs on one authorization check, 1 second to 1 hour. Default 60 seconds. */
   readonly reauthorizeEvery?: Duration.Input
+  /**
+   * The actor types that may subscribe to this actor's events, by name, so
+   * this definition never imports its subscribers. A subscription on any
+   * other type fails at `Actor.make`. Omitted, every type in the tenant may.
+   */
+  readonly subscribers?: ReadonlyArray<string>
 }
 
 export interface TurnPolicy {
@@ -80,6 +86,7 @@ export interface TurnPolicy {
   readonly connections: "park" | "keepAwake"
   readonly reauthorizeMs: number
   readonly keepWorkflowsMs: number
+  readonly subscribers: ReadonlyArray<string> | undefined
 }
 
 export const resolvePolicy = (policy: {
@@ -110,5 +117,6 @@ export const resolvePolicy = (policy: {
       Duration.toMillis(declared?.reauthorizeEvery ?? "60 seconds"),
     ),
     keepWorkflowsMs: horizon(declared?.keepWorkflows ?? "7 days"),
+    subscribers: declared?.subscribers === undefined ? undefined : [...declared.subscribers],
   })
 }

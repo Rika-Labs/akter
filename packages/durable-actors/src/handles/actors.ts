@@ -2,6 +2,7 @@ import type { Transport } from "../runtime/connections/transport.ts"
 import type { Holder } from "../runtime/connections/holder.ts"
 import { Context, Effect, type Exit, Schema, Scope } from "effect"
 import type { ActorError } from "../errors/actor.ts"
+import type { SubscriptionFailure } from "../errors/subscription.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
 import type { ConnectionCommands } from "../identity/command.ts"
@@ -20,9 +21,34 @@ export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
   Failure: { value: Schema.String },
   Defect: { cause: Schema.Defect() },
+  /**
+   * A subscription delivery the subscriber settled without running its
+   * handler; only the relay sees it, and it commits no receipt.
+   */
+  Acknowledged: {
+    reason: Schema.Literals(["AlreadyApplied", "Stale", "Unsubscribed", "NotCreated"]),
+  },
 })
 
 export type Outcome = typeof Outcome.Type
+
+/**
+ * What a subscription delivery carries beside its command id: the source-side
+ * row it came from, the subscription's epoch, and the source position it
+ * applies. Only the relay sets it; the subscriber's cursor row is checked and
+ * advanced against it in the delivery's own turn.
+ */
+export const SubscriptionEnvelope = Schema.Struct({
+  subscription: Schema.NonEmptyString,
+  sourceType: Schema.NonEmptyString,
+  sourceId: Schema.NonEmptyString,
+  epoch: Schema.String,
+  kind: Schema.Literals(["event", "gap", "rejected"]),
+  /** An event's cursor, a gap's `resumeAfter`, or a rejected subscription's cursor. */
+  position: Schema.String,
+})
+
+export type SubscriptionEnvelope = typeof SubscriptionEnvelope.Type
 
 export const Request = Schema.Struct({
   ref: ActorRef,
@@ -36,6 +62,7 @@ export const Request = Schema.Struct({
    * waits for the turn cannot run the command again.
    */
   external: Schema.optionalKey(Schema.Boolean),
+  delivery: Schema.optionalKey(SubscriptionEnvelope),
 })
 
 export type Request = typeof Request.Type
@@ -94,6 +121,8 @@ export type EventReader = (
 
 export interface RegisteredCommand {
   readonly internal: boolean
+  /** Named as a subscription's handler: only subscription deliveries reach it. */
+  readonly handler: boolean
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
@@ -242,6 +271,34 @@ export interface Registration {
   readonly connections: ReadonlyMap<string, RegisteredConnection>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
+  /** The subscriptions this actor type declares, as its subscriber. */
+  readonly subscriptions: ReadonlyArray<RegisteredSubscription>
+  /** `policy.subscribers` of this actor type as a source; undefined allows every type. */
+  readonly subscribers: ReadonlyArray<string> | undefined
+}
+
+/** One `Actor.subscription` of a registered subscriber type. */
+export interface RegisteredSubscription {
+  readonly tag: string
+  readonly sourceType: string
+  /** The internal command deliveries run. */
+  readonly handler: string
+  /** Event tags this declaration delivers. */
+  readonly events: ReadonlyArray<string>
+  /** Event tags it once delivered; rows carrying them stay claimable and skip them. */
+  readonly retired: ReadonlyArray<string>
+  /** How a routed subscription names its subscriber; undefined for a dynamic one. */
+  readonly routed: "id" | "singleton" | undefined
+  /**
+   * The subscriber id of one event of a routed subscription: decodes the
+   * stored event, applies `route`, and checks the id against the subscriber's
+   * key schema. Fails when any step fails.
+   */
+  readonly route: (
+    tag: string,
+    value: string,
+    source: ActorRef,
+  ) => Effect.Effect<string, SubscriptionFailure>
 }
 
 /** A workflow member bound to its body when the actor's layer was built. */

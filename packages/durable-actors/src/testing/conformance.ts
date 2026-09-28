@@ -90,6 +90,14 @@ import {
   type ProgressFixture,
 } from "./conformance/progress.ts"
 import {
+  subscriptionsClusterConformance,
+  subscriptionsConformance,
+  subscriptionsFixture,
+  subscriptionsLayer,
+  type SubscriptionsFixture,
+} from "./conformance/subscriptions.ts"
+import { TurnHooks } from "../runtime/turn/hooks.ts"
+import {
   workflowsConformance,
   workflowsFixture,
   type WorkflowsFixture,
@@ -190,6 +198,7 @@ export interface ConformanceFixture {
   readonly relay: RelayFixture
   readonly retention: RetentionFixture
   readonly workflows: WorkflowsFixture
+  readonly subscriptions: SubscriptionsFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -315,6 +324,7 @@ const makeFixture = (): ConformanceFixture => ({
   relay: relayFixture(),
   retention: retentionFixture(),
   workflows: workflowsFixture(),
+  subscriptions: subscriptionsFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -355,6 +365,8 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...workflowsConformance,
   ...connectionsConformance,
   ...workflowVersionsConformance,
+  ...subscriptionsConformance,
+  ...subscriptionsClusterConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1327,6 +1339,7 @@ export const describeConformance = (options: {
     workflowsLive(fixture.workflows),
     connectionsLayer,
     mintLayer,
+    subscriptionsLayer(fixture.subscriptions),
   )
 
   let store: ConformanceStore | undefined
@@ -1354,7 +1367,15 @@ export const describeConformance = (options: {
               authorize: (request) =>
                 Effect.sync(() => fixture.allowed && !fixture.denied.has(request.command)),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
-            }),
+            }).pipe(
+              // Subscription cases fault particular deliveries by command.
+              Layer.provide(
+                Layer.succeed(TurnHooks, {
+                  at: (point, request) =>
+                    Effect.suspend(() => fixture.subscriptions.hook(point, request)),
+                }),
+              ),
+            ),
           ),
           Layer.provideMerge(backend.services),
           Layer.provide(defectRecorder(fixture.foundation)),

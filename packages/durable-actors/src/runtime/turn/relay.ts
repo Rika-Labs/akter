@@ -18,6 +18,12 @@ import { progressPool } from "../effects/progress.ts"
 import { TurnHooks } from "./hooks.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
+import type {
+  SubscriptionError,
+  SubscriptionClaim,
+  SubscriptionSlots,
+  SubscriptionWork,
+} from "../subscriptions/relay.ts"
 
 /**
  * A drain whose deliveries keep staging due work after this many rounds, each
@@ -51,8 +57,11 @@ export interface LocalExecutor {
 }
 
 interface ClaimedRow {
-  /** `skipped-*` rows claim nothing; they report a probe whose candidates were all taken or locked. */
-  readonly kind: "intent" | "effect" | "skipped-intent" | "skipped-effect"
+  /**
+   * `skipped-*` rows claim nothing; they report a probe whose candidates were
+   * all taken or locked. A `work` row carries claimed subscription work in `work`.
+   */
+  readonly kind: "intent" | "effect" | "skipped-intent" | "skipped-effect" | "work"
   readonly routing_key: string
   readonly intent_id: string
   readonly attempts: number
@@ -69,6 +78,7 @@ interface ClaimedRow {
   /** The claim's `due_at_ms`, which every settling write of an intent names. */
   readonly claimed_until: string
   readonly candidates: number
+  readonly work: string | null
 }
 
 interface ClaimedEffect extends ClaimedRow {
@@ -85,13 +95,19 @@ const claimedColumns = (sql: SqlClient.SqlClient) =>
  * so its cost follows due rows of one kind, not stored actors or future timers.
  * It takes no locks; a claim locks only the rows it takes from it.
  */
-const candidates = (
-  sql: SqlClient.SqlClient,
-  kind: "intent" | "effect",
-  now: Statement.Fragment,
-  limit: number,
-  only: ReturnType<typeof sql.literal> = sql.literal(""),
-) =>
+export const candidates = ({
+  sql,
+  kind,
+  now,
+  limit,
+  only = sql.literal(""),
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly kind: "intent" | "effect" | "feed" | "control"
+  readonly now: Statement.Fragment
+  readonly limit: number
+  readonly only?: Statement.Fragment
+}) =>
   sql`SELECT o.routing_key, o.intent_id, o.actor_type, o.command
     FROM generate_series(${BUCKETS.first}::int, ${BUCKETS.last}::int) AS b(bucket)
     CROSS JOIN LATERAL (
@@ -140,11 +156,13 @@ export const claimDue = ({
   now,
   intents,
   effects,
+  subscriptions,
 }: {
   readonly sql: SqlClient.SqlClient
   readonly now: Statement.Fragment
   readonly intents?: IntentClaim | undefined
   readonly effects?: EffectClaim | undefined
+  readonly subscriptions?: SubscriptionClaim | undefined
 }) => {
   const parts: Array<Statement.Fragment> = []
   const results: Array<Statement.Fragment> = []
@@ -152,7 +170,7 @@ export const claimDue = ({
   if (intents !== undefined) {
     const { limit, leaseMs, maxBackoffMs, probe = 2 * limit } = intents
     parts.push(sql`intent_candidates AS (
-        ${candidates(sql, "intent", now, probe)}
+        ${candidates({ sql, kind: "intent", now, limit: probe })}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
       intent_locked AS (
@@ -169,7 +187,8 @@ export const claimDue = ({
         FROM intent_locked c
         WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
         RETURNING ${claimedColumns(sql)},
-          (SELECT count(*) FROM intent_candidates)::int AS candidates, false AS exhausted
+          (SELECT count(*) FROM intent_candidates)::int AS candidates, false AS exhausted,
+          NULL::text AS work
       )`)
     results.push(sql`SELECT * FROM intent_claimed`, skipped(sql, "intent"))
   }
@@ -185,15 +204,15 @@ export const claimDue = ({
         )}
       ),
       effect_candidates AS (
-        ${candidates(
+        ${candidates({
           sql,
-          "effect",
+          kind: "effect",
           now,
-          probe,
+          limit: probe,
           // Filtered inside each bucket's probe, so due rows no runner here can
           // execute never fill the per-bucket limit ahead of rows it can.
-          sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
-        )}
+          only: sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
+        })}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
       effect_locked AS (
@@ -218,9 +237,20 @@ export const claimDue = ({
         WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
         RETURNING ${claimedColumns(sql)},
           (SELECT count(*) FROM effect_candidates)::int AS candidates,
-          c.previous >= c.max_attempts AS exhausted
+          c.previous >= c.max_attempts AS exhausted, NULL::text AS work
       )`)
     results.push(sql`SELECT * FROM effect_claimed`, skipped(sql, "effect"))
+  }
+
+  // Subscription work rides in the same statement, so a pass stays one round trip.
+  if (subscriptions !== undefined) {
+    parts.push(...subscriptions.parts)
+
+    for (const result of subscriptions.results)
+      results.push(sql`SELECT 'work'::text, NULL::text, NULL::text, 0, NULL::text, false,
+          NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text,
+          NULL::text, NULL::text, 0, false, claimed.work
+        FROM (${result}) AS claimed`)
   }
 
   if (results.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedEffect>)
@@ -235,12 +265,18 @@ const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
   const found = sql.literal(`${kind}_candidates`)
 
   return sql`SELECT ${`skipped-${kind}`}::text, NULL, NULL, 0, NULL, false, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, (SELECT count(*) FROM ${found})::int, false
+      NULL, NULL, NULL, NULL, NULL, NULL, (SELECT count(*) FROM ${found})::int, false, NULL::text
     WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
 
 /** The outbox clock inside a statement: its start time on the database plus the test offset. */
-const outboxNow = (sql: SqlClient.SqlClient, offsetMillis: number) =>
+export const outboxNow = ({
+  sql,
+  offsetMillis,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly offsetMillis: number
+}) =>
   sql`(floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint + ${offsetMillis}::bigint)`
 
 /** The intent half of `claimDue` at a fixed `now`, as a statement to inspect. */
@@ -303,6 +339,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
   deliver: (request: Request) => Effect.Effect<Outcome, ActorError>,
   executors: () => ReadonlyArray<LocalExecutor>,
   settings: RelaySettings,
+  subscriptions?: {
+    /** Feed, control, and subscription-delivery slots, each; separate from intent slots. */
+    readonly concurrency: number
+    readonly claim: (slots: SubscriptionSlots) => SubscriptionClaim | undefined
+    readonly decode: (work: string) => Effect.Effect<SubscriptionWork>
+    readonly run: (work: SubscriptionWork) => Effect.Effect<void, SubscriptionError>
+  },
 ) {
   const sql = yield* SqlClient.SqlClient
   const services = yield* Effect.context<SqlClient.SqlClient>()
@@ -310,12 +353,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const signals = yield* Queue.sliding<void>(1)
   const deliveries = yield* FiberSet.make<unknown, unknown>()
   const attempts = yield* FiberSet.make<unknown, unknown>()
+  // Subscription work runs in its own slots, so a subscription backlog never
+  // delays intents, timers, or effects.
+
+  const subscriptionWork = {
+    feed: yield* FiberSet.make<unknown, unknown>(),
+    control: yield* FiberSet.make<unknown, unknown>(),
+    subscription: yield* FiberSet.make<unknown, unknown>(),
+  }
+
   const hooks = yield* TurnHooks
   const progress = yield* progressPool()
 
   // Set when a claim saw more due candidates than it took: a freed slot then
   // claims again instead of waiting for the poll.
-  const more = { intents: false, effects: false }
+  const more = { intents: false, effects: false, subscriptions: false }
   // How many times the base probe the next claim reads; doubled while a claim
   // leaves free capacity although it found more candidates than it took.
   const widen = { intents: 1, effects: 1 }
@@ -656,11 +708,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
     }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })
 
-  const freed = (kind: "intents" | "effects") =>
+  const freed = (kind: "intents" | "effects" | "subscriptions") =>
     Effect.suspend(() => (more[kind] ? Queue.offer(signals, undefined) : Effect.void))
 
   const inFlight = Effect.gen(function* () {
-    return (yield* FiberSet.size(deliveries)) + (yield* FiberSet.size(attempts))
+    return (
+      (yield* FiberSet.size(deliveries)) +
+      (yield* FiberSet.size(attempts)) +
+      (yield* FiberSet.size(subscriptionWork.feed)) +
+      (yield* FiberSet.size(subscriptionWork.control)) +
+      (yield* FiberSet.size(subscriptionWork.subscription))
+    )
   })
 
   // Uninterruptible so every row a claim returns reaches a fiber that can release it.
@@ -684,9 +742,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const claimedAt = yield* Clock.currentTimeNanos
           const clock = yield* FrameworkClock
 
+          const workSlots =
+            subscriptions === undefined
+              ? undefined
+              : {
+                  feed: subscriptions.concurrency - (yield* FiberSet.size(subscriptionWork.feed)),
+                  control:
+                    subscriptions.concurrency - (yield* FiberSet.size(subscriptionWork.control)),
+                  subscription:
+                    subscriptions.concurrency -
+                    (yield* FiberSet.size(subscriptionWork.subscription)),
+                }
+
           const rows = yield* claimDue({
             sql,
-            now: outboxNow(sql, clock.offsetMillis()),
+            now: outboxNow({ sql, offsetMillis: clock.offsetMillis() }),
             intents:
               slots > 0
                 ? {
@@ -705,6 +775,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
                     probe: 2 * permits * widen.effects,
                   }
                 : undefined,
+            subscriptions: workSlots === undefined ? undefined : subscriptions!.claim(workSlots),
           })
 
           const intents = rows.filter((row) => row.kind === "intent")
@@ -718,6 +789,33 @@ export const outboxRelay = Effect.fnUntraced(function* (
           if (permits > 0 && local.length > 0) {
             more.effects = effects.length > 0 && effects[0]!.candidates > effects.length
             widen.effects = widened(widen.effects, rows, "effect", permits)
+          }
+
+          let claimedWork = 0
+
+          if (subscriptions !== undefined && workSlots !== undefined) {
+            const work = yield* Effect.forEach(
+              rows.filter((row) => row.kind === "work"),
+              (row) => subscriptions.decode(row.work!),
+            )
+
+            claimedWork = work.length
+            more.subscriptions = (["feed", "control", "subscription"] as const).some(
+              (kind) =>
+                workSlots[kind] > 0 &&
+                work.filter((item) => item.kind === kind).length >= workSlots[kind],
+            )
+
+            for (const item of work)
+              yield* FiberSet.run(
+                subscriptionWork[item.kind],
+                subscriptions
+                  .run(item)
+                  .pipe(
+                    logFailure("Subscription relay work failed"),
+                    Effect.ensuring(freed("subscriptions")),
+                  ),
+              )
           }
 
           for (const row of intents)
@@ -753,8 +851,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
           }
 
           return {
-            claimed: intents.length + effects.length,
-            backlog: more.intents || more.effects,
+            claimed: intents.length + effects.length + claimedWork,
+            backlog: more.intents || more.effects || more.subscriptions,
             quiet,
           }
         }),
@@ -773,6 +871,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const idle = Effect.gen(function* () {
     yield* FiberSet.awaitEmpty(deliveries)
     yield* FiberSet.awaitEmpty(attempts)
+    yield* FiberSet.awaitEmpty(subscriptionWork.feed)
+    yield* FiberSet.awaitEmpty(subscriptionWork.control)
+    yield* FiberSet.awaitEmpty(subscriptionWork.subscription)
   })
 
   // Waits for in-flight work, which may stage more, then claims again; done
