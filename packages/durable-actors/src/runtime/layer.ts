@@ -549,12 +549,10 @@ export const layer = (options: Options) => {
         })
 
       const fireAndForget = <E>(send: Effect.Effect<void, E>) =>
-        send.pipe(
-          Effect.timeout(PROGRESS_SEND_TIMEOUT),
-          Effect.ignoreCause,
-          Effect.forkIn(scope),
-          Effect.asVoid,
-        )
+        send.pipe(Effect.timeout(PROGRESS_SEND_TIMEOUT), Effect.ignoreCause, Effect.forkIn(scope))
+
+      // Each effect's last frame still on its way, so its close never overtakes it.
+      const inflight = new Map<string, Fiber.Fiber<void>>()
 
       // Sends one progress message to its owner as the pool does, past the tap.
       const deliverProgress = (message: ProgressMessage) =>
@@ -569,16 +567,33 @@ export const layer = (options: Options) => {
         wants: (actor, effect) => effectRegistrations.get(actor)?.progress.has(effect) === true,
         send: (message) =>
           Effect.flatMap(progressTap.send(message), (deliver) =>
-            deliver ? fireAndForget(deliverProgress(message)) : Effect.void,
+            deliver
+              ? fireAndForget(deliverProgress(message)).pipe(
+                  Effect.flatMap((fiber) =>
+                    Effect.sync(() => {
+                      inflight.set(message.effectId, fiber)
+                      fiber.addObserver(() => {
+                        if (inflight.get(message.effectId) === fiber)
+                          inflight.delete(message.effectId)
+                      })
+                    }),
+                  ),
+                )
+              : Effect.void,
           ),
         closed: (message) =>
           Effect.flatMap(progressTap.closed(message), (deliver) =>
             deliver
               ? fireAndForget(
-                  Effect.flatMap(ownerOf(message.ref), (client) =>
-                    client.ProgressClosed(message, { discard: true }),
+                  Effect.suspend(() => {
+                    const last = inflight.get(message.effectId)
+
+                    return last === undefined ? Effect.void : Fiber.await(last)
+                  }).pipe(
+                    Effect.andThen(ownerOf(message.ref)),
+                    Effect.flatMap((client) => client.ProgressClosed(message, { discard: true })),
                   ),
-                )
+                ).pipe(Effect.asVoid)
               : Effect.void,
           ),
       })

@@ -92,6 +92,8 @@ interface EffectProgress {
   /** False once the effect's route or settle committed, or its row is gone. */
   open: boolean
   checkedAt: number
+  /** The last frame, check, or close; the record goes `PROGRESS_RECORD_MS` after it. */
+  touchedAt: number
   attempt: number
   seq: number
   readonly principal: Option.Option<Principal>
@@ -101,9 +103,13 @@ interface EffectProgress {
   readonly holders: Set<string>
 }
 
-const closedEffect = (): EffectProgress => ({
+/** How long a progress record stays after its last frame, check, or close. */
+const PROGRESS_RECORD_MS = 60_000
+
+const closedEffect = (at: number): EffectProgress => ({
   open: false,
-  checkedAt: 0,
+  checkedAt: at,
+  touchedAt: at,
   attempt: 0,
   seq: 0,
   principal: Option.none(),
@@ -206,6 +212,8 @@ export interface Activation {
   }>
   progressTokens: number
   progressRefilledAt: number
+  /** When `progress` was last swept of records nothing touched for `PROGRESS_RECORD_MS`. */
+  progressSweptAt: number
   /** The highest commit whose frames all went out to their holders. */
   through: string
   readonly channels: Map<string, Channel>
@@ -341,6 +349,7 @@ export const activationOwner = ({
           listeners: new Set(),
           progressTokens: PROGRESS_PER_SECOND,
           progressRefilledAt: 0,
+          progressSweptAt: 0,
           through: "0",
           channels: new Map(),
           flush: Semaphore.makeUnsafe(1),
@@ -1474,7 +1483,7 @@ export const activationOwner = ({
       const [row] = read.value
 
       if (row === undefined || row.kind !== "effect" || row.cancelled) {
-        const closed = closedEffect()
+        const closed = closedEffect(at)
         activation.progress.set(message.effectId, closed)
 
         return closed
@@ -1489,6 +1498,7 @@ export const activationOwner = ({
 
       if (stored !== undefined && stored.open) {
         stored.checkedAt = at
+        stored.touchedAt = at
 
         return stored
       }
@@ -1496,6 +1506,7 @@ export const activationOwner = ({
       const checked: EffectProgress = {
         open: true,
         checkedAt: at,
+        touchedAt: at,
         attempt: 0,
         seq: 0,
         principal: principal(yield* decodeCaller(row.caller).pipe(Effect.orDie)),
@@ -1532,6 +1543,14 @@ export const activationOwner = ({
 
       const at = yield* now
 
+      // A record nothing touched for a while goes; a late frame for it runs the effect check again.
+      if (at - activation.progressSweptAt >= PROGRESS_RECORD_MS) {
+        activation.progressSweptAt = at
+
+        for (const [effectId, record] of activation.progress)
+          if (at - record.touchedAt >= PROGRESS_RECORD_MS) activation.progress.delete(effectId)
+      }
+
       if (at > message.leaseUntil + PROGRESS_SKEW_MS) return
       const known = activation.progress.get(message.effectId)
 
@@ -1554,6 +1573,7 @@ export const activationOwner = ({
           if (!effect.open || !after(message, effect)) return
           effect.attempt = message.attempt
           effect.seq = message.seq
+          effect.touchedAt = at
 
           const perChannel = new Map<Channel, Map<string, Array<string>>>()
 
@@ -1624,7 +1644,7 @@ export const activationOwner = ({
       return activation.flush.withPermit(
         Effect.gen(function* () {
           const current = activation.progress.get(effectId)
-          activation.progress.set(effectId, closedEffect())
+          activation.progress.set(effectId, closedEffect(yield* now))
 
           if (current === undefined || !current.open) return
 
