@@ -375,6 +375,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 - `routes keyed, singleton, and minted actors, and treats special characters in ids as one segment`.
 - `keeps running a command whose HTTP client disconnected, and replays it on retry` — row **HTTP client disconnects mid-command**: the aborted command commits once.
 - `documents every served route and serves every documented one; the document is deterministic` — OpenAPI 3.1 with `<Actor>.<Member>` operation ids, `Idempotency-Key` on commands only, and two builds byte-identical.
+- `documents a cookie provider's cookie as an apiKey scheme and authenticates by it` — [ADR 0045](../decisions/0045-cookie-security-schemes.md): `cookies: { name: "session" }` is documented as `apiKey` `in: cookie` on every authenticated operation, with `bearer: true` as two alternative requirements, and a bearer provider as `http` `bearer` alone; the cookie-only provider authenticates from the cookie and answers a bearer token with `401 missing_credentials`, and a provider without a cookie credential never sees cookies. `serve/auth.test.ts` covers the credentials each `Actor.auth.make` form produces and rejects cookie names that aren't HTTP tokens.
 - `refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin` — 403 before authentication; CORS headers and preflight for a listed origin.
 - `rejects non-JSON and oversized bodies and credentials before any turn` — 415, 413 for body and credentials, 400 with value-free schema issues, 400 `decode` for invalid UTF-8, and 400 `unsupported_protocol`.
 - `answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version`.
@@ -388,7 +389,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 
 `waits at least retryAfter before retrying RunnerAtCapacity in process` (`runtime/retry.test.ts`) checks that in-process retries of `RunnerAtCapacity` and `ActorUnavailable` start from each error's own `retryAfter`; the existing `conformance/capacity.ts` cases still pass.
 
-These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency over HTTP/1.1 keep-alive for commands and queries with `Actor.auth.none`, 64 concurrent command callers, and commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload; HTTP/2 is not measured, since the harness serves through `Bun.serve` over plain HTTP/1.1.
+These cases cover one runtime process on loopback. Proxies, TLS, and other HTTP servers than Bun's are not exercised. The `http` benchmark scenario reports latency over HTTP/1.1 keep-alive for commands and queries with `Actor.auth.none`, 64 concurrent command callers, and commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload; its `h2-*` cases repeat the command, query, 64-caller, JWT, largest-principal, and 64 KiB cases over cleartext HTTP/2 from Bun's `node:http2` server, with every caller's requests multiplexed on one connection ([performance](03-performance.md#served-http2-beside-http11-122)). HTTP/2 is benchmarked, not covered by conformance cases, and HTTP/2 over TLS is not exercised.
 
 ### Promise client (M3.4)
 
