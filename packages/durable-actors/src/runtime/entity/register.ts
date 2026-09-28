@@ -417,16 +417,19 @@ export const registerActor = Effect.fnUntraced(function* (
       // A defect aborts the whole batch, and a following batch whose
       // admission was already sent is rolled back unseen with it. A retryable
       // defect restarts the activation; the redelivered commands of a failed
-      // batch then run alone. After a deterministic defect the following
+      // batch then run alone. So does any defect once the batch committed,
+      // while its callers were being answered: the redelivered commands
+      // replay their receipts rather than run again or answer `Defect`. After a deterministic defect the following
       // batch goes back to the head of the mailbox, and the failed batch's
       // commands run one per transaction, so one bad command cannot keep
       // rolling back its neighbours; a lone command answers `Defect`.
       const recover: (
         stopped: Stopped<Waiting>,
       ) => Effect.Effect<void, SqlError.SqlError, Entity.CurrentAddress | Sharding.Sharding> =
-        Effect.fnUntraced(function* ({ batch, orphan, cause }) {
-          if (retryable(cause)) {
-            if (batch.length > 1) for (const { request } of batch) alone.add(request.commandId)
+        Effect.fnUntraced(function* ({ batch, orphan, cause, committed }) {
+          if (committed || retryable(cause)) {
+            if (!committed && batch.length > 1)
+              for (const { request } of batch) alone.add(request.commandId)
 
             return yield* restart([...batch, ...(orphan ?? [])], cause)
           }

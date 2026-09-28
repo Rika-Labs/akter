@@ -186,12 +186,15 @@ export interface Run<W extends Delivery, RN, RP, RC> {
 /**
  * Why a run stopped early: the batch that failed, a following batch whose
  * admission was already sent and is rolled back unseen with it, and the cause.
- * Batches before them committed and were answered.
+ * Batches before them committed and were answered. `committed` says the batch
+ * itself ended, committed or cleanly rolled back, and failed while its callers
+ * were being answered, so its commands must resolve through their receipts.
  */
 export interface Stopped<W extends Delivery> {
   readonly batch: ReadonlyArray<W>
   readonly orphan: ReadonlyArray<W> | undefined
   readonly cause: Cause.Cause<unknown>
+  readonly committed: boolean
 }
 
 class RolledBack {
@@ -596,6 +599,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       cache.state = plan.state
     }
 
+    answering = true
+
     if (plan.wake) yield* (yield* OutboxRuntime).wake
 
     yield* run.committed(batch, {
@@ -603,11 +608,15 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       broadcasts: plan.broadcasts,
       head: plan.head,
     })
+
+    answering = false
   })
 
-  // The batch being run, and a following one whose admission is on the wire.
+  // The batch being run, a following one whose admission is on the wire, and
+  // whether the current batch committed and its callers are being answered.
   let current: ReadonlyArray<W> = run.first
   let orphan: ReadonlyArray<W> | undefined
+  let answering = false
 
   const locate = (batch: ReadonlyArray<W>, following: ReadonlyArray<W> | undefined) => {
     current = batch
@@ -838,5 +847,5 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
   if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.failCause(exit.cause)
 
-  return { batch: current, orphan, cause: exit.cause } satisfies Stopped<W>
+  return { batch: current, orphan, cause: exit.cause, committed: answering } satisfies Stopped<W>
 })
