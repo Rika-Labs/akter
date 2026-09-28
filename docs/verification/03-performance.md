@@ -19,18 +19,20 @@ No estimate becomes a product claim without a reproducible command, fixture, raw
 
 Measured values come from one 4-vCPU cloud VM with Postgres 18.6 on loopback TCP, not Neki, and from one runtime process ([results](#measured-results-2026-09-25)). They test whether this runtime reaches each number on that machine and say nothing about production capacity.
 
-| Quantity                         | Hypothesis                                                        | Measured (one VM, local Postgres 18)                                                                                                   | Status                                                                                                                                         |
-| -------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Durable turns per shard          | 5,000–20,000/second; plan with 10,000                             | At most about 450 turns/second in total. The benchmark process saturates about one core while Postgres uses under half of one          | Untested: one runtime process cannot load the database, so several runners are needed                                                          |
-| Usable data per shard            | 15 TB, below the 32 TB PostgreSQL relation limit                  | Not measured                                                                                                                           | Untested                                                                                                                                       |
-| Stored actor overhead            | 175–250 bytes plus state                                          | Not measured                                                                                                                           | Untested                                                                                                                                       |
-| In-region warm write p50 on Neki | 3–6 ms with two round trips                                       | 3.1 ms p50 and 6.7 ms p99 on local Postgres, with 14 round trips                                                                       | Neki untested. Two round trips missed: the turn issues 14. Latency is near the bottom of the range only because loopback round trips are cheap |
-| Hot-actor throughput             | 150–400 commands/second unbatched; 2,000–10,000 with turn batches | 290/second with one caller; with turn batches, 612–686/second with 8 callers and 911–1,275/second with 64 ([P5](#turn-batches-p5-160)) | Unbatched met, near the top of the range. Batched untested: turn batches are not implemented                                                   |
-| Wake latency                     | 5–15 ms                                                           | First turn after hibernation: 3.7 ms p50, 9.0 ms p99. First turn of a never-seen actor: 4.0 ms p50, 9.4 ms p99                         | Met on local Postgres; p50 is below the range                                                                                                  |
+| Quantity                         | Hypothesis                                                        | Measured (one VM, local Postgres 18)                                                                                                                            | Status                                                                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Durable turns per shard          | 5,000–20,000/second; plan with 10,000                             | At most about 450 turns/second in total. The benchmark process saturates about one core while Postgres uses under half of one                                   | Untested: one runtime process cannot load the database, so several runners are needed                                                          |
+| Usable data per shard            | 15 TB, below the 32 TB PostgreSQL relation limit                  | Not measured                                                                                                                                                    | Untested                                                                                                                                       |
+| Stored actor overhead            | 175–250 bytes plus state                                          | About 400 bytes per actor (395–416 across runs) with a 10-byte state: generation and state rows with their primary-key indexes ([M1 close](#m1-close-cloud-vm)) | Missed: both rows and both primary keys repeat the four ownership columns, and the hypothesis left out indexes                                 |
+| In-region warm write p50 on Neki | 3–6 ms with two round trips                                       | 3.1 ms p50 and 6.7 ms p99 on local Postgres, with 14 round trips                                                                                                | Neki untested. Two round trips missed: the turn issues 14. Latency is near the bottom of the range only because loopback round trips are cheap |
+| Hot-actor throughput             | 150–400 commands/second unbatched; 2,000–10,000 with turn batches | 290/second with one caller; with turn batches, 612–686/second with 8 callers and 911–1,275/second with 64 ([P5](#turn-batches-p5-160))                          | Unbatched met, near the top of the range. Batched untested: turn batches are not implemented                                                   |
+| Wake latency                     | 5–15 ms                                                           | First turn after hibernation: 3.7 ms p50, 9.0 ms p99. First turn of a never-seen actor: 4.0 ms p50, 9.4 ms p99                                                  | Met on local Postgres; p50 is below the range                                                                                                  |
 
 Split a shard, or stop placing new keys on it, when any of these persists at normal peak: primary CPU above 60–70%; autovacuum not returning dead tuples to baseline between peaks; transaction-ID age approaching `autovacuum_freeze_max_age` faster than vacuum advances it; replica or relay lag rising; heap-only update ratio falling on framework tables.
 
 ## Required scale benchmarks
+
+These run on dedicated hardware in [#66](https://github.com/Rika-Labs/durable-actors/issues/66), which no milestone waits on. The [M1 close](#m1-close-cloud-vm) pass on a cloud VM is not one of them.
 
 - **Flat latency with stored actors:** a fixed 10,000 turns/second on one shard with 10^5, 10^7, and 10^9 stored actors. Turn p99, wake latency, and timer lateness must stay within 10% across the three.
 - **Linear scale-out:** 1, 2, 4, 8, and 16 Neki shards with turns/second per shard held constant, including during an online reshard. Measure the single `cluster_*` shard group separately.
@@ -40,6 +42,103 @@ Split a shard, or stop placing new keys on it, when any of these persists at nor
 - **Workflows** (ADR 0022; M2.7's `workflow` scenario): statements and milliseconds per recorded activity step, resume latency after a runner kill, sleep lateness against the due time, and recovery resume turns per running execution. The emit-path wait lookup must not change the statement count for actor types without waits.
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
 - **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region.
+
+## M1 close (cloud VM)
+
+This is M1.10 (#48): the benchmark suite on `main` at M1 close, run from clean trees on one cloud VM, with repeats in the same session to bound noise. It is not a scale run. The [required scale benchmarks](#required-scale-benchmarks) run on dedicated hardware in [#66](https://github.com/Rika-Labs/durable-actors/issues/66).
+
+**Code.** `main` at `5e7a9ac` plus the harness changes on this branch: the new `stored-overhead` scenario, 10^6 sleeping timers in `outbox` (full profile), and a fix to the `blobs` append cases. No runtime code differs from `main` at `5e7a9ac`. Two harness SHAs ran:
+
+- `ace686a`: `stored-overhead` and the 10^6 timers. Its `blobs/append-65536` and `append-1048576` cases fail (392 and 100 `Error`s) because the scenario appended to one entry past the 8 MiB entry cap that M1.9 (#17) added. Ignore those two cases in the `ace686a` files.
+- `0efbf74`: the same plus the fix, which moves the growing entry to a fresh, already warm actor when it is full. Its append cases run without errors.
+
+**Runs.** One session, one after another:
+
+| File (`benchmarks/results/`)                      | Harness   | Backend       | Scenarios                    |
+| ------------------------------------------------- | --------- | ------------- | ---------------------------- |
+| `2026-09-28-ace686a-m1.10-close-r1-postgres.json` | `ace686a` | Postgres 18.6 | full profile, every scenario |
+| `2026-09-28-ace686a-m1.10-close-r1-pglite.json`   | `ace686a` | PGlite 0.5.8  | full profile, every scenario |
+| `2026-09-28-0efbf74-m1.10-close-r2-postgres.json` | `0efbf74` | Postgres 18.6 | full profile, every scenario |
+| `2026-09-28-0efbf74-m1.10-close-r2-pglite.json`   | `0efbf74` | PGlite 0.5.8  | the scoped scenarios below   |
+| `2026-09-28-0efbf74-m1.10-close-r3-postgres.json` | `0efbf74` | Postgres 18.6 | the scoped scenarios below   |
+
+The scoped scenarios are the ones the M1.10 scope names: `hot-actor`, `cold-activation`, `query-latency`, `receipt-replay`, `state-size`, `many-actors`, `retained-heap`, `stored-overhead`, and `outbox`. So every Postgres case has two full runs and the scoped cases three; every PGlite case has one run and the scoped cases two. A full profile takes about three hours on Postgres and longer on PGlite, which is why the third run and the PGlite repeat cover only the scope.
+
+**Where and how.**
+
+- **Machine:** one Amp orb (E2B cloud VM) with 16 vCPUs (Intel Xeon @ 2.60 GHz, 8 cores with 2 threads each), 31.4 GiB of memory, Linux 6.1.158, no swap. The benchmark client, the actor runtime, and Postgres share its CPUs. This is a different and larger machine than the 4- and 8-vCPU VMs of the sections above, so compare these numbers only with each other.
+- **Runtime:** one Bun 1.4.2 process with the benchmark client and the actor runtime, Effect `4.0.0-rc.116`, one runner except in `multi-runner` and `singleton-failover`.
+- **Postgres:** 18.6 in Docker from the repository's `compose.yaml`, reached over loopback TCP through Docker's port proxy, as `BENCH_DATABASE_URL`. `compose.yaml` now preloads `pg_stat_statements` and gives the container 1 GiB of shared memory, as the harness's own container does. Every other setting is the default: `fsync`, `synchronous_commit`, and `full_page_writes` on, `shared_buffers` 128 MB, `work_mem` 4 MB, `max_connections` 100, `wal_level` replica. Each case gets a fresh database; the runtime pool has 10 connections unless a case says otherwise. Because the harness doesn't own this container, `cpu.server` is not recorded.
+- **Data:** at most 10^5 actors, 10^6 sleeping timers, and 10^6 old receipts and events, uniform key choice, one tenant except `inspection-views` (100 tenants). No replica, no network hop, no Neki router, and no injected failure beyond the scenarios' own runner kills.
+- **One interruption:** the orb was paused for several hours during run 1's `workflows/sleep-50ms` case on Postgres. The process resumed where it stopped; that case's latencies match run 2's, but treat its run-1 throughput as unreliable.
+
+**Reading the tables.** Each cell is the median over the runs, with the lowest and highest run in brackets; with two runs the median is their mean. Statements per operation are the same in every run to within 0.2, so they're given once.
+
+### Scope results
+
+| Case                                                                                  | Runs | Throughput (op/s) |            p50 (ms) |          p99 (ms) | Statements/op |     PGlite p50 (ms) |
+| ------------------------------------------------------------------------------------- | ---: | ----------------: | ------------------: | ----------------: | ------------: | ------------------: |
+| Warm turn, one actor, one caller (`hot-actor/sequential`)                             |    3 |     219 (173–235) |    4.34 (4.09–5.51) |  9.22 (8.91–11.7) |          7.01 |    5.42 (4.76–6.08) |
+| Hot actor, 8 callers (`hot-actor/concurrent-8`)                                       |    3 |     266 (193–294) |    29.3 (25.9–39.9) |  46.7 (46.4–62.9) |          7.01 |    44.2 (39.5–48.9) |
+| Hot actor, 64 callers (`hot-actor/concurrent-64`)                                     |    3 |     287 (210–306) |       221 (204–298) |     281 (275–479) |          7.01 |       354 (318–390) |
+| First turn of a new actor (`cold-activation/new-actor`)                               |    3 |     183 (167–192) |    4.88 (4.82–5.78) |  12.2 (11.9–17.7) |          9.01 |    6.88 (6.23–7.54) |
+| First turn after hibernation (wake) (`cold-activation/after-hibernation`)             |    3 |    156 (70.8–170) |    5.85 (5.66–9.04) |  14.8 (11.7–64.9) |          9.01 |    6.58 (5.86–7.30) |
+| Query, one caller (`query-latency/sequential`)                                        |    3 | 1,738 (445–1,747) | 0.550 (0.532–0.984) | 1.04 (0.804–14.3) |             1 | 0.712 (0.687–0.736) |
+| Receipt replay, one caller (`receipt-replay/sequential`)                              |    3 |     601 (463–826) |    1.53 (1.15–1.98) |  4.08 (1.97–6.52) |             2 |    1.07 (1.04–1.09) |
+| 64 callers over 10^4 warm actors (`many-actors/steady-10000`)                         |    3 |     608 (553–702) |    77.9 (65.9–83.7) |     436 (384–516) |             7 |       367 (353–382) |
+| 64 callers over 10^5 actors (`many-actors/steady-100000`)                             |    3 |     408 (390–571) |      109 (79.9–114) |     719 (488–736) |     8.49–8.55 |             not run |
+| 10^4 warm actors, pool of 50 (`many-actors/steady-10000-pool-50`)                     |    3 |     625 (612–714) |    93.5 (79.2–95.4) |     202 (184–221) |             7 |             not run |
+| Intent delivery beside 10^4 sleeping timers (`outbox/delivery-beside-10000-timers`)   |    3 |  69.0 (61.5–93.9) |    13.4 (9.98–15.3) |  29.8 (17.9–33.9) |   14.13–14.14 |    15.3 (14.3–16.2) |
+| Intent delivery beside 10^5 sleeping timers (`outbox/delivery-beside-100000-timers`)  |    3 |   77.5 (63.7–107) |    12.3 (8.91–15.2) |  19.7 (14.6–29.8) |   14.13–14.14 |    15.6 (15.3–16.0) |
+| Intent delivery beside 10^6 sleeping timers (`outbox/delivery-beside-1000000-timers`) |    3 |  62.9 (58.6–90.8) |    15.2 (9.96–16.1) |  26.5 (23.0–33.7) |         14.13 |    16.1 (15.0–17.1) |
+
+| Case                                               | Runs |            Postgres |              PGlite |
+| -------------------------------------------------- | ---: | ------------------: | ------------------: |
+| KiB per resident activation, 10^4                  |    3 |    22.7 (22.7–22.7) |    22.6 (22.6–22.6) |
+| KiB per resident activation, 10^5                  |    3 |    22.8 (22.8–22.8) |             not run |
+| KiB kept per touched actor after hibernation, 10^5 |    3 | 0.078 (0.078–0.078) |             not run |
+| KiB kept per command after hibernation             |    3 | 0.041 (0.040–0.045) | 0.002 (0.000–0.004) |
+
+- **Statements and round trips per turn.** A warm turn issues 7.01 counted statements, a first turn and a wake 9, a query 1, and a receipt replay 2, in every run. With `BEGIN`, `SAVEPOINT`, and `COMMIT`, which `pg_stat_statements` doesn't count per call, a warm turn is 10 round trips, as expected after #43. ADR 0005's two round trips are not reached on `main`; #130 is the change that targets them.
+- **Hot actor and wake.** One caller gets 219 (173–235) turns per second on one actor, and 8 or 64 callers add about a third, because turns on one actor run one at a time and the process's CPU per turn (2.5–4.2 ms here) sets the pace. Turn batches don't exist, so the batched hypothesis stays untested. The first turn after hibernation takes 5.85 (5.66–9.04) ms at p50.
+- **Due-work scan.** The relay's due-work scan probes the `(bucket, kind, due_at_ms)` index once per bucket, so timers that aren't due cost little: its mean execution time was 1.31 (1.13–1.59), 1.27 (1.03–1.83), 2.35 (1.76–2.84) ms with 10^4, 10^5, and 10^6 timers not yet due, per `pg_stat_statements`. The step to 10^6 adds under a millisecond, and one intent's delivery latency beside the timers didn't change beyond run-to-run noise. Statements per delivery stay at 14.13.
+- **Many stored actors.** With 64 callers, steady state over 10^4 warm actors and over 10^5 actors ran at the throughputs above with no errors. Over 10^5 actors, 74–78% of steady-state turns started a new activation, because first touch takes longer than the 60-second `hibernateAfter`, so most actors had hibernated again. This is a VM-sized preview, not the flat-latency benchmark in #66.
+- **Heap.** A resident activation holds 22.6–22.8 KiB of JavaScript heap, flat from 10^4 to 10^5 actors and across runs and backends, up from 19.5 KiB measured for #59 on `0ba95fc`. After hibernation the runner keeps 0.04–0.08 KiB per touched actor and about 0.04 KiB per command, as before.
+
+### Stored bytes per actor
+
+`stored-overhead` measures the on-disk growth of the runtime tables after n `Probe` actors each took one `Add` turn. `Probe` keeps a 10-byte state value.
+
+| Backend, actors | Runs | Total per actor (B) | `actor_generations` heap / index (B) |   `actor_state` heap / index (B) | Receipt per turn (B) |
+| --------------- | ---: | ------------------: | -----------------------------------: | -------------------------------: | -------------------: |
+| Postgres, 10^4  |    3 |       412 (397–416) |     143 (138–149) / 75.4 (75.4–81.1) | 111 (108–111) / 76.2 (76.2–80.3) |        481 (479–482) |
+| Postgres, 10^5  |    3 |       399 (395–413) |     136 (135–152) / 76.9 (76.7–78.6) | 107 (107–107) / 77.7 (77.0–78.0) |        472 (471–473) |
+| PGlite, 10^4    |    2 |       411 (411–411) |     150 (150–150) / 78.6 (78.6–78.6) | 106 (106–106) / 76.2 (76.2–76.2) |        481 (481–481) |
+
+- **The 175–250 B hypothesis is missed.** One stored actor with a 10-byte state takes about 400 (395–416) bytes across its generation row, its state row, and their primary-key indexes. The heap rows are wider than the hypothesis assumed: both tables repeat the four ownership columns (`routing_key`, `tenant_id`, `actor_type`, `actor_id`) and use `fillfactor = 80`, and each primary key repeats the ownership columns again, so the two indexes alone take about 155 bytes. The hypothesis did not include indexes.
+- **Receipts are extra.** Each command leaves a receipt of about 475 bytes, table and index, until its horizon. An actor that took k commands inside the receipt horizon stores about k × 475 bytes of receipts beside its fixed rows.
+- The numbers agree on PGlite, whose storage format is the same, and between 10^4 and 10^5 actors.
+
+### Everything else
+
+The remaining cases ran in both full Postgres runs and the full PGlite run. Their statements per operation match between runs to within 0.2 (except `workflows`, whose statement count includes a finish poll that runs a varying number of times). Their latencies are in the result files; `bun run bench:compare` lines up two of them. Notes:
+
+- **Run-to-run noise is larger on this VM than on the earlier ones.** Run 2 was slower than run 1 in most cases, by up to about 70% at p50 for sequential cases (for example `blobs/set-4096`, 3.9 against 6.5 ms), with statement counts identical. Nothing changed in the runtime between them, so the spread reflects the shared cloud VM and is the noise floor for comparing any single run from it. Tail percentiles and one-caller throughput move the most.
+- **`capacity` past the limit** still hits the idle-sweep cliff: p99 about 4 seconds once actors outnumber `maxResidentActors` 4 to 1, as #58 recorded.
+- **`retention`** swept 10^6 receipts and 10^6 events in about three minutes (about 11,000 rows per second), and warm turns during the sweep kept their idle tail.
+- **`workflows/sleep-50ms`** resumes about 1 second after the call, bounded by the relay's 1-second poll, as before.
+- **`multi-runner/kill-1-of-3`** logs `Outbox relay pass failed` with a connection error around the kill; every command in the case succeeded.
+
+### Not covered
+
+- **Anything at scale.** Flat latency at 10^5, 10^7, and 10^9 stored actors, linear scale-out across shards and runner processes, the hot-actor ceiling at scale, the 72-hour soak (vacuum, transaction-ID age, WAL bytes per turn, replica and relay lag), failure drills at scale, and remote users are in [#66](https://github.com/Rika-Labs/durable-actors/issues/66), on dedicated hardware.
+- **Neki.** Every number here is single-node Postgres on loopback. Round trips cost more over a network or through a Neki router.
+- **Separate hosts and processes.** The client, the runtime, and Postgres shared one VM; `multi-runner` runs its runners in one process. No number here is a per-process or per-host capacity.
+- **Server CPU.** Not recorded, because Postgres ran from `compose.yaml` rather than the harness's own container.
+- **Turn batches.** Not implemented, so the batched hot-actor hypothesis stays untested.
+- **Durable turns per shard** (5,000–20,000/second). One runtime process reaches about 600–700 turns per second over many actors here. The sections below found that ceiling in the runtime process, not the database; without server CPU this pass can't confirm it. #66 measures it with several processes.
+- **Larger states and indexes.** `stored-overhead` measures a 10-byte state and the runtime's own tables only; owned tables, blobs, events, and outbox rows add their own bytes.
+- **PGlite limits.** PGlite has one in-process connection; its results bound local development and say nothing about lock contention or multi-process behavior.
 
 ## Measured results (2026-09-25)
 
@@ -168,7 +267,7 @@ Two full runs of `hot-actor`, `state-size`, and `blobs` on `feat/30-blobs` at `c
 5. **Memory per activation.** Measured after a forced garbage collection, the heap grew by 150–490 MiB across the three clean runs when 10k actors were first touched, all of them resident. That is roughly 15–50 KiB per activation. At 100k actors the heap grew by 0.8–1.0 GiB, although the 10,000-entity cap held fewer activations than at 10k. So memory grew with commands executed, not only with actors resident, and part of it outlived hibernation.
    - **Cause (#41):** the runtime built a new Cluster entity object for every command, and Sharding caches one RPC client per entity object, by identity, until the runtime closes. Every executed command retained one client, about 11 KiB and 95 objects of JavaScript heap. The runtime now reuses one entity per actor type.
    - **Measured** by the `retained-heap` scenario on Postgres after every activation hibernated: 10.94 KiB and 95 objects retained per touched actor before the fix, at both 10k and 100k actors, and 0.09–0.11 KiB and 1 object after it. Sending 10,000 commands to one actor retained the same amount per command, so the growth was per command, including steady-state load.
-   - **Remaining, in Effect Cluster:** with `MessageStorage.layerNoop`, Cluster's entity manager records every processed request id in a set that only its storage-read loop clears, and that loop doesn't run without storage. That keeps about 94 bytes per command for the runner's lifetime, roughly 1 GiB per 10 million commands. There's no safe workaround from the framework; it needs an upstream fix (#46).
+   - **Cluster's processed request ids (#46):** Cluster's entity manager records every request id it answers in a set that only its storage-read loop clears, and Sharding starts that loop for any message storage except `MessageStorage.noop`. Under `MessageStorage.layerNoop` the set kept every command's id for the runner's lifetime: the heap conformance case measured 1.02 objects per command on Postgres 18.6, and the standalone reproduction in the issue 94 bytes, roughly 1 GiB per 10 million commands. The runtime now provides `directMessages`, which stores nothing, as `noop` does, but is a different instance, so the loop runs every `entityMessagePollInterval` (10 s), reads nothing, and clears the set; retention is bounded by the commands of one poll interval, and the same case measures −0.10 objects and −3 bytes per command. Receipts stay the deduplication record: the set never deduplicated a caller's retry, which is a new Cluster request with the same command id, and a request id delivered again after a poll is admitted and answered from its receipt. Persisting a Cluster message still dies. The set is still unbounded inside Effect for any application that uses `layerNoop` itself; reporting it upstream remains open.
    - **Re-measured (#59):** a resident activation holds about 19.5 KiB and 263 objects of heap, the same at 10k and 100k actors; see "Activation residency and pools across runners" below. That accounts for the 15–50 KiB per activation seen during first touch together with the retained client the fix removed.
 6. **Not bottlenecks here.**
    - **Generation fence:** its statements cost about 0.02 ms of server time per turn.
@@ -274,9 +373,53 @@ On PGlite, which reports no statement counts, reducers ran at 197–202 op/s aga
 
 On PGlite the single connection sets the pace and the client matches raw `fetch` within noise: 264.8 against 262.2 op/s for sequential commands, 827.3 against 904.6 for queries, 288.9 against 318.7 with 64 callers, and 208.2 op/s at 1% loss.
 
+### Served HTTP/2 beside HTTP/1.1 (#122)
+
+`2026-09-28-0359851-m3.2-http2-{postgres,pglite}.json` and the same-SHA repeat `2026-09-28-0359851-m3.2-http2-repeat-{postgres,pglite}.json` run the `http` scenario (`bun run bench --scenario http --label m3.2-http2`, full profile) with Bun 1.4.2 on a 16-vCPU Xeon (2.6 GHz) orb VM that also hosts the Postgres 18.6 container. Each `h2-*` case serves the same `Actor.serve` handler over cleartext HTTP/2 from Bun's `node:http2` server and sends raw requests as streams on one `node:http2` client connection shared by every caller; the HTTP/1.1 cases use `Bun.serve` and `fetch`, which opens a keep-alive connection per concurrent caller. Neither run had errors, and `duplicateTurns` under 1% loss was 0.
+
+| Postgres case (run / repeat)   | HTTP/1.1 op/s | HTTP/1.1 p50 / p95 / p99 ms                  | HTTP/2 op/s   | HTTP/2 p50 / p95 / p99 ms                  | stmts/op |
+| ------------------------------ | ------------- | -------------------------------------------- | ------------- | ------------------------------------------ | -------- |
+| command, sequential            | 196.9 / 194.8 | 4.88 / 6.81 / 10.41, 4.96 / 7.17 / 10.64     | 201.6 / 209.3 | 4.79 / 6.71 / 10.60, 4.64 / 6.28 / 9.92    | 6.01     |
+| query, sequential              | 788.5 / 779.4 | 1.20 / 1.57 / 4.24, 1.22 / 1.58 / 4.42       | 889.6 / 879.7 | 1.07 / 1.39 / 2.24, 1.09 / 1.43 / 2.05     | 1        |
+| command, 64 callers, 1k actors | 550.3 / 579.1 | 106.0 / 213.9 / 278.8, 101.2 / 203.9 / 263.8 | 644.5 / 655.2 | 90.3 / 183.7 / 254.0, 89.9 / 180.9 / 231.7 | 6        |
+| command, ES256 JWT             | 180.3 / 181.9 | 5.31 / 7.57 / 11.03, 5.28 / 7.39 / 11.10     | 197.6 / 192.8 | 4.88 / 6.60 / 10.06, 5.03 / 6.64 / 10.01   | 6.01     |
+| command, largest principal     | 180.0 / 176.5 | 5.40 / 7.28 / 11.34, 5.48 / 7.68 / 11.34     | 210.2 / 195.9 | 4.54 / 6.55 / 9.67, 4.92 / 6.84 / 10.18    | 6.01     |
+| command, 64 KiB payload        | 146.3 / 144.7 | 6.43 / 10.13 / 13.61, 6.50 / 10.13 / 14.60   | 144.1 / 151.8 | 6.55 / 10.42 / 13.99, 6.12 / 10.20 / 13.65 | 6.01     |
+
+- **The protocol adds no database work.** Statements per operation are identical over HTTP/1.1 and HTTP/2 in every case, and equal to the embedded path's, so the transport is all the difference.
+- **HTTP/2 was never slower, and faster with concurrent callers.** With 64 callers over 1,000 actors on one multiplexed connection it ran 13–17% more operations per second than 64 HTTP/1.1 keep-alive connections, with p50 about 90 ms against 101–106 ms, and used 1.9–2.0 ms of CPU per operation against 2.5–2.7 (the benchmark client and the runtime share one process, so that is both sides). Sequential queries ran 13% faster with half the p99 (2.1–2.2 against 4.2–4.4 ms). Sequential commands, which spend most of their time in the database, differ by less than the run-to-run noise.
+- **Credentials and payload.** An ES256 JWT added 0.3–0.4 ms at p50 over `Actor.auth.none` on HTTP/1.1 and 0.1–0.4 ms on HTTP/2. The largest principal (a 1 KiB encoded caller from a custom provider) added 0.5 ms at p50 on HTTP/1.1 in both runs, and between −0.25 and +0.28 ms on HTTP/2. A 64 KiB body added 1.5–1.8 ms at p50 on either protocol.
+- **What this doesn't isolate.** The two paths differ in both the server (Bun's native `Bun.serve` against `node:http2` plus an adapter that buffers each stream into a web `Request`) and the client (`fetch` against `node:http2` streams), so the numbers show that `Actor.serve` works over HTTP/2 and is no slower there, not the cost of HTTP/2 framing alone. The HTTP/2 is cleartext with prior knowledge; browsers speak HTTP/2 only over TLS, and TLS is not measured on either protocol.
+
+On PGlite the single connection sets the pace and both protocols ran within noise of each other at 64 callers (195.8 and 202.8 op/s over HTTP/2 against 196.5 and 203.2 over HTTP/1.1), but HTTP/2's tail was longer: p99 512–514 ms against 333–379 ms, in both runs. Sequential HTTP/2 cases were faster: commands by 7% (190.9 and 190.3 against 177.8 and 178.7 op/s) and queries by 14–19% (751.2 and 739.1 against 631.7 and 647.3). The longer PGlite tail was not investigated further; on Postgres, where connections are pooled, HTTP/2's tail was shorter.
+
 ### Cross-actor subscriptions baseline
 
 [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed. The handler generates the ids, so the payload doesn't grow with n ([`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 33 ms with 256, and 83–86 ms with 1,024. With 16 subscribers it was 8.9 ms in one run and 4.2 ms in the repeat. Statements per turn stay at 8.0–8.2, and runtime CPU per turn tracks the latency, at about 80 µs per staged intent. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
+
+### Effect cancellation and per-actor caps (M2.13)
+
+`2026-09-27-7dd0260-m2.13-run{0..5}-postgres.json` runs `effect-concurrency` on Postgres 18.6, Bun 1.4.2, three in-process runners, on one 8-vCPU host (Xeon Platinum 8559C, 31 GiB) shared by client, runtime, and database. Command: `bun run bench --scenario effect-concurrency --backend postgres --profile full --label m2.13-run<i>`. Run 0 is the warm-up and contributes to none of the figures below: every median, range, and coefficient of variation (CV) is over runs 1–5 only. Statements are counted with `pg_stat_statements`; each is one round trip. Start latency is due-to-start: from the reply to the performing turn, which follows its commit and so the effect becoming due, to the fake provider seeing the attempt. The earlier `959da2f` runs timed start from before the performing command and are superseded; their other figures agree with these within noise.
+
+| Case                         | Metric                                 | Median                   | Range             | CV     |
+| ---------------------------- | -------------------------------------- | ------------------------ | ----------------- | ------ |
+| uncapped                     | effects/s                              | 1,890                    | 1,834–1,932       | 2.2%   |
+| uncapped                     | start p50 / p95 / p99 ms               | 205 / 260 / 283          | p99 268–300       | 2–5%   |
+| uncapped                     | most in flight per actor               | 10                       | 10                | 0%     |
+| uncapped                     | statements per effect                  | 4.46                     | 4.38–4.46         | 0.7%   |
+| `perActor: 2`                | effects/s                              | 523                      | 402–545           | 10.5%  |
+| `perActor: 2`                | start p50 / p95 / p99 ms               | 669 / 1,311 / 1,501      | p99 1,389–2,442   | 11–24% |
+| `perActor: 2`                | most in flight per actor               | 2                        | 2                 | 0%     |
+| `perActor: 2`                | statements per effect                  | 12.35                    | 12.18–12.40       | 0.6%   |
+| hot actor, `perActor: 1`     | hot effects/s                          | 16.3                     | 16.1–16.3         | 0.5%   |
+| hot actor, `perActor: 1`     | cold-actor start p50 / p95 / p99 ms    | 127 / 174 / 204          | p99 168–473       | 5–44%  |
+| cancel, default check (20 s) | cancel-to-interrupt p50 / p95 / p99 ms | 19,195 / 20,050 / 20,080 | p50 19,073–19,619 | 1.0%   |
+| cancel, 1 s check            | cancel-to-interrupt p50 / p95 / p99 ms | 1,095 / 1,436 / 1,476    | p50 1,073–1,953   | 27–34% |
+
+- **The cap holds.** No actor ever had more attempts in flight than its cap in any run, across three runners, and no case recorded an error.
+- **A capped claim costs about three times the statements of an uncapped one.** 12.3 against 4.5 statements per effect, and about a quarter of the throughput. The cap itself is not the limit here (2 in flight × 20 calls/s per actor would allow far more): each capped claim takes a transaction and an advisory lock per `(actor, tag)` group, so claiming is per group rather than one batch. Claims that group many actors per transaction are the obvious follow-up if capped throughput matters.
+- **A hot actor does not starve cold ones.** With one actor holding 1,000 queued effects at `perActor: 1`, it ran at 16 effects/s (50 ms provider, so near its 20/s ceiling) while the other 1,000 actors' effects started at p50 127 ms after becoming due.
+- **Cancel latency is the cancel check.** A cancellation committed on a runner without executors reaches the running attempt at the next renewal check: about 20 s at the default (lease 60 s / 3) and about 1 s at `cancelCheck: "1 second"`. One of the five 1-second runs was slow (p50 1,953 ms, statements per operation 22.7 against 15.1–16.9) and drives its CV to about 30%; the other four had p50 1,073–1,197 ms. The default-to-1-second difference (about 17×) is far beyond twice either CV. Differences below twice the CV in these tables, such as start-latency tails, are noise on a shared host.
 
 ### Query read path (#77)
 
@@ -342,6 +485,22 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 - **`turn-batches/merged-1024`:** each round holds one turn open, queues 1,024 calls of a commutative reducer behind it, and releases it. A round costs about 3,084 statements and 3 round trips: the held turn's commit carries the merged batch's admission, then one commit writes one state row and 1,024 receipts. The case reports them per call (3.0086 statements and 0.0029 round trips), because a round lasts most of a second and background work such as relay polls lands in it a varying number of times: per round, two runs of one commit differed by 0.5 statements, past the gate's tolerance. Almost all of the statements are the 3 per call outside the turn (command id minting, the pre-delivery receipt read, and the expiry recheck); the merged turn itself is about 9. Unmerged, the same 1,025 calls cost about 7,175 statements and 2,050 round trips. A round takes about 0.8 s p50 on this VM, dominated by the 1,024 calls' client-side work (1.1 s of client CPU per round).
 - Every other case is within the gate's tolerance.
 
+### Orders example (CR.8, #95)
+
+`2026-09-28-ed00421-cr.8-orders-{postgres,pglite}.json` runs `bun run bench --scenario orders --label cr.8-orders` (full profile, one run per backend) with Bun 1.4.2 and Postgres 18.6 on one 16-vCPU Xeon VM shared by the client, the runtime, and Postgres. The scenario calls `examples/orders`' own `Order.Place` with two lines in two packages against an in-process fake provider, on a fresh order id each time. Each order is six turns on three new actors: `Place`, two shipment `Open`s, `Charged`, and two `Release`s, plus one executor call. The relay's work overlaps the next order in every case, so statements per operation count the whole order, not one turn.
+
+| Postgres case         | op/s  | p50 / p95 / p99 ms   | stmts/op | client CPU/op ms |
+| --------------------- | ----- | -------------------- | -------- | ---------------- |
+| `place`               | 58.8  | 15.8 / 26.6 / 36.3   | 79.9     | 26.2             |
+| `place-to-paid`       | 41.5  | 21.5 / 38.7 / 52.1   | 80.0     | 25.8             |
+| `place-concurrent-16` | 214.8 | 60.5 / 176.9 / 240.4 | 23.8     | 6.1              |
+
+- **The effect round trip adds about 6 ms at p50.** `place-to-paid` waits for the executor and the `Charged` turn, which the relay runs after `Place` commits; 21.5 ms against 15.8 ms for the acknowledged `Place`.
+- **An order is about 80 statements on six turns.** Every order activates three actors it has never seen, so each turn pays a cold activation (generation insert, state read) on top of its receipt and state writes. `place-concurrent-16` counts 23.8 statements per order, most likely because the relay falls behind 16 callers and much of the orders' shipment and charge work is still queued when the window closes; this run did not confirm that.
+- **PGlite's single connection sets its pace:** 18.3 op/s for `place` (p50 51.6 ms), 15.6 for `place-to-paid`, and 45.5 with 16 callers.
+
+The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault point, the time from the SIGKILL until the order was paid on the replacement runner: under 1 s when nothing was claimed (`beforeHandler:Place`, `beforeCommit:Place`, and both `beforeOutboxDelete` points), and about 3.1 s when the killed runner held a claim (`afterCommit:Place`, `afterClaim`, and both executor points), bounded by the drill's 3-second relay and executor leases. Every run applied one charge per order; at `afterExecute:Charge` the provider saw two calls for the key.
+
 ### Failure drills (T7)
 
 `TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/133-m2-exit` at `801336e`; each run prints one `DRILL` line. Postgres 18.6 in Docker, Bun 1.4.2, one 8-vCPU Xeon 8559C machine shared by the five runner processes and Postgres. Workload: three processes, then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
@@ -360,6 +519,6 @@ Recovery runs from the kill to the commit of the slowest command the surviving r
 These are runtime changes, so each belongs in its own pull request:
 
 - Compute the payload hash and the database time once per command, instead of twice and three times. That removes three to four round trips from every command (#40, done: 14 to 10 round trips per warm turn).
-- Report Cluster's never-cleared processed-request set under `MessageStorage.layerNoop` upstream (#46).
+- Report Cluster's never-cleared processed-request set under `MessageStorage.layerNoop` upstream (#46 bounds it in the runtime; the upstream report still needs a go-ahead).
 - Rerun `many-actors` after #41 and measure heap per resident activation before making any claim above 10k actors per runner (#59, done: about 19.5 KiB per resident activation; the default stays 10,000).
 - Add a measured stored-actor overhead case, using relation sizes after N actors, and several-runner cases before testing the per-shard turn hypothesis.

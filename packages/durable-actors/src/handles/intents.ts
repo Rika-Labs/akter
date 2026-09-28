@@ -34,19 +34,36 @@ export interface StagedEffect {
   readonly effect: string
   readonly payload: string
   readonly caller: Caller
+  readonly due: Due | undefined
+  readonly key: string | undefined
 }
 
 /**
  * Everything one turn asked the outbox to do. `replaced` lists keys whose
- * committed rows the turn deletes before inserting `intents`.
+ * committed rows the turn deletes before inserting `intents`;
+ * `cancelledEffects` lists effect keys whose committed effects it cancels
+ * before inserting `effects`.
  */
 export interface StagedOutbox {
   readonly intents: ReadonlyArray<StagedIntent>
   readonly replaced: ReadonlyArray<string>
   readonly effects: ReadonlyArray<StagedEffect>
+  readonly cancelledEffects: ReadonlyArray<string>
 }
 
-export const emptyOutbox: StagedOutbox = { intents: [], replaced: [], effects: [] }
+export const emptyOutbox: StagedOutbox = {
+  intents: [],
+  replaced: [],
+  effects: [],
+  cancelledEffects: [],
+}
+
+/** Effect keys live in the actor's key namespace under this prefix, which intent keys may not use. */
+export const EFFECT_KEY_PREFIX = "$effect:"
+
+const checkKey = (what: string, key: string) => {
+  if (key.length === 0 || key.length > 200) throw new Error(`${what} must be 1-200 characters`)
+}
 
 /**
  * Marks a command turn. Only the runtime provides it, and `X.toLayer` removes
@@ -71,7 +88,8 @@ interface Staging {
   open: boolean
   intents: Array<StagedIntent>
   readonly replaced: Set<string>
-  readonly effects: Array<StagedEffect>
+  effects: Array<StagedEffect>
+  readonly cancelledEffects: Set<string>
 }
 
 // Keyed by the provided marker, so a hand-built `InTurn` value stages nothing.
@@ -107,6 +125,7 @@ export const openOutbox = ({
     intents: [],
     replaced: new Set(),
     effects: [],
+    cancelledEffects: new Set(),
   }
 
   stagings.set(marker, staging)
@@ -114,13 +133,16 @@ export const openOutbox = ({
   return {
     marker,
     /** Stages an effect; the caller checks that its turn is still running. */
-    perform: (effect: Pick<StagedEffect, "effect" | "payload">) => {
+    perform: (effect: Pick<StagedEffect, "effect" | "payload" | "due" | "key">) => {
+      if (effect.key !== undefined) cancelEffectKey(staging, effect.key)
       // Routes deliver to the performing actor as the effect, on the turn's principal.
       staging.effects.push({
         ...effect,
         caller: System.make({ source: "effect", ref: sender, onBehalfOf }),
       })
     },
+    /** Stages the cancellation of the effect with `key`; the caller checks the turn. */
+    cancelEffect: (key: string) => cancelEffectKey(staging, key),
     /** The proof the next `turn.mint` call of this turn carries. */
     nextMint: (): MintProof => ({ commandId, ordinal: staging.minted.size }),
     /** Records a minted id; its creating intent then carries `proof`. */
@@ -175,7 +197,12 @@ export const openOutbox = ({
     close: (): StagedOutbox => {
       staging.open = false
 
-      return { intents: staging.intents, replaced: [...staging.replaced], effects: staging.effects }
+      return {
+        intents: staging.intents,
+        replaced: [...staging.replaced],
+        effects: staging.effects,
+        cancelledEffects: [...staging.cancelledEffects],
+      }
     },
   }
 }
@@ -183,6 +210,18 @@ export const openOutbox = ({
 const IntentSettings = Context.Reference<IntentOptions>("durable-actors/IntentSettings", {
   defaultValue: () => ({}),
 })
+
+/** Checks an effect key; staged and stored effect keys are prefixed. */
+export const effectKey = (key: string) => {
+  checkKey("An effect key", key)
+
+  return `${EFFECT_KEY_PREFIX}${key}`
+}
+
+const cancelEffectKey = (staging: Staging, key: string) => {
+  staging.effects = staging.effects.filter((effect) => effect.key !== key)
+  staging.cancelledEffects.add(key)
+}
 
 const replaceKey = (staging: Staging, key: string) => {
   staging.intents = staging.intents.filter((intent) => intent.key !== key)
@@ -257,13 +296,18 @@ export const Intent = {
    * same key, in this turn or a later one, replaces it while it is pending.
    */
   key: (key: string) => {
-    if (key.length === 0 || key.length > 200) throw new Error("Intent.key must be 1-200 characters")
+    checkKey("Intent.key", key)
+
+    if (key.startsWith(EFFECT_KEY_PREFIX))
+      throw new Error(`Intent key "${key}" is reserved for effects`)
 
     return configure({ key })
   },
   /** Removes the sending actor's pending intent with `key` when this turn commits. */
   cancel: (key: string): Effect.Effect<void, never, InTurn> =>
     Effect.gen(function* () {
+      if (key.startsWith(EFFECT_KEY_PREFIX))
+        return yield* Effect.die(new Error(`Intent key "${key}" is reserved for effects`))
       const { staging } = yield* currentStaging()
       replaceKey(staging, key)
     }),

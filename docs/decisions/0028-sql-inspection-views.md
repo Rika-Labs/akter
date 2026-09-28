@@ -1,6 +1,6 @@
 # ADR 0028: SQL inspection views over runtime tables
 
-**Status:** accepted (2026-09-28, Dallen, with the recommended answer to every open question; proposed 2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements it; the [decided questions](#decided-questions) record the answers.
+**Status:** accepted (2026-09-28, Dallen, with the recommended answer to every open question; proposed 2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements it; the [decided questions](#decided-questions) record the answers. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) corrects §2's wording about `scheduled_at_ms`.
 
 **Responsibility:** define a stable, documented, read-only SQL surface for inspecting committed runtime state, which rows and columns it exposes, how it is tenant scoped, and which privileges read it.
 

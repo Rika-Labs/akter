@@ -5,6 +5,7 @@ import {
   type Broadcast,
   type BusinessResult,
   type ConnectionLister,
+  type EmittedEvent,
   Outcome,
   type RegisteredCommand,
   type Request,
@@ -13,12 +14,12 @@ import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
-import { eventsStatements, notifyEvents } from "../events/append.ts"
+import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
-import { CallerJson, OutboxRuntime, outboxStatements } from "./outbox.ts"
+import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
   asSqlConnection,
   isInterrupted,
@@ -50,6 +51,14 @@ export const emptyActivationCache = (): ActivationCache => ({
   generation: undefined,
   state: undefined,
 })
+
+/** The events a turn committed: sequences `after + 1` onward, stamped `emittedAtMs`. */
+export interface CommittedEvents {
+  readonly after: string
+  readonly events: ReadonlyArray<EmittedEvent>
+  readonly commandId: string
+  readonly emittedAtMs: number
+}
 
 interface Admission {
   readonly now: string
@@ -135,11 +144,20 @@ interface Plan {
   readonly settled: ReadonlyArray<Settled>
   readonly generation: string
   readonly state: ReadonlyMap<string, string> | undefined
+  /** A workflow waits on an emitted class, so the relay should wake after commit. */
   readonly wake: boolean
   /** Broadcasts the batch's committed successes publish to the actor's connections. */
   readonly broadcasts: ReadonlyArray<Broadcast>
   /** The actor's event sequence once this batch commits. */
   readonly head: string
+  /**
+   * Each command's committed events, in delivery order. Their stamps and the
+   * outbox replies are filled in as the commit group replies, so read them
+   * only after it has.
+   */
+  readonly committed: ReadonlyArray<Omit<CommittedEvents, "emittedAtMs">>
+  readonly emitted: ReadonlyArray<{ readonly emittedAtMs: number }>
+  readonly outbox: ReadonlyArray<OutboxReplies>
 }
 
 /** One `actor_receipts` row a batch commits. */
@@ -169,6 +187,8 @@ export interface Done {
   readonly broadcasts: ReadonlyArray<Broadcast>
   /** The actor's event sequence once the batch commits. */
   readonly head: string
+  /** Each command's committed events, stamped, in delivery order. */
+  readonly committed: ReadonlyArray<CommittedEvents>
 }
 
 /**
@@ -182,6 +202,10 @@ export interface Run<W extends Delivery, RN, RP, RC> {
   readonly next: Effect.Effect<ReadonlyArray<W> | undefined, never, RN>
   readonly prepare: Effect.Effect<void, never, RP>
   readonly committed: (batch: ReadonlyArray<W>, done: Done) => Effect.Effect<void, never, RC>
+  /** Wraps one batch's handlers, commit, and answers in that batch's own span and logs. */
+  readonly observe: (
+    batch: ReadonlyArray<W>,
+  ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
 /**
@@ -362,6 +386,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       // Broadcasts of committed successes, and how many events the batch appends.
       const broadcasts: Array<Broadcast> = []
       let events = 0
+      const committed: Array<Omit<CommittedEvents, "emittedAtMs">> = []
+      const emitted: Array<{ readonly emittedAtMs: number }> = []
+      const outboxes: Array<OutboxReplies> = []
 
       // Resolves one command's receipt and admission checks; undefined when
       // the command is answered without running, with its payload hash when
@@ -512,8 +539,16 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           removed.delete(key)
         }
 
-        if (result.events.length > 0)
-          staged.push(...(yield* eventsStatements(request, routingKey, result.events)))
+        if (result.events.length > 0) {
+          const appended = yield* eventsStatement(request, routingKey, result.events)
+          staged.push(appended.statement)
+          committed.push({
+            after: String(BigInt(first.head) + BigInt(events)),
+            events: result.events,
+            commandId: request.commandId,
+          })
+          emitted.push(appended.stamp)
+        }
 
         events += result.events.length
 
@@ -542,8 +577,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         )
 
         staged.push(...outbox.statements)
-
-        if (outbox.dueNow) wake = true
+        outboxes.push(outbox.replies)
 
         const outcome = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
 
@@ -579,6 +613,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           wake: false,
           broadcasts: [],
           head: first.head,
+          committed: [],
+          emitted: [],
+          outbox: [],
         } satisfies Plan
 
       const writes: Array<Statement> = []
@@ -623,6 +660,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         wake,
         broadcasts,
         head: String(BigInt(first.head) + BigInt(events)),
+        committed,
+        emitted,
+        outbox: outboxes,
       } satisfies Plan
     })
 
@@ -652,12 +692,21 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
     answering = true
 
-    if (plan.wake) yield* (yield* OutboxRuntime).wake
+    if (plan.wake || plan.outbox.some((replies) => replies.wake))
+      yield* (yield* OutboxRuntime).wake
+
+    if (plan.outbox.some((replies) => replies.cancelled)) yield* (yield* OutboxRuntime).cancelled
 
     yield* run.committed(batch, {
       settled: plan.settled,
       broadcasts: plan.broadcasts,
       head: plan.head,
+      committed: plan.committed.map(
+        (entry, index): CommittedEvents => ({
+          ...entry,
+          emittedAtMs: plan.emitted[index]!.emittedAtMs,
+        }),
+      ),
     })
 
     answering = false
@@ -756,59 +805,65 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           while (true) {
             locate(batch, undefined)
 
+            const current = batch
+
             const step = yield* Effect.gen(function* () {
-              yield* replies(admitted)
-              const plan = yield* admission.resume()
-              const following = yield* run.next
-              const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
-              let tag: string | undefined
+              const stepped = yield* Effect.gen(function* () {
+                yield* replies(admitted)
+                const plan = yield* admission.resume()
+                const following = yield* run.next
+                const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
+                let tag: string | undefined
 
-              const commit: ReadonlyArray<Statement> = [
-                ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
-                Effect.map(control(ending), (result) => {
-                  tag = result.command
+                const commit: ReadonlyArray<Statement> = [
+                  ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
+                  Effect.map(control(ending), (result) => {
+                    tag = result.command
 
-                  if (following === undefined) open = false
-                }),
-              ]
+                    if (following === undefined) open = false
+                  }),
+                ]
 
-              if (following === undefined) {
-                yield* pipeline(commit)
+                if (following === undefined) {
+                  yield* pipeline(commit)
 
-                return { plan, ending, tag, next: undefined }
-              }
+                  return { plan, ending, tag, next: undefined }
+                }
 
-              locate(batch, following)
+                locate(batch, following)
 
-              // Built as if this batch commits; its fence proves it did.
-              const upcoming = admit(
-                following,
-                plan.writes === undefined
-                  ? view()
-                  : { generation: plan.generation, state: plan.state },
-                session,
-                [begin],
-              )
+                // Built as if this batch commits; its fence proves it did.
+                const upcoming = admit(
+                  following,
+                  plan.writes === undefined
+                    ? view()
+                    : { generation: plan.generation, state: plan.state },
+                  session,
+                  [begin],
+                )
 
-              const flight = yield* queue({ scope, group: [...commit, ...upcoming.group] })
-              yield* replies(flight.slice(0, commit.length))
+                const flight = yield* queue({ scope, group: [...commit, ...upcoming.group] })
+                yield* replies(flight.slice(0, commit.length))
 
-              return {
-                plan,
-                ending,
-                tag,
-                next: {
-                  batch: following,
-                  admission: upcoming,
-                  admitted: flight.slice(commit.length),
-                },
-              }
-            }).pipe(inTurn, bounded)
+                return {
+                  plan,
+                  ending,
+                  tag,
+                  next: {
+                    batch: following,
+                    admission: upcoming,
+                    admitted: flight.slice(commit.length),
+                  },
+                }
+              }).pipe(inTurn, bounded)
 
-            if (step.ending === "COMMIT" && step.tag !== "COMMIT")
-              return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
+              if (stepped.ending === "COMMIT" && stepped.tag !== "COMMIT")
+                return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
 
-            yield* finish(batch, step.plan)
+              yield* finish(current, stepped.plan)
+
+              return stepped
+            }).pipe(run.observe(current))
 
             if (step.next === undefined) return
 
@@ -848,38 +903,41 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         let batch: ReadonlyArray<W> | undefined = run.first
 
         while (batch !== undefined) {
-          locate(batch, undefined)
+          const admitting: ReadonlyArray<W> = batch
+          locate(admitting, undefined)
           yield* run.prepare
 
           const control = (text: string) => Effect.asVoid(sql.unsafe(text))
           const session = { send: sequential, control, defer: control, withdraw: () => false }
-          const admitting = batch
 
-          const plan = yield* bounded(
-            sql
-              .withTransaction(
-                Effect.gen(function* () {
-                  const admission = admit(admitting, view(), session, [])
-                  yield* sequential(admission.group)
-                  const decided = yield* admission.resume()
+          yield* Effect.gen(function* () {
+            const plan: Plan = yield* bounded(
+              sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    const admission = admit(admitting, view(), session, [])
+                    yield* sequential(admission.group)
+                    const decided = yield* admission.resume()
 
-                  if (decided.writes === undefined)
-                    return yield* Effect.fail(new RolledBack(decided))
+                    if (decided.writes === undefined)
+                      return yield* Effect.fail(new RolledBack(decided))
 
-                  yield* sequential(decided.writes)
+                    yield* sequential(decided.writes)
 
-                  return decided
-                }),
-              )
-              .pipe(
-                Effect.catchIf(
-                  (error) => error instanceof RolledBack,
-                  (rolled) => Effect.succeed(rolled.plan),
+                    return decided
+                  }),
+                )
+                .pipe(
+                  Effect.catchIf(
+                    (error) => error instanceof RolledBack,
+                    (rolled) => Effect.succeed(rolled.plan),
+                  ),
                 ),
-              ),
-          )
+            )
 
-          yield* finish(batch, plan)
+            yield* finish(admitting, plan)
+          }).pipe(run.observe(admitting))
+
           batch = yield* run.next
         }
       })

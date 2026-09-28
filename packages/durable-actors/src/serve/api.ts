@@ -6,8 +6,14 @@ import {
   HttpApiSchema,
   OpenApi,
 } from "effect/unstable/httpapi"
-import { declaredStatus, type ServedDefinition, type ServedMember } from "../actor/served.ts"
-import type { AuthProvider } from "./auth.ts"
+import {
+  declaredStatus,
+  type ServedConnection,
+  type ServedDefinition,
+  type ServedMember,
+} from "../actor/served.ts"
+import { type AuthProvider, Credential } from "./auth.ts"
+import { SUBPROTOCOL } from "./frames.ts"
 import { Defect, envelope, type WireTag } from "./wire.ts"
 
 const COMMAND_ERRORS = {
@@ -42,7 +48,30 @@ const errorSchemas = (errors: Readonly<Record<number, ReadonlyArray<WireTag>>>, 
     }),
   )
 
+/** A refused upgrade; once upgraded, a session ends with an `end` message instead. */
+const UPGRADE_ERRORS = {
+  400: ["InvalidInput"],
+  401: ["Unauthorized"],
+  403: ["InvalidInput"],
+  404: ["InvalidInput"],
+  413: ["InvalidInput"],
+  503: ["RunnerAtCapacity"],
+} as const
+
+/** A refused feed; a feed that ends later sends an `end` message instead. */
+const FEED_ERRORS = {
+  400: ["InvalidInput"],
+  401: ["Unauthorized"],
+  403: ["Unauthorized", "InvalidInput"],
+  404: ["NotCreated", "InvalidInput"],
+  503: ["ActorUnavailable", "RunnerAtCapacity"],
+} as const
+
 const commandErrors = errorSchemas(COMMAND_ERRORS, "Command")
+
+const feedErrors = errorSchemas(FEED_ERRORS, "Feed")
+
+const upgradeErrors = errorSchemas(UPGRADE_ERRORS, "Upgrade")
 
 const queryErrors = errorSchemas(QUERY_ERRORS, "Query")
 
@@ -65,7 +94,7 @@ const IdempotencyKey = Schema.String.annotate({
 /** The path of one served member, with `:id` for keyed and minted actors. */
 export interface ServedRoute {
   readonly definition: ServedDefinition
-  readonly member: ServedMember
+  readonly member: { readonly tag: string }
 }
 
 export const memberPath = ({ definition, member }: ServedRoute) =>
@@ -91,6 +120,91 @@ const endpoint = (basePath: string, definition: ServedDefinition, member: Served
     error: [...declared, ...(isQuery ? queryErrors : commandErrors), defect],
   })
 }
+
+const frameSchemaName = (
+  definition: ServedDefinition,
+  connection: ServedConnection,
+  part: string,
+) => `${definition.name}.${connection.tag}.${part}`
+
+/** The schemas a connection's messages carry: `hello` params, and frames each way. */
+const frameParts = (connection: ServedConnection) => ({
+  params: connection.params,
+  server: connection.server,
+  client: connection.client,
+})
+
+// OpenAPI can't describe a socket's message flow, so a connection is an upgrade
+// operation that names its frame schemas; the envelope is the served protocol's.
+const connectionEndpoint = (
+  basePath: string,
+  definition: ServedDefinition,
+  connection: ServedConnection,
+) =>
+  HttpApiEndpoint.get(
+    connection.tag,
+    `${basePath}${memberPath({ definition, member: connection })}` as `/${string}`,
+    {
+      params: definition.key === "singleton" ? undefined : { id: Schema.String },
+      error: [...upgradeErrors, defect],
+    },
+  ).annotate(OpenApi.Transform, (operation) => {
+    const { 204: _, ...refusals }: { readonly [status: string]: Schema.Json } =
+      operation.responses ?? {}
+
+    return {
+      ...operation,
+      responses: {
+        101: { description: `WebSocket upgrade with subprotocol ${SUBPROTOCOL}` },
+        ...refusals,
+      },
+      "x-durable-transport": "websocket",
+      "x-durable-subprotocol": SUBPROTOCOL,
+      "x-durable-frames": Object.fromEntries(
+        Object.keys(frameParts(connection)).map((part) => [
+          part,
+          { $ref: `#/components/schemas/${frameSchemaName(definition, connection, part)}` },
+        ]),
+      ),
+    }
+  })
+
+// An event feed is served over SSE: one message per event, its cursor as the `id`.
+const feedEndpoint = (basePath: string, definition: ServedDefinition) =>
+  HttpApiEndpoint.get(
+    "events",
+    `${basePath}${memberPath({ definition, member: { tag: "events" } })}` as `/${string}`,
+    {
+      params: definition.key === "singleton" ? undefined : { id: Schema.String },
+      query: {
+        event: Schema.Array(Schema.Literals(definition.feeds)),
+        after: Schema.optionalKey(Schema.String),
+      },
+      error: [...feedErrors, defect],
+    },
+  ).annotate(OpenApi.Transform, (operation) => {
+    const { 204: _, ...refusals }: { readonly [status: string]: Schema.Json } =
+      operation.responses ?? {}
+
+    return {
+      ...operation,
+      responses: {
+        200: {
+          description:
+            "Server-sent events: `id` is the event cursor, `event` its tag; `Last-Event-ID` resumes after it",
+          content: { "text/event-stream": { schema: { type: "string" } } },
+        },
+        ...refusals,
+        410: { description: "RetentionGap: events after the cursor were pruned" },
+      },
+      "x-durable-transport": "sse",
+    }
+  })
+
+const frameSchemas = (definition: ServedDefinition, connection: ServedConnection) =>
+  Object.entries(frameParts(connection)).map(([part, schema]) =>
+    schema.annotate({ identifier: frameSchemaName(definition, connection, part) }),
+  )
 
 /** Protocol routes live in their own group. */
 const PROTOCOL_GROUP = "durable"
@@ -123,23 +237,31 @@ export const build = ({ definitions, basePath }: ServedRoutes) => {
   ]
 
   for (const definition of definitions) {
-    const endpoints = definition.members.map((member) => endpoint(basePath, definition, member))
+    const endpoints = [
+      ...definition.members.map((member) => endpoint(basePath, definition, member)),
+      ...definition.connections.map((connection) =>
+        connectionEndpoint(basePath, definition, connection),
+      ),
+      ...(definition.feeds.length > 0 ? [feedEndpoint(basePath, definition)] : []),
+    ]
 
     if (endpoints.length > 0)
       groups.push(HttpApiGroup.make(definition.name).add(endpoints[0]!, ...endpoints.slice(1)))
   }
 
-  const api: HttpApi.HttpApi<string, HttpApiGroup.Constraint> = HttpApi.make("durable-actors").add(
-    groups[0]!,
-    ...groups.slice(1),
-  )
+  const api: HttpApi.HttpApi<string, HttpApiGroup.Constraint> = HttpApi.make("durable-actors")
+    .add(groups[0]!, ...groups.slice(1))
+    .annotate(
+      HttpApi.AdditionalSchemas,
+      definitions.flatMap((definition) =>
+        definition.connections.flatMap((connection) => frameSchemas(definition, connection)),
+      ),
+    )
 
   return api
 }
 
 export type ServedApi = ReturnType<typeof build>
-
-const SECURITY_NAME = "bearer"
 
 export interface DocumentOptions {
   readonly api: ServedApi
@@ -148,10 +270,29 @@ export interface DocumentOptions {
   readonly version: string
 }
 
-/** The OpenAPI 3.1 document of `api`, with the provider's security on every authenticated operation. */
+/** The OpenAPI security scheme a credential is documented as; a provider has at most one per scheme. */
+export const schemeName = Credential.$match({
+  Bearer: () => "bearer",
+  Jwt: () => "bearer",
+  Cookie: () => "cookie",
+})
+
+const securityScheme = Credential.$match({
+  Bearer: () => ({ type: "http", scheme: "bearer" }),
+  Jwt: () => ({ type: "http", scheme: "bearer", bearerFormat: "JWT" }),
+  Cookie: ({ name }) => ({ type: "apiKey", in: "cookie", name }),
+})
+
+/**
+ * The OpenAPI 3.1 document of `api`. Every authenticated operation lists the
+ * provider's credentials as alternatives, since any one of them authenticates.
+ */
 export const document = ({ api, auth, title, version }: DocumentOptions) => {
   const spec = OpenApi.fromApi(api)
-  const secured = auth.scheme !== "none"
+
+  const security = auth.credentials.map((credential) => ({
+    [schemeName(credential)]: [],
+  }))
 
   const paths = Object.fromEntries(
     Object.entries(spec.paths).map(([path, item]) => [
@@ -163,10 +304,9 @@ export const document = ({ api, auth, title, version }: DocumentOptions) => {
             ? operation
             : Object.assign({}, operation, {
                 security:
-                  secured &&
-                  !("operationId" in operation && operation.operationId === "durable.protocol")
-                    ? [{ [SECURITY_NAME]: [] }]
-                    : [],
+                  "operationId" in operation && operation.operationId === "durable.protocol"
+                    ? []
+                    : security,
               }),
         ]),
       ),
@@ -179,14 +319,9 @@ export const document = ({ api, auth, title, version }: DocumentOptions) => {
     paths,
     components: {
       ...spec.components,
-      securitySchemes: secured
-        ? {
-            [SECURITY_NAME]:
-              auth.scheme === "jwt"
-                ? { type: "http", scheme: "bearer", bearerFormat: "JWT" }
-                : { type: "http", scheme: "bearer" },
-          }
-        : {},
+      securitySchemes: Object.fromEntries(
+        auth.credentials.map((credential) => [schemeName(credential), securityScheme(credential)]),
+      ),
     },
   }
 }
