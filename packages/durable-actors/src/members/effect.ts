@@ -81,6 +81,34 @@ export const DeadLetter = <E extends AnyEffect>(effect: E) =>
 
 export type DeadLetter<E extends AnyEffect> = ReturnType<typeof DeadLetter<E>>["Type"]
 
+/**
+ * The input of an `onCancelled` command: what is known of a cancelled
+ * effect. `Succeeded` carries the provider's result; `Failed` is reported only
+ * when no attempt can have applied the call; every other case is `Unknown`,
+ * with `ambiguous` true, because the provider may have acted.
+ */
+export const Cancelled = <E extends AnyEffect>(effect: E) =>
+  Schema.Struct({
+    effectId: Schema.String,
+    effect,
+    attempts: Schema.Int,
+    outcome: Schema.TaggedUnion({
+      Succeeded: { value: effect.success },
+      Failed: { cause: Schema.String },
+      Unknown: { cause: Schema.String },
+    }),
+    ambiguous: Schema.Boolean,
+  })
+
+export type Cancelled<E extends AnyEffect> = ReturnType<typeof Cancelled<E>>["Type"]
+
+/** A cancelled effect's outcome before its route decodes `value`. */
+export const CancelledOutcome = Schema.TaggedUnion({
+  Succeeded: { value: Schema.Unknown },
+  Failed: { cause: Schema.String },
+  Unknown: { cause: Schema.String },
+})
+
 /** Commands whose input accepts `T`. */
 type Accepting<Command extends AnyCommand, T> = Command extends AnyCommand
   ? [T] extends [Command["input"]["Type"]]
@@ -114,6 +142,16 @@ export interface EffectPolicy<E extends AnyEffect, Command extends AnyCommand> {
   readonly onSuccess?: Accepting<Command, E["success"]["Type"]>
   /** Receives `Actor.DeadLetter(E)` once when retries are exhausted. */
   readonly onDeadLetter?: Accepting<Command, DeadLetter<E>>
+  /**
+   * Receives `Actor.Cancelled(E)` once for an effect cancelled after an
+   * attempt started, with the effect id as its command id.
+   */
+  readonly onCancelled?: Accepting<Command, Cancelled<E>>
+  /**
+   * Attempts of this effect running at once for one actor, across every
+   * runner: an integer from 1 to 64. Unlimited when omitted.
+   */
+  readonly concurrency?: { readonly perActor: number }
 }
 
 export type EffectPolicies<Effects extends AnyEffect, Command extends AnyCommand> = {
