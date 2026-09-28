@@ -17,7 +17,7 @@ import {
   type RegisteredCommand,
   type RegisteredWorkflow,
   type Registration,
-  type Request,
+  Request,
 } from "../../handles/actors.ts"
 import { Due, emptyOutbox } from "../../handles/intents.ts"
 import {
@@ -32,6 +32,7 @@ import { type ActorRef, Caller, type Principal, principal, System } from "../../
 import { decodeExecutionId, encodeExecutionId } from "../../identity/execution.ts"
 import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
+import { TurnHooks } from "../turn/hooks.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import type { ActivationCache } from "../turn/execute.ts"
 import { changedSteps, decodeStoredManifest, missingSteps } from "./compatibility.ts"
@@ -431,7 +432,13 @@ export const activationEngine = (options: {
 
     const live = new Map<
       string,
-      { rerun: boolean; activities: number; body: Fiber.Fiber<unknown, unknown> | undefined }
+      {
+        rerun: boolean
+        activities: number
+        body: Fiber.Fiber<unknown, unknown> | undefined
+        /** Clocks and waits the live run is parked on while another branch still runs. */
+        readonly parked: Set<string>
+      }
     >()
 
     const fenced = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -769,7 +776,11 @@ export const activationEngine = (options: {
                 } else dueAt = Number(row.due_at_ms)
 
                 // The due time is recorded once, so a replay never moves it.
-                if (at < dueAt) return yield* suspend
+                if (at < dueAt) {
+                  entry.parked.add(step.name)
+
+                  return yield* suspend
+                }
 
                 yield* fenced(settle(step, RecordedExit.cases.Success.make({ value: null }), at))
                 remember(step, {
@@ -886,6 +897,8 @@ export const activationEngine = (options: {
                   remember(step, { scanned: String(scanned) })
                 }
 
+                entry.parked.add(step.name)
+
                 return yield* suspend
               }),
             ),
@@ -945,6 +958,16 @@ export const activationEngine = (options: {
           if (stale(exit.cause) || (interrupted && !interrupting)) return "abandoned" as const
 
           if (suspended(exit.cause)) {
+            yield* (yield* TurnHooks).at(
+              "beforeWorkflowSuspend",
+              Request.make({
+                ref,
+                caller: System.make({ source: "workflow", ref }),
+                command: RESUME,
+                commandId: "",
+                payload: executionId,
+              }),
+            )
             yield* fenced(
               Effect.gen(function* () {
                 const [due] = yield* sql<{ due: string | null }>`
@@ -1005,6 +1028,7 @@ export const activationEngine = (options: {
 
         for (;;) {
           entry.rerun = false
+          entry.parked.clear()
           const body = yield* Effect.forkChild(runOnce(executionId))
           entry.body = body
           const outcome = yield* Fiber.join(body).pipe(Effect.exit)
@@ -1015,6 +1039,30 @@ export const activationEngine = (options: {
           if (!entry.rerun || (Exit.isSuccess(outcome) && outcome.value === "abandoned")) break
         }
       }).pipe(Effect.ensuring(Effect.sync(() => live.delete(executionId))))
+
+    // Whether a step the live run is parked on can settle now: a clock or a
+    // wait timeout that is due, or a wait with owner events it hasn't scanned.
+    const settleable = (executionId: string, parked: ReadonlySet<string>) =>
+      parked.size === 0
+        ? Effect.succeed(false)
+        : Effect.gen(function* () {
+            const at = yield* now
+
+            const [found] = yield* sql<{ found: boolean }>`
+              SELECT EXISTS (
+                SELECT 1 FROM actor_workflow_step s
+                WHERE s.routing_key = ${routingKey} AND s.execution_id = ${executionId}
+                  AND s.step IN ${sql.in([...parked])} AND s.exit IS NULL
+                  AND (s.due_at_ms <= ${at}
+                    OR (s.kind = 'wait' AND EXISTS (
+                      SELECT 1 FROM actor_events e
+                      WHERE e.routing_key = s.routing_key AND e.tenant_id = s.tenant_id
+                        AND e.actor_type = s.actor_type AND e.actor_id = s.actor_id
+                        AND e.event = s.wait_event AND e.sequence > s.scanned)))
+              ) AS found`
+
+            return found?.found === true
+          }).pipe(Effect.orElseSucceed(() => false))
 
     /**
      * Runs or replays an execution after a committed workflow command. A live
@@ -1028,6 +1076,11 @@ export const activationEngine = (options: {
           current.rerun = true
 
           if (interrupt && current.body !== undefined)
+            yield* Fiber.interrupt(current.body).pipe(Effect.forkIn(scope))
+          else if (current.body !== undefined && (yield* settleable(executionId, current.parked)))
+            // A race branch parked on a clock or wait that can now settle: stop
+            // the run so its replay settles it, as a deferred completion would.
+            // A running sibling activity reruns, under the same attempt.
             yield* Fiber.interrupt(current.body).pipe(Effect.forkIn(scope))
 
           // The relay consumed the recovery timer; a still-running activity needs another.
@@ -1054,7 +1107,7 @@ export const activationEngine = (options: {
           return
         }
 
-        live.set(executionId, { rerun: false, activities: 0, body: undefined })
+        live.set(executionId, { rerun: false, activities: 0, body: undefined, parked: new Set() })
         yield* loop(executionId).pipe(Effect.forkIn(scope))
       }).pipe(Effect.provideContext(services))
 

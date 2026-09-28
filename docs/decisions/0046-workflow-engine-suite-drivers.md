@@ -41,6 +41,13 @@ The interrupt row keeps both engines inside ADR 0022's contract: the result is a
 
 **Behaviour change:** ADR 0022 decision 10's `describeWorkflowEngine(name, { layer, executionId })` signature and its "plain Effect workflows registered with the engine" become drivers over one shared body. Its divergence "external completion … dies with `Unsupported`" becomes "can't be called, because a body has no `WorkflowEngine`"; decision 2's "our engine dies with `InvalidExecutionId` on any id that doesn't decode" holds at `X.run` and the handles, which are the only way in.
 
+## Recovery, preemption, and the expiry bound
+
+These amend ADR 0022 decision 4 with behaviour the later conformance cases pinned down.
+
+- **Recovery can land past the expiry bound.** A runner that dies during an activity is replaced when the recovery timer fires, `RECOVERY_MS` (30 s) after the attempt last armed it. The rerun reuses the attempt's `started_at_ms`, so its derived calls keep the same `expiresAt`, and the engine refuses a call once `now + deliveryTimeout ≥ expiresAt`. When the deployment's retry window minus the actor's `deliveryTimeout` is at most 30 s, every rerun after a lost runner is already past that bound, and an activity that makes actor calls dies with `ActivityOutcomeUnknown` instead of rerunning them. This is a documented constraint, not a change to the bound: `Actors.layer` logs a warning at startup for each actor type with workflows under it, and [retention](../operations/retention.md) states it. The default retry window is a day, so defaults are unaffected.
+- **A resume preempts a live run parked on a step that can settle.** When a live run has a race branch parked on a clock or wait (another branch is still running), a resume first checks whether any parked step can now settle: a clock or wait timeout that is due, or a wait with owner events of its tag after `scanned`. If one can, the engine interrupts the run so its replay settles it, as ADR 0022 decision 4's deferred completion does. A running sibling activity is interrupted and reruns under the same attempt. A resume with nothing settleable, such as the 30-second recovery re-arm, only marks the run to replay after it exits, so a long activity isn't restarted for nothing. Before this, a live run parked on a wait ignored its event until every other branch finished.
+
 ## Alternatives
 
 - **Make the framework engine an Effect `WorkflowEngine` service.** Faithful to the letter of decision 10, but it would add a second way to start and step workflows (raw `Workflow.execute`, `Activity.make`), which decision 7 forbids in bodies, and a service whose `register` and `execute` have no owner actor to run on.
