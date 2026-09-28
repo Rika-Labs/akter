@@ -1,7 +1,7 @@
-import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
+import { BunCrypto, BunHttpServer, BunFileSystem } from "@effect/platform-bun"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Cause, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
+import { Cause, Clock, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Migrator, SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -21,6 +21,7 @@ afterAll(() => harness.dispose())
 const backend: ConformanceBackend = {
   independentConnections: false,
   services: BunCrypto.layer,
+  httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>
     harness.runPromise(
       Effect.gen(function* () {
@@ -140,6 +141,7 @@ describe("PGlite migrations", () => {
             [12, "workflows"],
             [13, "inspection_views"],
             [14, "connections"],
+            [15, "effect_control"],
             [17, "subscriptions"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
@@ -172,6 +174,7 @@ describe("PGlite migrations", () => {
             [12, "workflows"],
             [13, "inspection_views"],
             [14, "connections"],
+            [15, "effect_control"],
             [17, "subscriptions"],
           ])
           expect(
@@ -214,6 +217,7 @@ describe("PGlite migrations", () => {
             [12, "workflows"],
             [13, "inspection_views"],
             [14, "connections"],
+            [15, "effect_control"],
             [17, "subscriptions"],
           ])
           expect(
@@ -223,6 +227,93 @@ describe("PGlite migrations", () => {
             yield* sql`SELECT indexname FROM pg_indexes WHERE tablename = 'actor_outbox'
               AND indexname LIKE 'actor_outbox_due%'`,
           ).toEqual([{ indexname: "actor_outbox_due_kind" }])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("applies 0015_effect_control to a database that already ran 0014_connections, backfilling pending, backing-off, and running effect rows", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughRelay = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0015")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughRelay
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (1, 't', 'Sender', 's')`
+          const far = (yield* Clock.currentTimeMillis) + 3_600_000
+          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+              scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
+              payload, caller, kind, attempts, ambiguous, last_error)
+            VALUES
+              (1, 'pending', 0, 42, 40, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
+                'effect', 0, false, NULL),
+              (1, 'backing-off', 0, ${far}, 41, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
+                'effect', 1, false, 'typed'),
+              (1, 'running', 0, ${far}, 42, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
+                'effect', 2, true, 'Attempt 2 ended without reporting an outcome'),
+              (1, 'expired', 0, 43, 43, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
+                'effect', 1, true, 'Attempt 1 ended without reporting an outcome'),
+              (1, 'intent', 0, 44, 44, 't', 'Sender', 's', 'Sink', 'k', 'Deliver', '{}', '{}',
+                'intent', 0, false, NULL)`
+          expect(yield* migrate).toEqual([
+            [15, "effect_control"],
+            [17, "subscriptions"],
+          ])
+          expect(
+            yield* sql`SELECT intent_id, running, maybe_applied, ready_at_ms::int AS ready,
+                cancelled_at_ms, waiting
+              FROM actor_outbox ORDER BY intent_id`,
+          ).toEqual([
+            {
+              intent_id: "backing-off",
+              running: false,
+              maybe_applied: false,
+              ready: 41,
+              cancelled_at_ms: null,
+              waiting: false,
+            },
+            {
+              intent_id: "expired",
+              running: false,
+              maybe_applied: true,
+              ready: 43,
+              cancelled_at_ms: null,
+              waiting: false,
+            },
+            {
+              intent_id: "intent",
+              running: false,
+              maybe_applied: false,
+              ready: null,
+              cancelled_at_ms: null,
+              waiting: false,
+            },
+            {
+              intent_id: "pending",
+              running: false,
+              maybe_applied: false,
+              ready: 40,
+              cancelled_at_ms: null,
+              waiting: false,
+            },
+            {
+              intent_id: "running",
+              running: true,
+              maybe_applied: true,
+              ready: 42,
+              cancelled_at_ms: null,
+              waiting: false,
+            },
+          ])
         }),
       )
       .finally(() => runtime.dispose())
@@ -250,6 +341,7 @@ describe("PGlite migrations", () => {
             [12, "workflows"],
             [13, "inspection_views"],
             [14, "connections"],
+            [15, "effect_control"],
             [17, "subscriptions"],
           ])
           expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(
@@ -314,6 +406,7 @@ describe("PGlite migrations", () => {
           ])
           expect(yield* migrate).toEqual([
             [14, "connections"],
+            [15, "effect_control"],
             [17, "subscriptions"],
           ])
           expect(
@@ -326,13 +419,13 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
-  it("applies 0017_subscriptions to a database that already ran 0014_connections", () => {
+  it("applies 0017_subscriptions to a database that already ran 0015_effect_control", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
     const throughConnections = Migrator.make({})({
       table: "actor_migrations",
       loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0015")),
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0016")),
       ),
     })
 
@@ -403,6 +496,7 @@ describe("PGlite migrations", () => {
             { migration_id: 12 },
             { migration_id: 13 },
             { migration_id: 14 },
+            { migration_id: 15 },
             { migration_id: 17 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([

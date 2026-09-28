@@ -1,6 +1,6 @@
 # ADR 0025: `turn.mint` — deterministic child actors minted in a turn
 
-**Status:** accepted (2026-09-28, Dallen, with every proposed default; proposed 2026-09-26). M2.15 implemented it before acceptance. The amendments listed under [behaviour changes](#behaviour-changes-against-existing-contracts) have landed; the [decided questions](#decided-questions) record the defaults.
+**Status:** accepted (2026-09-28, Dallen, with every proposed default; proposed 2026-09-26). M2.15 implemented it before acceptance. The amendments listed under [behaviour changes](#behaviour-changes-against-existing-contracts) have landed; the [decided questions](#decided-questions) record the defaults. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) amends the creation check, keyed and delayed creating intents, where the runtime rejects an actor that cannot be minted, and the returned id type to match the shipped code.
 
 ## Context
 

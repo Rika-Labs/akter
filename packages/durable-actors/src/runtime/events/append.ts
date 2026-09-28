@@ -26,7 +26,7 @@ export const FEED_KEY = "$feed"
  *
  * When a workflow of this actor waits for one of the emitted classes, pending
  * waits re-arm their executions' timers in the same transaction; the result
- * says whether the relay should wake.
+ * says whether the relay should wake, and when the events were stamped.
  */
 export const appendEvents = Effect.fnUntraced(function* (
   request: Request,
@@ -34,7 +34,7 @@ export const appendEvents = Effect.fnUntraced(function* (
   events: ReadonlyArray<EmittedEvent>,
   waited: ReadonlySet<string> = new Set(),
 ) {
-  if (events.length === 0) return false
+  if (events.length === 0) return { notified: false, emittedAtMs: 0 }
   const sql = yield* SqlClient.SqlClient
   const { tenant, actor, id } = request.ref
   const clock = yield* FrameworkClock
@@ -46,7 +46,8 @@ export const appendEvents = Effect.fnUntraced(function* (
     RETURNING event_sequence::text AS last, floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
 
   const first = BigInt(reserved!.last) - BigInt(events.length) + 1n
-  const now = BigInt(reserved!.now) + BigInt(clock.offsetMillis())
+  const emittedAtMs = Number(reserved!.now) + clock.offsetMillis()
+  const now = BigInt(emittedAtMs)
   const emitted = [...new Set(events.map((event) => event.tag))]
 
   const routed = outbox
@@ -132,5 +133,5 @@ export const appendEvents = Effect.fnUntraced(function* (
 
   const notified = tags.length === 0 ? false : yield* notifyWaits(routingKey, request.ref, tags)
 
-  return fed || notified
+  return { notified: fed || notified, emittedAtMs }
 })

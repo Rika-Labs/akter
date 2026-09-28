@@ -210,11 +210,37 @@ export interface RegisteredEffect {
   readonly progressEveryMs: number | undefined
   /** The wait after failed attempt `n` is `min(baseMs × 2^(n − 1), maxMs)`. */
   readonly backoff: { readonly baseMs: number; readonly maxMs: number }
-  /** Runs one attempt; succeeds with the `onSuccess` route, if declared. */
+  /** Attempts running at once per actor across runners; unlimited when undefined. */
+  readonly perActor: number | undefined
+  /** Whether the effect declares an `onCancelled` route. */
+  readonly routesCancelled: boolean
+  /**
+   * Runs one attempt; succeeds with the `onSuccess` route and the
+   * `onCancelled` route of its result, each if declared, or with the reason
+   * `onSuccess` rejects the result.
+   */
   readonly execute: (
     payload: string,
     context: AttemptContext,
-  ) => Effect.Effect<EffectRoute | undefined, EffectFailure>
+  ) => Effect.Effect<
+    {
+      readonly success: EffectRoute | undefined
+      readonly cancelled: EffectRoute | undefined
+      /** Why `onSuccess` cannot accept the result, when it cannot. */
+      readonly rejected: EffectFailure | undefined
+    },
+    EffectFailure
+  >
+  /** The `onCancelled` route for a cancelled effect without a result, if declared. */
+  readonly cancelled: (
+    payload: string,
+    letter: {
+      readonly effectId: string
+      readonly attempts: number
+      readonly outcome: { readonly _tag: "Failed" | "Unknown"; readonly cause: string }
+      readonly ambiguous: boolean
+    },
+  ) => Effect.Effect<EffectRoute | undefined>
   /** The `onDeadLetter` route for an exhausted effect, if declared. */
   readonly deadLetter: (
     payload: string,
@@ -273,6 +299,8 @@ export interface Registration {
     ref: ActorRef,
   ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
   readonly connections: ReadonlyMap<string, RegisteredConnection>
+  /** Tags of the events this actor type serves as event feeds. */
+  readonly feeds: ReadonlySet<string>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
   /** The subscriptions this actor type declares, as its subscriber. */
@@ -355,6 +383,22 @@ export class InternalActors extends Context.Service<
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /** Whether the actor has a generation row, read without waking or creating it. */
+    readonly exists: (ref: ActorRef) => Effect.Effect<boolean, ActorError>
+    /**
+     * Reads up to `limit` committed events of `tags` after an exclusive
+     * cursor, like a query, without waking the actor; an actor with no
+     * generation row fails `NotCreated` and gets none.
+     */
+    readonly readFeed: (
+      ref: ActorRef,
+      tags: ReadonlyArray<string>,
+      after: string | undefined,
+      limit: number,
+    ) => Effect.Effect<
+      ReadonlyArray<StoredEvent & { readonly tag: string }>,
+      ActorError | UnknownCursor | RetentionGap
+    >
     /**
      * Reads one execution's status like a query: `request.command` is the
      * workflow member, `request.payload` the execution id.

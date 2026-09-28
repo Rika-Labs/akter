@@ -4,6 +4,7 @@ import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../erro
 import {
   type BusinessResult,
   type ConnectionLister,
+  type EmittedEvent,
   Outcome,
   type RegisteredCommand,
   type Request,
@@ -39,6 +40,14 @@ export const emptyActivationCache = (): ActivationCache => ({
   generation: undefined,
   state: undefined,
 })
+
+/** The events a turn committed: sequences `after + 1` onward, stamped `emittedAtMs`. */
+export interface CommittedEvents {
+  readonly after: string
+  readonly events: ReadonlyArray<EmittedEvent>
+  readonly commandId: string
+  readonly emittedAtMs: number
+}
 
 interface Admission {
   readonly now: string
@@ -216,8 +225,15 @@ export const executeTurn = Effect.fnUntraced(function* (
         generation: current,
         state: cache.state,
         wake: false,
+        cancelled: false,
         broadcasts: [],
         head: admission.head,
+        committed: {
+          after: admission.head,
+          events: [],
+          commandId: request.commandId,
+          emittedAtMs: 0,
+        },
       }
     }
 
@@ -246,8 +262,15 @@ export const executeTurn = Effect.fnUntraced(function* (
       generation: current,
       state: cache.state,
       wake: false,
+      cancelled: false,
       broadcasts: [],
       head: admission.head,
+      committed: {
+        after: admission.head,
+        events: [],
+        commandId: request.commandId,
+        emittedAtMs: 0,
+      },
     })
 
     // Only the relay's subscription deliveries reach a handler, and only a
@@ -345,7 +368,12 @@ export const executeTurn = Effect.fnUntraced(function* (
         }
     }
 
-    const notified = yield* appendEvents(request, routingKey, result.events, waited)
+    const { notified, emittedAtMs } = yield* appendEvents(
+      request,
+      routingKey,
+      result.events,
+      waited,
+    )
 
     const creates =
       Outcome.guards.Success(result.outcome) &&
@@ -353,7 +381,8 @@ export const executeTurn = Effect.fnUntraced(function* (
       !admission.created
 
     if (creates) yield* sql`UPDATE actor_generations SET created = true WHERE ${actorRow}`
-    const wake = (yield* writeOutbox(routingKey, request.ref, result.outbox)) || notified
+    const { wake: written, cancelled } = yield* writeOutbox(routingKey, request.ref, result.outbox)
+    const wake = written || notified
     // The delivery's position is applied with its receipt, declared failures included.
 
     if (delivery !== undefined)
@@ -375,8 +404,15 @@ export const executeTurn = Effect.fnUntraced(function* (
       generation: current,
       state: next,
       wake,
+      cancelled,
       broadcasts: Outcome.guards.Success(result.outcome) ? (result.broadcasts ?? []) : [],
       head: String(BigInt(admission.head) + BigInt(result.events.length)),
+      committed: {
+        after: admission.head,
+        events: result.events,
+        commandId: request.commandId,
+        emittedAtMs,
+      },
     }
   })
 
@@ -400,5 +436,12 @@ export const executeTurn = Effect.fnUntraced(function* (
 
   if (done.wake) yield* (yield* OutboxRuntime).wake
 
-  return { outcome: done.outcome, broadcasts: done.broadcasts, head: done.head }
+  if (done.cancelled) yield* (yield* OutboxRuntime).cancelled
+
+  return {
+    outcome: done.outcome,
+    broadcasts: done.broadcasts,
+    head: done.head,
+    committed: done.committed,
+  }
 })
