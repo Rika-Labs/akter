@@ -97,6 +97,7 @@ import { type ActorClient, type ClientOptions, clientOf } from "../client/make.t
 import {
   checkDeclaredErrors,
   type ServedDefinition,
+  servedConnection,
   servedDefinitions,
   servedMember,
 } from "./served.ts"
@@ -450,6 +451,11 @@ interface Definition<
   readonly state?: ActorState<Fields>
   /** Event classes this actor may emit in a turn and replay in a query. */
   readonly events?: Events
+  /**
+   * The declared events `Actor.serve` serves as event feeds. None are served
+   * unless listed, and `authorize` still decides who reads each.
+   */
+  readonly feeds?: ReadonlyArray<Events[number]>
   /** `Actor.table` tables whose rows this actor type owns. */
   readonly tables?: Tables
   /** `Actor.blob` binary storage this actor type's turns write and its queries read. */
@@ -608,6 +614,14 @@ const make = <
   for (const event of definition.events ?? []) {
     if (events.has(event.identifier)) throw new Error(`Duplicate event: ${event.identifier}`)
     events.set(event.identifier, event)
+  }
+
+  const feeds = new Set<string>()
+
+  for (const event of definition.feeds ?? []) {
+    if (events.get(event.identifier) !== event)
+      throw new Error(`Feed ${event.identifier} is not one of ${name}'s events`)
+    feeds.add(event.identifier)
   }
 
   const eventCodecs = new Map(
@@ -1351,6 +1365,7 @@ const make = <
                 blobs,
                 guard: escaped("Blob"),
                 maxBytes: policy.blobMaxBytes,
+                maxEntries: policy.blobMaxEntries,
               },
               true,
             )
@@ -1663,11 +1678,14 @@ const make = <
             workflows: yield* workflowsOf(handlers, workflowServices as Context.Context<RW>),
             activate: () => Effect.succeed(commands),
             connections,
+            feeds,
           })
         }
 
-        if (connectionMembers.length > 0)
-          return yield* Effect.die(new Error("Singleton actors cannot declare connections yet"))
+        if (connectionMembers.length > 0 || feeds.size > 0)
+          return yield* Effect.die(
+            new Error("Singleton actors cannot declare connections or feeds yet"),
+          )
 
         const services = yield* Effect.context<
           Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
@@ -1697,6 +1715,7 @@ const make = <
             return commands
           }),
           connections: new Map(),
+          feeds,
         })
       }),
     ) as Layer.Layer<
@@ -1799,6 +1818,7 @@ const make = <
                 blobs,
                 guard: escaped("Blob"),
                 maxBytes: policy.blobMaxBytes,
+                maxEntries: policy.blobMaxEntries,
               },
               false,
             )
@@ -2163,6 +2183,8 @@ const make = <
     members: Object.values(api)
       .filter((member) => member.kind !== "connection" && member.kind !== "workflow")
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
+    connections: connectionMembers.map(servedConnection),
+    feeds: [...feeds],
     deliveryMs: policy.deliveryMs,
   }
 
