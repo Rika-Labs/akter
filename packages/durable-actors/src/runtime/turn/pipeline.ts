@@ -92,27 +92,48 @@ export const asSqlConnection = ({
 }
 
 /**
- * Sends a group of statements as one flight and waits for every reply.
+ * Queues a group of statements for one flight without waiting for replies.
  *
  * Each statement starts on its own fiber before the next is forked, so the
  * driver queues them in submission order and flushes them together. Queuing
- * is uninterruptible, so a group is queued whole or not at all; only the wait
- * can be interrupted. Every reply is awaited before the first failure is
- * reported, so the session has nothing in flight afterwards.
+ * is uninterruptible, so a group is queued whole or not at all. The fibers
+ * live in `scope`, so a group can be queued in one step and awaited in the
+ * next.
  */
-export const pipeline = (group: ReadonlyArray<Effect.Effect<void, SqlError.SqlError>>) =>
+export const queue = ({
+  scope,
+  group,
+}: {
+  readonly scope: Scope.Scope
+  readonly group: ReadonlyArray<Effect.Effect<void, SqlError.SqlError>>
+}) =>
   Effect.uninterruptible(
     Effect.forEach(group, (statement) =>
-      Effect.forkChild(statement, { startImmediately: true, uninterruptible: false }),
+      Effect.forkIn(statement, scope, { startImmediately: true, uninterruptible: false }),
     ),
-  ).pipe(
-    Effect.flatMap((fibers) => Effect.forEach(fibers, Fiber.await)),
+  )
+
+/**
+ * Waits for every reply of a queued group, in order. Every reply is awaited
+ * before the first failure is reported, so the session has nothing of the
+ * group in flight afterwards. Only the wait can be interrupted.
+ */
+export const replies = (fibers: ReadonlyArray<Fiber.Fiber<void, SqlError.SqlError>>) =>
+  Effect.forEach(fibers, Fiber.await).pipe(
     Effect.flatMap((exits) => {
       const failed = exits.find(Exit.isFailure)
 
       return failed === undefined ? Effect.void : Effect.failCause(failed.cause)
     }),
   )
+
+/** Sends a group of statements as one flight, on child fibers, and waits for every reply. */
+export const pipeline = (group: ReadonlyArray<Effect.Effect<void, SqlError.SqlError>>) =>
+  Effect.uninterruptible(
+    Effect.forEach(group, (statement) =>
+      Effect.forkChild(statement, { startImmediately: true, uninterruptible: false }),
+    ),
+  ).pipe(Effect.flatMap(replies))
 
 /** Runs a group one statement at a time, for a database with nothing to pipeline. */
 export const sequential = (group: ReadonlyArray<Effect.Effect<void, SqlError.SqlError>>) =>

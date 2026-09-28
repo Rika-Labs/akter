@@ -34,7 +34,7 @@ import { ActorRef } from "../../identity/caller.ts"
 import { routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { takeBatch } from "./mailbox.ts"
-import { executeBatch } from "../turn/execute.ts"
+import { type Done, executeBatches, type Stopped } from "../turn/execute.ts"
 import { activationOwner } from "../connections/owner.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
@@ -142,7 +142,7 @@ export const registerActor = Effect.fnUntraced(function* (
     })
 
   const services = yield* Effect.context<
-    Effect.Services<ReturnType<typeof executeBatch>> | Crypto.Crypto
+    Effect.Services<ReturnType<typeof executeBatches<Waiting, never, never, never>>> | Crypto.Crypto
   >()
 
   const entity = commandEntity(registration.name)
@@ -262,74 +262,6 @@ export const registerActor = Effect.fnUntraced(function* (
       const alone = aloneAfterFailure.get(activation) ?? new Set<string>()
       aloneAfterFailure.set(activation, alone)
 
-      // Connection broadcasts of a batch go out once it commits.
-      const execute = (batch: ReadonlyArray<Waiting>) =>
-        Effect.gen(function* () {
-          yield* owner.prepare(owned)
-
-          const done = yield* executeBatch(
-            batch,
-            owned.cache,
-            owned.key,
-            policy,
-            registration.mintable,
-            statements,
-            waited,
-            owner.hasConnections ? owner.list(owned) : undefined,
-          )
-
-          if (owner.hasConnections) yield* owner.flush(owned, done.broadcasts, done.head)
-
-          return done.settled
-        })
-
-      // A lone command's turn: its span and logs name the command, and a
-      // deterministic defect answers the caller with `Defect`.
-      const runAlone = (entry: Waiting) => {
-        const { request } = entry
-
-        return execute([entry]).pipe(
-          Effect.flatMap(([settled]) =>
-            Result.isSuccess(settled!)
-              ? Effect.succeed(settled.success)
-              : Effect.fail(settled!.failure),
-          ),
-          Effect.catchDefect(
-            Effect.fnUntraced(function* (cause) {
-              if (retryable(Cause.die(cause))) return yield* Effect.die(cause)
-
-              // Deterministic defects run no user code, because a defect hook
-              // can loop on corrupt state; the turn span and this log carry
-              // the cause for operators.
-              yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
-
-              return Outcome.cases.Defect.make({ cause })
-            }),
-          ),
-          Effect.annotateLogs({
-            actor: request.ref.actor,
-            id: request.ref.id,
-            tenant: request.ref.tenant,
-            command: request.command,
-            commandId: request.commandId,
-          }),
-          // The span's call site is always this file, so a captured stack
-          // trace would cost an Error per turn and name nothing useful.
-          Effect.withSpan(
-            `durable-actors.${request.ref.actor}/${request.command}`,
-            {
-              attributes: {
-                "actor.tenant": request.ref.tenant,
-                "actor.id": request.ref.id,
-                "command.id": request.commandId,
-              },
-            },
-            { captureStackTrace: false },
-          ),
-          Effect.exit,
-        )
-      }
-
       // Replies follow the commit: each command's caller hears its outcome
       // only after the batch that ran it committed.
       const settle = Effect.fnUntraced(function* (
@@ -371,67 +303,144 @@ export const registerActor = Effect.fnUntraced(function* (
           { discard: true },
         ).pipe(Effect.andThen(Effect.interrupt))
 
-      // A defect that reaches here, including one from the afterCommit hook
-      // after a commit, restarts the activation.
-      const deliver = (entry: Waiting, exit: Exit.Exit<Outcome, ActorError>) =>
-        Exit.isFailure(exit) && Cause.hasDies(exit.cause)
-          ? Effect.failCause(exit.cause)
-          : settle(entry, exit)
+      // The next batch already waiting, taken while the previous one commits
+      // so its admission rides in the same flight. Nothing waits for one.
+      const following = Effect.sync(() => {
+        if (lost) return undefined
 
-      const runBatch = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>) {
-        if (lost) return yield* Effect.die(leaseLostDefect)
+        const batch = takeBatch({ waiting, alone })
 
-        if (batch.length === 1) return yield* deliver(batch[0]!, yield* runAlone(batch[0]!))
+        if (waiting.length === 0) ready.closeUnsafe()
 
-        const { ref } = batch[0]!.request
+        return batch.length > 0 ? batch : undefined
+      })
 
-        const exit = yield* execute(batch).pipe(
-          Effect.annotateLogs({ actor: ref.actor, id: ref.id, tenant: ref.tenant }),
+      // Connection broadcasts of a batch go out once it commits, and then
+      // each caller hears its own outcome.
+      const committed = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>, done: Done) {
+        if (owner.hasConnections) yield* owner.flush(owned, done.broadcasts, done.head)
+
+        for (const [index, settled] of done.settled.entries())
+          yield* settle(
+            batch[index]!,
+            Result.isSuccess(settled) ? Exit.succeed(settled.success) : Exit.fail(settled.failure),
+          )
+      })
+
+      // Runs `batch`, and with `pipelining` every batch that is already
+      // waiting when the one before it commits. A lone command's span and
+      // logs name the command.
+      const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
+        const { request } = batch[0]!
+        const { ref } = request
+        const lone = batch.length === 1
+
+        return executeBatches(
+          {
+            first: batch,
+            next: pipelining ? following : Effect.undefined,
+            prepare: owner.prepare(owned),
+            committed,
+          },
+          owned.cache,
+          owned.key,
+          policy,
+          registration.mintable,
+          statements,
+          waited,
+          owner.hasConnections ? owner.list(owned) : undefined,
+        ).pipe(
+          Effect.annotateLogs(
+            lone
+              ? {
+                  actor: ref.actor,
+                  id: ref.id,
+                  tenant: ref.tenant,
+                  command: request.command,
+                  commandId: request.commandId,
+                }
+              : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
+          ),
+          // The span's call site is always this file, so a captured stack
+          // trace would cost an Error per turn and name nothing useful.
           Effect.withSpan(
-            `durable-actors.${ref.actor}/batch`,
+            lone
+              ? `durable-actors.${ref.actor}/${request.command}`
+              : `durable-actors.${ref.actor}/batch`,
             {
-              attributes: {
-                "actor.tenant": ref.tenant,
-                "actor.id": ref.id,
-                "batch.size": batch.length,
-              },
-              links: batch.flatMap(({ context }) => {
-                const span = Context.getOrUndefined(context, Tracer.ParentSpan)
+              attributes: lone
+                ? {
+                    "actor.tenant": ref.tenant,
+                    "actor.id": ref.id,
+                    "command.id": request.commandId,
+                  }
+                : { "actor.tenant": ref.tenant, "actor.id": ref.id, "batch.size": batch.length },
+              links: lone
+                ? []
+                : batch.flatMap(({ context }) => {
+                    const span = Context.getOrUndefined(context, Tracer.ParentSpan)
 
-                return span === undefined ? [] : [{ span, attributes: {} }]
-              }),
+                    return span === undefined ? [] : [{ span, attributes: {} }]
+                  }),
             },
             { captureStackTrace: false },
           ),
-          Effect.exit,
         )
+      }
 
-        if (Exit.isSuccess(exit)) {
-          for (const [index, settled] of exit.value.entries())
-            yield* settle(
-              batch[index]!,
-              Result.isSuccess(settled)
-                ? Exit.succeed(settled.success)
-                : Exit.fail(settled.failure),
+      // A defect aborts the whole batch, and a following batch whose
+      // admission was already sent is rolled back unseen with it. A retryable
+      // defect restarts the activation; the redelivered commands of a failed
+      // batch then run alone. After a deterministic defect the following
+      // batch goes back to the head of the mailbox, and the failed batch's
+      // commands run one per transaction, so one bad command cannot keep
+      // rolling back its neighbours; a lone command answers `Defect`.
+      const recover: (
+        stopped: Stopped<Waiting>,
+      ) => Effect.Effect<void, SqlError.SqlError, Entity.CurrentAddress | Sharding.Sharding> =
+        Effect.fnUntraced(function* ({ batch, orphan, cause }) {
+          if (retryable(cause)) {
+            if (batch.length > 1) for (const { request } of batch) alone.add(request.commandId)
+
+            return yield* restart([...batch, ...(orphan ?? [])], cause)
+          }
+
+          if (orphan !== undefined) {
+            waiting.unshift(...orphan)
+            ready.openUnsafe()
+          }
+
+          if (batch.length === 1) {
+            const { request } = batch[0]!
+            const defect = Cause.squash(cause)
+
+            // Deterministic defects run no user code, because a defect hook
+            // can loop on corrupt state; the turn span and this log carry the
+            // cause for operators.
+            yield* Effect.logError("Deterministic actor defect", Cause.die(defect)).pipe(
+              Effect.annotateLogs({
+                actor: request.ref.actor,
+                id: request.ref.id,
+                tenant: request.ref.tenant,
+                command: request.command,
+                commandId: request.commandId,
+              }),
             )
 
-          return
-        }
+            return yield* settle(
+              batch[0]!,
+              Exit.succeed(Outcome.cases.Defect.make({ cause: defect })),
+            )
+          }
 
-        // A defect aborts the whole batch. Its commands then run one per
-        // transaction until each is processed, so one bad command cannot
-        // keep rolling back its neighbours. A retryable defect restarts the
-        // activation first, and the redelivered commands run alone there.
-        if (retryable(exit.cause)) {
-          for (const { request } of batch) alone.add(request.commandId)
+          yield* Effect.logDebug("Turn batch failed; running its commands one at a time", cause)
 
-          return yield* Effect.failCause(exit.cause)
-        }
+          for (const entry of batch) {
+            const stopped = yield* run([entry], false)
 
-        yield* Effect.logDebug("Turn batch failed; running its commands one at a time", exit.cause)
-
-        for (const entry of batch) yield* deliver(entry, yield* runAlone(entry))
-      })
+            if (stopped !== undefined) yield* recover(stopped)
+          }
+        }, Effect.provideContext(services))
 
       yield* Effect.gen(function* () {
         while (true) {
@@ -440,14 +449,21 @@ export const registerActor = Effect.fnUntraced(function* (
 
           if (waiting.length === 0) ready.closeUnsafe()
 
-          if (batch.length > 0)
-            yield* runBatch(batch).pipe(
-              Effect.provideContext(Context.merge(batch[0]!.context, services)),
-              Effect.catchCauseIf(
-                (cause) => !Cause.hasInterruptsOnly(cause),
-                (cause) => restart(batch, cause),
-              ),
-            )
+          if (batch.length === 0) continue
+
+          yield* Effect.gen(function* () {
+            if (lost) return yield* restart(batch, Cause.die(leaseLostDefect))
+
+            const stopped = yield* run(batch, true)
+
+            if (stopped !== undefined) yield* recover(stopped)
+          }).pipe(
+            Effect.provideContext(Context.merge(batch[0]!.context, services)),
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) => restart(batch, cause),
+            ),
+          )
         }
       }).pipe(Effect.provideContext(services), Effect.forkIn(scope))
 
