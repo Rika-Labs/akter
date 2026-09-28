@@ -34,6 +34,7 @@ it("pins the versions the core package is built and released against", () => {
   for (const name of [
     "effect",
     "@effect/platform-bun",
+    "@effect/platform-node-shared",
     "@effect/sql-pg",
     "@effect/sql-pglite",
     "drizzle-orm",
