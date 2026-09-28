@@ -692,7 +692,7 @@ The owner kills are `cluster.kill`, which cuts the runner's database and runner 
 
 Not covered by an executable case, each for the reason given:
 
-- A broadcast from a cron tick that wakes a parked actor on another runner. Cron delivers a command like the intent and timer above. The subscription-delivery counterpart is `wakes a subscriber parked on another runner and flushes the delivery's broadcast to its holder` in `conformance/subscriptions.ts`.
+- A broadcast from a cron tick that wakes a parked actor. Cron (M2.5) is not on `main` yet; it delivers a command like the intent and timer above. The subscription-delivery counterpart is `wakes a subscriber parked on another runner and flushes the delivery's broadcast to its holder` in `conformance/subscriptions.ts`.
 - An activation that reloads stored rows reapplies `keepAwake`, and a `keepAwake` actor whose last row goes with an unreachable holder releases residency. Residency is Cluster's entity keep-alive, which neither `ActorTest` nor `ActorCluster` can observe.
 - Concurrent flushes never move the cursor back. The two flushes must reach one activation's flush lock in the opposite order to the heads they read, and no fault point orders a connection handler's flush against a turn's.
 - Deferred frames counting against the holder-wide 256 MiB budget. The per-connection frame and byte limits above run the same check, and filling 256 MiB in a test is impractical.
