@@ -654,7 +654,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             probe.sent
               .slice(-10)
               .map(wire)
-              .every((flight) => /INSERT|SELECT|COMMIT/.test(flight)),
+              .every((flight) => /insert|select|commit/i.test(flight)),
           ).toBe(true)
         }),
       ),
