@@ -16,6 +16,7 @@ export type TurnPoint =
   | "beforeSettle"
   | "afterSettleSnapshot"
   | "afterExpand"
+  | "beforeWorkflowSuspend"
 
 export class RetryTurn extends Schema.TaggedError<RetryTurn>()("RetryTurn", {
   message: Schema.String,
