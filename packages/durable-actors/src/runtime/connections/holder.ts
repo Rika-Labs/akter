@@ -609,6 +609,9 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
           if (connection.ended) return
 
+          // An owner that answers past the bound closes the session; the client learns the bound lapsed.
+          if (yield* expired(connection)) return
+
           if (Exit.isFailure(answer)) {
             yield* end(connection, ended("OwnerLost", true), true)
 
