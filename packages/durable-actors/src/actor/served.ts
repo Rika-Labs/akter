@@ -60,6 +60,8 @@ export interface ServedDefinition {
   readonly members: ReadonlyArray<ServedMember>
   /** Connection members, served as WebSocket upgrades. */
   readonly connections: ReadonlyArray<ServedConnection>
+  /** Tags of the events served as SSE event feeds. */
+  readonly feeds: ReadonlyArray<string>
   readonly deliveryMs: number
 }
 

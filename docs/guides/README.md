@@ -12,7 +12,13 @@ The framework is alpha and not yet on npm. The [quickstart](../quickstart.md) ru
 ## On this site
 
 - [Quickstart](../quickstart.md): create an app, run it, and test it.
+- [Concepts](concepts.md): actors, turns, receipts, and the work that continues after a turn.
+- Guides:
+  - [Effect all the way into the commit](effect-into-the-commit.md): how a handler's Effect runs inside the turn's transaction.
+  - [Testing](testing.md): `ActorTest`, crash points, time, and which database to test on.
+  - [Deploy](deploy.md): running on Postgres in production, and what is supported today.
 - [API reference](../api/README.md): the server API, the context services, the TypeScript SDK, Drizzle, generated clients, naming, and versioning.
+- [Comparison](comparison.md): Durable Actors next to Cloudflare Durable Objects, Rivet, Restate, and Temporal, citing their documentation.
 
 Every page has a Markdown copy: replace `.html` with `.md` in its address, or follow **View as Markdown** at the bottom of the page. [`llms.txt`](https://llmstxt.org) at the site root lists every Markdown copy.
 
