@@ -129,8 +129,8 @@ export const Room = Actor.make("Room", {
     effects: {
       ModerateMessage: {
         retry: { times: 5 },
-        // At most four calls per room in flight, across every runner.
-        concurrency: { perActor: 4 },
+        // At most two calls per room in flight, across every runner.
+        concurrency: { perActor: 2 },
         onSuccess: Moderated,
         onDeadLetter: ModerationFailed,
         onCancelled: ModerationCancelled,
