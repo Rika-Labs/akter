@@ -136,9 +136,13 @@ const serveInspector = Effect.gen(function* () {
 
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
 
-  return (path: string, tenant?: string) =>
+  const url = `http://127.0.0.1:${server.port}`
+
+  return (path: string, tenant?: string, origin?: string) =>
     Effect.gen(function* () {
-      const request = HttpClientRequest.get(`http://127.0.0.1:${server.port}/inspector${path}`)
+      const request = HttpClientRequest.get(`${url}/inspector${path}`, {
+        headers: origin === undefined ? {} : { origin: origin === "self" ? url : origin },
+      })
 
       const response = yield* client.execute(
         tenant === undefined ? request : HttpClientRequest.bearerToken(request, tenant),
@@ -501,6 +505,35 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             expect(field(anonymous.body, "reason", "_tag")).toBe("Unauthorized")
             expect(field(anonymous.body, "reason", "code")).toBe("missing_credentials")
           }
+
+          // Another browser origin is refused before its credentials are read; the page's own is served.
+          const foreign = yield* get(
+            "/actor?type=Inspected&id=shared",
+            home,
+            "https://elsewhere.example",
+          )
+
+          expect(foreign.status).toBe(403)
+          expect(field(foreign.body, "reason", "code")).toBe("origin_not_allowed")
+          expect(field(foreign.body, "state")).toBe(null)
+          expect(yield* get("/actor?type=Inspected&id=shared", home, "self")).toEqual(shared)
+
+          // Following `next` one actor at a time visits every actor once, in the listed order.
+          const everyone = list((yield* get("/actors?type=Inspected", abroad)).body, "actors")
+          const paged: Array<Schema.Json> = []
+          let cursor = ""
+
+          for (let page = 0; page <= everyone.length; page++) {
+            const reply = (yield* get(`/actors?type=Inspected&limit=1${cursor}`, abroad)).body
+            paged.push(...list(reply, "actors"))
+            const next = field(reply, "next")
+
+            if (next === null) break
+
+            cursor = `&afterType=${encodeURIComponent(text(field(next, "actorType")))}&afterId=${encodeURIComponent(text(field(next, "actorId")))}`
+          }
+
+          expect(paged).toEqual(everyone)
         }),
       ),
   },

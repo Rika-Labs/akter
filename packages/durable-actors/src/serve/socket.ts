@@ -102,8 +102,9 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
   let buffered: Array<string | Uint8Array> = []
 
   const write = (message: ServerWireMessage) =>
-    encodeServerMessage(message).pipe(Effect.orDie, Effect.flatMap(writer.write), Effect.ignore)
+    encodeServerMessage(message).pipe(Effect.orDie, Effect.flatMap(writer.write))
 
+  // A failed write means the peer is gone; it ends the session like a close would.
   const send = (message: ServerWireMessage) =>
     Effect.suspend(() => (finished ? Effect.void : write(message)))
 
@@ -230,7 +231,12 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
   let expiresAt = expiryOf(principal)
   const renewed = yield* Queue.sliding<void>(1)
 
-  yield* send({
+  // The peer is gone: nothing more is written, and the holder closes the session.
+  const gone = Effect.sync(() => {
+    finished = true
+  }).pipe(Effect.andThen(held.close))
+
+  const opening = send({
     t: "open",
     connectionId: held.connectionId,
     baseline: connection.stampCursor ? held.cursor : undefined,
@@ -266,7 +272,8 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
     Stream.filter((message) => !ClientMessage.guards.Progress(message)),
     Stream.runForEach((message) => wire(message).pipe(Effect.flatMap(send))),
     Effect.matchEffect({
-      onFailure: (error) => error.pipe(refuse, finishWith),
+      onFailure: (error) =>
+        Predicate.isTagged(error, "SocketError") ? gone : error.pipe(refuse, finishWith),
       onSuccess: () => finish(undefined, 1000),
     }),
   )
@@ -334,7 +341,10 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
       yield* send({ t: "reauthenticate", by: deadline })
       yield* Queue.take(renewed)
     }
-  })
+  }).pipe(Effect.catchTag("SocketError", () => gone))
 
-  yield* Effect.raceAll([outbound, inbound, reauthenticate])
+  yield* opening.pipe(
+    Effect.andThen(Effect.raceAll([outbound, inbound, reauthenticate])),
+    Effect.catchTag("SocketError", () => gone),
+  )
 })
