@@ -58,7 +58,18 @@ const UPGRADE_ERRORS = {
   503: ["RunnerAtCapacity"],
 } as const
 
+/** A refused feed; a feed that ends later sends an `end` message instead. */
+const FEED_ERRORS = {
+  400: ["InvalidInput"],
+  401: ["Unauthorized"],
+  403: ["Unauthorized", "InvalidInput"],
+  404: ["NotCreated", "InvalidInput"],
+  503: ["ActorUnavailable", "RunnerAtCapacity"],
+} as const
+
 const commandErrors = errorSchemas(COMMAND_ERRORS, "Command")
+
+const feedErrors = errorSchemas(FEED_ERRORS, "Feed")
 
 const upgradeErrors = errorSchemas(UPGRADE_ERRORS, "Upgrade")
 
@@ -158,6 +169,38 @@ const connectionEndpoint = (
     }
   })
 
+// An event feed is served over SSE: one message per event, its cursor as the `id`.
+const feedEndpoint = (basePath: string, definition: ServedDefinition) =>
+  HttpApiEndpoint.get(
+    "events",
+    `${basePath}${memberPath({ definition, member: { tag: "events" } })}` as `/${string}`,
+    {
+      params: definition.key === "singleton" ? undefined : { id: Schema.String },
+      query: {
+        event: Schema.Array(Schema.Literals(definition.feeds)),
+        after: Schema.optionalKey(Schema.String),
+      },
+      error: [...feedErrors, defect],
+    },
+  ).annotate(OpenApi.Transform, (operation) => {
+    const { 204: _, ...refusals }: { readonly [status: string]: Schema.Json } =
+      operation.responses ?? {}
+
+    return {
+      ...operation,
+      responses: {
+        200: {
+          description:
+            "Server-sent events: `id` is the event cursor, `event` its tag; `Last-Event-ID` resumes after it",
+          content: { "text/event-stream": { schema: { type: "string" } } },
+        },
+        ...refusals,
+        410: { description: "RetentionGap: events after the cursor were pruned" },
+      },
+      "x-durable-transport": "sse",
+    }
+  })
+
 const frameSchemas = (definition: ServedDefinition, connection: ServedConnection) =>
   Object.entries(frameParts(connection)).map(([part, schema]) =>
     schema.annotate({ identifier: frameSchemaName(definition, connection, part) }),
@@ -199,6 +242,7 @@ export const build = ({ definitions, basePath }: ServedRoutes) => {
       ...definition.connections.map((connection) =>
         connectionEndpoint(basePath, definition, connection),
       ),
+      ...(definition.feeds.length > 0 ? [feedEndpoint(basePath, definition)] : []),
     ]
 
     if (endpoints.length > 0)

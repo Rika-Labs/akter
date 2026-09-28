@@ -1,4 +1,15 @@
-import { Cause, Effect, Exit, Fiber, Match, Option, Schema, SchemaAST, Stream } from "effect"
+import {
+  Cause,
+  DateTime,
+  Effect,
+  Exit,
+  Fiber,
+  Match,
+  Option,
+  Schema,
+  SchemaAST,
+  Stream,
+} from "effect"
 import {
   Headers,
   HttpRouter,
@@ -11,13 +22,15 @@ import {
   type ServedMember,
   servedDefinitions,
 } from "../actor/served.ts"
-import { ActorError, RunnerAtCapacity, Unauthorized } from "../errors/actor.ts"
+import { ActorError, NotCreated, RunnerAtCapacity, Unauthorized } from "../errors/actor.ts"
+import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
 import { build, document, memberPath, PROTOCOL_OPERATIONS } from "./api.ts"
 import { type AuthProvider, type Authenticated, readsCookies, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
+import { feedStream, MAX_FEED_FILTERS, openFeed } from "./feed.ts"
 import { MAX_AWAITING_HELLO, socketSession } from "./socket.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
 
@@ -46,7 +59,10 @@ export interface ServeOptions<R> {
 
 const NAME = /^[A-Za-z][A-Za-z0-9_]*$/
 
-const RESERVED_MEMBERS: ReadonlySet<string> = new Set(["events"])
+/** The path segment an actor's event feed is served at, so no member may take it. */
+const FEED_ROUTE = "events"
+
+const RESERVED_MEMBERS: ReadonlySet<string> = new Set([FEED_ROUTE])
 
 const ALLOWED_HEADERS = [
   "authorization",
@@ -518,6 +534,70 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return HttpServerResponse.empty()
         })
 
+      const encodeCursorError = Schema.encodeEffect(Schema.Union([UnknownCursor, RetentionGap]))
+
+      // An event feed: authorized per event tag, answered with its cursor's errors before any
+      // stream starts, and never creating the actor it follows.
+      const feedHandler = (definition: ServedDefinition) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const query = new URL(request.url, "http://feed").searchParams
+          const tags = [...new Set(query.getAll("event"))]
+
+          if (tags.length > MAX_FEED_FILTERS) return yield* invalidInput("too_many_filters")
+
+          // No wildcard: every tag a caller reads is one `authorize` sees.
+          if (tags.length === 0 || tags.some((tag) => !definition.feeds.includes(tag)))
+            return yield* invalidInput("unknown_event")
+
+          // A browser's own reconnect resumes where it stopped.
+          const after = Option.getOrUndefined(
+            Option.orElse(Headers.get(request.headers, "last-event-id"), () =>
+              Option.fromNullishOr(query.get("after")),
+            ),
+          )
+
+          const authenticated = yield* authenticate(request)
+          const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
+
+          if (!(yield* actors.exists(ref)))
+            return yield* ActorError.make({ reason: NotCreated.make({}) })
+
+          const options = {
+            actors,
+            ref,
+            tags,
+            caller: authenticated.caller,
+            expiresAt:
+              authenticated.expiresAt === undefined
+                ? undefined
+                : DateTime.toEpochMillis(authenticated.expiresAt),
+          }
+
+          const held = yield* openFeed(options)
+
+          const checked = yield* actors.readFeed(ref, tags, after, 1).pipe(
+            Effect.as(undefined),
+            Effect.catchTags({
+              UnknownCursor: (error) => Effect.succeed({ error, status: 404 }),
+              RetentionGap: (error) => Effect.succeed({ error, status: 410 }),
+            }),
+            Effect.tapError(() => held.close),
+          )
+
+          if (checked !== undefined) {
+            yield* held.close
+            const body = yield* encodeCursorError(checked.error).pipe(Effect.orDie)
+
+            return HttpServerResponse.jsonUnsafe(body, { status: checked.status })
+          }
+
+          return HttpServerResponse.stream(feedStream({ options, first: held, after }), {
+            contentType: "text/event-stream",
+            headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
+          })
+        })
+
       const requestId =
         (member: ServedMember) =>
         (request: HttpServerRequest.HttpServerRequest): Record<string, string> => {
@@ -534,6 +614,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             "POST",
             `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
             respond(memberHandler(definition, member), requestId(member)),
+          )
+
+      for (const definition of definitions)
+        if (definition.feeds.length > 0)
+          yield* router.add(
+            "GET",
+            `${basePath}${memberPath({ definition, member: { tag: FEED_ROUTE } })}` as HttpRouter.PathInput,
+            respond(feedHandler(definition)),
           )
 
       for (const definition of definitions)
