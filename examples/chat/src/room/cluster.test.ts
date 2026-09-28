@@ -1,7 +1,8 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actor, ActorError, Actors } from "@durable-actors/core"
-import { ActorCluster, ActorTest } from "@durable-actors/core/testing"
+import { ActorCluster, ActorTest, type ClusterOptions } from "@durable-actors/core/testing"
 import {
+  Clock,
   Config,
   Crypto,
   Effect,
@@ -18,7 +19,7 @@ import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { threeRunners } from "./cluster.ts"
 import { Appeal, Digest, Presence, Room, RoomId, Thread } from "./contract.ts"
-import { RoomLive } from "./layer.ts"
+import { RoomEffects, RoomHandlers, RoomLive } from "./layer.ts"
 import { ModerationApi, Moderators } from "./moderation.ts"
 
 /** Moderator notifications per appealed message, across every runner. */
@@ -60,10 +61,17 @@ const freshDatabase = Effect.gen(function* () {
   return Redacted.make(base.href)
 })
 
-const onCluster = <A, E>(body: Effect.Effect<A, E, ActorCluster>) =>
+type Cluster = Pick<
+  ClusterOptions<never, never, Layer.Services<typeof actors>>,
+  "actors" | "runnerActors" | "executors"
+>
+
+const onCluster = <A, E>(body: Effect.Effect<A, E, ActorCluster>, cluster: Cluster) =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const context = yield* Layer.build(threeRunners({ database: yield* freshDatabase, actors }))
+      const context = yield* Layer.build(
+        threeRunners({ ...cluster, database: yield* freshDatabase }),
+      )
 
       return yield* body.pipe(Effect.provideContext(context))
     }).pipe(Effect.scoped, Effect.orDie),
@@ -72,8 +80,11 @@ const onCluster = <A, E>(body: Effect.Effect<A, E, ActorCluster>) =>
 // Three runners need independent connections, so these cases skip on PGlite.
 const pglite = runtime.runSync(Config.String("CHAT_BACKEND")) === "pglite"
 
-const clusterCase = <A, E>(name: string, body: Effect.Effect<A, E, ActorCluster>) =>
-  it.skipIf(pglite)(name, () => onCluster(body), 90_000)
+const clusterCase = <A, E>(
+  name: string,
+  body: Effect.Effect<A, E, ActorCluster>,
+  cluster: Cluster = { actors },
+) => it.skipIf(pglite)(name, () => onCluster(body, cluster), 90_000)
 
 const on = <A, E, R>(runner: number, effect: Effect.Effect<A, E, R>) =>
   ActorCluster.use((cluster) => cluster.on(runner)(effect))
@@ -260,7 +271,127 @@ clusterCase(
   }),
 )
 
-it.todo("holds each room to two moderation calls in flight across three runners (caps, #125)")
+/** One moderation call as the provider saw it; `endedAt` stays unset while it runs. */
+interface ModerationCall {
+  readonly body: string
+  readonly effectId: string
+  readonly runner: number
+  readonly startedAt: number
+  endedAt?: number
+}
+
+const moderationCalls: Array<ModerationCall> = []
+
+/** The most calls in `calls` that were running at the same moment. */
+const mostInFlight = (calls: ReadonlyArray<ModerationCall>) =>
+  Math.max(
+    0,
+    ...calls.map(
+      ({ startedAt }) =>
+        calls.filter(
+          (call) => call.startedAt <= startedAt && (call.endedAt ?? Infinity) > startedAt,
+        ).length,
+    ),
+  )
+
+// Each runner gets its own provider, so a call records which runner made it. The
+// first call for "capped 0" never returns: it holds a slot until its runner dies.
+const cappedProvider = (runner: number) =>
+  Layer.succeed(ModerationApi, {
+    check: (body, { idempotencyKey }) =>
+      Effect.gen(function* () {
+        const call: ModerationCall = {
+          body,
+          effectId: idempotencyKey,
+          runner,
+          startedAt: yield* Clock.currentTimeMillis,
+        }
+
+        const hangs = body === "capped 0" && !moderationCalls.some((seen) => seen.body === body)
+        moderationCalls.push(call)
+
+        yield* (hangs ? Effect.never : Effect.sleep("150 millis")).pipe(
+          Effect.ensuring(
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => {
+                call.endedAt = now
+              }),
+            ),
+          ),
+        )
+
+        return false
+      }),
+  })
+
+// Long enough that a loaded machine's late renewal cannot lose the lease before the kill.
+const CAP_LEASE_MS = 9_000
+
+clusterCase(
+  "holds each room to two moderation calls in flight across three runners (caps, #125)",
+
+  Effect.gen(function* () {
+    const cluster = yield* ActorCluster
+    const room = RoomId.make("caps")
+
+    const bodies = (from: number, to: number) =>
+      Array.from({ length: to - from }, (_, index) => `capped ${from + index}`)
+
+    const post = (runner: number, posted: ReadonlyArray<string>) =>
+      on(
+        runner,
+        Effect.gen(function* () {
+          const handle = yield* Room.get(room)
+          yield* Effect.forEach(posted, (body) => handle.Post({ body }), { discard: true })
+        }),
+      )
+
+    // Receipts, not provider returns: a call whose runner dies before its settle commits reruns.
+    const moderated = (runner: number, count: number) =>
+      on(
+        runner,
+        ActorTest.use((test) =>
+          Effect.gen(function* () {
+            const ref = (yield* Room.get(room)).ref
+
+            return (yield* test.receiptsFor(ref, "Moderated")) === count
+          }),
+        ),
+      )
+
+    // "capped 0" holds one slot; the other three share the other slot.
+    yield* post(0, bodies(0, 4))
+    yield* eventually(moderated(0, 3), "the first posts' moderation")
+
+    const hung = moderationCalls.find((call) => call.body === "capped 0")!
+    yield* cluster.kill(hung.runner)
+    const killedAt = yield* Clock.currentTimeMillis
+    yield* cluster.ready
+
+    const survivor = (hung.runner + 1) % cluster.runners
+    yield* post(survivor, bodies(4, 8))
+
+    yield* eventually(moderated(survivor, 8), "every post's moderation to route")
+
+    const retried = moderationCalls.filter((call) => call.effectId === hung.effectId)
+    const afterKill = moderationCalls.filter((call) => call.startedAt >= killedAt)
+
+    expect(mostInFlight(moderationCalls)).toBe(2)
+    // Every post was moderated once, except the hung call's retry under its own effect id.
+    expect(new Set(moderationCalls.map(({ effectId }) => effectId)).size).toBe(8)
+    expect(moderationCalls).toHaveLength(9)
+    expect(retried.map(({ runner }) => runner === hung.runner)).toEqual([true, false])
+    // The dead runner's lease kept counting, so later posts ran one at a time until it ended:
+    // it was renewed at most a third of a lease before the kill.
+    expect(mostInFlight(afterKill)).toBe(1)
+    expect(retried[1]!.startedAt - killedAt).toBeGreaterThanOrEqual((CAP_LEASE_MS * 2) / 3)
+  }),
+  {
+    actors: RoomHandlers.pipe(Layer.provide(CountingModerators)),
+    runnerActors: (runner) => RoomEffects.pipe(Layer.provide(cappedProvider(runner))),
+    executors: { lease: `${CAP_LEASE_MS} millis` },
+  },
+)
 
 clusterCase(
   "wakes a parked room on another runner when a typing frame arrives",

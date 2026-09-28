@@ -492,6 +492,12 @@ describe("actor declarations", () => {
       // @ts-expect-error onDeadLetter must accept Actor.DeadLetter(E)
       policy: { effects: { Moderate: { onDeadLetter: Moderated } } },
     })
+    Actor.make("WrongCancelled", {
+      effects: [Moderate],
+      api: { Moderated },
+      // @ts-expect-error onCancelled must accept Actor.Cancelled(E)
+      policy: { effects: { Moderate: { onCancelled: Moderated } } },
+    })
     expect(() =>
       Actor.make("ForeignRoute", {
         effects: [Moderate],

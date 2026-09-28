@@ -6,6 +6,7 @@ export type TurnPoint =
   | "beforeHandler"
   | "beforeCommit"
   | "afterCommit"
+  | "beforeFlush"
   | "afterClaim"
   | "beforeOutboxDelete"
   | "beforeExecute"
