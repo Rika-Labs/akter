@@ -676,7 +676,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "a renewal whose fresh credential expires while its check runs ends the session with Unauthorized expired",
+    name: "an open or a renewal whose credential expires while its check runs is refused with Unauthorized expired",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -686,6 +686,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           const owner = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" }
           let offset = 0
+          let slowOpen = true
 
           const type: HeldActorType = {
             deliveryMs: 1_000,
@@ -726,12 +727,28 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             actorType: () => type,
             authorize: (request) =>
               Effect.sync(() => {
-                // The renewal's check allows it, but answers a second later.
-                if (request.kind === "reauthorize") offset += 1_000
+                // Each slow check allows its session, but answers a second later.
+                if (request.kind === "reauthorize" || (request.kind === "open" && slowOpen))
+                  offset += 1_000
 
                 return true
               }),
           }).pipe(Effect.provideService(FrameworkClock, { offsetMillis: () => offset }))
+
+          const late = yield* holder
+            .open({
+              ref: room.ref,
+              member: Live.tag,
+              caller: System.make({ source: "actor" }),
+              params: "{}",
+              expiresAt: (yield* holder.now) + 500,
+            })
+            .pipe(Effect.flip)
+
+          expect(Predicate.isTagged(late, "ActorError") ? late.reason : late).toMatchObject({
+            code: "expired",
+          })
+          slowOpen = false
 
           const held = yield* holder.open({
             ref: room.ref,
