@@ -6,6 +6,7 @@ export const SalesRow = Schema.Struct({
   name: Schema.String,
   orders: Schema.Int,
   quantity: Schema.Int,
+  /** Cents; exact up to 2^53. */
   revenue: Schema.Int,
 })
 
@@ -23,7 +24,7 @@ export const salesBySku = Effect.fn("Reports.salesBySku")(function* (tenant: str
     SELECT sku, min(name) AS name,
       count(DISTINCT actor_id)::int AS orders,
       sum(quantity)::int AS quantity,
-      sum(quantity * unit_price)::int AS revenue
+      sum(quantity::bigint * unit_price)::float8 AS revenue
     FROM order_lines
     WHERE tenant_id = ${tenant}
     GROUP BY sku

@@ -180,6 +180,22 @@ The chat example's own test ([`examples/chat/src/room/layer.test.ts`](../../exam
 
 **Executed 2026-09-27 (M1.9, branch `feat/17-retention` at `657183f`, merged with `main` at `9b51535`):** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, PGlite 0.5.8, and disposable Postgres 18.6. `bun run check` passed all 58 tasks, with `durable-actors` tests at 141 passed and 24 independent-connection cases skipped on PGlite, and the chat example at 7 passed. `bun run test:integration` passed all 7 tasks: `durable-actors` 144 Postgres tests (including the seven cases that timed out at `779e6a5`), chat 7, api 11, counter 1, infra 1. The statement gate (`--profile ci`) matches the baseline. Benchmark results: [`f028893-m1.9-retention-postgres`](../../benchmarks/results/2026-09-27-f028893-m1.9-retention-postgres.json) and [`f028893-m1.9-retention-pglite`](../../benchmarks/results/2026-09-27-f028893-m1.9-retention-pglite.json), recorded with no timed sweep. Local results do not substitute for the CI evidence artifact of the pushed revision.
 
+### CR.8 orders example
+
+`examples/orders` adds no conformance cases; its own tests are the evidence ([walkthrough](../../examples/orders/README.md)). [`order/layer.test.ts`](../../examples/orders/src/order/layer.test.ts) and [`server.test.ts`](../../examples/orders/src/server.test.ts) run on PGlite (`test`) and on a fresh Postgres database (`test:integration`):
+
+- `places an order: owned lines, an event, a minted shipment per package, and one charge`;
+- `replays a retried Place from its receipt and refuses the same id with other input` (R1, R2);
+- `refuses a second order under a placed order id and changes nothing`;
+- `mints the same shipment ids when a crash before COMMIT reruns Place` (A5);
+- `applies one charge when the executor's result is lost after the provider applied it` (P1, contract 08);
+- `dead-letters a declined charge, fails the order, and cancels its shipments`;
+- over HTTP: the OpenAPI snapshot without the order's `Place`, a placed order replayed under the same `Idempotency-Key`, `refuses a retry whose catalog read changed under the same key` (409), bad requests answered before any turn, and the cross-order sales report in plain SQL.
+
+The crash drill, [`drill/runner.test.ts`](../../examples/orders/src/drill/runner.test.ts), runs on Postgres only. For each of `beforeHandler:Place`, `beforeCommit:Place`, `afterCommit:Place`, `afterClaim:Open`, `beforeOutboxDelete:Open`, `beforeExecute:Charge`, `afterExecute:Charge`, `afterClaim:Charged`, and `beforeOutboxDelete:Charged`, it SIGKILLs a real runner process ([`drill/runner.ts`](../../examples/orders/src/drill/runner.ts)) at the fault through `TurnHooks`, retries the order under the same key on a replacement process, and asserts one `Place` receipt, every order line, two shipments opened and released once each, one `Charged`, an empty outbox, and one applied charge per idempotency key in a fake provider that outlives the runners.
+
+**Executed 2026-09-28 (CR.8, branch `feat/95-orders`):** Bun 1.4.2, Postgres 18.6. PGlite: 11 passed, the 9 drill cases skipped. Postgres: 20 passed, including all 9 drill cases in about 33 s.
+
 ### CR.4 inspection views
 
 The cases live in [`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts) and check [ADR 0028](../decisions/0028-sql-inspection-views.md) (proposed). The fixture actor `Specimen` writes state, emits an event, schedules a keyed self-timer an hour out, and performs an effect with `retry: { times: 0 }` whose executor always fails. Shared (PGlite and Postgres):

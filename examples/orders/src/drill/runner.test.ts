@@ -8,6 +8,7 @@ import {
   Crypto,
   type Duration,
   Effect,
+  Exit,
   Fiber,
   identity,
   Layer,
@@ -248,6 +249,9 @@ describe.skipIf(pglite)("orders crash drill with Postgres", () => {
             expect(String((yield* first.child.exitCode.pipe(Effect.flip)).cause)).toContain(
               "SIGKILL",
             )
+
+            // Stopped inside Place, the killed runner never answered.
+            if (!acknowledged) expect(Exit.isFailure(yield* Fiber.await(reply))).toBe(true)
 
             const second = yield* start("none")
 

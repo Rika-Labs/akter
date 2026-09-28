@@ -55,7 +55,7 @@ interface ProblemDetail {
 const problem = (status: number, error: string, detail?: ProblemDetail) =>
   HttpServerResponse.jsonUnsafe({ error, ...detail }, { status })
 
-/** The HTTP status of each `ActorError` reason; reasons not listed are retryable. */
+/** Answers an `ActorError` with its reason; the retryable reasons (unavailable, timeout, capacity) are 503. */
 const actorFailure = (error: ActorError) =>
   problem(
     Match.value(error.reason).pipe(
