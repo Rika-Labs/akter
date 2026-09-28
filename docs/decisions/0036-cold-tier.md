@@ -29,7 +29,7 @@ What exists today that the design must fit:
 
 - **Moves:** an actor's keyed state rows and its `Actor.blob` entries.
 - **Stays hot:** the `actor_generations` row (identity, generation, event sequence), receipts, events, outbox rows and timers, owned-table rows (they exist to be seen by SQL), connections, and workflow rows. Anything with due work or retention of its own keeps its own rules.
-- **Not in scope:** tenant content blobs from ADR 0034 (proposed separately). Their lifecycle is per tenant.
+- **Not in scope:** tenant content blobs from [ADR 0034](0034-tenant-scoped-content-addressed-blobs.md). Their lifecycle is per tenant.
 - **Where it runs.** Only where an object store is configured: `Actors.layer({ coldStorage })`. Hosted deployments configure it. Self-hosted deployments may. PGlite never does. Without `coldStorage`, nothing goes cold.
 
 ### 2. Finding idle actors without touching warm turns
@@ -68,12 +68,12 @@ A wake between steps 1 and 3 changes the generation, so step 3 aborts. A wake af
 
 - An object becomes unreferenced when its actor rehydrates, or when step 3 aborts. Rehydration and aborts record the key in a small garbage table on the same shard. A sweeper deletes an object only after it has been unreferenced for longer than the database backup retention plus a grace, so a restored snapshot never points at a deleted object.
 - **Restore** is otherwise unchanged. The object store is in the backup boundary: it must be versioned or replicated with at least the database's durability. The [restore procedure](../operations/04-backup-restore.md) gains a check that every `cold_ref` in the restored snapshot exists.
-- **Regions.** Objects live in the tenant's home region. A tenant move (L.1, designed in ADR 0031, proposed separately) copies the tenant's objects, or rehydrates the tenant first.
+- **Regions.** Objects live in the tenant's home region. A tenant move (L.1, designed in [ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md)) copies the tenant's objects, or rehydrates the tenant first.
 - **Tenancy and security.** Keys are prefixed by deployment and tenant. Runners get credentials scoped to their deployment's prefix, and the object store is never reachable by clients. Per-tenant encryption keys are open question 5.
 
 ### 6. Compatibility
 
-A cold object keeps the state `$version` it was written with. Its actor type's state chain must therefore keep every step a cold object still needs. L.2 records the `$version` on `actor_generations` beside `cold_ref`. A startup check refuses a shortened chain while cold actors still hold an older version, as ADR 0032 (proposed separately) does for events.
+A cold object keeps the state `$version` it was written with. Its actor type's state chain must therefore keep every step a cold object still needs. L.2 records the `$version` on `actor_generations` beside `cold_ref`. A startup check refuses a shortened chain while cold actors still hold an older version, as [ADR 0032](0032-event-and-effect-payload-evolution.md) does for events.
 
 ## Alternatives rejected
 
