@@ -217,6 +217,7 @@ const unreserved = (key: string) =>
   key.startsWith(CRON_PREFIX)
     ? Effect.die(new Error(`Intent key "${key}" is reserved for cron`))
     : Effect.void
+
 /** Checks an effect key; staged and stored effect keys are prefixed. */
 export const effectKey = (key: string) => {
   checkKey("An effect key", key)
