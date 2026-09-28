@@ -438,6 +438,8 @@ export const activationEngine = (options: {
         body: Fiber.Fiber<unknown, unknown> | undefined
         /** Clocks and waits the live run is parked on while another branch still runs. */
         readonly parked: Set<string>
+        /** Activity, clock, and wait steps of the run still working, not parked. */
+        active: number
       }
     >()
 
@@ -677,7 +679,32 @@ export const activationEngine = (options: {
             ...row,
           })
 
-        const suspend = Effect.die(new Suspend())
+        // A branch that parks would otherwise interrupt concurrent branches
+        // mid-step: a sibling registering or settling its own clock or wait,
+        // or running an activity, would lose that work and could replay
+        // forever. So a parking step waits until every other step of the run
+        // has parked or finished, as Effect's engines let running steps finish.
+        const working = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.acquireUseRelease(
+            Effect.sync(() => (entry.active += 1)),
+            () => effect,
+            () => Effect.sync(() => (entry.active -= 1)),
+          )
+
+        const quiet = Effect.gen(function* () {
+          for (;;) {
+            while (entry.active > 0) yield* Effect.sleep("1 millis")
+            yield* Effect.yieldNow
+
+            if (entry.active === 0) return
+          }
+        })
+
+        const suspend = Effect.acquireUseRelease(
+          Effect.sync(() => (entry.active -= 1)),
+          () => quiet,
+          () => Effect.sync(() => (entry.active += 1)),
+        ).pipe(Effect.andThen(Effect.die(new Suspend())))
 
         // Step writes run inside the body's fiber; a failed statement is a defect there, and the timer resumes.
         const guarded = <A, R>(effect: Effect.Effect<A, SqlError.SqlError, R>) =>
@@ -686,221 +713,228 @@ export const activationEngine = (options: {
         const engine: WorkflowSteps = {
           activity: (step, run) =>
             guarded(
-              Effect.gen(function* () {
-                yield* registered(step)
-                // `Activity.retry` numbers its attempts; each records its own exit.
-                const attempt = yield* Activity.CurrentAttempt
-                let row = yield* recordedOf(step, attempt)
+              working(
+                Effect.gen(function* () {
+                  yield* registered(step)
+                  // `Activity.retry` numbers its attempts; each records its own exit.
+                  const attempt = yield* Activity.CurrentAttempt
+                  let row = yield* recordedOf(step, attempt)
 
-                if (row?.exit !== null && row?.exit !== undefined)
-                  return yield* decodeRecorded(row.exit)
+                  if (row?.exit !== null && row?.exit !== undefined)
+                    return yield* decodeRecorded(row.exit)
 
-                if (interrupting) return yield* Effect.interrupt
+                  if (interrupting) return yield* Effect.interrupt
 
-                // The pending row is committed before the activity runs, so a
-                // rerun after a crash reuses its attempt and derived ids.
-                if (row === undefined) {
-                  const at = yield* now
-                  yield* fenced(
-                    Effect.gen(function* () {
-                      yield* insertStep(step, {}, at, attempt)
-                      yield* armTimer(routingKey, ref, executionId, at + RECOVERY_MS, onBehalfOf)
-                    }),
+                  // The pending row is committed before the activity runs, so a
+                  // rerun after a crash reuses its attempt and derived ids.
+                  if (row === undefined) {
+                    const at = yield* now
+                    yield* fenced(
+                      Effect.gen(function* () {
+                        yield* insertStep(step, {}, at, attempt)
+                        yield* armTimer(routingKey, ref, executionId, at + RECOVERY_MS, onBehalfOf)
+                      }),
+                    )
+                    remember(step, { started_at_ms: String(at) }, attempt)
+                    row = steps.get(slot(step.name, attempt))!
+                  }
+
+                  const issuedAt = Number(row.started_at_ms)
+                  const expiresAt = issuedAt + retryWindowMs
+                  let ordinal = 0
+
+                  const nextCommandId = Effect.gen(function* () {
+                    ordinal += 1
+
+                    if ((yield* now) + options.deliveryMs >= expiresAt)
+                      return yield* Effect.die(
+                        ActivityOutcomeUnknown.make({ executionId, step: step.name }),
+                      )
+
+                    const digest = yield* crypto
+                      .digest(
+                        "SHA-256",
+                        new TextEncoder().encode(
+                          callIdentity(executionId, step.name, row!.attempt, ordinal),
+                        ),
+                      )
+                      .pipe(Effect.orDie)
+
+                    return `v1.${issuedAt}.${expiresAt}.${derivedUuid(digest)}`
+                  }).pipe(
+                    Effect.catchIf(SqlError.isSqlError, Effect.die),
+                    Effect.provideContext(services),
                   )
-                  remember(step, { started_at_ms: String(at) }, attempt)
-                  row = steps.get(slot(step.name, attempt))!
-                }
 
-                const issuedAt = Number(row.started_at_ms)
-                const expiresAt = issuedAt + retryWindowMs
-                let ordinal = 0
+                  entry.activities += 1
 
-                const nextCommandId = Effect.gen(function* () {
-                  ordinal += 1
+                  const exit = yield* run.pipe(
+                    Effect.provideService(CurrentCallPhase, CallPhase.Activity({ nextCommandId })),
+                    Effect.ensuring(Effect.sync(() => (entry.activities -= 1))),
+                  )
 
-                  if ((yield* now) + options.deliveryMs >= expiresAt)
-                    return yield* Effect.die(
-                      ActivityOutcomeUnknown.make({ executionId, step: step.name }),
-                    )
+                  const at = yield* now
+                  const settled = yield* fenced(settle(step, exit, at, { attempt }))
+                  const recorded = settled[0]?.exit ?? (yield* readExit(step, attempt))
 
-                  const digest = yield* crypto
-                    .digest(
-                      "SHA-256",
-                      new TextEncoder().encode(
-                        callIdentity(executionId, step.name, row!.attempt, ordinal),
-                      ),
-                    )
-                    .pipe(Effect.orDie)
+                  if (recorded === null)
+                    return yield* Effect.die(new Error("Activity exit missing"))
+                  remember(step, { exit: recorded }, attempt)
 
-                  return `v1.${issuedAt}.${expiresAt}.${derivedUuid(digest)}`
-                }).pipe(
-                  Effect.catchIf(SqlError.isSqlError, Effect.die),
-                  Effect.provideContext(services),
-                )
-
-                entry.activities += 1
-
-                const exit = yield* run.pipe(
-                  Effect.provideService(CurrentCallPhase, CallPhase.Activity({ nextCommandId })),
-                  Effect.ensuring(Effect.sync(() => (entry.activities -= 1))),
-                )
-
-                const at = yield* now
-                const settled = yield* fenced(settle(step, exit, at, { attempt }))
-                const recorded = settled[0]?.exit ?? (yield* readExit(step, attempt))
-
-                if (recorded === null) return yield* Effect.die(new Error("Activity exit missing"))
-                remember(step, { exit: recorded }, attempt)
-
-                return yield* decodeRecorded(recorded)
-              }),
+                  return yield* decodeRecorded(recorded)
+                }),
+              ),
             ),
 
           sleep: (step, millis) =>
             guarded(
-              Effect.gen(function* () {
-                yield* registered(step)
-                const row = yield* recordedOf(step)
+              working(
+                Effect.gen(function* () {
+                  yield* registered(step)
+                  const row = yield* recordedOf(step)
 
-                if (row?.exit !== null && row?.exit !== undefined) return
+                  if (row?.exit !== null && row?.exit !== undefined) return
 
-                if (interrupting) return yield* Effect.interrupt
+                  if (interrupting) return yield* Effect.interrupt
 
-                const at = yield* now
-                let dueAt: number
+                  const at = yield* now
+                  let dueAt: number
 
-                if (row === undefined) {
-                  dueAt = at + millis
-                  yield* fenced(insertStep(step, { due_at_ms: dueAt }, at))
-                  remember(step, { due_at_ms: String(dueAt), started_at_ms: String(at) })
-                } else dueAt = Number(row.due_at_ms)
+                  if (row === undefined) {
+                    dueAt = at + millis
+                    yield* fenced(insertStep(step, { due_at_ms: dueAt }, at))
+                    remember(step, { due_at_ms: String(dueAt), started_at_ms: String(at) })
+                  } else dueAt = Number(row.due_at_ms)
 
-                // The due time is recorded once, so a replay never moves it.
-                if (at < dueAt) {
-                  entry.parked.add(step.name)
+                  // The due time is recorded once, so a replay never moves it.
+                  if (at < dueAt) {
+                    entry.parked.add(step.name)
 
-                  return yield* suspend
-                }
+                    return yield* suspend
+                  }
 
-                yield* fenced(settle(step, RecordedExit.cases.Success.make({ value: null }), at))
-                remember(step, {
-                  exit: encodeRecorded(RecordedExit.cases.Success.make({ value: null })),
-                })
-              }),
+                  yield* fenced(settle(step, RecordedExit.cases.Success.make({ value: null }), at))
+                  remember(step, {
+                    exit: encodeRecorded(RecordedExit.cases.Success.make({ value: null })),
+                  })
+                }),
+              ),
             ),
 
           wait: (step, event, matches, timeoutMs) =>
             guarded(
-              Effect.gen(function* () {
-                yield* registered(step)
-                let row = yield* recordedOf(step)
+              working(
+                Effect.gen(function* () {
+                  yield* registered(step)
+                  let row = yield* recordedOf(step)
 
-                const settledValue = (exit: Uint8Array) =>
-                  decodeRecorded(exit).pipe(
-                    Effect.flatMap((recorded) =>
-                      Schema.decodeUnknownEffect(Schema.NullOr(Schema.String))(
-                        RecordedExit.guards.Success(recorded) ? recorded.value : null,
-                      ).pipe(Effect.orDie),
-                    ),
-                    Effect.map(Option.fromNullOr),
-                  )
+                  const settledValue = (exit: Uint8Array) =>
+                    decodeRecorded(exit).pipe(
+                      Effect.flatMap((recorded) =>
+                        Schema.decodeUnknownEffect(Schema.NullOr(Schema.String))(
+                          RecordedExit.guards.Success(recorded) ? recorded.value : null,
+                        ).pipe(Effect.orDie),
+                      ),
+                      Effect.map(Option.fromNullOr),
+                    )
 
-                if (row?.exit !== null && row?.exit !== undefined)
-                  return yield* settledValue(row.exit)
+                  if (row?.exit !== null && row?.exit !== undefined)
+                    return yield* settledValue(row.exit)
 
-                if (interrupting) return yield* Effect.interrupt
+                  if (interrupting) return yield* Effect.interrupt
 
-                if (row === undefined) {
-                  const at = yield* now
-                  const dueAt = timeoutMs === undefined ? null : at + timeoutMs
-                  const after = eventCursor.value
-                  yield* fenced(
-                    insertStep(
-                      step,
-                      { wait_event: event, wait_after: after, scanned: after, due_at_ms: dueAt },
-                      at,
-                    ),
-                  )
-                  remember(step, {
-                    wait_after: String(after),
-                    scanned: String(after),
-                    due_at_ms: dueAt === null ? null : String(dueAt),
-                    started_at_ms: String(at),
-                  })
-                  row = steps.get(slot(step.name, 1))!
-                }
+                  if (row === undefined) {
+                    const at = yield* now
+                    const dueAt = timeoutMs === undefined ? null : at + timeoutMs
+                    const after = eventCursor.value
+                    yield* fenced(
+                      insertStep(
+                        step,
+                        { wait_event: event, wait_after: after, scanned: after, due_at_ms: dueAt },
+                        at,
+                      ),
+                    )
+                    remember(step, {
+                      wait_after: String(after),
+                      scanned: String(after),
+                      due_at_ms: dueAt === null ? null : String(dueAt),
+                      started_at_ms: String(at),
+                    })
+                    row = steps.get(slot(step.name, 1))!
+                  }
 
-                let scanned = BigInt(row.scanned!)
+                  let scanned = BigInt(row.scanned!)
 
-                // `where` runs here, outside any lock; the settle below is fenced
-                // and conditional, so a racing timeout or a second run settles once.
-                for (;;) {
-                  const page = yield* sql<{ sequence: string; value: Uint8Array }>`
+                  // `where` runs here, outside any lock; the settle below is fenced
+                  // and conditional, so a racing timeout or a second run settles once.
+                  for (;;) {
+                    const page = yield* sql<{ sequence: string; value: Uint8Array }>`
                   SELECT sequence::text AS sequence, value FROM actor_events
                   WHERE ${ownerRow} AND event = ${event} AND sequence > ${scanned}
                   ORDER BY sequence LIMIT 256`
 
-                  for (const found of page) {
-                    const value = decompress(found.value)
+                    for (const found of page) {
+                      const value = decompress(found.value)
 
-                    if (!(yield* matches(value))) continue
-                    const at = yield* now
-                    const sequence = BigInt(found.sequence)
-                    const exit = RecordedExit.cases.Success.make({ value })
+                      if (!(yield* matches(value))) continue
+                      const at = yield* now
+                      const sequence = BigInt(found.sequence)
+                      const exit = RecordedExit.cases.Success.make({ value })
 
-                    const settled = yield* fenced(
-                      Effect.gen(function* () {
-                        const done = yield* settle(step, exit, at, { matched: sequence })
+                      const settled = yield* fenced(
+                        Effect.gen(function* () {
+                          const done = yield* settle(step, exit, at, { matched: sequence })
 
-                        if (done.length > 0)
-                          yield* sql`UPDATE actor_workflow_executions SET event_cursor = GREATEST(event_cursor, ${sequence})
+                          if (done.length > 0)
+                            yield* sql`UPDATE actor_workflow_executions SET event_cursor = GREATEST(event_cursor, ${sequence})
                           WHERE routing_key = ${routingKey} AND execution_id = ${executionId}`
 
-                        return done
-                      }),
+                          return done
+                        }),
+                      )
+
+                      if (settled.length > 0 && sequence > eventCursor.value)
+                        eventCursor.value = sequence
+                      const recorded = settled[0]?.exit ?? (yield* readExit(step))
+                      remember(step, { exit: recorded })
+
+                      return yield* settledValue(recorded!)
+                    }
+
+                    if (page.length < 256) {
+                      if (page.length > 0) scanned = BigInt(page[page.length - 1]!.sequence)
+
+                      break
+                    }
+
+                    scanned = BigInt(page[page.length - 1]!.sequence)
+                  }
+
+                  const at = yield* now
+
+                  if (row.due_at_ms !== null && at >= Number(row.due_at_ms)) {
+                    const settled = yield* fenced(
+                      settle(step, RecordedExit.cases.Success.make({ value: null }), at),
                     )
 
-                    if (settled.length > 0 && sequence > eventCursor.value)
-                      eventCursor.value = sequence
                     const recorded = settled[0]?.exit ?? (yield* readExit(step))
                     remember(step, { exit: recorded })
 
                     return yield* settledValue(recorded!)
                   }
 
-                  if (page.length < 256) {
-                    if (page.length > 0) scanned = BigInt(page[page.length - 1]!.sequence)
-
-                    break
-                  }
-
-                  scanned = BigInt(page[page.length - 1]!.sequence)
-                }
-
-                const at = yield* now
-
-                if (row.due_at_ms !== null && at >= Number(row.due_at_ms)) {
-                  const settled = yield* fenced(
-                    settle(step, RecordedExit.cases.Success.make({ value: null }), at),
-                  )
-
-                  const recorded = settled[0]?.exit ?? (yield* readExit(step))
-                  remember(step, { exit: recorded })
-
-                  return yield* settledValue(recorded!)
-                }
-
-                if (scanned > BigInt(row.scanned!)) {
-                  yield* fenced(sql`UPDATE actor_workflow_step SET scanned = ${scanned}
+                  if (scanned > BigInt(row.scanned!)) {
+                    yield* fenced(sql`UPDATE actor_workflow_step SET scanned = ${scanned}
                   WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
                     AND step = ${step.name} AND attempt = 1 AND exit IS NULL AND scanned < ${scanned}`)
-                  remember(step, { scanned: String(scanned) })
-                }
+                    remember(step, { scanned: String(scanned) })
+                  }
 
-                entry.parked.add(step.name)
+                  entry.parked.add(step.name)
 
-                return yield* suspend
-              }),
+                  return yield* suspend
+                }),
+              ),
             ),
 
           race: (step, run) =>
@@ -1107,7 +1141,13 @@ export const activationEngine = (options: {
           return
         }
 
-        live.set(executionId, { rerun: false, activities: 0, body: undefined, parked: new Set() })
+        live.set(executionId, {
+          rerun: false,
+          activities: 0,
+          body: undefined,
+          parked: new Set(),
+          active: 0,
+        })
         yield* loop(executionId).pipe(Effect.forkIn(scope))
       }).pipe(Effect.provideContext(services))
 
