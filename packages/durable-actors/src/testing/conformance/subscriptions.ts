@@ -8,6 +8,7 @@ import {
   Layer,
   Match,
   Option,
+  Predicate,
   Schema,
   Stream,
 } from "effect"
@@ -377,7 +378,7 @@ export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
         OnPayment: Effect.fnUntraced(function* (delivery) {
           const turn = yield* SubShipment.Turn
 
-          if (delivery._tag !== "Event") return
+          if (!Predicate.isTagged(delivery, "Event")) return
 
           yield* turn.emit(PaymentSeen.make({ orderId: delivery.source.id }))
           yield* turn.unsubscribe(PaymentUpdates, delivery.source.id)
@@ -2044,6 +2045,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
             "repeat-j#3:OrderPlaced",
           ])
           // The redelivery replayed both receipts: each handler ran once.
+
           for (const entry of ["repeat-j~gap:0-2", "repeat-j#3:OrderPlaced"])
             expect(
               fixture.runs.filter((run) => run === `SubFollower/repeat-f/${entry}`).length,
