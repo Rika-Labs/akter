@@ -400,6 +400,29 @@ export const migrations = {
       )`
     yield* sql`CREATE INDEX actor_connections_holder ON actor_connections (bucket, holder, holder_epoch)`
   }),
+  "0015_effect_control": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_outbox
+      ADD COLUMN running boolean NOT NULL DEFAULT false,
+      ADD COLUMN cancelled_at_ms bigint,
+      ADD COLUMN maybe_applied boolean NOT NULL DEFAULT false,
+      ADD COLUMN ready_at_ms bigint,
+      ADD COLUMN waiting boolean NOT NULL DEFAULT false`
+    // An attempt whose claim is still live and reported nothing is running;
+    // any attempt that ended ambiguously may have applied the call.
+    yield* sql`UPDATE actor_outbox SET ready_at_ms = coalesce(scheduled_at_ms, due_at_ms),
+        maybe_applied = attempts > 0 AND ambiguous,
+        running = attempts > 0 AND ambiguous
+          AND last_error = format('Attempt %s ended without reporting an outcome', attempts)
+          AND due_at_ms > (extract(epoch FROM clock_timestamp()) * 1000)::bigint
+      WHERE kind = 'effect'`
+    yield* sql`CREATE INDEX actor_outbox_running
+      ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, command)
+      WHERE kind = 'effect' AND running`
+    yield* sql`CREATE INDEX actor_outbox_effect_queue
+      ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, command, ready_at_ms, intent_id)
+      WHERE kind = 'effect' AND NOT running`
+  }),
   // An attempt can end an effect before its retries run out, as when its
   // route rejects the result. `final_attempt` records which attempt did, with
   // the outcome, so a dead letter that fails to commit is retried without

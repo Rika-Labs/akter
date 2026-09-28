@@ -36,6 +36,10 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
     new Error(`One actor's blobs hold at most ${scope.maxBytes} bytes (policy.maxBlobBytes)`),
   )
 
+  const tooManyEntries = Effect.die(
+    new Error(`One actor's blobs hold at most ${scope.maxEntries} entries (policy.maxBlobEntries)`),
+  )
+
   const access: BlobAccess = (blob: AnyBlob) => {
     // Checked per call, like owned rows, so a misuse is a defect of the turn.
     const entry = Effect.fnUntraced(function* (name: string) {
@@ -107,6 +111,19 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
     const values = (name: string, chunk: ReturnType<typeof sql.literal>, bytes: Uint8Array) =>
       sql`${routingKey}::bigint, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${blob.name}, ${name}, ${chunk}, ${bytes}::bytea`
 
+    // Read only after a write changed nothing, to name the quota it would pass.
+    const usage = (where: Effect.Success<ReturnType<typeof entry>>) =>
+      sql<{ entries: number; present: boolean; entry_bytes: number }>`
+        SELECT count(*) FILTER (WHERE chunk = 0)::float8 AS entries,
+          COALESCE(bool_or(${where}), false) AS present,
+          COALESCE(sum(octet_length(bytes)) FILTER (WHERE ${where}), 0)::float8 AS entry_bytes
+        FROM actor_blobs WHERE ${owner}`.pipe(Effect.map(([row]) => row!))
+
+    // Chunk 0 heads every entry, so counting it counts entries; an existing
+    // entry stays writable even when the actor already holds the maximum.
+    const refused = (used: { readonly entries: number; readonly present: boolean }) =>
+      !used.present && used.entries >= scope.maxEntries ? tooManyEntries : overQuota
+
     return {
       ...read,
       set: (name, bytes) =>
@@ -119,9 +136,13 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
             // rest. The entry's old bytes don't count against the quota, and past
             // it the statement changes nothing, so a caught defect leaves the entry whole.
             const written = yield* sql`WITH used AS (
-                SELECT COALESCE(sum(octet_length(bytes)) FILTER (WHERE NOT (${where})), 0) AS other
+                SELECT COALESCE(sum(octet_length(bytes)) FILTER (WHERE NOT (${where})), 0) AS other,
+                  count(*) FILTER (WHERE chunk = 0) AS entries,
+                  COALESCE(bool_or(${where}), false) AS present
                 FROM actor_blobs WHERE ${owner}),
-              fits AS (SELECT 1 FROM used WHERE other + ${copied.byteLength} <= ${scope.maxBytes}),
+              fits AS (
+                SELECT 1 FROM used WHERE other + ${copied.byteLength} <= ${scope.maxBytes}
+                  AND (present OR entries < ${scope.maxEntries})),
               dropped AS (
                 DELETE FROM actor_blobs WHERE ${where} AND chunk > 0 AND EXISTS (SELECT 1 FROM fits))
               INSERT INTO actor_blobs (routing_key, tenant_id, actor_type, actor_id, blob, name, chunk, bytes)
@@ -130,7 +151,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
               DO UPDATE SET bytes = EXCLUDED.bytes
               RETURNING chunk`
 
-            if (written.length === 0) return yield* overQuota
+            if (written.length === 0) return yield* refused(yield* usage(where))
           }),
         ),
       append: (name, bytes) =>
@@ -147,15 +168,15 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
               FROM (SELECT chunk, bytes, (${where}) AS entry FROM actor_blobs WHERE ${owner}) AS owned
               HAVING COALESCE(sum(octet_length(bytes)) FILTER (WHERE entry), 0) + ${copied.byteLength} <= ${MAX_ENTRY_BYTES}
                 AND COALESCE(sum(octet_length(bytes)), 0) + ${copied.byteLength} <= ${scope.maxBytes}
+                AND (bool_or(entry) OR count(*) FILTER (WHERE chunk = 0) < ${scope.maxEntries})
               RETURNING chunk`
 
             if (inserted.length === 0) {
-              const [entrySize] = yield* sql<{ bytes: number }>`
-                SELECT COALESCE(sum(octet_length(bytes)), 0)::float8 AS bytes FROM actor_blobs WHERE ${where}`
+              const used = yield* usage(where)
 
-              return yield* entrySize!.bytes + copied.byteLength > MAX_ENTRY_BYTES
+              return yield* used.entry_bytes + copied.byteLength > MAX_ENTRY_BYTES
                 ? oversized
-                : overQuota
+                : refused(used)
             }
           }),
         ),
@@ -169,6 +190,14 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
               UPDATE actor_blobs AS head
               SET bytes = head.bytes || (SELECT string_agg(m.bytes, ''::bytea ORDER BY m.chunk) FROM merged AS m)
               WHERE ${where} AND head.chunk = 0 AND EXISTS (SELECT 1 FROM merged)`
+          }),
+        ),
+      delete: (name) =>
+        run(
+          Effect.gen(function* () {
+            const where = yield* entry(name)
+
+            yield* sql`DELETE FROM actor_blobs WHERE ${where}`
           }),
         ),
     } satisfies BlobWrite
