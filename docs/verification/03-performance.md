@@ -397,6 +397,27 @@ On PGlite the single connection sets the pace and both protocols ran within nois
 
 [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed. The handler generates the ids, so the payload doesn't grow with n ([`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 33 ms with 256, and 83–86 ms with 1,024. With 16 subscribers it was 8.9 ms in one run and 4.2 ms in the repeat. Statements per turn stay at 8.0–8.2, and runtime CPU per turn tracks the latency, at about 80 µs per staged intent. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
 
+### Cross-actor subscriptions (M3.7, #94)
+
+The `subscriptions` scenario now also runs the built feature ([`b63a32a-m3.7-subscriptions`](../../benchmarks/results/2026-09-28-b63a32a-m3.7-subscriptions-postgres.json), full profile, Postgres 18.6 with `pg_stat_statements`, one orb VM shared with the runtime and the driver). `publish-with-<n>-subscribers` gives one publisher `n` subscriptions of a subscriber type no runner registers, so the relay expands its feed after every commit but no delivery turn competes with the timed publisher.
+
+| Case                                                      | p50 / p99 (ms)           | Rate                 | Statements per operation |
+| --------------------------------------------------------- | ------------------------ | -------------------- | ------------------------ |
+| `intent-fanout-1` / `-1024` (hand-rolled baseline)        | 3.1 / 7.6 → 56.3 / 155.7 | 289 → 16 publishes/s | 8.0 → 8.1                |
+| `publish-with-1-subscribers`                              | 3.9 / 8.6                | 252 publishes/s      | 10.0                     |
+| `publish-with-16-subscribers`                             | 3.8 / 8.9                | 250 publishes/s      | 10.0                     |
+| `publish-with-256-subscribers`                            | 3.1 / 8.2                | 292 publishes/s      | 9.6                      |
+| `publish-with-1024-subscribers`                           | 3.3 / 49.0               | 216 publishes/s      | 9.9                      |
+| `commit-to-delivery` (one routed subscriber)              | 21.6 / 46.0              | 43/s                 | 23                       |
+| `pair-throughput` (2,000 events, one pair)                | —                        | 70 events/s          | —                        |
+| `fan-in-10000` (10^4 sources, one subscriber, 64 callers) | 1,045 / 1,504            | 70 events/s          | 23                       |
+| `subscribe-churn`                                         | 3.9 / 11.6               | 230 changes/s        | 11.5                     |
+| `drain-8192` (64 subscribers)                             | —                        | 513 deliveries/s     | —                        |
+
+- **The publisher's turn is flat in subscriber count.** p50 stays at 3.1–3.9 ms from 1 to 1,024 subscriptions, where hand-rolled fan-out grows from 3.1 to 56 ms. The statements per publish above the T2 `events/append-1` baseline of 8 are the relay's feed claims and expansions that run during the window, not the publisher's; the publishing turn itself keeps its statement count. The 1,024 case's p99 is the expansion of 1,024 rows competing for the same CPU.
+- **Delivery costs several relay passes.** A commit wakes the relay, which claims the feed, expands it, claims the now-due row, delivers the turn, and settles; commit-to-delivery p50 is about 22 ms here, and one pair runs at about 70 events per second, as ADR 0026 expects of a sequential pair. The ADR's lease-in-expansion step, not built yet, would save one claim pass.
+- **Fan-in is bounded by the subscriber's turn rate,** as ADR 0026 notes; turn batches (P5) raise it.
+
 ### Effect cancellation and per-actor caps (M2.13)
 
 `2026-09-27-7dd0260-m2.13-run{0..5}-postgres.json` runs `effect-concurrency` on Postgres 18.6, Bun 1.4.2, three in-process runners, on one 8-vCPU host (Xeon Platinum 8559C, 31 GiB) shared by client, runtime, and database. Command: `bun run bench --scenario effect-concurrency --backend postgres --profile full --label m2.13-run<i>`. Run 0 is the warm-up and contributes to none of the figures below: every median, range, and coefficient of variation (CV) is over runs 1–5 only. Statements are counted with `pg_stat_statements`; each is one round trip. Start latency is due-to-start: from the reply to the performing turn, which follows its commit and so the effect becoming due, to the fake provider seeing the attempt. The earlier `959da2f` runs timed start from before the performing command and are superseded; their other figures agree with these within noise.
