@@ -1,6 +1,6 @@
 # ADR 0041: The quickstart scaffolder and its PGlite default
 
-**Status:** proposed (2026-09-27).
+**Status:** accepted (2026-09-28, Dallen; proposed 2026-09-27). CR.2 shipped it before acceptance.
 
 **Responsibility:** decide how `bun create @durable-actors` is packaged, what it generates, and what its PGlite default promises.
 
