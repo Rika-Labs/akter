@@ -3,6 +3,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { ActorError, CommandExpired, InvalidCommandId } from "../../errors/actor.ts"
 import type { Request } from "../../handles/actors.ts"
 import { CommandId, commandTimes } from "../../identity/command.ts"
+import { hashedPayload } from "../subscriptions/identity.ts"
 import { hashCanonical, type StoredReceipt } from "./receipt.ts"
 
 /**
@@ -67,7 +68,7 @@ export const readAdmission = Effect.fnUntraced(function* (request: Request, rout
     { now: string; canonical: string } & { [K in keyof StoredReceipt]: StoredReceipt[K] | null }
   >`
     SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
-      ${request.payload}::jsonb::text AS canonical,
+      ${yield* hashedPayload(request)}::jsonb::text AS canonical,
       r.caller_key, r.command, r.payload_hash, r.outcome
     FROM (VALUES (1)) AS one (x)
     LEFT JOIN actor_receipts r ON r.routing_key = ${routingKey} AND r.tenant_id = ${request.ref.tenant}
