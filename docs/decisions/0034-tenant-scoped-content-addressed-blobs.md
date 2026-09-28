@@ -101,7 +101,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 ## Consequences
 
 - Attaching a shared file costs one row on the actor's shard, whatever the file's size.
-- Serving bytes costs an extra single-shard statement, and handlers that need bytes run off-turn, in a query, a stream, or a connection handler, or clients fetch them through the served download route. Effect executors get no content access in this ADR, because `X.Executor` has no actor read context and executors may not require a database client ([contract 08](../contracts/08-background-work.md)). An effect that needs the bytes receives a grant in its payload and downloads through the served route, like any other client.
+- Serving bytes costs an extra single-shard statement, and handlers that need bytes run off-turn, in a query, a stream, or a connection handler, or clients fetch them through the served download route. Effect executors get no content access in this ADR, because `X.Executor` has no actor read context and executors may not require a database client ([contract 08](../contracts/08-background-work.md)). Giving executors a read path is open question 6.
 - Collection is eventually consistent and bounded by the grace. Storage for unreferenced content lags by about a day.
 - The sweep is the first framework maintenance job that scatters on Neki by design. It must be rate-limited and measured.
 
@@ -139,6 +139,7 @@ Uses the reserved `0019_content_blobs`. It creates `tenant_contents`, `tenant_co
 3. **Grant lifetime and grace.** Recommended defaults: 1 hour and 24 hours. Alternative: shorter values to reclaim storage sooner, with less margin for slow clients and clock skew.
 4. **Size limit and quotas.** Recommended default: 64 MiB per content, with no framework quota. Alternative: a per-tenant byte quota enforced at upload.
 5. **Spelling.** Recommended default: `Actor.content(name)`. Alternative: `Actor.blob(name, { shared: true })`, which puts two behaviours behind one constructor.
+6. **Content in effect executors.** Recommended default: none in M4.13; executors that need bytes wait for a later ADR. Alternative: a read-only `X.Executor.content(ref)` that reads by grant from the tenant's shard, which amends contract 08's rule that executors hold no database capability.
 
 ## Evidence required
 
