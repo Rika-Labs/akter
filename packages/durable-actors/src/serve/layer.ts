@@ -5,13 +5,20 @@ import {
   type HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http"
-import { type ServedDefinition, type ServedMember, servedDefinitions } from "../actor/served.ts"
-import { ActorError, Unauthorized } from "../errors/actor.ts"
+import {
+  type ServedConnection,
+  type ServedDefinition,
+  type ServedMember,
+  servedDefinitions,
+} from "../actor/served.ts"
+import { ActorError, RunnerAtCapacity, Unauthorized } from "../errors/actor.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
 import { build, document, memberPath, PROTOCOL_OPERATIONS } from "./api.ts"
 import { type AuthProvider, type Authenticated, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
+import { SUBPROTOCOL } from "./frames.ts"
+import { MAX_AWAITING_HELLO, socketSession } from "./socket.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
 
 export interface ServeOptions<R> {
@@ -102,6 +109,23 @@ const pathId = Effect.fnUntraced(function* (definition: ServedDefinition) {
 
 const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
 
+/** Sockets awaiting `hello`, per runtime, across every `Actor.serve` layer it runs. */
+const awaitingHello = new WeakMap<object, { count: number }>()
+
+const offeredProtocols = (request: HttpServerRequest.HttpServerRequest) =>
+  Option.match(Headers.get(request.headers, "sec-websocket-protocol"), {
+    onNone: () => [],
+    onSome: (value) => value.split(",").map((protocol) => protocol.trim()),
+  })
+
+// A connection route answers only a WebSocket upgrade that offers our subprotocol first,
+// which the server then selects.
+const isConnectionUpgrade = (request: HttpServerRequest.HttpServerRequest) =>
+  Option.exists(
+    Headers.get(request.headers, "upgrade"),
+    (value) => value.toLowerCase() === "websocket",
+  ) && offeredProtocols(request)[0] === SUBPROTOCOL
+
 const resolve = (actor: { readonly name: string }): ServedDefinition => {
   const definition = servedDefinitions.get(actor)
 
@@ -111,7 +135,7 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
   if (!NAME.test(definition.name))
     throw new Error(`Actor.serve: actor name ${definition.name} is not [A-Za-z][A-Za-z0-9_]*`)
 
-  for (const member of definition.members) {
+  for (const member of [...definition.members, ...definition.connections]) {
     if (!NAME.test(member.tag) || RESERVED_MEMBERS.has(member.tag))
       throw new Error(`Actor.serve: ${definition.name}.${member.tag} can't be served`)
   }
@@ -136,7 +160,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return yield* Effect.die(new Error(`Actor.serve: ${definition.name} is listed twice`))
         names.add(definition.name)
 
-        const collision = definition.members.find((member) =>
+        const collision = [...definition.members, ...definition.connections].find((member) =>
           PROTOCOL_OPERATIONS.has(`${definition.name}.${member.tag}`),
         )
 
@@ -173,9 +197,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       for (const definition of definitions) {
         const registered = actors.registered(definition.name)
 
-        const missing = definition.members.some((member) =>
-          member.kind === "query" ? !registered.queries : !registered.commands,
-        )
+        const missing =
+          definition.members.some((member) =>
+            member.kind === "query" ? !registered.queries : !registered.commands,
+          ) ||
+          (definition.connections.length > 0 && !registered.commands)
 
         if (missing)
           return yield* Effect.die(
@@ -273,22 +299,27 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             ),
           )
 
-      const authenticate = (request: HttpServerRequest.HttpServerRequest) =>
+      // `credential` is a WebSocket frame's, read instead of the request's `authorization`.
+      const authenticate = (request: HttpServerRequest.HttpServerRequest, credential?: string) =>
         Effect.gen(function* () {
           const authorization = Headers.get(request.headers, "authorization")
           const cookie = Headers.get(request.headers, "cookie")
 
           if (
+            (credential !== undefined && bytes(credential) > credentialBytes) ||
             (Option.isSome(authorization) && bytes(authorization.value) > credentialBytes) ||
             (options.auth.cookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes)
           )
             return yield* invalidInput("too_large")
 
+          const cookies = options.auth.cookies ? request.cookies : {}
+
           const authenticated: Authenticated = yield* options.auth
-            .authenticate({
-              headers: request.headers,
-              cookies: options.auth.cookies ? request.cookies : {},
-            })
+            .authenticate(
+              credential === undefined
+                ? { headers: request.headers, cookies }
+                : { headers: request.headers, cookies, credential },
+            )
             .pipe(
               Effect.provideContext(context),
               Effect.mapError((reason) => ActorError.make({ reason })),
@@ -438,6 +469,54 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return yield* outcomeResponse(member, exit.value)
         })
 
+      const awaiting = awaitingHello.get(actors) ?? { count: 0 }
+      awaitingHello.set(actors, awaiting)
+
+      // A connection is a WebSocket upgrade; nothing is authorized or woken before its `hello`.
+      const connectionHandler = (definition: ServedDefinition, connection: ServedConnection) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+
+          if (!isConnectionUpgrade(request)) return yield* invalidInput("unsupported_protocol")
+
+          // A non-browser client, or a cookie provider, may authenticate the upgrade itself.
+          const upgrade =
+            Headers.has(request.headers, "authorization") ||
+            (options.auth.cookies && Headers.has(request.headers, "cookie"))
+              ? yield* authenticate(request)
+              : undefined
+
+          if (awaiting.count >= MAX_AWAITING_HELLO)
+            return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
+          awaiting.count += 1
+          let waiting = true
+
+          const greeted = Effect.sync(() => {
+            if (!waiting) return
+            waiting = false
+            awaiting.count -= 1
+          })
+
+          yield* request.upgrade.pipe(
+            Effect.flatMap((socket) =>
+              socketSession({
+                socket,
+                connection,
+                holder: actors.holder,
+                ref: (tenant) => ActorRef.make({ tenant, actor: definition.name, id }),
+                upgrade,
+                authenticate: (credential) => authenticate(request, credential),
+                greeted,
+              }),
+            ),
+            Effect.ensuring(greeted),
+            Effect.scoped,
+            Effect.orDie,
+          )
+
+          return HttpServerResponse.empty()
+        })
+
       const requestId =
         (member: ServedMember) =>
         (request: HttpServerRequest.HttpServerRequest): Record<string, string> => {
@@ -454,6 +533,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             "POST",
             `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
             respond(memberHandler(definition, member), requestId(member)),
+          )
+
+      for (const definition of definitions)
+        for (const connection of definition.connections)
+          yield* router.add(
+            "GET",
+            `${basePath}${memberPath({ definition, member: connection })}` as HttpRouter.PathInput,
+            respond(connectionHandler(definition, connection)),
           )
 
       yield* router.add(

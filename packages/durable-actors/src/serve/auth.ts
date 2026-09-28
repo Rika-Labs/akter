@@ -9,7 +9,10 @@ export interface AuthRequest {
   readonly headers: Headers.Headers
   /** Empty unless the provider was made with `cookies: true`. */
   readonly cookies: Readonly<Record<string, string>>
-  /** A credential carried outside the headers, such as a WebSocket `hello` frame's. */
+  /**
+   * A credential carried outside the headers, such as a WebSocket `hello`
+   * frame's `authorization`; it has the header's form, `Bearer <token>`.
+   */
   readonly credential?: string
 }
 
@@ -32,11 +35,15 @@ export interface AuthProvider<R = never> {
 
 export const unauthorized = (code: Unauthorized["code"]) => Unauthorized.make({ code })
 
-/** The token of an `authorization: Bearer` header, or the request's frame credential. */
+/**
+ * The token of an `authorization: Bearer` header, or of the request's frame
+ * credential, which carries the same `Bearer <token>` value.
+ */
 export const bearerToken = (request: AuthRequest) => {
-  if (request.credential !== undefined) return Effect.succeed(request.credential)
-
-  const header = Headers.get(request.headers, "authorization")
+  const header =
+    request.credential === undefined
+      ? Headers.get(request.headers, "authorization")
+      : Option.some(request.credential)
 
   if (Option.isNone(header)) return Effect.fail(unauthorized("missing_credentials"))
 

@@ -17,7 +17,7 @@ The Effect handle, Promise client from `@durable-actors/core/client`, HTTP, WebS
 
 ## Served mapping ([ADR 0027](../decisions/0027-served-protocol.md))
 
-M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, and OpenAPI; feeds, streams, and WebSocket sessions are later slices. Evidence: [`conformance/http.ts`](../verification/01-conformance.md#served-http-m32).
+M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, and OpenAPI; M3.3 serves connection members as WebSocket sessions; feeds and streams are later slices. Evidence: [`conformance/http.ts`](../verification/01-conformance.md#served-http-m32) and [`conformance/transports.ts`](../verification/01-conformance.md#served-websocket-connections-m33).
 
 - Each public member has one route under the server's base path: `POST /actors/{Actor}/{id}/{Member}` for commands, reducers, queries, and workflow starts; `GET …/events?event=…&after=…` for the events an actor type declares in `feeds`, over SSE; `POST …/{Stream}` for streams over SSE; and a WebSocket upgrade at `…/{Connection}`. Singletons omit `{id}`. Internal members have no route and answer like unknown ones.
 - A command carries its v1 id in `Idempotency-Key`. A command without one is rejected before any turn, and the server never mints an id for a caller. Clients mint ids against the database clock, learned from `GET /protocol` and the `durable-now` response header, or obtained from `POST /command-ids`, and never mint a replacement for a sent id on their own.
