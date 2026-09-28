@@ -1631,7 +1631,7 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "client opens a connection with typed frames both ways, rejects a declared open failure as its class, and ends on close",
+    name: "client opens a connection with typed frames both ways, rejects a declared open failure or a failing headers provider, and ends on close",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -1659,6 +1659,23 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* next).value).toEqual(Said.make({ text: "hi" }))
           yield* Effect.promise(() => connection.close())
           expect((yield* next).done).toBe(true)
+
+          // A provider that rejects, such as a failed token refresh, fails `connect` with its own error.
+          const refresh = new Error("token refresh failed")
+
+          const failing = SocketRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () => Promise.reject(refresh),
+          }).get("client-socket")
+
+          const unsent = yield* Effect.promise(() =>
+            failing.Chat.connect({ name: "alice" }).then(
+              () => "opened",
+              (thrown: Error) => thrown,
+            ),
+          )
+
+          expect(unsent).toBe(refresh)
         }),
       ),
   },
