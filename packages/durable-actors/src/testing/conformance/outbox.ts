@@ -1,4 +1,4 @@
-import { Cause, DateTime, Duration, Effect, Exit, Fiber, Layer, Schema } from "effect"
+import { Cause, Data, DateTime, Duration, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Caller, Intent, System } from "../../index.ts"
 import type { InTurn } from "../../handles/intents.ts"
@@ -237,6 +237,10 @@ const seedSleepers = Effect.fnUntraced(function* (from: number, to: number, dueA
   yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
     SELECT ((i % 256) - 128)::bigint << 56 | i, 'scan', 'Sleeper', i::text
     FROM generate_series(${from}::int, ${to}::int) AS i`
+  // A pooled connection caches its foreign key check plan. One planned while
+  // actor_generations looked tiny scans the whole table for every outbox row, which
+  // makes this insert quadratic. Fresh statistics invalidate that plan.
+  yield* sql`ANALYZE actor_generations`
   yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
       actor_type, actor_id, target_type, target_id, command, payload, caller)
     SELECT ((i % 256) - 128)::bigint << 56 | i, 'sleep-' || i, (i % 256) - 128, ${dueAt}::bigint,
@@ -265,6 +269,15 @@ const measureScan = Effect.fnUntraced(function* (now: number) {
     blocks: root["Shared Hit Blocks"] + root["Shared Read Blocks"],
   }
 })
+
+type Scan = Effect.Success<ReturnType<typeof measureScan>>
+
+// Fails the seeding transaction on purpose so it rolls back. Deleting the sleepers instead
+// runs every foreign key into actor_generations once per row, which dominates the case.
+class Measured extends Data.TaggedError("Measured")<{
+  readonly small: Scan
+  readonly large: Scan
+}> {}
 
 /** The default claim lease for these actors: 30 s `commandTimeout` + 2 s `lockWait` + 5 s. */
 export const CLAIM_LEASE = "37 seconds"
@@ -556,7 +569,6 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "scans due work by bucket without reading sleeping actors' future timers",
-    timeoutMs: 60_000,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -566,33 +578,33 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const now = DateTime.toEpochMillis(yield* test.now)
           const tomorrow = now + 86_400_000
 
-          yield* Effect.gen(function* () {
+          // Every sleeper stays inside one transaction that rolls back, so the relay never
+          // sees them and no other case inherits them.
+          const { small, large } = yield* Effect.gen(function* () {
             yield* seedSleepers(1, 5_000, tomorrow)
             const small = yield* measureScan(now)
             yield* seedSleepers(5_001, 50_000, tomorrow)
-            const large = yield* measureScan(now)
 
-            for (const scan of [small, large]) {
-              expect(scan).toMatchObject({ seqScans: 0, rows: 0, indexRows: 0 })
-              // The primary key or intent id index only locates claimed rows, and there are none.
-              expect(
-                scan.indexes.filter(
-                  (index) => index !== "actor_outbox_pkey" && index !== "actor_outbox_intent",
-                ),
-              ).toEqual(["actor_outbox_due_kind"])
-            }
+            return yield* new Measured({ small, large: yield* measureScan(now) })
+          }).pipe(sql.withTransaction, Effect.catchTag("Measured", Effect.succeed))
 
-            // The planner may skip the per-bucket probe when no intent is due at all, so the
-            // bound is absolute: at most three index levels for each of the 256 bucket probes.
-            expect(large.blocks <= 3 * 256).toBe(true)
-          }).pipe(
-            Effect.ensuring(
-              Effect.gen(function* () {
-                yield* sql`DELETE FROM actor_outbox WHERE tenant_id = 'scan'`
-                yield* sql`DELETE FROM actor_generations WHERE tenant_id = 'scan'`
-              }).pipe(Effect.orDie),
-            ),
-          )
+          for (const scan of [small, large]) {
+            expect(scan).toMatchObject({ seqScans: 0, rows: 0, indexRows: 0 })
+            // The primary key or intent id index only locates claimed rows, and there are none.
+            expect(
+              scan.indexes.filter(
+                (index) => index !== "actor_outbox_pkey" && index !== "actor_outbox_intent",
+              ),
+            ).toEqual(["actor_outbox_due_kind"])
+          }
+
+          // The planner may skip the per-bucket probe when no intent is due at all, so the
+          // bound is absolute: at most three index levels for each of the 256 bucket probes.
+          expect(large.blocks <= 3 * 256).toBe(true)
+          expect(
+            yield* sql`SELECT count(*)::int AS sleepers FROM actor_generations
+              WHERE tenant_id = 'scan'`,
+          ).toEqual([{ sleepers: 0 }])
         }),
       ),
   },

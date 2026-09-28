@@ -270,7 +270,8 @@ export interface DocumentOptions {
   readonly version: string
 }
 
-const schemeName = Credential.$match({
+/** The OpenAPI security scheme a credential is documented as; a provider has at most one per scheme. */
+export const schemeName = Credential.$match({
   Bearer: () => "bearer",
   Jwt: () => "bearer",
   Cookie: () => "cookie",
