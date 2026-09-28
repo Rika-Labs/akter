@@ -676,6 +676,86 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "a renewal whose fresh credential expires while its check runs ends the session with Unauthorized expired",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-late-renewal")
+          yield* next(connection)
+
+          const sql = yield* SqlClient.SqlClient
+          const owner = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" }
+          let offset = 0
+
+          const type: HeldActorType = {
+            deliveryMs: 1_000,
+            takeoverMs: 5_000,
+            reauthorizeMs: 60_000,
+            retryWindowMs: 60_000,
+            placement: "actor",
+            hasResync: () => false,
+            hasMember: () => true,
+            routingKey: () => 0n,
+            channel: {
+              // The owner's row, so the holder's liveness check keeps the session.
+              open: (request) =>
+                sql`
+                  INSERT INTO actor_connections (
+                    routing_key, connection_id, bucket, tenant_id, actor_type, actor_id, member,
+                    holder, holder_epoch, caller, session, opened_at_ms, opened_through
+                  )
+                  SELECT routing_key, ${request.connectionId}, bucket, tenant_id, actor_type, actor_id,
+                    member, ${request.holder}, ${request.holderEpoch}, caller, NULL, opened_at_ms, 0
+                  FROM actor_connections WHERE connection_id = ${connection.connectionId}`.pipe(
+                  Effect.orDie,
+                  Effect.as({ _tag: "Opened" as const, ...owner, baseline: "0" }),
+                ),
+              frame: () => Effect.die(new Error("No frame is sent")),
+              close: () => Effect.void,
+              resync: () => Effect.die(new Error("No owner is lost")),
+            },
+          }
+
+          const holder = yield* connectionHolder({
+            transport: () => ({
+              holder: "renewal-holder",
+              epoch: "renewal-epoch",
+              deliver: () => Effect.die(new Error("No owner delivers")),
+              ping: () => Effect.succeed(true),
+            }),
+            actorType: () => type,
+            authorize: (request) =>
+              Effect.sync(() => {
+                // The renewal's check allows it, but answers a second later.
+                if (request.kind === "reauthorize") offset += 1_000
+
+                return true
+              }),
+          }).pipe(Effect.provideService(FrameworkClock, { offsetMillis: () => offset }))
+
+          const held = yield* holder.open({
+            ref: room.ref,
+            member: Live.tag,
+            caller: System.make({ source: "actor" }),
+            params: "{}",
+          })
+
+          const renewal = yield* held.reauthenticate((yield* holder.now) + 500).pipe(Effect.flip)
+          expect(renewal.reason).toMatchObject({ code: "expired" })
+
+          const exit = yield* held.messages.pipe(
+            Stream.runDrain,
+            Effect.exit,
+            Effect.timeout("10 seconds"),
+            Effect.orDie,
+          )
+
+          const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+          expect(Option.getOrUndefined(failure)?.reason).toMatchObject({ code: "expired" })
+        }),
+      ),
+  },
+  {
     name: "an ungraceful owner death resyncs a held connection in place from its flushed-through cursor",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
