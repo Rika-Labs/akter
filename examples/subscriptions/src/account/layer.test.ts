@@ -16,7 +16,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { authorize } from "./authorize.ts"
-import { Account, AccountId, Collect } from "./contract.ts"
+import { Account, AccountId } from "./contract.ts"
 import { fakeGateway, ledger } from "./gateway.ts"
 import { AccountLive } from "./layer.ts"
 
@@ -65,63 +65,79 @@ afterAll(() => runtime.dispose())
 const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof live>>) =>
   runtime.runPromise(effect)
 
-/** Subscribes and waits until the provider holds the card. */
+/** Subscribes; the first invoice is issued once the provider holds the card. */
 const subscribe = Effect.fnUntraced(function* (id: string, card: string) {
-  const test = yield* ActorTest
   const account = yield* Account.get(AccountId.make(id))
   yield* account.Subscribe({ plan: "pro", card })
-  yield* test.advance(0)
+  yield* (yield* ActorTest).advance(0)
 
   return account
 })
 
 /** Issues the next invoice as the monthly cron tick would. */
 const renew = Effect.fnUntraced(function* (id: string) {
-  const test = yield* ActorTest
-
-  return Option.getOrThrow(yield* (yield* test.actor(Account, id)).system.Renew())
+  yield* (yield* (yield* ActorTest).actor(Account, id)).system.Renew()
 })
+
+/** The execution collecting an invoice, and its status. */
+const collection = Effect.fnUntraced(function* (invoiceId: string) {
+  const sql = yield* SqlClient.SqlClient
+
+  const rows = yield* sql<{ execution_id: string; status: string }>`
+    SELECT execution_id, status FROM actor_workflow_executions WHERE workflow_key = ${invoiceId}`
+
+  return rows[0]
+})
+
+const poll = <A, E, R>(effect: Effect.Effect<A, E, R>, until: (value: A) => boolean) =>
+  effect.pipe(Effect.repeat({ schedule: Schedule.spaced("20 millis"), until }))
 
 /** Waits until the collection has parked on a durable wait. */
-const suspended = Effect.fnUntraced(function* (executionId: string) {
-  const sql = yield* SqlClient.SqlClient
-  yield* sql<{ status: string }>`SELECT status FROM actor_workflow_executions
-    WHERE execution_id = ${executionId}`.pipe(
-    Effect.repeat({
-      schedule: Schedule.spaced("20 millis"),
-      until: (rows) => rows[0]?.status === "suspended",
-    }),
+const suspended = (invoiceId: string) =>
+  poll(collection(invoiceId), (row) => row?.status === "suspended")
+
+/** Waits until an invoice is paid or failed, and returns it. */
+const settled = Effect.fnUntraced(function* (id: string, period: number) {
+  const account = yield* Account.get(AccountId.make(id))
+
+  const invoices = yield* poll(account.Invoices(), (rows) =>
+    rows.some((row) => row.period === period && row.status !== "open"),
   )
+
+  return invoices.find((row) => row.period === period)!
 })
 
-/** Charge calls and applied charges for one collection. */
-const charges = (executionId: string) => {
-  const keys = [...book.calls.keys()].filter((key) => key.startsWith(`${executionId}:`))
+/** Charge calls and approved charges for one invoice's collection. */
+const charges = Effect.fnUntraced(function* (invoiceId: string) {
+  const { execution_id } = (yield* collection(invoiceId))!
+  const keys = [...book.calls.keys()].filter((key) => key.startsWith(`${execution_id}:`))
 
   return {
     calls: keys.reduce((sum, key) => sum + (book.calls.get(key) ?? 0), 0),
     approved: keys.filter((key) => book.results.get(key)?._tag === "Approved").length,
   }
-}
+})
 
-it("issues an invoice, charges it once, and settles it", () =>
+it("issues the first invoice once the card is on file, charges it once, and settles it", () =>
   run(
     Effect.gen(function* () {
       const test = yield* ActorTest
       const account = yield* subscribe("a1", "tok_visa")
-      const executionId = yield* renew("a1")
 
-      expect(yield* (yield* Account.run(Collect, executionId)).result).toBe("paid")
-      expect(yield* account.Invoices()).toEqual([
-        { id: "a1-1", period: 1, amountCents: 2900, status: "paid", attempts: 1 },
-      ])
+      expect(yield* settled("a1", 1)).toEqual({
+        id: "a1-1",
+        period: 1,
+        amountCents: 2900,
+        status: "paid",
+        attempts: 1,
+      })
       expect(yield* account.Summary()).toEqual({
         plan: "pro",
         status: "active",
         period: 1,
         cardVersion: 1,
       })
-      expect(charges(executionId)).toEqual({ calls: 1, approved: 1 })
+      expect(yield* charges("a1-1")).toEqual({ calls: 1, approved: 1 })
       expect(yield* test.inspect(account.ref)).toMatchObject({
         rows: { billing_invoices: 1 },
         events: 3,
@@ -134,19 +150,17 @@ it("retries a declined charge as soon as the customer adds a newer card", () =>
     Effect.gen(function* () {
       const test = yield* ActorTest
       const account = yield* subscribe("a2", "tok_declined")
-      const executionId = yield* renew("a2")
 
       // The first charge declined and the collection waits for a card or three days.
-      yield* suspended(executionId)
-      expect(charges(executionId)).toEqual({ calls: 1, approved: 0 })
+      yield* suspended("a2-1")
+      expect(yield* charges("a2-1")).toEqual({ calls: 1, approved: 0 })
 
       yield* account.UpdateCard("tok_visa")
       yield* test.advance(0)
 
-      expect(yield* (yield* Account.run(Collect, executionId)).result).toBe("paid")
-      expect((yield* account.Invoices())[0]).toMatchObject({ status: "paid", attempts: 2 })
+      expect(yield* settled("a2", 1)).toMatchObject({ status: "paid", attempts: 2 })
       expect((yield* account.Summary()).status).toBe("active")
-      expect(charges(executionId)).toEqual({ calls: 2, approved: 1 })
+      expect(yield* charges("a2-1")).toEqual({ calls: 2, approved: 1 })
     }),
   ))
 
@@ -155,19 +169,17 @@ it("marks the account past due after the last retry declines", () =>
     Effect.gen(function* () {
       const test = yield* ActorTest
       const account = yield* subscribe("a3", "tok_declined")
-      const executionId = yield* renew("a3")
 
       // Each declined charge parks the collection for three days before the next one.
       for (const declines of [1, 2]) {
-        while (charges(executionId).calls < declines) yield* Effect.sleep("20 millis")
-        yield* suspended(executionId)
+        yield* poll(charges("a3-1"), ({ calls }) => calls >= declines)
+        yield* suspended("a3-1")
         yield* test.advance("3 days")
       }
 
-      expect(yield* (yield* Account.run(Collect, executionId)).result).toBe("failed")
-      expect((yield* account.Invoices())[0]).toMatchObject({ status: "failed", attempts: 3 })
+      expect(yield* settled("a3", 1)).toMatchObject({ status: "failed", attempts: 3 })
       expect((yield* account.Summary()).status).toBe("past_due")
-      expect(charges(executionId)).toEqual({ calls: 3, approved: 0 })
+      expect(yield* charges("a3-1")).toEqual({ calls: 3, approved: 0 })
     }),
   ))
 
@@ -176,42 +188,45 @@ it("issues one invoice when a renewal is redelivered after its turn committed", 
     Effect.gen(function* () {
       const test = yield* ActorTest
       const account = yield* subscribe("a4", "tok_visa")
+      yield* settled("a4", 1)
 
       // The tick's turn commits, then the runner dies before replying; the retry replays the receipt.
       yield* test.crashNext("afterCommit")
-      const executionId = yield* renew("a4")
+      yield* renew("a4")
 
-      expect(yield* (yield* Account.run(Collect, executionId)).result).toBe("paid")
+      expect(yield* settled("a4", 2)).toMatchObject({ id: "a4-2", status: "paid", attempts: 1 })
       expect(yield* test.receiptsFor(account.ref, "Renew")).toBe(1)
-      expect(yield* account.Invoices()).toHaveLength(1)
-      expect(charges(executionId)).toEqual({ calls: 1, approved: 1 })
+      expect(yield* account.Invoices()).toHaveLength(2)
+      expect(yield* charges("a4-2")).toEqual({ calls: 1, approved: 1 })
     }),
   ))
 
 it("skips renewal for a cancelled account", () =>
   run(
     Effect.gen(function* () {
-      const test = yield* ActorTest
       const account = yield* subscribe("a5", "tok_visa")
+      yield* settled("a5", 1)
       yield* account.Cancel()
+      yield* renew("a5")
 
-      expect(yield* (yield* test.actor(Account, "a5")).system.Renew()).toEqual(Option.none())
-      expect(yield* account.Invoices()).toEqual([])
+      expect(yield* account.Invoices()).toHaveLength(1)
+      expect((yield* account.Summary()).status).toBe("cancelled")
     }),
   ))
 
-it("refuses a settlement from anyone but the account's own workflow", () =>
+it("refuses collections and settlements from anyone but the account itself", () =>
   run(
     Effect.gen(function* () {
       const account = yield* subscribe("a6", "tok_visa")
-      const executionId = yield* renew("a6")
-      yield* (yield* Account.run(Collect, executionId)).result
+      yield* settled("a6", 1)
 
-      // A user holding the account's handle still cannot settle its invoice.
-      const forged = yield* account
-        .Settle({ invoiceId: "a6-1", paid: false, attempts: 1 })
-        .pipe(Effect.flip)
-      expect(Schema.is(ActorError)(forged) && forged.reason._tag).toBe("Unauthorized")
-      expect((yield* account.Invoices())[0]).toMatchObject({ status: "paid" })
+      // A user holding the account's handle can neither charge it nor settle its invoice.
+      for (const forged of [
+        yield* account.Collect({ invoiceId: "a6-9", amountCents: 1 }).pipe(Effect.flip),
+        yield* account.Settle({ invoiceId: "a6-1", paid: false, attempts: 1 }).pipe(Effect.flip),
+      ])
+        expect(Schema.is(ActorError)(forged) && forged.reason._tag).toBe("Unauthorized")
+
+      expect(yield* account.Invoices()).toMatchObject([{ id: "a6-1", status: "paid" }])
     }),
   ))

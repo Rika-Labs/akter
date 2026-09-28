@@ -1,5 +1,5 @@
 import type { Step } from "@durable-actors/core"
-import { DateTime, Effect, Layer, Option } from "effect"
+import { DateTime, Effect, Layer } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import {
   Account,
@@ -26,6 +26,26 @@ import { PaymentGateway } from "./gateway.ts"
 /** Each retry waits this long for a newer card before charging again. */
 const RETRY_AFTER = "3 days"
 
+/** Issues the next period's invoice and starts collecting it when the turn commits. */
+const issue = Effect.gen(function* () {
+  const turn = yield* Account.Turn
+  const period = turn.state.period + 1
+  const invoiceId = `${turn.id}-${period}`
+  const amountCents = prices[turn.state.plan]
+
+  yield* turn.rows(invoices).insert({
+    id: invoiceId,
+    period,
+    amountCents,
+    status: "open",
+    attempts: 0,
+    issuedAt: DateTime.toDate(yield* DateTime.now),
+  })
+  yield* turn.emit(InvoiceIssued.make({ invoiceId, amountCents }))
+  yield* turn.state.set({ period })
+  yield* (yield* Account.intents(turn.id)).Collect({ invoiceId, amountCents })
+})
+
 export const AccountCommands = Account.toLayer(
   Effect.gen(function* () {
     const gateway = yield* PaymentGateway
@@ -45,38 +65,22 @@ export const AccountCommands = Account.toLayer(
         yield* (yield* Account.Turn).state.set({ status: "cancelled" })
       }),
 
-      // The cron tick. A cancelled account keeps its schedule, so the tick checks state.
+      // The cron tick. A cancelled account keeps its schedule, so the tick checks state;
+      // an account whose card never reached the provider has not started billing yet.
       Renew: Effect.fnUntraced(function* () {
-        const turn = yield* Account.Turn
+        const { status, period } = (yield* Account.Turn).state
 
-        if (turn.state.status === "cancelled") return Option.none()
-
-        const period = turn.state.period + 1
-        const invoiceId = `${turn.id}-${period}`
-        const amountCents = prices[turn.state.plan]
-
-        yield* turn.rows(invoices).insert({
-          id: invoiceId,
-          period,
-          amountCents,
-          status: "open",
-          attempts: 0,
-          issuedAt: DateTime.toDate(yield* DateTime.now),
-        })
-        yield* turn.emit(InvoiceIssued.make({ invoiceId, amountCents }))
-        yield* turn.state.set({ period })
-
-        // Starts with the turn's commit; the invoice id keys the execution.
-        return Option.some(
-          yield* (yield* Account.intents(turn.id)).Collect({ invoiceId, amountCents }),
-        )
+        if (status !== "cancelled" && period > 0) yield* issue
       }),
 
+      // Billing starts when the first card is on file.
       CardAttached: Effect.fnUntraced(function* () {
         const turn = yield* Account.Turn
         const version = turn.state.cardVersion + 1
         yield* turn.state.set({ cardVersion: version })
         yield* turn.emit(CardUpdated.make({ version }))
+
+        if (turn.state.period === 0 && turn.state.status !== "cancelled") yield* issue
       }),
 
       Settle: Effect.fnUntraced(function* ({ invoiceId, paid, attempts }) {

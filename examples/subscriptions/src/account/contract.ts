@@ -105,7 +105,7 @@ export const Cancel = Actor.command("Cancel")
 /**
  * Records the outcome of `Collect`. It is public because a workflow reaches
  * its owner through an ordinary handle; `authorize` admits only the owner's
- * own workflow.
+ * own workflow, as it does for `Collect`.
  */
 export const Settle = Actor.command("Settle", { input: Settlement })
 
@@ -131,9 +131,10 @@ export const Invoices = Actor.query("Invoices", {
 })
 
 // Internal: only System callers (cron, and the effect route) reach them.
-/** Issues the next invoice and returns its collection's execution id, or none when cancelled. */
-export const Renew = Actor.command("Renew", { output: Schema.Option(Schema.String) })
+/** Issues the next period's invoice. */
+export const Renew = Actor.command("Renew")
 
+/** A card reached the provider; the first one issues the first invoice. */
 export const CardAttached = Actor.command("CardAttached")
 
 export const Account = Actor.make("Account", {

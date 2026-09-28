@@ -4,9 +4,10 @@ import { Effect, Schema } from "effect"
 const isSystem = Schema.is(System)
 
 /**
- * Users run commands and queries. `Settle` is reserved for the account's own
- * `Collect` workflow, whose calls carry a System caller that names the account;
- * `Actor.serve` authentication never produces a System caller.
+ * Users run commands and queries. `Collect` and `Settle` are reserved for the
+ * account itself: its turns start collections, and a collection's step calls
+ * carry a System caller that names the account. `Actor.serve` authentication
+ * never produces a System caller.
  */
 export const authorize = ({
   caller,
@@ -20,7 +21,7 @@ export const authorize = ({
   readonly kind: string
 }) =>
   Effect.succeed(
-    command === "Settle"
+    command === "Collect" || command === "Settle"
       ? isSystem(caller) &&
           caller.source === "workflow" &&
           caller.ref?.actor === ref.actor &&
