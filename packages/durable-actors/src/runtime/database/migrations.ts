@@ -406,7 +406,7 @@ export const migrations = {
   // and the subscriber's cursor, on its own shard, deduplicates every
   // delivery after its receipt is pruned. The due index leads with
   // `subscriber_type` so a runner never scans types it doesn't register.
-  "0016_subscriptions": Effect.gen(function* () {
+  "0017_subscriptions": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE TABLE actor_subscriptions (
         routing_key bigint NOT NULL,
