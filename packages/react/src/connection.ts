@@ -28,6 +28,10 @@ export interface Connected<Server, Client> {
 
 const DEFAULT_KEEP = 100
 
+/** `frames` with `frame` appended, trimmed to the last `keep`; none when `keep` is zero or less. */
+export const keepLast = <Frame>(frames: ReadonlyArray<Frame>, frame: Frame, keep: number) =>
+  keep <= 0 ? [] : [...frames, frame].slice(-keep)
+
 /**
  * Holds one connection open while the component is mounted with the same
  * `params` key: the latest frames, `send`, and how it ended. A new key, or
@@ -69,7 +73,7 @@ export const useConnection = <Params, Server, Client>(
         setStatus("open")
 
         for await (const frame of open.frames)
-          setFrames((current) => [...current, frame].slice(-keep))
+          setFrames((current) => keepLast(current, frame, keep))
 
         if (!controller.signal.aborted) setStatus("closed")
       } catch (thrown) {

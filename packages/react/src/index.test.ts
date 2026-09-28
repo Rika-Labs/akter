@@ -11,6 +11,7 @@ import {
   useEventFeed,
   useQuery,
 } from "./index.ts"
+import { keepLast } from "./connection.ts"
 
 class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
 
@@ -51,5 +52,10 @@ describe("@durable-actors/react", () => {
   it("renders on a server without fetching, connecting, or touching browser globals", () => {
     expect("window" in globalThis).toBe(false)
     expect(renderToString(createElement(Page))).toBe("<p>idle true 0 connecting null</p>")
+  })
+
+  it("keeps at most `keep` recent connection frames, and none for zero", () => {
+    expect(keepLast(["a", "b"], "c", 2)).toEqual(["b", "c"])
+    expect(keepLast(["a"], "b", 0)).toEqual([])
   })
 })
