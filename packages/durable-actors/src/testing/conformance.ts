@@ -556,6 +556,45 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "backs off an actor whose turn dies on every attempt, and only that actor",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const crashing = yield* Counter.get("crash-always")
+
+          const elapsed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.gen(function* () {
+              const started = yield* Clock.currentTimeMillis
+              const value = yield* effect
+
+              return { value, ms: (yield* Clock.currentTimeMillis) - started }
+            })
+
+          // Five deaths in a row wait 50 + 100 + 200 + 400 + 800 ms before the
+          // sixth attempt commits; a flat delay would retry in a quarter second.
+          for (let crash = 0; crash < 5; crash++) yield* test.crashNext("beforeCommit")
+          const before = fixture.executions
+          const backedOff = yield* elapsed(crashing.Increment(1))
+          expect(backedOff.value).toBe(1)
+          expect(fixture.executions - before).toBe(6)
+          expect(backedOff.ms >= 1_500).toBe(true)
+
+          // Another actor of the type restarts at the base delay.
+          yield* test.crashNext("beforeCommit")
+          const other = yield* elapsed((yield* Counter.get("crash-always-other")).Increment(2))
+          expect(other.value).toBe(2)
+          expect(other.ms < 1_000).toBe(true)
+
+          // A settled turn resets the crashing actor's own backoff.
+          yield* test.crashNext("beforeCommit")
+          const reset = yield* elapsed(crashing.Increment(1))
+          expect(reset.value).toBe(2)
+          expect(reset.ms < 1_000).toBe(true)
+        }),
+      ),
+  },
+  {
     name: "does not cancel an accepted turn with its waiter",
     run: ({ expect, environment }) =>
       environment.run(
