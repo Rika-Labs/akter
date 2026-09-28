@@ -430,7 +430,7 @@ These cases are in-process runners on one Postgres; real process death stays wit
 
 ### Cron (M2.5)
 
-The cases live in [`conformance/cron.ts`](../../packages/durable-actors/src/testing/conformance/cron.ts). The shared cases run on PGlite and Postgres, each with its own runtime and `ActorTest.advance` moving the framework clock; `CronHeartbeat` declares `* * * * *` and `0 0 1 1 *` with a 10-minute `cronSkipIfOlderThan`, and its handlers record each run's command id and caller. The singleton fixture `CronBeacon` joins only the cases that name it, so its minutely tick never takes another case's fault injection. Declaration checks are in [`definition.test.ts`](../../packages/durable-actors/src/actor/definition.test.ts): canonical timer keys (whitespace, ranges, steps, full fields, weekday names, and a seconds field), an unparsable expression, equal and equivalent schedules, a foreign target, a target with input (also a type error), and an invalid skip window.
+The cases live in [`conformance/cron.ts`](../../packages/durable-actors/src/testing/conformance/cron.ts). The shared cases run on PGlite and Postgres, each with its own runtime and `ActorTest.advance` moving the framework clock; `CronHeartbeat` declares `* * * * *` and `0 0 1 1 *` with a 10-minute `cronSkipIfOlderThan`, and its handlers record each run's command id and caller. The singleton fixture `CronBeacon` joins only the cases that name it, so its minutely tick never takes another case's fault injection. Declaration checks are in [`definition.test.ts`](../../packages/durable-actors/src/actor/definition.test.ts): canonical timer keys (whitespace, ranges, steps, full fields, weekday names, and a seconds field), an unparsable expression, equal and equivalent schedules, a foreign target, a target with input (also a type error), and an invalid skip window; ADR 0042's keys for `CRON_TZ=` zones (as declared, so aliases stay separate) and `@every` intervals, an unknown zone, a fixed offset, a zone on an interval, bad intervals, and duplicates across `CRON_TZ=UTC` and `@every` spellings. [`schedule.test.ts`](../../packages/durable-actors/src/runtime/cron/schedule.test.ts) checks scheduled instants against tz data: spring-forward gaps and fall-back overlaps in `America/New_York`, `Australia/Sydney`, and the half-hour `Australia/Lord_Howe`, sub-hourly and hourly schedules across them, rewrites from inside the repeated hour, zones without transitions, and epoch-anchored intervals.
 
 Shared (PGlite and Postgres):
 
@@ -449,6 +449,10 @@ Shared (PGlite and Postgres):
 - `releases a tick whose entry left the policy and deletes it past the skip window` — row **Runner without the actor type claims a cron tick**, the missing-entry half.
 - `writes a singleton's ticks in the default tenant at startup`.
 - `claims $cron: ticks only for actor types registered on the claiming runner` — the claim filter, the other half of the same row.
+- `fires a wall-clock time skipped by a spring-forward gap once, at the first instant after the gap` — `CronZoned` declares `CRON_TZ=America/New_York 30 2 * * *`; the clock moves to the next second Sunday of March, the pending tick is due at 03:00 EDT (07:00Z), fires once there, and is rewritten to the next day's 02:30 EDT, with no second receipt an hour later.
+- `fires a wall-clock time repeated by a fall-back transition once, at its first occurrence` — `CRON_TZ=America/New_York 30 1 * * *` is pending at 01:30 EDT on the next first Sunday of November; the runtime comes back at 01:10 EST, inside the repeated hour and the 1-hour skip window, fires the tick once, and rewrites it to the next day, so 01:30 EST gives no second receipt.
+- `keeps one expression in two zones as two entries that fire at their own times` — `30 1 * * *` in UTC and in `America/New_York` are two rows with two keys and due times, and each fires once.
+- `fires a fixed interval at multiples of its length and once after downtime` — `@every 5 minutes` ticks on multiples of 5 minutes since the epoch; four and a half missed intervals inside the skip window fire once, and the next tick is the next multiple.
 
 Postgres only (three in-process runners, independent connections):
 
@@ -456,7 +460,7 @@ Postgres only (three in-process runners, independent connections):
 - `fires a tick once when the runner delivering it is killed at afterClaim` and `… at beforeOutboxDelete` — the cron half of **Singleton runner dies**: the dead runner's claim holds the row until the lease ends, then a survivor delivers or replays it and rewrites it once.
 - `keeps a singleton's ticks firing after its runner is killed`.
 
-The `cron` benchmark measures tick lateness and the relay claim with 10^5 minutely ticks falling due at one minute boundary on 1, 2, and 4 runners; see [benchmarks](../../benchmarks/README.md). Time zones, fixed intervals, and daylight-saving evidence from [M2](../milestones/M2.md) are not implemented.
+The `cron` benchmark measures tick lateness and the relay claim with 10^5 minutely ticks falling due at one minute boundary on 1, 2, and 4 runners; see [benchmarks](../../benchmarks/README.md). Zoned and interval ticks add runner-side arithmetic per rewrite and no statement, so no scenario is added for them.
 
 ### Property tests (T3)
 

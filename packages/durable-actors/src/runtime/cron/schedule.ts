@@ -1,4 +1,4 @@
-import { Crypto, Cron, Effect, Result, Schema, SchemaAST } from "effect"
+import { Crypto, Cron, DateTime, Duration, Effect, Option, Result, Schema, SchemaAST } from "effect"
 import { SqlClient, type Statement } from "effect/unstable/sql"
 import { type ActorRef, System } from "../../identity/caller.ts"
 import type { AnyCommand } from "../../members/command.ts"
@@ -8,10 +8,11 @@ import { bucketOf, CallerJson, OutboxRuntime } from "../turn/outbox.ts"
 
 export { CRON_PREFIX }
 
-/** One `policy.cron` entry: its tick's timer key, parsed schedule, and zero-input target. */
+/** One `policy.cron` entry: its tick's timer key, when it ticks, and its zero-input target. */
 export interface CronEntry {
   readonly key: string
-  readonly schedule: Cron.Cron
+  /** The first scheduled instant strictly after `afterMs`. */
+  readonly next: (afterMs: number) => number
   readonly command: string
   /** Encodes the target's empty input, as an intent carries it. */
   readonly payload: Effect.Effect<string>
@@ -28,12 +29,62 @@ const emptyPayload = (command: AnyCommand) =>
     Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.input }))),
   )({ value: undefined }).pipe(Effect.orDie)
 
+const ZONE_PREFIX = /^CRON_TZ=(\S+)\s+(.*)$/
+
+const EVERY_PREFIX = /^@every(?:\s+(.*))?$/
+
+const DAY_MS = 86_400_000
+
+/** A parsed declaration: a cron expression in a zone, or a fixed interval. */
+type Timing =
+  | { readonly _tag: "Cron"; readonly zone: string; readonly cron: Cron.Cron }
+  | { readonly _tag: "Every"; readonly millis: number }
+
+const timingOf = (declaration: string): Timing => {
+  const normalized = declaration.trim().replace(/\s+/g, " ")
+  const zoned = ZONE_PREFIX.exec(normalized)
+  const zone = zoned?.[1] ?? "UTC"
+  const schedule = zoned?.[2] ?? normalized
+  const every = EVERY_PREFIX.exec(schedule)
+
+  if (every !== null) {
+    if (zoned !== null)
+      throw new Error(`policy.cron "${declaration}": an interval takes no time zone`)
+
+    // The declared text is only a string here; `fromInput` rejects one that is not a duration.
+    const length = Duration.fromInput((every[1] ?? "") as Duration.Input)
+    const millis = Option.isSome(length) ? Duration.toMillis(length.value) : Number.NaN
+
+    if (!Number.isSafeInteger(millis) || millis < 1000)
+      throw new Error(
+        `policy.cron "${declaration}" needs an interval of whole milliseconds, at least 1 second`,
+      )
+
+    return { _tag: "Every", millis }
+  }
+
+  // Offsets such as +05:00 resolve as zones too, but they have no daylight
+  // saving to follow, so a UTC expression says the same thing.
+  if (/^[+-]/.test(zone) || Option.isNone(DateTime.zoneMakeNamed(zone)))
+    throw new Error(`policy.cron "${declaration}" names an unknown time zone "${zone}"`)
+
+  // Fields are read in UTC; `nextInZone` maps wall-clock times to instants.
+  const parsed = Cron.parse(schedule, "UTC")
+
+  if (Result.isFailure(parsed))
+    throw new Error(`policy.cron "${declaration}" does not parse: ${parsed.failure.message}`)
+
+  return { _tag: "Cron", zone, cron: parsed.success }
+}
+
 /**
- * Parses `policy.cron`. Expressions are Effect `Cron.parse` five- or six-field
- * strings evaluated in UTC; whitespace is normalized, so the timer key is the
- * same however an expression is spaced. Two expressions with the same
- * schedule, an unparsable expression, or a target that is not a zero-input
- * command of this actor throw.
+ * Parses `policy.cron`. A key is a five- or six-field Effect `Cron.parse`
+ * expression evaluated in UTC, the same with a `CRON_TZ=<IANA zone> ` prefix
+ * evaluated in that zone, or `@every <duration>`. Whitespace is normalized and
+ * the timer key names the zone, so one expression in two zones is two entries.
+ * Two declarations with one timer key, an unparsable expression, an unknown
+ * zone, a bad interval, or a target that is not a zero-input command of this
+ * actor throw.
  */
 export const resolveCron = ({
   declared,
@@ -43,33 +94,31 @@ export const resolveCron = ({
   readonly commands: ReadonlyArray<AnyCommand>
 }): ReadonlyArray<CronEntry> => {
   const entries: Array<CronEntry> = []
+  const declarations = new Map<string, string>()
 
-  for (const [expression, command] of Object.entries(declared ?? {})) {
-    const parsed = Cron.parse(expression, "UTC")
-
-    if (Result.isFailure(parsed))
-      throw new Error(`policy.cron "${expression}" does not parse: ${parsed.failure.message}`)
+  for (const [declaration, command] of Object.entries(declared ?? {})) {
+    const timing = timingOf(declaration)
 
     if (!commands.includes(command))
-      throw new Error(`policy.cron "${expression}" must name a command of this actor`)
+      throw new Error(`policy.cron "${declaration}" must name a command of this actor`)
 
     if (!SchemaAST.isVoid(command.input.ast))
-      throw new Error(`policy.cron "${expression}" must name a command without input`)
+      throw new Error(`policy.cron "${declaration}" must name a command without input`)
 
-    const key = `${CRON_PREFIX}${canonicalOf(parsed.success)}`
+    const key =
+      timing._tag === "Every"
+        ? `${CRON_PREFIX}@every ${timing.millis}ms`
+        : `${CRON_PREFIX}${timing.zone} ${canonicalOf(timing.cron)}`
 
-    const duplicate = entries.find(
-      (entry) => entry.key === key || Cron.Equivalence(entry.schedule, parsed.success),
-    )
+    const duplicate = declarations.get(key)
 
     if (duplicate !== undefined)
-      throw new Error(
-        `policy.cron "${expression}" repeats the schedule of "${duplicate.key.slice(CRON_PREFIX.length)}"`,
-      )
+      throw new Error(`policy.cron "${declaration}" repeats the schedule of "${duplicate}"`)
 
+    declarations.set(key, declaration)
     entries.push({
       key,
-      schedule: parsed.success,
+      next: timing._tag === "Every" ? nextEvery(timing.millis) : nextInZone(timing),
       command: command.tag,
       payload: emptyPayload(command),
     })
@@ -98,8 +147,65 @@ const canonicalOf = (cron: Cron.Cron) => {
   ).join(" ")
 }
 
-/** The first tick of `entry` strictly after `afterMs`. */
-const nextTick = (entry: CronEntry, afterMs: number) => Cron.next(entry.schedule, afterMs).getTime()
+/** Interval ticks fall on whole multiples of the interval since the Unix epoch. */
+const nextEvery = (millis: number) => (afterMs: number) =>
+  (Math.floor(afterMs / millis) + 1) * millis
+
+const offsetAt = (zone: DateTime.TimeZone, ms: number) =>
+  DateTime.zonedOffset(DateTime.makeZonedUnsafe(ms, { timeZone: zone }))
+
+/**
+ * The earliest instant whose wall clock in `zone` shows `wall` (a wall-clock
+ * time written as UTC milliseconds), or, when a spring-forward gap skips
+ * `wall`, the first instant after that gap. Offsets a day either side bound
+ * the candidates, since no zone changes its offset twice within two days.
+ */
+const instantOf = (zone: DateTime.TimeZone, wall: number) => {
+  const before = offsetAt(zone, wall - DAY_MS)
+  const after = offsetAt(zone, wall + DAY_MS)
+
+  // A larger offset gives an earlier instant, so a repeated time resolves to
+  // its first occurrence.
+  for (const offset of before >= after ? [before, after] : [after, before]) {
+    if (offsetAt(zone, wall - offset) === offset) return wall - offset
+  }
+
+  // `wall` falls in a gap: find the first instant whose wall clock reaches it.
+  let low = wall - Math.max(before, after)
+  let high = wall - Math.min(before, after)
+
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2)
+
+    if (middle + offsetAt(zone, middle) >= wall) high = middle
+    else low = middle
+  }
+
+  return high
+}
+
+/**
+ * The first scheduled instant after `afterMs`: a matching wall-clock time at
+ * its first occurrence, or the first instant after a gap that skips one. A
+ * repeated time's second occurrence is never scheduled, however late the tick
+ * is rewritten, so it cannot fire twice.
+ */
+const nextInZone = ({ zone, cron }: { readonly zone: string; readonly cron: Cron.Cron }) => {
+  if (zone === "UTC") return (afterMs: number) => Cron.next(cron, afterMs).getTime()
+
+  const named = DateTime.zoneMakeNamedUnsafe(zone)
+
+  return (afterMs: number) => {
+    let wall = afterMs + offsetAt(named, afterMs)
+
+    for (;;) {
+      wall = Cron.next(cron, wall).getTime()
+      const instant = instantOf(named, wall)
+
+      if (instant > afterMs) return instant
+    }
+  }
+}
 
 const tickId = (now: number, dueAt: number, retryWindowMs: number) =>
   Effect.gen(function* () {
@@ -132,7 +238,7 @@ export const writeTicks = Effect.fnUntraced(function* (
   const rows = []
 
   for (const entry of entries) {
-    const dueAt = nextTick(entry, now)
+    const dueAt = entry.next(now)
 
     rows.push({
       routing_key: routingKey,
@@ -225,7 +331,7 @@ export const cronTicks = ({
     claim: Statement.Fragment,
   ) {
     const now = yield* databaseTime
-    const dueAt = nextTick(entry, now)
+    const dueAt = entry.next(now)
 
     const id = yield* tickId(now, dueAt, retryWindowMs).pipe(
       Effect.provideService(Crypto.Crypto, crypto),

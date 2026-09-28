@@ -62,11 +62,16 @@ export interface Policy<
   /** Per declared effect, keyed by tag: `retry`, `onSuccess`, and `onDeadLetter`. */
   readonly effects?: EffectPolicies<Effects, Command>
   /**
-   * Cron expressions, five or six fields evaluated in UTC, mapped to the
-   * zero-input command each tick runs with a `System({ source: "cron" })`
-   * caller. A tick fires at most once per scheduled time, never overlaps the
-   * previous tick of its entry, and after downtime fires once rather than once
-   * per missed time.
+   * Schedules mapped to the zero-input command each tick runs with a
+   * `System({ source: "cron" })` caller. A key is a five- or six-field cron
+   * expression evaluated in UTC, the same prefixed `CRON_TZ=<IANA zone> ` to
+   * evaluate it in that zone, or `@every <duration>` (at least 1 second) to
+   * fire on every multiple of the duration since the Unix epoch. In a zone, a
+   * time a spring-forward gap skips fires once at the first instant after the
+   * gap, and a time a fall-back transition repeats fires once, at its first
+   * occurrence. A tick fires at most once per scheduled time, never overlaps
+   * the previous tick of its entry, and after downtime fires once rather than
+   * once per missed time.
    */
   readonly cron?: Readonly<Record<string, CronTarget<Command>>>
   /** A tick later than this after its scheduled time is skipped. Default 1 day. */
