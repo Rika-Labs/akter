@@ -40,7 +40,11 @@ What exists today that the design must fit:
 
 ### 3. Offload: upload first, then flip under the fence
 
-`cold` is a third outbox kind beside `intent` and `effect`, because neither existing path fits: an intent is delivered as a command, which would wake the actor, and an effect runs an application executor. The relay claims due `cold` rows through the `(bucket, kind, due_at_ms)` index with the same lease and backoff as effects ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)), and hands each to a per-runner offload pool instead of delivering it. The row targets no command and carries no payload. The pool runs the steps below, never activates the actor, and on any failure releases the claim to back off like a failed effect attempt. A `cold` row never becomes a route intent or a dead letter.
+`cold` is a third outbox kind beside `intent` and `effect`, because neither existing path fits: an intent is delivered as a command, which would wake the actor, and an effect runs an application executor. The relay claims due `cold` rows through the `(bucket, kind, due_at_ms)` index with the same lease and backoff as effects ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)), and hands each to a per-runner offload pool instead of delivering it. The pool runs the steps below and never activates the actor. A `cold` row never becomes a route intent or a dead letter.
+
+- **Row shape.** `actor_outbox`'s columns stay `NOT NULL`. A `cold` row fills them with fixed values that describe it truthfully: `target_type` and `target_id` are the actor itself, `command` is `$cold`, `payload` is `null` (the JSON text), `caller` is the System caller with source `cold`, and `timer_key` is `$cold`. A check constraint ties the kind to those values: `kind = 'cold'` exactly when `command = '$cold'`, and then `timer_key = '$cold'`. No application command can be named `$cold`, since `$` is reserved.
+- **Claim.** The relay's claim statement adds `kind = 'cold'` to the kinds it selects, but only on runners with `coldStorage` configured and a free offload permit. It moves `due_at_ms` to the end of a lease and increments `attempts`, exactly as an effect claim does. The pool renews the lease while it uploads.
+- **Settle.** Step 3 deletes the row in the flip transaction. An abort (step 3 finds a newer generation) also deletes the row, because the wake that caused it already deleted or replaced the timer; the delete matches on the claim's lease. A failure (the object store is unavailable, the upload times out) sets `due_at_ms` to a capped backoff and records `last_error`, as a failed effect attempt does. There is no attempt limit, and a metric counts rows past eight attempts.
 
 1. **Snapshot, outside any transaction.** Read the generation `g`, every state row, and every blob chunk. If the actor has none, delete the timer and stop.
 2. **Upload.** Write one immutable object, a framework envelope holding the format version, the codec, the state `$version`, the state entries, and the blob entries, compressed with zstd. Its key is `<deployment>/<tenant>/<actor type>/<routing key>/<digest of the actor id>/<g>-<sha256 of the object>`. Upload with a create-only condition, so an existing key is never overwritten.
@@ -52,11 +56,11 @@ A wake between steps 1 and 3 changes the generation, so step 3 aborts. A wake af
 
 ### 4. Rehydrate: fetch before the transaction, write back inside it
 
-1. The owner reads `cold_ref` from the generation row it is about to acquire. If the actor is not cold, the wake proceeds exactly as today, so warm and ordinary wakes are unchanged.
-2. **Outside any transaction,** it fetches the object and checks its SHA-256 against `cold_digest`.
-3. **In the wake's statement group,** which acquires the generation, it checks that `cold_ref` is unchanged, writes the state rows and blob chunks back, and clears `cold_ref`. The first turn then runs as usual, and the state migration chain upcasts from the object's `$version` as for any stored state.
+1. **Receipts first.** Every external command already starts with `readAdmission` (`runtime/turn/admission.ts`), one statement before delivery that reads the database clock, the canonical payload, and any retained receipt. L.2 adds `cold_ref` and `cold_digest` to that statement. Receipts stay hot (§1), so a command whose receipt is retained replays its outcome from that read, as [contract 04](../contracts/04-receipts.md) requires. It never fetches the object, and an object-store outage cannot turn a replay into a failure. Intent deliveries resolve their receipt the same way before any fetch.
+2. If the actor is not cold, the command proceeds exactly as today, so warm and ordinary wakes are unchanged. Otherwise, **outside any transaction,** the owner fetches the object and checks its SHA-256 against `cold_digest`.
+3. **In the wake's statement group,** which acquires the generation, it checks that `cold_ref` is unchanged, writes the state rows and blob chunks back, and clears `cold_ref`. Then the turn runs as usual: its fence and receipt insert-or-resolve come next, in contract 02's order, so a duplicate that raced in after step 1 still replays. The state migration chain upcasts from the object's `$version` as for any stored state.
 
-- **Failures.** An object-store failure or timeout is `ActorError` `ActorUnavailable` with `retryAfter`, and the handle retries with the same command id. A digest mismatch or an undecodable envelope is a deterministic defect that leaves the actor cold and untouched for an operator.
+- **Failures.** An object-store failure or timeout, for a command that must run its handler, is `ActorError` `ActorUnavailable` with `retryAfter`, and the handle retries with the same command id. A digest mismatch or an undecodable envelope is a deterministic defect that leaves the actor cold and untouched for an operator.
 - **Queries** never activate an actor. On a cold actor, a query fetches and decodes the object read-through, and writes nothing (open question 3).
 - **Cost.** Only a cold wake pays for the fetch. The target is the wake-latency target plus one object-store GET, which L.2 must measure and publish.
 
@@ -113,7 +117,7 @@ This ADR is docs only. These amendments are listed for when it is accepted and b
 
 ## Migration
 
-None now. L.2 needs one framework migration: `cold_ref`, `cold_digest`, and the cold state version on `actor_generations`; `'cold'` added to the `actor_outbox.kind` check (today `intent` or `effect`, from `0008_effects`); and the object garbage table. It is numbered when L.2 is scheduled, above whatever has merged by then.
+None now. L.2 needs one framework migration: `cold_ref`, `cold_digest`, and the cold state version on `actor_generations`; `'cold'` added to the `actor_outbox.kind` check (today `intent` or `effect`, from `0008_effects`), with the check that ties `kind = 'cold'` to `command = '$cold'` and `timer_key = '$cold'` (§3); and the object garbage table. No column becomes nullable. It is numbered when L.2 is scheduled, above whatever has merged by then.
 
 ## Open questions for Dallen, with recommended defaults
 
@@ -131,7 +135,9 @@ None now. L.2 needs one framework migration: `cold_ref`, `cold_digest`, and the 
 - A wake racing an offload aborts the flip, and the next offload succeeds.
 - A due `cold` row is claimed and offloaded without activating the actor or delivering any command, and a failed offload backs off without a dead letter.
 - A restore to a snapshot taken before a rehydration finds its object.
-- An object-store outage gives `ActorUnavailable` with `retryAfter`, and a later retry with the same command id succeeds once.
+- An object-store outage gives `ActorUnavailable` with `retryAfter` to a command that must run its handler, and a later retry with the same command id succeeds once.
+- A duplicate of a command whose receipt is retained replays its outcome on a cold actor while the object store is unavailable, and fetches nothing.
+- A `cold` row satisfies the kind check, is claimed only by runners with `coldStorage`, backs off on upload failure, and is deleted by the flip or by an aborted flip.
 - A shortened state chain is refused while cold actors hold an older version.
 
 ## Revisit when
