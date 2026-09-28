@@ -1,6 +1,9 @@
+import { connect } from "node:net"
 import { Database } from "@durable-actors/core/runtime"
+import { TurnPoolSettings } from "@durable-actors/core/testing"
 import { Context, Effect, Fiber, Layer, Redacted, Schedule, type Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
+import { flightCounter } from "./flights.ts"
 
 export type BackendName = "postgres" | "pglite"
 
@@ -31,6 +34,10 @@ export interface Instruments {
   ) => Effect.Effect<readonly [A, Activity], E, R>
   /** Database-server CPU seconds consumed so far; present when the harness owns the server. */
   readonly serverCpuSeconds: Effect.Effect<number | undefined> | undefined
+  /** Zeroes the turn-session flight count. */
+  readonly resetFlights: Effect.Effect<void>
+  /** Round trips turns waited for on their sessions since the last reset. */
+  readonly flights: Effect.Effect<number>
 }
 
 export interface CaseDatabase {
@@ -233,8 +240,15 @@ export const postgres = (external: string | undefined) =>
           return [result, { samples, connections, peakConnections }] as const
         })
 
+      const counter = yield* flightCounter(server)
+
       return {
         layer: Database.postgres({ url: url(name), maxConnections: options.maxConnections }).pipe(
+          Layer.provide(
+            Layer.succeed(TurnPoolSettings, {
+              stream: () => connect({ host: "127.0.0.1", port: counter.port, noDelay: true }),
+            }),
+          ),
           Layer.orDie,
         ),
         url: url(name),
@@ -246,6 +260,8 @@ export const postgres = (external: string | undefined) =>
           statements,
           sampleActivity,
           serverCpuSeconds: cpuSeconds,
+          resetFlights: counter.reset,
+          flights: counter.flights,
         },
       } satisfies CaseDatabase
     })
