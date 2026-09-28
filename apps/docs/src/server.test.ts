@@ -25,6 +25,8 @@ const siteHandler = Effect.gen(function* () {
     yield* fs.writeFileString(path.join(root, file), text)
   }
 
+  yield* fs.symlink(path.join(root, "secret.txt"), path.join(root, "dist/linked.txt"))
+
   const serve = yield* staticSiteHandler(path.join(root, "dist"))
 
   return (pathname: string, method = "GET") =>
@@ -67,20 +69,23 @@ layer(BunServices.layer)("staticSiteHandler", (it) => {
     }),
   )
 
-  it.effect("returns 404 for missing files, other methods, and paths outside the site", () =>
-    Effect.gen(function* () {
-      const get = yield* siteHandler
+  it.effect(
+    "returns 404 for missing files, other methods, and paths or symlinks outside the site",
+    () =>
+      Effect.gen(function* () {
+        const get = yield* siteHandler
 
-      for (const pathname of [
-        "/missing.html",
-        "/api/",
-        "/..%2Fsecret.txt",
-        "/%2e%2e/secret.txt",
-        "/%E0",
-      ])
-        expect((yield* get(pathname)).status).toBe(404)
+        for (const pathname of [
+          "/missing.html",
+          "/api/",
+          "/..%2Fsecret.txt",
+          "/%2e%2e/secret.txt",
+          "/%E0",
+          "/linked.txt",
+        ])
+          expect((yield* get(pathname)).status).toBe(404)
 
-      expect((yield* get("/llms.txt", "POST")).status).toBe(404)
-    }),
+        expect((yield* get("/llms.txt", "POST")).status).toBe(404)
+      }),
   )
 })
