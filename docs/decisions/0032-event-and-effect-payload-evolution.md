@@ -140,7 +140,7 @@ With several runners on one database, a new runner's events would reach old runn
 
 ## Migration
 
-Needs one framework migration: `payload_version` on `actor_events`, `actor_outbox`, and `actor_dead_letters`, and the `actor_payload_versions` and `actor_payload_writers` tables. It is none of the reserved `0017`–`0019`. Recommended: reserve the next free number when this ADR is accepted (today `0020`, moving `0020_adoption` from wave 9 up by one), as `00NN_payload_versions`. If a slice merges a migration first, the milestone rule applies and this one takes the next number above the highest merged migration.
+Needs one framework migration: `payload_version` on `actor_events`, `actor_outbox`, and `actor_dead_letters`, and the `actor_payload_versions` and `actor_payload_writers` tables. It is none of the reserved M4 migrations (`0018_rls`, `0019_commit_version`, `0020_content_blobs`). Recommended: reserve the next free number when this ADR is accepted (today `0021`, moving `0021_adoption` from wave 9 up by one), as `00NN_payload_versions`. If a slice merges a migration first, the milestone rule applies and this one takes the next number above the highest merged migration.
 
 ## Open questions for Dallen, with recommended defaults
 
@@ -148,7 +148,7 @@ Needs one framework migration: `payload_version` on `actor_events`, `actor_outbo
 2. **Two-phase deploys with `writeVersion` and a downcast.** Recommended default: yes, because M2 made several runners per database a supported shape. Alternative: require stopping every runner for a deploy that adds a step, which is simpler and costs downtime.
 3. **Command inputs in pending intents.** Recommended default: out of scope; they stay additive-only. Alternative: give `Actor.command` inputs the same chain, which also touches receipts' payload hashes and needs its own ADR.
 4. **Workflow waits.** Recommended default: keep ADR 0022's rule that an event schema change waits for open executions that recorded a wait on it. Alternative: fingerprint the chain instead, so recorded waits upcast too.
-5. **Migration number.** Recommended default: reserve the next free number at acceptance and move `0020_adoption` up. Alternative: wait for merge time and apply the milestone renumbering rule.
+5. **Migration number.** Recommended default: reserve the next free number at acceptance and move `0021_adoption` up. Alternative: wait for merge time and apply the milestone renumbering rule.
 
 ## Evidence required
 
