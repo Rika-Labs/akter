@@ -6,7 +6,9 @@ import {
   awaitApplied,
   BeatFollower,
   BeatSource,
+  PoisonFollower,
   PruneSource,
+  PulseSleeper,
   PulseSource,
 } from "../probe/subscriptions.ts"
 import { cleanup } from "@durable-actors/core/testing"
@@ -55,7 +57,7 @@ const rate = (result: CaseResult, events: number): CaseResult => ({
 export const subscriptions: Scenario = {
   name: "subscriptions",
   description:
-    "Cross-actor subscriptions: the hand-rolled intent fan-out baseline; the publisher's turn beside 1 to 1,024 subscriptions; commit-to-delivery latency; one pair's throughput; fan-in; subscribe churn; and a backlog drain across 64 subscribers.",
+    "Cross-actor subscriptions: the hand-rolled intent fan-out baseline; the publisher's turn beside 1 to 1,024 subscriptions; commit-to-delivery latency, awake and hibernated; one pair's throughput; fan-in; subscribe churn; a backlog drain across 64 subscribers; lag beside one poison row; and the retention pass beside 10,000 subscriptions.",
   run: (context) =>
     Effect.gen(function* () {
       const quick = context.profile === "quick"
@@ -146,6 +148,59 @@ export const subscriptions: Scenario = {
                 instruments,
                 workers: 1,
                 operations: quick ? 100 : 1000,
+                operation: trip,
+                listStatements: true,
+              })
+            }),
+          )
+          .pipe(Effect.orDie),
+      )
+
+      // Each delivery wakes a subscriber that hibernated after its last turn,
+      // so the trip includes the activation the wake starts.
+      results.push(
+        yield* context
+          .withRuntime({ subscriptions: true }, (instruments) =>
+            Effect.gen(function* () {
+              const operations = quick ? 50 : 300
+              const source = yield* PulseSource.get("hibernated-latency")
+
+              yield* Effect.forEach(
+                Array.from({ length: operations + 10 }, (_, index) => index),
+                (index) =>
+                  Effect.flatMap(PulseSleeper.get(`sleeper-${index}`), (sleeper) =>
+                    sleeper.Touch(),
+                  ),
+                { concurrency: 16, discard: true },
+              )
+              // Past the sleepers' 100 ms `hibernateAfter`, so none is active.
+              yield* Effect.sleep("1 second")
+
+              const trip = (index: number) =>
+                Effect.gen(function* () {
+                  const key = `hibernated-${index}`
+                  const applied = yield* awaitApplied(key)
+                  yield* source.Pulse({ reader: `sleeper-${index}`, key })
+                  yield* applied
+                })
+
+              yield* load({
+                workers: 1,
+                operations: 10,
+                operation: (index) => trip(operations + index),
+              })
+
+              return yield* measure({
+                name: "commit-to-delivery-hibernated",
+                parameters: {
+                  subscribers: operations,
+                  route: "id",
+                  workers: 1,
+                  hibernateAfterMs: 100,
+                },
+                instruments,
+                workers: 1,
+                operations,
                 operation: trip,
                 listStatements: true,
               })
@@ -309,6 +364,62 @@ export const subscriptions: Scenario = {
                     operation: drain,
                   }),
                   backlog,
+                )
+              }),
+            )
+            .pipe(Effect.orDie),
+        )
+
+      // One source's backlog to 63 healthy followers, beside a 64th whose
+      // handler always dies, against the same backlog without it: the poison
+      // row backs off on its own and must not hold the others back.
+      for (const poison of [false, true])
+        results.push(
+          yield* context
+            .withRuntime({ subscriptions: true }, (instruments) =>
+              Effect.gen(function* () {
+                const followers = 63
+                const perFollower = quick ? 16 : 128
+                const name = poison ? "lag-with-one-poison-row" : "lag-without-poison-row"
+                const source = yield* BeatSource.get(name)
+
+                for (let index = 0; index < followers; index++)
+                  yield* (yield* BeatFollower.get(`${name}-${index}`)).Follow(name)
+
+                if (poison) yield* (yield* PoisonFollower.get(`${name}-poison`)).Follow(name)
+
+                const sql = yield* SqlClient.SqlClient
+                const expected = followers + (poison ? 1 : 0)
+
+                while (
+                  (yield* sql<{
+                    rows: number
+                  }>`SELECT count(*)::int AS rows FROM actor_subscriptions
+                  WHERE source_id = ${name} AND active`.pipe(Effect.orDie))[0]!.rows < expected
+                )
+                  yield* Effect.sleep("20 millis")
+
+                const lag = () =>
+                  Effect.gen(function* () {
+                    const applied = yield* Effect.forEach(
+                      Array.from({ length: followers }, (_, index) => index),
+                      (index) => awaitApplied(`${name}-${index}/${perFollower - 1}`),
+                    )
+
+                    for (let n = 0; n < perFollower; n++) yield* source.Emit(n)
+                    yield* Effect.all(applied, { concurrency: "unbounded", discard: true })
+                  })
+
+                return rate(
+                  yield* measure({
+                    name,
+                    parameters: { subscribers: followers, poison, events: perFollower, sources: 1 },
+                    instruments,
+                    workers: 1,
+                    operations: 1,
+                    operation: lag,
+                  }),
+                  perFollower * followers,
                 )
               }),
             )
