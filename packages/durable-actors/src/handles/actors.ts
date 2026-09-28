@@ -126,7 +126,11 @@ export interface RegisteredCommand {
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
-    connections?: ConnectionLister,
+    turn: {
+      /** The actor's event sequence before this turn's emits. */
+      readonly head: string
+      readonly connections?: ConnectionLister | undefined
+    },
   ) => Effect.Effect<BusinessResult, BusinessResult>
 }
 

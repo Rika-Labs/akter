@@ -10,7 +10,7 @@ import {
   Schema,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, InvalidExecutionId, Unauthorized, User } from "../../index.ts"
+import { Actor, Intent, InvalidExecutionId, Unauthorized, User } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -75,10 +75,15 @@ const Begin = Actor.command("Begin", {
   output: Schema.String,
 })
 
+const Defer = Actor.command("Defer", {
+  input: Schema.Struct({ orderId: Schema.String, sku: Schema.String }),
+  output: Schema.String,
+})
+
 const Shipper = Actor.make("Shipper", {
   key: Schema.String,
   events: [Paid],
-  api: { Ship, Quote, Pay, Begin },
+  api: { Ship, Quote, Pay, Begin, Defer },
 })
 
 const bump = (fixture: WorkflowsFixture, key: string) =>
@@ -108,6 +113,18 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
           yield* turn.emit(Paid.make({ orderId: input.orderId, amount: 3 }))
 
           return yield* (yield* Shipper.intents(turn.id)).Ship(input)
+        }),
+        // Stages a start without emitting, delivered late enough that an
+        // owner event can commit before the execution exists.
+        Defer: Effect.fnUntraced(function* (input: {
+          readonly orderId: string
+          readonly sku: string
+        }) {
+          const turn = yield* Shipper.Turn
+
+          return yield* (yield* Shipper.intents(turn.id))
+            .Ship(input)
+            .pipe(Intent.after("500 millis"))
         }),
         Pay: Effect.fnUntraced(function* (input: {
           readonly orderId: string
@@ -651,6 +668,19 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const again = yield* shipper.Ship({ orderId: "s1", sku: "wait-s" })
           expect(again.executionId).toBe(id)
           expect(yield* again.result).toBe("r-wait-s:paid-3")
+        }),
+      ),
+  },
+  {
+    name: "workflows: a start staged by a turn that emits nothing sees an owner event committed before the start is delivered",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const shipper = yield* Shipper.get("deferred")
+          const id = yield* shipper.Defer({ orderId: "d1", sku: "wait-d" })
+          yield* shipper.Pay({ orderId: "d1", amount: 5 })
+          expect(yield* (yield* Shipper.run(Ship, id)).result).toBe("r-wait-d:paid-5")
         }),
       ),
   },

@@ -141,14 +141,16 @@ const insertExecution = Effect.fnUntraced(function* (options: {
   readonly key: string
   readonly input: string
   readonly caller: Caller
-  readonly startedBy: string | null
+  readonly after: string | null
 }) {
   const sql = yield* SqlClient.SqlClient
   const { routingKey, ref, workflow, executionId } = options
   const now = yield* databaseTime
   const manifest = yield* manifestOf(ref.actor, workflow.member)
 
-  // The cursor sits before the starting turn's own events, so a wait sees them.
+  // An owner-staged start's cursor sits before the staging turn's events, so a
+  // wait sees them and every later owner event, including ones committed
+  // before the start is delivered.
   // The start manifest is restored if retention pruned it while a runner of an
   // older deployment still starts executions under it.
   const inserted = yield* sql`
@@ -157,9 +159,7 @@ const insertExecution = Effect.fnUntraced(function* (options: {
     SELECT ${routingKey}, ${executionId}, ${bucketOf(routingKey)}, ${ref.tenant}, ${ref.actor}, ${ref.id},
       ${workflow.member.tag}, ${options.key}, ${manifest.hash}, ${compress(options.input)},
       ${yield* encodeCaller(options.caller).pipe(Effect.orDie)},
-      COALESCE((SELECT min(e.sequence) - 1 FROM actor_events e WHERE e.routing_key = g.routing_key
-        AND e.tenant_id = g.tenant_id AND e.actor_type = g.actor_type AND e.actor_id = g.actor_id
-        AND e.command_id = ${options.startedBy}), g.event_sequence),
+      COALESCE(${options.after}::bigint, g.event_sequence),
       'running', ${now}
     FROM actor_generations g WHERE ${owner(sql, routingKey, ref)}
     ON CONFLICT DO NOTHING RETURNING 1),
@@ -215,7 +215,7 @@ export const workflowCommands = ({
     workflow: RegisteredWorkflow,
     input: string,
     key: string,
-    startedBy: string | null,
+    after: string | null,
   ) =>
     Effect.gen(function* () {
       const executionId = yield* encodeExecutionId({
@@ -234,7 +234,7 @@ export const workflowCommands = ({
         key,
         input,
         caller: request.caller,
-        startedBy,
+        after,
       })
 
       return success(yield* encodeExecutionOutput({ value: executionId }).pipe(Effect.orDie))
@@ -265,7 +265,7 @@ export const workflowCommands = ({
         if (workflow === undefined)
           return yield* Effect.die(new Error(`Unregistered workflow ${payload.workflow}`))
 
-        return yield* start(request, workflow, payload.input, payload.key, payload.startedBy)
+        return yield* start(request, workflow, payload.input, payload.key, payload.after)
       }),
   })
 
