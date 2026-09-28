@@ -5,6 +5,7 @@ import {
   type Broadcast,
   type BusinessResult,
   type ConnectionLister,
+  type EmittedEvent,
   Outcome,
   type RegisteredCommand,
   type Request,
@@ -13,12 +14,12 @@ import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
-import { eventsStatements, notifyEvents } from "../events/append.ts"
+import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
-import { CallerJson, OutboxRuntime, outboxStatements } from "./outbox.ts"
+import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
   asSqlConnection,
   isInterrupted,
@@ -49,6 +50,14 @@ export const emptyActivationCache = (): ActivationCache => ({
   generation: undefined,
   state: undefined,
 })
+
+/** The events a turn committed: sequences `after + 1` onward, stamped `emittedAtMs`. */
+export interface CommittedEvents {
+  readonly after: string
+  readonly events: ReadonlyArray<EmittedEvent>
+  readonly commandId: string
+  readonly emittedAtMs: number
+}
 
 interface Admission {
   readonly now: string
@@ -134,11 +143,20 @@ interface Plan {
   readonly settled: ReadonlyArray<Settled>
   readonly generation: string
   readonly state: ReadonlyMap<string, string> | undefined
+  /** A workflow waits on an emitted class, so the relay should wake after commit. */
   readonly wake: boolean
   /** Broadcasts the batch's committed successes publish to the actor's connections. */
   readonly broadcasts: ReadonlyArray<Broadcast>
   /** The actor's event sequence once this batch commits. */
   readonly head: string
+  /**
+   * Each command's committed events, in delivery order. Their stamps and the
+   * outbox replies are filled in as the commit group replies, so read them
+   * only after it has.
+   */
+  readonly committed: ReadonlyArray<Omit<CommittedEvents, "emittedAtMs">>
+  readonly emitted: ReadonlyArray<{ readonly emittedAtMs: number }>
+  readonly outbox: ReadonlyArray<OutboxReplies>
 }
 
 /** One `actor_receipts` row a batch commits. */
@@ -168,6 +186,8 @@ export interface Done {
   readonly broadcasts: ReadonlyArray<Broadcast>
   /** The actor's event sequence once the batch commits. */
   readonly head: string
+  /** Each command's committed events, stamped, in delivery order. */
+  readonly committed: ReadonlyArray<CommittedEvents>
 }
 
 /**
@@ -365,6 +385,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       // Broadcasts of committed successes, and how many events the batch appends.
       const broadcasts: Array<Broadcast> = []
       let events = 0
+      const committed: Array<Omit<CommittedEvents, "emittedAtMs">> = []
+      const emitted: Array<{ readonly emittedAtMs: number }> = []
+      const outboxes: Array<OutboxReplies> = []
 
       for (const [index, { request, command }] of batch.entries()) {
         const admitted = admissions[index]!
@@ -471,8 +494,16 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           removed.delete(key)
         }
 
-        if (result.events.length > 0)
-          staged.push(...(yield* eventsStatements(request, routingKey, result.events)))
+        if (result.events.length > 0) {
+          const appended = yield* eventsStatement(request, routingKey, result.events)
+          staged.push(appended.statement)
+          committed.push({
+            after: String(BigInt(first.head) + BigInt(events)),
+            events: result.events,
+            commandId: request.commandId,
+          })
+          emitted.push(appended.stamp)
+        }
 
         events += result.events.length
 
@@ -501,8 +532,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         )
 
         staged.push(...outbox.statements)
-
-        if (outbox.dueNow) wake = true
+        outboxes.push(outbox.replies)
 
         receipts.push({
           routing_key: routingKey,
@@ -532,6 +562,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           wake: false,
           broadcasts: [],
           head: first.head,
+          committed: [],
+          emitted: [],
+          outbox: [],
         } satisfies Plan
 
       const writes: Array<Statement> = []
@@ -576,6 +609,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         wake,
         broadcasts,
         head: String(BigInt(first.head) + BigInt(events)),
+        committed,
+        emitted,
+        outbox: outboxes,
       } satisfies Plan
     })
 
@@ -605,12 +641,21 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
     answering = true
 
-    if (plan.wake) yield* (yield* OutboxRuntime).wake
+    if (plan.wake || plan.outbox.some((replies) => replies.wake))
+      yield* (yield* OutboxRuntime).wake
+
+    if (plan.outbox.some((replies) => replies.cancelled)) yield* (yield* OutboxRuntime).cancelled
 
     yield* run.committed(batch, {
       settled: plan.settled,
       broadcasts: plan.broadcasts,
       head: plan.head,
+      committed: plan.committed.map(
+        (entry, index): CommittedEvents => ({
+          ...entry,
+          emittedAtMs: plan.emitted[index]!.emittedAtMs,
+        }),
+      ),
     })
 
     answering = false

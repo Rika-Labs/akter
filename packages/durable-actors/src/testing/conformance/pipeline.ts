@@ -3,6 +3,7 @@ import { pgTable, text } from "drizzle-orm/pg-core"
 import {
   Crypto,
   Deferred,
+  Duration,
   Effect,
   Fiber,
   Layer,
@@ -53,12 +54,19 @@ const Defer = Actor.command("Defer", {
 
 const Remind = Actor.command("Remind", {})
 
+class Ping extends Actor.effect<Ping>()("Ping", { input: {}, success: Schema.String }) {}
+
+const PingLater = Actor.command("PingLater", { input: Schema.Finite })
+
+const CancelPing = Actor.command("CancelPing", {})
+
 const Plain = Actor.make("Plain", {
   key: Schema.String,
   state: Actor.state({
     count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  api: { Add, Defer },
+  effects: [Ping],
+  api: { Add, Defer, PingLater, CancelPing },
   internal: { Remind },
 })
 
@@ -132,8 +140,23 @@ const actorsLive = (probe: Probe) =>
               return turn.state.count
             }),
             Remind: () => Effect.void,
+            // Performs the keyed ping an hour out after a real-time pause, so
+            // its due time too must be measured from commit.
+            PingLater: Effect.fnUntraced(function* (pauseMs: number) {
+              probe.handled += 1
+              yield* Effect.sleep(pauseMs)
+              yield* (yield* Plain.Turn).perform(Ping.make({}), {
+                key: "ping",
+                after: Duration.hours(1),
+              })
+            }),
+            CancelPing: Effect.fnUntraced(function* () {
+              probe.handled += 1
+              yield* (yield* Plain.Turn).cancelEffect("ping")
+            }),
           }),
         ),
+        Plain.toEffectLayer(Effect.succeed({ Ping: () => Effect.succeed("pong") })),
       )
     }).pipe(Effect.orDie),
   )
@@ -949,5 +972,41 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
         }),
       )
     },
+  },
+  {
+    name: "pipeline: a keyed delayed effect, its replacement, and its cancellation each keep two round trips",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, {}, (probe) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const plain = yield* Plain.get("pinged")
+          yield* plain.Add(1)
+          yield* plain.Add(1)
+
+          const clock = sql<{ now: string }>`
+            SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
+
+          const pings = sql<{ due: string; ready: string; key: string | null }>`
+            SELECT due_at_ms::text AS due, ready_at_ms::text AS ready, timer_key AS key
+            FROM actor_outbox WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}
+              AND kind = 'effect' AND command = 'Ping'`
+
+          const before = Number((yield* clock)[0]!.now)
+          expect((yield* flightsOf(probe, plain.PingLater(400))).flights).toBe(2)
+
+          const [first] = yield* pings
+          expect(Number(first!.due) >= before + 400 + 3_600_000).toBe(true)
+          expect(first!.ready).toBe(first!.due)
+
+          // Performing again under the key drops the unstarted row in the same group.
+          expect((yield* flightsOf(probe, plain.PingLater(0))).flights).toBe(2)
+          expect((yield* pings).length).toBe(1)
+
+          expect((yield* flightsOf(probe, plain.CancelPing())).flights).toBe(2)
+          expect(yield* pings).toEqual([])
+        }),
+      ),
   },
 ]

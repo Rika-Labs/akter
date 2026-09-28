@@ -344,7 +344,13 @@ export const registerActor = Effect.fnUntraced(function* (
       // Connection broadcasts of a batch go out once it commits, and then
       // each caller hears its own outcome.
       const committed = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>, done: Done) {
-        if (owner.hasConnections) yield* owner.flush(owned, done.broadcasts, done.head)
+        if (owner.hasConnections) {
+          for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
+
+          const feeds = yield* Effect.forEach(done.committed, owner.feedBroadcasts)
+
+          yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat()], done.head)
+        }
 
         for (const [index, settled] of done.settled.entries())
           yield* settle(

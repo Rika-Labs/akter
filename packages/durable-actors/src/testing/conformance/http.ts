@@ -35,7 +35,7 @@ import {
 } from "../../errors/actor.ts"
 import { InternalActors } from "../../handles/actors.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
-import type { AuthProvider, AuthRequest } from "../../serve/auth.ts"
+import { type AuthProvider, type AuthRequest, Credential } from "../../serve/auth.ts"
 import type { ServeOptions } from "../../serve/layer.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -204,36 +204,44 @@ export const httpLayer = Layer.mergeAll(
   ),
 )
 
-// `Bearer <tenant>:<subject>`; `expired` and `unavailable` exercise the provider's failures.
-const tokens = Actor.auth.make((request: AuthRequest) =>
-  Effect.gen(function* () {
-    const header = Headers.get(request.headers, "authorization")
+// `<tenant>:<subject>`; `expired` exercises the provider's expiry failure.
+const principal = (token: string) => {
+  if (token === "expired") return Effect.fail(Unauthorized.make({ code: "expired" }))
 
-    if (Option.isNone(header)) return yield* Unauthorized.make({ code: "missing_credentials" })
+  const match = /^([^:]+):(.+)$/s.exec(token)
 
-    const token = header.value.replace(/^Bearer /, "")
+  return match === null
+    ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
+    : Effect.succeed({ tenant: match[1]!, caller: User.make({ subject: match[2]! }) })
+}
 
-    if (token === "expired") return yield* Unauthorized.make({ code: "expired" })
+// The principal from `authorization: Bearer <tenant>:<subject>`.
+const bearer = (request: AuthRequest) =>
+  Option.match(Headers.get(request.headers, "authorization"), {
+    onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
+    onSome: (header) => principal(header.replace(/^Bearer /, "")),
+  })
 
-    const match = /^([^:]+):(.+)$/s.exec(token)
+const tokens = Actor.auth.make(bearer)
 
-    if (match === null) return yield* Unauthorized.make({ code: "invalid_credentials" })
+// The same principal from the `session` cookie.
+const session = (request: AuthRequest) => {
+  const value = request.cookies["session"]
 
-    return { tenant: match[1]!, caller: User.make({ subject: match[2]! }) }
-  }),
-)
+  return value === undefined
+    ? Effect.fail(Unauthorized.make({ code: "missing_credentials" }))
+    : principal(value)
+}
 
 const unavailable: AuthProvider = {
-  scheme: "bearer",
-  cookies: false,
+  credentials: [Credential.Bearer()],
   authenticate: () =>
     Effect.fail(ActorUnavailable.make({ cause: new Error("identity provider secret detail") })),
 }
 
 // Providers are typed to return User or Anonymous; this one ignores that to prove the runtime check.
 const systemCaller: AuthProvider = {
-  scheme: "bearer",
-  cookies: false,
+  credentials: [Credential.Bearer()],
   authenticate: () =>
     Effect.succeed({
       tenant: "t",
@@ -365,6 +373,37 @@ const reasonOf = (body: Schema.Json | undefined) =>
     Effect.map(({ reason }) =>
       reason.code === undefined ? { tag: reason._tag } : { tag: reason._tag, code: reason.code },
     ),
+  )
+
+const SecurityDocument = Schema.Struct({
+  paths: Schema.Record(
+    Schema.String,
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        operationId: Schema.String,
+        security: Schema.Array(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+      }),
+    ),
+  ),
+  components: Schema.Struct({ securitySchemes: Schema.Record(Schema.String, Schema.Json) }),
+})
+
+/** A served document's security schemes, and the distinct security of its authenticated operations. */
+const securityOf = (server: Server) =>
+  server.send("/openapi.json", { method: "GET" }).pipe(
+    Effect.flatMap((reply) => Schema.decodeUnknownEffect(SecurityDocument)(reply.body)),
+    Effect.orDie,
+    Effect.map((spec) => {
+      const distinct = new Map(
+        Object.values(spec.paths)
+          .flatMap((methods) => Object.values(methods))
+          .filter((operation) => operation.operationId !== "durable.protocol")
+          .map((operation) => [JSON.stringify(operation.security), operation.security]),
+      )
+
+      return { schemes: spec.components.securitySchemes, security: [...distinct.values()] }
+    }),
   )
 
 const isDefectBody = Schema.is(Schema.TaggedStruct("Defect", { traceId: Schema.String }))
@@ -987,6 +1026,81 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "documents a cookie provider's cookie as an apiKey scheme and authenticates by it",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const openapi = { path: "/openapi.json" as const }
+
+          const cookieOnly = yield* serveHttp({
+            auth: Actor.auth.make({ authenticate: session, cookies: { name: "session" } }),
+            openapi,
+          })
+
+          const either = yield* serveHttp({
+            auth: Actor.auth.make({
+              authenticate: (request) =>
+                request.cookies["session"] === undefined ? bearer(request) : session(request),
+              cookies: { name: "session" },
+              bearer: true,
+            }),
+            openapi,
+          })
+
+          const cookie = { type: "apiKey", in: "cookie", name: "session" }
+
+          expect(yield* securityOf(cookieOnly)).toEqual({
+            schemes: { cookie },
+            security: [[{ cookie: [] }]],
+          })
+
+          expect(yield* securityOf(either)).toEqual({
+            schemes: { bearer: { type: "http", scheme: "bearer" }, cookie },
+            security: [[{ bearer: [] }, { cookie: [] }]],
+          })
+
+          expect(yield* securityOf(yield* serveHttp({ openapi }))).toEqual({
+            schemes: { bearer: { type: "http", scheme: "bearer" } },
+            security: [[{ bearer: [] }]],
+          })
+
+          const tenant = yield* tenantOf
+
+          const whoami = (server: Server, init: { token?: string; cookie?: string }) =>
+            Effect.gen(function* () {
+              return yield* server.send("/actors/HttpRoom/cookie/Whoami", {
+                key: yield* server.mint(),
+                token: init.token,
+                headers: init.cookie === undefined ? {} : { cookie: init.cookie },
+              })
+            })
+
+          expect(
+            (yield* whoami(cookieOnly, { cookie: `theme=dark; session=${tenant}:alice` })).body,
+          ).toBe(`${tenant}/alice`)
+
+          const bearerOnly = yield* whoami(cookieOnly, { token: `${tenant}:alice` })
+          expect(bearerOnly.status).toBe(401)
+          expect(bearerOnly.body).toEqual(
+            yield* envelope(Unauthorized.make({ code: "missing_credentials" })),
+          )
+
+          expect((yield* whoami(either, { cookie: `session=${tenant}:carol` })).body).toBe(
+            `${tenant}/carol`,
+          )
+
+          expect((yield* whoami(either, { token: `${tenant}:dave` })).body).toBe(`${tenant}/dave`)
+
+          // A provider without a cookie credential never sees the request's cookies.
+          const ignored = yield* whoami(yield* serveHttp({ auth: Actor.auth.make(session) }), {
+            cookie: `session=${tenant}:erin`,
+          })
+
+          expect(ignored.status).toBe(401)
+        }),
+      ),
+  },
+  {
     name: "refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin",
     run: ({ expect, environment }) =>
       environment.run(
@@ -1279,6 +1393,30 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
             expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
               `openapi.path ${path} collides with a protocol route`,
+            )
+          }
+        }),
+      ),
+  },
+  {
+    name: "fails Actor.serve at startup when a provider declares two credentials of one OpenAPI scheme",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const internal = Layer.succeed(InternalActors, yield* InternalActors)
+
+          for (const credentials of [
+            [Credential.Cookie({ name: "a" }), Credential.Cookie({ name: "b" })],
+            [Credential.Bearer(), Credential.Jwt()],
+          ]) {
+            const exit = yield* HttpRouter.toHttpEffect(
+              Actor.serve({ actors: [HttpRoom], auth: { ...tokens, credentials } }).pipe(
+                Layer.provide(internal),
+              ),
+            ).pipe(Effect.exit)
+
+            expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+              "more than one credential documented as the same OpenAPI scheme",
             )
           }
         }),
