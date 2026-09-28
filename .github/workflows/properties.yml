@@ -69,7 +69,10 @@ jobs:
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare
-      # A failure names its seed; rerun it with SIMULATION_SEEDS=1 SIMULATION_SEED_BASE=<seed>.
+      # Seeds come from this workflow's run number, which scheduled and manual runs
+      # both advance, so every run covers 10,000 seeds no earlier run did and logs
+      # where they start. A failure names its seed; rerun it locally with
+      # SIMULATION_SEEDS=1 SIMULATION_SEED_BASE=<seed>.
       - name: Simulate
         run: |
           export SIMULATION_SEED_BASE=$(( GITHUB_RUN_NUMBER * 10000 ))

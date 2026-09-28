@@ -241,8 +241,8 @@ describe("runner and relay process death with Postgres", () => {
           const worst = Math.max(
             ...survivors.flatMap(({ process }) => process.done.map(({ latency }) => latency)),
           )
-          // Tagged so a drill run's recovery can be read from the test output.
 
+          // Tagged so a drill run's recovery can be read from the test output.
           yield* Console.error(
             `DRILL increments=${of("Increment")} sends=${of("Send")} adds=${of("Add")} lost=${lost.length} recoveryMs=${recovery} worstCommandMs=${worst}`,
           )
