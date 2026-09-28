@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { ActorTest, type TestConnection } from "@durable-actors/core/testing"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Queue, Stream } from "effect"
 import type { Instruments } from "../backend.ts"
 import { load } from "../measure.ts"
 import { Feed, LiveProbe, LiveProbeLive } from "../probe/connections.ts"
@@ -47,12 +47,14 @@ const echo = (connection: TestConnection<typeof Feed>) =>
 /**
  * Connection frames and broadcasts through the holder: a frame answered by a
  * warm owner, a frame that wakes a parked owner, and a committed broadcast
- * reaching 1 and 64 connections.
+ * reaching 1 and 64 connections. Then streams on the owner: a subscription
+ * that emits one element and ends, and a commit reaching a `read.follow`
+ * subscriber.
  */
 export const connections: Scenario = {
   name: "connections",
   description:
-    "Connection round trips through the in-process holder: a frame echoed by a warm owner, a frame that wakes a hibernated owner, and a turn's broadcast reaching 1 and 64 parked connections.",
+    "Connection round trips through the in-process holder: a frame echoed by a warm owner, a frame that wakes a hibernated owner, and a turn's broadcast reaching 1 and 64 parked connections; stream subscriptions, and a commit reaching a read.follow subscriber.",
   run: (context) =>
     Effect.gen(function* () {
       const operations = context.profile === "quick" ? 200 : 2000
@@ -134,6 +136,55 @@ export const connections: Scenario = {
             }),
           ),
         )
+
+      results.push(
+        yield* withConnections(context, (instruments) =>
+          Effect.gen(function* () {
+            const probe = yield* LiveProbe.get("subscribe")
+            const once = () => Stream.runDrain(probe.Once())
+            yield* load({ workers: 1, operations: 50, operation: once })
+
+            return yield* measure({
+              name: "stream-subscribe",
+              parameters: { subscriptions: 1, workers: 1 },
+              instruments,
+              workers: 1,
+              operations,
+              operation: once,
+              listStatements: true,
+            })
+          }),
+        ),
+      )
+
+      results.push(
+        yield* withConnections(context, (instruments) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const probe = yield* LiveProbe.get("follow")
+              const received = yield* Queue.unbounded<string>()
+              yield* probe.Tail().pipe(
+                Stream.runForEach((text) => Queue.offer(received, text)),
+                Effect.forkScoped,
+              )
+
+              // Timed from the command's call until the subscriber holds its event.
+              const logged = () => Effect.andThen(probe.Log("hello"), Queue.take(received))
+              yield* load({ workers: 1, operations: 50, operation: logged })
+
+              return yield* measure({
+                name: "stream-follow",
+                parameters: { subscriptions: 1, workers: 1 },
+                instruments,
+                workers: 1,
+                operations,
+                operation: logged,
+                listStatements: true,
+              })
+            }),
+          ),
+        ),
+      )
 
       return results
     }),
