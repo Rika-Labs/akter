@@ -100,7 +100,14 @@
       "name": "@durable-actors/coding-agent",
       "dependencies": {
         "@durable-actors/core": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "drizzle-orm": "catalog:",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
       },
     },
     "examples/counter": {
