@@ -1,5 +1,5 @@
 /** The site's sections, in sidebar and `llms.txt` order. */
-export const sections = ["Start", "API reference"] as const
+export const sections = ["Start", "Guides", "API reference", "Compare"] as const
 
 export type Section = (typeof sections)[number]
 
@@ -19,6 +19,10 @@ export const homeSource = "guides/README.md"
 export const pages: ReadonlyArray<Page> = [
   { source: homeSource, section: "Start" },
   { source: "quickstart.md", section: "Start" },
+  { source: "guides/concepts.md", section: "Start" },
+  { source: "guides/effect-into-the-commit.md", section: "Guides" },
+  { source: "guides/testing.md", section: "Guides" },
+  { source: "guides/deploy.md", section: "Guides" },
   { source: "api/README.md", section: "API reference" },
   { source: "api/01-server-api.md", section: "API reference" },
   { source: "api/02-context.md", section: "API reference" },
@@ -29,6 +33,7 @@ export const pages: ReadonlyArray<Page> = [
   { source: "api/naming.md", section: "API reference" },
   { source: "api/versioning.md", section: "API reference" },
   { source: "api/post-foundation-sketches.md", section: "API reference" },
+  { source: "guides/comparison.md", section: "Compare" },
 ]
 
 /** Repository documents the site links to instead of publishing. */
