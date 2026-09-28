@@ -32,6 +32,7 @@ import {
   Request,
 } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
+import { bootstrapTicks } from "../cron/schedule.ts"
 import { routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { takeBatch } from "./mailbox.ts"
@@ -308,6 +309,7 @@ export const registerActor = Effect.fnUntraced(function* (
             statements,
             waited,
             owner.hasConnections ? owner.list(owned) : undefined,
+            registration.cron,
           )
 
           // A route turn's command id is its effect id: its progress stops
@@ -603,6 +605,16 @@ export const registerActor = Effect.fnUntraced(function* (
   // keeper, on whichever runner Cluster runs it, keeps the default tenant's
   // instance resident and so moves it, and its background loop, to a survivor.
   if (registration.singleton) {
+    const ref = ActorRef.make({
+      tenant: registration.tenant,
+      actor: registration.name,
+      id: "singleton",
+    })
+
+    yield* bootstrapTicks(routingKeyOf(ref), ref, registration.cron).pipe(
+      Effect.provideContext(services),
+      Effect.orDie,
+    )
     const address = yield* encodeEntityId([registration.tenant, "singleton"]).pipe(Effect.orDie)
     const client = (yield* sharding.makeClient(entity))(address)
 
