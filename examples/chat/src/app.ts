@@ -2,7 +2,7 @@ import { User } from "@durable-actors/core"
 import { Actors } from "@durable-actors/core/runtime"
 import { Effect, Layer, Schema } from "effect"
 import { RoomLive } from "./room/layer.ts"
-import { ModerationApi } from "./room/moderation.ts"
+import { ModerationApi, Moderators } from "./room/moderation.ts"
 import { routes } from "./server.ts"
 
 /**
@@ -12,7 +12,7 @@ import { routes } from "./server.ts"
 export const app = routes.pipe(
   Layer.provide(
     RoomLive.pipe(
-      Layer.provide(ModerationApi.layer),
+      Layer.provide([ModerationApi.layer, Moderators.layer]),
       Layer.provideMerge(
         Actors.layer({
           authorize: ({ caller, ref }) =>

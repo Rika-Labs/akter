@@ -39,6 +39,50 @@ export class ModerateMessage extends Actor.effect<ModerateMessage>()("ModerateMe
   success: Schema.Struct({ id: Schema.String, flagged: Schema.Boolean }),
 }) {}
 
+/** A moderator's ruling on an appealed message; the waiting appeal reads it from the room's events. */
+export class AppealDecided extends Actor.Event<AppealDecided>()("AppealDecided", {
+  messageId: Schema.String,
+  restore: Schema.Boolean,
+}) {}
+
+/** One appeal per message: it notifies moderators once and waits durably for their decision. */
+export const Appeal = Actor.workflow("Appeal", {
+  input: { messageId: Schema.String },
+  output: Schema.Boolean,
+  key: ({ messageId }) => messageId,
+  versions: { "notify-moderators": { current: 1, min: 0 } },
+})
+
+export const Notify = Appeal.step("notify", { input: Schema.String })
+
+export const AwaitDecision = Appeal.wait("decision", AppealDecided)
+
+export const DecideAppeal = Actor.command("DecideAppeal", {
+  input: Schema.Struct({ messageId: Schema.String, restore: Schema.Boolean }),
+})
+
+export const Open = Actor.command("Open", {
+  input: Schema.Struct({ room: Schema.String, messageId: Schema.String }),
+})
+
+export const Reply = Actor.command("Reply", { input: Schema.String, output: Schema.Int })
+
+/** A reply thread: a minted child with no key, created only by its room's `Open` intent. */
+export const Thread = Actor.make("Thread", {
+  state: Actor.state({
+    room: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+    messageId: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+    replies: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  }),
+  api: { Open, Reply },
+  policy: { createdBy: Open },
+})
+
+export const StartThread = Actor.command("StartThread", {
+  input: Schema.Struct({ messageId: Schema.String }),
+  output: Schema.String,
+})
+
 export class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {}) {}
 
 export const RoomState = Actor.state({
@@ -112,9 +156,20 @@ export const Room = Actor.make("Room", {
   state: RoomState,
   tables: [messages],
   blobs: [Attachments],
-  events: [MessagePosted, RoomArchived],
+  events: [MessagePosted, RoomArchived, AppealDecided],
   effects: [ModerateMessage],
-  api: { Post, Archive, Recent, History, Attachment, React, Presence },
+  api: {
+    Post,
+    Archive,
+    Recent,
+    History,
+    Attachment,
+    React,
+    Presence,
+    Appeal,
+    DecideAppeal,
+    StartThread,
+  },
   internal: { IdleCheck, Moderated, ModerationFailed },
   policy: {
     keepReceipts: "7 days",

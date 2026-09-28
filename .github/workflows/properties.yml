@@ -50,3 +50,33 @@ jobs:
         run: bun run --filter @durable-actors/core test
       - name: Postgres suite
         run: bun run --filter @durable-actors/core test:integration
+  simulation:
+    name: Deterministic simulation, 10,000 seeds
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Restore Bun package cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run prepare
+      # Seeds come from this workflow's run number, which scheduled and manual runs
+      # both advance, so every run covers 10,000 seeds no earlier run did and logs
+      # where they start. A failure names its seed; rerun it locally with
+      # SIMULATION_SEEDS=1 SIMULATION_SEED_BASE=<seed>.
+      - name: Simulate
+        run: |
+          export SIMULATION_SEED_BASE=$(( GITHUB_RUN_NUMBER * 10000 ))
+          echo "Seeds from $SIMULATION_SEED_BASE"
+          bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/simulate.test.ts --testTimeout=0 -t "exactly once"
+        env:
+          SIMULATION_SEEDS: "10000"
