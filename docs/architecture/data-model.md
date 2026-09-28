@@ -21,6 +21,8 @@ Framework-private records include:
 | Subscription         | per-source subscription row with settled cursor on the source's shard; applied cursor on the subscriber's shard                                                                   | subscription delivery                |
 | `actor_outbox`       | intents, timers, workflow starts, effects, subscription feeds and controls; target `running`, `cancelled_at_ms`, `maybe_applied`, `ready_at_ms` (`0015_effect_control`, ADR 0024) | delivery and recovery                |
 
+An `actor_outbox` effect row's `exhausted` flag (`0016_final_effect_failures`) records that no attempt is left although `attempts` is below the effect's limit, as after a result its `onSuccess` route rejects; a claim then retries only the dead letter.
+
 One Postgres database belongs to each deployment region. Commands are direct: the receipt is their only durable record, and there is no command message table. `tenant_id` appears on every framework and actor-owned table, with optional RLS. Actor state, tables, events, effects, blobs, and receipts share the actor ownership key and transaction boundary.
 
 Receipts retain original logical-caller attribution for result access without adding caller identity to their tenant/actor/command-id deduplication key. The command identity/admission design must also enforce external expiry after receipt pruning while preserving deduplication evidence for accepted internal work. Caller-key encoding and expiry enforcement records are not yet a concrete schema; see [ADR 0004](../decisions/0004-receipt-access-revocation-and-expiry.md) and [retention](../operations/retention.md).

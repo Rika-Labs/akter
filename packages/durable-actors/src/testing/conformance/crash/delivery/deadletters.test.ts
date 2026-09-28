@@ -4,11 +4,14 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 
+// Each effect's letter checks the cause its executor reported.
 const counts = `SELECT
-  (SELECT count(*)::int FROM actor_receipts WHERE command = 'Order') AS ordered,
-  (SELECT count(*)::int FROM actor_receipts WHERE command = 'ChargeFailed') AS routed,
+  (SELECT count(*)::int FROM actor_receipts WHERE command IN ('Order', 'Measure')) AS ordered,
+  (SELECT count(*)::int FROM actor_receipts WHERE command LIKE '%Failed') AS routed,
   (SELECT coalesce(sum(calls), 0)::int FROM provider_calls) AS calls,
-  (SELECT json_agg(json_build_array(attempts, ambiguous, cause LIKE '%ProviderDown%'))
+  (SELECT json_agg(json_build_array(attempts, ambiguous, CASE effect
+      WHEN 'Charge' THEN cause LIKE '%ProviderDown%'
+      ELSE cause LIKE '%onSuccess route cannot accept%' END))
     FROM actor_dead_letters) AS letters,
   (SELECT json_agg(json_build_array(kind, command, attempts)) FROM actor_outbox) AS outbox`
 
@@ -16,16 +19,47 @@ describe("effect dead-letter process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  // At each point: the dead letters and outbox row the killed process leaves.
-  // Inside the dead-letter transaction nothing of it commits; after it, the
-  // letter is recorded and the row is already the route's intent.
-  for (const [point, letters, row] of [
-    ["beforeDeadLetterCommit", null, ["effect", "Charge", 1]],
-    ["beforeDelivery", [[1, false, true]], ["intent", "ChargeFailed", 1]],
-    ["beforeCommit", [[1, false, true]], ["intent", "ChargeFailed", 1]],
+  // At each point: the dead letters and outbox row the killed process leaves,
+  // then the letter recovery writes. Inside the dead-letter transaction
+  // nothing of it commits; after it, the letter is recorded and the row is
+  // already the route's intent. A gauge's rejected result is final with two
+  // retries left, which recovery must not spend on the provider.
+  for (const [name, effect, point, letters, row, letter] of [
+    [
+      "an exhausted effect",
+      "Charge",
+      "beforeDeadLetterCommit",
+      null,
+      ["effect", "Charge", 1],
+      [1, false, true],
+    ],
+    [
+      "an exhausted effect",
+      "Charge",
+      "beforeDelivery",
+      [[1, false, true]],
+      ["intent", "ChargeFailed", 1],
+      [1, false, true],
+    ],
+    [
+      "an exhausted effect",
+      "Charge",
+      "beforeCommit",
+      [[1, false, true]],
+      ["intent", "ChargeFailed", 1],
+      [1, false, true],
+    ],
+    [
+      "a final failure with retries left",
+      "Gauge",
+      "beforeDeadLetterCommit",
+      null,
+      ["effect", "Gauge", 1],
+      [1, true, true],
+    ],
   ] as const) {
     it(
-      `recovers a SIGKILL ${point} of an exhausted effect with one dead letter and one route`,
+      `recovers a SIGKILL ${point} of ${name} with one dead letter and one route`,
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
@@ -58,7 +92,7 @@ describe("effect dead-letter process death with Postgres", () => {
 
             const command = (mode: string) =>
               ChildProcess.make("bun", [new URL("./deadletters.ts", import.meta.url).pathname], {
-                env: { CRASH_DATABASE_URL: database.href, CRASH_POINT: mode },
+                env: { CRASH_DATABASE_URL: database.href, CRASH_POINT: mode, CRASH_EFFECT: effect },
                 extendEnv: true,
                 stderr: "inherit",
               })
@@ -99,7 +133,7 @@ describe("effect dead-letter process death with Postgres", () => {
                 .map((line) => line.slice("RESULT ".length)),
             ).toEqual([`{"routedId":"${effectId}","state":"1"}`])
             expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
-              { ordered: 1, routed: 1, calls: 1, letters: [[1, false, true]], outbox: null },
+              { ordered: 1, routed: 1, calls: 1, letters: [letter], outbox: null },
             ])
           }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
         ),

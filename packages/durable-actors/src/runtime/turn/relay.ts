@@ -196,8 +196,10 @@ export const claimDue = ({
         )}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
+      -- A row whose last attempt was final is exhausted whatever attempts remain.
       effect_locked AS (
-        SELECT o.routing_key, o.intent_id, o.attempts AS previous, m.max_attempts
+        SELECT o.routing_key, o.intent_id,
+          o.exhausted OR o.attempts >= m.max_attempts AS exhausted
         FROM actor_outbox o
         JOIN effect_candidates USING (routing_key, intent_id)
         JOIN mine m ON m.actor_type = o.actor_type AND m.command = o.command
@@ -205,20 +207,18 @@ export const claimDue = ({
         ORDER BY o.due_at_ms LIMIT ${permits}
         FOR UPDATE OF o SKIP LOCKED
       ),
-      -- RETURNING sees the updated row, so exhaustion is judged on the attempts before this claim.
+      -- RETURNING sees the updated row, so exhaustion is judged on the row before this claim.
       effect_claimed AS (
         UPDATE actor_outbox o SET
           due_at_ms = ${now} + ${leaseMs}::bigint,
-          attempts = CASE WHEN o.attempts < c.max_attempts THEN o.attempts + 1 ELSE o.attempts END,
-          ambiguous = CASE WHEN o.attempts < c.max_attempts THEN true ELSE o.ambiguous END,
-          last_error = CASE WHEN o.attempts < c.max_attempts
-            THEN 'Attempt ' || (o.attempts + 1) || ' ended without reporting an outcome'
-            ELSE o.last_error END
+          attempts = CASE WHEN c.exhausted THEN o.attempts ELSE o.attempts + 1 END,
+          ambiguous = CASE WHEN c.exhausted THEN o.ambiguous ELSE true END,
+          last_error = CASE WHEN c.exhausted THEN o.last_error
+            ELSE 'Attempt ' || (o.attempts + 1) || ' ended without reporting an outcome' END
         FROM effect_locked c
         WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
         RETURNING ${claimedColumns(sql)},
-          (SELECT count(*) FROM effect_candidates)::int AS candidates,
-          c.previous >= c.max_attempts AS exhausted
+          (SELECT count(*) FROM effect_candidates)::int AS candidates, c.exhausted
       )`)
     results.push(sql`SELECT * FROM effect_claimed`, skipped(sql, "effect"))
   }
@@ -642,8 +642,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const { baseMs, maxMs } = registered.backoff
 
       // The outcome is recorded first, so a failed dead-letter transaction is
-      // retried with this attempt's cause rather than the claim's.
+      // retried with this attempt's cause rather than the claim's, and a final
+      // failure is never followed by another attempt.
       yield* sql`UPDATE actor_outbox SET last_error = ${cause}, ambiguous = ${ambiguous},
+          exhausted = ${last},
           due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
         WHERE ${attemptRow(attempt)}`
 

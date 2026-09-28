@@ -400,6 +400,13 @@ export const migrations = {
       )`
     yield* sql`CREATE INDEX actor_connections_holder ON actor_connections (bucket, holder, holder_epoch)`
   }),
+  // An attempt can end an effect before its retries run out, as when its
+  // route rejects the result. `exhausted` records that with the outcome, so a
+  // dead letter that fails to commit is retried without another provider call.
+  "0016_final_effect_failures": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_outbox ADD COLUMN exhausted boolean NOT NULL DEFAULT false`
+  }),
 }
 
 /**

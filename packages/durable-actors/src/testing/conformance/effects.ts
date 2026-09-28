@@ -489,6 +489,32 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "retries only the dead letter of a rejected result whose dead-letter commit fails",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const author = yield* Author.get("unroutable-retry")
+          // Retries remain, so only a durable record of the final outcome keeps
+          // the next claim from calling the provider again.
+          yield* test.crashNext("beforeDeadLetterCommit")
+          yield* author.Gauge(1.5)
+          yield* test.advance(0)
+          expect(yield* deadLetters("unroutable-retry")).toEqual([])
+          yield* test.advance("1 hour")
+          const attempts = attemptsOf(fixture.effects, "unroutable-retry")
+
+          expect(attempts.map(({ attempt }) => attempt)).toEqual([1])
+          expect(fixture.effects.calls.get(attempts[0]!.effectId)).toBe(1)
+          expect(yield* test.receiptsFor(author.ref, "Measured")).toBe(0)
+          expect(yield* deadLetters("unroutable-retry")).toEqual([
+            { effect: "Measure", attempts: 1, ambiguous: true },
+          ])
+          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+        }),
+      ),
+  },
+  {
     name: "rejects an escaped perform capability without recording an effect",
     run: ({ expect, environment, fixture }) =>
       environment.run(
