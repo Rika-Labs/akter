@@ -405,6 +405,30 @@ Postgres only (two runners, 3-second shard locks):
 
 Not covered by an executable case yet: executor progress frames reaching a WebSocket client (M2.18's delivery side, and ADR 0030's `t: "progress"` message, are not merged); the row **Socket-owning process dies** with a real process kill, whose client half (`SessionEnded` `HolderLost`) is M3.5's; the 30-second ping and 60-second pong timeout, which Actor.serve can't configure through Effect's socket abstraction (Bun's server sends pings and closes idle sockets through its own `websocket: { sendPings, idleTimeout }` options, which the application sets on `BunHttpServer`); the 32-frames-in-flight read pause (the session stops pulling from the socket at 32 queued frames; nothing measures it); and a cookie-reading provider on an upgrade. The `ws` benchmark scenario is not written yet.
 
+### Served SSE event feeds (M3.3)
+
+The cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) beside the WebSocket ones, and run on PGlite and Postgres. The fixture actor `FeedRoom` declares `events: [Said, Noted]` and `feeds: [Said]`, with `policy.reauthorizeEvery` of 2 seconds. Feeds are read with Effect's `HttpClient` over `fetch`, the way the Promise client reads them, and parsed as SSE.
+
+- `serves an event feed: committed events after the cursor, then live ones, with no gap or repeat through a commit race` — contract 07's snapshot/live race over SSE: 20 commands commit concurrently with the feed's open and first read, then one more. The feed carries each `Said` event exactly once in cursor order, and the `Noted` event between them is never served. `data` carries the command id.
+- `resumes a feed from Last-Event-ID with no gap or repeat, and answers UnknownCursor and RetentionGap before streaming` — replay: `after` is exclusive and `Last-Event-ID` overrides it. A future or malformed cursor is `404` with the `UnknownCursor` body. After the first events are pruned, a cursor before them is `410` with the `RetentionGap` body (row **SSE feed reconnects after pruning**), and the pruning boundary still resumes.
+- `answers a feed for a never-created actor with 404 NotCreated and writes no row, and refuses undeclared, missing, and too many event filters` — no generation or connection row is written. `Noted` (declared but not a feed), an unknown event, and no `event` are `404 unknown_event`. 17 distinct events are `400 too_many_filters`. A feed without credentials is `401`.
+- `authorizes a feed per event tag before reading, and revokes a live feed within reauthorizeEvery` — revocation, row **Live or parked session loses authorization**: `authorize` sees the event tag as `command`, a denial is `403 access_denied`, and a live feed is ended with an `end` message carrying `access_denied`.
+- `ends a feed at its credential's expiry with Unauthorized expired, and a reconnect from its last cursor loses nothing` — row **Credential expires during a live session** over SSE.
+- `keeps an idle feed parked, and delivers an event committed by a command that woke its actor` — a hibernated actor's feed receives the next committed event.
+- `catches a lagging feed up from actor_events instead of ending it with SlowConsumer` — a single turn emits 1,100 events, more than the holder's 1,024-frame buffer. The holder ends the feed session with `SlowConsumer`, and the server reopens it and rereads from its last cursor. The client sees 1,100 contiguous cursors.
+
+Postgres only (two runners, 3-second shard locks):
+
+- `resyncs a feed at its holder after an owner kill with no client-visible gap` — loss and C4 at the holder: runner 0 serves the feed of an actor runner 1 owns, and `cluster.kill(1)` follows. An event committed through runner 0 reaches the client as the next message, with no control message and no gap.
+
+Not covered by an executable case yet:
+
+- A native `EventSource` closing for good on an initial `410` (a browser case, M3.5).
+- A parked feed woken by a timer on another runner. Commands, intents, and timers wake a parked actor through the same trigger, which #177 covers for connections.
+- The 10,000-feeds-per-actor cap.
+- The 15-second keepalive comment.
+- The extra statement a cold activation of an actor type with feeds pays. The feed rows load with the connection rows; the `sse` benchmark is not written yet.
+
 ### Multi-runner relay (M2.4)
 
 The cases live in [`conformance/relay.ts`](../../packages/durable-actors/src/testing/conformance/relay.ts) and are registered with `describeConformance`. Multi-runner cases build `ActorTest.cluster` on a fresh Postgres database with a 3-second `shardLockExpiration`; the fixture's `afterClaim` counter is a `TurnHooks` service around the cluster, so it sees every runner's claims. A `Relayer` stages `Take` intents to 32 `RelayMailbox` actors, and a `RelayCaller` performs `RelayCall` (`retry: { times: 1 }`, routed to `Called` and `CallFailed`), `RelayCallOnce` (`retry: { times: 0 }`), and `RelayTimed` (`timeout: "100 millis"`, `retry: { times: 3, backoff: { base: "10 millis", max: "40 millis" } }`). Cases that need to control which runner claims set `relay.poll` to an hour, so only the committing runner's wake and `advance` claim rows. Executor-lease cases use `executors.lease: "3 seconds"`.

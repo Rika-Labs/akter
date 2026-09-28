@@ -113,6 +113,7 @@ export const Room = Actor.make("Room", {
   tables: [messages],
   blobs: [Attachments],
   events: [MessagePosted, RoomArchived],
+  feeds: [MessagePosted],
   effects: [ModerateMessage],
   api: { Post, Archive, Recent, History, Attachment, React, Presence },
   internal: { IdleCheck, Moderated, ModerationFailed },

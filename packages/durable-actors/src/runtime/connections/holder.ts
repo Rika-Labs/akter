@@ -152,7 +152,8 @@ export interface HolderOptions {
     readonly caller: Caller
     readonly ref: ActorRef
     readonly command: string
-    readonly kind: "open" | "reauthorize"
+    readonly kind: "open" | "feed" | "reauthorize"
+    readonly of?: "open" | "feed"
   }) => Effect.Effect<boolean>
 }
 
@@ -161,6 +162,8 @@ interface Held {
   readonly ref: ActorRef
   readonly key: string
   readonly member: string
+  /** A feed's event tags, each authorized on its own; `undefined` for a connection member. */
+  readonly feed: ReadonlyArray<string> | undefined
   readonly caller: Caller
   readonly type: HeldActorType
   readonly outbound: Queue.Queue<ClientMessage, ActorError | Cause.Done>
@@ -684,18 +687,35 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       }
     })
 
+  // A connection is checked as its member; a feed as each event tag it reads, all of which must pass.
+  const check = (
+    session: { readonly caller: Caller; readonly ref: ActorRef; readonly member: string },
+    feed: ReadonlyArray<string> | undefined,
+    kind: "first" | "reauthorize",
+  ) =>
+    feed === undefined
+      ? options.authorize({
+          caller: session.caller,
+          ref: session.ref,
+          command: session.member,
+          kind: kind === "first" ? "open" : "reauthorize",
+          of: kind === "first" ? undefined : "open",
+        })
+      : Effect.forEach(feed, (tag) =>
+          options.authorize({
+            caller: session.caller,
+            ref: session.ref,
+            command: tag,
+            kind: kind === "first" ? "feed" : "reauthorize",
+            of: kind === "first" ? undefined : "feed",
+          }),
+        ).pipe(Effect.map((answers) => answers.every(Boolean)))
+
   const reauthorize = (connection: Held, at: number) =>
     Effect.gen(function* () {
       connection.checking = true
 
-      const allowed = yield* options
-        .authorize({
-          caller: connection.caller,
-          ref: connection.ref,
-          command: connection.member,
-          kind: "reauthorize",
-        })
-        .pipe(Effect.exit)
+      const allowed = yield* check(connection, connection.feed, "reauthorize").pipe(Effect.exit)
 
       connection.checking = false
 
@@ -831,6 +851,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     readonly params: string
     /** The credential's own expiry, if it has one; the session never outlives it. */
     readonly expiresAt?: number | undefined
+    /** The event tags of a feed, which opens the framework feed member. */
+    readonly feed?: ReadonlyArray<string> | undefined
   }) {
     const type = options.actorType(request.ref.actor)
 
@@ -855,12 +877,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     if (request.expiresAt !== undefined && (yield* now) >= request.expiresAt)
       return yield* credentialExpired
 
-    const allowed = yield* options.authorize({
-      caller: request.caller,
-      ref: request.ref,
-      command: request.member,
-      kind: "open",
-    })
+    const allowed = yield* check(request, request.feed, "first")
 
     if (!allowed)
       return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
@@ -870,6 +887,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       ref: request.ref,
       key: actorKey(request.ref),
       member: request.member,
+      feed: request.feed,
       caller: request.caller,
       type,
       outbound: yield* Queue.unbounded<ClientMessage, ActorError | Cause.Done>(),
@@ -1022,12 +1040,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
           if (expiresAt !== undefined && at >= expiresAt) return yield* fail(credentialExpired)
 
-          const allowed = yield* options.authorize({
-            caller: connection.caller,
-            ref: connection.ref,
-            command: connection.member,
-            kind: "reauthorize",
-          })
+          const allowed = yield* check(connection, connection.feed, "reauthorize")
 
           if (connection.ended) return yield* ended("ClientClosed", false)
           const answered = yield* now
