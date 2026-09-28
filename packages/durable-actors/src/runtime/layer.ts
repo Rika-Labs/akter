@@ -80,7 +80,7 @@ import {
 import type { Placement } from "./storage/codec.ts"
 import { sweep } from "./storage/retention.ts"
 import { acceptWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
-import { decodeResult } from "./workflows/engine.ts"
+import { decodeResult, RECOVERY_MS } from "./workflows/engine.ts"
 import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
@@ -800,6 +800,17 @@ export const layer = (options: Options) => {
               new Error(
                 `Actor ${registration.name} keepWorkflows is shorter than the retry window`,
               ),
+            )
+
+          // A runner that dies mid-activity is replaced after the recovery
+          // interval; if the rerun is then already past its call ids' expiry
+          // bound, the activity dies with ActivityOutcomeUnknown instead.
+          if (
+            registration.workflows.size > 0 &&
+            retryWindowMs - registration.policy.deliveryMs <= RECOVERY_MS
+          )
+            yield* Effect.logWarning(
+              `Actor ${registration.name}: the retry window minus deliveryTimeout is at most the ${RECOVERY_MS / 1000}-second workflow recovery interval, so an activity whose runner dies fails with ActivityOutcomeUnknown instead of rerunning its actor calls`,
             )
 
           const { incompatibilities, retained } = yield* acceptWorkflows({

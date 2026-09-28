@@ -1,5 +1,6 @@
 import type { Unify } from "effect"
 import type { NodeInspectSymbol } from "effect/Inspectable"
+import type { WorkflowEngine } from "effect/unstable/workflow"
 import {
   Cause,
   Context,
@@ -1078,6 +1079,18 @@ const make = <
         return yield* Effect.die(new Error("Actor call in a workflow body outside a step"))
     })
 
+    // An activity's calls carry the execution's recorded attribution and were
+    // admitted when it started, so, like relay delivery, they skip the
+    // external access and expiry checks: accepted work continues after its
+    // starting caller loses access.
+    const send = (request: Request) =>
+      Effect.gen(function* () {
+        if (CallPhase.$is("Activity")(yield* CurrentCallPhase))
+          return yield* internalActors.deliver(request)
+
+        return yield* internalActors.execute(request)
+      })
+
     const callId = (command: string) =>
       Effect.gen(function* () {
         const phase = yield* CurrentCallPhase
@@ -1154,7 +1167,7 @@ const make = <
                   if (member.key !== undefined) yield* checkKey(member.key(input))
                   const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-                  const outcome = yield* internalActors.execute(
+                  const outcome = yield* send(
                     Request.make({
                       ref,
                       caller,
@@ -1215,7 +1228,7 @@ const make = <
                     ? yield* internalActors.query(
                         Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
                       )
-                    : yield* internalActors.execute(
+                    : yield* send(
                         Request.make({
                           ref,
                           caller,
@@ -2105,7 +2118,7 @@ const make = <
     | Exclude<R, Turn | InTurn>
     | Exclude<RC, Connection>
     | Exclude<RS, Read | InStream>
-    | Exclude<RW, Workflow>
+    | Exclude<RW, Workflow | WorkflowEngine.WorkflowInstance | Scope.Scope>
     | Exclude<RB, Scope.Scope>
     | InternalActors
   > =>
@@ -2133,7 +2146,12 @@ const make = <
             Exclude<R, Turn | InTurn> | Exclude<RC, Connection> | Exclude<RS, Read | InStream>
           >()
 
-          const workflowServices = yield* Effect.context<Exclude<RW, Workflow>>()
+          // Without the layer's scope: a body's own scope is its run's.
+          const workflowServices = Context.omit(Scope.Scope)(
+            yield* Effect.context<
+              Exclude<RW, Workflow | WorkflowEngine.WorkflowInstance | Scope.Scope>
+            >(),
+          )
 
           const { commands, connections, streams } = yield* commandsOf(
             handlers,
@@ -2193,7 +2211,7 @@ const make = <
       | Exclude<R, Turn | InTurn>
       | Exclude<RC, Connection>
       | Exclude<RS, Read | InStream>
-      | Exclude<RW, Workflow>
+      | Exclude<RW, Workflow | WorkflowEngine.WorkflowInstance | Scope.Scope>
       | Exclude<RB, Scope.Scope>
       | InternalActors
     >
