@@ -1361,7 +1361,13 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* on(survivor, stateOf("orphan"))).cancelled).toMatchObject([
             { outcome: "Unknown", ambiguous: true },
           ])
-          expect(yield* query(survivor, effectRows)).toEqual([])
+          // The relay deletes the report's intent row only after its receipt
+          // commits, so the report can be visible a moment before the row is gone.
+          yield* eventually(
+            query(survivor, effectRows).pipe(Effect.map((rows) => rows.length === 0)),
+            "20 seconds",
+            "the report's outbox row to be deleted",
+          )
         }),
       ),
   },
