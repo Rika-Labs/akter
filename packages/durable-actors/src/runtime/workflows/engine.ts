@@ -407,6 +407,7 @@ export const activationEngine = (options: {
     const { retryWindowMs } = yield* OutboxRuntime
     // Only these two: steps run inside the body's fiber, whose caller and
     // tenant are the execution's recorded ones, not the activation's.
+
     const services = Context.pick(
       SqlClient.SqlClient,
       Crypto.Crypto,

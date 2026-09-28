@@ -1348,10 +1348,12 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           yield* reset(fixture.workflows)
           const test = yield* ActorTest
+
           const run = yield* (yield* Shipper.get("outside")).Ship({
             orderId: "out1",
             sku: "outside",
           })
+
           const exit = yield* run.result.pipe(Effect.exit)
           expect(Exit.isFailure(exit) && Cause.pretty(exit.cause).includes("outside a step")).toBe(
             true,
@@ -1380,9 +1382,11 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
       environment.run(
         Effect.gen(function* () {
           const shipper = yield* Shipper.get("oversized")
+
           const error = yield* shipper
             .Ship({ orderId: "k".repeat(257), sku: "a" })
             .pipe(Effect.flip)
+
           expect(error).toBeInstanceOf(InvalidExecutionKey)
           expect(error).toMatchObject({ bytes: 257 })
         }),
