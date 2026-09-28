@@ -193,6 +193,25 @@ const withCluster = <A, E>(
 
 export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "a connection opened after every earlier one to a resident actor closed still receives broadcasts",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-reopen")
+          yield* next(connection)
+          yield* room.Post("first")
+          expect(frameOf((yield* next(connection))[0])).toEqual(Said.make({ text: "first" }))
+          yield* connection.close
+
+          // The owner stays resident and its channel to this holder keeps counting.
+          const again = yield* test.connect(room.ref, Live, { name: "bob" })
+          yield* next(again)
+          yield* room.Post("second")
+          expect(frameOf((yield* next(again))[0])).toEqual(Said.make({ text: "second" }))
+        }),
+      ),
+  },
+  {
     name: "connection opens, answers frames in order, stores its session, and leaves no row once closed",
     run: ({ expect, environment }) =>
       environment.run(
