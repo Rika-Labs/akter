@@ -129,6 +129,22 @@
         "vitest": "catalog:",
       },
     },
+    "examples/orders": {
+      "name": "@durable-actors/orders",
+      "dependencies": {
+        "@durable-actors/core": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@effect/sql-pglite": "catalog:",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
+      },
+    },
     "infra": {
       "name": "@durable-actors/infra",
       "dependencies": {
@@ -269,6 +285,7 @@
       "name": "@durable-actors/benchmarks",
       "dependencies": {
         "@durable-actors/core": "workspace:*",
+        "@durable-actors/orders": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@electric-sql/pglite": "0.5.8",
         "drizzle-orm": "catalog:",
@@ -541,6 +558,8 @@
     "@durable-actors/infra": ["@durable-actors/infra@workspace:infra"],
 
     "@durable-actors/observability": ["@durable-actors/observability@workspace:packages/observability"],
+
+    "@durable-actors/orders": ["@durable-actors/orders@workspace:examples/orders"],
 
     "@durable-actors/oxlint": ["@durable-actors/oxlint@workspace:tooling/oxlint"],
 

@@ -98,7 +98,7 @@ const program = Effect.gen(function* () {
 })
 ```
 
-Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error, and [`examples/chat`](examples/chat) adds blobs, effects, and retention. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
+Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error, and [`examples/chat`](examples/chat) adds blobs, effects, and retention. [`examples/orders`](examples/orders) places orders inside an app with its own Postgres tables, mints a shipment actor per package, charges through an idempotent effect, and proves with a SIGKILL crash drill that no acknowledged order is lost and no payment is taken twice. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
 
 ## Why Effect for actors?
 
