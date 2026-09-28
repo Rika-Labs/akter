@@ -54,7 +54,7 @@ A core release that upgrades PGlite to a different embedded Postgres major versi
 ### 5. Backup and restore
 
 - **Stopped copy.** This is the primary method: stop the process (which releases the lock), copy `dataDir`, and start again. Restore copies the directory back while the process is stopped. A copy taken while the process runs is not a backup.
-- **Logical dump.** The second method is a `pg_dump` taken inside the running process, with a `pgDump` build that matches the pinned PGlite, such as the one in `@electric-sql/pglite-tools`. The framework doesn't depend on it today. It runs on the one connection, so it blocks turns while it runs. Use it only for small databases or quiet periods.
+- **Logical dump (future).** A `pg_dump` taken inside the running process is not a supported method yet. The only `pgDump` build in the lockfile, `@electric-sql/pglite-tools` 0.2.20, targets PGlite 0.3.15, not the pinned 0.5.8, and no build compatible with 0.5.8 has been verified. When one is, it would run on the single connection and block turns while it runs. Until then, the stopped copy is the only backup method.
 - The [restore procedure](../operations/04-backup-restore.md) applies unchanged: the command-expiry check before reopening, and reconciling effects the snapshot may have lost. There is no point-in-time recovery.
 
 ### 6. Stated limits
@@ -111,7 +111,7 @@ None. The lock is a file outside the database, and the checks read `PG_VERSION` 
 
 1. **Power-loss durability.** Recommended default: not claimed in M4.14; record it as unverified. Alternative: add a test with a failing block device (for example `dm-flakey` in a VM) and claim it if the test passes.
 2. **Platforms.** Recommended default: Linux and macOS, with `flock` through `bun:ffi`. Alternative: add Windows with `LockFileEx`, which needs its own CI runner.
-3. **Online backup.** Recommended default: a stopped copy is the supported method, and an in-process `pg_dump` is documented as blocking. Alternative: support only the stopped copy.
+3. **Online backup.** Recommended default: support only the stopped copy until a `pgDump` build compatible with the pinned PGlite is verified. Alternative: find or build that `pgDump` now, and document that it blocks turns while it runs.
 4. **Upgrades across a Postgres major.** Recommended default: refuse with `DataDirVersion`, and document dump-and-reload using the previous core version. Alternative: ship a `durable pglite upgrade` command that runs both PGlite versions.
 5. **Serving from the same process.** Recommended default: allowed, because it's still one process. Alternative: embedded-only, with no `Actor.serve` on PGlite.
 
