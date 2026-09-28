@@ -1,6 +1,6 @@
 import type { Transport } from "../runtime/connections/transport.ts"
 import type { Holder } from "../runtime/connections/holder.ts"
-import { Context, Effect, type Exit, Schema, Scope } from "effect"
+import { Context, Effect, type Exit, Schema, Scope, type Stream } from "effect"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
@@ -147,6 +147,29 @@ export interface RegisteredConnection {
   ) => Effect.Effect<ConnectionResult, { readonly failure: string }>
 }
 
+/** The committed view one stream handler starts from, and its live event feed. */
+export interface StreamInput {
+  readonly ref: ActorRef
+  readonly caller: Caller
+  /** The committed event head when the subscription started. */
+  readonly cursor: string
+  readonly state: ReadonlyArray<readonly [string, string]>
+  readonly events: EventReader
+  /** Committed events of one tag after `after`, then each one as its turn commits. */
+  readonly follow: (
+    tag: string,
+    after: string | undefined,
+  ) => Stream.Stream<StoredEvent, UnknownCursor | RetentionGap>
+}
+
+export interface RegisteredStream {
+  /** Encoded elements; a declared failure is encoded, anything else is a defect. */
+  readonly run: (
+    payload: string,
+    input: StreamInput,
+  ) => Stream.Stream<string, { readonly failure: string }>
+}
+
 /** A command an effect's outcome is delivered to, with its encoded input. */
 export interface EffectRoute {
   readonly command: string
@@ -273,6 +296,7 @@ export interface Registration {
     ref: ActorRef,
   ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
   readonly connections: ReadonlyMap<string, RegisteredConnection>
+  readonly streams: ReadonlyMap<string, RegisteredStream>
   /** Tags of the events this actor type serves as event feeds. */
   readonly feeds: ReadonlySet<string>
   /** Workflow members with their bodies, keyed by tag. */
@@ -345,6 +369,14 @@ export class InternalActors extends Context.Service<
       ReadonlyArray<StoredEvent & { readonly tag: string }>,
       ActorError | UnknownCursor | RetentionGap
     >
+    /**
+     * Subscribes to a stream member on the actor's owner: `request.command`
+     * is the member and `request.payload` its encoded input. Elements arrive
+     * encoded; a declared failure fails with its encoding.
+     */
+    readonly subscribe: (
+      request: Request,
+    ) => Stream.Stream<string, ActorError | { readonly failure: string }>
     /**
      * Reads one execution's status like a query: `request.command` is the
      * workflow member, `request.payload` the execution id.
