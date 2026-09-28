@@ -54,7 +54,7 @@ Attach: Effect.fn(function* ({ name, ref }) {
 const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pdf")
 ```
 
-- `Actor.content(name)` declares a content blob and sits in the same `blobs` section as `Actor.blob`. Its entries are immutable references, not mutable bytes: `turn.blob(C)` offers `attach(name, ref)`, `detach(name)`, and `list()`; `read.blob(C)` offers `get(name)`, `stream(name)`, `list()`, and `grant(name)`.
+- `Actor.content(name)` declares a content blob and sits in the same `blobs` section as `Actor.blob`. Its entries are immutable references, not mutable bytes: `turn.blob(C)` offers `attach(name, ref)`, `detach(name)`, and `list()`; `read.blob(C)` offers `get(name)`, `stream(name)`, and `list()`, and stays read-only like every `BlobRead`.
 - Mutable per-actor bytes stay `Actor.blob`. Shared immutable bytes are `Actor.content`. Each task still has one way.
 
 ### 2. Access: a reference is a grant, and a hash is not
@@ -62,7 +62,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 - **Upload.** `Content.upload(bytes)` runs outside turns with the ambient tenant and caller. Served deployments get `POST /content`, authenticated like any route. The server computes SHA-256 over the bytes; clients never supply a hash. It returns `ContentRef { hash, size, grant }`.
 - **The grant** is `g1.<key id>.<expires ms>.<mac>`. `mac` is HMAC-SHA-256, under a deployment secret, over `durable-content/v1`, the deployment, the tenant, the hash, the size, and the expiry. Grants last 1 hour.
 - **Attach** checks the grant's MAC and expiry against the turn's database time, and checks that the tenant and hash match. It reads nothing, so the turn stays on the actor's shard. A bare hash, a grant for another tenant, or an expired grant makes `attach` fail with the typed error `InvalidContentRef`, which the command declares or handles like any other application failure; a reference from a client is input, not authority.
-- **Copying between actors.** An actor that holds a reference can hand out a fresh grant with `read.blob(C).grant(name)` in a query the caller is authorized to run. Reaching content therefore always goes through an actor the caller can reach, as M4.md requires.
+- **Copying between actors.** `Content.grant(Document, id, name)` hands out a fresh grant for an entry an actor already references. Like `Content.upload`, it is a framework content operation outside turns and queries, with the ambient tenant and caller; served deployments get `POST /actors/<Actor>/<id>/content/<blob>/<name>/grant`. It runs the actor type's `authorize` with the operation `<blob>.grant`, reads the reference on the actor's shard, and then raises `granted_until_ms` on the tenant's shard (§4). It writes no actor row and goes through no query, so queries and `BlobRead` stay read-only. Reaching content therefore always goes through an actor the caller is authorized to reach, as M4.md requires.
 - **Reads** resolve the name to a hash through this actor's reference row, then read the bytes. A caller who knows a hash but holds no reference can't read anything.
 
 ### 3. Placement: references on the actor's shard, content on the tenant's
@@ -74,7 +74,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 
 ### 4. Garbage collection: mark and sweep, gated by grants
 
-- Every grant raises the content row's `granted_until_ms` to at least its own expiry before the grant is returned. That covers uploads, re-uploads of the same bytes, and `read.blob(C).grant`. It's a single-row write of framework metadata on the tenant's shard. It never touches business data, and `BlobRead` still exposes no mutation. The raise is one `UPDATE … RETURNING` on the tenant's row, and a grant is returned only if that statement found the row. `read.blob(C).grant(name)` first resolves the name through this actor's reference, then runs the raise. If a detach and a sweep deleted the content in between, the raise finds no row, and `grant` fails as it would for a name that doesn't exist, never with a grant for deleted content. If the raise runs first, it moves `granted_until_ms` past `sweep_start`, and the sweep's re-check keeps the content. The row lock orders the raise and the delete.
+- Every grant raises the content row's `granted_until_ms` to at least its own expiry before the grant is returned. That covers uploads, re-uploads of the same bytes, and `Content.grant`. It's a single-row write of framework metadata on the tenant's shard, made only by those two content operations. It never touches business data or actor rows, and no query or `BlobRead` makes it. The raise is one `UPDATE … RETURNING` on the tenant's row, and a grant is returned only if that statement found the row. `Content.grant` first resolves the name through the actor's reference, then runs the raise. If a detach and a sweep deleted the content in between, the raise finds no row, and `Content.grant` fails as it would for a name that doesn't exist, never with a grant for deleted content. If the raise runs first, it moves `granted_until_ms` past `sweep_start`, and the sweep's re-check keeps the content. The row lock orders the raise and the delete.
 - A per-tenant sweep, under an advisory lock, runs at most once an hour:
   1. It takes `now` from the database as `sweep_start`, and computes the horizon `H = grace + T`. The grace defaults to 24 hours. `T` is the longest a turn transaction may stay open for any actor type that declares a content blob: its `commandTimeout`, which the runtime already enforces as the transaction's hard timeout, turn batches included. It picks candidates whose `granted_until_ms` is older than `sweep_start − H`.
   2. For a batch of candidates, it looks for any reference with that tenant and hash through the `(tenant_id, hash)` index on `actor_content_refs`. On Neki this is an explicit fleet-tier scatter on a dedicated connection. It is maintenance, never a turn path.
@@ -110,13 +110,13 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 **Contracts.**
 
 - [06 storage](../contracts/06-storage-ownership.md): add content blobs beside actor blobs: tenant-placed content, actor-shard references written in turns, off-turn bytes, mark-and-sweep with grants, and per-tenant deduplication. Qualify "never share bytes", which stays true across tenants.
-- [10 security](../contracts/10-security.md): a hash never grants access; grants are MAC'd, tenant-bound, and expiring; deduplication never crosses tenants.
+- [10 security](../contracts/10-security.md): a hash never grants access; grants are MAC'd, tenant-bound, and expiring; `Content.grant` is authorized by the actor type's `authorize` as `<blob>.grant`; deduplication never crosses tenants. Contract 06 gains the rule that the two content operations are framework writes on the tenant's shard, outside turns and queries.
 
 **API.**
 
-- [Server API](../api/01-server-api.md): `Actor.content(name)`, `Content.upload`, and `ContentRef`.
-- [Context](../api/02-context.md): `turn.blob(C).attach/detach/list` and `read.blob(C).get/stream/list/grant`.
-- [Protocol](../contracts/protocol.md): `POST /content` and the served download route for a content entry.
+- [Server API](../api/01-server-api.md): `Actor.content(name)`, `Content.upload`, `Content.grant`, and `ContentRef`.
+- [Context](../api/02-context.md): `turn.blob(C).attach/detach/list` and `read.blob(C).get/stream/list`.
+- [Protocol](../contracts/protocol.md): `POST /content`, the grant route, and the served download route for a content entry.
 - [Error model](../contracts/error-model.md): the typed `InvalidContentRef` failure of `attach`, which is an application failure, not an `ActorError` reason.
 
 **Architecture and operations.** [Storage layout](../architecture/03-storage-layout.md) gets the new tables. [Retention](../operations/retention.md) gets the sweep and the grace. The [inspection views](../operations/inspection-views.md) get `durable.contents` and `durable.content_refs`. [Runbooks](../operations/runbooks.md) cover sweep lag and grant-key rotation.
@@ -152,7 +152,7 @@ In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
 - `collects unattached uploads after grant plus grace and never before`
 - `never deletes content attached concurrently with a sweep` (Postgres, independent connections: the attach commits between the reference scan and the delete)
 - `never deletes content whose attach checked its grant just before expiry and commits up to commandTimeout later` (Postgres, with the turn held open by a pause hook past the grant's expiry)
-- `hands a fresh grant from one actor's reference to another actor's attach`
+- `hands a fresh grant from one actor's reference to another actor's attach through Content.grant, and refuses a caller whose authorize denies <blob>.grant`
 - `never returns a grant for content a concurrent detach and sweep deleted` (Postgres, independent connections: the sweep deletes between the reference read and the raise)
 - `verifies grants under the previous key for one grant lifetime after rotation`
 - `applies 0019_content_blobs to a database that ran the previous migration`
