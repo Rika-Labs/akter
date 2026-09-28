@@ -1,4 +1,4 @@
-# ADR 0042: Cookie credentials in `Actor.auth.make` and OpenAPI
+# ADR 0045: Cookie credentials in `Actor.auth.make` and OpenAPI
 
 **Status:** proposed (2026-09-28, issue #122); the review of its pull request decides it. It amends [ADR 0027](0027-served-protocol.md) section 3, where `Actor.auth.make` providers "declare `cookies: true`" to receive cookies, and section 6, where "the auth provider contributes its security scheme", one per provider.
 
