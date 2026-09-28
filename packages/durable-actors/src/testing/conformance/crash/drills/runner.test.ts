@@ -133,7 +133,9 @@ describe("runner and relay process death with Postgres", () => {
               Effect.forkScoped,
             )
 
-            return { child, process }
+            const start = Stream.run(Stream.make(new TextEncoder().encode("GO\n")), child.stdin)
+
+            return { child, process, start }
           })
 
           const until = (condition: () => boolean, what: string, within: Duration.Input) =>
@@ -163,15 +165,19 @@ describe("runner and relay process death with Postgres", () => {
             "three runners",
             "30 seconds",
           )
+          yield* Effect.forEach([first, second, third], ({ start }) => start, { discard: true })
 
           yield* until(() => second.process.done.length >= 30, "r1 under load", "60 seconds")
           const killedAt = yield* Clock.currentTimeMillis
+          // The kill lands under load only while the first runner still has work.
+          expect(first.process.finished).toBe(false)
           yield* killed(second.child)
           yield* until(() => third.process.claimed, "r2's relay claim", "60 seconds")
           yield* killed(third.child)
 
           const fourth = yield* spawn(REPLACEMENT_OPERATIONS, false)
           const fifth = yield* spawn(REPLACEMENT_OPERATIONS, false)
+          yield* Effect.forEach([fourth, fifth], ({ start }) => start, { discard: true })
           const survivors = [first, fourth, fifth]
           yield* until(
             () => survivors.every(({ process }) => process.finished),
@@ -230,9 +236,11 @@ describe("runner and relay process death with Postgres", () => {
           expect(of("Add")).toBe(of("Send"))
           expect(yield* total("DrillReceiver")).toBe(of("Send"))
 
-          // The slowest command a survivor started after the kill waited for
-          // the killed runner's shards; its commit marks their takeover.
-          const stalled = first.process.done
+          // The slowest command any survivor started after the kill waited for
+          // the killed runner's shards; its commit marks their takeover. The
+          // replacements start after the kill, so there is always one.
+          const stalled = survivors
+            .flatMap(({ process }) => process.done)
             .filter(({ started }) => started >= killedAt)
             .reduce((slowest, done) => (done.latency > slowest.latency ? done : slowest))
 

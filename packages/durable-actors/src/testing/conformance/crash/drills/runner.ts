@@ -1,3 +1,4 @@
+import { stdin } from "node:process"
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
 import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
@@ -108,12 +109,20 @@ const runtime = Layer.unwrap(
   }),
 ).pipe(Layer.provideMerge(BunCrypto.layer))
 
+// The parent starts every runner's load together, so none has finished its
+// operations before another is killed.
+const started = Effect.callback<void>((resume) => {
+  stdin.once("data", () => resume(Effect.void))
+  stdin.once("end", () => resume(Effect.void))
+})
+
 // Each runner is also a caller: it retries a command under its minted id until
 // it commits, as a client would, and reports each commit and its latency.
 const program = Effect.gen(function* () {
   const actors = yield* ActorClient
   const operations = yield* Config.Int("DRILL_OPERATIONS")
   yield* Console.log("READY")
+  yield* started
 
   for (let index = 0; index < operations; index++) {
     const started = yield* Clock.currentTimeMillis
