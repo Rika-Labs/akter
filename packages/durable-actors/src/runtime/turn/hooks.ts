@@ -3,6 +3,7 @@ import type { Request } from "../../handles/actors.ts"
 
 export type TurnPoint =
   | "beforeDelivery"
+  | "queued"
   | "beforeHandler"
   | "beforeCommit"
   | "afterCommit"

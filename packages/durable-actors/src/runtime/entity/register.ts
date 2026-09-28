@@ -2,13 +2,17 @@ import {
   Cause,
   Context,
   type Crypto,
+  Deferred,
   Duration,
   Effect,
   Exit,
+  Latch,
   Option,
+  Result,
   Schedule,
   Schema,
   Scope,
+  Tracer,
 } from "effect"
 import {
   ClusterSchema,
@@ -20,11 +24,17 @@ import {
 import { Rpc } from "effect/unstable/rpc"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
-import { Outcome, type Registration, Request } from "../../handles/actors.ts"
+import {
+  Outcome,
+  type RegisteredCommand,
+  type Registration,
+  Request,
+} from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
-import { executeTurn } from "../turn/execute.ts"
+import { takeBatch } from "../turn/batch.ts"
+import { executeBatch } from "../turn/execute.ts"
 import { activationOwner } from "../connections/owner.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
@@ -64,6 +74,30 @@ const entityScope = () =>
 
 // The current handler's scope within each entity scope.
 const handlerScopes = new WeakMap<Scope.Scope, Scope.Closeable>()
+
+// Per entity scope, the command ids of a batch a retryable defect aborted;
+// they outlive the handler the defect rebuilt, so each runs alone once.
+const aloneAfterFailure = new WeakMap<Scope.Scope, Set<string>>()
+
+/** A command in an activation's mailbox and the caller waiting on its reply. */
+interface Waiting {
+  readonly request: Request
+  readonly command: RegisteredCommand
+  readonly reply: Deferred.Deferred<Outcome, ActorError>
+  /**
+   * The request's own context, under the runtime's services, as the turn ran
+   * in before batching: its span is the turn span's parent.
+   */
+  context: Context.Context<never>
+}
+
+// Defects that say nothing about the command: the activation restarts and
+// the caller retries the same id.
+const retryable = (cause: Cause.Cause<unknown>) => {
+  const defect = Cause.squash(cause)
+
+  return Schema.is(RetryTurn)(defect) || (SqlError.isSqlError(defect) && defect.isRetryable)
+}
 
 const commandEntities = new Map<string, ReturnType<typeof makeCommandEntity>>()
 
@@ -108,7 +142,7 @@ export const registerActor = Effect.fnUntraced(function* (
     })
 
   const services = yield* Effect.context<
-    Effect.Services<ReturnType<typeof executeTurn>> | Crypto.Crypto
+    Effect.Services<ReturnType<typeof executeBatch>> | Crypto.Crypto
   >()
 
   const entity = commandEntity(registration.name)
@@ -136,9 +170,11 @@ export const registerActor = Effect.fnUntraced(function* (
     ? Option.getOrUndefined(yield* Effect.serviceOption(ShardLease))
     : undefined
 
-  const leaseLost = Effect.die(
-    RetryTurn.make({ message: "Singleton runner no longer holds its shard lock" }),
-  )
+  const leaseLostDefect = RetryTurn.make({
+    message: "Singleton runner no longer holds its shard lock",
+  })
+
+  const leaseLost = Effect.die(leaseLostDefect)
 
   const register = sharding.registerEntity(
     entity,
@@ -216,99 +252,245 @@ export const registerActor = Effect.fnUntraced(function* (
           Effect.annotateLogs({ actor: registration.name, id, tenant }),
         )
 
+      const policy = registration.policy
+      const statements = registration.tables.length > 0 || registration.blobs.length > 0
+
+      // Commands wait here in delivery order; one worker runs them as turn
+      // batches, so an activation still has one transaction in flight.
+      const waiting: Array<Waiting> = []
+      const ready = Latch.makeUnsafe(false)
+      const alone = aloneAfterFailure.get(activation) ?? new Set<string>()
+      aloneAfterFailure.set(activation, alone)
+
+      // Connection broadcasts of a batch go out once it commits.
+      const execute = (batch: ReadonlyArray<Waiting>) =>
+        Effect.gen(function* () {
+          yield* owner.prepare(owned)
+
+          const done = yield* executeBatch(
+            batch,
+            owned.cache,
+            owned.key,
+            policy,
+            registration.mintable,
+            statements,
+            waited,
+            owner.hasConnections ? owner.list(owned) : undefined,
+          )
+
+          if (owner.hasConnections) yield* owner.flush(owned, done.broadcasts, done.head)
+
+          return done.settled
+        })
+
+      // A lone command's turn: its span and logs name the command, and a
+      // deterministic defect answers the caller with `Defect`.
+      const runAlone = (entry: Waiting) => {
+        const { request } = entry
+
+        return execute([entry]).pipe(
+          Effect.flatMap(([settled]) =>
+            Result.isSuccess(settled!)
+              ? Effect.succeed(settled.success)
+              : Effect.fail(settled!.failure),
+          ),
+          Effect.catchDefect(
+            Effect.fnUntraced(function* (cause) {
+              if (retryable(Cause.die(cause))) return yield* Effect.die(cause)
+
+              // Deterministic defects run no user code, because a defect hook
+              // can loop on corrupt state; the turn span and this log carry
+              // the cause for operators.
+              yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
+
+              return Outcome.cases.Defect.make({ cause })
+            }),
+          ),
+          Effect.annotateLogs({
+            actor: request.ref.actor,
+            id: request.ref.id,
+            tenant: request.ref.tenant,
+            command: request.command,
+            commandId: request.commandId,
+          }),
+          // The span's call site is always this file, so a captured stack
+          // trace would cost an Error per turn and name nothing useful.
+          Effect.withSpan(
+            `durable-actors.${request.ref.actor}/${request.command}`,
+            {
+              attributes: {
+                "actor.tenant": request.ref.tenant,
+                "actor.id": request.ref.id,
+                "command.id": request.commandId,
+              },
+            },
+            { captureStackTrace: false },
+          ),
+          Effect.exit,
+        )
+      }
+
+      // Replies follow the commit: each command's caller hears its outcome
+      // only after the batch that ran it committed.
+      const settle = Effect.fnUntraced(function* (
+        entry: Waiting,
+        exit: Exit.Exit<Outcome, ActorError>,
+      ) {
+        const { request } = entry
+
+        if (Exit.isSuccess(exit) && !Outcome.guards.Defect(exit.value)) {
+          yield* (yield* TurnHooks).at("afterCommit", request)
+
+          if (workflowRoutes.has(request.command)) {
+            const kicked = yield* kickedExecution({ request, outcome: exit.value })
+
+            if (kicked !== undefined) {
+              engine ??= yield* activationEngine({
+                registration,
+                ref: request.ref,
+                routingKey: routingKeyOf(request.ref),
+                cache: owned.cache,
+                scope,
+                deliveryMs: policy.deliveryMs,
+              })
+              yield* engine.kick(kicked.executionId, kicked.interrupt)
+            }
+          }
+        }
+
+        yield* Deferred.done(entry.reply, exit)
+      })
+
+      // A defect that restarts the activation answers every unanswered
+      // caller of the batch with it, and Cluster redelivers those commands to
+      // the rebuilt handler. This worker stops, so it never runs beside it.
+      const restart = (batch: ReadonlyArray<Waiting>, cause: Cause.Cause<unknown>) =>
+        Effect.forEach(
+          batch,
+          (entry) => Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause))),
+          { discard: true },
+        ).pipe(Effect.andThen(Effect.interrupt))
+
+      // A defect that reaches here, including one from the afterCommit hook
+      // after a commit, restarts the activation.
+      const deliver = (entry: Waiting, exit: Exit.Exit<Outcome, ActorError>) =>
+        Exit.isFailure(exit) && Cause.hasDies(exit.cause)
+          ? Effect.failCause(exit.cause)
+          : settle(entry, exit)
+
+      const runBatch = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>) {
+        if (lost) return yield* Effect.die(leaseLostDefect)
+
+        if (batch.length === 1) return yield* deliver(batch[0]!, yield* runAlone(batch[0]!))
+
+        const { ref } = batch[0]!.request
+
+        const exit = yield* execute(batch).pipe(
+          Effect.annotateLogs({ actor: ref.actor, id: ref.id, tenant: ref.tenant }),
+          Effect.withSpan(
+            `durable-actors.${ref.actor}/batch`,
+            {
+              attributes: {
+                "actor.tenant": ref.tenant,
+                "actor.id": ref.id,
+                "batch.size": batch.length,
+              },
+              links: batch.flatMap(({ context }) => {
+                const span = Context.getOrUndefined(context, Tracer.ParentSpan)
+
+                return span === undefined ? [] : [{ span, attributes: {} }]
+              }),
+            },
+            { captureStackTrace: false },
+          ),
+          Effect.exit,
+        )
+
+        if (Exit.isSuccess(exit)) {
+          for (const [index, settled] of exit.value.entries())
+            yield* settle(
+              batch[index]!,
+              Result.isSuccess(settled)
+                ? Exit.succeed(settled.success)
+                : Exit.fail(settled.failure),
+            )
+
+          return
+        }
+
+        // A defect aborts the whole batch. Its commands then run one per
+        // transaction until each is processed, so one bad command cannot
+        // keep rolling back its neighbours. A retryable defect restarts the
+        // activation first, and the redelivered commands run alone there.
+        if (retryable(exit.cause)) {
+          for (const { request } of batch) alone.add(request.commandId)
+
+          return yield* Effect.failCause(exit.cause)
+        }
+
+        yield* Effect.logDebug("Turn batch failed; running its commands one at a time", exit.cause)
+
+        for (const entry of batch) yield* deliver(entry, yield* runAlone(entry))
+      })
+
+      yield* Effect.gen(function* () {
+        while (true) {
+          yield* ready.await
+          const batch = takeBatch({ waiting, alone })
+
+          if (waiting.length === 0) ready.closeUnsafe()
+
+          if (batch.length > 0)
+            yield* runBatch(batch).pipe(
+              Effect.provideContext(Context.merge(batch[0]!.context, services)),
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) => restart(batch, cause),
+              ),
+            )
+        }
+      }).pipe(Effect.provideContext(services), Effect.forkIn(scope))
+
       return entity.of({
         Wake: () => Effect.suspend(() => (lost ? leaseLost : Effect.void)),
-        Execute: Effect.fnUntraced(function* ({ payload }) {
-          if (lost) return yield* leaseLost
+        // Enqueues synchronously, when Cluster delivers the request, so the
+        // mailbox keeps delivery order; the reply is awaited outside the
+        // server's one-at-a-time limit, which the worker enforces instead.
+        // The server starts the forked effect in the same call, so the entry
+        // has its context before the worker can take it.
+        Execute: ({ payload }) => {
+          if (lost) return leaseLost
 
           if (Exit.isFailure(activated))
-            return Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) })
+            return Effect.succeed(
+              Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) }),
+            )
 
           const command =
             activated.value.get(payload.command) ?? workflowRoutes.get(payload.command)
 
           if (command === undefined)
-            return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
+            return Effect.die(new Error(`Unregistered command ${payload.command}`))
 
-          const outcome = yield* Effect.gen(function* () {
-            yield* owner.prepare(owned)
-
-            const done = yield* executeTurn(
-              payload,
-              command,
-              owned.cache,
-              owned.key,
-              registration.policy,
-              registration.mintable,
-              registration.tables.length > 0 || registration.blobs.length > 0,
-              waited,
-              owner.hasConnections ? owner.list(owned) : undefined,
-            )
-
-            if (owner.hasConnections) yield* owner.flush(owned, done.broadcasts, done.head)
-
-            return done.outcome
-          }).pipe(
-            Effect.catchDefect(
-              Effect.fnUntraced(function* (cause) {
-                if (
-                  Schema.is(RetryTurn)(cause) ||
-                  (SqlError.isSqlError(cause) && cause.isRetryable)
-                )
-                  return yield* Effect.die(cause)
-
-                // Deterministic defects run no user code, because a defect hook
-                // can loop on corrupt state; the turn span and this log carry
-                // the cause for operators.
-                yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
-
-                return Outcome.cases.Defect.make({ cause })
-              }),
-            ),
-            Effect.annotateLogs({
-              actor: payload.ref.actor,
-              id: payload.ref.id,
-              tenant: payload.ref.tenant,
-              command: payload.command,
-              commandId: payload.commandId,
-            }),
-            // The span's call site is always this file, so a captured stack
-            // trace would cost an Error per turn and name nothing useful.
-            Effect.withSpan(
-              `durable-actors.${payload.ref.actor}/${payload.command}`,
-              {
-                attributes: {
-                  "actor.tenant": payload.ref.tenant,
-                  "actor.id": payload.ref.id,
-                  "command.id": payload.commandId,
-                },
-              },
-              { captureStackTrace: false },
-            ),
-          )
-
-          const hooks = yield* TurnHooks
-
-          if (!Outcome.guards.Defect(outcome)) yield* hooks.at("afterCommit", payload)
-
-          if (workflowRoutes.has(payload.command)) {
-            const kicked = yield* kickedExecution({ request: payload, outcome })
-
-            if (kicked !== undefined) {
-              engine ??= yield* activationEngine({
-                registration,
-                ref: payload.ref,
-                routingKey: routingKeyOf(payload.ref),
-                cache: owned.cache,
-                scope,
-                deliveryMs: registration.policy.deliveryMs,
-              })
-              yield* engine.kick(kicked.executionId, kicked.interrupt)
-            }
+          const entry: Waiting = {
+            request: payload,
+            command,
+            reply: Deferred.makeUnsafe<Outcome, ActorError>(),
+            context: Context.empty(),
           }
 
-          return outcome
-        }, Effect.provideContext(services)),
+          waiting.push(entry)
+
+          return Rpc.fork(
+            Effect.gen(function* () {
+              entry.context = yield* Effect.context<never>()
+              ready.openUnsafe()
+              yield* (yield* TurnHooks).at("queued", payload)
+
+              return yield* Deferred.await(entry.reply)
+            }).pipe(Effect.provideContext(services)),
+          )
+        },
       })
     }),
     {

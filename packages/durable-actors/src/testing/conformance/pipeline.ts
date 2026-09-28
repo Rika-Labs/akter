@@ -7,6 +7,7 @@ import { Actor, Actors, Intent, User } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest } from "../actor-test.ts"
+import { enqueue, holding } from "./batches.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 const marks = Actor.table(pgTable("pipeline_marks", { id: text("id").primaryKey() }))
@@ -595,6 +596,62 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(Number(row!.due) >= before + 400 + 3_600_000).toBe(true)
           expect(row!.scheduled).toBe(row!.due)
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a batch of waiting commands takes two round trips, and its savepoints add none",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { prepare: false }, (probe) =>
+        Effect.gen(function* () {
+          const meter = yield* Meter.get("batched")
+          yield* meter.Tap()
+
+          // Eight waiting commands whose handlers issue no statements: the
+          // held turn's commit, then one admission and one commit for all.
+          const taps = yield* flightsOf(
+            probe,
+            Effect.gen(function* () {
+              const first = yield* holding(meter.Tap())
+              const waiting = yield* enqueue(
+                Array.from({ length: 8 }, () => Effect.orDie(meter.Tap())),
+              )
+              const before = probe.flights
+              yield* first.release
+              yield* Fiber.join(first.fiber)
+
+              return { before, replies: yield* Effect.forEach(waiting, Fiber.join) }
+            }),
+          )
+
+          expect(probe.flights - taps.value.before).toBe(3)
+          const batch = probe.sent.slice(-2).map(wire)
+          expect(batch[0]).toContain("FOR UPDATE OF g")
+          expect(batch[1]).toContain("COMMIT")
+          // Only the first handler's savepoint went out; the rest had no
+          // statement to protect and were never sent.
+          expect(batch.join("").split("SAVEPOINT durable_handler").length - 1).toBe(2)
+
+          // Handlers that insert and count: each awaited statement is one
+          // round trip, and each savepoint rides with its handler's first
+          // statement or the commit group.
+          const first = yield* holding(meter.Tap())
+          const waiting = yield* enqueue(
+            ["m1", "m2", "m3", "m4"].map((id) => Effect.orDie(meter.Mark(id))),
+          )
+          const before = probe.flights
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+          expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual([1, 2, 3, 4])
+          expect(probe.flights - before).toBe(1 + 1 + 4 * 2 + 1)
+          expect(
+            probe.sent
+              .slice(-10)
+              .map(wire)
+              .every((flight) => /INSERT|SELECT|COMMIT/.test(flight)),
+          ).toBe(true)
         }),
       ),
   },

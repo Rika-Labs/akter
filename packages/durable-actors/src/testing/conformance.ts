@@ -61,6 +61,7 @@ import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import { pipelineConformance } from "./conformance/pipeline.ts"
 import { connectionsConformance, connectionsLayer } from "./conformance/connections.ts"
+import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import {
   outboxConformance,
@@ -348,6 +349,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...progressConformance,
   ...multiRunnerConformance,
   ...pipelineConformance,
+  ...batchesConformance,
   ...relayConformance,
   ...relayClusterConformance,
   ...singletonConformance,
@@ -1316,6 +1318,7 @@ export const describeConformance = (options: {
     eventsLayer(fixture.events),
     eventsQueryLayer(fixture.events),
     reducerLayer,
+    batchesLayer,
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
