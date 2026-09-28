@@ -44,6 +44,7 @@ import {
   type BusinessResult,
   type EffectRoute,
   InternalActors,
+  MAX_EFFECT_ATTEMPTS,
   Outcome,
   type Broadcast,
   type ConnectionLister,
@@ -713,8 +714,13 @@ const make = <
 
     const times = effectPolicy?.retry?.times
 
-    if (times !== undefined && (!Number.isInteger(times) || times < 0 || times > 100))
-      throw new Error(`policy.effects.${tag}.retry.times must be an integer from 0 to 100`)
+    if (
+      times !== undefined &&
+      (!Number.isInteger(times) || times < 0 || times > MAX_EFFECT_ATTEMPTS - 1)
+    )
+      throw new Error(
+        `policy.effects.${tag}.retry.times must be an integer from 0 to ${MAX_EFFECT_ATTEMPTS - 1}`,
+      )
 
     effectTimings.set(tag, effectTiming(tag, effectPolicy))
   }

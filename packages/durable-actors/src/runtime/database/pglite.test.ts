@@ -142,6 +142,7 @@ describe("PGlite migrations", () => {
             [13, "inspection_views"],
             [14, "connections"],
             [15, "effect_control"],
+            [16, "final_effect_failures"],
             [17, "subscriptions"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
@@ -175,6 +176,7 @@ describe("PGlite migrations", () => {
             [13, "inspection_views"],
             [14, "connections"],
             [15, "effect_control"],
+            [16, "final_effect_failures"],
             [17, "subscriptions"],
           ])
           expect(
@@ -218,6 +220,7 @@ describe("PGlite migrations", () => {
             [13, "inspection_views"],
             [14, "connections"],
             [15, "effect_control"],
+            [16, "final_effect_failures"],
             [17, "subscriptions"],
           ])
           expect(
@@ -266,6 +269,7 @@ describe("PGlite migrations", () => {
                 'intent', 0, false, NULL)`
           expect(yield* migrate).toEqual([
             [15, "effect_control"],
+            [16, "final_effect_failures"],
             [17, "subscriptions"],
           ])
           expect(
@@ -342,6 +346,7 @@ describe("PGlite migrations", () => {
             [13, "inspection_views"],
             [14, "connections"],
             [15, "effect_control"],
+            [16, "final_effect_failures"],
             [17, "subscriptions"],
           ])
           expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(
@@ -407,6 +412,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [14, "connections"],
             [15, "effect_control"],
+            [16, "final_effect_failures"],
             [17, "subscriptions"],
           ])
           expect(
@@ -419,13 +425,49 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
-  it("applies 0017_subscriptions to a database that already ran 0015_effect_control", () => {
+  it("applies 0016_final_effect_failures to a database with a pending effect", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
     const throughConnections = Migrator.make({})({
       table: "actor_migrations",
       loader: Migrator.fromRecord(
         Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0016")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughConnections
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (1, 't', 'Sender', 's')`
+          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
+              actor_type, actor_id, target_type, target_id, command, payload, caller, kind,
+              attempts, last_error)
+            VALUES (1, 'failed', 0, 42, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
+              'effect', 1, 'typed')`
+          expect(yield* migrate).toEqual([
+            [16, "final_effect_failures"],
+            [17, "subscriptions"],
+          ])
+          // A row written before the column retries by its attempt count, as it did.
+          expect(yield* sql`SELECT intent_id, attempts, final_attempt FROM actor_outbox`).toEqual([
+            { intent_id: "failed", attempts: 1, final_attempt: null },
+          ])
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("applies 0017_subscriptions to a database that already ran 0016_final_effect_failures", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughConnections = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0017")),
       ),
     })
 
@@ -497,6 +539,7 @@ describe("PGlite migrations", () => {
             { migration_id: 13 },
             { migration_id: 14 },
             { migration_id: 15 },
+            { migration_id: 16 },
             { migration_id: 17 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
