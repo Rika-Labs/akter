@@ -95,6 +95,10 @@ const linkDelimiters = [
 
 const fenceOpening = /^ {0,3}(`{3,}|~{3,})/
 
+// A closing fence carries no info string, so a line such as "```ts" inside a
+// block opens nothing and closes nothing.
+const fenceClosing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
+
 /**
  * Applies `rewrite` to the Markdown outside fenced code blocks, so an example
  * that happens to contain a link's exact text is copied unchanged.
@@ -107,6 +111,8 @@ const outsideFences = (markdown: string, rewrite: (text: string) => string) => {
   for (const line of markdown.split("\n")) {
     const marker = fenceOpening.exec(line)?.[1]
 
+    const closing = fenceClosing.exec(line)?.[1]
+
     if (fence === undefined && marker !== undefined) {
       if (prose.length > 0) segments.push(rewrite(prose.join("\n")))
       prose = []
@@ -115,7 +121,7 @@ const outsideFences = (markdown: string, rewrite: (text: string) => string) => {
     } else if (fence !== undefined) {
       segments.push(line)
 
-      if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length)
+      if (closing !== undefined && closing[0] === fence[0] && closing.length >= fence.length)
         fence = undefined
     } else prose.push(line)
   }
