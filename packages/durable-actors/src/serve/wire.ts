@@ -63,6 +63,7 @@ const CREDENTIAL_CODES: ReadonlySet<Unauthorized["code"]> = new Set([
 const inputStatus = (code: InvalidInput["code"]) => {
   switch (code) {
     case "unknown_route":
+    case "unknown_event":
       return 404
     case "too_large":
       return 413

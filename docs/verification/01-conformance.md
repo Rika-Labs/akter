@@ -207,6 +207,17 @@ The cases live in [`conformance/inspection-views.ts`](../../packages/durable-act
 
 Counts that include effects add `effects` and `dead_letters` in one statement, because the relay may settle an effect at any moment after its commit. Migration, in `pglite.test.ts`: `applies 0012_workflows then 0013_inspection_views to a database that stopped at 0011_relay`, and `refuses to start when a registered migration below the latest applied one was skipped` (a database that recorded 13 without 12). Workflow views, in `conformance/workflows.ts`: `workflows: durable.workflows and durable.workflow_steps show a suspended then finished execution` — while suspended, the execution row shows `suspended` with no result, and its steps show the settled `reserve` activity and the pending `cool-off` clock; once it finishes, the row shows `finished` with a result and no step rows remain.
 
+### CR.5 local inspector
+
+The cases live in [`conformance/inspector.ts`](../../packages/durable-actors/src/testing/conformance/inspector.ts) and check the inspector described in [inspection views](../operations/inspection-views.md#the-local-inspector). They serve `Inspector.serve` from a real Bun server with a provider that takes the tenant from `Bearer <tenant>`. The fixture actor `Inspected` writes state, emits an event, schedules a keyed self-timer an hour out, and performs an effect with `retry: { times: 0 }` whose executor always fails; its workflow `Settle` settles a `reserve` activity, then sleeps 10 seconds. Shared (PGlite and Postgres):
+
+- `inspector: shows an actor's committed rows decoded, with the events each receipt committed` — the actor row equals `durable.actors`; state and the event come back decoded and equal to an independent zstd decode of the view's bytes; the `Write` receipt lists event 1, the declared failure's receipt lists none, and the defect left nothing; the timer is in `outbox`; the effect is a dead letter with one attempt; `totals`, the actors list, and `/overview` equal counts read from the views; an unknown actor is `404 NotFound` and `limit=0` is `400`.
+- `inspector: shows a workflow's step history while open and its result once finished` — while suspended, the execution shows its decoded payload, the settled `reserve` exit (equal to the view's bytes decoded), and the pending `pause` clock with its due time, and is listed by `/workflows?status=open`; once finished it shows its decoded result and no steps, and only `status=all` lists it.
+- `inspector: reads only the authenticated principal's tenant and refuses missing credentials` — an actor id present in two tenants shows each tenant only its own state and receipts; a `tenant` query parameter changes nothing; an actor only the other tenant has is `404`; lists, dead letters, and overview counts cover exactly the credential's tenant; requests without credentials are `401 Unauthorized(missing_credentials)`.
+- `inspector: reads through the durable views only and never writes` — after every route answers, every runtime row of the fixture's actor type (count and content hash across nine `actor_*` tables) is unchanged; inside a rolled-back transaction, a role granted only the `durable` schema, in a read-only transaction, runs every inspector read successfully while `permission denied` on `actor_receipts`; and a `DELETE` inside the inspector's read-only transaction fails as a write in a read-only transaction.
+
+`durable dev`, in `apps/cli/src/commands/dev/run.test.ts` on PGlite: option parsing and its usage errors, the entry's `app` export check, and one router serving a command through `Actor.serve` and the inspector reading its receipt and decoded state, with an actor in another tenant `404`. The page, in `apps/cli/src/commands/dev/inspector/page.test.ts`: the HTML shell names its API and bundled client, the client bundles from source at startup, and paths written into the shell are escaped.
+
 ### Backend-specific cases
 
 - PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.
@@ -421,6 +432,30 @@ Postgres only (two runners, 3-second shard locks):
 - `resyncs a WebSocket in place after its owner dies, and holds live frames until resyncDone` — contract 07's loss and replay over a socket and row **Owner runner dies ungracefully with open connections**: runner 0 serves the socket to an actor runner 1 owns; after `cluster.kill(1)` the socket stays open, `resync { after, reason: "OwnerLost", deadline: 30000 }` arrives, the new owner's `resync` handler replays, `resyncReplayed` follows, a broadcast committed before `resyncDone` waits for it, and the session then resumes with `resumed === true`.
 
 Not covered by an executable case yet: executor progress frames reaching a WebSocket client (M2.18's delivery side, and ADR 0030's `t: "progress"` message, are not merged); the row **Socket-owning process dies** with a real process kill, whose client half (`SessionEnded` `HolderLost`) is M3.5's; the 30-second ping and 60-second pong timeout, which Actor.serve can't configure through Effect's socket abstraction (Bun's server sends pings and closes idle sockets through its own `websocket: { sendPings, idleTimeout }` options, which the application sets on `BunHttpServer`); the 32-frames-in-flight read pause (the session stops pulling from the socket at 32 queued frames; nothing measures it); and a cookie-reading provider on an upgrade. The `ws` benchmark scenario is not written yet.
+
+### Served SSE event feeds (M3.3)
+
+The cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) beside the WebSocket ones, and run on PGlite and Postgres. The fixture actor `FeedRoom` declares `events: [Said, Noted]` and `feeds: [Said]`, with `policy.reauthorizeEvery` of 2 seconds. Feeds are read with Effect's `HttpClient` over `fetch`, the way the Promise client reads them, and parsed as SSE.
+
+- `serves an event feed: committed events after the cursor, then live ones, with no gap or repeat through a commit race` — contract 07's snapshot/live race over SSE: 20 commands commit concurrently with the feed's open and first read, then one more. The feed carries each `Said` event exactly once in cursor order, and the `Noted` event between them is never served. `data` carries the command id.
+- `resumes a feed from Last-Event-ID with no gap or repeat, and answers UnknownCursor and RetentionGap before streaming` — replay: `after` is exclusive and `Last-Event-ID` overrides it. A future or malformed cursor is `404` with the `UnknownCursor` body. After the first events are pruned, a cursor before them is `410` with the `RetentionGap` body (row **SSE feed reconnects after pruning**), and the pruning boundary still resumes.
+- `answers a feed for a never-created actor with 404 NotCreated and writes no row, and refuses undeclared, missing, and too many event filters` — no generation or connection row is written. `Noted` (declared but not a feed), an unknown event, and no `event` are `404 unknown_event`. 17 distinct events are `400 too_many_filters`. A feed without credentials is `401`.
+- `authorizes a feed per event tag before reading, and revokes a live feed within reauthorizeEvery` — revocation, row **Live or parked session loses authorization**: `authorize` sees the event tag as `command`, a denial is `403 access_denied`, and a live feed is ended with an `end` message carrying `access_denied`.
+- `ends a feed at its credential's expiry with Unauthorized expired, and a reconnect from its last cursor loses nothing` — row **Credential expires during a live session** over SSE.
+- `keeps an idle feed parked, and delivers an event committed by a command that woke its actor` — a hibernated actor's feed receives the next committed event.
+- `catches a lagging feed up from actor_events instead of ending it with SlowConsumer` — a single turn emits 1,100 events, more than the holder's 1,024-frame buffer. The holder ends the feed session with `SlowConsumer`, and the server reopens it and rereads from its last cursor. The client sees 1,100 contiguous cursors.
+
+Postgres only (two runners, 3-second shard locks):
+
+- `resyncs a feed at its holder after an owner kill with no client-visible gap` — loss and C4 at the holder: runner 0 serves the feed of an actor runner 1 owns, and `cluster.kill(1)` follows. An event committed through runner 0 reaches the client as the next message, with no control message and no gap.
+
+Not covered by an executable case yet:
+
+- A native `EventSource` closing for good on an initial `410` (a browser case, M3.5).
+- A parked feed woken by a timer on another runner. Commands, intents, and timers wake a parked actor through the same trigger, which #177 covers for connections.
+- The 10,000-feeds-per-actor cap.
+- The 15-second keepalive comment.
+- The extra statement a cold activation of an actor type with feeds pays. The feed rows load with the connection rows; the `sse` benchmark is not written yet.
 
 ### Multi-runner relay (M2.4)
 
