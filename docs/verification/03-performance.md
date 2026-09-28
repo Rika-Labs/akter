@@ -335,6 +335,13 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 - **`turn-batches/waiting-32`:** 3 round trips per operation instead of 4, since the batch's admission rides in the held turn's commit flight; statements are unchanged at 107.03.
 - **`hot-actor` under contention:** `concurrent-8` went from 4 to 4.32–4.44 statements and from 0.5 to 0.36–0.37 round trips per command; `concurrent-64` from 3.2 to 3.28–3.30 statements and from 0.1 to 0.07 round trips. The next batch is now taken while the previous one commits, before that batch's callers have sent their next commands, so batches are a little smaller (more fence and receipt statements per command) but each rides a commit flight (fewer round trips). Throughput and latency moved within run-to-run noise (`concurrent-8` 540–720/second, `concurrent-64` 1,101–1,148/second).
 
+### Commutative merging (P6, #161)
+
+`2026-09-28-b75859f-p6-merging-postgres.json` is one `ci` profile run on the same VM; an earlier run of the same commit recorded the same counts for the new case.
+
+- **`turn-batches/merged-1024`:** each operation holds one turn open, queues 1,024 calls of a commutative reducer behind it, and releases it. It costs 3,083.8 statements and 3 round trips: the held turn's commit carries the merged batch's admission, then one commit writes one state row and 1,024 receipts. Almost all of the statements are the 3 per call outside the turn (command id minting, the pre-delivery receipt read, and the expiry recheck); the merged turn itself is about 9. Unmerged, the same 1,025 calls cost about 7,175 statements and 2,050 round trips. A round takes about 0.8 s p50 on this VM, dominated by the 1,024 calls' client-side work (1.1 s of client CPU per round).
+- Every other case is within the gate's tolerance.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
