@@ -681,6 +681,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
    * callers are answered once its `COMMIT` reply arrives, and the next batch's
    * handlers run only once its own fence and receipt replies arrive. If N's
    * commit fails, the next batch's transaction is rolled back unseen with it.
+   * A batch that leaves the cache cold is committed alone, so the next one
+   * prepares before its admission locks the generation row.
    *
    * Any other exit rolls back, and a session whose transaction state is unknown
    * never goes back to the pool: an interrupted batch cancels its backend's
@@ -741,14 +743,31 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         const batches = Effect.gen(function* () {
           let batch = run.first
-          // Preparing may acquire the generation itself, so the first
-          // admission is built after it; a later batch's runs once the batch
-          // before it committed, when the cache is warm.
-          yield* run.prepare
-          let admission = admit(batch, view(), session, [begin])
-          let admitted = yield* inTurn(queue({ scope, group: admission.group }))
+
+          // A batch's admission group, queued but not yet answered.
+          let pending:
+            | {
+                readonly admission: ReturnType<typeof admit>
+                readonly admitted: Effect.Success<ReturnType<typeof queue>>
+              }
+            | undefined
 
           while (true) {
+            // Preparing may acquire the generation itself, so an admission
+            // not already pipelined is built after it.
+            if (pending === undefined) {
+              yield* run.prepare
+
+              const fresh = admit(batch, view(), session, [begin])
+
+              pending = {
+                admission: fresh,
+                admitted: yield* inTurn(queue({ scope, group: fresh.group })),
+              }
+            }
+
+            const { admission, admitted } = pending
+
             locate(batch, undefined)
 
             const current = batch
@@ -759,6 +778,21 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 const plan = yield* admission.resume()
                 const following = yield* run.next
                 const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
+
+                // Built as if this batch commits; its fence proves it did. A
+                // cold view would make the next admission lock the generation
+                // row that preparing must then bump on another connection, so
+                // that batch waits for this commit and prepares first.
+                const after: View =
+                  plan.writes === undefined
+                    ? view()
+                    : { generation: plan.generation, state: plan.state }
+
+                const chained =
+                  following !== undefined &&
+                  after.generation !== undefined &&
+                  after.state !== undefined
+
                 let tag: string | undefined
 
                 const commit: ReadonlyArray<Statement> = [
@@ -766,27 +800,19 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   Effect.map(control(ending), (result) => {
                     tag = result.command
 
-                    if (following === undefined) open = false
+                    if (!chained) open = false
                   }),
                 ]
 
-                if (following === undefined) {
-                  yield* pipeline(commit)
-
-                  return { plan, ending, tag, next: undefined }
-                }
-
                 locate(batch, following)
 
-                // Built as if this batch commits; its fence proves it did.
-                const upcoming = admit(
-                  following,
-                  plan.writes === undefined
-                    ? view()
-                    : { generation: plan.generation, state: plan.state },
-                  session,
-                  [begin],
-                )
+                if (!chained) {
+                  yield* pipeline(commit)
+
+                  return { plan, ending, tag, following, next: undefined }
+                }
+
+                const upcoming = admit(following, after, session, [begin])
 
                 const flight = yield* queue({ scope, group: [...commit, ...upcoming.group] })
                 yield* replies(flight.slice(0, commit.length))
@@ -795,11 +821,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   plan,
                   ending,
                   tag,
-                  next: {
-                    batch: following,
-                    admission: upcoming,
-                    admitted: flight.slice(commit.length),
-                  },
+                  following,
+                  next: { admission: upcoming, admitted: flight.slice(commit.length) },
                 }
               }).pipe(inTurn, bounded)
 
@@ -811,12 +834,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               return stepped
             }).pipe(run.observe(current))
 
-            if (step.next === undefined) return
+            if (step.following === undefined) return
 
-            batch = step.next.batch
-            admission = step.next.admission
-            admitted = step.next.admitted
-            yield* run.prepare
+            batch = step.following
+            pending = step.next
+
+            if (pending !== undefined) yield* run.prepare
           }
         })
 
