@@ -430,7 +430,7 @@ These cases are in-process runners on one Postgres; real process death stays wit
 
 ### Effect cancellation and caps (M2.13)
 
-The cases live in [`conformance/effect-control.ts`](../../packages/durable-actors/src/testing/conformance/effect-control.ts) and are registered with `describeConformance`; they implement the proposed defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md), which is still proposed. The executor is a fake provider that records each attempt's runner, start and end time, and whether it was interrupted.
+The cases live in [`conformance/effect-control.ts`](../../packages/durable-actors/src/testing/conformance/effect-control.ts) and are registered with `describeConformance`; they implement the accepted defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md). The executor is a fake provider that records each attempt's runner, start and end time, and whether it was interrupted.
 
 **Executed 2026-09-27 (M2.13, branch `feat/67-effect-control` on `main` at `c01a20f`):** Bun 1.4.2, Effect/SQL 4.0.0-rc.116, and disposable Postgres 18.6; see the PR for the test counts at its head.
 

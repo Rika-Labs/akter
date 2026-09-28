@@ -1,8 +1,8 @@
 # ADR 0024: Effect cancellation and per-actor effect concurrency
 
-**Status:** proposed (2026-09-26)
+**Status:** accepted (2026-09-28, Dallen; proposed 2026-09-26), with the recommended defaults below. It amends [ADR 0012](0012-workflows-internals-effects-defects-merging-regions.md) §3, whose effect routes gain `onCancelled`, and [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)'s settle rule, as listed under [Behaviour changes against existing contracts](#behaviour-changes-against-existing-contracts); those ADRs stay unedited and the amendments land in contract 08.
 
-**Implementation:** M2.13 (migration `0015_effect_control`) implements this ADR's recommended defaults below, pending acceptance; evidence is in the [conformance ledger](../verification/01-conformance.md#effect-cancellation-and-caps-m213). Accepting different defaults requires changing that implementation. Two statement boundaries differ from the text below: `cancelEffect` is applied by two statements (a `DELETE` of never-attempted rows, then an `UPDATE` of the rest) inside the turn's commit transaction rather than inside its single commit statement, and the wake of the oldest waiting row is its own statement right after a capped attempt's settle commits rather than part of the settle statement. A runner that dies between a settle and its wake leaves the waiting row to the lease-length fallback.
+**Implementation:** M2.13 (migration `0015_effect_control`) implements this ADR with the accepted defaults below; evidence is in the [conformance ledger](../verification/01-conformance.md#effect-cancellation-and-caps-m213). Changing a default requires changing that implementation. Two statement boundaries differ from the text below: `cancelEffect` is applied by two statements (a `DELETE` of never-attempted rows, then an `UPDATE` of the rest) inside the turn's commit transaction rather than inside its single commit statement, and the wake of the oldest waiting row is its own statement right after a capped attempt's settle commits rather than part of the settle statement. A runner that dies between a settle and its wake leaves the waiting row to the lease-length fallback.
 
 ## Context
 
@@ -244,6 +244,8 @@ This ADR is documentation only; there is nothing to measure until M2.13. M2.13 a
 - **Statements gate.** Turn statement counts in `benchmarks/baselines/statements.json` must not change: a keyed perform and a cancel are part of the existing commit statement. Any change is explained in the M2.13 PR.
 
 ## Open questions for Dallen, with recommended defaults
+
+Dallen accepted every recommended default below on 2026-09-28.
 
 **Q1. API spelling.** Default: `turn.perform(e, { key })` and `turn.cancelEffect(key)`. Alternative: `Effect.key`-style pipeable options like `Intent.key`. The options object is clearer because `perform` is a method, not a staged Effect that other combinators wrap.
 
