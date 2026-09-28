@@ -60,6 +60,7 @@ import {
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import { connectionsConformance, connectionsLayer } from "./conformance/connections.ts"
+import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import {
   outboxConformance,
@@ -354,6 +355,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...retentionConformance,
   ...workflowsConformance,
   ...connectionsConformance,
+  ...streamsConformance,
   ...workflowVersionsConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
@@ -1326,6 +1328,7 @@ export const describeConformance = (options: {
     propertiesLayer,
     workflowsLive(fixture.workflows),
     connectionsLayer,
+    streamsLayer,
     mintLayer,
   )
 

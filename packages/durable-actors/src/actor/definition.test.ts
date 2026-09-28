@@ -1,4 +1,4 @@
-import { type Context, Effect, Layer, Schema } from "effect"
+import { type Context, Effect, Layer, Schema, Stream } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import {
   Actor,
@@ -79,6 +79,73 @@ describe("actor declarations", () => {
 
     expectTypeOf<keyof Handle & "Ping">().toEqualTypeOf<"Ping">()
     expectTypeOf<keyof Handle & "Live">().toEqualTypeOf<never>()
+  })
+
+  it("types stream handles and handlers, and keeps read.follow to stream handlers", () => {
+    class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+
+    class Missing extends Schema.TaggedError<Missing>()("Missing", {}) {}
+
+    const Feed = Actor.stream("Feed", {
+      input: Schema.String,
+      output: Schema.String,
+      errors: [Missing],
+    })
+
+    const Peek = Actor.query("Peek", { output: Schema.Finite })
+
+    const Room = Actor.make("StreamRoom", {
+      key: Schema.String,
+      events: [Posted],
+      api: { Feed, Peek },
+    })
+
+    type Handle = Effect.Success<ReturnType<typeof Room.get>>
+
+    expectTypeOf<ReturnType<Handle["Feed"]>>().toEqualTypeOf<
+      Stream.Stream<
+        string,
+        | Missing
+        | ActorError.Of<"ActorUnavailable" | "Unauthorized" | "RunnerAtCapacity" | "SessionEnded">
+      >
+    >()
+
+    const follows = Room.toLayer(
+      Effect.succeed({
+        Feed: (after: string) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const read = yield* Room.Read
+
+              return read.follow(Posted, { after }).pipe(
+                Stream.map((entry) => entry.event.text),
+                Stream.orDie,
+              )
+            }),
+          ),
+      }),
+    )
+
+    expectTypeOf(follows).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+
+    const followsInQuery = Room.toQueryLayer(
+      Effect.succeed({
+        Peek: Effect.fnUntraced(function* () {
+          const read = yield* Room.Read
+          yield* read.follow(Posted).pipe(Stream.runDrain, Effect.orDie)
+
+          return 1
+        }),
+      }),
+    )
+
+    expectTypeOf(followsInQuery).toEqualTypeOf<
+      Layer.Layer<never, never, Context.Service.Identifier<typeof Actor.InStream> | InternalActors>
+    >()
+
+    type Served = ReturnType<ReturnType<typeof Room.client>["get"]>
+
+    expectTypeOf<keyof Served & "Feed">().toEqualTypeOf<never>()
   })
 
   it("lets a turn mint only unkeyed actors that declare createdBy", () => {

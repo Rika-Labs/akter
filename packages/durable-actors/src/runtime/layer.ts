@@ -2,15 +2,19 @@ import { PgClient, PgTypes } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
 import {
   Cause,
+  Clock,
   Context,
   Crypto,
+  Deferred,
   Duration,
   Effect,
   Fiber,
   Layer,
   Option,
   Result,
+  Schedule,
   Schema,
+  Stream,
 } from "effect"
 import {
   ClusterError,
@@ -31,6 +35,7 @@ import {
   Timeout,
   MailboxFull,
   RunnerAtCapacity,
+  SessionEnded,
 } from "../errors/actor.ts"
 import {
   Actors,
@@ -56,6 +61,7 @@ import {
 } from "./entity/register.ts"
 import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
+import { StreamFailed, StreamItem } from "./connections/protocol.ts"
 import type { Owner } from "./connections/owner.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
@@ -156,6 +162,12 @@ export class RunnerWiring extends Context.Service<
     ) => RunnerStorage.RunnerStorage["Service"]
   }
 >()("@durable-actors/core/runtime/layer/RunnerWiring") {}
+
+/** How often a subscriber checks that a stream's owner on another runner is alive. */
+const OWNER_CHECK_INTERVAL = "1 second"
+
+const activationEnded = () =>
+  ActorError.make({ reason: SessionEnded.make({ cause: "ActivationEnded", resync: false }) })
 
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
@@ -291,7 +303,7 @@ export const layer = (options: Options) => {
 
       const allow = Effect.fnUntraced(function* (
         request: Request,
-        kind: "command" | "query" = "command",
+        kind: "command" | "query" | "stream" = "command",
       ) {
         if (!(yield* options.authorize({ ...(yield* authorizedAs(request)), kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
@@ -609,10 +621,11 @@ export const layer = (options: Options) => {
               ),
             )
 
-          const { isResident, owner } = yield* registerActor(registration, transport).pipe(
-            Effect.provideContext(services),
-            Effect.provideService(OutboxRuntime, outbox),
-          )
+          const { isResident, owner } = yield* registerActor(
+            registration,
+            transport,
+            options.authorize,
+          ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
 
           registrations.set(registration.name, registration)
           residency.set(registration.name, isResident)
@@ -742,6 +755,106 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
+        subscribe: (request) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const registration = registrations.get(request.ref.actor)
+
+              if (registration === undefined || !registration.streams.has(request.command))
+                return yield* ActorError.make({
+                  reason: ActorUnavailable.make({ cause: new Error("Stream not registered") }),
+                })
+
+              yield* allow(request, "stream")
+
+              const client = (yield* sharding.makeClient(connectionEntity(request.ref.actor)))(
+                yield* entityId(request.ref),
+              )
+
+              const authorizedUntil =
+                (yield* Clock.currentTimeMillis) +
+                frameworkClock.offsetMillis() +
+                registration.policy.reauthorizeMs
+
+              // The owner the stream runs on, once it answers; a runner that
+              // stops answering ends the stream as its activation would.
+              const started = yield* Deferred.make<{ owner: string; ownerEpoch: string }>()
+              const lost = yield* Deferred.make<never, ActorError>()
+              let owner: { owner: string; ownerEpoch: string } | undefined
+
+              yield* Deferred.await(started).pipe(
+                Effect.flatMap(({ owner, ownerEpoch }) =>
+                  owner === transport.holder
+                    ? Effect.never
+                    : transport.ping(owner, ownerEpoch).pipe(
+                        Effect.repeat({
+                          schedule: Schedule.spaced(OWNER_CHECK_INTERVAL),
+                          while: (alive) => alive,
+                        }),
+                        Effect.andThen(Deferred.fail(lost, activationEnded())),
+                      ),
+                ),
+                Effect.forkScoped,
+              )
+
+              let finished = false
+
+              return client
+                .Subscribe({
+                  member: request.command,
+                  caller: request.caller,
+                  input: request.payload,
+                  authorizedUntil,
+                })
+                .pipe(
+                  Stream.tap((item) =>
+                    Effect.gen(function* () {
+                      if (StreamItem.guards.Done(item)) finished = true
+
+                      if (!StreamItem.guards.Started(item)) return
+
+                      // Cluster resends a request whose runner died; a stream never resumes by itself.
+                      if (owner !== undefined) return yield* activationEnded()
+                      owner = item
+                      yield* Deferred.succeed(started, item)
+                    }),
+                  ),
+                  Stream.takeWhile((item) => !StreamItem.guards.Done(item)),
+                  Stream.filter(StreamItem.guards.Element),
+                  Stream.map((item) => item.value),
+                  // Only `Done` ends a stream cleanly; anything else is its activation ending.
+                  Stream.concat(
+                    Stream.fromEffect(
+                      Effect.suspend(() => (finished ? Effect.void : activationEnded())),
+                    ).pipe(Stream.drain),
+                  ),
+                  Stream.interruptWhen(Deferred.await(lost)),
+                  Stream.catchCause(
+                    (cause): Stream.Stream<never, ActorError | { readonly failure: string }> => {
+                      const failure = Cause.findErrorOption(cause)
+
+                      if (Option.isSome(failure)) {
+                        if (Schema.is(ActorError)(failure.value)) return Stream.fail(failure.value)
+
+                        if (Schema.is(StreamFailed)(failure.value))
+                          return Stream.fail({ failure: failure.value.value })
+                      }
+
+                      if (Cause.hasInterruptsOnly(cause)) return Stream.fromEffect(Effect.interrupt)
+
+                      // Before the owner answered, the subscription never started.
+                      return Stream.fail(
+                        owner === undefined
+                          ? ActorError.make({
+                              reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                            })
+                          : activationEnded(),
+                      )
+                    },
+                  ),
+                )
+            }).pipe(Effect.provideContext(services)),
+          ),
         transport,
         holder,
         hibernate: (ref) =>

@@ -15,11 +15,13 @@ import {
   Schema,
   Scope,
   Semaphore,
+  Stream,
 } from "effect"
 import {
   type CommandContext,
   type EventEntry,
   InsideTurn,
+  InStream,
   type Mintable,
   outsideTurn,
   type QueryContext,
@@ -33,10 +35,10 @@ import type {
   FrameOf,
 } from "../contexts/connection.ts"
 import type { AnyConnection } from "../members/connection.ts"
-import { SessionEnded } from "../errors/actor.ts"
+import type { AnyStream } from "../members/stream.ts"
+import { ActorError, SessionEnded } from "../errors/actor.ts"
 import { CallPhase, CurrentCallPhase, type WorkflowContext } from "../contexts/workflow.ts"
 import { InvalidExecutionId, InvalidExecutionKey } from "../errors/workflow.ts"
-import type { ActorError } from "../errors/actor.ts"
 import {
   Actors,
   type BusinessResult,
@@ -51,6 +53,10 @@ import {
   ConnectionPhase,
   type RegisteredEffect,
   type RegisteredQuery,
+  type RegisteredStream,
+  type EventReader,
+  type StoredEvent,
+  type StreamInput,
   type RegisteredWorkflow,
   type WorkflowStatus,
   type EmittedEvent,
@@ -227,6 +233,10 @@ type ConnectionKeys<Members extends MemberRecord> = {
   [K in keyof Members]: Members[K]["kind"] extends "connection" ? K : never
 }[keyof Members]
 
+type StreamKeys<Members extends MemberRecord> = {
+  [K in keyof Members]: Members[K]["kind"] extends "stream" ? K : never
+}[keyof Members]
+
 type ConnectionsOf<Members extends MemberRecord> = Extract<
   Values<Members>,
   { readonly kind: "connection" }
@@ -252,6 +262,9 @@ type ReducerKeys<Members extends MemberRecord> = {
 
 /** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
 type QueryReason = "ActorUnavailable" | "Unauthorized" | "Timeout"
+
+/** A subscription ends with its activation, its subscriber's authorization, or a full window. */
+type StreamReason = "ActorUnavailable" | "Unauthorized" | "RunnerAtCapacity" | "SessionEnded"
 
 type Reasons<
   M extends AnyMember,
@@ -284,7 +297,7 @@ export type Handle<
   Creating extends string = never,
   BoundedMailbox extends boolean = false,
 > = {
-  readonly [K in Exclude<keyof Members, ConnectionKeys<Members>>]: (
+  readonly [K in Exclude<keyof Members, ConnectionKeys<Members> | StreamKeys<Members>>]: (
     ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
   ) => Members[K] extends AnyWorkflow
     ? Effect.Effect<
@@ -296,6 +309,14 @@ export type Handle<
         | Members[K]["errors"][number]["Type"]
         | ActorError.Of<Reasons<Members[K], Creating, BoundedMailbox>>
       >
+} & {
+  /** Subscribes to a live feed on the actor's activation; it ends with that activation. */
+  readonly [K in StreamKeys<Members>]: (
+    ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
+  ) => Stream.Stream<
+    Members[K]["output"]["Type"],
+    Members[K]["errors"][number]["Type"] | ActorError.Of<StreamReason>
+  >
 } & { readonly ref: ActorRef }
 
 type HandlerMap<Members extends MemberRecord, Keys extends keyof Members, R> = {
@@ -312,8 +333,13 @@ type NoRequestReply<R> = [Extract<R, Actors>] extends [never]
   ? unknown
   : { readonly "Request/reply inside a turn: use X.intents(id)": never }
 
+/** A stream member's entry in `X.toLayer`: its live feed for one subscriber. */
+export type StreamHandler<S extends AnyStream, R> = (
+  input: S["input"]["Type"],
+) => Stream.Stream<S["output"]["Type"], S["errors"][number]["Type"], R>
+
 /** One handler per command in `api` and `internal`; a reducer has no handler. */
-export type Handlers<Members extends MemberRecord, R, RC = R> = HandlerMap<
+export type Handlers<Members extends MemberRecord, R, RC = R, RS = R> = HandlerMap<
   Members,
   CommandKeys<Members>,
   R
@@ -321,6 +347,8 @@ export type Handlers<Members extends MemberRecord, R, RC = R> = HandlerMap<
   readonly [K in ReducerKeys<Members>]?: never
 } & {
   readonly [K in ConnectionKeys<Members>]: ConnectionHandlers<Members[K] & AnyConnection, RC>
+} & {
+  readonly [K in StreamKeys<Members>]: StreamHandler<Members[K] & AnyStream, RS>
 }
 
 /**
@@ -514,6 +542,8 @@ const make = <
   const connectionMembers = all.filter(
     (member): member is AnyConnection => member.kind === "connection",
   )
+
+  const streamMembers = all.filter((member): member is AnyStream => member.kind === "stream")
 
   const connectionCodecs = new Map(
     connectionMembers.map((member) => {
@@ -764,6 +794,42 @@ const make = <
     `durable-actors/Read/${name}`,
   ) {}
 
+  const entryOf = <E extends Event>(event: E, stored: StoredEvent) =>
+    Effect.map(
+      eventCodecs.get(event)!.decode(stored.value).pipe(Effect.orDie),
+      (decoded): EventEntry<E["Type"]> => ({
+        cursor: stored.cursor,
+        event: decoded as E["Type"],
+        commandId: stored.commandId,
+        timestamp: DateTime.makeUnsafe(stored.timestampMs),
+      }),
+    )
+
+  // `read.events`: one page of committed events of a declared class.
+  const replayWith = (readEvents: EventReader) =>
+    Effect.fnUntraced(function* <E extends Event>(
+      event: E,
+      options?: {
+        readonly after?: string | undefined
+        readonly limit?: number | undefined
+      },
+    ) {
+      if (events.get(event.identifier) !== event)
+        return yield* Effect.die(new Error(`Undeclared event: ${event.identifier}`))
+
+      const limit = options?.limit ?? DEFAULT_REPLAY_LIMIT
+
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_REPLAY_LIMIT)
+        return yield* Effect.die(
+          new Error(`read.events limit must be an integer from 1 to ${MAX_REPLAY_LIMIT}`),
+        )
+
+      return yield* Effect.forEach(
+        yield* readEvents(event.identifier, options?.after, limit),
+        (stored) => entryOf(event, stored),
+      )
+    })
+
   type Connections = ConnectionsOf<Api>
 
   class Connection extends Context.Service<
@@ -821,6 +887,38 @@ const make = <
         .filter((member) => member.kind !== "connection")
         .map((member) => {
           const { encodeInput, decodeOutput, decodeError } = codecs.get(member.tag)!
+
+          if (member.kind === "stream")
+            return [
+              member.tag,
+              (input: typeof member.input.Type) =>
+                Stream.unwrap(
+                  Effect.gen(function* () {
+                    yield* outsideTurn
+                    const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+
+                    return internalActors
+                      .subscribe(
+                        Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
+                      )
+                      .pipe(
+                        Stream.mapEffect((value) =>
+                          Effect.map(decodeOutput(value).pipe(Effect.orDie), (out) => out.value),
+                        ),
+                        Stream.catch((error) =>
+                          Schema.is(ActorError)(error)
+                            ? Stream.fail(error)
+                            : Stream.fromEffect(
+                                Effect.flatMap(
+                                  decodeError(error.failure).pipe(Effect.orDie),
+                                  Effect.fail,
+                                ),
+                              ),
+                        ),
+                      )
+                  }),
+                ),
+            ]
 
           if (isWorkflow(member))
             return [
@@ -1213,7 +1311,98 @@ const make = <
     }
   }
 
-  const commandsOf = <R, RC>(handlers: Handlers<All, R, RC>, services: Context.Context<R | RC>) =>
+  // Builds one stream member's handler: it runs on the activation for one
+  // subscriber, reading the committed view the subscription started from.
+  const streamHandler = <R>(
+    member: AnyStream,
+    handle: StreamHandler<AnyStream, R | Read | InStream>,
+    services: Context.Context<R>,
+    actors: InternalActors["Service"],
+  ): RegisteredStream => {
+    const { decodeInput, encodeOutput, isError, encodeError } = codecs.get(member.tag)!
+
+    return {
+      run: (payload: string, input: StreamInput) =>
+        Stream.unwrap(
+          Effect.gen(function* () {
+            const { state } = yield* decodeStored(input.state)
+            let open = true
+            const stream = Symbol()
+
+            const guard = (capability: string) =>
+              open
+                ? Effect.void
+                : Effect.die(new Error(`${capability} capability escaped its stream`))
+
+            const access = yield* actors.tables(
+              { ref: input.ref, placement, tables, guard: guard("Table") },
+              false,
+            )
+
+            const blob = yield* actors.blobs(
+              {
+                ref: input.ref,
+                placement,
+                blobs,
+                guard: guard("Blob"),
+                maxBytes: policy.blobMaxBytes,
+              },
+              false,
+            )
+
+            const context: QueryContext<State, Event, Owned, Blobs> = {
+              id: input.ref.id,
+              ref: input.ref,
+              caller: input.caller,
+              principal: principal(input.caller),
+              state: Object.freeze(state) as Readonly<State>,
+              cursor: input.cursor,
+              events: replayWith(input.events),
+              rows: access.rows as QueryContext<State, Event, Owned>["rows"],
+              group: access.group,
+              blob,
+              follow: <E extends Event>(
+                event: E,
+                options?: { readonly after?: string | undefined },
+              ) =>
+                events.get(event.identifier) !== event
+                  ? Stream.die(new Error(`Undeclared event: ${event.identifier}`))
+                  : input
+                      .follow(event.identifier, options?.after)
+                      .pipe(Stream.mapEffect((stored) => entryOf(event, stored))),
+            }
+
+            const { value } = yield* decodeInput(payload).pipe(Effect.orDie)
+
+            return handle(value).pipe(
+              Stream.mapEffect((output) => encodeOutput({ value: output }).pipe(Effect.orDie)),
+              Stream.catch((error) =>
+                isError(error)
+                  ? Stream.fromEffect(
+                      Effect.flatMap(encodeError(error).pipe(Effect.orDie), (failure) =>
+                        Effect.fail({ failure }),
+                      ),
+                    )
+                  : Stream.die(error),
+              ),
+              Stream.ensuring(Effect.sync(() => (open = false))),
+              Stream.provideService(Read, context),
+              Stream.provideService(InStream, { stream }),
+              Stream.provideContext(services),
+              Stream.provideService(CurrentCaller, input.caller),
+              Stream.provideService(Tenant, input.ref.tenant),
+              // A stream is read-only: a command or query call from it is a defect.
+              Stream.provideService(InsideTurn, stream),
+            )
+          }),
+        ),
+    }
+  }
+
+  const commandsOf = <R, RC, RS>(
+    handlers: Handlers<All, R, RC, RS>,
+    services: Context.Context<R | RC | RS>,
+  ) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
       const commands = new Map<string, RegisteredCommand>()
@@ -1232,6 +1421,19 @@ const make = <
           return yield* Effect.die(new Error(`Missing connection handlers ${member.tag}`))
 
         connections.set(member.tag, connectionHandler(member, entry, services))
+      }
+
+      const streams = new Map<string, RegisteredStream>()
+
+      for (const member of streamMembers) {
+        const handle = (
+          handlers as Record<string, StreamHandler<AnyStream, RS | Read | InStream> | undefined>
+        )[member.tag]
+
+        if (!Predicate.isFunction(handle))
+          return yield* Effect.die(new Error(`Missing stream handler ${member.tag}`))
+
+        streams.set(member.tag, streamHandler(member, handle, services, actors))
       }
 
       for (const member of members) {
@@ -1526,7 +1728,11 @@ const make = <
         })
       }
 
-      return { commands: commands as ReadonlyMap<string, RegisteredCommand>, connections }
+      return {
+        commands: commands as ReadonlyMap<string, RegisteredCommand>,
+        connections,
+        streams,
+      }
     })
 
   const workflowsOf = <RW>(
@@ -1599,14 +1805,15 @@ const make = <
    * exactly as long as the one cluster-wide activation.
    */
   // Defaults keep R `never` when there is no handler to infer it from, as for an actor of reducers only.
-  const toLayer = <R = never, RB = never, RC = never, RW = never>(
-    build: Effect.Effect<Handlers<All, R, RC> & WorkflowHandlers<All, RW>, never, RB> &
+  const toLayer = <R = never, RB = never, RC = never, RW = never, RS = never>(
+    build: Effect.Effect<Handlers<All, R, RC, RS> & WorkflowHandlers<All, RW>, never, RB> &
       NoRequestReply<R>,
   ): Layer.Layer<
     never,
     never,
     | Exclude<R, Turn | InTurn>
     | Exclude<RC, Connection>
+    | Exclude<RS, Read | InStream>
     | Exclude<RW, Workflow>
     | Exclude<RB, Scope.Scope>
     | InternalActors
@@ -1630,14 +1837,14 @@ const make = <
           const handlers = yield* build
 
           const services = yield* Effect.context<
-            Exclude<R, Turn | InTurn> | Exclude<RC, Connection>
+            Exclude<R, Turn | InTurn> | Exclude<RC, Connection> | Exclude<RS, Read | InStream>
           >()
 
           const workflowServices = yield* Effect.context<Exclude<RW, Workflow>>()
 
-          const { commands, connections } = yield* commandsOf(
+          const { commands, connections, streams } = yield* commandsOf(
             handlers,
-            services as Context.Context<R | RC>,
+            services as Context.Context<R | RC | RS>,
           )
 
           return yield* actors.register({
@@ -1645,11 +1852,14 @@ const make = <
             workflows: yield* workflowsOf(handlers, workflowServices as Context.Context<RW>),
             activate: () => Effect.succeed(commands),
             connections,
+            streams,
           })
         }
 
-        if (connectionMembers.length > 0)
-          return yield* Effect.die(new Error("Singleton actors cannot declare connections yet"))
+        if (connectionMembers.length > 0 || streamMembers.length > 0)
+          return yield* Effect.die(
+            new Error("Singleton actors cannot declare connections or streams yet"),
+          )
 
         const services = yield* Effect.context<
           Exclude<R, Turn | InTurn> | Exclude<RB, Scope.Scope> | InternalActors
@@ -1673,12 +1883,13 @@ const make = <
 
             const { commands } = yield* commandsOf(
               handlers,
-              services as Context.Context<R | RC>,
+              services as Context.Context<R | RC | RS>,
             ).pipe(Effect.provideContext(services))
 
             return commands
           }),
           connections: new Map(),
+          streams: new Map(),
         })
       }),
     ) as Layer.Layer<
@@ -1686,6 +1897,7 @@ const make = <
       never,
       | Exclude<R, Turn | InTurn>
       | Exclude<RC, Connection>
+      | Exclude<RS, Read | InStream>
       | Exclude<RW, Workflow>
       | Exclude<RB, Scope.Scope>
       | InternalActors
@@ -1718,39 +1930,7 @@ const make = <
             let open = true
             const query = Symbol()
 
-            const replay = Effect.fnUntraced(function* <E extends Event>(
-              event: E,
-              options?: {
-                readonly after?: string | undefined
-                readonly limit?: number | undefined
-              },
-            ) {
-              if (events.get(event.identifier) !== event)
-                return yield* Effect.die(new Error(`Undeclared event: ${event.identifier}`))
-
-              const limit = options?.limit ?? DEFAULT_REPLAY_LIMIT
-
-              if (!Number.isInteger(limit) || limit < 1 || limit > MAX_REPLAY_LIMIT)
-                return yield* Effect.die(
-                  new Error(`read.events limit must be an integer from 1 to ${MAX_REPLAY_LIMIT}`),
-                )
-
-              const { decode } = eventCodecs.get(event)!
-
-              return yield* Effect.forEach(
-                yield* readEvents(event.identifier, options?.after, limit),
-                Effect.fnUntraced(function* (stored) {
-                  const entry: EventEntry<E["Type"]> = {
-                    cursor: stored.cursor,
-                    event: (yield* decode(stored.value).pipe(Effect.orDie)) as E["Type"],
-                    commandId: stored.commandId,
-                    timestamp: DateTime.makeUnsafe(stored.timestampMs),
-                  }
-
-                  return entry
-                }),
-              )
-            })
+            const replay = replayWith(readEvents)
 
             // A forked fiber inherits InsideTurn, so the query's own fiber is checked too.
             const owner = Fiber.getCurrent()
@@ -1796,6 +1976,8 @@ const make = <
               rows: access.rows as QueryContext<State, Event, Owned>["rows"],
               group: access.group,
               blob,
+              follow: () =>
+                Stream.die(new Error("read.follow is only available in stream handlers")),
             }
 
             return yield* Effect.gen(function* () {
@@ -2143,7 +2325,10 @@ const make = <
     decodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => decodeId(id),
     encodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => encodeId(id),
     members: Object.values(api)
-      .filter((member) => member.kind !== "connection" && member.kind !== "workflow")
+      .filter(
+        (member) =>
+          member.kind !== "connection" && member.kind !== "stream" && member.kind !== "workflow",
+      )
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     deliveryMs: policy.deliveryMs,
   }
@@ -2185,7 +2370,7 @@ const make = <
     client: (options: ClientOptions) =>
       clientOf<
         ActorClient<
-          Omit<Api, WorkflowKeys<Api> | ConnectionKeys<Api>>,
+          Omit<Api, WorkflowKeys<Api> | ConnectionKeys<Api> | StreamKeys<Api>>,
           K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
           Id,
           StateOf<Fields>

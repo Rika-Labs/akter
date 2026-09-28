@@ -1,10 +1,12 @@
 import { Effect } from "effect"
 import { Definition } from "./actor/definition.ts"
 import { InTurn } from "./handles/intents.ts"
+import { InStream } from "./contexts/command.ts"
 import { CurrentCommandId } from "./identity/command.ts"
 import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
 import { Connection } from "./members/connection.ts"
+import { StreamMember } from "./members/stream.ts"
 import { Event } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
 import { DeadLetter, effect } from "./members/effect.ts"
@@ -21,6 +23,7 @@ export const Actor = {
   command: Command.make,
   query: Query.make,
   connection: Connection.make,
+  stream: StreamMember.make,
   workflow: WorkflowMember.make,
   Event: Event.make,
   reducer: Reducer.make,
@@ -37,6 +40,8 @@ export const Actor = {
   auth: { none: authNone, make: authMake, jwt },
   /** Provided by the runtime only inside command turns; `X.intents` requires it. */
   InTurn,
+  /** Provided by the runtime only inside stream handlers; `read.follow` requires it. */
+  InStream,
   as:
     (caller: Caller) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -111,7 +116,9 @@ export type {
 
 export type { AnyConnection, Connection } from "./members/connection.ts"
 
-export type { ConnectionHandlers } from "./actor/definition.ts"
+export type { AnyStream, Stream as StreamMember } from "./members/stream.ts"
+
+export type { ConnectionHandlers, StreamHandler } from "./actor/definition.ts"
 
 export type { EffectClass, EffectPolicy, ProgressEffect, ProgressOf } from "./members/effect.ts"
 
