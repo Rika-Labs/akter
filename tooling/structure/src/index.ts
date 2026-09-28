@@ -25,7 +25,7 @@ const E2E_FILE = /\.e2e\.[cm]?[jt]sx?$/
 
 const LEAF_MODULE_LIMIT = 12
 
-const APP_PACKAGE = /^@durable-actors\/(api|console|edge|cli)$/
+const APP_PACKAGE = /^@durable-actors\/(api|console|docs|edge|cli)$/
 
 const WORKSPACE_PACKAGE = /^@durable-actors\//
 
