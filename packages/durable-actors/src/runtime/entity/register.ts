@@ -269,7 +269,11 @@ export const registerActor = Effect.fnUntraced(function* (
 
             if (owner.hasConnections) {
               yield* (yield* TurnHooks).at("beforeFlush", payload)
-              yield* owner.flush(owned, done.broadcasts, done.head)
+              yield* owner.flush(
+                owned,
+                [...done.broadcasts, ...(yield* owner.feedBroadcasts(done.committed))],
+                done.head,
+              )
             }
 
             return done.outcome
