@@ -27,7 +27,7 @@ import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
 import { build, document, memberPath, PROTOCOL_OPERATIONS } from "./api.ts"
-import { type AuthProvider, type Authenticated, withinLimits } from "./auth.ts"
+import { type AuthProvider, type Authenticated, readsCookies, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
 import { feedStream, MAX_FEED_FILTERS, openFeed } from "./feed.ts"
@@ -254,6 +254,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const origins = new Set(options.origins ?? [])
       const requestBytes = options.limits?.requestBytes ?? 1024 * 1024
       const credentialBytes = options.limits?.credentialBytes ?? 8 * 1024
+      const withCookies = readsCookies(options.auth)
       const api = build({ definitions, basePath })
 
       const withProtocol = (
@@ -329,11 +330,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           if (
             (credential !== undefined && bytes(credential) > credentialBytes) ||
             (Option.isSome(authorization) && bytes(authorization.value) > credentialBytes) ||
-            (options.auth.cookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes)
+            (withCookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes)
           )
             return yield* invalidInput("too_large")
 
-          const cookies = options.auth.cookies ? request.cookies : {}
+          const cookies = withCookies ? request.cookies : {}
 
           const authenticated: Authenticated = yield* options.auth
             .authenticate(
@@ -503,7 +504,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           // A non-browser client, or a cookie provider, may authenticate the upgrade itself.
           const upgrade =
             Headers.has(request.headers, "authorization") ||
-            (options.auth.cookies && Headers.has(request.headers, "cookie"))
+            (withCookies && Headers.has(request.headers, "cookie"))
               ? yield* authenticate(request)
               : undefined
 
