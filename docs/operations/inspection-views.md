@@ -94,7 +94,7 @@ The API is `Inspector.serve({ auth, basePath? })` from `@durable-actors/core/run
 | `/dead-letters`                  | the tenant's dead letters, newest first                                                                                                                                                                                          |
 | `/workflows?status`              | the tenant's workflow executions with their steps, newest first; `status=open` (the default) omits finished ones, `status=all` keeps them                                                                                        |
 
-Compressed values (state, event values, workflow payloads, results, and step exits) and JSON text columns come back as `{ "json": <value> }`, or `{ "undecodable": <reason> }` for a row that is not zstd or not JSON. An unknown actor is `404 { "_tag": "NotFound" }`; a failed authentication is the served `ActorError` envelope with `401`.
+Compressed values (state, event values, workflow payloads, results, and step exits) and JSON text columns come back as `{ "json": <value> }`, or `{ "undecodable": <reason> }` for a row that is not zstd or not JSON. An unknown actor is `404 { "_tag": "NotFound" }`; a failed authentication is the served `ActorError` envelope with `401`. A request whose `Origin` is not the server's own is refused with `403 InvalidInput(origin_not_allowed)` before authentication, so another site cannot probe it with a browser's credentials.
 
 The inspector adds no access of its own:
 
