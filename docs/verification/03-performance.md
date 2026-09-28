@@ -397,6 +397,30 @@ On PGlite the single connection sets the pace and both protocols ran within nois
 
 [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md) measures hand-rolled fan-out before subscriptions exist: one publisher turn that stages one intent per subscriber, due in a day, so only the publisher's turn is timed. The handler generates the ids, so the payload doesn't grow with n ([`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat). On Postgres the publisher's turn p50 is 2.5 ms with 1 subscriber, 33 ms with 256, and 83–86 ms with 1,024. With 16 subscribers it was 8.9 ms in one run and 4.2 ms in the repeat. Statements per turn stay at 8.0–8.2, and runtime CPU per turn tracks the latency, at about 80 µs per staged intent. Subscriptions move fan-out to the relay, so the #94 build must hold the publisher's turn flat across subscriber counts.
 
+### Effect cancellation and per-actor caps (M2.13)
+
+`2026-09-27-7dd0260-m2.13-run{0..5}-postgres.json` runs `effect-concurrency` on Postgres 18.6, Bun 1.4.2, three in-process runners, on one 8-vCPU host (Xeon Platinum 8559C, 31 GiB) shared by client, runtime, and database. Command: `bun run bench --scenario effect-concurrency --backend postgres --profile full --label m2.13-run<i>`. Run 0 is the warm-up and contributes to none of the figures below: every median, range, and coefficient of variation (CV) is over runs 1–5 only. Statements are counted with `pg_stat_statements`; each is one round trip. Start latency is due-to-start: from the reply to the performing turn, which follows its commit and so the effect becoming due, to the fake provider seeing the attempt. The earlier `959da2f` runs timed start from before the performing command and are superseded; their other figures agree with these within noise.
+
+| Case                         | Metric                                 | Median                   | Range             | CV     |
+| ---------------------------- | -------------------------------------- | ------------------------ | ----------------- | ------ |
+| uncapped                     | effects/s                              | 1,890                    | 1,834–1,932       | 2.2%   |
+| uncapped                     | start p50 / p95 / p99 ms               | 205 / 260 / 283          | p99 268–300       | 2–5%   |
+| uncapped                     | most in flight per actor               | 10                       | 10                | 0%     |
+| uncapped                     | statements per effect                  | 4.46                     | 4.38–4.46         | 0.7%   |
+| `perActor: 2`                | effects/s                              | 523                      | 402–545           | 10.5%  |
+| `perActor: 2`                | start p50 / p95 / p99 ms               | 669 / 1,311 / 1,501      | p99 1,389–2,442   | 11–24% |
+| `perActor: 2`                | most in flight per actor               | 2                        | 2                 | 0%     |
+| `perActor: 2`                | statements per effect                  | 12.35                    | 12.18–12.40       | 0.6%   |
+| hot actor, `perActor: 1`     | hot effects/s                          | 16.3                     | 16.1–16.3         | 0.5%   |
+| hot actor, `perActor: 1`     | cold-actor start p50 / p95 / p99 ms    | 127 / 174 / 204          | p99 168–473       | 5–44%  |
+| cancel, default check (20 s) | cancel-to-interrupt p50 / p95 / p99 ms | 19,195 / 20,050 / 20,080 | p50 19,073–19,619 | 1.0%   |
+| cancel, 1 s check            | cancel-to-interrupt p50 / p95 / p99 ms | 1,095 / 1,436 / 1,476    | p50 1,073–1,953   | 27–34% |
+
+- **The cap holds.** No actor ever had more attempts in flight than its cap in any run, across three runners, and no case recorded an error.
+- **A capped claim costs about three times the statements of an uncapped one.** 12.3 against 4.5 statements per effect, and about a quarter of the throughput. The cap itself is not the limit here (2 in flight × 20 calls/s per actor would allow far more): each capped claim takes a transaction and an advisory lock per `(actor, tag)` group, so claiming is per group rather than one batch. Claims that group many actors per transaction are the obvious follow-up if capped throughput matters.
+- **A hot actor does not starve cold ones.** With one actor holding 1,000 queued effects at `perActor: 1`, it ran at 16 effects/s (50 ms provider, so near its 20/s ceiling) while the other 1,000 actors' effects started at p50 127 ms after becoming due.
+- **Cancel latency is the cancel check.** A cancellation committed on a runner without executors reaches the running attempt at the next renewal check: about 20 s at the default (lease 60 s / 3) and about 1 s at `cancelCheck: "1 second"`. One of the five 1-second runs was slow (p50 1,953 ms, statements per operation 22.7 against 15.1–16.9) and drives its CV to about 30%; the other four had p50 1,073–1,197 ms. The default-to-1-second difference (about 17×) is far beyond twice either CV. Differences below twice the CV in these tables, such as start-latency tails, are noise on a shared host.
+
 ### Query read path (#77)
 
 After the M1 merges, `query-latency` on PGlite ran about 35% slower than before them: p50 rose from 0.37–0.40 ms to about 0.60 ms, with one statement per query throughout. Two alternating PGlite runs of `query-latency` and `receipt-replay` at each M1 merge on `main` (`48aa44e`, `e0a7915`, `238a0f8`, `7015670`, `3beaa25`, `f324a40`, `96eb5e1`, `0ba95fc`) put the whole step at `3beaa25`, the events merge. That merge made the query statement read the event head from `actor_generations` together with `actor_state`, so state and replay describe one committed moment. The same runs on Postgres showed no step larger than run-to-run noise, and three alternating runs of `receipt-replay` found `0ba95fc` no slower than `96eb5e1` there.
