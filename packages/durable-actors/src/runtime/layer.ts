@@ -31,6 +31,7 @@ import { SqlClient, SqlError } from "effect/unstable/sql"
 import {
   ActorError,
   ActorUnavailable,
+  NotCreated,
   Unauthorized,
   Timeout,
   MailboxFull,
@@ -64,6 +65,7 @@ import { holderShardGroups, holderTransport, type Transport } from "./connection
 import { StreamFailed, StreamItem } from "./connections/protocol.ts"
 import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
 import type { Owner } from "./connections/owner.ts"
+import { FEED_MEMBER } from "./connections/protocol.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
@@ -76,6 +78,7 @@ import { decodeResult } from "./workflows/engine.ts"
 import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
+import { directMessages } from "./topology/messages.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -86,8 +89,15 @@ export interface Options {
     readonly caller: Caller
     readonly ref: ActorRef
     readonly command: string
-    /** What is being authorized: `command` for commands and reducers, `query` for queries; hooks should deny kinds they do not know. */
-    readonly kind: "command" | "query" | "open" | "stream" | "reauthorize"
+    /**
+     * What is being authorized: `command` for commands and reducers, `query`
+     * for queries, `open` for a connection, `feed` for an event feed (with
+     * `command` set to the event tag), and `reauthorize` for a live session's
+     * periodic check; hooks should deny kinds they do not know.
+     */
+    readonly kind: "command" | "query" | "open" | "stream" | "feed" | "reauthorize"
+    /** On `reauthorize`, what the session is: an `open` connection, a `stream`, or a `feed`. */
+    readonly of?: "open" | "stream" | "feed"
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
@@ -270,8 +280,13 @@ export const layer = (options: Options) => {
           retryWindowMs,
           placement: registration.placement,
           routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
-          hasResync: (member) => registration.connections.get(member)?.hasResync ?? false,
-          hasMember: (member) => registration.connections.has(member),
+          // A feed's holder rereads its events after an owner loss, so it waits for the new owner's answer.
+          hasResync: (member) =>
+            member === FEED_MEMBER || (registration.connections.get(member)?.hasResync ?? false),
+          hasMember: (member) =>
+            member === FEED_MEMBER
+              ? registration.feeds.size > 0
+              : registration.connections.has(member),
           channel: {
             open: (request) =>
               connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
@@ -684,7 +699,7 @@ export const layer = (options: Options) => {
           residency.set(registration.name, isResident)
           owners.set(registration.name, owner)
 
-          if (registration.connections.size > 0)
+          if (registration.connections.size > 0 || registration.feeds.size > 0)
             heldTypes.set(registration.name, heldType(registration))
 
           if (retained) sweepsWorkflows.add(registration.name)
@@ -727,6 +742,62 @@ export const layer = (options: Options) => {
             }),
           )
         }),
+        exists: Effect.fnUntraced(
+          function* (ref: ActorRef) {
+            const registration = registrations.get(ref.actor)
+
+            if (registration === undefined)
+              return yield* ActorError.make({
+                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+              })
+
+            const sql = yield* SqlClient.SqlClient
+
+            const rows = yield* sql`
+              SELECT 1 FROM actor_generations
+              WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
+                AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+
+            return rows.length > 0
+          },
+          Effect.provideContext(services),
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        ),
+        // Feeds read committed events on the serving node, like queries: no activation.
+        readFeed: Effect.fnUntraced(
+          function* (
+            ref: ActorRef,
+            tags: ReadonlyArray<string>,
+            after: string | undefined,
+            limit: number,
+          ) {
+            const registration = registrations.get(ref.actor)
+
+            if (registration === undefined)
+              return yield* ActorError.make({
+                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+              })
+
+            const key = routingKey({ ref, placement: registration.placement })
+            const sql = yield* SqlClient.SqlClient
+
+            const [row] = yield* sql<{ head: string }>`
+              SELECT event_sequence::text AS head FROM actor_generations
+              WHERE routing_key = ${key} AND tenant_id = ${ref.tenant}
+                AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+
+            // A feed never creates an actor, so a missing generation row is an answer, not a wake.
+            if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
+
+            return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
+          },
+          Effect.provideContext(services),
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        ),
         // Queries read committed rows on the caller's node: no activation, no
         // generation fence, no receipt, and no command id.
         query: Effect.fnUntraced(
@@ -778,7 +849,7 @@ export const layer = (options: Options) => {
               const cursor = head ?? "0"
 
               return yield* query.run(request, state, cursor, (tag, after, limit) =>
-                replayEvents(request.ref, key, tag, after, BigInt(cursor), limit).pipe(
+                replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
                   Effect.catchIf(SqlError.isSqlError, Effect.die),
                   Effect.provideContext(services),
                 ),
@@ -998,12 +1069,12 @@ export const layer = (options: Options) => {
         ? "memory"
         : "sql"
 
-      // Commands are direct, so Cluster keeps no message storage; durable
-      // intents will use the actor-shard outbox instead.
+      // Commands are direct, so Cluster keeps no messages; durable intents
+      // use the actor-shard outbox instead.
       const sharding = (
         wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))
       ).pipe(
-        Layer.provideMerge(MessageStorage.layerNoop),
+        Layer.provideMerge(directMessages),
         Layer.provide([
           runnerStorage === "memory"
             ? Layer.effect(

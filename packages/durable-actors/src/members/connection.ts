@@ -82,6 +82,9 @@ const make = <
     }
   },
 ): Connection<Tag, Params, Server, Client, Session, Errors> => {
+  // `$` names framework members, such as the one an event feed opens.
+  if (tag.startsWith("$")) throw new Error(`Connection ${tag} may not start with $`)
+
   for (const schema of [options.server, options.client])
     if (schema !== undefined)
       for (const reserved of taggedIdentifiers(schema))

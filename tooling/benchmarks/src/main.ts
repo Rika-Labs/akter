@@ -38,6 +38,7 @@ import { subscriptions } from "./scenarios/subscriptions.ts"
 import { workflowCheck } from "./scenarios/workflow-check.ts"
 import { workflows } from "./scenarios/workflows.ts"
 import { mint } from "./scenarios/mint.ts"
+import { orders } from "./scenarios/orders.ts"
 
 /** Every scenario, in run order. A new slice adds its scenario here. */
 const SCENARIOS: ReadonlyArray<Scenario> = [
@@ -66,6 +67,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   progress,
   workflowCheck,
   mint,
+  orders,
 ]
 
 /**
