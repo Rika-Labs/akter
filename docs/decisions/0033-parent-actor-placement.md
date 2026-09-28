@@ -20,7 +20,7 @@ What the code does:
 - `actor_placements (actor_type, placement, encoding)` records each type's placement, with `CHECK (placement IN ('tenant', 'actor'))` (`0003_routing_state`). A build that changes either value refuses to start (`pglite.test.ts`: `refuses to start an actor type under a different placement than its stored rows`).
 - `group` reads are scoped by `routing_key` and `tenant_id` (`runtime/turn/rows.ts`), so a group is exactly the set of actors that share a routing key.
 - Routing must be computed from the address alone. A handle, the relay, the served protocol, and Cluster all turn `(tenant, actor type, id)` into a routing key without reading the database; a lookup would add a round trip to every turn and wake ([ADR 0005](0005-turn-latency-batching-and-regional-placement.md)).
-- `turn.mint(Child)` ([ADR 0025](0025-turn-mint.md), proposed; implemented) derives a UUIDv8 from the tenant, parent type and id, command id, ordinal, and child type. The id alone doesn't reveal the parent.
+- `turn.mint(Child)` ([ADR 0025](0025-turn-mint.md), accepted; implemented) derives a UUIDv8 from the tenant, parent type and id, command id, ordinal, and child type. The id alone doesn't reveal the parent.
 
 The problem parent placement solves: `actor` placement spreads high-cardinality actors across shards, but then a parent and its children land on different shards. Every intent between them is a cross-shard outbox delivery, and no `group` query can read an order together with its shipments in one snapshot. Examples: an order and its shipments, a document and its comment threads, a project and its tasks, a room and its reply threads.
 
