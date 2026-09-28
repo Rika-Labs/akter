@@ -20,10 +20,9 @@ export class PageHeaderMissing extends Schema.TaggedError<PageHeaderMissing>()(
 
 const markdownOptions = { headings: { ids: true } } as const
 
-const inlineMarkdown = /[`*_]|\[([^\]]*)\]\([^)]*\)/g
-
-const plainText = (markdown: string) =>
-  markdown.replace(inlineMarkdown, (_match, label: string | undefined) => label ?? "").trim()
+// With no callbacks, the renderer keeps only text: emphasis, code spans, and
+// link syntax go, while literal punctuation such as `actor_id` stays.
+const plainText = (markdown: string) => Bun.markdown.render(markdown, {}).trim()
 
 /**
  * Reads the title and summary every published document declares in its
