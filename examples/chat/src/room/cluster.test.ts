@@ -12,11 +12,12 @@ import {
   Redacted,
   Schedule,
   Schema,
+  Stream,
 } from "effect"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { threeRunners } from "./cluster.ts"
-import { Appeal, Room, RoomId, Thread } from "./contract.ts"
+import { Appeal, Presence, Room, RoomId, Thread } from "./contract.ts"
 import { RoomLive } from "./layer.ts"
 import { ModerationApi, Moderators } from "./moderation.ts"
 
@@ -206,4 +207,49 @@ it.todo("runs one digest per day across three runners, through a runner kill (cr
 
 it.todo("holds each room to two moderation calls in flight across three runners (caps, #125)")
 
-it.todo("wakes a parked room on another runner when a typing frame arrives (connections, M2.10)")
+clusterCase(
+  "wakes a parked room on another runner when a typing frame arrives",
+
+  Effect.gen(function* () {
+    const cluster = yield* ActorCluster
+    const ref = (yield* on(0, Room.get(RoomId.make("presence")))).ref
+    const owner = (yield* cluster.owner(ref))!
+
+    const inspect = on(
+      owner,
+      ActorTest.use((test) => test.inspect(ref)),
+    )
+
+    const connect = (runner: number) =>
+      on(
+        runner,
+        ActorTest.use((test) => test.connect(ref, Presence, undefined)),
+      )
+
+    // Neither member is held by the room's owner, and each by a different runner.
+    const typist = yield* connect((owner + 1) % cluster.runners)
+    const watcher = yield* connect((owner + 2) % cluster.runners)
+
+    const parked = Number((yield* inspect).generation)
+    yield* on(
+      owner,
+      ActorTest.use((test) => test.hibernate(ref)),
+    )
+    yield* typist.send({ typing: true })
+
+    const [seen] = yield* watcher.frames.pipe(
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.timeout("30 seconds"),
+      Effect.orDie,
+    )
+
+    // The name comes from the session stored at open, so the woken room read it back.
+    expect(seen).toEqual({ user: "ada", typing: true })
+    expect(Number((yield* inspect).generation)).toBeGreaterThan(parked)
+    expect(yield* cluster.owner(ref)).toBe(owner)
+
+    yield* typist.close
+    yield* watcher.close
+  }),
+)
