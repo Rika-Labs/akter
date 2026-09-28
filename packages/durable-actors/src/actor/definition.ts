@@ -557,11 +557,13 @@ const make = <
   const Effects extends ReadonlyArray<AnyEffect> = readonly [],
   const P extends Policy<CommandsOf<Api> | Values<Internal>, Effects[number]> = {},
   const B extends ReadonlyArray<AnyBlob> = [],
+  const F extends ReadonlyArray<Events[number]> = readonly [],
 >(
   name: Name,
   definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B> & {
     readonly key?: K
     readonly policy?: P
+    readonly feeds?: F
   },
 ) => {
   Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/)).make(name)
@@ -2554,7 +2556,7 @@ const make = <
           K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
           Id,
           StateOf<Fields>,
-          Events[number]
+          F[number]
         >
       >(served)(options),
   }

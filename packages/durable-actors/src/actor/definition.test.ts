@@ -70,6 +70,25 @@ describe("actor declarations", () => {
     const _unbranded = A.get("not-a-minted-id")
   })
 
+  it("types a client's event feed to the events the actor serves in feeds", () => {
+    class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+
+    class Hidden extends Actor.Event<Hidden>()("Hidden", {}) {}
+
+    const Ping = Actor.command("Ping")
+
+    const Served = Actor.make("FeedTyped", {
+      key: Schema.String,
+      events: [Posted, Hidden],
+      feeds: [Posted],
+      api: { Ping },
+    })
+
+    type Events = Parameters<ReturnType<ReturnType<typeof Served.client>["get"]>["events"]>[0]
+
+    expectTypeOf<Events>().toEqualTypeOf<typeof Posted>()
+  })
+
   it("serves connection members on the Promise client through connect", () => {
     const Ping = Actor.command("Ping")
     const Live = Actor.connection("Live", { client: Schema.String, server: Schema.String })
