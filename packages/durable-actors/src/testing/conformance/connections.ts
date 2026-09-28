@@ -1,12 +1,37 @@
-import { Cause, Effect, Exit, Layer, Option, Predicate, Schedule, Schema, Stream } from "effect"
+import {
+  Cause,
+  DateTime,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Predicate,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, User } from "../../index.ts"
+import { Actor, Intent, User } from "../../index.ts"
 import { ActorError, ActorUnavailable, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import { type ActorRef, CurrentCaller, System, Tenant } from "../../identity/caller.ts"
-import { connectionHolder, type HeldActorType } from "../../runtime/connections/holder.ts"
+import {
+  connectionHolder,
+  type HeldActorType,
+  type HeldConnection,
+  MAX_OUTBOUND_BYTES,
+  MAX_OUTBOUND_FRAMES,
+  type OwnerChannel,
+  RESYNC_DEADLINE_MS,
+} from "../../runtime/connections/holder.ts"
+import { MAX_SESSION_BYTES } from "../../runtime/connections/owner.ts"
+import { ClientMessage, type Deliver, HolderItem } from "../../runtime/connections/protocol.ts"
+import { decompress } from "../../runtime/storage/codec.ts"
 import { FrameworkClock } from "../../runtime/turn/admission.ts"
 import { ActorTest, type TestConnection, type TestMessage } from "../actor-test.ts"
-import { ActorCluster } from "../cluster.ts"
+import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 class Said extends Actor.Event<Said>()("Said", { text: Schema.String }) {}
@@ -19,96 +44,232 @@ class Hello extends Schema.TaggedClass<Hello>()("Hello", {
 
 class Say extends Schema.TaggedClass<Say>()("Say", { text: Schema.String }) {}
 
+/** A server frame with an event entry's shape whose `event` is no server frame. */
+class Receipted extends Schema.TaggedClass<Receipted>()("Receipted", {
+  cursor: Schema.String,
+  event: Schema.String,
+  commandId: Schema.String,
+  timestamp: Schema.DateTimeUtc,
+}) {}
+
+const receipted = Receipted.make({
+  cursor: "7",
+  event: "not a frame",
+  commandId: "command",
+  timestamp: DateTime.makeUnsafe(0),
+})
+
 class Banned extends Schema.TaggedError<Banned>()("Banned", { name: Schema.String }) {}
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
+const LiveSession = Schema.Struct({ name: Schema.String, frames: Schema.Finite })
+
+/** A session's own encoded JSON, which the 16 KiB limit measures. */
+const sessionJson = (session: typeof LiveSession.Type) =>
+  Schema.encodeEffect(Schema.fromJsonString(LiveSession))(session).pipe(Effect.orDie)
+
+/** A stored session: its encoded JSON inside the codec's `value` envelope. */
+const storedSession = (stored: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(Schema.Struct({ value: LiveSession })))(stored).pipe(
+    Effect.orDie,
+  )
+
 const Live = Actor.connection("Live", {
   params: Schema.Struct({ name: Schema.String }),
-  server: Schema.Union([Said, Hello]),
+  server: Schema.Union([Said, Hello, Receipted]),
   client: Say,
-  session: Schema.Struct({ name: Schema.String, frames: Schema.Finite }),
+  session: LiveSession,
   errors: [Banned],
 })
 
+/** A connection member `LiveRoom` does not declare. */
+const Undeclared = Actor.connection("Undeclared", {
+  params: Schema.Struct({}),
+  server: Said,
+  client: Say,
+})
+
 const Post = Actor.command("Post", { input: Schema.String, errors: [Refused] })
+
+/** Stages `Post(text)` to the room `to`, or to itself, as an intent delayed by `afterMs` when given. */
+const Forward = Actor.command("Forward", {
+  input: Schema.Struct({
+    to: Schema.optional(Schema.String),
+    text: Schema.String,
+    afterMs: Schema.optional(Schema.Int),
+  }),
+})
+
+/** Performs `Echo`, whose success routes back to the room as `Echoed`. */
+const Shout = Actor.command("Shout", { input: Schema.String })
+
+const Echoed = Actor.command("Echoed", { input: Schema.String })
+
+class Echo extends Actor.effect<Echo>()("LiveEcho", {
+  input: { text: Schema.String },
+  success: Schema.String,
+}) {}
 
 const Room = Actor.make("LiveRoom", {
   key: Schema.String,
   state: Actor.state({ posts: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   events: [Said],
-  api: { Live, Post },
+  effects: [Echo],
+  api: { Live, Post, Forward, Shout },
+  internal: { Echoed },
+  policy: { effects: { LiveEcho: { onSuccess: Echoed } } },
 })
 
 /** Frames a `flood` sends in one handler, past the 1,024-frame outbound limit. */
 const FLOOD = 1_100
 
-export const connectionsLayer = Room.toLayer(
-  Effect.succeed({
-    Post: Effect.fnUntraced(function* (text: string) {
-      const turn = yield* Room.Turn
-      yield* turn.emit(Said.make({ text }))
-      yield* turn.broadcast(Live, Said.make({ text }))
+/** Controls the connection cases share with the room's handlers; a case restores what it changes. */
+export interface ConnectionsFixture {
+  /** Where an open for `held` or a `hold` frame waits, once; it then resets to nothing. */
+  hold: Effect.Effect<void>
+  /** What the `Echo` executor does before it succeeds. */
+  echo: Effect.Effect<void>
+}
 
-      if (text === "refuse") return yield* Refused.make({})
+export const connectionsFixture = (): ConnectionsFixture => ({
+  hold: Effect.void,
+  echo: Effect.void,
+})
 
-      yield* turn.state.set({ posts: turn.state.posts + 1 })
+const takeHold = (fixture: ConnectionsFixture) =>
+  Effect.suspend(() => {
+    const hold = fixture.hold
+    fixture.hold = Effect.void
+
+    return hold
+  })
+
+/** Makes the next handler that reaches `hold` wait until the case releases it. */
+const holdNext = (fixture: ConnectionsFixture) =>
+  Effect.gen(function* () {
+    const reached = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    fixture.hold = Deferred.succeed(reached, undefined).pipe(
+      Effect.andThen(Deferred.await(release)),
+    )
+
+    return {
+      reached: Deferred.await(reached),
+      release: Deferred.succeed(release, undefined).pipe(Effect.asVoid),
+    }
+  })
+
+const said = Effect.fnUntraced(function* (text: string) {
+  const turn = yield* Room.Turn
+  yield* turn.emit(Said.make({ text }))
+  yield* turn.broadcast(Live, Said.make({ text }))
+})
+
+export const connectionsLayer = (fixture: ConnectionsFixture) =>
+  Room.toLayer(
+    Effect.succeed({
+      Post: Effect.fnUntraced(function* (text: string) {
+        const turn = yield* Room.Turn
+        yield* said(text)
+
+        if (text === "refuse") return yield* Refused.make({})
+
+        yield* turn.state.set({ posts: turn.state.posts + 1 })
+      }),
+      // `to` is optional so that an actor's own timer reads as `Forward({ text, afterMs })`.
+      Forward: Effect.fnUntraced(function* ({ to, text, afterMs }) {
+        const turn = yield* Room.Turn
+        const intent = (yield* Room.intents(to ?? turn.id)).Post(text)
+
+        yield* afterMs === undefined ? intent : intent.pipe(Intent.after(Duration.millis(afterMs)))
+      }),
+      Shout: Effect.fnUntraced(function* (text: string) {
+        const turn = yield* Room.Turn
+        yield* turn.perform(Echo.make({ text }))
+      }),
+      Echoed: said,
+      Live: {
+        open: Effect.fnUntraced(function* ({ name }: { readonly name: string }) {
+          const conn = yield* Room.Connection
+
+          if (name === "mallory") return yield* Banned.make({ name })
+
+          if (name === "leaver") return yield* conn.close
+
+          if (name === "held") yield* takeHold(fixture)
+
+          yield* conn.session.set({ name, frames: 0 })
+          yield* conn.send(Hello.make({ name, resumed: conn.resumed, frames: 0 }))
+        }),
+        frame: Effect.fnUntraced(function* (frame: Say) {
+          const conn = yield* Room.Connection
+          const session = Option.getOrElse(yield* conn.session.get, () => ({ name: "", frames: 0 }))
+          const frames = session.frames + 1
+          yield* conn.session.set({ frames })
+
+          if (frame.text === "hold") {
+            yield* takeHold(fixture)
+
+            return yield* conn.send(
+              Hello.make({ name: session.name, resumed: conn.resumed, frames }),
+            )
+          }
+
+          if (frame.text === "leave") return yield* conn.close
+
+          if (frame.text === "receipted") return yield* conn.send(receipted)
+
+          // Grows the session's name to `length` characters.
+          if (frame.text.startsWith("grow:")) {
+            const length = Number(frame.text.slice("grow:".length))
+            yield* conn.session.set({ name: "x".repeat(length), frames })
+
+            return yield* conn.send(
+              Hello.make({ name: `${length}`, resumed: conn.resumed, frames }),
+            )
+          }
+
+          if (frame.text === "whoami")
+            return yield* conn.send(
+              Hello.make({ name: session.name, resumed: conn.resumed, frames }),
+            )
+
+          if (frame.text === "caller") {
+            const caller = yield* CurrentCaller
+            const subject = Predicate.isTagged(caller, "User") ? caller.subject : ""
+            const tenant = yield* Tenant
+
+            return yield* conn.send(
+              Hello.make({
+                name: `${tenant}/${caller._tag}/${subject}`,
+                resumed: conn.resumed,
+                frames,
+              }),
+            )
+          }
+
+          if (frame.text === "flood") {
+            for (let index = 0; index < FLOOD; index++)
+              yield* conn.send(Hello.make({ name: session.name, resumed: conn.resumed, frames }))
+
+            return
+          }
+
+          yield* (yield* Room.get(conn.id)).Post(frame.text).pipe(Effect.orDie)
+        }),
+        resync: Effect.fnUntraced(function* ({ after }: { readonly after: string | undefined }) {
+          const conn = yield* Room.Connection
+          const session = yield* conn.session.get
+
+          if (Option.isSome(session) && session.value.name === "quitter") return yield* conn.close
+
+          for (const entry of yield* conn.events(Said, { after }).pipe(Effect.orDie))
+            yield* conn.send(entry)
+        }),
+      },
     }),
-    Live: {
-      open: Effect.fnUntraced(function* ({ name }: { readonly name: string }) {
-        const conn = yield* Room.Connection
-
-        if (name === "mallory") return yield* Banned.make({ name })
-
-        if (name === "leaver") return yield* conn.close
-
-        yield* conn.session.set({ name, frames: 0 })
-        yield* conn.send(Hello.make({ name, resumed: conn.resumed, frames: 0 }))
-      }),
-      frame: Effect.fnUntraced(function* (frame: Say) {
-        const conn = yield* Room.Connection
-        const session = Option.getOrElse(yield* conn.session.get, () => ({ name: "", frames: 0 }))
-        const frames = session.frames + 1
-        yield* conn.session.set({ frames })
-
-        if (frame.text === "whoami")
-          return yield* conn.send(Hello.make({ name: session.name, resumed: conn.resumed, frames }))
-
-        if (frame.text === "caller") {
-          const caller = yield* CurrentCaller
-          const subject = Predicate.isTagged(caller, "User") ? caller.subject : ""
-          const tenant = yield* Tenant
-
-          return yield* conn.send(
-            Hello.make({
-              name: `${tenant}/${caller._tag}/${subject}`,
-              resumed: conn.resumed,
-              frames,
-            }),
-          )
-        }
-
-        if (frame.text === "flood") {
-          for (let index = 0; index < FLOOD; index++)
-            yield* conn.send(Hello.make({ name: session.name, resumed: conn.resumed, frames }))
-
-          return
-        }
-
-        yield* (yield* Room.get(conn.id)).Post(frame.text).pipe(Effect.orDie)
-      }),
-      resync: Effect.fnUntraced(function* ({ after }: { readonly after: string | undefined }) {
-        const conn = yield* Room.Connection
-        const session = yield* conn.session.get
-
-        if (Option.isSome(session) && session.value.name === "quitter") return yield* conn.close
-
-        for (const entry of yield* conn.events(Said, { after }).pipe(Effect.orDie))
-          yield* conn.send(entry)
-      }),
-    },
-  }),
-)
+  )
 
 type LiveMessage = TestMessage<typeof Live.server.Type>
 
@@ -167,10 +328,67 @@ const connect = (id: string, name = "alice") =>
     return { test, room, connection }
   })
 
+/** The `Echo` executor, which every cluster runner builds. */
+const connectionsEffects = (fixture: ConnectionsFixture) =>
+  Room.toEffectLayer(
+    Effect.succeed({
+      LiveEcho: ({ text }: { readonly text: string }) =>
+        Effect.suspend(() => fixture.echo).pipe(Effect.as(text)),
+    }),
+  ) as Layer.Layer<never, never, RunnerServices>
+
+/** Reports whether no envelope arrives within one second. */
+const quiet = (connection: TestConnection<typeof Live>) =>
+  connection.messages.pipe(
+    Stream.take(1),
+    Stream.runCollect,
+    Effect.timeout("1 second"),
+    Effect.option,
+    Effect.map(Option.isNone),
+  )
+
+/** Reads envelopes through the next `ResyncReplayed`. */
+const throughReplayed = (connection: TestConnection<typeof Live>) =>
+  connection.messages.pipe(
+    Stream.takeUntil((message) => Predicate.isTagged(message, "ResyncReplayed")),
+    Stream.runCollect,
+    Effect.map((chunk): ReadonlyArray<LiveMessage> => [...chunk]),
+    Effect.timeoutOrElse({
+      duration: "60 seconds",
+      orElse: () => Effect.die(new Error("No ResyncReplayed arrived")),
+    }),
+  )
+
+/** Collects envelopes until the session ends and returns them with how it ended. */
+const untilEnd = (connection: TestConnection<typeof Live>) =>
+  Effect.gen(function* () {
+    const seen: Array<LiveMessage> = []
+
+    const exit = yield* connection.messages.pipe(
+      Stream.runForEach((message) => Effect.sync(() => seen.push(message))),
+      Effect.exit,
+      Effect.timeoutOrElse({
+        duration: "60 seconds",
+        orElse: () => Effect.die(new Error("The session did not end")),
+      }),
+    )
+
+    const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+
+    return { seen, ended: reasonOf(Option.getOrUndefined(failure)) }
+  })
+
+const posts = (ref: ActorRef) =>
+  ActorTest.use((test) => test.inspect(ref)).pipe(
+    Effect.map(({ state }) => (state as { readonly posts?: number }).posts ?? 0),
+  )
+
 const EXPIRATION_SECONDS = 3
 
 const withCluster = <A, E>(
   environment: ConformanceEnvironment,
+  fixture: ConnectionsFixture,
+  options: { readonly runners: number; readonly holdersOnly?: ReadonlyArray<number> },
   body: Effect.Effect<A, E, ActorCluster>,
 ) =>
   environment.run(
@@ -180,9 +398,11 @@ const withCluster = <A, E>(
       const context = yield* Layer.build(
         ActorTest.cluster({
           database,
-          runners: 2,
+          runners: options.runners,
+          holdersOnly: options.holdersOnly,
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
-          actors: connectionsLayer,
+          actors: connectionsLayer(fixture),
+          runnerActors: () => connectionsEffects(fixture),
           as: User.make({ subject: "alice" }),
         }),
       )
@@ -191,7 +411,142 @@ const withCluster = <A, E>(
     }),
   )
 
+const OWNER = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" } as const
+
+/**
+ * A holder on its own transport whose owner side is `channel`, for cases that
+ * need an owner answer the real one never gives. Unless `channel.open` says
+ * otherwise, opening copies the row of the real connection `template`, so the
+ * holder's liveness check keeps the session.
+ */
+const fakeHolder = Effect.fnUntraced(function* (options: {
+  readonly name: string
+  readonly template: string
+  /** Overrides owner calls; `copyRow` is the default open. */
+  readonly channel?: (copyRow: OwnerChannel["open"]) => Partial<OwnerChannel>
+  readonly type?: Partial<Omit<HeldActorType, "channel">>
+  readonly alive?: () => boolean
+  readonly offset?: () => number
+}) {
+  const sql = yield* SqlClient.SqlClient
+  const holderName = `${options.name}-holder`
+  const epoch = `${options.name}-epoch`
+
+  const copyRow: OwnerChannel["open"] = (request) =>
+    sql`
+      INSERT INTO actor_connections (
+        routing_key, connection_id, bucket, tenant_id, actor_type, actor_id, member,
+        holder, holder_epoch, caller, session, opened_at_ms, opened_through
+      )
+      SELECT routing_key, ${request.connectionId}, bucket, tenant_id, actor_type, actor_id,
+        member, ${request.holder}, ${request.holderEpoch}, caller, NULL, opened_at_ms, 0
+      FROM actor_connections WHERE connection_id = ${options.template}`.pipe(
+      Effect.orDie,
+      Effect.as({ _tag: "Opened" as const, ...OWNER, baseline: "0" }),
+    )
+
+  const type: HeldActorType = {
+    deliveryMs: 1_000,
+    takeoverMs: 5_000,
+    reauthorizeMs: 60_000,
+    retryWindowMs: 60_000,
+    placement: "actor",
+    hasResync: () => true,
+    hasMember: () => true,
+    routingKey: () => 0n,
+    ...options.type,
+    channel: {
+      open: copyRow,
+      frame: () => Effect.die(new Error("No frame is sent")),
+      close: () => Effect.void,
+      resync: () => Effect.never,
+      ...options.channel?.(copyRow),
+    },
+  }
+
+  const holder = yield* connectionHolder({
+    transport: () => ({
+      holder: holderName,
+      epoch,
+      deliver: () => Effect.die(new Error("No owner delivers")),
+      ping: () => Effect.sync(() => options.alive?.() ?? true),
+    }),
+    actorType: () => type,
+    authorize: () => Effect.succeed(true),
+  }).pipe(Effect.provideService(FrameworkClock, { offsetMillis: () => options.offset?.() ?? 0 }))
+
+  const open = (ref: ActorRef) =>
+    holder.open({ ref, member: Live.tag, caller: System.make({ source: "actor" }), params: "{}" })
+
+  /** An owner message on the generation's channel carrying `items`. */
+  const message = (
+    ref: ActorRef,
+    generation: string,
+    seq: number,
+    items: Deliver["items"],
+  ): Deliver => ({ epoch, ...OWNER, ref, generation, seq, through: "0", items })
+
+  return { holder, open, message }
+})
+
+/** An owner frame to `to`; the fake holder never decodes it. */
+const rawFrame = (to: ReadonlyArray<string>, frame: string) =>
+  HolderItem.cases.Frame.make({ member: Live.tag, to, frame, stamp: true })
+
+/** Collects a held connection's messages until it ends and returns them with how it ended. */
+const heldUntilEnd = (held: HeldConnection) =>
+  Effect.gen(function* () {
+    const seen: Array<ClientMessage> = []
+
+    const exit = yield* held.messages.pipe(
+      Stream.runForEach((message) => Effect.sync(() => seen.push(message))),
+      Effect.exit,
+      Effect.timeoutOrElse({
+        duration: "20 seconds",
+        orElse: () => Effect.die(new Error("The held session did not end")),
+      }),
+    )
+
+    const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+
+    return { seen, ended: reasonOf(Option.getOrUndefined(failure)) }
+  })
+
+/** The `Resync` a holder sends when an owner is lost, proving continuity through `after`. */
+const resyncFrom = (after: string | undefined) =>
+  ClientMessage.cases.Resync.make({ after, reason: "OwnerLost", deadlineMs: RESYNC_DEADLINE_MS })
+
+/** Polls `check` until it holds. */
+const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: string) =>
+  check.pipe(
+    Effect.repeat({ schedule: Schedule.spaced("25 millis"), until: (held) => held }),
+    Effect.timeoutOrElse({
+      duration: "20 seconds",
+      orElse: () => Effect.die(new Error(`Timed out waiting for ${what}`)),
+    }),
+    Effect.asVoid,
+  )
+
 export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "a connection opened after every earlier one to a resident actor closed still receives broadcasts",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-reopen")
+          yield* next(connection)
+          yield* room.Post("first")
+          expect(frameOf((yield* next(connection))[0])).toEqual(Said.make({ text: "first" }))
+          yield* connection.close
+
+          // The owner stays resident and its channel to this holder keeps counting.
+          const again = yield* test.connect(room.ref, Live, { name: "bob" })
+          yield* next(again)
+          yield* room.Post("second")
+          expect(frameOf((yield* next(again))[0])).toEqual(Said.make({ text: "second" }))
+        }),
+      ),
+  },
   {
     name: "connection opens, answers frames in order, stores its session, and leaves no row once closed",
     run: ({ expect, environment }) =>
@@ -657,12 +1012,204 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "an open or a renewal whose credential expires while its check runs is refused with Unauthorized expired",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-late-renewal")
+          yield* next(connection)
+
+          const sql = yield* SqlClient.SqlClient
+          const owner = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" }
+          let offset = 0
+          let slowOpen = true
+
+          const type: HeldActorType = {
+            deliveryMs: 1_000,
+            takeoverMs: 5_000,
+            reauthorizeMs: 60_000,
+            retryWindowMs: 60_000,
+            placement: "actor",
+            hasResync: () => false,
+            hasMember: () => true,
+            routingKey: () => 0n,
+            channel: {
+              // The owner's row, so the holder's liveness check keeps the session.
+              open: (request) =>
+                sql`
+                  INSERT INTO actor_connections (
+                    routing_key, connection_id, bucket, tenant_id, actor_type, actor_id, member,
+                    holder, holder_epoch, caller, session, opened_at_ms, opened_through
+                  )
+                  SELECT routing_key, ${request.connectionId}, bucket, tenant_id, actor_type, actor_id,
+                    member, ${request.holder}, ${request.holderEpoch}, caller, NULL, opened_at_ms, 0
+                  FROM actor_connections WHERE connection_id = ${connection.connectionId}`.pipe(
+                  Effect.orDie,
+                  Effect.as({ _tag: "Opened" as const, ...owner, baseline: "0" }),
+                ),
+              frame: () => Effect.die(new Error("No frame is sent")),
+              close: () => Effect.void,
+              resync: () => Effect.die(new Error("No owner is lost")),
+            },
+          }
+
+          const holder = yield* connectionHolder({
+            transport: () => ({
+              holder: "renewal-holder",
+              epoch: "renewal-epoch",
+              deliver: () => Effect.die(new Error("No owner delivers")),
+              ping: () => Effect.succeed(true),
+            }),
+            actorType: () => type,
+            authorize: (request) =>
+              Effect.sync(() => {
+                // Each slow check allows its session, but answers a second later.
+                if (request.kind === "reauthorize" || (request.kind === "open" && slowOpen))
+                  offset += 1_000
+
+                return true
+              }),
+          }).pipe(Effect.provideService(FrameworkClock, { offsetMillis: () => offset }))
+
+          const late = yield* holder
+            .open({
+              ref: room.ref,
+              member: Live.tag,
+              caller: System.make({ source: "actor" }),
+              params: "{}",
+              expiresAt: (yield* holder.now) + 500,
+            })
+            .pipe(Effect.flip)
+
+          expect(Predicate.isTagged(late, "ActorError") ? late.reason : late).toMatchObject({
+            code: "expired",
+          })
+          slowOpen = false
+
+          const held = yield* holder.open({
+            ref: room.ref,
+            member: Live.tag,
+            caller: System.make({ source: "actor" }),
+            params: "{}",
+          })
+
+          const renewal = yield* held.reauthenticate((yield* holder.now) + 500).pipe(Effect.flip)
+          expect(renewal.reason).toMatchObject({ code: "expired" })
+
+          const exit = yield* held.messages.pipe(
+            Stream.runDrain,
+            Effect.exit,
+            Effect.timeout("10 seconds"),
+            Effect.orDie,
+          )
+
+          const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+          expect(Option.getOrUndefined(failure)?.reason).toMatchObject({ code: "expired" })
+        }),
+      ),
+  },
+  {
+    name: "a resync the new owner answers after the credential expired ends the session with Unauthorized expired",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-late-resync")
+          yield* next(connection)
+
+          const sql = yield* SqlClient.SqlClient
+          const owner = { generation: "1", owner: "owner", ownerEpoch: "owner-epoch" }
+          let offset = 0
+
+          const type: HeldActorType = {
+            deliveryMs: 1_000,
+            takeoverMs: 5_000,
+            reauthorizeMs: 60_000,
+            retryWindowMs: 60_000,
+            placement: "actor",
+            hasResync: () => false,
+            hasMember: () => true,
+            routingKey: () => 0n,
+            channel: {
+              // The owner's row, so the holder's liveness check keeps the session.
+              open: (request) =>
+                sql`
+                  INSERT INTO actor_connections (
+                    routing_key, connection_id, bucket, tenant_id, actor_type, actor_id, member,
+                    holder, holder_epoch, caller, session, opened_at_ms, opened_through
+                  )
+                  SELECT routing_key, ${request.connectionId}, bucket, tenant_id, actor_type, actor_id,
+                    member, ${request.holder}, ${request.holderEpoch}, caller, NULL, opened_at_ms, 0
+                  FROM actor_connections WHERE connection_id = ${connection.connectionId}`.pipe(
+                  Effect.orDie,
+                  Effect.as({ _tag: "Opened" as const, ...owner, baseline: "0" }),
+                ),
+              frame: () => Effect.die(new Error("No frame is sent")),
+              close: () => Effect.void,
+              // The new owner answers after the credential's expiry, closing the session as the owner does.
+              resync: () =>
+                Effect.sync(() => {
+                  offset += 1_000
+
+                  return {
+                    _tag: "Closed" as const,
+                    ended: SessionEnded.make({ cause: "ServerClosed", resync: false }),
+                  }
+                }),
+            },
+          }
+
+          const holder = yield* connectionHolder({
+            transport: () => ({
+              holder: "resync-holder",
+              epoch: "resync-epoch",
+              deliver: () => Effect.die(new Error("No owner delivers")),
+              ping: () => Effect.succeed(true),
+            }),
+            actorType: () => type,
+            authorize: () => Effect.succeed(true),
+          }).pipe(Effect.provideService(FrameworkClock, { offsetMillis: () => offset }))
+
+          const held = yield* holder.open({
+            ref: room.ref,
+            member: Live.tag,
+            caller: System.make({ source: "actor" }),
+            params: "{}",
+            expiresAt: (yield* holder.now) + 500,
+          })
+
+          // A message from a newer generation over an unsealed one: the first owner died.
+          yield* holder.deliver({
+            epoch: "resync-epoch",
+            owner: "other",
+            ownerEpoch: "other-epoch",
+            ref: room.ref,
+            generation: "2",
+            seq: 1,
+            through: "0",
+            items: [],
+          })
+
+          const exit = yield* held.messages.pipe(
+            Stream.runDrain,
+            Effect.exit,
+            Effect.timeout("10 seconds"),
+            Effect.orDie,
+          )
+
+          const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+          expect(Option.getOrUndefined(failure)?.reason).toMatchObject({ code: "expired" })
+        }),
+      ),
+  },
+  {
     name: "an ungraceful owner death resyncs a held connection in place from its flushed-through cursor",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
+        fixture.connections,
+        { runners: 2 },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
           yield* cluster.ready
@@ -744,6 +1291,751 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const [resumed] = yield* next(connection)
           expect(frameOf(resumed)).toEqual(Hello.make({ name: "alice", resumed: true, frames: 1 }))
           expect(yield* cluster.owner(target)).toBe(0)
+        }),
+      ),
+  },
+  {
+    name: "rejects a session above 16 KiB as a defect, closes the connection, and stores nothing of it",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-session-limit")
+          yield* next(connection)
+
+          // The name that makes the session's encoded JSON exactly the limit on the next frame.
+          const fits = MAX_SESSION_BYTES - (yield* sessionJson({ name: "", frames: 1 })).length
+          yield* connection.send(Say.make({ text: `grow:${fits}` }))
+          const [grown] = yield* next(connection)
+          expect(frameOf(grown)).toEqual(Hello.make({ name: `${fits}`, resumed: false, frames: 1 }))
+
+          const [stored] = yield* rows(room.ref)
+          expect(stored?.frame_seq).toBe("1")
+
+          const session = (yield* storedSession(decompress(stored!.session!))).value
+          const json = yield* sessionJson(session)
+          expect(new TextEncoder().encode(json).byteLength).toBe(MAX_SESSION_BYTES)
+
+          // One byte more is a defect of the handler: its session and frames are never written.
+          yield* connection.send(Say.make({ text: `grow:${fits + 1}` }))
+          const { seen, ended } = yield* untilEnd(connection)
+          expect(seen).toEqual([])
+          expect(Schema.is(SessionEnded)(ended)).toBe(true)
+          expect(ended).toMatchObject({ cause: "Defect", resync: false })
+          expect(yield* rows(room.ref)).toEqual([])
+        }),
+      ),
+  },
+  {
+    name: "sends a broadcast committed while open runs after the open's own frames",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const room = yield* Room.get("connections-opening")
+          const hold = yield* holdNext(fixture.connections)
+
+          const opening = yield* test
+            .connect(room.ref, Live, { name: "held" })
+            .pipe(Effect.forkChild({ startImmediately: true }))
+
+          yield* hold.reached
+          yield* room.Post("during open")
+          yield* hold.release
+          const connection = yield* Fiber.join(opening)
+          const opened = yield* next(connection, 2)
+
+          expect(opened.map(frameOf)).toEqual([
+            Hello.make({ name: "held", resumed: false, frames: 0 }),
+            Said.make({ text: "during open" }),
+          ])
+        }),
+      ),
+  },
+  {
+    name: "a failed row delete keeps the connection open and still reached by broadcasts",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const { room, connection } = yield* connect("connections-undeletable")
+          yield* next(connection)
+
+          yield* sql`CREATE FUNCTION connections_keep_row() RETURNS trigger LANGUAGE plpgsql
+            AS $$ BEGIN RAISE EXCEPTION 'row delete refused'; END $$`.pipe(Effect.orDie)
+
+          yield* sql`CREATE TRIGGER connections_keep_row BEFORE DELETE ON actor_connections
+            FOR EACH ROW WHEN (OLD.actor_id = 'connections-undeletable')
+            EXECUTE FUNCTION connections_keep_row()`.pipe(Effect.orDie)
+
+          yield* Effect.gen(function* () {
+            // The handler closes its connection, but the owner cannot delete the row.
+            yield* connection.send(Say.make({ text: "leave" }))
+            yield* room.Post("still here")
+            const [still] = yield* next(connection)
+            expect(frameOf(still)).toEqual(Said.make({ text: "still here" }))
+            expect((yield* rows(room.ref)).length).toBe(1)
+          }).pipe(
+            Effect.ensuring(
+              Effect.all([
+                sql`DROP TRIGGER connections_keep_row ON actor_connections`,
+                sql`DROP FUNCTION connections_keep_row()`,
+              ]).pipe(Effect.orDie),
+            ),
+          )
+        }),
+      ),
+  },
+  {
+    name: "a connection queues at most 1,024 inbound frames and never runs the queue it dropped",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-inbound")
+          yield* next(connection)
+          const hold = yield* holdNext(fixture.connections)
+          yield* connection.send(Say.make({ text: "hold" }))
+          yield* hold.reached
+
+          // Every queued frame would post; none may once the queue overflowed.
+          for (let index = 0; index <= 1_024; index++)
+            yield* connection.send(Say.make({ text: "queued" })).pipe(Effect.ignore)
+
+          const { ended } = yield* untilEnd(connection)
+          expect(Schema.is(SessionEnded)(ended)).toBe(true)
+          expect(ended).toMatchObject({ cause: "SlowConsumer", resync: true })
+
+          yield* hold.release
+          yield* Effect.sleep("500 millis")
+          expect(yield* posts(room.ref)).toBe(0)
+        }),
+      ),
+  },
+  {
+    name: "a revoked connection drops its unread outbound frames and its queued inbound frames",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-revoked-queue")
+          yield* next(connection)
+
+          // A broadcast the client has not read yet.
+          yield* room.Post("unread")
+          const hold = yield* holdNext(fixture.connections)
+          yield* connection.send(Say.make({ text: "hold" }))
+          yield* hold.reached
+          yield* connection.send(Say.make({ text: "queued" }))
+
+          fixture.allowed = false
+
+          // The client reads only after revocation deleted the session's row.
+          const { seen, ended } = yield* test.advance("55 seconds").pipe(
+            Effect.andThen(
+              eventually(
+                Effect.map(rows(room.ref), (found) => found.length === 0),
+                "the revoked row to go",
+              ),
+            ),
+            Effect.andThen(untilEnd(connection)),
+            Effect.ensuring(Effect.sync(() => (fixture.allowed = true))),
+          )
+
+          expect(ended).toMatchObject(Unauthorized.make({ code: "access_denied" }))
+          expect(seen).toEqual([])
+
+          yield* hold.release
+          yield* Effect.sleep("500 millis")
+          // Only the direct post ran; the queued frame's post never did.
+          expect(yield* posts(room.ref)).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "rejects an open for a member the actor does not declare before authorizing it",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const room = yield* Room.get("connections-undeclared")
+          fixture.allowed = false
+
+          const exit = yield* test
+            .connect(room.ref, Undeclared, {})
+            .pipe(Effect.exit, Effect.ensuring(Effect.sync(() => (fixture.allowed = true))))
+
+          const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+          expect(Schema.is(ActorUnavailable)(Option.getOrUndefined(failure)?.reason)).toBe(true)
+          expect(yield* rows(room.ref)).toEqual([])
+        }),
+      ),
+  },
+  {
+    name: "a command and a frame that wake one parked actor together acquire one generation",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-together")
+          yield* next(connection)
+          yield* test.hibernate(room.ref)
+          const parked = BigInt((yield* test.inspect(room.ref)).generation!)
+
+          yield* Effect.all(
+            [room.Post("together"), connection.send(Say.make({ text: "whoami" }))],
+            { concurrency: "unbounded", discard: true },
+          )
+
+          const woken = (yield* next(connection, 2)).map(frameOf)
+          const said = woken.find((frame) => Predicate.isTagged(frame, "Said"))
+          const hello = woken.find((frame) => Predicate.isTagged(frame, "Hello"))
+          expect(said).toEqual(Said.make({ text: "together" }))
+          expect(hello).toEqual(Hello.make({ name: "alice", resumed: true, frames: 1 }))
+          expect(BigInt((yield* test.inspect(room.ref)).generation!)).toBe(parked + 1n)
+        }),
+      ),
+  },
+  {
+    name: "a holder whose liveness check fails for a whole reauthorization bound ends its sessions, and later opens are not blamed for it",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const { test, connection } = yield* connect("connections-blind")
+          yield* next(connection)
+
+          yield* sql`ALTER TABLE actor_connections RENAME TO actor_connections_hidden`.pipe(
+            Effect.orDie,
+          )
+
+          const { ended } = yield* Effect.gen(function* () {
+            // The first failing check, then a reauthorization that succeeds, then the bound.
+            yield* test.advance("11 seconds")
+            yield* Effect.sleep("500 millis")
+            yield* test.advance("40 seconds")
+            yield* Effect.sleep("500 millis")
+            yield* test.advance("21 seconds")
+
+            return yield* untilEnd(connection)
+          }).pipe(
+            Effect.ensuring(
+              sql`ALTER TABLE actor_connections_hidden RENAME TO actor_connections`.pipe(
+                Effect.orDie,
+              ),
+            ),
+          )
+
+          expect(Schema.is(SessionEnded)(ended)).toBe(true)
+          expect(ended).toMatchObject({ cause: "ActorUnavailable", resync: true })
+
+          // The holder now holds nothing; a connection opened after the database is back is proven by its open.
+          const after = yield* connect("connections-sighted")
+          yield* next(after.connection)
+          yield* Effect.sleep("300 millis")
+          yield* after.connection.send(Say.make({ text: "whoami" }))
+          const [answer] = yield* next(after.connection)
+          expect(frameOf(answer)).toEqual(Hello.make({ name: "alice", resumed: false, frames: 1 }))
+        }),
+      ),
+  },
+  {
+    name: "a holder applies a redelivered owner message once and counts resync-deferred frames against the outbound limits",
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-redelivered")
+          yield* next(connection)
+          let alive = true
+
+          const fake = yield* fakeHolder({
+            name: "redelivered",
+            template: connection.connectionId,
+            alive: () => alive,
+            type: { takeoverMs: 60_000 },
+          })
+
+          const frames = yield* fake.open(room.ref)
+          const bytes = yield* fake.open(room.ref)
+          const once = fake.message(room.ref, "1", 1, [rawFrame([frames.connectionId], "once")])
+          yield* fake.holder.deliver(once)
+          // The owner resends after its acknowledgment was lost; the holder acknowledges it again.
+          expect(yield* fake.holder.deliver(once)).toEqual({ wrongEpoch: false, unknown: [] })
+
+          yield* fake.holder.deliver(
+            fake.message(room.ref, "1", 2, [rawFrame([frames.connectionId], "twice")]),
+          )
+
+          const delivered = yield* frames.messages.pipe(
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.timeout("5 seconds"),
+            Effect.orDie,
+          )
+
+          expect(
+            [...delivered].map((message) =>
+              ClientMessage.guards.Frame(message) ? message.frame : undefined,
+            ),
+          ).toEqual(["once", "twice"])
+
+          // The owner stops answering pings: both connections resync, and live frames wait behind it.
+          alive = false
+
+          for (const held of [frames, bytes]) {
+            const [resync] = yield* held.messages.pipe(
+              Stream.take(1),
+              Stream.runCollect,
+              Effect.timeout("10 seconds"),
+              Effect.orDie,
+            )
+
+            expect(resync?._tag).toBe("Resync")
+          }
+
+          const half = "x".repeat(MAX_OUTBOUND_BYTES / 2 + 1)
+
+          yield* fake.holder.deliver(
+            fake.message(room.ref, "2", 1, [
+              ...Array.from({ length: MAX_OUTBOUND_FRAMES + 1 }, (_, index) =>
+                rawFrame([frames.connectionId], `deferred ${index}`),
+              ),
+              rawFrame([bytes.connectionId], half),
+              rawFrame([bytes.connectionId], half),
+            ]),
+          )
+
+          for (const held of [frames, bytes]) {
+            const { seen, ended } = yield* heldUntilEnd(held)
+            expect(seen).toEqual([])
+            expect(ended).toMatchObject({ cause: "SlowConsumer", resync: true })
+          }
+        }),
+      ),
+  },
+  {
+    name: "a holder never delivers a broadcast that arrives past the session's authorization bound",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-late-broadcast")
+          yield* next(connection)
+          let offset = 0
+
+          const fake = yield* fakeHolder({
+            name: "late-broadcast",
+            template: connection.connectionId,
+            offset: () => offset,
+          })
+
+          const held = yield* fake.open(room.ref)
+          offset = 60_001
+          yield* fake.holder.deliver(
+            fake.message(room.ref, "1", 1, [rawFrame([held.connectionId], "late")]),
+          )
+          const { seen, ended } = yield* heldUntilEnd(held)
+          expect(seen).toEqual([])
+          expect(ended).toMatchObject(Unauthorized.make({ code: "reauthorization_unavailable" }))
+        }),
+      ),
+  },
+  {
+    name: "a holder closes a connection again when its owner commits the open after the holder gave up",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-late-open")
+          yield* next(connection)
+          const closes: Array<SessionEnded> = []
+
+          const fake = yield* fakeHolder({
+            name: "late-open",
+            template: connection.connectionId,
+            type: { deliveryMs: 200 },
+            channel: (copyRow) => ({
+              // The owner commits the open well after the holder's delivery timeout.
+              open: (request) => copyRow(request).pipe(Effect.delay("600 millis")),
+              close: (request) => Effect.sync(() => closes.push(request.cause)),
+            }),
+          })
+
+          const exit = yield* fake.open(room.ref).pipe(Effect.exit)
+          const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+
+          const reason = Option.filter(failure, Schema.is(ActorError)).pipe(
+            Option.map((error) => error.reason),
+            Option.getOrUndefined,
+          )
+
+          expect(reason).toMatchObject({ cause: "ActorUnavailable", resync: true })
+
+          yield* eventually(
+            Effect.sync(() => closes.length > 0),
+            "the late open to be closed",
+          )
+
+          expect(closes).toMatchObject([{ cause: "ActorUnavailable", resync: true }])
+        }),
+      ),
+  },
+  {
+    name: "a resync whose new owner never answers within the takeover bound closes with OwnerLost",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { room, connection } = yield* connect("connections-unanswered")
+          yield* next(connection)
+          const requests: Array<string | undefined> = []
+
+          const fake = yield* fakeHolder({
+            name: "unanswered",
+            template: connection.connectionId,
+            type: { takeoverMs: 300 },
+            channel: (copyRow) => ({
+              // A retried open whose first commit's reply was lost resyncs from its baseline.
+              open: (request) =>
+                copyRow(request).pipe(
+                  Effect.map((opened) => ({ ...opened, baseline: "4", recovered: true })),
+                ),
+              resync: (request) =>
+                Effect.sync(() => requests.push(request.after)).pipe(Effect.andThen(Effect.never)),
+            }),
+          })
+
+          const held = yield* fake.open(room.ref)
+          const { seen, ended } = yield* heldUntilEnd(held)
+          expect(seen).toMatchObject([resyncFrom("4")])
+          expect(requests).toEqual(["4"])
+          expect(ended).toMatchObject({ cause: "OwnerLost", resync: true })
+        }),
+      ),
+  },
+  {
+    name: "sends a server frame shaped like an event entry as the frame itself when its event is no server frame",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { connection } = yield* connect("connections-receipted")
+          yield* next(connection)
+          yield* connection.send(Say.make({ text: "receipted" }))
+          const [sent] = yield* next(connection)
+          expect(frameOf(sent)).toEqual(receipted)
+          expect(isFrame(sent) ? sent.event : "stamped").toBe(undefined)
+        }),
+      ),
+  },
+  {
+    name: "a failed generation acquisition caches nothing, so the retried frame acquires once and resumes the session",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const { test, room, connection } = yield* connect("connections-unacquired")
+          yield* next(connection)
+          yield* test.hibernate(room.ref)
+          const parked = BigInt((yield* test.inspect(room.ref)).generation!)
+
+          yield* sql`CREATE FUNCTION connections_refuse_generation() RETURNS trigger LANGUAGE plpgsql
+            AS $$ BEGIN RAISE EXCEPTION 'generation refused'; END $$`.pipe(Effect.orDie)
+
+          yield* sql`CREATE TRIGGER connections_refuse_generation BEFORE UPDATE ON actor_generations
+            FOR EACH ROW WHEN (OLD.actor_id = 'connections-unacquired')
+            EXECUTE FUNCTION connections_refuse_generation()`.pipe(Effect.orDie)
+
+          const dropped = Effect.all([
+            sql`DROP TRIGGER IF EXISTS connections_refuse_generation ON actor_generations`,
+            sql`DROP FUNCTION IF EXISTS connections_refuse_generation()`,
+          ]).pipe(Effect.orDie)
+
+          yield* Effect.gen(function* () {
+            // The frame's acquisitions fail and are retried until the database accepts one.
+            yield* connection.send(Say.make({ text: "whoami" }))
+            yield* Effect.sleep("300 millis")
+            yield* dropped
+            const [woken] = yield* next(connection)
+            expect(frameOf(woken)).toEqual(Hello.make({ name: "alice", resumed: true, frames: 1 }))
+          }).pipe(Effect.ensuring(dropped))
+
+          expect(BigInt((yield* test.inspect(room.ref)).generation!)).toBe(parked + 1n)
+        }),
+      ),
+  },
+  {
+    name: "a session write that races a takeover waits for it, writes nothing, and the redelivered frame applies once",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const { room, connection } = yield* connect("connections-takeover")
+          yield* next(connection)
+          const hold = yield* holdNext(fixture.connections)
+          yield* connection.send(Say.make({ text: "hold" }))
+          yield* hold.reached
+
+          // Another owner takes the generation and holds its row while the handler finishes.
+          const takeover = yield* environment.connect!
+          yield* takeover.query("BEGIN")
+
+          const bumped = (yield* takeover.query(
+            `UPDATE actor_generations SET generation = generation + 1
+             WHERE tenant_id = $1 AND actor_type = $2 AND actor_id = $3
+             RETURNING generation::text AS generation`,
+            [room.ref.tenant, room.ref.actor, room.ref.id],
+          )) as ReadonlyArray<{ readonly generation: string }>
+
+          yield* hold.release
+
+          yield* eventually(
+            Effect.map(
+              sql<{
+                waiting: number
+              }>`SELECT count(*)::int AS waiting FROM pg_locks WHERE NOT granted`,
+              ([row]) => row!.waiting > 0,
+            ).pipe(Effect.orDie),
+            "the session write to wait on the takeover",
+          )
+
+          yield* takeover.query("COMMIT")
+
+          // The fenced-out generation never sealed, so the holder resyncs before the new owner's answer.
+          const replay = yield* throughReplayed(connection)
+          expect(replay.map((message) => message._tag)).toEqual(["Resync", "ResyncReplayed"])
+          expect(replay[0]).toMatchObject({
+            after: connection.cursor === "0" ? undefined : connection.cursor,
+          })
+          yield* connection.resyncDone
+          const [answer] = yield* next(connection)
+          const hello = frameOf(answer)
+
+          expect(
+            Predicate.isTagged(hello, "Hello") ? { name: hello.name, frames: hello.frames } : hello,
+          ).toEqual({ name: "alice", frames: 1 })
+          expect(yield* quiet(connection)).toBe(true)
+          const [row] = yield* rows(room.ref)
+          expect(row?.frame_seq).toBe("1")
+
+          // The redelivered frame ran on an activation that took a newer generation still.
+          const test = yield* ActorTest
+
+          expect(BigInt((yield* test.inspect(room.ref)).generation!)).toBe(
+            BigInt(bumped[0]!.generation) + 1n,
+          )
+        }),
+      ),
+  },
+  {
+    name: "an intent, a timer, and an effect route each wake a parked actor on another runner, and its broadcast reaches the held connection",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.connections,
+        { runners: 3, holdersOnly: [0] },
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          const holder = cluster.on(0)
+          const id = "connections-woken"
+          const ref = (yield* holder(Room.get(id))).ref
+
+          const connection = yield* holder(
+            ActorTest.use((test) => test.connect(ref, Live, { name: "alice" })),
+          )
+
+          yield* next(connection)
+          const generation = holder(ActorTest.use((test) => test.inspect(ref)))
+
+          // Hibernates the actor on its owner, which is never the holder's runner.
+          const park = Effect.gen(function* () {
+            const owner = yield* cluster.owner(ref)
+            expect(owner === undefined || owner === 0).toBe(false)
+            yield* cluster.on(owner!)(ActorTest.use((test) => test.hibernate(ref)))
+
+            return BigInt((yield* generation).generation!)
+          })
+
+          const woken = Effect.fnUntraced(function* (text: string, parked: bigint) {
+            const [broadcast] = yield* next(connection)
+            expect(frameOf(broadcast)).toEqual(Said.make({ text }))
+            expect(BigInt((yield* generation).generation!) > parked).toBe(true)
+          })
+
+          // An intent another actor staged.
+          let parked = yield* park
+
+          yield* holder(
+            Room.get("connections-dispatcher").pipe(
+              Effect.flatMap((dispatcher) => dispatcher.Forward({ to: id, text: "by intent" })),
+            ),
+          )
+
+          yield* woken("by intent", parked)
+
+          // A timer the actor set for itself before it parked.
+          yield* holder(
+            Room.get(id).pipe(
+              Effect.flatMap((room) => room.Forward({ text: "by timer", afterMs: 30_000 })),
+            ),
+          )
+
+          parked = yield* park
+          expect(yield* quiet(connection)).toBe(true)
+          yield* holder(ActorTest.use((test) => test.advance("31 seconds")))
+          yield* woken("by timer", parked)
+
+          // An effect route: the executor succeeds only after the actor parked.
+          const executed = yield* Deferred.make<void>()
+          fixture.connections.echo = Deferred.await(executed)
+
+          yield* holder(Room.get(id).pipe(Effect.flatMap((room) => room.Shout("by effect route"))))
+
+          parked = yield* park
+          yield* Deferred.succeed(executed, undefined)
+          yield* woken("by effect route", parked).pipe(
+            Effect.ensuring(Effect.sync(() => (fixture.connections.echo = Effect.void))),
+          )
+        }),
+      ),
+  },
+  {
+    name: "an owner killed between a turn's commit and its broadcast flush resyncs from the open's cursor, and the resync handler delivers the lost event",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.connections,
+        { runners: 3, holdersOnly: [0] },
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          const holder = cluster.on(0)
+          const id = "connections-unflushed"
+
+          const post = (text: string) =>
+            holder(Room.get(id).pipe(Effect.flatMap((room) => room.Post(text))))
+
+          // An event before the connection opens, so its open cursor is not the beginning.
+          yield* post("earlier")
+          const ref = (yield* holder(Room.get(id))).ref
+
+          const connection = yield* holder(
+            ActorTest.use((test) => test.connect(ref, Live, { name: "alice" })),
+          )
+
+          yield* next(connection)
+          expect(BigInt(connection.cursor) > 0n).toBe(true)
+
+          const owner = (yield* cluster.owner(ref))!
+
+          const paused = yield* cluster.on(owner)(
+            ActorTest.use((test) => test.pauseNext("beforeFlush")),
+          )
+
+          yield* post("lost").pipe(Effect.ignore, Effect.forkChild({ startImmediately: true }))
+          yield* paused.reached
+          yield* cluster.kill(owner)
+
+          const [resync] = yield* next(connection)
+          expect(resync).toMatchObject(resyncFrom(connection.cursor))
+
+          // Acknowledged before the new owner answered, so the holder ignores it.
+          yield* connection.resyncDone
+
+          const replay = yield* throughReplayed(connection)
+          const replayed = replay.filter(isFrame)
+          expect(replayed.map(frameOf)).toEqual([Said.make({ text: "lost" })])
+          expect(BigInt(replayed[0]!.event!) > BigInt(connection.cursor)).toBe(true)
+
+          // The 30-second deadline started at ResyncReplayed, not at Resync.
+          yield* holder(ActorTest.use((test) => test.advance("27 seconds")))
+          expect(yield* quiet(connection)).toBe(true)
+          yield* holder(ActorTest.use((test) => test.advance("4 seconds")))
+          const { ended } = yield* untilEnd(connection)
+          expect(Schema.is(SessionEnded)(ended)).toBe(true)
+          expect(ended).toMatchObject({ cause: "OwnerLost", resync: true })
+        }),
+      ),
+  },
+  {
+    name: "a third owner loss within five minutes closes with OwnerLost and a retry hint, and a loss during a replay from the beginning keeps that cursor",
+    requiresIndependentConnections: true,
+    timeoutMs: 180_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.connections,
+        { runners: 4, holdersOnly: [0] },
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          const holder = cluster.on(0)
+          const id = "connections-crashloop"
+          const ref = (yield* holder(Room.get(id))).ref
+
+          const connection = yield* holder(
+            ActorTest.use((test) => test.connect(ref, Live, { name: "alice" })),
+          )
+
+          yield* next(connection)
+          expect(connection.cursor).toBe("0")
+
+          const killOwner = Effect.gen(function* () {
+            const owner = yield* cluster.owner(ref)
+            expect(owner === undefined || owner === 0).toBe(false)
+            yield* cluster.kill(owner!)
+            yield* cluster.ready
+          })
+
+          yield* killOwner
+          const first = yield* throughReplayed(connection)
+          expect(first[0]).toMatchObject(resyncFrom(undefined))
+          expect(first.filter(isFrame)).toEqual([])
+
+          // The new owner's broadcast moves the holder's watermark while the client has not acknowledged.
+          yield* holder(Room.get(id).pipe(Effect.flatMap((room) => room.Post("between"))))
+          yield* killOwner
+          const second = yield* throughReplayed(connection)
+          expect(second[0]).toMatchObject(resyncFrom(undefined))
+          expect(second.filter(isFrame).map(frameOf)).toEqual([Said.make({ text: "between" })])
+
+          yield* killOwner
+          const { seen, ended } = yield* untilEnd(connection)
+          expect(seen.filter((message) => Predicate.isTagged(message, "Resync"))).toEqual([])
+          expect(Schema.is(SessionEnded)(ended)).toBe(true)
+          expect(ended).toMatchObject({ cause: "OwnerLost", resync: true })
+          const retryAfterMs = (ended as SessionEnded).retryAfterMs ?? 0
+          expect(retryAfterMs >= 1_000 && retryAfterMs <= 5_000).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "an owner does not run a frame that reaches it past the session's authorization bound",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.connections,
+        { runners: 2, holdersOnly: [0] },
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          const holder = cluster.on(0)
+          const ref = (yield* holder(Room.get("connections-owner-clock"))).ref
+
+          const connection = yield* holder(
+            ActorTest.use((test) => test.connect(ref, Live, { name: "alice" })),
+          )
+
+          yield* next(connection)
+
+          // The owner's clock is past the bound the holder stamps on the frame.
+          yield* cluster.on(1)(ActorTest.use((test) => test.advance("61 seconds")))
+          yield* connection.send(Say.make({ text: "stale" }))
+          const { seen, ended } = yield* untilEnd(connection)
+          expect(seen).toEqual([])
+          expect(ended).toMatchObject({ cause: "ServerClosed", resync: false })
+          expect(yield* holder(posts(ref))).toBe(0)
         }),
       ),
   },

@@ -5,6 +5,7 @@ import {
   type Broadcast,
   type BusinessResult,
   type ConnectionLister,
+  type EmittedEvent,
   Outcome,
   type RegisteredCommand,
   type Request,
@@ -13,12 +14,12 @@ import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
-import { eventsStatements, notifyEvents } from "../events/append.ts"
+import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
-import { CallerJson, OutboxRuntime, outboxStatements } from "./outbox.ts"
+import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
   asSqlConnection,
   isInterrupted,
@@ -46,6 +47,14 @@ export const emptyActivationCache = (): ActivationCache => ({
   generation: undefined,
   state: undefined,
 })
+
+/** The events a turn committed: sequences `after + 1` onward, stamped `emittedAtMs`. */
+export interface CommittedEvents {
+  readonly after: string
+  readonly events: ReadonlyArray<EmittedEvent>
+  readonly commandId: string
+  readonly emittedAtMs: number
+}
 
 interface Admission {
   readonly now: string
@@ -112,11 +121,17 @@ interface Plan {
   readonly outcome: Outcome
   readonly generation: string
   readonly state: ReadonlyMap<string, string> | undefined
+  /** A workflow waits on an emitted class, so the relay should wake after commit. */
   readonly wake: boolean
   /** Broadcasts a committed success publishes to the actor's connections. */
   readonly broadcasts: ReadonlyArray<Broadcast>
   /** The actor's event sequence once this turn commits. */
   readonly head: string
+  /** The events this turn commits, without their stamp. */
+  readonly committed: Omit<CommittedEvents, "emittedAtMs">
+  /** Filled in as the commit group replies, so read only after it has. */
+  readonly outbox: OutboxReplies
+  readonly emitted: { atMs: number }
 }
 
 class RolledBack {
@@ -249,6 +264,9 @@ export const executeTurn = Effect.fnUntraced(function* (
         wake: false,
         broadcasts: [],
         head: admitted.head,
+        committed: { after: admitted.head, events: [], commandId: request.commandId },
+        outbox: { wake: false, cancelled: false },
+        emitted: { atMs: 0 },
       } satisfies Plan
     }
 
@@ -344,8 +362,14 @@ export const executeTurn = Effect.fnUntraced(function* (
         )
     }
 
+    const emitted = { atMs: 0 }
+
     if (result.events.length > 0)
-      writes.push(...(yield* eventsStatements(request, routingKey, result.events)))
+      writes.push(
+        Effect.map(yield* eventsStatement(request, routingKey, result.events), (atMs) => {
+          emitted.atMs = atMs
+        }),
+      )
 
     // Re-arming waiting workflows reads their steps, so it runs before the
     // commit group; only an actor with a workflow waiting on an emitted class
@@ -381,9 +405,12 @@ export const executeTurn = Effect.fnUntraced(function* (
       outcome: result.outcome,
       generation: current,
       state: next,
-      wake: outbox.dueNow || notified,
+      wake: notified,
       broadcasts: Outcome.guards.Success(result.outcome) ? (result.broadcasts ?? []) : [],
       head: String(BigInt(admitted.head) + BigInt(result.events.length)),
+      committed: { after: admitted.head, events: result.events, commandId: request.commandId },
+      outbox: outbox.replies,
+      emitted,
     } satisfies Plan
   })
 
@@ -430,9 +457,16 @@ export const executeTurn = Effect.fnUntraced(function* (
   cache.generation = done.generation
   cache.state = done.state
 
-  if (done.wake) yield* (yield* OutboxRuntime).wake
+  if (done.wake || done.outbox.wake) yield* (yield* OutboxRuntime).wake
 
-  return { outcome: done.outcome, broadcasts: done.broadcasts, head: done.head }
+  if (done.outbox.cancelled) yield* (yield* OutboxRuntime).cancelled
+
+  return {
+    outcome: done.outcome,
+    broadcasts: done.broadcasts,
+    head: done.head,
+    committed: { ...done.committed, emittedAtMs: done.emitted.atMs } satisfies CommittedEvents,
+  }
 })
 
 /**
