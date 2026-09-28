@@ -581,6 +581,47 @@ const sentFor = (id: string, count: number) =>
 
 export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "keeps an effect's progress in order when its first frames on an activation arrive together",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("racing")
+          const mine = yield* test.connect(studio.ref, Mine, undefined)
+          const job = yield* plan("racing", [10])
+          yield* studio.Render("racing")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          expect(progressOf(yield* nextOf(mine))?.seq).toBe(1)
+
+          const [sent] = (yield* test.progress).filter(
+            (record) => record.ref.id === "racing" && ProgressRecord.$is("Progress")(record),
+          )
+
+          if (sent === undefined || !ProgressRecord.$is("Progress")(sent))
+            return yield* Effect.die(new Error("No progress was sent"))
+
+          // A new activation gets a newer and an older frame at once; both run its effect check.
+          yield* test.hibernate(studio.ref)
+          yield* Effect.all(
+            [test.resendProgress({ ...sent, seq: 5 }), test.resendProgress({ ...sent, seq: 3 })],
+            { concurrency: "unbounded" },
+          )
+          yield* Effect.sleep("500 millis")
+
+          const seqs = (yield* quietFor(mine, "1 second")).flatMap((message) => {
+            const found = progressOf(message)
+
+            return found === undefined ? [] : [found.seq]
+          })
+
+          expect(seqs.at(-1)).toBe(5)
+          expect(seqs).toEqual(seqs.toSorted((a, b) => a - b))
+          yield* Deferred.succeed(job.finish, undefined)
+        }),
+      ),
+  },
+  {
     name: "drops progress after the cancelling commit",
     run: ({ expect, environment }) =>
       environment.run(
