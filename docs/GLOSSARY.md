@@ -28,7 +28,7 @@
 - **Event:** committed fact available for delivery or replay.
 - **Intent:** durable actor message, timer, workflow start, or effect obligation written to `actor_outbox` by a turn and delivered after commit.
 - **Outbox:** the actor-shard `actor_outbox` table that carries every intent; its relay delivers due rows as direct commands.
-- **Effect:** external I/O requested by `turn.perform`, persisted with the turn, and executed after commit by `X.toEffectLayer`; its result and dead letter reach the actor through declared `onSuccess` and `onDeadLetter` routes, and a cancelled keyed effect's outcome through `onCancelled` (target, ADR 0024).
+- **Effect:** external I/O requested by `turn.perform`, persisted with the turn, and executed after commit by `X.toEffectLayer`; its result and dead letter reach the actor through declared `onSuccess` and `onDeadLetter` routes, and a cancelled keyed effect's outcome through `onCancelled` (ADR 0024, M2.13).
 - **Internal command:** a command in the `internal` section, callable only by System callers.
 - **Workflow:** durable orchestration declared as an actor member with `Actor.workflow`.
 - **WorkflowRun:** handle returned by a workflow start, exposing identity, result, polling, and interruption.

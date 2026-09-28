@@ -61,7 +61,12 @@ import {
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
-import { connectionsConformance, connectionsLayer } from "./conformance/connections.ts"
+import {
+  connectionsConformance,
+  connectionsFixture,
+  type ConnectionsFixture,
+  connectionsLayer,
+} from "./conformance/connections.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import {
@@ -71,6 +76,14 @@ import {
   type OutboxFixture,
 } from "./conformance/outbox.ts"
 import { propertiesConformance, propertiesLayer } from "./conformance/properties.ts"
+import {
+  effectControlClusterConformance,
+  effectControlConformance,
+  effectControlEffects,
+  effectControlFixture,
+  effectControlLayer,
+  type EffectControlFixture,
+} from "./conformance/effect-control.ts"
 import {
   relayClusterConformance,
   relayConformance,
@@ -200,8 +213,10 @@ export interface ConformanceFixture {
   readonly progress: ProgressFixture
   readonly blobs: BlobsFixture
   readonly relay: RelayFixture
+  readonly effectControl: EffectControlFixture
   readonly retention: RetentionFixture
   readonly workflows: WorkflowsFixture
+  readonly connections: ConnectionsFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -325,8 +340,10 @@ const makeFixture = (): ConformanceFixture => ({
   progress: progressFixture(),
   blobs: blobsFixture(),
   relay: relayFixture(),
+  effectControl: effectControlFixture(),
   retention: retentionFixture(),
   workflows: workflowsFixture(),
+  connections: connectionsFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -339,10 +356,10 @@ const makeFixture = (): ConformanceFixture => ({
 
 /**
  * The shared durable-turn conformance cases. Cases flagged
- * `requiresIndependentConnections` need a real second database connection —
- * either to read committed state while a turn holds its transaction open, or
- * to take a competing row lock — and never run on single-connection backends
- * such as PGlite.
+ * `requiresIndependentConnections` need real Postgres: a second database
+ * connection to read committed state while a turn holds its transaction open
+ * or to take a competing row lock, or a database outside the JavaScript heap
+ * they measure. They never run on single-connection backends such as PGlite.
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
@@ -360,6 +377,8 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...multiRunnerConformance,
   ...relayConformance,
   ...relayClusterConformance,
+  ...effectControlConformance,
+  ...effectControlClusterConformance,
   ...singletonConformance,
   ...blobsConformance,
   ...inspectionViewsConformance,
@@ -1395,10 +1414,12 @@ export const describeConformance = (options: {
     inspectorLayer,
     relayLayer(fixture.relay),
     relayEffects(fixture.relay),
+    effectControlLayer,
+    effectControlEffects(fixture.effectControl),
     retentionLayer(fixture.retention),
     propertiesLayer,
     workflowsLive(fixture.workflows),
-    connectionsLayer,
+    connectionsLayer(fixture.connections),
     transportsLayer,
     mintLayer,
   )
