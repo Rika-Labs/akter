@@ -184,6 +184,7 @@ export const singletonFailover: Scenario = {
           errorKinds: {},
           latencyMs: summarize(pick("resumedMs")),
           statementsPerOperation: null,
+          roundTripsPerOperation: null,
           statements: null,
           activity: null,
           cpu: {
