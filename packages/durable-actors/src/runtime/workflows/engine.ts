@@ -1,15 +1,4 @@
-import {
-  Cause,
-  type Context,
-  Crypto,
-  Data,
-  Effect,
-  Exit,
-  Fiber,
-  Option,
-  Schema,
-  Scope,
-} from "effect"
+import { Cause, Context, Crypto, Data, Effect, Exit, Fiber, Option, Schema, Scope } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { Activity, Workflow as EffectWorkflow, WorkflowEngine } from "effect/unstable/workflow"
 import {
@@ -417,7 +406,14 @@ export const activationEngine = (options: {
     const sql = yield* SqlClient.SqlClient
     const crypto = yield* Crypto.Crypto
     const { retryWindowMs } = yield* OutboxRuntime
-    const services = yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>()
+    // Only these two: steps run inside the body's fiber, whose caller and
+    // tenant are the execution's recorded ones, not the activation's.
+
+    const services = Context.pick(
+      SqlClient.SqlClient,
+      Crypto.Crypto,
+    )(yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>())
+
     const ownerRow = owner(sql, routingKey, ref)
 
     const instanceWorkflows = new Map<string, EffectWorkflow.Any>()

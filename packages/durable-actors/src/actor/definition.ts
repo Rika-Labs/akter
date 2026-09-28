@@ -965,6 +965,18 @@ const make = <
         return yield* Effect.die(new Error("Actor call in a workflow body outside a step"))
     })
 
+    // An activity's calls carry the execution's recorded attribution and were
+    // admitted when it started, so, like relay delivery, they skip the
+    // external access and expiry checks: accepted work continues after its
+    // starting caller loses access.
+    const send = (request: Request) =>
+      Effect.gen(function* () {
+        if (CallPhase.$is("Activity")(yield* CurrentCallPhase))
+          return yield* internalActors.deliver(request)
+
+        return yield* internalActors.execute(request)
+      })
+
     const callId = (command: string) =>
       Effect.gen(function* () {
         const phase = yield* CurrentCallPhase
@@ -1041,7 +1053,7 @@ const make = <
                   if (member.key !== undefined) yield* checkKey(member.key(input))
                   const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-                  const outcome = yield* internalActors.execute(
+                  const outcome = yield* send(
                     Request.make({
                       ref,
                       caller,
@@ -1102,7 +1114,7 @@ const make = <
                     ? yield* internalActors.query(
                         Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
                       )
-                    : yield* internalActors.execute(
+                    : yield* send(
                         Request.make({
                           ref,
                           caller,
