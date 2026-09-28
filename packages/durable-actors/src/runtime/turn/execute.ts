@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Option, Result, Schema } from "effect"
+import { Cause, Crypto, Effect, Exit, Option, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
@@ -14,11 +14,12 @@ import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
+import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
-import { FrameworkClock } from "./admission.ts"
+import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
@@ -324,11 +325,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   statements: boolean,
   waited: ReadonlySet<string> = new Set(),
   connections?: ConnectionLister,
+  cron: ReadonlyArray<CronEntry> = [],
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
-  const { tenant, actor, id } = run.first[0]!.request.ref
+  const { ref } = run.first[0]!.request
+  const { tenant, actor, id } = ref
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
@@ -480,6 +483,18 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         keepReceiptsMs: policy.keepReceiptsMs,
         deliveryMs: policy.deliveryMs,
         retryWindowMs,
+      })
+
+      // The first batch a generation commits schedules every entry not yet
+      // ticking, from the database clock after its handlers ran, so a first
+      // tick is never due before the batch that writes it.
+      const ticks = Effect.gen(function* () {
+        if (!cold || cron.length === 0) return []
+
+        const now = yield* databaseTime
+        const services = yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>()
+
+        return [writeTicks(routingKey, ref, cron, now).pipe(Effect.provideContext(services))]
       })
 
       const settled: Array<Settled> = Array.from({ length: batch.length })
@@ -841,6 +856,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
       if (receipts.length > 0)
         writes.push(Effect.asVoid(sql`INSERT INTO actor_receipts ${sql.insert(receipts)}`))
+
+      writes.push(...(yield* ticks))
 
       return {
         writes,

@@ -10,6 +10,7 @@ import type { ConnectionCommands } from "../identity/command.ts"
 import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
+import type { CronEntry } from "../runtime/cron/schedule.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
 import type { StagedOutbox } from "./intents.ts"
 import type { AnyBlob } from "../members/blob.ts"
@@ -365,6 +366,8 @@ export interface Registration {
   readonly feeds: ReadonlySet<string>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
+  /** `policy.cron` entries; each is one keyed tick row per actor. */
+  readonly cron: ReadonlyArray<CronEntry>
   /** The subscriptions this actor type declares, as its subscriber. */
   readonly subscriptions: ReadonlyArray<RegisteredSubscription>
   /** `policy.subscribers` of this actor type as a source; undefined allows every type. */

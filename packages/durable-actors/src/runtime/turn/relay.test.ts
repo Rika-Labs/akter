@@ -21,6 +21,7 @@ const settings: RelaySettings = {
   maxBackoffMs: 256_000,
   executorConcurrency: 64,
   executorLeaseMs: 60_000,
+  retryWindowMs: 86_400_000,
 }
 
 // Every row is due at epoch 0 and belongs to one sender, so one bucket holds the backlog.
