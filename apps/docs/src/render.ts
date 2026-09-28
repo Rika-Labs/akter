@@ -140,14 +140,13 @@ export const renderMarkdownCopy = (input: {
   readonly published: ReadonlySet<string>
 }) =>
   Effect.gen(function* () {
-    const targets = yield* rewrites(
-      input.page,
-      linkHrefs(input.page.markdown),
-      "md",
-      input.published,
-    )
+    // Fence and reference-definition matching is line based, so CRLF sources
+    // are read as LF; the copy is written with LF endings.
+    const source = input.page.markdown.replaceAll("\r\n", "\n")
 
-    return outsideFences(input.page.markdown, (prose) => {
+    const targets = yield* rewrites(input.page, linkHrefs(source), "md", input.published)
+
+    return outsideFences(source, (prose) => {
       let text = prose
 
       for (const [href, target] of targets) {
