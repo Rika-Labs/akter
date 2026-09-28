@@ -143,6 +143,26 @@ Actors.layer({
 - Cron expressions are parsed with `Cron.parse` (five or six fields) and evaluated in UTC against the database clock; the timer key spells the parsed schedule canonically (sorted value lists, `*` for a full field, seconds only when not `0`), so `"0  8 * * 1-5"` and `"0 8 * * 1,2,3,4,5"` are one key, `$cron:0 8 * * 1,2,3,4,5`, and a deployment that respells a schedule keeps its row. `Actor.make` rejects an unparsable expression, two equivalent schedules (such as `1-5` and `1,2,3,4,5`), a target that is not a command of the actor or takes input, and an invalid `cronSkipIfOlderThan`. A cron tick's caller is `System({ source: "cron", ref })`, so a target may be an `internal` command that handles, HTTP, and the Promise client cannot call. On a singleton, cron runs in the default tenant only.
 - **Changed from M1:** `Intent.key` values starting with `$`, `$cron:` among them, are reserved: `Intent.key` throws and `Intent.cancel` dies with `Intent.key values starting with $ are reserved`. A pending intent staged earlier under a key an entry now uses loses its key when the entry's tick is written, then fires once as an ordinary intent.
 
+### Cron time zones and intervals
+
+Target API from [ADR 0042](../decisions/0042-cron-time-zones-intervals-and-daylight-saving.md) (accepted; M2.5 follow-up to [#132](https://github.com/Rika-Labs/durable-actors/pull/132)). It amends the UTC-only expressions and `$cron:<expression>` keys above.
+
+```ts
+policy: {
+  cron: {
+    "0 8 * * *": Digest, // UTC, key $cron:UTC 0 8 * * *
+    "CRON_TZ=America/New_York 0 8 * * 1-5": OpenDesk, // key $cron:America/New_York 0 8 * * 1,2,3,4,5
+    "CRON_TZ=Europe/London 0 8 * * 1-5": OpenLondonDesk, // same expression, another zone, another entry
+    "@every 90 minutes": Reconcile, // key $cron:@every 5400000ms
+  },
+}
+```
+
+- `CRON_TZ=<zone>` takes an IANA zone name the runtime knows; the key keeps the name as declared, so aliases such as `US/Eastern` and `America/New_York` are separate entries. Without the prefix the zone is `UTC`. `Actor.make` rejects an unknown zone or a fixed offset.
+- `@every <duration>` takes a `Duration.Input` string of whole milliseconds, at least 1 second, and fires at every multiple of it since the Unix epoch, so `@every 1 day` fires at 00:00 UTC. `Actor.make` rejects a zone prefix on an interval.
+- Daylight saving: a wall-clock time a spring-forward gap skips fires once at the first instant after the gap (`CRON_TZ=America/New_York 30 2 * * *` fires at 03:00 EDT on 2027-03-14), and a wall-clock time a fall-back transition repeats fires once, at its first occurrence (`30 1 * * *` in that zone fires at 01:30 EDT on 2026-11-01, not again at 01:30 EST).
+- After downtime a pending zoned or interval tick fires once inside `cronSkipIfOlderThan` and is skipped outside it, and the next tick is the first scheduled time after now.
+
 ### Effect cancellation and caps
 
 Implemented in M2.13 (migration `0015_effect_control`) with the accepted defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md). `perActor` is validated at `Actor.make`, and `executors.cancelCheck` at `Actors.layer` (at least 1 second; above `lease / 3` it is lowered to `lease / 3`).
