@@ -7,6 +7,7 @@ import {
   InvalidCommandId,
   InvalidInput,
   type Reason,
+  SessionEnded,
   Timeout,
   Unauthorized,
 } from "../errors/actor.ts"
@@ -29,6 +30,7 @@ const reasonSchemas = {
   MailboxFull: Schema.TaggedStruct("MailboxFull", {}),
   RunnerAtCapacity: Schema.TaggedStruct("RunnerAtCapacity", {}),
   InvalidInput: Schema.TaggedStruct("InvalidInput", InvalidInput.fields),
+  SessionEnded: Schema.TaggedStruct("SessionEnded", SessionEnded.fields),
 } as const
 
 export type WireTag = keyof typeof reasonSchemas
@@ -89,6 +91,39 @@ export const statusOf = (reason: Reason): number =>
       TransportError: () => 502,
       // Only connection sessions end this way; no served command or query returns it.
       SessionEnded: () => 410,
+    }),
+  )
+
+/** The close code a WebSocket session ends with; the `end` message before it is authoritative. */
+export const closeCodeOf = (reason: Reason): number =>
+  Match.value(reason).pipe(
+    Match.tagsExhaustive({
+      ActorUnavailable: () => 1013,
+      RunnerAtCapacity: () => 1013,
+      NotCreated: () => 4404,
+      Unauthorized: (unauthorized) =>
+        unauthorized.code === "reauthorization_unavailable" ? 1013 : 1008,
+      InvalidInput: () => 4400,
+      SessionEnded: (session) => {
+        switch (session.cause) {
+          case "ClientClosed":
+          case "ServerClosed":
+          case "Terminated":
+            return 1000
+          case "HolderShutdown":
+            return 1012
+          case "Defect":
+            return 1011
+          default:
+            return 1013
+        }
+      },
+      CommandConflict: () => 1011,
+      CommandExpired: () => 1011,
+      InvalidCommandId: () => 1011,
+      Timeout: () => 1011,
+      MailboxFull: () => 1011,
+      TransportError: () => 1011,
     }),
   )
 

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@durable-actors/core": "workspace:*",
+    "@durable-actors/orders": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@electric-sql/pglite": "0.5.8",
     "drizzle-orm": "catalog:",
