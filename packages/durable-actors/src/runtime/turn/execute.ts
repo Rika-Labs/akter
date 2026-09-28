@@ -254,6 +254,8 @@ export interface Done {
   readonly head: string
   /** Each command's committed events, stamped, in delivery order. */
   readonly committed: ReadonlyArray<CommittedEvents>
+  /** Started effects the batch's commands cancelled. */
+  readonly cancelledEffects: ReadonlyArray<string>
 }
 
 /**
@@ -842,6 +844,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         ...entry,
         emittedAtMs: plan.emitted[index]!.emittedAtMs,
       })),
+      cancelledEffects: plan.outbox.flatMap((replies) => replies.cancelledIds),
     })
 
     answering = false

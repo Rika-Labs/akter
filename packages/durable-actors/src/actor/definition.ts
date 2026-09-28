@@ -22,6 +22,7 @@ import {
   type CommandContext,
   type EventEntry,
   InsideTurn,
+  type ProgressEntry,
   InStream,
   type Mintable,
   outsideTurn,
@@ -668,6 +669,18 @@ const make = <
     ),
   )
 
+  // Effects some member receives executor progress of; each must be declared with a progress schema.
+  const progressEffects = new Set<string>()
+
+  for (const member of [...connectionMembers, ...streamMembers])
+    for (const declared of member.progress?.effects ?? []) {
+      if (effects.get(declared.tag) !== declared || declared.progress === undefined)
+        throw new Error(
+          `${member.tag} lists progress of ${declared.tag}, which is not a declared effect with a progress schema`,
+        )
+      progressEffects.add(declared.tag)
+    }
+
   const effectPolicies: Readonly<Record<string, EffectPolicy<AnyEffect, AnyCommand> | undefined>> =
     definition.policy?.effects ?? {}
 
@@ -1003,9 +1016,24 @@ const make = <
       decode: workflowExits.get(member.tag)!.decode,
     })
 
-  class Read extends Context.Service<Read, QueryContext<State, Event, Owned, Blobs>>()(
-    `durable-actors/Read/${name}`,
-  ) {}
+  class Read extends Context.Service<
+    Read,
+    QueryContext<State, Event, Owned, Blobs, Effects[number]>
+  >()(`durable-actors/Read/${name}`) {}
+
+  const progressCodecs = new Map(
+    [...progressEffects].map((tag) => {
+      const declared = effects.get(tag)!
+
+      return [
+        tag,
+        {
+          effect: Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(declared))),
+          frame: Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(declared.progress!))),
+        },
+      ] as const
+    }),
+  )
 
   const entryOf = <E extends Event>(event: E, stored: StoredEvent) =>
     Effect.map(
@@ -1363,6 +1391,13 @@ const make = <
 
     return {
       stampCursor: member.stampCursor,
+      progress:
+        member.progress === undefined
+          ? undefined
+          : {
+              effects: new Set(member.progress.effects.map((effect) => effect.tag)),
+              to: member.progress.to,
+            },
       hasResync: entry.resync !== undefined,
       run: Effect.fnUntraced(function* (input, phase) {
         let open = true
@@ -1553,6 +1588,7 @@ const make = <
     const { decodeInput, encodeOutput, isError, encodeError } = codecs.get(member.tag)!
 
     return {
+      progress: new Set(member.progress?.effects.map((effect) => effect.tag) ?? []),
       run: (payload: string, input: StreamInput) =>
         Stream.unwrap(
           Effect.gen(function* () {
@@ -1582,7 +1618,7 @@ const make = <
               false,
             )
 
-            const context: QueryContext<State, Event, Owned, Blobs> = {
+            const context: QueryContext<State, Event, Owned, Blobs, Effects[number]> = {
               id: input.ref.id,
               ref: input.ref,
               caller: input.caller,
@@ -1602,6 +1638,33 @@ const make = <
                   : input
                       .follow(event.identifier, options?.after)
                       .pipe(Stream.mapEffect((stored) => entryOf(event, stored))),
+              progress: <E extends Extract<Effects[number], ProgressEffect>>(
+                effect: E,
+                options?: { readonly effectId?: string | undefined },
+              ) => {
+                const codecs = progressCodecs.get(effect.tag)
+
+                if (codecs === undefined || member.progress?.effects.includes(effect) !== true)
+                  return Stream.die(
+                    new Error(`Stream ${member.tag} does not list progress of ${effect.tag}`),
+                  )
+
+                return input.progress(effect.tag, options?.effectId).pipe(
+                  Stream.mapEffect((stored) =>
+                    Effect.gen(function* () {
+                      const entry: ProgressEntry<E> = {
+                        effectId: stored.effectId,
+                        effect: (yield* codecs.effect(stored.effect)) as E["Type"],
+                        attempt: stored.attempt,
+                        seq: stored.seq,
+                        frame: (yield* codecs.frame(stored.frame)) as ProgressOf<E>,
+                      }
+
+                      return entry
+                    }).pipe(Effect.orDie),
+                  ),
+                )
+              },
             }
 
             const { value } = yield* decodeInput(payload).pipe(Effect.orDie)
@@ -2279,7 +2342,7 @@ const make = <
               false,
             )
 
-            const context: QueryContext<State, Event, Owned, Blobs> = {
+            const context: QueryContext<State, Event, Owned, Blobs, Effects[number]> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -2292,6 +2355,8 @@ const make = <
               blob,
               follow: () =>
                 Stream.die(new Error("read.follow is only available in stream handlers")),
+              progress: () =>
+                Stream.die(new Error("Progress is only available in stream handlers")),
             }
 
             return yield* Effect.gen(function* () {
@@ -2545,6 +2610,7 @@ const make = <
 
       yield* actors.registerEffects({
         name,
+        progress: progressEffects,
         services: services as Context.Context<never>,
         effects: registered,
       })
