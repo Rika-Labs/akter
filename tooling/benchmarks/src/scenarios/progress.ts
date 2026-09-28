@@ -3,7 +3,7 @@ import { ActorTest } from "@durable-actors/core/testing"
 import { Effect, Layer, Queue, Stream } from "effect"
 import type { Instruments } from "../backend.ts"
 import { load } from "../measure.ts"
-import { Plain, ProgressProbe, ProgressProbeLive, QuietProbe, Watch } from "../probe/progress.ts"
+import { Plain, ProgressProbe, ProgressProbeLive, QuietProbe, Watch } from "../probe/connections.ts"
 import {
   type CaseResult,
   DEFAULT_POOL,
