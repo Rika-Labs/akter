@@ -16,6 +16,7 @@ import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { blobs } from "./scenarios/storage/blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { connections } from "./scenarios/connections.ts"
+import { progress } from "./scenarios/progress.ts"
 import { effectConcurrency } from "./scenarios/effect-concurrency.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
@@ -68,6 +69,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   subscriptions,
   workflows,
   connections,
+  progress,
   workflowCheck,
   mint,
   cron,
@@ -102,7 +104,8 @@ const describeCase = (scenario: string, result: CaseResult) => {
   const latency = result.latencyMs
 
   const statements =
-    result.statementsPerOperation === null ? "" : ` stmts/op=${result.statementsPerOperation}`
+    (result.statementsPerOperation === null ? "" : ` stmts/op=${result.statementsPerOperation}`) +
+    (result.roundTripsPerOperation === null ? "" : ` rt/op=${result.roundTripsPerOperation}`)
 
   const cpu =
     result.cpu.clientMsPerOperation === null ? "" : ` cpu/op=${result.cpu.clientMsPerOperation} ms`

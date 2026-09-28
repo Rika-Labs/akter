@@ -8,6 +8,7 @@ import {
   Fiber,
   Layer,
   ManagedRuntime,
+  Option,
   Schedule,
   Schema,
   Scope,
@@ -16,6 +17,7 @@ import type { HttpServer } from "effect/unstable/http"
 import { SqlClient, Statement } from "effect/unstable/sql"
 import { Actor, Actors, CurrentCaller, User } from "../index.ts"
 import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
+import { principal } from "../identity/caller.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 import type { InternalActors } from "../handles/actors.ts"
@@ -61,12 +63,14 @@ import {
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
+import { pipelineConformance } from "./conformance/pipeline.ts"
 import {
   connectionsConformance,
   connectionsFixture,
   type ConnectionsFixture,
   connectionsLayer,
 } from "./conformance/connections.ts"
+import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
@@ -102,11 +106,22 @@ import {
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
 import {
+  progressDeliveryConformance,
+  studioLayer,
   progressConformance,
   progressFixture,
   progressLayer,
   type ProgressFixture,
 } from "./conformance/progress.ts"
+import {
+  subscriptionsClusterConformance,
+  subscriptionsConformance,
+  subscriptionsRetentionConformance,
+  subscriptionsFixture,
+  subscriptionsLayer,
+  type SubscriptionsFixture,
+} from "./conformance/subscriptions.ts"
+import { TurnHooks } from "../runtime/turn/hooks.ts"
 import {
   workflowsConformance,
   workflowsFixture,
@@ -217,6 +232,7 @@ export interface ConformanceFixture {
   readonly effectControl: EffectControlFixture
   readonly retention: RetentionFixture
   readonly workflows: WorkflowsFixture
+  readonly subscriptions: SubscriptionsFixture
   readonly connections: ConnectionsFixture
   executions: number
   queries: number
@@ -227,6 +243,8 @@ export interface ConformanceFixture {
   allowed: boolean
   /** Commands the test authorization refuses while `allowed` holds. */
   readonly denied: Set<string>
+  /** Principals that lost access: refused as callers and as `onBehalfOf`, as an application would. */
+  readonly revoked: Set<string>
 }
 
 export interface ConformanceContext {
@@ -344,6 +362,7 @@ const makeFixture = (): ConformanceFixture => ({
   effectControl: effectControlFixture(),
   retention: retentionFixture(),
   workflows: workflowsFixture(),
+  subscriptions: subscriptionsFixture(),
   connections: connectionsFixture(),
   executions: 0,
   queries: 0,
@@ -353,6 +372,7 @@ const makeFixture = (): ConformanceFixture => ({
   duringQuery: Effect.void,
   allowed: true,
   denied: new Set(),
+  revoked: new Set(),
 })
 
 /**
@@ -376,6 +396,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...effectsConformance,
   ...progressConformance,
   ...multiRunnerConformance,
+  ...pipelineConformance,
   ...relayConformance,
   ...relayClusterConformance,
   ...effectControlConformance,
@@ -389,8 +410,13 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...retentionConformance,
   ...workflowsConformance,
   ...connectionsConformance,
+  ...streamsConformance,
+  ...progressDeliveryConformance,
   ...transportsConformance,
   ...workflowVersionsConformance,
+  ...subscriptionsConformance,
+  ...subscriptionsRetentionConformance,
+  ...subscriptionsClusterConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1423,8 +1449,11 @@ export const describeConformance = (options: {
     propertiesLayer,
     workflowsLive(fixture.workflows),
     connectionsLayer(fixture.connections),
+    streamsLayer,
+    studioLayer,
     transportsLayer,
     mintLayer,
+    subscriptionsLayer(fixture.subscriptions),
   )
 
   let store: ConformanceStore | undefined
@@ -1450,9 +1479,25 @@ export const describeConformance = (options: {
               database,
               as: User.make({ subject: "alice" }),
               authorize: (request) =>
-                Effect.sync(() => fixture.allowed && !fixture.denied.has(request.command)),
+                Effect.sync(
+                  () =>
+                    fixture.allowed &&
+                    !fixture.denied.has(request.command) &&
+                    Option.match(principal(request.caller), {
+                      onNone: () => true,
+                      onSome: ({ subject }) => !fixture.revoked.has(subject),
+                    }),
+                ),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
-            }),
+            }).pipe(
+              // Subscription cases fault particular deliveries by command.
+              Layer.provide(
+                Layer.succeed(TurnHooks, {
+                  at: (point, request) =>
+                    Effect.suspend(() => fixture.subscriptions.hook(point, request)),
+                }),
+              ),
+            ),
           ),
           Layer.provideMerge(backend.services),
           Layer.provide(defectRecorder(fixture.foundation)),

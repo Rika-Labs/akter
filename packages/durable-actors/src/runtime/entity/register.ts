@@ -9,6 +9,7 @@ import {
   Schedule,
   Schema,
   Scope,
+  Stream,
 } from "effect"
 import {
   ClusterSchema,
@@ -26,7 +27,8 @@ import { bootstrapTicks } from "../cron/schedule.ts"
 import { routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { executeTurn } from "../turn/execute.ts"
-import { activationOwner } from "../connections/owner.ts"
+import { activationOwner, type Authorize } from "../connections/owner.ts"
+import { FrameworkClock } from "../turn/admission.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
@@ -112,9 +114,16 @@ export const connectionEntity = (name: string) => {
 export const registerActor = Effect.fnUntraced(function* (
   registration: Registration,
   transport: Transport,
+  authorize: Authorize,
 ) {
   const sharding = yield* Sharding.Sharding
-  const owner = activationOwner({ registration, transport })
+
+  const owner = activationOwner({
+    registration,
+    transport,
+    authorize,
+    clock: yield* FrameworkClock,
+  })
 
   const ownedOf = (entityId: string) =>
     Effect.flatMap(Effect.orDie(decodeEntityId(entityId)), ([tenant, id]) => {
@@ -264,12 +273,23 @@ export const registerActor = Effect.fnUntraced(function* (
               owned.key,
               registration.policy,
               registration.mintable,
+              registration.tables.length > 0 || registration.blobs.length > 0,
               waited,
               owner.hasConnections ? owner.list(owned) : undefined,
               registration.cron,
             )
 
-            if (owner.hasConnections) {
+            // A route turn's command id is its effect id: its progress stops before the route's broadcasts.
+            if (owner.hasProgress && !Outcome.guards.Defect(done.outcome)) {
+              yield* owner.closeProgress(owned, payload.commandId)
+
+              // A turn that cancelled a running effect stops its progress before its own broadcasts.
+              for (const effectId of done.cancelledEffects)
+                yield* owner.closeProgress(owned, effectId)
+            }
+
+            // Stream followers wake when a commit advances the activation's head.
+            if (owner.hasConnections || owner.hasStreams) {
               yield* (yield* TurnHooks).at("beforeFlush", payload)
               yield* owner.flush(
                 owned,
@@ -360,14 +380,23 @@ export const registerActor = Effect.fnUntraced(function* (
 
   yield* register
 
-  if (owner.hasConnections)
+  if (owner.hasConnections || owner.hasStreams)
     yield* sharding.registerEntity(
       connections,
       Effect.gen(function* () {
         const { entityId } = yield* Entity.CurrentAddress
         const owned = yield* ownedOf(entityId)
 
+        // A move, shutdown, or eviction ends the activation, and its streams with it.
+        yield* Effect.addFinalizer(() => owner.endStreams(owned))
+
         return connections.of({
+          Progress: ({ payload }) =>
+            owner.progress(owned, payload).pipe(Effect.provideContext(connectionServices)),
+          ProgressClosed: ({ payload }) =>
+            owner.progressClosed(owned, payload).pipe(Effect.provideContext(connectionServices)),
+          Subscribe: ({ payload }) =>
+            owner.subscribe(owned, payload).pipe(Stream.provideContext(connectionServices)),
           Open: ({ payload }) =>
             owner.open(owned, payload).pipe(Effect.provideContext(connectionServices)),
           Frame: ({ payload }) =>
@@ -380,6 +409,8 @@ export const registerActor = Effect.fnUntraced(function* (
       }),
       { concurrency: "unbounded", maxIdleTime: registration.policy.idleMs },
     )
+
+  if (owner.hasStreams) yield* owner.watchStreams.pipe(Effect.forkScoped)
 
   // Every runner serves the singleton's entity, so its shard lock and the
   // generation fence keep each tenant's instance to one activation. One

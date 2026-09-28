@@ -2,15 +2,19 @@ import { PgClient, PgTypes } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
 import {
   Cause,
+  Clock,
   Context,
   Crypto,
+  Deferred,
   Duration,
   Effect,
   Fiber,
   Layer,
   Option,
   Result,
+  Schedule,
   Schema,
+  Stream,
 } from "effect"
 import {
   ClusterError,
@@ -32,6 +36,7 @@ import {
   Timeout,
   MailboxFull,
   RunnerAtCapacity,
+  SessionEnded,
 } from "../errors/actor.ts"
 import {
   Actors,
@@ -57,17 +62,26 @@ import {
 } from "./entity/register.ts"
 import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
+import { StreamFailed, StreamItem } from "./connections/protocol.ts"
+import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
 import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER } from "./connections/protocol.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
-import { OutboxRuntime } from "./turn/outbox.ts"
+import { OutboxRuntime, textArray } from "./turn/outbox.ts"
+import { turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
+import {
+  type LocalSubscription,
+  type SubscriptionRelay,
+  subscriptionRelay,
+} from "./subscriptions/relay.ts"
+import type { Placement } from "./storage/codec.ts"
 import { sweep } from "./storage/retention.ts"
 import { acceptWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
-import { decodeResult } from "./workflows/engine.ts"
+import { decodeResult, RECOVERY_MS } from "./workflows/engine.ts"
 import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
@@ -115,8 +129,16 @@ export interface Options {
      * plus 5 seconds.
      */
     readonly claimLease?: Duration.Input
-    /** Cap on intent redelivery backoff. Default 256 seconds. */
+    /** Cap on intent and subscription redelivery backoff. Default 256 seconds. */
     readonly maxBackoff?: Duration.Input
+    /**
+     * Subscription deliveries in flight at once, separate from intent
+     * slots; feed expansions and control registrations each get as many.
+     * Default 16.
+     */
+    readonly subscriptionConcurrency?: number
+    /** Matching events one claimed subscription row delivers before it settles. Default 16. */
+    readonly subscriptionBatch?: number
   }
   /** The effect executor pool of this runner. */
   readonly executors?: {
@@ -174,6 +196,18 @@ export class RunnerWiring extends Context.Service<
   }
 >()("@durable-actors/core/runtime/layer/RunnerWiring") {}
 
+/** How long registering a source waits for the subscriber types routing from it to register. */
+const ROUTED_SUBSCRIBER_WAIT_MS = 5000
+
+/** How often a subscriber checks that a stream's owner on another runner is alive. */
+const OWNER_CHECK_INTERVAL = "1 second"
+
+const activationEnded = () =>
+  ActorError.make({ reason: SessionEnded.make({ cause: "ActivationEnded", resync: false }) })
+
+/** How long a progress send may take before it is given up as a lost frame. */
+const PROGRESS_SEND_TIMEOUT = "5 seconds"
+
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
 
@@ -213,6 +247,9 @@ export const layer = (options: Options) => {
     retryWindowMs,
     cancelCheckMs,
   }
+
+  const subscriptionConcurrency = Count.make(options.relay?.subscriptionConcurrency ?? 16)
+  const subscriptionBatch = Count.make(options.relay?.subscriptionBatch ?? 16)
 
   const runtime = Layer.effectContext(
     Effect.gen(function* () {
@@ -324,7 +361,7 @@ export const layer = (options: Options) => {
 
       const allow = Effect.fnUntraced(function* (
         request: Request,
-        kind: "command" | "query" = "command",
+        kind: "command" | "query" | "stream" = "command",
       ) {
         if (!(yield* options.authorize({ ...(yield* authorizedAs(request)), kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
@@ -361,6 +398,66 @@ export const layer = (options: Options) => {
 
       const entityId = (ref: ActorRef) => encodeEntityId([ref.tenant, ref.id]).pipe(Effect.orDie)
 
+      // Records this type's routed declarations for every runner of the
+      // deployment, and drops the ones it no longer declares.
+      const recordRouted = Effect.fnUntraced(function* (registration: Registration) {
+        const sql = yield* SqlClient.SqlClient
+
+        const routed = registration.subscriptions.filter(
+          (declared) => declared.routed !== undefined,
+        )
+
+        for (const declared of routed)
+          yield* sql`INSERT INTO actor_routed_subscriptions (source_type, subscriber_type, subscription)
+            VALUES (${declared.sourceType}, ${registration.name}, ${declared.tag})
+            ON CONFLICT DO NOTHING`
+
+        yield* sql`DELETE FROM actor_routed_subscriptions
+          WHERE subscriber_type = ${registration.name}
+            AND NOT (source_type, subscription) IN (
+              SELECT * FROM unnest(${textArray({ sql, values: routed.map((declared) => declared.sourceType) })},
+                ${textArray({ sql, values: routed.map((declared) => declared.tag) })}))`
+      })
+
+      /**
+       * A publishing turn creates a routed subscription's source-side rows
+       * only from the routed declarations its runner registers, so a runner
+       * that serves a source without a subscriber type routing from it would
+       * lose those events silently. Registering the source fails instead.
+       * Layers of one runtime register concurrently, so the subscriber gets
+       * a short window to register first.
+       */
+      const requireRoutedSubscribers = Effect.fnUntraced(function* (sourceType: string) {
+        const sql = yield* SqlClient.SqlClient
+
+        const missing = Effect.map(
+          sql<{ subscriber_type: string; subscription: string }>`
+            SELECT subscriber_type, subscription FROM actor_routed_subscriptions
+            WHERE source_type = ${sourceType}`,
+          (rows) =>
+            rows.filter(
+              (row) =>
+                row.subscriber_type !== sourceType && !registrations.has(row.subscriber_type),
+            ),
+        )
+
+        for (let waited = 0; waited < ROUTED_SUBSCRIBER_WAIT_MS; waited += 100) {
+          if ((yield* missing).length === 0) return
+          yield* Effect.sleep("100 millis")
+        }
+
+        const unregistered = yield* missing
+
+        if (unregistered.length > 0)
+          return yield* Effect.die(
+            new Error(
+              `Actor ${sourceType} is registered without the subscriber types that route from it (${unregistered
+                .map((row) => `${row.subscriber_type}.${row.subscription}`)
+                .join(", ")}); register their layers on every runner that serves ${sourceType}`,
+            ),
+          )
+      })
+
       const publicActors = Actors.of({
         mintCommandId: Effect.gen(function* () {
           const now = yield* databaseTime
@@ -389,8 +486,14 @@ export const layer = (options: Options) => {
 
           return yield* Effect.gen(function* () {
             // Only the relay presents a mint proof, as the delivery of the
-            // parent's committed creating intent.
-            if (external && Schema.is(System)(request.caller) && request.caller.mint !== undefined)
+            // parent's committed creating intent, and only the relay delivers
+            // a subscription, with its envelope.
+            if (
+              external &&
+              (request.delivery !== undefined ||
+                (Schema.is(System)(request.caller) &&
+                  (request.caller.mint !== undefined || request.caller.source === "subscription")))
+            )
               return yield* ActorError.make({
                 reason: Unauthorized.make({ code: "access_denied" }),
               })
@@ -518,6 +621,116 @@ export const layer = (options: Options) => {
         return longest === 0 ? DEFAULT_CLAIM_LEASE_MS : longest + CLAIM_MARGIN_MS
       }
 
+      // Executor progress goes to the performing actor's connection entity,
+      // fire-and-forget: no retry, no acknowledgment, and a lost message is a
+      // lost frame. Actor types with no member that receives an effect's
+      // progress get no messages at all.
+      const progressTap = yield* ProgressTap
+      const utf8Decoder = new TextDecoder()
+
+      const ownerOf = (ref: ActorRef) =>
+        Effect.gen(function* () {
+          const make = yield* sharding.makeClient(connectionEntity(ref.actor))
+
+          return make(yield* entityId(ref))
+        })
+
+      const fireAndForget = <E>(send: Effect.Effect<void, E>) =>
+        send.pipe(Effect.timeout(PROGRESS_SEND_TIMEOUT), Effect.ignoreCause, Effect.forkIn(scope))
+
+      // Each effect's last frame still on its way, so its close never overtakes it.
+      const inflight = new Map<string, Fiber.Fiber<void>>()
+
+      // Sends one progress message to its owner as the pool does, past the tap.
+      const deliverProgress = (message: ProgressMessage) =>
+        Effect.flatMap(ownerOf(message.ref), (client) =>
+          client.Progress(
+            { ...message, frame: utf8Decoder.decode(message.frame) },
+            { discard: true },
+          ),
+        )
+
+      const progressSink = ProgressSink.of({
+        wants: (actor, effect) => effectRegistrations.get(actor)?.progress.has(effect) === true,
+        send: (message) =>
+          Effect.flatMap(progressTap.send(message), (deliver) =>
+            deliver
+              ? fireAndForget(deliverProgress(message)).pipe(
+                  Effect.flatMap((fiber) =>
+                    Effect.sync(() => {
+                      inflight.set(message.effectId, fiber)
+                      fiber.addObserver(() => {
+                        if (inflight.get(message.effectId) === fiber)
+                          inflight.delete(message.effectId)
+                      })
+                    }),
+                  ),
+                )
+              : Effect.void,
+          ),
+        closed: (message) =>
+          Effect.flatMap(progressTap.closed(message), (deliver) =>
+            deliver
+              ? fireAndForget(
+                  Effect.suspend(() => {
+                    const last = inflight.get(message.effectId)
+
+                    return last === undefined ? Effect.void : Fiber.await(last)
+                  }).pipe(
+                    Effect.andThen(ownerOf(message.ref)),
+                    Effect.flatMap((client) => client.ProgressClosed(message, { discard: true })),
+                  ),
+                ).pipe(Effect.asVoid)
+              : Effect.void,
+          ),
+      })
+
+      // Every subscription this runner registers, by subscriber type.
+      const localSubscriptions = (): ReadonlyArray<LocalSubscription> =>
+        [...registrations.values()].flatMap((registration) =>
+          registration.subscriptions.map((subscription) => ({
+            subscriberType: registration.name,
+            subscription,
+          })),
+        )
+
+      const placements = new Map<string, Placement>()
+
+      // A source may be registered only on other runners; its recorded
+      // placement is fixed once written, so it is cached.
+      const placementOf = (actorType: string) =>
+        Effect.gen(function* () {
+          const known =
+            registrations.get(actorType)?.placement ??
+            queryRegistrations.get(actorType)?.placement ??
+            placements.get(actorType)
+
+          if (known !== undefined) return known
+
+          const sql = yield* SqlClient.SqlClient
+
+          const [recorded] = yield* sql<{ placement: Placement }>`
+            SELECT placement FROM actor_placements WHERE actor_type = ${actorType}`
+
+          if (recorded !== undefined) placements.set(actorType, recorded.placement)
+
+          return recorded?.placement
+        }).pipe(Effect.provideContext(services), Effect.orDie)
+
+      const subscriptions: SubscriptionRelay = yield* subscriptionRelay({
+        deliver: (request) => dispatch(request, false),
+        local: localSubscriptions,
+        placementOf,
+        wake: Effect.suspend(() => relay.wake),
+        settings: {
+          concurrency: subscriptionConcurrency,
+          batch: subscriptionBatch,
+          claimLeaseMs: () => claimLeaseMs ?? leaseForTurns(),
+          maxBackoffMs: relaySettings.maxBackoffMs,
+          retryWindowMs,
+        },
+      })
+
       const relay = yield* outboxRelay(
         (request) => dispatch(request, false),
         () =>
@@ -533,6 +746,13 @@ export const layer = (options: Options) => {
             })),
           ),
         { ...relaySettings, claimLeaseMs: () => claimLeaseMs ?? leaseForTurns() },
+        {
+          concurrency: subscriptionConcurrency,
+          claim: subscriptions.claim,
+          decode: subscriptions.decode,
+          run: (work, handoff) =>
+            subscriptions.run(work, handoff).pipe(Effect.provideContext(services)),
+        },
         () =>
           new Map(
             Array.from(registrations.values(), ({ name, cron, policy }) => [
@@ -540,7 +760,7 @@ export const layer = (options: Options) => {
               { entries: cron, skipMs: policy.cronSkipMs },
             ]),
           ),
-      )
+      ).pipe(Effect.provideService(ProgressSink, progressSink))
 
       yield* relay.run.pipe(Effect.forkIn(scope))
 
@@ -553,11 +773,26 @@ export const layer = (options: Options) => {
             actorType: name,
             keepReceiptsMs: policy.keepReceiptsMs,
             keepEventsMs: policy.keepEventsMs,
+            holdEventsMs: policy.holdEventsMs,
             deliveryMs: policy.deliveryMs,
             keepWorkflowsMs: policy.keepWorkflowsMs,
             workflows: sweepsWorkflows.has(name),
           })),
           retryWindowMs,
+        ).pipe(
+          // Rows of a subscription a registered subscriber type no longer
+          // declares go a day after they fall due.
+          Effect.tap(() =>
+            Effect.forEach(
+              [...registrations.values()],
+              (registration) =>
+                subscriptions.cleanupRemoved(
+                  registration.name,
+                  registration.subscriptions.map((declared) => declared.tag),
+                ),
+              { discard: true },
+            ),
+          ),
         ),
       ).pipe(
         Effect.provideContext(services),
@@ -581,7 +816,16 @@ export const layer = (options: Options) => {
           Effect.forever,
           Effect.forkIn(scope),
         )
-      const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled }
+      // Routed subscriptions registered here, by source type.
+
+      const routed = (sourceType: string) =>
+        localSubscriptions().flatMap(({ subscriberType, subscription }) =>
+          subscription.routed !== undefined && subscription.sourceType === sourceType
+            ? [{ ...subscription, subscriberType }]
+            : [],
+        )
+
+      const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled, routed }
 
       const databaseNow = databaseTime.pipe(
         Effect.provideContext(services),
@@ -634,6 +878,17 @@ export const layer = (options: Options) => {
               ),
             )
 
+          // A runner that dies mid-activity is replaced after the recovery
+          // interval; if the rerun is then already past its call ids' expiry
+          // bound, the activity dies with ActivityOutcomeUnknown instead.
+          if (
+            registration.workflows.size > 0 &&
+            retryWindowMs - registration.policy.deliveryMs <= RECOVERY_MS
+          )
+            yield* Effect.logWarning(
+              `Actor ${registration.name}: the retry window minus deliveryTimeout is at most the ${RECOVERY_MS / 1000}-second workflow recovery interval, so an activity whose runner dies fails with ActivityOutcomeUnknown instead of rerunning its actor calls`,
+            )
+
           const { incompatibilities, retained } = yield* acceptWorkflows({
             name: registration.name,
             workflows: Array.from(registration.workflows.values(), ({ member }) => member),
@@ -649,10 +904,25 @@ export const layer = (options: Options) => {
               ),
             )
 
-          const { isResident, owner } = yield* registerActor(registration, transport).pipe(
+          const { isResident, owner } = yield* registerActor(
+            registration,
+            transport,
+            options.authorize,
+          ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
+
+          yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
+          yield* requireRoutedSubscribers(registration.name).pipe(
             Effect.provideContext(services),
-            Effect.provideService(OutboxRuntime, outbox),
+            Effect.orDie,
           )
+
+          // A deploy may add an event class to a dynamic subscription; its
+          // caught-up rows must wake for it.
+          for (const declared of registration.subscriptions)
+            if (declared.routed === undefined)
+              yield* subscriptions
+                .widen(registration.name, declared)
+                .pipe(Effect.provideContext(services), Effect.orDie)
 
           registrations.set(registration.name, registration)
           residency.set(registration.name, isResident)
@@ -838,6 +1108,108 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
+        subscribe: (request) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const registration = registrations.get(request.ref.actor)
+
+              if (registration === undefined || !registration.streams.has(request.command))
+                return yield* ActorError.make({
+                  reason: ActorUnavailable.make({ cause: new Error("Stream not registered") }),
+                })
+
+              yield* allow(request, "stream")
+
+              const client = (yield* sharding.makeClient(connectionEntity(request.ref.actor)))(
+                yield* entityId(request.ref),
+              )
+
+              const authorizedUntil =
+                (yield* Clock.currentTimeMillis) +
+                frameworkClock.offsetMillis() +
+                registration.policy.reauthorizeMs
+
+              // The owner the stream runs on, once it answers; a runner that
+              // stops answering ends the stream as its activation would.
+              const started = yield* Deferred.make<{ owner: string; ownerEpoch: string }>()
+              const lost = yield* Deferred.make<never, ActorError>()
+              let owner: { owner: string; ownerEpoch: string } | undefined
+
+              yield* Deferred.await(started).pipe(
+                Effect.flatMap(({ owner, ownerEpoch }) =>
+                  owner === transport.holder
+                    ? Effect.never
+                    : transport.ping(owner, ownerEpoch).pipe(
+                        Effect.repeat({
+                          schedule: Schedule.spaced(OWNER_CHECK_INTERVAL),
+                          while: (alive) => alive,
+                        }),
+                        Effect.andThen(Deferred.fail(lost, activationEnded())),
+                      ),
+                ),
+                Effect.forkScoped,
+              )
+
+              let finished = false
+
+              return client
+                .Subscribe({
+                  member: request.command,
+                  caller: request.caller,
+                  input: request.payload,
+                  authorizedUntil,
+                })
+                .pipe(
+                  Stream.tap((item) =>
+                    Effect.gen(function* () {
+                      if (StreamItem.guards.Done(item)) finished = true
+
+                      if (!StreamItem.guards.Started(item)) return
+
+                      // Cluster resends a request whose runner died; a stream never resumes by itself.
+                      if (owner !== undefined) return yield* activationEnded()
+                      owner = item
+                      yield* Deferred.succeed(started, item)
+                    }),
+                  ),
+                  Stream.takeWhile((item) => !StreamItem.guards.Done(item)),
+                  Stream.filter(StreamItem.guards.Element),
+                  Stream.map((item) => item.value),
+                  // Only `Done` ends a stream cleanly; anything else is its activation ending.
+                  Stream.concat(
+                    Stream.fromEffect(
+                      Effect.suspend(() => (finished ? Effect.void : activationEnded())),
+                    ).pipe(Stream.drain),
+                  ),
+                  Stream.interruptWhen(Deferred.await(lost)),
+                  Stream.catchCause(
+                    (cause): Stream.Stream<never, ActorError | { readonly failure: string }> => {
+                      const failure = Cause.findErrorOption(cause)
+
+                      if (Option.isSome(failure)) {
+                        if (Schema.is(ActorError)(failure.value)) return Stream.fail(failure.value)
+
+                        if (Schema.is(StreamFailed)(failure.value))
+                          return Stream.fail({ failure: failure.value.value })
+                      }
+
+                      if (Cause.hasInterruptsOnly(cause)) return Stream.fromEffect(Effect.interrupt)
+
+                      // Before the owner answered, the subscription never started.
+                      return Stream.fail(
+                        owner === undefined
+                          ? ActorError.make({
+                              reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                            })
+                          : activationEnded(),
+                      )
+                    },
+                  ),
+                )
+            }).pipe(Effect.provideContext(services)),
+          ),
+        deliverProgress: (message) =>
+          deliverProgress(message).pipe(Effect.ignoreCause, Effect.provideContext(services)),
         transport,
         holder,
         hibernate: (ref) =>
@@ -988,12 +1360,17 @@ export const layer = (options: Options) => {
 
 export const Database = {
   /**
-   * `maxConnections` defaults to 50. A command holds one connection for its
-   * whole turn, so a pool smaller than the commands in flight queues callers
-   * behind it; the pool opens connections only as load needs them. Keep the
-   * sum across runners below the server's `max_connections`.
+   * A runner holds two pools. Turns lease sessions from the turn pool,
+   * `maxConnections` (default 50): a command holds one session for its whole
+   * turn, so a pool smaller than the commands in flight queues callers behind
+   * it. Queries, the relay, migrations, and cluster storage use the off-turn
+   * pool, `offTurnConnections` (default 10). Both open connections only as
+   * load needs them. Keep the sum of both across runners below the server's
+   * `max_connections`.
    */
-  postgres: (options: Omit<PgClient.PgPoolConfig, "types">) => {
+  postgres: (
+    options: Omit<PgClient.PgPoolConfig, "types"> & { readonly offTurnConnections?: number },
+  ) => {
     const types = PgTypes.makeRegistry()
     // rc.116 lacks regclass decoding, used by Sql Migrator on restart. Remove after Effect #8309.
     types.register(2205, {
@@ -1006,7 +1383,12 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    return PgClient.layer({ ...options, maxConnections: options.maxConnections ?? 50, types })
+    const { offTurnConnections, ...pool } = options
+
+    return Layer.merge(
+      PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+      turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+    )
   },
   pglite,
 }

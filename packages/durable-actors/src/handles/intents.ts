@@ -1,5 +1,4 @@
 import { Context, DateTime, Duration, Effect, Schema } from "effect"
-import { CRON_PREFIX } from "../runtime/cron/key.ts"
 import {
   type ActorRef,
   type Caller,
@@ -40,6 +39,20 @@ export interface StagedEffect {
 }
 
 /**
+ * A dynamic subscription change a turn staged: `subscribe` from a position,
+ * or `remove`. The last change a turn stages for one source wins.
+ */
+export interface StagedSubscription {
+  readonly subscription: string
+  readonly source: ActorRef
+  readonly op: "subscribe" | "remove"
+  /** `"now"`, `"start"`, or an exclusive source cursor; unused by `remove`. */
+  readonly from: string
+  /** The declaration's event tags, which decide which of the source's commits wake the row. */
+  readonly events: ReadonlyArray<string>
+}
+
+/**
  * Everything one turn asked the outbox to do. `replaced` lists keys whose
  * committed rows the turn deletes before inserting `intents`;
  * `cancelledEffects` lists effect keys whose committed effects it cancels
@@ -49,6 +62,7 @@ export interface StagedOutbox {
   readonly intents: ReadonlyArray<StagedIntent>
   readonly replaced: ReadonlyArray<string>
   readonly effects: ReadonlyArray<StagedEffect>
+  readonly subscriptions: ReadonlyArray<StagedSubscription>
   readonly cancelledEffects: ReadonlyArray<string>
 }
 
@@ -56,6 +70,7 @@ export const emptyOutbox: StagedOutbox = {
   intents: [],
   replaced: [],
   effects: [],
+  subscriptions: [],
   cancelledEffects: [],
 }
 
@@ -65,6 +80,13 @@ export const EFFECT_KEY_PREFIX = "$effect:"
 const checkKey = (what: string, key: string) => {
   if (key.length === 0 || key.length > 200) throw new Error(`${what} must be 1-200 characters`)
 }
+
+/**
+ * Outbox keys the framework writes: `$`-prefixed keys and JSON arrays whose
+ * first element is `$`-prefixed. An application key of that shape could
+ * replace or cancel a framework row of the same actor.
+ */
+export const isFrameworkKey = (key: string) => key.startsWith("$") || key.startsWith('["$')
 
 /**
  * Marks a command turn. Only the runtime provides it, and `X.toLayer` removes
@@ -84,12 +106,15 @@ interface Minted {
 interface Staging {
   readonly sender: ActorRef
   readonly commandId: string
+  /** The sender's event sequence before this turn's emits. */
+  readonly head: string
   readonly onBehalfOf: Principal | undefined
   readonly minted: Map<string, Minted>
   open: boolean
   intents: Array<StagedIntent>
   readonly replaced: Set<string>
   effects: Array<StagedEffect>
+  readonly subscriptions: Map<string, StagedSubscription>
   readonly cancelledEffects: Set<string>
 }
 
@@ -109,10 +134,12 @@ const creates = (intent: StagedIntent, child: ActorRef, createdBy: string) =>
 export const openOutbox = ({
   sender,
   commandId,
+  head,
   onBehalfOf,
 }: {
   readonly sender: ActorRef
   readonly commandId: string
+  readonly head: string
   readonly onBehalfOf: Principal | undefined
 }) => {
   const marker = InTurn.of({ turn: Symbol() })
@@ -120,12 +147,14 @@ export const openOutbox = ({
   const staging: Staging = {
     sender,
     commandId,
+    head,
     onBehalfOf,
     minted: new Map(),
     open: true,
     intents: [],
     replaced: new Set(),
     effects: [],
+    subscriptions: new Map(),
     cancelledEffects: new Set(),
   }
 
@@ -195,6 +224,13 @@ export const openOutbox = ({
 
       return undefined
     },
+    /** Stages a subscription change; a later change for the same source replaces it. */
+    subscribe: (change: StagedSubscription) => {
+      staging.subscriptions.set(
+        JSON.stringify([change.subscription, change.source.actor, change.source.id]),
+        change,
+      )
+    },
     close: (): StagedOutbox => {
       staging.open = false
 
@@ -202,6 +238,7 @@ export const openOutbox = ({
         intents: staging.intents,
         replaced: [...staging.replaced],
         effects: staging.effects,
+        subscriptions: [...staging.subscriptions.values()],
         cancelledEffects: [...staging.cancelledEffects],
       }
     },
@@ -211,12 +248,6 @@ export const openOutbox = ({
 const IntentSettings = Context.Reference<IntentOptions>("durable-actors/IntentSettings", {
   defaultValue: () => ({}),
 })
-
-// `policy.cron` ticks own these keys; an intent may neither replace nor cancel one.
-const unreserved = (key: string) =>
-  key.startsWith(CRON_PREFIX)
-    ? Effect.die(new Error(`Intent key "${key}" is reserved for cron`))
-    : Effect.void
 
 /** Checks an effect key; staged and stored effect keys are prefixed. */
 export const effectKey = (key: string) => {
@@ -268,11 +299,7 @@ export const stage = Effect.fnUntraced(function* (
       ? System.make({ ...attribution, mint: minted.proof })
       : System.make(attribution)
 
-  if (key !== undefined) {
-    yield* unreserved(key)
-    replaceKey(staging, key)
-  }
-
+  if (key !== undefined) replaceKey(staging, key)
   staging.intents.push({ ...intent, due, key, caller })
 })
 
@@ -312,6 +339,8 @@ export const Intent = {
     if (key.startsWith(EFFECT_KEY_PREFIX))
       throw new Error(`Intent key "${key}" is reserved for effects`)
 
+    if (isFrameworkKey(key)) throw new Error("Intent.key values starting with $ are reserved")
+
     return configure({ key })
   },
   /** Removes the sending actor's pending intent with `key` when this turn commits. */
@@ -319,8 +348,11 @@ export const Intent = {
     Effect.gen(function* () {
       if (key.startsWith(EFFECT_KEY_PREFIX))
         return yield* Effect.die(new Error(`Intent key "${key}" is reserved for effects`))
+
+      if (isFrameworkKey(key))
+        return yield* Effect.die(new Error("Intent.key values starting with $ are reserved"))
+
       const { staging } = yield* currentStaging()
-      yield* unreserved(key)
       replaceKey(staging, key)
     }),
 }

@@ -6,10 +6,12 @@ import {
   Crypto,
   Deferred,
   Effect,
+  Fiber,
   Layer,
   ManagedRuntime,
   Predicate,
   Redacted,
+  Stream,
 } from "effect"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
@@ -81,7 +83,16 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
     Effect.gen(function* () {
       const test = yield* ActorTest
       const agent = yield* started("g1")
+      // Pieces a moment apart, so each leaves the executor before the reply commits.
+      fake.paceMs = 100
       const turnId = yield* agent.Prompt({ text: "hello" })
+
+      // A client following this turn's reply live, subscribed before the executor runs.
+      const streamed = yield* agent
+        .Streaming({ turnId })
+        .pipe(Stream.take(1), Stream.runCollect, Effect.forkChild)
+
+      yield* Effect.sleep("200 millis")
       yield* test.advance(0)
 
       expect(yield* agent.Transcript({ limit: 10 })).toEqual([
@@ -102,6 +113,10 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
 
       expect(frames.length).toBeGreaterThan(0)
       expect(frames.every((frame) => frame.includes(turnId))).toBe(true)
+
+      const [delta] = [...(yield* Fiber.join(streamed).pipe(Effect.timeout("10 seconds")))]
+      expect(["Done: ", "hello"]).toContain(delta)
+      fake.paceMs = 0
     }),
   ))
 
@@ -158,9 +173,13 @@ it("records a reply once when the executor's result is lost and the prompt runs 
       yield* test.crashNext("afterExecute")
       yield* agent.Prompt({ text: "retry me" })
 
+      // Waits, without moving the clock, until the first attempt has run and crashed after the
+      // provider answered. Advancing while it still ran would move its lease with the clock.
+      yield* test.advance(0)
+      expect([...fake.prompts].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([1])
+      expect(yield* test.receiptsFor(agent.ref, "Replied")).toBe(0)
+
       // The crashed attempt keeps its lease; the relay runs it again once the lease has passed.
-      while (![...fake.prompts.keys()].some((key) => !before.has(key)))
-        yield* Effect.sleep("20 millis")
       yield* test.advance("2 minutes")
 
       expect([...fake.prompts].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([2])

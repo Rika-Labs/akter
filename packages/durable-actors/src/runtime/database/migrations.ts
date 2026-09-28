@@ -423,6 +423,83 @@ export const migrations = {
       ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, command, ready_at_ms, intent_id)
       WHERE kind = 'effect' AND NOT running`
   }),
+  // An attempt can end an effect before its retries run out, as when its
+  // route rejects the result. `final_attempt` records which attempt did, with
+  // the outcome, so a dead letter that fails to commit is retried without
+  // another provider call and still reports the attempts actually made.
+  "0016_final_effect_failures": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_outbox ADD COLUMN final_attempt integer`
+  }),
+  // Subscriptions fan out on the source's shard after commit: one row per
+  // (source, subscription, subscriber), routed rows with subscriber_id = ''.
+  // The tag summary makes the publisher's probe a key lookup per emitted tag,
+  // and the subscriber's cursor, on its own shard, deduplicates every
+  // delivery after its receipt is pruned. The due index leads with
+  // `subscriber_type` so a runner never scans types it doesn't register.
+  "0017_subscriptions": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE actor_subscriptions (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        source_type text NOT NULL,
+        source_id text NOT NULL,
+        subscriber_type text NOT NULL,
+        subscription text NOT NULL,
+        subscriber_id text NOT NULL,
+        events text[] NOT NULL,
+        epoch bigint NOT NULL DEFAULT 0,
+        active boolean NOT NULL DEFAULT true,
+        delivered bigint NOT NULL,
+        marked bigint NOT NULL DEFAULT 0,
+        bucket integer NOT NULL CHECK (bucket = routing_key >> 56),
+        due_at_ms bigint,
+        attempts integer NOT NULL DEFAULT 0,
+        last_error text,
+        gaps bigint NOT NULL DEFAULT 0,
+        gap_at_ms bigint,
+        gap_through bigint,
+        PRIMARY KEY (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id),
+        FOREIGN KEY (routing_key, tenant_id, source_type, source_id) REFERENCES actor_generations
+      ) WITH (fillfactor = 80)`
+    yield* sql`CREATE INDEX actor_subscriptions_due ON actor_subscriptions (bucket, subscriber_type, due_at_ms)
+        WHERE due_at_ms IS NOT NULL`
+    yield* sql`CREATE TABLE actor_subscription_tags (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        source_type text NOT NULL,
+        source_id text NOT NULL,
+        event text NOT NULL,
+        rows integer NOT NULL CHECK (rows > 0),
+        PRIMARY KEY (routing_key, tenant_id, source_type, source_id, event),
+        FOREIGN KEY (routing_key, tenant_id, source_type, source_id) REFERENCES actor_generations
+      )`
+    yield* sql`CREATE TABLE actor_subscription_cursors (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        subscription text NOT NULL,
+        source_type text NOT NULL,
+        source_id text NOT NULL,
+        epoch bigint NOT NULL DEFAULT 0,
+        active boolean NOT NULL DEFAULT true,
+        applied bigint NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    // The routed declarations of the deployment, by source type: a runner
+    // that serves a source must register every subscriber type routing from
+    // it, because the publishing turn creates the routed rows.
+    yield* sql`CREATE TABLE actor_routed_subscriptions (
+        source_type text NOT NULL,
+        subscriber_type text NOT NULL,
+        subscription text NOT NULL,
+        PRIMARY KEY (source_type, subscriber_type, subscription)
+      )`
+    yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
+        ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
+  }),
 }
 
 /**

@@ -2,7 +2,7 @@
 
 **Status:** accepted (2026-09-26, Dallen, with every recommended default; proposed 2026-09-26). It amends [contract 04](../contracts/04-receipts.md), [contract 05](../contracts/05-messaging.md), [contract 07](../contracts/07-realtime.md), [contract 10](../contracts/10-security.md), and [retention](../operations/retention.md). It builds on the outbox ([ADR 0011](0011-direct-commands-outbox-and-performance.md)) and the multi-runner relay ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)). The amendments listed under [Amendments](#amendments) land in the same change.
 
-**Responsibility:** decide how one actor follows another actor's committed events and is woken durably when a new one commits, even while it sleeps, so that the build unit ([#94](https://github.com/Rika-Labs/durable-actors/issues/94), migration `0016_subscriptions`) has no open design questions.
+**Responsibility:** decide how one actor follows another actor's committed events and is woken durably when a new one commits, even while it sleeps, so that the build unit ([#94](https://github.com/Rika-Labs/durable-actors/issues/94), migration `0017_subscriptions`) has no open design questions.
 
 **Authority:** design decision record.
 
@@ -193,7 +193,7 @@ yield * turn.unsubscribe(Follow, supplierId)
 
 ### 3. Fan-out at relay time, not at commit
 
-The source's commit writes at most one extra row, whatever the number of subscribers. Tables `0016_subscriptions` adds (target DDL; the build unit may adjust names but not placement):
+The source's commit writes at most one extra row, whatever the number of subscribers. Tables `0017_subscriptions` adds (target DDL; the build unit may adjust names but not placement):
 
 ```sql
 -- On the source's shard: one row per (source actor, subscription, subscriber); routed rows use subscriber_id = ''.
@@ -639,7 +639,7 @@ RecordOrder: Effect.fn(function* (d) {
 
 ### Q11. Migration number and build order
 
-**Decision:** `0016_subscriptions`, built in wave 4 as #94 (still M3.7, moved from wave 6 to wave 4 by DURA-22's #97). The build depends on M2.4's `0011_relay` (claims, the kind index, `scheduled_at_ms`) and M1.9's `0010_retention` (pruning bounds). It doesn't depend on workflows or connections. The migrator skips ids at or below the latest one applied, so `0016` must land after `0012`–`0015`, or the reservations are renumbered under the roadmap's rule.
+**Decision:** `0017_subscriptions`, built in wave 4 as #94 (still M3.7, moved from wave 6 to wave 4 by DURA-22's #97). The build depends on M2.4's `0011_relay` (claims, the kind index, `scheduled_at_ms`) and M1.9's `0010_retention` (pruning bounds). It doesn't depend on workflows or connections. The migrator skips ids at or below the latest one applied, so `0016` must land after `0012`–`0015`, or the reservations are renumbered under the roadmap's rule.
 
 ## Behaviour changes against existing contracts
 
@@ -687,7 +687,7 @@ In this change:
 - [Data model](../architecture/data-model.md), [transaction catalog](../architecture/transaction-catalog.md), and [glossary](../GLOSSARY.md).
 - [Conformance](../verification/01-conformance.md): the **Subscription delivery** gate and decision check. [Failure matrix](../verification/02-failure-matrix.md): the new rows. [Invariants](../verification/invariants.md): E2. [Performance](../verification/03-performance.md): the baseline.
 
-## Required evidence (#94, `conformance/subscriptions.ts`, migration `0016_subscriptions`)
+## Required evidence (#94, `conformance/subscriptions.ts`, migration `0017_subscriptions`)
 
 - The conformance cases named under Q1–Q10 run on PGlite and Postgres. Crash, contention, and race cases run on Postgres only. Multi-runner cases run on the M2.1 harness.
 - Fault points `beforeSettle` (after the subscriber's commit, before the source-side settle), `afterSettleSnapshot` (settle paused after its snapshot), and `afterExpand` are added to `TurnHooks` and `crashNext`/`pauseNext`.
