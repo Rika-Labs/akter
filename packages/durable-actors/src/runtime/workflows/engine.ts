@@ -435,7 +435,13 @@ export const activationEngine = (options: {
 
     const live = new Map<
       string,
-      { rerun: boolean; activities: number; body: Fiber.Fiber<unknown, unknown> | undefined }
+      {
+        rerun: boolean
+        activities: number
+        body: Fiber.Fiber<unknown, unknown> | undefined
+        /** The engine stopped this run itself to replay it, as for an interrupt. */
+        preempted: boolean
+      }
     >()
 
     const fenced = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -1009,14 +1015,20 @@ export const activationEngine = (options: {
 
         for (;;) {
           entry.rerun = false
+          entry.preempted = false
           const body = yield* Effect.forkChild(runOnce(executionId))
           entry.body = body
           const outcome = yield* Fiber.join(body).pipe(Effect.exit)
           entry.body = undefined
 
           // A wake that arrived during a run replays it once more, unless the run
-          // lost its generation; a finished execution's replay just reads it.
-          if (!entry.rerun || (Exit.isSuccess(outcome) && outcome.value === "abandoned")) break
+          // lost its generation; a finished execution's replay just reads it. A
+          // run the engine stopped to replay always replays, however it ended.
+          if (
+            !entry.rerun ||
+            (!entry.preempted && Exit.isSuccess(outcome) && outcome.value === "abandoned")
+          )
+            break
         }
       }).pipe(Effect.ensuring(Effect.sync(() => live.delete(executionId))))
 
@@ -1031,8 +1043,10 @@ export const activationEngine = (options: {
         if (current !== undefined) {
           current.rerun = true
 
-          if (interrupt && current.body !== undefined)
+          if (interrupt && current.body !== undefined) {
+            current.preempted = true
             yield* Fiber.interrupt(current.body).pipe(Effect.forkIn(scope))
+          }
 
           // The relay consumed the recovery timer; a still-running activity needs another.
           if (current.activities > 0)
@@ -1058,7 +1072,7 @@ export const activationEngine = (options: {
           return
         }
 
-        live.set(executionId, { rerun: false, activities: 0, body: undefined })
+        live.set(executionId, { rerun: false, activities: 0, body: undefined, preempted: false })
         yield* loop(executionId).pipe(Effect.forkIn(scope))
       }).pipe(Effect.provideContext(services))
 

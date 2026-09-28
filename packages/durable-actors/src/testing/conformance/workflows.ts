@@ -452,6 +452,48 @@ const engineConformance: ReadonlyArray<ConformanceCase> = [
 export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
   ...engineConformance,
   {
+    name: "workflows: a live interrupt finishes well within the recovery interval",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const engine = fixture.workflows.engine
+          const key = "live-interrupt"
+          const gate = yield* Deferred.make<void>()
+          engine.gates.set(key, gate)
+          const probe = yield* EngineProbe.get(key)
+          const run = yield* probe.Probe({ scenario: "compensate-hold", key })
+
+          yield* eventually(
+            Effect.sync(() => (engine.runs.get(`hold:${key}`) ?? 0) >= 1),
+            "the activity to start",
+          )
+
+          // The framework clock never moves, so the 30-second recovery timer
+          // can't fire: only the live loop's own replay can record the interrupt.
+          yield* run.interrupt
+
+          const exit = yield* run.result.pipe(
+            Effect.exit,
+            Effect.timeoutOrElse({
+              duration: "10 seconds",
+              orElse: () => Effect.die(new Error("The live interrupt waited for recovery")),
+            }),
+          )
+
+          expect(Exit.isFailure(exit) && Exit.hasInterrupts(exit)).toBe(true)
+          expect(engine.runs.get(`compensate:${key}`)).toBe(1)
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const gate = fixture.workflows.engine.gates.get("live-interrupt")
+
+              if (gate !== undefined) yield* Deferred.succeed(gate, undefined)
+            }),
+          ),
+        ),
+      ),
+  },
+  {
     name: "workflows: a start returns a stable execution id, records the activity once, and finishes",
     run: ({ expect, environment, fixture }) =>
       environment.run(
