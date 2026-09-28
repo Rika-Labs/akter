@@ -40,6 +40,8 @@ it("pins the versions the core package is built and released against", () => {
     "typescript",
   ] as const)
     expect(versions[name]).toBe(catalog[name])
+
+  expect(manifest("app").overrides).toEqual({ "@effect/platform-node-shared": catalog.effect })
 })
 
 it("derives an installable package name from the directory", () => {

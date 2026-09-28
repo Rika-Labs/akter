@@ -82,6 +82,13 @@ const runtimeDependencies = [
   "effect",
 ] as const
 
+/**
+ * `@effect/platform-bun` depends on `@effect/platform-node-shared` with a caret
+ * range, so a fresh install takes a newer prerelease built against a newer
+ * `effect`. Pinning it keeps every Effect package on the version the core uses.
+ */
+export const pinned = { "@effect/platform-node-shared": versions.effect } as const
+
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))
 
 export const manifest = (name: string) => ({
@@ -97,6 +104,7 @@ export const manifest = (name: string) => ({
     runtimeDependencies.map((dependency) => [dependency, versions[dependency]]),
   ),
   devDependencies: { "@types/bun": versions["@types/bun"], typescript: versions.typescript },
+  overrides: pinned,
 })
 
 /** Package name for a target directory: its lowercased basename, with anything npm rejects replaced. */
