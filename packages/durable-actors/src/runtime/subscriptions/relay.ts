@@ -427,17 +427,18 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           : sql`subscribed (subscriber_type, subscription, known) AS (
               VALUES ${subscribedValues(local)}),
             leasable AS (
-              SELECT s.subscriber_type, s.subscription, s.subscriber_id
-              FROM actor_subscriptions s JOIN page USING (subscriber_type, subscription, subscriber_id), head
-              WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
-                AND s.due_at_ms IS NULL AND s.marked < head.h
-                AND EXISTS (SELECT 1 FROM subscribed m WHERE m.subscriber_type = s.subscriber_type
-                  AND m.subscription = s.subscription AND m.known @> s.events)
+              SELECT p.subscriber_type, p.subscription, p.subscriber_id
+              FROM page p JOIN subscribed m ON m.subscriber_type = p.subscriber_type
+                AND m.subscription = p.subscription AND m.known @> p.events, head
+              WHERE p.due_at_ms IS NULL AND p.marked < head.h
+                -- OFFSET 0 keeps this a per-row probe bounded by the row's
+                -- cursor in the index, rather than a join that reads the
+                -- source's whole event log for every row of the page.
                 AND EXISTS (
                   SELECT 1 FROM actor_events e
                   WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
-                    AND e.sequence > s.delivered AND e.sequence <= head.h
-                    AND e.event = ANY(s.events))
+                    AND e.sequence > p.delivered AND e.sequence <= head.h
+                    AND e.event = ANY(p.events) OFFSET 0)
               LIMIT ${free})`
 
       const leaseEnd = sql`(${now()} + greatest(${lease}::bigint,
@@ -448,7 +449,9 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           SELECT event_sequence AS h FROM actor_generations g
           WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}),
         page AS (
-          SELECT s.subscriber_type, s.subscription, s.subscriber_id FROM actor_subscriptions s
+          SELECT s.subscriber_type, s.subscription, s.subscriber_id, s.due_at_ms, s.marked,
+            s.delivered, s.events
+          FROM actor_subscriptions s
           WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)} AND s.active
             AND (s.subscriber_type, s.subscription, s.subscriber_id) > (${after[0]!}, ${after[1]!}, ${after[2]!})
           ORDER BY s.subscriber_type, s.subscription, s.subscriber_id
