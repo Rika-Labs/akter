@@ -1,4 +1,4 @@
-# ADR 0042: Blob entry quota and entry deletion
+# ADR 0044: Blob entry quota and entry deletion
 
 **Status:** proposed (2026-09-28).
 
