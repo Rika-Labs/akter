@@ -1,5 +1,5 @@
 import { Context, Crypto, Effect, Match, Schema } from "effect"
-import { SqlClient, type SqlError } from "effect/unstable/sql"
+import { SqlClient, type SqlError, type Statement } from "effect/unstable/sql"
 import type { RegisteredSubscription } from "../../handles/actors.ts"
 import {
   Due,
@@ -312,7 +312,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     )
   }
 
-  if (capped.length > 0) statements.push(orderCapped(sql, routingKey, sender, capped))
+  if (capped.length > 0) statements.push(orderCapped({ sql, routingKey, sender, capped }))
 
   return { statements, replies }
 })
@@ -327,12 +327,21 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
  * serializes its turns, so the rows this statement reads are every earlier
  * perform. It runs after any delay shift, so `scheduled_at_ms` is final.
  */
-const orderCapped = (
-  sql: SqlClient.SqlClient,
-  routingKey: bigint,
-  sender: ActorRef,
-  capped: ReadonlyArray<{ readonly id: string; readonly effect: string; readonly dueAt: number }>,
-) => {
+export const orderCapped = ({
+  sql,
+  routingKey,
+  sender,
+  capped,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly routingKey: bigint
+  readonly sender: ActorRef
+  readonly capped: ReadonlyArray<{
+    readonly id: string
+    readonly effect: string
+    readonly dueAt: number
+  }>
+}) => {
   // An earlier row of this turn, of one type, due at the same time (`tied`)
   // or no later (`before`), always ends ahead of the rows after it.
   const ranked = capped.map((row, index) => {
@@ -347,15 +356,25 @@ const orderCapped = (
 
   const ids = ranked.map(({ id }) => id)
 
-  const latest = (running: boolean) => sql`(SELECT max(e.ready_at_ms) FROM actor_outbox e
+  // Rows written before `0011_relay` have no `scheduled_at_ms`, and rows a
+  // runner older than `0015_effect_control` wrote have no `ready_at_ms`; each
+  // falls back as the claim does. Each probe reads one partial index.
+  const latestOf = (rows: Statement.Fragment, due: Statement.Fragment) => sql`(SELECT max(${due})
+    FROM actor_outbox e
     WHERE e.routing_key = o.routing_key AND e.tenant_id = o.tenant_id
       AND e.actor_type = o.actor_type AND e.actor_id = o.actor_id AND e.command = o.command
-      AND e.kind = 'effect' AND ${running ? sql`e.running` : sql`NOT e.running`}
-      AND e.scheduled_at_ms <= o.scheduled_at_ms AND e.intent_id NOT IN ${sql.in(ids)})`
+      AND e.kind = 'effect' AND ${rows}
+      AND coalesce(e.scheduled_at_ms, e.ready_at_ms, e.due_at_ms) <= o.scheduled_at_ms
+      AND e.intent_id NOT IN ${sql.in(ids)})`
+
+  const latest = sql`greatest(
+    ${latestOf(sql`NOT e.running AND e.ready_at_ms IS NOT NULL`, sql`e.ready_at_ms`)},
+    ${latestOf(sql`NOT e.running AND e.ready_at_ms IS NULL`, sql`e.due_at_ms`)},
+    ${latestOf(sql`e.running`, sql`coalesce(e.ready_at_ms, e.due_at_ms)`)})`
 
   return Effect.asVoid(sql`UPDATE actor_outbox o
     SET ready_at_ms = greatest(o.scheduled_at_ms + v.tied,
-      coalesce(greatest(${latest(false)}, ${latest(true)}), o.scheduled_at_ms - 1) + 1 + v.before)
+      coalesce(${latest}, o.scheduled_at_ms - 1) + 1 + v.before)
     FROM (VALUES ${sql.csv(
       ranked.map(({ id, tied, before }) => sql`(${id}::text, ${tied}::int, ${before}::int)`),
     )}) AS v(intent_id, tied, before)
