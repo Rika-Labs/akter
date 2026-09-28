@@ -1,8 +1,21 @@
-import { Effect, Exit, Layer, Schema } from "effect"
-import { Actor } from "../../index.ts"
+import {
+  Deferred,
+  type Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Predicate,
+  Schema,
+  Scope,
+  Stream,
+} from "effect"
+import { Actor, type AnyConnection, User } from "../../index.ts"
 import type { ExecutorContext } from "../../contexts/effect.ts"
-import { ActorTest, ProgressRecord } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ActorRef } from "../../identity/caller.ts"
+import { ActorTest, ProgressRecord, type TestConnection, type TestMessage } from "../actor-test.ts"
+import { ActorCluster } from "../cluster.ts"
+import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 /** What one executor attempt does after reporting its frames. */
 type ProgressStep = "ok" | "fail"
@@ -54,13 +67,19 @@ const Thumb = Actor.command("Thumb", { input: Schema.String })
 
 const Transcoded = Actor.command("Transcoded", { input: Schema.String })
 
+// Receives Transcode and Import progress, so the pool sends it for this actor type.
+const Watch = Actor.connection("Watch", {
+  server: Schema.String,
+  progress: { effects: [Transcode, Import] },
+})
+
 const Encoder = Actor.make("Encoder", {
   key: Schema.String,
   state: Actor.state({
     outputs: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   effects: [Transcode, Import, Thumbnail],
-  api: { Start, Thumb },
+  api: { Start, Thumb, Watch },
   internal: { Transcoded },
   policy: {
     effects: {
@@ -86,6 +105,7 @@ export const progressLayer = (fixture: ProgressFixture) =>
           const turn = yield* Encoder.Turn
           yield* turn.state.set({ outputs: [...turn.state.outputs, output] })
         }),
+        Watch: { open: () => Effect.void, frame: () => Effect.void },
       }),
     ),
     Encoder.toEffectLayer(
@@ -313,6 +333,458 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
           yield* fixture.progress.captured!.progress(Transcode, probe)
 
           expect(yield* recordsOf("plain")).toEqual([])
+        }),
+      ),
+  },
+]
+
+class Render extends Actor.effect<Render>()("Render", {
+  input: { job: Schema.String },
+  success: Schema.String,
+  progress: Schema.Struct({ percent: Schema.Finite }),
+}) {}
+
+class Rendered extends Schema.TaggedClass<Rendered>()("Rendered", { output: Schema.String }) {}
+
+/** How one Render executor runs: it reports `frames` once `go` opens, then returns once `finish` opens. */
+interface RenderPlan {
+  readonly frames: ReadonlyArray<number>
+  readonly go: Deferred.Deferred<void>
+  readonly finish: Deferred.Deferred<void>
+}
+
+const renderPlans = new Map<string, RenderPlan>()
+
+const plan = (job: string, frames: ReadonlyArray<number>) =>
+  Effect.gen(function* () {
+    const created: RenderPlan = {
+      frames,
+      go: yield* Deferred.make<void>(),
+      finish: yield* Deferred.make<void>(),
+    }
+
+    renderPlans.set(job, created)
+
+    return created
+  })
+
+const Render_ = Actor.command("Render", { input: Schema.String })
+
+const Finished = Actor.command("Finished", { input: Schema.String })
+
+/** Performs Render under the job as its key, so a later turn can cancel it. */
+const RenderKeyed = Actor.command("RenderKeyed", { input: Schema.String })
+
+/** Cancels the keyed Render of a job and tells `Mine` connections in the same turn. */
+const CancelRender = Actor.command("CancelRender", { input: Schema.String })
+
+/** Progress for the performer's own connections only (the default audience). */
+const Mine = Actor.connection("Mine", { server: Rendered, progress: { effects: [Render] } })
+
+/** Progress for every open connection of the member. */
+const Everyone = Actor.connection("Everyone", {
+  server: Rendered,
+  progress: { effects: [Render], to: "all" },
+})
+
+/** Receives no progress: it lists no effect. */
+const Quiet = Actor.connection("Quiet", { server: Rendered })
+
+/** A stream of the job's progress percentages, filtered by the effect's own input. */
+const Percent = Actor.stream("Percent", {
+  input: Schema.String,
+  output: Schema.Finite,
+  progress: { effects: [Render] },
+})
+
+const Studio = Actor.make("Studio", {
+  key: Schema.String,
+  effects: [Render],
+  api: { Render: Render_, RenderKeyed, CancelRender, Mine, Everyone, Quiet, Percent },
+  internal: { Finished },
+  policy: {
+    effects: { Render: { onSuccess: Finished, retry: { times: 0 }, progressEvery: "50 millis" } },
+  },
+})
+
+const handlers = { open: () => Effect.void, frame: () => Effect.void }
+
+const studioCommands = Studio.toLayer(
+  Effect.succeed({
+    Render: Effect.fnUntraced(function* (job: string) {
+      yield* (yield* Studio.Turn).perform(Render.make({ job }))
+    }),
+    RenderKeyed: Effect.fnUntraced(function* (job: string) {
+      yield* (yield* Studio.Turn).perform(Render.make({ job }), { key: job })
+    }),
+    CancelRender: Effect.fnUntraced(function* (job: string) {
+      const turn = yield* Studio.Turn
+      yield* turn.cancelEffect(job)
+      yield* turn.broadcast(Mine, Rendered.make({ output: `cancelled-${job}` }))
+    }),
+    Finished: Effect.fnUntraced(function* (output: string) {
+      const turn = yield* Studio.Turn
+      yield* turn.broadcast(Mine, Rendered.make({ output }))
+      yield* turn.broadcast(Everyone, Rendered.make({ output }))
+      yield* turn.broadcast(Quiet, Rendered.make({ output }))
+    }),
+    Mine: handlers,
+    Everyone: handlers,
+    Quiet: handlers,
+    Percent: (job: string) =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const read = yield* Studio.Read
+
+          return read.progress(Render).pipe(
+            Stream.filter((entry) => entry.effect.job === job),
+            Stream.map((entry) => entry.frame.percent),
+          )
+        }),
+      ),
+  }),
+)
+
+export const studioExecutors = Studio.toEffectLayer(
+  Effect.succeed({
+    Render: Effect.fnUntraced(function* ({ job }) {
+      const exec = yield* Studio.Executor
+      const found = renderPlans.get(job)
+
+      if (found === undefined) return job
+      yield* Deferred.await(found.go)
+
+      // Each frame is its own send: they are spaced past `progressEvery`.
+      for (const percent of found.frames) {
+        yield* exec.progress(Render, { percent })
+        yield* Effect.sleep("150 millis")
+      }
+
+      yield* Deferred.await(found.finish)
+
+      return `${job}.png`
+    }),
+  }),
+)
+
+export const studioLayer = Layer.mergeAll(studioCommands, studioExecutors)
+
+type StudioMessage = TestMessage<Rendered>
+
+const WAIT = "20 seconds"
+
+const nextOf = <C extends AnyConnection>(connection: TestConnection<C>) =>
+  connection.messages.pipe(
+    Stream.take(1),
+    Stream.runCollect,
+    Effect.map((chunk) => [...chunk][0] as StudioMessage | undefined),
+    Effect.timeoutOrElse({
+      duration: WAIT,
+      orElse: () => Effect.die(new Error("No connection message arrived")),
+    }),
+  )
+
+/** Messages that arrive within `window`, without waiting past it. */
+const quietFor = <C extends AnyConnection>(connection: TestConnection<C>, window: Duration.Input) =>
+  connection.messages.pipe(
+    Stream.interruptWhen(Effect.sleep(window)),
+    Stream.runCollect,
+    Effect.map((chunk): ReadonlyArray<StudioMessage> => [...chunk] as never),
+  )
+
+const progressOf = (message: StudioMessage | undefined) =>
+  Predicate.isTagged(message, "Progress") ? message : undefined
+
+/** A member frame's value, or undefined for progress and control frames. */
+const frameOf = (message: StudioMessage | undefined) =>
+  Predicate.isTagged(message, "Frame") ? message.frame : undefined
+
+const bob = User.make({ subject: "bob" })
+
+const withStudioCluster = <A, E>(
+  environment: ConformanceEnvironment,
+  body: Effect.Effect<A, E, ActorCluster | Scope.Scope>,
+) =>
+  environment.run(
+    Effect.gen(function* () {
+      const database = yield* environment.freshDatabase
+
+      const context = yield* Layer.build(
+        ActorTest.cluster({
+          database,
+          runners: 3,
+          shardLockExpiration: "3 seconds",
+          actors: studioCommands,
+          // Only runner 2 runs executors, so progress always crosses runners.
+          runnerActors: (runner) => (runner === 2 ? studioExecutors : Layer.empty),
+          as: User.make({ subject: "alice" }),
+        }),
+      )
+
+      return yield* body.pipe(Effect.scoped, Effect.provideContext(context))
+    }),
+  )
+
+export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "keeps an effect's progress in order when its first frames on an activation arrive together",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("racing")
+          const mine = yield* test.connect(studio.ref, Mine, undefined)
+          const job = yield* plan("racing", [10])
+          yield* studio.Render("racing")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          expect(progressOf(yield* nextOf(mine))?.seq).toBe(1)
+
+          const [sent] = (yield* test.progress).filter(
+            (record) => record.ref.id === "racing" && ProgressRecord.$is("Progress")(record),
+          )
+
+          if (sent === undefined || !ProgressRecord.$is("Progress")(sent))
+            return yield* Effect.die(new Error("No progress was sent"))
+
+          // A new activation gets a newer and an older frame at once; both run its effect check.
+          yield* test.hibernate(studio.ref)
+          yield* Effect.all(
+            [test.resendProgress({ ...sent, seq: 5 }), test.resendProgress({ ...sent, seq: 3 })],
+            { concurrency: "unbounded" },
+          )
+          yield* Effect.sleep("500 millis")
+
+          const seqs = (yield* quietFor(mine, "1 second")).flatMap((message) => {
+            const found = progressOf(message)
+
+            return found === undefined ? [] : [found.seq]
+          })
+
+          expect(seqs.at(-1)).toBe(5)
+          expect(seqs).toEqual(seqs.toSorted((a, b) => a - b))
+          yield* Deferred.succeed(job.finish, undefined)
+        }),
+      ),
+  },
+  {
+    name: "drops progress after the cancelling commit",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("cancelled")
+          const mine = yield* test.connect(studio.ref, Mine, undefined)
+          const job = yield* plan("cancelled", [10])
+          // Without the pool's close, only the cancelling turn closes the effect on this activation.
+          yield* test.dropProgress(
+            (message) => message.ref.id === "cancelled" && !("seq" in message),
+          )
+          yield* studio.RenderKeyed("cancelled")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          expect(progressOf(yield* nextOf(mine))?.frame).toEqual({ percent: 10 })
+
+          yield* studio.CancelRender("cancelled")
+          expect(frameOf(yield* nextOf(mine))).toEqual(
+            Rendered.make({ output: "cancelled-cancelled" }),
+          )
+
+          const [sent] = (yield* test.progress).filter(
+            (record) => record.ref.id === "cancelled" && ProgressRecord.$is("Progress")(record),
+          )
+
+          if (sent === undefined || !ProgressRecord.$is("Progress")(sent))
+            return yield* Effect.die(new Error("No progress was sent"))
+
+          // A frame delayed past the cancel, then one on a new activation, which reads the row.
+          yield* test.resendProgress({ ...sent, seq: sent.seq + 1 })
+          expect(yield* quietFor(mine, "1 second")).toEqual([])
+          yield* test.hibernate(studio.ref)
+          yield* test.resendProgress({ ...sent, seq: sent.seq + 2 })
+          expect(yield* quietFor(mine, "1 second")).toEqual([])
+          yield* test.dropProgress(() => false)
+          yield* Deferred.succeed(job.finish, undefined)
+        }),
+      ),
+  },
+  {
+    name: "delivers performer progress only to the performer's connection, and to every connection with to: all",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("audience")
+          const mine = yield* test.connect(studio.ref, Mine, undefined)
+          const theirs = yield* test.connect(studio.ref, Mine, undefined).pipe(Actor.as(bob))
+          const everyone = yield* test.connect(studio.ref, Everyone, undefined).pipe(Actor.as(bob))
+          const quiet = yield* test.connect(studio.ref, Quiet, undefined)
+          const job = yield* plan("audience", [10, 60])
+          yield* studio.Render("audience")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+
+          const first = progressOf(yield* nextOf(mine))
+          expect(first).toMatchObject({
+            effect: "Render",
+            attempt: 1,
+            seq: 1,
+            frame: { percent: 10 },
+          })
+          expect(progressOf(yield* nextOf(everyone))?.frame).toEqual({ percent: 10 })
+          expect(progressOf(yield* nextOf(mine))).toMatchObject({ seq: 2, frame: { percent: 60 } })
+
+          yield* Deferred.succeed(job.finish, undefined)
+          const seen = yield* quietFor(theirs, "1500 millis")
+
+          // Bob did not perform the effect: his `Mine` connection gets its frame and no progress.
+          expect(seen.map(frameOf)).toEqual([Rendered.make({ output: "audience.png" })])
+          // A member that lists no effect receives only its frames.
+          expect(frameOf(yield* nextOf(quiet))).toEqual(Rendered.make({ output: "audience.png" }))
+        }),
+      ),
+  },
+  {
+    name: "loses nothing durable when every progress message is dropped",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("dropped")
+          const mine = yield* test.connect(studio.ref, Mine, undefined)
+          const job = yield* plan("dropped", [10, 60])
+          yield* test.dropProgress((message) => message.ref.id === "dropped")
+          yield* studio.Render("dropped")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          yield* Deferred.succeed(job.finish, undefined)
+
+          const [arrived] = yield* mine.messages.pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.timeout(WAIT),
+            Effect.ensuring(test.dropProgress(() => false)),
+          )
+
+          expect(frameOf(arrived)).toEqual(Rendered.make({ output: "dropped.png" }))
+          expect(yield* test.receiptsFor(studio.ref, "Finished")).toBe(1)
+          expect(yield* test.inspect(studio.ref)).toMatchObject({ outbox: 0, effects: 0 })
+          const sent = (yield* test.progress).filter((record) => record.ref.id === "dropped")
+          expect(sent.some(ProgressRecord.$is("Progress"))).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "drops progress that arrives after the effect's route commits, on the same activation and after a move",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("late")
+          const mine = yield* test.connect(studio.ref, Mine, undefined)
+          const job = yield* plan("late", [10])
+          // Without the pool's close, only the route turn closes the effect on this activation.
+          yield* test.dropProgress((message) => message.ref.id === "late" && !("seq" in message))
+          yield* studio.Render("late")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          expect(progressOf(yield* nextOf(mine))?.frame).toEqual({ percent: 10 })
+          yield* Deferred.succeed(job.finish, undefined)
+          expect(frameOf(yield* nextOf(mine))).toEqual(Rendered.make({ output: "late.png" }))
+
+          const [sent] = (yield* test.progress).filter(
+            (record) => record.ref.id === "late" && ProgressRecord.$is("Progress")(record),
+          )
+
+          if (sent === undefined || !ProgressRecord.$is("Progress")(sent))
+            return yield* Effect.die(new Error("No progress was sent"))
+
+          // A frame the network delayed past the route, then one on a new activation.
+          yield* test.resendProgress({ ...sent, seq: sent.seq + 1 })
+          expect(yield* quietFor(mine, "1 second")).toEqual([])
+          yield* test.hibernate(studio.ref)
+          yield* test.resendProgress({ ...sent, seq: sent.seq + 2 })
+          expect(yield* quietFor(mine, "1 second")).toEqual([])
+          yield* test.dropProgress(() => false)
+        }),
+      ),
+  },
+  {
+    name: "streams progress to an Actor.stream handler through read.progress, filtered by effect input",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("streamed")
+          const one = yield* plan("streamed-one", [20, 40])
+          const other = yield* plan("streamed-other", [99])
+
+          const percents = yield* studio
+            .Percent("streamed-one")
+            .pipe(Stream.take(2), Stream.runCollect, Effect.forkChild)
+
+          // The subscription is open before any frame is reported.
+          yield* Effect.sleep("300 millis")
+          yield* studio.Render("streamed-one")
+          yield* studio.Render("streamed-other")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(other.go, undefined)
+          yield* Deferred.succeed(one.go, undefined)
+
+          expect([...(yield* Fiber.join(percents).pipe(Effect.timeout(WAIT)))]).toEqual([20, 40])
+          yield* Deferred.succeed(one.finish, undefined)
+          yield* Deferred.succeed(other.finish, undefined)
+        }),
+      ),
+  },
+  {
+    name: "delivers progress from an executor on runner C to a connection parked at holder A for an actor owned by runner B",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment }) =>
+      withStudioCluster(
+        environment,
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          let ref: ActorRef | undefined
+
+          for (let index = 0; ref === undefined && index < 200; index++) {
+            const candidate = (yield* cluster.on(0)(Studio.get(`parked-${index}`))).ref
+
+            if ((yield* cluster.owner(candidate)) === 1) ref = candidate
+          }
+
+          if (ref === undefined)
+            return yield* Effect.die(new Error("Runner 1 owns no probed actor"))
+          const target = ref
+
+          const mine = yield* cluster.on(0)(
+            ActorTest.use((test) => test.connect(target, Mine, undefined)),
+          )
+
+          const job = yield* plan(target.id, [30])
+          yield* cluster.on(0)(
+            Studio.get(target.id).pipe(Effect.flatMap((s) => s.Render(target.id))),
+          )
+
+          // The owner parks before the executor on runner 2 reports.
+          yield* cluster.on(1)(ActorTest.use((test) => test.hibernate(target)))
+
+          const before = (yield* cluster.on(0)(ActorTest.use((test) => test.inspect(target))))
+            .generation
+
+          yield* Deferred.succeed(job.go, undefined)
+
+          const first = yield* nextOf(mine)
+
+          expect(progressOf(first)).toMatchObject({ effect: "Render", frame: { percent: 30 } })
+
+          const after = (yield* cluster.on(0)(ActorTest.use((test) => test.inspect(target))))
+            .generation
+
+          expect(BigInt(after!) > BigInt(before!)).toBe(true)
+          yield* Deferred.succeed(job.finish, undefined)
         }),
       ),
   },

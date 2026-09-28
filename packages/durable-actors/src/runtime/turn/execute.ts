@@ -337,7 +337,7 @@ export const executeTurn = Effect.fnUntraced(function* (
         broadcasts: [],
         head: admitted.head,
         committed: { after: admitted.head, events: [], commandId: request.commandId },
-        outbox: { wake: false, cancelled: false },
+        outbox: { wake: false, cancelled: false, cancelledIds: [] },
         emitted: { emittedAtMs: 0, fed: false },
       } satisfies Plan
     }
@@ -376,7 +376,7 @@ export const executeTurn = Effect.fnUntraced(function* (
         broadcasts: [],
         head: admitted.head,
         committed: { after: admitted.head, events: [], commandId: request.commandId },
-        outbox: { wake: false, cancelled: false },
+        outbox: { wake: false, cancelled: false, cancelledIds: [] },
         emitted: { emittedAtMs: 0, fed: false },
       }) satisfies Plan
 
@@ -604,6 +604,8 @@ export const executeTurn = Effect.fnUntraced(function* (
       ...done.committed,
       emittedAtMs: done.emitted.emittedAtMs,
     } satisfies CommittedEvents,
+    /** Started effects this turn cancelled. */
+    cancelledEffects: done.outbox.cancelledIds,
   }
 })
 
