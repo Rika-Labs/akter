@@ -25,15 +25,24 @@ const inlineMarkdown = /[`*_]|\[([^\]]*)\]\([^)]*\)/g
 const plainText = (markdown: string) =>
   markdown.replace(inlineMarkdown, (_match, label: string | undefined) => label ?? "").trim()
 
-/** Reads the title and summary every published document declares in its header. */
+/**
+ * Reads the title and summary every published document declares in its
+ * header: the first line is the `# ` title and the next non-blank line is the
+ * `**Responsibility:**` line. A later H1 or responsibility line, such as one in
+ * a code example, does not count.
+ */
 export const readHeader = (input: { readonly source: string; readonly markdown: string }) =>
   Effect.gen(function* () {
-    const title = /^# (.+)$/m.exec(input.markdown)?.[1]
+    const [first = "", ...rest] = input.markdown.split("\n")
+
+    const title = /^# (.+)$/.exec(first)?.[1]
 
     if (title === undefined)
       return yield* PageHeaderMissing.make({ source: input.source, field: "title" })
 
-    const summary = /^\*\*Responsibility:\*\*(.+)$/m.exec(input.markdown)?.[1]
+    const headerLine = rest.find((line) => line.trim() !== "") ?? ""
+
+    const summary = /^\*\*Responsibility:\*\*(.+)$/.exec(headerLine)?.[1]
 
     if (summary === undefined)
       return yield* PageHeaderMissing.make({ source: input.source, field: "responsibility" })
