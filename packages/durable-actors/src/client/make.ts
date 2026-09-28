@@ -105,7 +105,7 @@ export type ClientHandle<
   Members extends MemberRecord,
   Id = string,
   State = unknown,
-  Events extends EventClass = EventClass,
+  Events extends EventClass = never,
 > = {
   readonly [K in keyof Members]: Members[K] extends AnyConnection
     ? ConnectionClient<Members[K]>
@@ -128,7 +128,7 @@ export type ActorClient<
   Kind extends ServedDefinition["key"],
   Id,
   State = unknown,
-  Events extends EventClass = EventClass,
+  Events extends EventClass = never,
 > = {
   /** A fresh command id, for a caller that saves it before sending the command. */
   readonly commandId: () => Promise<string>
