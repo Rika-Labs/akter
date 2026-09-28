@@ -1,5 +1,6 @@
 import type { Unify } from "effect"
 import type { NodeInspectSymbol } from "effect/Inspectable"
+import type { WorkflowEngine } from "effect/unstable/workflow"
 import {
   Cause,
   Context,
@@ -1931,7 +1932,7 @@ const make = <
     | Exclude<R, Turn | InTurn>
     | Exclude<RC, Connection>
     | Exclude<RS, Read | InStream>
-    | Exclude<RW, Workflow>
+    | Exclude<RW, Workflow | WorkflowEngine.WorkflowInstance | Scope.Scope>
     | Exclude<RB, Scope.Scope>
     | InternalActors
   > =>
@@ -1957,7 +1958,12 @@ const make = <
             Exclude<R, Turn | InTurn> | Exclude<RC, Connection> | Exclude<RS, Read | InStream>
           >()
 
-          const workflowServices = yield* Effect.context<Exclude<RW, Workflow>>()
+          // Without the layer's scope: a body's own scope is its run's.
+          const workflowServices = Context.omit(Scope.Scope)(
+            yield* Effect.context<
+              Exclude<RW, Workflow | WorkflowEngine.WorkflowInstance | Scope.Scope>
+            >(),
+          )
 
           const { commands, connections, streams } = yield* commandsOf(
             handlers,
@@ -2017,7 +2023,7 @@ const make = <
       | Exclude<R, Turn | InTurn>
       | Exclude<RC, Connection>
       | Exclude<RS, Read | InStream>
-      | Exclude<RW, Workflow>
+      | Exclude<RW, Workflow | WorkflowEngine.WorkflowInstance | Scope.Scope>
       | Exclude<RB, Scope.Scope>
       | InternalActors
     >
