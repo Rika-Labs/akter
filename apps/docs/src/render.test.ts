@@ -62,6 +62,21 @@ describe("readHeader", () => {
     }),
   )
 
+  it.effect("keeps literal punctuation that is not Markdown syntax", () =>
+    Effect.gen(function* () {
+      const read = yield* readHeader({
+        source: "api/x.md",
+        markdown:
+          "# The actor_id column\n\n**Responsibility:** scope rows by actor_id and 2*3 **tables**.\n",
+      })
+
+      expect(read).toEqual({
+        title: "The actor_id column",
+        summary: "scope rows by actor_id and 2*3 tables.",
+      })
+    }),
+  )
+
   it.effect(
     "rejects a page whose title or responsibility line is missing or not in its header",
     () =>
