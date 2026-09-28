@@ -1,4 +1,4 @@
-import { Cause, Duration, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
+import { Cause, DateTime, Duration, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Intent, NotCreated, System, User } from "../../index.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
@@ -282,7 +282,7 @@ const DAY = 24 * HOUR
 
 /** Midnight UTC of the `nth` Sunday of `month` (0-based) in `year`. */
 const nthSunday = (year: number, month: number, nth: number) => {
-  const weekday = new Date(Date.UTC(year, month, 1)).getUTCDay()
+  const weekday = DateTime.getPartUtc(DateTime.makeUnsafe(Date.UTC(year, month, 1)), "weekDay")
 
   return Date.UTC(year, month, 1 + ((7 - weekday) % 7) + 7 * (nth - 1))
 }
@@ -296,7 +296,7 @@ const fallBack = (year: number) => nthSunday(year, 10, 1) + 6 * HOUR
 
 /** The first transition at least two days after `now`, so a case can open its actor before it. */
 const upcoming = (transition: (year: number) => number, now: number) => {
-  let year = new Date(now).getUTCFullYear()
+  let year = DateTime.getPartUtc(DateTime.makeUnsafe(now), "year")
 
   while (transition(year) < now + 2 * DAY) year++
 

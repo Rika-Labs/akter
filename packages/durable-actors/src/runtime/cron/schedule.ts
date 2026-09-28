@@ -35,17 +35,13 @@ const EVERY_PREFIX = /^@every(?:\s+(.*))?$/
 
 const DAY_MS = 86_400_000
 
-/** A parsed declaration: a cron expression in a zone, or a fixed interval. */
-type Timing =
-  | { readonly _tag: "Cron"; readonly zone: string; readonly cron: Cron.Cron }
-  | { readonly _tag: "Every"; readonly millis: number }
-
-const timingOf = (declaration: string): Timing => {
+/** A declaration's timer key and the first scheduled instant strictly after a time. */
+const scheduleOf = (declaration: string): Pick<CronEntry, "key" | "next"> => {
   const normalized = declaration.trim().replace(/\s+/g, " ")
   const zoned = ZONE_PREFIX.exec(normalized)
   const zone = zoned?.[1] ?? "UTC"
-  const schedule = zoned?.[2] ?? normalized
-  const every = EVERY_PREFIX.exec(schedule)
+  const expression = zoned?.[2] ?? normalized
+  const every = EVERY_PREFIX.exec(expression)
 
   if (every !== null) {
     if (zoned !== null)
@@ -60,7 +56,7 @@ const timingOf = (declaration: string): Timing => {
         `policy.cron "${declaration}" needs an interval of whole milliseconds, at least 1 second`,
       )
 
-    return { _tag: "Every", millis }
+    return { key: `${CRON_PREFIX}@every ${millis}ms`, next: nextEvery(millis) }
   }
 
   // Offsets such as +05:00 resolve as zones too, but they have no daylight
@@ -69,12 +65,15 @@ const timingOf = (declaration: string): Timing => {
     throw new Error(`policy.cron "${declaration}" names an unknown time zone "${zone}"`)
 
   // Fields are read in UTC; `nextInZone` maps wall-clock times to instants.
-  const parsed = Cron.parse(schedule, "UTC")
+  const parsed = Cron.parse(expression, "UTC")
 
   if (Result.isFailure(parsed))
     throw new Error(`policy.cron "${declaration}" does not parse: ${parsed.failure.message}`)
 
-  return { _tag: "Cron", zone, cron: parsed.success }
+  return {
+    key: `${CRON_PREFIX}${zone} ${canonicalOf(parsed.success)}`,
+    next: nextInZone(zone, parsed.success),
+  }
 }
 
 /**
@@ -97,18 +96,13 @@ export const resolveCron = ({
   const declarations = new Map<string, string>()
 
   for (const [declaration, command] of Object.entries(declared ?? {})) {
-    const timing = timingOf(declaration)
+    const { key, next } = scheduleOf(declaration)
 
     if (!commands.includes(command))
       throw new Error(`policy.cron "${declaration}" must name a command of this actor`)
 
     if (!SchemaAST.isVoid(command.input.ast))
       throw new Error(`policy.cron "${declaration}" must name a command without input`)
-
-    const key =
-      timing._tag === "Every"
-        ? `${CRON_PREFIX}@every ${timing.millis}ms`
-        : `${CRON_PREFIX}${timing.zone} ${canonicalOf(timing.cron)}`
 
     const duplicate = declarations.get(key)
 
@@ -118,7 +112,7 @@ export const resolveCron = ({
     declarations.set(key, declaration)
     entries.push({
       key,
-      next: timing._tag === "Every" ? nextEvery(timing.millis) : nextInZone(timing),
+      next,
       command: command.tag,
       payload: emptyPayload(command),
     })
@@ -190,7 +184,7 @@ const instantOf = (zone: DateTime.TimeZone, wall: number) => {
  * repeated time's second occurrence is never scheduled, however late the tick
  * is rewritten, so it cannot fire twice.
  */
-const nextInZone = ({ zone, cron }: { readonly zone: string; readonly cron: Cron.Cron }) => {
+const nextInZone = (zone: string, cron: Cron.Cron) => {
   if (zone === "UTC") return (afterMs: number) => Cron.next(cron, afterMs).getTime()
 
   const named = DateTime.zoneMakeNamedUnsafe(zone)

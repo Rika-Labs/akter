@@ -1,3 +1,4 @@
+import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
 import { Actor } from "../../index.ts"
 import { resolveCron } from "./schedule.ts"
@@ -18,7 +19,7 @@ const ticks = (declaration: string, from: string, count: number) => {
 
   for (let index = 0; index < count; index++) {
     at = entry.next(at)
-    out.push(new Date(at).toISOString())
+    out.push(DateTime.formatIso(DateTime.makeUnsafe(at)))
   }
 
   return out
