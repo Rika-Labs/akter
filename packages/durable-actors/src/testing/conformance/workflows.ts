@@ -1735,6 +1735,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const shipper = yield* Shipper.get("clocks")
           const run = yield* shipper.Watch({ mode: "clocks", orderId: "clocks" })
           yield* suspendedRow(run.executionId)
+
           const marks = () =>
             ["mark-a", "mark-b"].map((label) => fixture.workflows.runs.get(`${label}:clocks`) ?? 0)
 
