@@ -17,6 +17,7 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
+import { hashedPayload } from "../subscriptions/identity.ts"
 import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
@@ -69,6 +70,70 @@ interface Admission {
   readonly payload_hash: string | null
   readonly outcome: string | null
   readonly head: string
+  /** The subscriber's cursor row for a subscription delivery, read with the fence. */
+  readonly sub_epoch?: string | null
+  readonly sub_active?: boolean | null
+  readonly sub_applied?: string | null
+}
+
+type SubscriptionDelivery = NonNullable<Request["delivery"]>
+
+/** A subscriber's cursor row as the fenced admission read it; all null when there is none. */
+type Cursor = Pick<Admission, "sub_epoch" | "sub_active" | "sub_applied">
+
+/**
+ * The cursor row once `delivery` applied, as its commit writes it: a routed
+ * delivery creates the epoch-0 row or raises its position, a dynamic one moves
+ * the row of its own epoch, and a rejection deactivates that row.
+ */
+const applied = (delivery: SubscriptionDelivery, cursor: Cursor): Cursor => {
+  const epoch = cursor.sub_epoch ?? null
+
+  if (delivery.kind === "rejected")
+    return epoch === delivery.epoch ? { ...cursor, sub_active: false } : cursor
+
+  if (delivery.epoch === "0") {
+    if (epoch === null) return { sub_epoch: "0", sub_active: true, sub_applied: delivery.position }
+
+    if (epoch !== "0") return cursor
+
+    const position =
+      BigInt(cursor.sub_applied!) >= BigInt(delivery.position)
+        ? cursor.sub_applied!
+        : delivery.position
+
+    return { ...cursor, sub_applied: position }
+  }
+
+  return epoch === delivery.epoch ? { ...cursor, sub_applied: delivery.position } : cursor
+}
+
+type Acknowledgement = (typeof Outcome.cases.Acknowledged.Type)["reason"]
+
+/**
+ * How the subscriber's cursor row settles a subscription delivery before its
+ * handler runs: undefined runs the handler. A row of a newer epoch makes the
+ * delivery stale, an inactive row at its epoch means it was unsubscribed, and
+ * a position at or below `applied` was already applied. A dynamic
+ * subscription always has a row, so only a routed one (epoch 0) creates it.
+ */
+const acknowledgement = (
+  delivery: SubscriptionDelivery,
+  admission: Cursor,
+): Acknowledgement | undefined => {
+  const epoch = BigInt(delivery.epoch)
+
+  if (admission.sub_epoch == null) return epoch > 0n ? "Stale" : undefined
+
+  const stored = BigInt(admission.sub_epoch)
+
+  if (stored !== epoch) return "Stale"
+
+  if (admission.sub_active !== true) return "Unsubscribed"
+
+  if (delivery.kind === "rejected") return undefined
+
+  return BigInt(admission.sub_applied!) >= BigInt(delivery.position) ? "AlreadyApplied" : undefined
 }
 
 /**
@@ -155,7 +220,8 @@ interface Plan {
    * only after it has.
    */
   readonly committed: ReadonlyArray<Omit<CommittedEvents, "emittedAtMs">>
-  readonly emitted: ReadonlyArray<{ readonly emittedAtMs: number }>
+  /** Each events statement's stamp, and whether a subscription feed row is due. */
+  readonly emitted: ReadonlyArray<{ readonly emittedAtMs: number; readonly fed: boolean }>
   readonly outbox: ReadonlyArray<OutboxReplies>
 }
 
@@ -263,11 +329,30 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
+  // A delivery's canonical payload binds its identity, not the event's bytes.
+  const canonicalsOf = (batch: ReadonlyArray<Delivery>) =>
+    Effect.forEach(batch, ({ request }) => hashedPayload(request))
+
+  const cursorOf = (delivery: SubscriptionDelivery) =>
+    sql`${actorRow} AND subscription = ${delivery.subscription}
+      AND source_type = ${delivery.sourceType} AND source_id = ${delivery.sourceId}`
+
+  // A routed subscriber's row starts at epoch 0 with its first delivery.
+  const applyCursor = (delivery: SubscriptionDelivery) =>
+    Effect.asVoid(sql`INSERT INTO actor_subscription_cursors (routing_key, tenant_id, actor_type, actor_id,
+        subscription, source_type, source_id, epoch, active, applied)
+      VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${delivery.subscription},
+        ${delivery.sourceType}, ${delivery.sourceId}, 0, true, ${delivery.position})
+      ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id)
+      DO UPDATE SET applied = greatest(actor_subscription_cursors.applied, EXCLUDED.applied)
+      WHERE actor_subscription_cursors.epoch = 0`)
+
   // Builds a batch's admission group against `view`, the activation as its
   // handlers will find it once every earlier batch commits. `resume` runs the
   // rest of the batch once the group's replies arrive.
   const admit = (
     batch: ReadonlyArray<Delivery>,
+    canonicals: ReadonlyArray<string>,
     view: View,
     session: Session,
     begin: ReadonlyArray<Statement>,
@@ -282,12 +367,34 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     let bumped: string | undefined
     let stored: ReadonlyArray<{ key: string; value: Uint8Array }> = []
 
+    // Subscription deliveries read their cursor rows in the fenced admission
+    // statement; a batch without one keeps the statement unchanged.
+    const subscribed = batch.some(({ request }) => request.delivery !== undefined)
+
     const commands = sql.csv(
-      batch.map(
-        ({ request }, index) =>
-          sql`(${index}::integer, ${request.commandId}::text, ${request.payload}::text)`,
+      batch.map(({ request: { commandId, delivery } }, index) =>
+        subscribed
+          ? sql`(${index}::integer, ${commandId}::text, ${canonicals[index]!}::text,
+              ${delivery?.subscription ?? null}::text, ${delivery?.sourceType ?? null}::text,
+              ${delivery?.sourceId ?? null}::text)`
+          : sql`(${index}::integer, ${commandId}::text, ${canonicals[index]!}::text)`,
       ),
     )
+
+    const cursorColumns = subscribed
+      ? sql`, s.epoch::text AS sub_epoch, s.active AS sub_active, s.applied::text AS sub_applied`
+      : sql.literal("")
+
+    const values = subscribed
+      ? sql`(VALUES ${commands}) AS c (ordinal, command_id, payload, subscription, source_type, source_id)`
+      : sql`(VALUES ${commands}) AS c (ordinal, command_id, payload)`
+
+    const cursorJoin = subscribed
+      ? sql`LEFT JOIN actor_subscription_cursors s ON s.routing_key = g.routing_key
+          AND s.tenant_id = g.tenant_id AND s.actor_type = g.actor_type AND s.actor_id = g.actor_id
+          AND s.subscription = c.subscription AND s.source_type = c.source_type
+          AND s.source_id = c.source_id`
+      : sql.literal("")
 
     // None of these takes a parameter from another's reply. The insert comes
     // before the fenced read, so a brand-new actor's receipts are resolved
@@ -309,10 +416,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             g.generation::text AS generation, g.created,
             c.payload::jsonb::text AS canonical,
             r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
+            ${cursorColumns}
           FROM actor_generations g
-          CROSS JOIN (VALUES ${commands}) AS c (ordinal, command_id, payload)
+          CROSS JOIN ${values}
           LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
             AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
+          ${cursorJoin}
           WHERE g.routing_key = ${routingKey} AND g.tenant_id = ${tenant}
             AND g.actor_type = ${actor} AND g.actor_id = ${id}
           ORDER BY c.ordinal
@@ -380,13 +489,22 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       const receipts: Array<ReceiptRow> = []
       let created = first.created
       let creates = false
+      // A cold activation that replays or acknowledges keeps the generation it
+      // acquired, so work the replay wakes runs under it.
       let replayed = false
       let wake = false
       // Broadcasts of committed successes, and how many events the batch appends.
       const broadcasts: Array<Broadcast> = []
       let events = 0
       const committed: Array<Omit<CommittedEvents, "emittedAtMs">> = []
-      const emitted: Array<{ readonly emittedAtMs: number }> = []
+      const emitted: Array<{ readonly emittedAtMs: number; readonly fed: boolean }> = []
+      // Cursor rows as the batch's earlier deliveries left them, so a later
+      // delivery of the same subscription is checked against them.
+      const cursors = new Map<string, Cursor>()
+
+      const cursorKey = (delivery: SubscriptionDelivery) =>
+        JSON.stringify([delivery.subscription, delivery.sourceType, delivery.sourceId])
+
       const outboxes: Array<OutboxReplies> = []
 
       for (const [index, { request, command }] of batch.entries()) {
@@ -421,7 +539,59 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         if (command.internal && !isSystem(request.caller))
           return yield* Effect.die(new Error("Internal commands require a System caller"))
 
+        const { delivery } = request
+
+        const cursor =
+          delivery === undefined ? admitted : (cursors.get(cursorKey(delivery)) ?? admitted)
+
+        const apply = (delivery: SubscriptionDelivery) =>
+          cursors.set(cursorKey(delivery), applied(delivery, cursor))
+
+        // Acknowledged without running the handler or writing a receipt.
+        const acknowledge = (reason: Acknowledgement) => {
+          replayed = true
+          settled.push(Result.succeed(Outcome.cases.Acknowledged.make({ reason })))
+        }
+
+        // Only the relay's subscription deliveries reach a handler, and only a
+        // handler takes one, so no caller can reach it around the cursor or route.
+        if (command.handler || delivery !== undefined) {
+          const caller = request.caller
+
+          if (
+            !command.handler ||
+            delivery === undefined ||
+            !isSystem(caller) ||
+            caller.source !== "subscription" ||
+            caller.ref?.actor !== delivery.sourceType ||
+            caller.ref.id !== delivery.sourceId
+          )
+            return yield* Effect.die(
+              new Error("Subscription handlers accept only subscription deliveries"),
+            )
+
+          if (caller.ref.tenant !== tenant)
+            return yield* Effect.die(new Error("A subscription delivery crosses tenants"))
+
+          const reason = acknowledgement(delivery, cursor)
+
+          if (reason !== undefined) {
+            acknowledge(reason)
+            continue
+          }
+        }
+
         if (policy.createdBy !== undefined && !created && policy.createdBy !== request.command) {
+          // A routed event for a subscriber its creating command hasn't created
+          // is skipped, and the cursor keeps a stale redelivery of it from
+          // running after another command creates the subscriber.
+          if (delivery !== undefined && delivery.epoch === "0" && delivery.kind === "event") {
+            staged.push(applyCursor(delivery))
+            apply(delivery)
+            acknowledge("NotCreated")
+            continue
+          }
+
           settled.push(Result.fail(ActorError.make({ reason: NotCreated.make({}) })))
           continue
         }
@@ -448,6 +618,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           : new Map(view.state!)
 
         const given = next
+        const head = String(BigInt(first.head) + BigInt(events))
 
         // The first handler's savepoint went out with admission; each later
         // one's goes out with that handler's first statement, if it has one.
@@ -458,7 +629,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         const business = yield* Effect.gen(function* () {
           yield* hooks.at("beforeHandler", request)
 
-          return yield* command.run(request, [...given], connections)
+          return yield* command.run(request, [...given], { head, connections })
         }).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
 
         const result: BusinessResult = Result.isSuccess(business)
@@ -498,7 +669,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           const appended = yield* eventsStatement(request, routingKey, result.events)
           staged.push(appended.statement)
           committed.push({
-            after: String(BigInt(first.head) + BigInt(events)),
+            after: head,
             events: result.events,
             commandId: request.commandId,
           })
@@ -534,6 +705,20 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         staged.push(...outbox.statements)
         outboxes.push(outbox.replies)
 
+        // The delivery's position is applied with its receipt, declared failures included.
+        if (delivery !== undefined) {
+          apply(delivery)
+          staged.push(
+            delivery.kind === "rejected"
+              ? Effect.asVoid(sql`UPDATE actor_subscription_cursors SET active = false
+                  WHERE ${cursorOf(delivery)} AND epoch = ${delivery.epoch}`)
+              : delivery.epoch === "0"
+                ? applyCursor(delivery)
+                : Effect.asVoid(sql`UPDATE actor_subscription_cursors SET applied = ${delivery.position}
+                    WHERE ${cursorOf(delivery)} AND epoch = ${delivery.epoch}`),
+          )
+        }
+
         receipts.push({
           routing_key: routingKey,
           tenant_id: tenant,
@@ -550,10 +735,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         settled.push(Result.succeed(result.outcome))
       }
 
-      // Nothing ran and nothing replays on a newly acquired generation, so
-      // there is nothing worth committing. A cold activation that replays keeps
-      // the generation it acquired, so work the replay wakes runs under it.
-      if (receipts.length === 0 && !(cold && replayed))
+      // Nothing ran, nothing replays on a newly acquired generation, and no
+      // cursor moved, so there is nothing worth committing.
+      if (receipts.length === 0 && staged.length === 0 && !(cold && replayed))
         return {
           writes: undefined,
           settled,
@@ -641,7 +825,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
     answering = true
 
-    if (plan.wake || plan.outbox.some((replies) => replies.wake)) yield* (yield* OutboxRuntime).wake
+    if (
+      plan.wake ||
+      plan.outbox.some((replies) => replies.wake) ||
+      plan.emitted.some((stamp) => stamp.fed)
+    )
+      yield* (yield* OutboxRuntime).wake
 
     if (plan.outbox.some((replies) => replies.cancelled)) yield* (yield* OutboxRuntime).cancelled
 
@@ -758,7 +947,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             if (pending === undefined) {
               yield* run.prepare
 
-              const fresh = admit(batch, view(), session, [begin])
+              const fresh = admit(batch, yield* canonicalsOf(batch), view(), session, [begin])
 
               pending = {
                 admission: fresh,
@@ -812,7 +1001,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   return { plan, ending, tag, following, next: undefined }
                 }
 
-                const upcoming = admit(following, after, session, [begin])
+                const upcoming = admit(following, yield* canonicalsOf(following), after, session, [
+                  begin,
+                ])
 
                 const flight = yield* queue({ scope, group: [...commit, ...upcoming.group] })
                 yield* replies(flight.slice(0, commit.length))
@@ -884,7 +1075,14 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               sql
                 .withTransaction(
                   Effect.gen(function* () {
-                    const admission = admit(admitting, view(), session, [])
+                    const admission = admit(
+                      admitting,
+                      yield* canonicalsOf(admitting),
+                      view(),
+                      session,
+                      [],
+                    )
+
                     yield* sequential(admission.group)
                     const decided = yield* admission.resume()
 

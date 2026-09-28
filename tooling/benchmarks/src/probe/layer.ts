@@ -12,7 +12,7 @@ import {
 } from "./contract.ts"
 import { EffectProbeLive } from "./effects.ts"
 import { ArchiveLive } from "./archive.ts"
-import { BatchProbeLive } from "./batches.ts"
+import { BatchProbeLive } from "./turns/batches.ts"
 import { LedgerLive } from "./ledger.ts"
 import { MintLive } from "./mint.ts"
 import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
