@@ -1,13 +1,13 @@
 {
-  "name": "@durable-actors/coding-agent",
+  "name": "@durable-actors/subscriptions",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "CODING_AGENT_BACKEND=pglite bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/coding-agent/src",
-    "test:integration": "CODING_AGENT_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/coding-agent/src"
+    "test": "SUBSCRIPTIONS_BACKEND=pglite bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/subscriptions/src",
+    "test:integration": "SUBSCRIPTIONS_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/subscriptions/src"
   },
   "dependencies": {
     "@durable-actors/core": "workspace:*",
