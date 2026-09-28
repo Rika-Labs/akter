@@ -181,6 +181,8 @@ interface Held {
   inBytes: number
   nextSeq: number
   lastAuthorized: number
+  /** When the owner acknowledged the open, which proved the connection's row. */
+  openedAt: number
   checking: boolean
   resync:
     | {
@@ -777,8 +779,12 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       if (!connection.open) continue
       const every = connection.type.reauthorizeMs
 
-      // A holder that cannot confirm its rows for a whole bound stops serving them.
-      if (livenessFailedSince !== undefined && at - livenessFailedSince >= every) {
+      // A holder that cannot confirm its rows for a whole bound stops serving them;
+      // a connection opened since the checks began failing counts from its open.
+      if (
+        livenessFailedSince !== undefined &&
+        at - Math.max(livenessFailedSince, connection.openedAt) >= every
+      ) {
         yield* end(connection, ended("ActorUnavailable", true), false)
 
         continue
@@ -910,6 +916,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       inBytes: 0,
       nextSeq: 0,
       lastAuthorized: yield* now,
+      openedAt: 0,
       checking: false,
       resync: undefined,
       resyncs: [],
@@ -981,6 +988,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
     // An open handler that closed the connection leaves it already ended with `ServerClosed`.
     if (!connection.ended) {
+      connection.openedAt = yield* now
       connection.open = true
 
       // Its opening frames and any broadcasts the lost owner never flushed may be gone.
