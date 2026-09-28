@@ -1,16 +1,25 @@
 import {
+  type Cause,
   Context,
   DateTime,
   Deferred,
   Effect,
+  Fiber,
   Layer,
   Option,
   Predicate,
   Queue,
   Schema,
   type Scope,
+  Stream,
 } from "effect"
-import { HttpRouter, HttpServer } from "effect/unstable/http"
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  HttpRouter,
+  HttpServer,
+} from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, User } from "../../index.ts"
 import { Unauthorized } from "../../errors/actor.ts"
@@ -57,7 +66,7 @@ const SocketRoom = Actor.make("SocketRoom", {
   policy: { reauthorizeEvery: "2 seconds" },
 })
 
-export const transportsLayer = SocketRoom.toLayer(
+const socketLayer = SocketRoom.toLayer(
   Effect.succeed({
     Post: Effect.fnUntraced(function* (text: string) {
       const turn = yield* SocketRoom.Turn
@@ -101,6 +110,40 @@ export const transportsLayer = SocketRoom.toLayer(
   }),
 )
 
+class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
+
+const Tell = Actor.command("Tell", { input: Schema.String })
+
+const Note = Actor.command("Note", { input: Schema.String })
+
+const Burst = Actor.command("Burst", { input: Schema.Int })
+
+/** The actor served as an event feed: `Said` is served, `Noted` is declared but not a feed. */
+const FeedRoom = Actor.make("FeedRoom", {
+  key: Schema.String,
+  events: [Said, Noted],
+  feeds: [Said],
+  api: { Tell, Note, Burst },
+  policy: { reauthorizeEvery: "2 seconds" },
+})
+
+const feedLayer = FeedRoom.toLayer(
+  Effect.succeed({
+    Tell: Effect.fnUntraced(function* (text: string) {
+      yield* (yield* FeedRoom.Turn).emit(Said.make({ text }))
+    }),
+    Note: Effect.fnUntraced(function* (text: string) {
+      yield* (yield* FeedRoom.Turn).emit(Noted.make({ text }))
+    }),
+    Burst: Effect.fnUntraced(function* (count: number) {
+      const turn = yield* FeedRoom.Turn
+
+      for (let index = 0; index < count; index++)
+        yield* turn.emit(Said.make({ text: `burst-${index}` }))
+    }),
+  }),
+)
+
 /**
  * `tenant:subject`, or `tenant:subject:expiresAtMs` for a credential with an
  * expiry, which the holder enforces on its own clock; `expired` is refused.
@@ -128,6 +171,8 @@ const tokens = Actor.auth.make((request) =>
 )
 
 /** Serves `SocketRoom` from a fresh listening server for the rest of the scope; returns its host. */
+export const transportsLayer = Layer.mergeAll(socketLayer, feedLayer)
+
 const serveSockets = Effect.fnUntraced(function* (
   environment: ConformanceEnvironment,
   options?: Partial<ServeOptions<never>>,
@@ -135,7 +180,7 @@ const serveSockets = Effect.fnUntraced(function* (
   const context = yield* Effect.context<InternalActors>()
 
   const app = Actor.serve({
-    actors: [SocketRoom],
+    actors: [SocketRoom, FeedRoom],
     auth: tokens,
     basePath: "/api",
     ...options,
@@ -440,6 +485,122 @@ const headerSocket = (host: string, id: string, authorization: string) =>
 
     return { status, send, next, closed: Deferred.await(closed) }
   })
+
+interface SseMessage {
+  readonly id: string | undefined
+  readonly event: string | undefined
+  readonly data: string
+}
+
+const FeedEntry = Schema.fromJsonString(
+  Schema.Struct({
+    event: Schema.toCodecJson(Said),
+    commandId: Schema.String,
+    timestamp: Schema.Finite,
+  }),
+)
+
+const decodeEntry = Schema.decodeUnknownEffect(FeedEntry)
+
+const decodeBody = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
+
+/**
+ * An event feed read over `fetch`, as the Promise client reads one: SSE
+ * messages parsed from the body, comments skipped. Closed with the scope.
+ */
+const feed = (host: string, id: string, query: string, headers: Readonly<Record<string, string>>) =>
+  Effect.gen(function* () {
+    const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
+
+    const response = yield* client
+      .execute(
+        HttpClientRequest.get(`http://${host}/api/actors/FeedRoom/${id}/events?${query}`, {
+          headers,
+        }),
+      )
+      .pipe(Effect.orDie)
+
+    const messages = yield* Queue.unbounded<SseMessage, Cause.Done>()
+
+    if (response.status !== 200)
+      return { status: response.status, body: yield* response.text.pipe(Effect.orDie), messages }
+
+    let text = ""
+
+    // Closing the scope interrupts the read, which aborts the request.
+    yield* response.stream.pipe(
+      Stream.decodeText,
+      Stream.runForEach((chunk) =>
+        Effect.gen(function* () {
+          text += chunk
+          let end = text.indexOf("\n\n")
+
+          while (end !== -1) {
+            const block = text.slice(0, end)
+            text = text.slice(end + 2)
+            end = text.indexOf("\n\n")
+            const fields = new Map<string, string>()
+
+            for (const line of block.split("\n"))
+              if (!line.startsWith(":")) {
+                const colon = line.indexOf(":")
+                fields.set(line.slice(0, colon), line.slice(colon + 2))
+              }
+
+            if (fields.has("data"))
+              yield* Queue.offer(messages, {
+                id: fields.get("id"),
+                event: fields.get("event"),
+                data: fields.get("data")!,
+              })
+          }
+        }),
+      ),
+      Effect.ignore,
+      Effect.andThen(Queue.end(messages)),
+      Effect.forkScoped,
+    )
+
+    return { status: 200, body: "", messages }
+  })
+
+/** The next `count` feed messages, failing the test if they don't arrive in time. */
+const take = (messages: Queue.Dequeue<SseMessage, Cause.Done>, count: number, timeout = 20_000) =>
+  Effect.forEach(
+    Array.from({ length: count }, (_, index) => index),
+    () =>
+      Queue.take(messages).pipe(
+        Effect.catch(() => Effect.die(new Error("The feed ended"))),
+        Effect.timeoutOrElse({
+          duration: timeout,
+          orElse: () => Effect.die(new Error("No feed message arrived")),
+        }),
+      ),
+  )
+
+/** The `Said` text a feed message carries. */
+const textOf = (message: SseMessage) =>
+  decodeEntry(message.data).pipe(
+    Effect.orDie,
+    Effect.map((entry) => entry.event.text),
+  )
+
+/** The reason of a feed's `end` message or a refused feed's body, without its `_tag` key. */
+const feedReason = (data: string) =>
+  decodeBody(data).pipe(
+    Effect.flatMap(decodeReason),
+    Effect.orDie,
+    Effect.map(({ reason }) => ({ tag: reason._tag, code: reason.code, cause: reason.cause })),
+  )
+
+const CursorBody = Schema.Struct({ _tag: Schema.String, cursor: Schema.String })
+
+const cursorError = (body: string) =>
+  decodeBody(body).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(CursorBody)),
+    Effect.orDie,
+    Effect.map((error) => ({ tag: error._tag, cursor: error.cursor })),
+  )
 
 const rows = Effect.fnUntraced(function* (ref: ActorRef) {
   const sql = yield* SqlClient.SqlClient
@@ -954,6 +1115,316 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             expect(yield* frameOf(yield* ws.next())).toEqual(
               Hello.make({ name: "alice", resumed: true }),
             )
+          }).pipe(Effect.provideContext(context))
+        }),
+      ),
+  },
+  {
+    name: "serves an event feed: committed events after the cursor, then live ones, with no gap or repeat through a commit race",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("sse-race")
+          yield* room.Tell("one")
+          yield* room.Note("not served")
+          yield* room.Tell("two")
+
+          // Commits race the open and its first read.
+          const racing = yield* Effect.forEach(
+            Array.from({ length: 20 }, (_, index) => index),
+            (index) => room.Tell(`race-${index}`),
+            { concurrency: 4 },
+          ).pipe(Effect.forkScoped)
+
+          const opened = yield* feed(host, "sse-race", "event=Said&after=0", {
+            authorization: token(),
+          })
+
+          expect(opened.status).toBe(200)
+          yield* Fiber.join(racing)
+          yield* room.Tell("live")
+
+          const received = yield* take(opened.messages, 23)
+          const cursors = received.map((message) => Number(message.id))
+
+          // Every Said event once, in cursor order; the Noted event between them is not served.
+          expect(cursors).toEqual([...cursors].sort((left, right) => left - right))
+          expect(new Set(cursors).size).toBe(23)
+          expect(cursors.includes(2)).toBe(false)
+          expect(received.every((message) => message.event === "Said")).toBe(true)
+          expect(yield* textOf(received[0]!)).toBe("one")
+          expect(yield* textOf(received.at(-1)!)).toBe("live")
+          const entry = yield* decodeEntry(received[0]!.data).pipe(Effect.orDie)
+          expect(entry.commandId.startsWith("v1.")).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "resumes a feed from Last-Event-ID with no gap or repeat, and answers UnknownCursor and RetentionGap before streaming",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("sse-resume")
+
+          for (const text of ["a", "b", "c", "d"]) yield* room.Tell(text)
+
+          const after = yield* feed(host, "sse-resume", "event=Said&after=2", {
+            authorization: token(),
+          })
+
+          expect((yield* take(after.messages, 2)).map((message) => message.id)).toEqual(["3", "4"])
+
+          // Last-Event-ID overrides `after`, as a browser's own reconnect sends it.
+          const resumed = yield* feed(host, "sse-resume", "event=Said&after=0", {
+            authorization: token(),
+            "last-event-id": "3",
+          })
+
+          expect((yield* take(resumed.messages, 1)).map((message) => message.id)).toEqual(["4"])
+
+          const future = yield* feed(host, "sse-resume", "event=Said&after=99", {
+            authorization: token(),
+          })
+
+          expect(future.status).toBe(404)
+          expect(yield* cursorError(future.body)).toEqual({ tag: "UnknownCursor", cursor: "99" })
+
+          const malformed = yield* feed(host, "sse-resume", "event=Said&after=abc", {
+            authorization: token(),
+          })
+
+          expect(malformed.status).toBe(404)
+
+          // Pruning removes a prefix; a cursor before it can't resume without a gap.
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`DELETE FROM actor_events WHERE tenant_id = ${room.ref.tenant}
+            AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id} AND sequence <= 2`.pipe(
+            Effect.orDie,
+          )
+
+          const pruned = yield* feed(host, "sse-resume", "event=Said&after=1", {
+            authorization: token(),
+          })
+
+          expect(pruned.status).toBe(410)
+          expect(yield* cursorError(pruned.body)).toEqual({ tag: "RetentionGap", cursor: "1" })
+
+          const kept = yield* feed(host, "sse-resume", "event=Said&after=2", {
+            authorization: token(),
+          })
+
+          expect((yield* take(kept.messages, 2)).map((message) => message.id)).toEqual(["3", "4"])
+        }),
+      ),
+  },
+  {
+    name: "answers a feed for a never-created actor with 404 NotCreated and writes no row, and refuses undeclared, missing, and too many event filters",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const headers = { authorization: token() }
+          const ref = (yield* FeedRoom.get("sse-nobody")).ref
+
+          const missing = yield* feed(host, "sse-nobody", "event=Said", headers)
+          expect(missing.status).toBe(404)
+          expect(yield* feedReason(missing.body)).toMatchObject({ tag: "NotCreated" })
+          expect(yield* rows(ref)).toEqual({ connections: 0, generations: 0 })
+
+          yield* (yield* FeedRoom.get("sse-filters")).Tell("x")
+
+          for (const query of ["event=Noted", "event=Nope", "after=0"]) {
+            const refused = yield* feed(host, "sse-filters", query, headers)
+            expect(refused.status).toBe(404)
+            expect(yield* feedReason(refused.body)).toMatchObject({
+              tag: "InvalidInput",
+              code: "unknown_event",
+            })
+          }
+
+          const many = Array.from({ length: 17 }, () => "event=Said").join("&")
+          expect((yield* feed(host, "sse-filters", many, headers)).status).toBe(200)
+
+          const distinct = Array.from({ length: 17 }, (_, index) => `event=E${index}`).join("&")
+          const tooMany = yield* feed(host, "sse-filters", distinct, headers)
+          expect(tooMany.status).toBe(400)
+          expect(yield* feedReason(tooMany.body)).toMatchObject({ code: "too_many_filters" })
+
+          // Unauthenticated feeds run nothing.
+          const anonymous = yield* feed(host, "sse-filters", "event=Said", {})
+          expect(anonymous.status).toBe(401)
+        }),
+      ),
+  },
+  {
+    name: "authorizes a feed per event tag before reading, and revokes a live feed within reauthorizeEvery",
+    timeoutMs: 40_000,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("sse-revoke")
+          yield* room.Tell("before")
+
+          yield* Effect.gen(function* () {
+            // `authorize` sees the event tag as the command of a feed.
+            fixture.denied.add("Said")
+
+            const refused = yield* feed(host, "sse-revoke", "event=Said", {
+              authorization: token(),
+            })
+
+            expect(refused.status).toBe(403)
+            expect(yield* feedReason(refused.body)).toMatchObject({
+              tag: "Unauthorized",
+              code: "access_denied",
+            })
+            fixture.denied.delete("Said")
+
+            const live = yield* feed(host, "sse-revoke", "event=Said", { authorization: token() })
+            expect(yield* textOf((yield* take(live.messages, 1))[0]!)).toBe("before")
+            fixture.denied.add("Said")
+
+            const [ended] = yield* take(live.messages, 1, 10_000)
+            expect(ended!.event).toBe("end")
+            expect(yield* feedReason(ended!.data)).toMatchObject({
+              tag: "Unauthorized",
+              code: "access_denied",
+            })
+          }).pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Said"))))
+        }),
+      ),
+  },
+  {
+    name: "ends a feed at its credential's expiry with Unauthorized expired, and a reconnect from its last cursor loses nothing",
+    timeoutMs: 40_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, host, token } = yield* setup(environment)
+          const holder = (yield* InternalActors).holder
+          const room = yield* FeedRoom.get("sse-expiry")
+          yield* room.Tell("first")
+
+          const expiring = `Bearer ${test.tenant}:alice:${(yield* holder.now) + 1_500}`
+          const opened = yield* feed(host, "sse-expiry", "event=Said", { authorization: expiring })
+          const [first] = yield* take(opened.messages, 1)
+
+          const [ended] = yield* take(opened.messages, 1, 10_000)
+          expect(ended!.event).toBe("end")
+          expect(yield* feedReason(ended!.data)).toMatchObject({
+            tag: "Unauthorized",
+            code: "expired",
+          })
+
+          // Committed while the client was away; the reconnect resumes after its last cursor.
+          yield* room.Tell("while away")
+
+          const again = yield* feed(host, "sse-expiry", "event=Said", {
+            authorization: token(),
+            "last-event-id": first!.id!,
+          })
+
+          expect(yield* textOf((yield* take(again.messages, 1))[0]!)).toBe("while away")
+        }),
+      ),
+  },
+  {
+    name: "keeps an idle feed parked, and delivers an event committed by a command that woke its actor",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("sse-parked")
+          yield* room.Tell("before")
+          const opened = yield* feed(host, "sse-parked", "event=Said", { authorization: token() })
+          yield* take(opened.messages, 1)
+
+          yield* test.hibernate(room.ref)
+          yield* room.Tell("woken")
+          expect(yield* textOf((yield* take(opened.messages, 1))[0]!)).toBe("woken")
+        }),
+      ),
+  },
+  {
+    name: "catches a lagging feed up from actor_events instead of ending it with SlowConsumer",
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("sse-lag")
+          yield* room.Tell("first")
+          const opened = yield* feed(host, "sse-lag", "event=Said", { authorization: token() })
+          yield* take(opened.messages, 1)
+
+          // One turn's 1,100 frames overflow the holder's 1,024-frame buffer at once.
+          yield* room.Burst(1_100)
+
+          const received = yield* take(opened.messages, 1_100)
+          expect(received.map((message) => Number(message.id))).toEqual(
+            Array.from({ length: 1_100 }, (_, index) => index + 2),
+          )
+          expect(received.every((message) => message.event === "Said")).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "resyncs a feed at its holder after an owner kill with no client-visible gap",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          const context = yield* Layer.build(
+            ActorTest.cluster({
+              database,
+              runners: 2,
+              shardLockExpiration: "3 seconds",
+              actors: transportsLayer,
+              as: User.make({ subject: "alice" }),
+            }),
+          )
+
+          yield* Effect.gen(function* () {
+            const cluster = yield* ActorCluster
+            yield* cluster.ready
+            let target: ActorRef | undefined
+
+            for (let index = 0; target === undefined && index < 200; index++) {
+              const candidate = (yield* cluster.on(0)(FeedRoom.get(`sse-crash-${index}`))).ref
+
+              if ((yield* cluster.owner(candidate)) === 1) target = candidate
+            }
+
+            if (target === undefined)
+              return yield* Effect.die(new Error("Runner 1 owns no probed actor"))
+
+            const ref = target
+
+            const tell = (text: string) =>
+              cluster.on(0)(FeedRoom.get(ref.id).pipe(Effect.flatMap((room) => room.Tell(text))))
+
+            yield* tell("before")
+            const host = yield* cluster.on(0)(serveSockets(environment))
+
+            const opened = yield* feed(host, ref.id, "event=Said", {
+              authorization: `Bearer ${ref.tenant}:alice`,
+            })
+
+            expect(yield* textOf((yield* take(opened.messages, 1))[0]!)).toBe("before")
+
+            yield* cluster.kill(1)
+            yield* tell("after")
+
+            // No control message reaches the client: the next message is the next event.
+            const [next] = yield* take(opened.messages, 1, 60_000)
+            expect(next!.id).toBe("2")
+            expect(yield* textOf(next!)).toBe("after")
           }).pipe(Effect.provideContext(context))
         }),
       ),

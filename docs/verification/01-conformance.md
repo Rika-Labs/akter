@@ -58,6 +58,7 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `rejects an expired identity after receipt pruning and runtime restart`
 - `isolates durable state between fresh layer builds`
 - `retains bounded heap for touched actors once every activation hibernates`: touches 1,000 actors, waits for every activation to hibernate, and allows under 10 retained objects and 1 KiB of JavaScript heap per actor (the #41 leak retained about 95 objects and 11 KiB)
+- `retains bounded heap per command once Cluster forgets processed request ids` (Postgres only; PGlite's heap shrinks by about one object per command between rounds for several rounds): sends three rounds of 4,096 commands to the same 32 actors, the first to warm up, and measures the heap after each later round plus one 10-second Cluster message poll, allowing under 0.5 retained objects and 64 bytes per command; a command sent with a saved id before the rounds is answered from its receipt after them without running again. Under `MessageStorage.layerNoop` every command's request id stayed in Cluster's processed set: the case fails with 1.02 objects per command on Postgres 18.6 (heap bytes per command varied from 35 to 237 between runs with where the set's table doubles), against −0.10 objects and −3 bytes with `directMessages` (#46)
 
 Event cases live in [`conformance/events.ts`](../../packages/durable-actors/src/testing/conformance/events.ts) and join the same list:
 
@@ -129,7 +130,7 @@ The cases live in [`conformance/blobs.ts`](../../packages/durable-actors/src/tes
 
 - `scopes blob entries by tenant, actor type, and actor for equal names` — equal entry names written interleaved by two tenants with equal actor ids, two actors in one tenant, and a second actor type declaring the same blob name; every read and `inspect` count stays in its own scope (S2).
 - `round-trips appended chunks through compact and replaces them with set` — `append` creates an entry and adds chunks, `compact` returns the same bytes in the turn and afterwards, `set` replaces every chunk (also after a `set` and `append` earlier in the same turn), and an empty entry reads as empty rather than absent.
-- `rolls back every blob write with a declared failure and keeps its receipt` — `set`, `append`, and `compact` of an existing entry, `set` and `append` of a new one, and a state change, then a declared failure: the pre-turn bytes survive, the new entry is absent, and the failure replays from one receipt.
+- `rolls back every blob write with a declared failure and keeps its receipt` — `set`, `append`, `compact`, and `delete` of an existing entry, `set` and `append` of a new one, and a state change, then a declared failure: the pre-turn bytes survive, the new entry is absent, and the failure replays from one receipt.
 - `discards blob writes of a declared failure across a crash before and after its commit` — the declared-failure turn crashes at `beforeCommit` (no receipt; the retry reruns and commits the failure) and at `afterCommit` (the retry replays the committed failure); either way the pre-turn bytes survive and no new entry exists.
 - `retries a blob append that crashes before commit to exactly one chunk` (T1)
 - `replays a blob append committed before a crash without appending again`
@@ -148,7 +149,7 @@ Declarations, in [`definition.test.ts`](../../packages/durable-actors/src/actor/
 
 **Executed 2026-09-26 (M1.blob on main with events and effects, migration 0009):** `bun run check` passed 57/57 tasks, with `durable-actors` tests at 128 passed and 16 independent-connection cases skipped on PGlite; `test:integration` on disposable Postgres 18.6 passed 125 tests, including the Postgres-only blob case and both blob SIGKILL recoveries.
 
-**Security review (contract 10), 2026-09-26:** a fresh-machine review of #61 at `912c471` covered `actor_blobs` tenant and actor isolation on every read, write, and compact; the fiber guard and capability escape; size and DoS; and SQL construction, with exploit cases on PGlite and Postgres. Isolation and SQL construction: no issue found. Fixed: an entry of 16 MiB or more could be written but not read, and its read closed a pooled Postgres connection and put the turn into a retry loop (high; now an 8 MiB entry cap enforced on `set` and `append`); 1,024-character names could exceed the btree key size (low; now 512 UTF-8 bytes); a guard defect swallowed by `race` let the turn commit without the write (low; the turn now fails). Open, tracked as a follow-up: no per-actor quota on blob entry count or total bytes, and no statement timeout on query reads (medium).
+**Security review (contract 10), 2026-09-26:** a fresh-machine review of #61 at `912c471` covered `actor_blobs` tenant and actor isolation on every read, write, and compact; the fiber guard and capability escape; size and DoS; and SQL construction, with exploit cases on PGlite and Postgres. Isolation and SQL construction: no issue found. Fixed: an entry of 16 MiB or more could be written but not read, and its read closed a pooled Postgres connection and put the turn into a retry loop (high; now an 8 MiB entry cap enforced on `set` and `append`); 1,024-character names could exceed the btree key size (low; now 512 UTF-8 bytes); a guard defect swallowed by `race` let the turn commit without the write (low; the turn now fails). Open, tracked as a follow-up: no per-actor quota on blob entry count or total bytes, and no statement timeout on query reads (medium). M1.9 added `policy.maxBlobBytes` and the `commandTimeout` bound on queries with server-side cancellation; [ADR 0044](../decisions/0044-blob-entry-quota-and-deletion.md) (#78) adds `policy.maxBlobEntries` and `delete`, closing the finding.
 
 ### M1.9 retention, replay pages, emit budget, and blob quota
 
@@ -164,6 +165,7 @@ The cases live in [`conformance/retention.ts`](../../packages/durable-actors/src
 - `pages event replay by limit and continues after the last cursor` — the default page is 1,000 entries, a full page resumes after its last cursor, and a limit of 0, 10,001, or 1.5 is a defect.
 - `fails a turn whose emits exceed the per-turn byte budget and commits none of them` — two 500 kB events commit; three are a defect with no receipt, no events, and an unchanged sequence.
 - `refuses blob writes past policy.maxBlobBytes and leaves the entry whole` — `append` and `set` past a 1,024-byte quota are defects, a replacing `set` counts only the new bytes, and a refused `set` whose defect the handler catches leaves both chunks of the entry.
+- `refuses a new blob entry past policy.maxBlobEntries and frees one on delete` — with a 3-entry quota and three empty entries, a `set` and an `append` of a fourth entry are defects, and a refused `set` whose defect the handler catches leaves no row; `set` and `append` of existing entries still commit; `delete` of an entry and of a missing entry succeed, the deleted entry reads none, and a new entry then fits ([ADR 0044](../decisions/0044-blob-entry-quota-and-deletion.md)).
 
 Postgres only (independent connections):
 
@@ -222,7 +224,7 @@ The cases live in [`conformance/inspector.ts`](../../packages/durable-actors/src
 - `inspector: reads only the authenticated principal's tenant and refuses missing credentials` — an actor id present in two tenants shows each tenant only its own state and receipts; a `tenant` query parameter changes nothing; an actor only the other tenant has is `404`; lists, dead letters, and overview counts cover exactly the credential's tenant; requests without credentials are `401 Unauthorized(missing_credentials)`.
 - `inspector: reads through the durable views only and never writes` — after every route answers, every runtime row of the fixture's actor type (count and content hash across nine `actor_*` tables) is unchanged; inside a rolled-back transaction, a role granted only the `durable` schema, in a read-only transaction, runs every inspector read successfully while `permission denied` on `actor_receipts`; and a `DELETE` inside the inspector's read-only transaction fails as a write in a read-only transaction.
 
-`durable dev`, in `apps/cli/src/commands/dev/run.test.ts` on PGlite: option parsing and its usage errors, the entry's `app` export check, and one router serving a command through `Actor.serve` and the inspector reading its receipt and decoded state, with an actor in another tenant `404`.
+`durable dev`, in `apps/cli/src/commands/dev/run.test.ts` on PGlite: option parsing and its usage errors, the entry's `app` export check, and one router serving a command through `Actor.serve` and the inspector reading its receipt and decoded state, with an actor in another tenant `404`. The page, in `apps/cli/src/commands/dev/inspector/page.test.ts`: the HTML shell names its API and bundled client, the client bundles from source at startup, and paths written into the shell are escaped.
 
 ### Backend-specific cases
 
@@ -438,6 +440,30 @@ Postgres only (two runners, 3-second shard locks):
 - `resyncs a WebSocket in place after its owner dies, and holds live frames until resyncDone` — contract 07's loss and replay over a socket and row **Owner runner dies ungracefully with open connections**: runner 0 serves the socket to an actor runner 1 owns; after `cluster.kill(1)` the socket stays open, `resync { after, reason: "OwnerLost", deadline: 30000 }` arrives, the new owner's `resync` handler replays, `resyncReplayed` follows, a broadcast committed before `resyncDone` waits for it, and the session then resumes with `resumed === true`.
 
 Not covered by an executable case yet: executor progress frames reaching a WebSocket client (M2.18's delivery side, and ADR 0030's `t: "progress"` message, are not merged); the row **Socket-owning process dies** with a real process kill, whose client half (`SessionEnded` `HolderLost`) is M3.5's; the 30-second ping and 60-second pong timeout, which Actor.serve can't configure through Effect's socket abstraction (Bun's server sends pings and closes idle sockets through its own `websocket: { sendPings, idleTimeout }` options, which the application sets on `BunHttpServer`); the 32-frames-in-flight read pause (the session stops pulling from the socket at 32 queued frames; nothing measures it); and a cookie-reading provider on an upgrade. The `ws` benchmark scenario is not written yet.
+
+### Served SSE event feeds (M3.3)
+
+The cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) beside the WebSocket ones, and run on PGlite and Postgres. The fixture actor `FeedRoom` declares `events: [Said, Noted]` and `feeds: [Said]`, with `policy.reauthorizeEvery` of 2 seconds. Feeds are read with Effect's `HttpClient` over `fetch`, the way the Promise client reads them, and parsed as SSE.
+
+- `serves an event feed: committed events after the cursor, then live ones, with no gap or repeat through a commit race` — contract 07's snapshot/live race over SSE: 20 commands commit concurrently with the feed's open and first read, then one more. The feed carries each `Said` event exactly once in cursor order, and the `Noted` event between them is never served. `data` carries the command id.
+- `resumes a feed from Last-Event-ID with no gap or repeat, and answers UnknownCursor and RetentionGap before streaming` — replay: `after` is exclusive and `Last-Event-ID` overrides it. A future or malformed cursor is `404` with the `UnknownCursor` body. After the first events are pruned, a cursor before them is `410` with the `RetentionGap` body (row **SSE feed reconnects after pruning**), and the pruning boundary still resumes.
+- `answers a feed for a never-created actor with 404 NotCreated and writes no row, and refuses undeclared, missing, and too many event filters` — no generation or connection row is written. `Noted` (declared but not a feed), an unknown event, and no `event` are `404 unknown_event`. 17 distinct events are `400 too_many_filters`. A feed without credentials is `401`.
+- `authorizes a feed per event tag before reading, and revokes a live feed within reauthorizeEvery` — revocation, row **Live or parked session loses authorization**: `authorize` sees the event tag as `command`, a denial is `403 access_denied`, and a live feed is ended with an `end` message carrying `access_denied`.
+- `ends a feed at its credential's expiry with Unauthorized expired, and a reconnect from its last cursor loses nothing` — row **Credential expires during a live session** over SSE.
+- `keeps an idle feed parked, and delivers an event committed by a command that woke its actor` — a hibernated actor's feed receives the next committed event.
+- `catches a lagging feed up from actor_events instead of ending it with SlowConsumer` — a single turn emits 1,100 events, more than the holder's 1,024-frame buffer. The holder ends the feed session with `SlowConsumer`, and the server reopens it and rereads from its last cursor. The client sees 1,100 contiguous cursors.
+
+Postgres only (two runners, 3-second shard locks):
+
+- `resyncs a feed at its holder after an owner kill with no client-visible gap` — loss and C4 at the holder: runner 0 serves the feed of an actor runner 1 owns, and `cluster.kill(1)` follows. An event committed through runner 0 reaches the client as the next message, with no control message and no gap.
+
+Not covered by an executable case yet:
+
+- A native `EventSource` closing for good on an initial `410` (a browser case, M3.5).
+- A parked feed woken by a timer on another runner. Commands, intents, and timers wake a parked actor through the same trigger, which #177 covers for connections.
+- The 10,000-feeds-per-actor cap.
+- The 15-second keepalive comment.
+- The extra statement a cold activation of an actor type with feeds pays. The feed rows load with the connection rows; the `sse` benchmark is not written yet.
 
 ### Multi-runner relay (M2.4)
 

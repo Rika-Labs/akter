@@ -6,6 +6,7 @@ import type { HttpRouter } from "effect/unstable/http"
 import type { SqlClient } from "effect/unstable/sql"
 
 import { UsageError } from "../workflows/check.ts"
+import { pageRoutes } from "./inspector/page.ts"
 
 export const USAGE =
   "Usage: durable dev --entry <module> [--database-url <url> | --data-dir <dir>] [--port <port>] [--hostname <host>] [--tenant <tenant>]"
@@ -108,7 +109,7 @@ export const appOf = ({ module, entry }: { readonly module: object; readonly ent
     ),
   )
 
-/** Where `durable dev` serves the inspector; the API is under `/api`. */
+/** Where `durable dev` serves the inspector page; its API is under `/api`. */
 export const INSPECTOR_PATH = "/_durable/inspector"
 
 /**
@@ -118,9 +119,10 @@ export const INSPECTOR_PATH = "/_durable/inspector"
 export const localOperator = (tenant: string) =>
   Actor.auth.make(() => Effect.succeed({ tenant, caller: User.make({ subject: "durable-dev" }) }))
 
-/** The entry's routes and the inspector's, on one router. */
+/** The entry's routes and the inspector's page and API, on one router. */
 export const devRoutes = ({ app, tenant }: { readonly app: DevApp; readonly tenant: string }) =>
   Layer.mergeAll(
     app,
     Inspector.serve({ auth: localOperator(tenant), basePath: `${INSPECTOR_PATH}/api` }),
+    pageRoutes(INSPECTOR_PATH),
   )
