@@ -50,6 +50,12 @@ export interface ClusterOptions<ROut, E, RIn> extends TestOptions {
   readonly actors: Layer.Layer<ROut, E, RIn>
   /** Layers only some runners build, such as an effect layer one runner lacks. */
   readonly runnerActors?: (runner: number) => Layer.Layer<never, never, RunnerServices>
+  /**
+   * Runners that hold connections but are never assigned actor shards, so an
+   * actor is always owned by another runner and killing its owner leaves the
+   * holder alive.
+   */
+  readonly holdersOnly?: ReadonlyArray<number>
 }
 
 export class ActorCluster extends Context.Service<
@@ -221,6 +227,13 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
       if (!Number.isInteger(options.runners) || options.runners < 1)
         return yield* Effect.die(new Error("ActorTest.cluster needs at least one runner"))
 
+      if (
+        Array.from({ length: options.runners }).every((_, index) =>
+          (options.holdersOnly ?? []).includes(index),
+        )
+      )
+        return yield* Effect.die(new Error("ActorTest.cluster needs a runner that hosts actors"))
+
       const expiration = Duration.fromInputUnsafe(options.shardLockExpiration)
       const expirationSeconds = Math.ceil(Duration.toSeconds(expiration))
       const crypto = yield* Crypto.Crypto
@@ -243,6 +256,9 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
       const addresses = new Map<string, number>()
       const stopping: Array<Fiber.Fiber<void>> = []
       const url = new URL(Redacted.value(database))
+
+      const hostsActors = (runner: Runner) =>
+        !(options.holdersOnly ?? []).includes(runners.indexOf(runner))
 
       const dial = (runner: Runner) => () => {
         const sockets = runner.sockets
@@ -340,6 +356,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
                     ...TIMINGS,
                     runnerAddress: Option.some(runner.address),
                     shardsPerGroup: SHARDS,
+                    assignedShardGroups: hostsActors(runner) ? ["default"] : [],
                     shardLockExpiration: expiration,
                     shardLockDisableAdvisory: true,
                   },
@@ -401,7 +418,9 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           AND address LIKE ${`${host}:%`}`.pipe(Effect.orDie)
 
       const ready = Effect.gen(function* () {
-        const serving = runners.filter((runner) => runner.heartbeat === "running")
+        const serving = runners.filter(
+          (runner) => runner.heartbeat === "running" && hostsActors(runner),
+        )
 
         if (serving.length === 0) return true
 
