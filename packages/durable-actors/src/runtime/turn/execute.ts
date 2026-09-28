@@ -692,8 +692,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
     answering = true
 
-    if (plan.wake || plan.outbox.some((replies) => replies.wake))
-      yield* (yield* OutboxRuntime).wake
+    if (plan.wake || plan.outbox.some((replies) => replies.wake)) yield* (yield* OutboxRuntime).wake
 
     if (plan.outbox.some((replies) => replies.cancelled)) yield* (yield* OutboxRuntime).cancelled
 
@@ -701,12 +700,10 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       settled: plan.settled,
       broadcasts: plan.broadcasts,
       head: plan.head,
-      committed: plan.committed.map(
-        (entry, index): CommittedEvents => ({
-          ...entry,
-          emittedAtMs: plan.emitted[index]!.emittedAtMs,
-        }),
-      ),
+      committed: plan.committed.map((entry, index): CommittedEvents => ({
+        ...entry,
+        emittedAtMs: plan.emitted[index]!.emittedAtMs,
+      })),
     })
 
     answering = false
