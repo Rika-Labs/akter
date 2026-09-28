@@ -75,10 +75,12 @@ A column, rather than a reserved field inside the value, keeps values in the cla
 
 ### 4. A deploy that would strand a stored value is refused
 
-- A new table, `actor_payload_versions (actor_type, kind, tag, version, first_written_at_ms, superseded_at_ms)`, records every version a deployment has written. `kind` is `event` or `effect`. At layer build, a runtime inserts its current version for each declared event and effect if the row is missing, and sets `superseded_at_ms` on older versions. This is one statement per build, not per turn.
+- A new table, `actor_payload_versions (actor_type, kind, tag, version, first_written_at_ms, superseded_at_ms)`, records every version that may be stored. `kind` is `event` or `effect`.
+  - **Existing values.** The migration that adds the table seeds a version-0 row for every actor type and tag that already has rows in `actor_events`, `actor_outbox` (effect rows), or `actor_dead_letters`. It reads each table once, when the migration runs. After that, a tag with no row at all is treated as if version 0 were recorded and never superseded, so a guard can never pass for lack of a row.
+  - **New values.** At layer build, a runtime records the version it will write for each declared event and effect: its `writeVersion` when set (§5), and otherwise the chain's last version. It inserts the row if it is missing, and sets `superseded_at_ms` on lower versions of that tag that have none. This is one statement per build, not per turn.
 - `Actors.layer` refuses to start, as a placement mismatch or a workflow manifest mismatch does ([ADR 0022](0022-workflow-engine-storage-and-version-markers.md) §7), when:
-  1. a recorded version is newer than the code's current version for that tag, which is a rollback past a schema change; or
-  2. the code's chain starts above a recorded version whose values may still be stored. Event versions may be stored until `superseded_at_ms + keepEvents` has passed. Effect versions may be stored while any `actor_outbox` or `actor_dead_letters` row has that version, which the check reads directly because those tables are small.
+  1. a recorded version is above the last version the code's chain can read for that tag, which is a rollback past a schema change; or
+  2. the code's chain starts above a version that may still be stored. That includes a tag with no row, which counts as version 0. Event versions may be stored until `superseded_at_ms + keepEvents` has passed, and a version with no `superseded_at_ms` counts as still stored. Effect versions may be stored while any `actor_outbox` or `actor_dead_letters` row has that version, which the check reads directly because those tables are small.
 - `durable payloads check --entry ./src/actors.ts` runs the same check read-only for CI, like `durable workflows check`.
 
 ### 5. Rolling deploys write the old version until every runner reads the new one
@@ -155,6 +157,8 @@ In `conformance/payload-migrations.ts`, on PGlite and Postgres:
 - `delivers an onDeadLetter route with the upcast effect and keeps the dead letter's version`
 - `fails a read as a defect, never a skip, when an upcast throws or the stored version is newer than the chain`
 - `refuses startup after a rollback past a recorded version, and when a shortened chain drops a version still retained`
+- `seeds version 0 for existing rows, so the first shortened chain after the migration is refused while version-0 values remain`
+- `records the writeVersion, not the chain's last version, while a two-phase deploy is in its first phase`
 - `writes the old version under writeVersion and reads both versions on one runtime`
 - `replays a subscription receipt after a schema change without CommandConflict`
 
