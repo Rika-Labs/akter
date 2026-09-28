@@ -686,12 +686,15 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         const batches = Effect.gen(function* () {
           let batch = run.first
+          // Preparing may acquire the generation itself, so the first
+          // admission is built after it; a later batch's runs once the batch
+          // before it committed, when the cache is warm.
+          yield* run.prepare
           let admission = admit(batch, view(), session, [begin])
           let admitted = yield* inTurn(queue({ scope, group: admission.group }))
 
           while (true) {
             locate(batch, undefined)
-            yield* run.prepare
 
             const step = yield* Effect.gen(function* () {
               yield* replies(admitted)
@@ -752,6 +755,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             batch = step.next.batch
             admission = step.next.admission
             admitted = step.next.admitted
+            yield* run.prepare
           }
         })
 
