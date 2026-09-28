@@ -376,6 +376,30 @@ export const migrations = {
         ('workflow_steps', 1), ('views', 1)
       ) AS v(view_name, version)`
   }),
+  // A connection's session lives beside the actor's rows; its socket and
+  // buffers live at the holder runner named by `holder` and `holder_epoch`.
+  "0014_connections": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE actor_connections (
+        routing_key bigint NOT NULL,
+        connection_id text NOT NULL,
+        bucket integer NOT NULL CHECK (bucket = routing_key >> 56),
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        member text NOT NULL,
+        holder text NOT NULL,
+        holder_epoch text NOT NULL,
+        caller text NOT NULL,
+        session bytea,
+        frame_seq bigint NOT NULL DEFAULT 0,
+        opened_at_ms bigint NOT NULL,
+        opened_through bigint NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, connection_id),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    yield* sql`CREATE INDEX actor_connections_holder ON actor_connections (bucket, holder, holder_epoch)`
+  }),
   "0015_effect_control": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_outbox

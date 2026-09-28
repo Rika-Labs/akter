@@ -139,6 +139,7 @@ describe("PGlite migrations", () => {
             [11, "relay"],
             [12, "workflows"],
             [13, "inspection_views"],
+            [14, "connections"],
             [15, "effect_control"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
@@ -170,6 +171,7 @@ describe("PGlite migrations", () => {
             [11, "relay"],
             [12, "workflows"],
             [13, "inspection_views"],
+            [14, "connections"],
             [15, "effect_control"],
           ])
           expect(
@@ -211,6 +213,7 @@ describe("PGlite migrations", () => {
             [11, "relay"],
             [12, "workflows"],
             [13, "inspection_views"],
+            [14, "connections"],
             [15, "effect_control"],
           ])
           expect(
@@ -225,7 +228,7 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
-  it("applies 0015_effect_control to pending, backing-off, and running effect rows", () => {
+  it("applies 0015_effect_control to a database that already ran 0014_connections, backfilling pending, backing-off, and running effect rows", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
     const throughRelay = Migrator.make({})({
@@ -330,6 +333,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [12, "workflows"],
             [13, "inspection_views"],
+            [14, "connections"],
             [15, "effect_control"],
           ])
           expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(
@@ -374,6 +378,38 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
+  it("applies 0014_connections to a database that already ran 0013_inspection_views", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughInspectionViews = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0014")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughInspectionViews
+          expect(yield* sql`SELECT to_regclass('actor_connections')::text AS connections`).toEqual([
+            { connections: null },
+          ])
+          expect(yield* migrate).toEqual([
+            [14, "connections"],
+            [15, "effect_control"],
+          ])
+          expect(
+            yield* sql`SELECT indexname FROM pg_indexes
+              WHERE indexname = 'actor_connections_holder'`,
+          ).toEqual([{ indexname: "actor_connections_holder" }])
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
   it("rolls back partial foundation DDL and safely reruns the migration", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
@@ -403,6 +439,7 @@ describe("PGlite migrations", () => {
             { migration_id: 11 },
             { migration_id: 12 },
             { migration_id: 13 },
+            { migration_id: 14 },
             { migration_id: 15 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
