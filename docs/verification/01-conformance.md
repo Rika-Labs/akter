@@ -474,9 +474,10 @@ Not covered by an executable case yet:
 The client cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) and use the same served fixtures as the transport cases, through `FeedRoom.client` and `SocketRoom.client`:
 
 - `client reads an event feed as an AsyncIterable and resumes from its cursor after the response drops` — a `fetch` that cuts the first feed response after one event. The client reopens with `Last-Event-ID: 1` and delivers `1:one`, `2:two`, `3:three` with no repeat.
+- `client feed reopens with fresh headers when its credential expires, and loses nothing` — each request's credential expires 1.5 s later. The feed ends with `Unauthorized expired`, and the client reopens with a fresh credential from `headers` and delivers the event committed meanwhile. The feed opens twice.
 - `client feed fails with RetentionGap for a pruned cursor and UnknownCursor for one never issued` — both are thrown as their classes.
 - `client opens a connection with typed frames both ways, rejects a declared open failure as its class, and ends on close` — `Banned` is rejected as its class, and `cursor` is the baseline. The greeting, a sent frame's echo, and a normal end all arrive in order.
-- `client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates` (Postgres, two runners) — `Resync { after: "1" }`, `onResync` with `"1"`, then `ResyncReplayed`, then the next live frame.
+- `client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates` (Postgres, two runners) — `Resync { after: "1" }`, `onResync` with `"1"` (which throws, and the resync is still acknowledged), then `ResyncReplayed`, then the next live frame.
 
 The Playwright tests live in [`apps/e2e/chat.e2e.ts`](../../apps/e2e/chat.e2e.ts). They run in Chromium against `examples/chat` served to a browser page (`examples/chat/src/web/`) on in-memory PGlite. The page follows the room's `MessagePosted` feed, posts through the Promise client, runs `React` optimistically, and shows Presence typing frames.
 

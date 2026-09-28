@@ -195,8 +195,11 @@ export const connect = <Server, Client>({
         const state = { settled: false }
         resync = state
 
+        // A callback that throws, at once or later, still settles the acknowledgment.
         const settle = Effect.promise(() =>
-          Promise.resolve(options.onResync?.({ after: message.after })).catch(() => undefined),
+          Promise.resolve()
+            .then(() => options.onResync?.({ after: message.after }))
+            .catch(() => undefined),
         ).pipe(
           Effect.andThen(
             Effect.sync(() => {
@@ -310,8 +313,11 @@ export const connect = <Server, Client>({
           Effect.runPromiseWith(services)(
             encodeFrame(value).pipe(
               Effect.mapError(undecodable),
+              // A frame can't be sent once the session ended or its socket stopped being open.
               Effect.flatMap((json) =>
-                finished ? Effect.fail(holderLost) : write({ t: "frame", frame: json }),
+                finished || ws.readyState !== WebSocket.OPEN
+                  ? Effect.fail(holderLost)
+                  : write({ t: "frame", frame: json }),
               ),
             ),
           ),

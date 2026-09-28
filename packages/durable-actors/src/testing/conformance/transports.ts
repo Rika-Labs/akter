@@ -1523,6 +1523,58 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "client feed reopens with fresh headers when its credential expires, and loses nothing",
+    timeoutMs: 40_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, host } = yield* setup(environment)
+          const holder = (yield* InternalActors).holder
+          const room = yield* FeedRoom.get("client-expiry")
+          yield* room.Tell("before")
+          const send = yield* FetchHttpClient.Fetch
+          const services = yield* Effect.context<never>()
+          let opened = 0
+
+          // Each request carries a fresh credential that expires 1.5 seconds later.
+          const handle = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () =>
+              Effect.runPromiseWith(services)(
+                Effect.map(holder.now, (now) => ({
+                  authorization: `Bearer ${test.tenant}:alice:${now + 1_500}`,
+                })),
+              ),
+            fetch: (input, init) =>
+              send(input, init).then((response) => {
+                if (response.ok) opened += 1
+
+                return response
+              }),
+          }).get("client-expiry")
+
+          const entries = Stream.fromAsyncIterable(handle.events(Said), asFailure).pipe(
+            Stream.map((entry) => entry.event.text),
+          )
+
+          const received = yield* entries.pipe(
+            Stream.tap((text) =>
+              text === "before"
+                ? Effect.sleep("2500 millis").pipe(Effect.andThen(room.Tell("after expiry")))
+                : Effect.void,
+            ),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.timeout("20 seconds"),
+            Effect.orDie,
+          )
+
+          expect([...received]).toEqual(["before", "after expiry"])
+          expect(opened).toBe(2)
+        }),
+      ),
+  },
+  {
     name: "client feed fails with RetentionGap for a pruned cursor and UnknownCursor for one never issued",
     run: ({ expect, environment }) =>
       environment.run(
@@ -1634,7 +1686,13 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             const connection = yield* Effect.promise(() =>
               handle.Chat.connect(
                 { name: "alice" },
-                { onResync: ({ after }) => void resyncs.push(after) },
+                {
+                  // A callback that throws still lets the resync be acknowledged.
+                  onResync: ({ after }) => {
+                    resyncs.push(after)
+                    throw new Error("the page failed to reload")
+                  },
+                },
               ),
             )
 
