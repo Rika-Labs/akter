@@ -406,6 +406,7 @@ const frameworkDriver = (environment: ConformanceEnvironment) =>
       restart: Effect.gen(function* () {
         const now = (test: ActorTest["Service"]) =>
           test.now.pipe(Effect.map(DateTime.toEpochMillis))
+
         const before = yield* inTenant(Effect.flatMap(Effect.service(ActorTest), now))
         yield* environment.restart
         const after = yield* inTenant(Effect.flatMap(Effect.service(ActorTest), now))
