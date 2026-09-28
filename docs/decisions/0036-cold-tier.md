@@ -34,13 +34,13 @@ What exists today that the design must fit:
 
 ### 2. Finding idle actors without touching warm turns
 
-- When an activation hibernates, the runtime stages a keyed framework timer `$cold` on the actor, due at `now + policy.coldAfter` (default 30 days; `"never"` opts a type out). That's one outbox write per hibernation, not per turn. `$cold` becomes a reserved prefix like `$cron:` and `$effect:`.
+- When an activation hibernates, the runtime stages a keyed `actor_outbox` row with `kind = 'cold'` and `timer_key = '$cold'` on the actor, due at `now + policy.coldAfter` (default 30 days; `"never"` opts a type out). That's one outbox write per hibernation, not per turn. `$cold` becomes a reserved prefix like `$cron:` and `$effect:`.
 - When an activation starts, the same statement group that acquires the generation deletes the `$cold` timer. That adds no round trip.
 - So a `$cold` row falls due only for an actor that has slept continuously for `coldAfter`. Due-work scans find it through the existing index, and the cost is what is due, not what is stored.
 
 ### 3. Offload: upload first, then flip under the fence
 
-A due `$cold` row is claimed by the relay like an effect, and run by a per-runner offload pool. It never wakes the actor.
+`cold` is a third outbox kind beside `intent` and `effect`, because neither existing path fits: an intent is delivered as a command, which would wake the actor, and an effect runs an application executor. The relay claims due `cold` rows through the `(bucket, kind, due_at_ms)` index with the same lease and backoff as effects ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)), and hands each to a per-runner offload pool instead of delivering it. The row targets no command and carries no payload. The pool runs the steps below, never activates the actor, and on any failure releases the claim to back off like a failed effect attempt. A `cold` row never becomes a route intent or a dead letter.
 
 1. **Snapshot, outside any transaction.** Read the generation `g`, every state row, and every blob chunk. If the actor has none, delete the timer and stop.
 2. **Upload.** Write one immutable object, a framework envelope holding the format version, the codec, the state `$version`, the state entries, and the blob entries, compressed with zstd. Its key is `<deployment>/<tenant>/<actor type>/<routing key>/<digest of the actor id>/<g>-<sha256 of the object>`. Upload with a create-only condition, so an existing key is never overwritten.
@@ -94,7 +94,7 @@ This ADR is docs only. These amendments are listed for when it is accepted and b
 
 - [06 storage](../contracts/06-storage-ownership.md): `cold_ref` on the generation row; state and blob rows deleted on offload; rehydration fetches outside the transaction and writes back in the wake's statement group before the first handler.
 - [03 transactions](../contracts/03-transactions.md): rehydration's fetch as an example of work outside the transaction.
-- [05 messaging](../contracts/05-messaging.md): reserve the `$cold` key prefix.
+- [05 messaging](../contracts/05-messaging.md): reserve the `$cold` key, and describe the `cold` outbox kind, which the relay claims but never delivers as a command.
 - [09 recovery](../contracts/09-recovery.md): crash cases for offload and rehydration, and object loss.
 - [10 security](../contracts/10-security.md): object keys and credentials scoped to the deployment and tenant.
 
@@ -113,7 +113,7 @@ This ADR is docs only. These amendments are listed for when it is accepted and b
 
 ## Migration
 
-None now. L.2 needs one framework migration: `cold_ref`, `cold_digest`, and the cold state version on `actor_generations`, plus the object garbage table. It is numbered when L.2 is scheduled, above whatever has merged by then.
+None now. L.2 needs one framework migration: `cold_ref`, `cold_digest`, and the cold state version on `actor_generations`; `'cold'` added to the `actor_outbox.kind` check (today `intent` or `effect`, from `0008_effects`); and the object garbage table. It is numbered when L.2 is scheduled, above whatever has merged by then.
 
 ## Open questions for Dallen, with recommended defaults
 
@@ -129,6 +129,7 @@ None now. L.2 needs one framework migration: `cold_ref`, `cold_digest`, and the 
 - A cold wake rehydrates within the published wake-latency target plus one object GET, measured on the hosted topology.
 - Crash cases (SIGKILL on Postgres) at each step: after the snapshot, after the upload, and after the flip; after the fetch, and after the write-back. Each ends with the actor either warm with its last committed state, or cold with a readable object, never both and never neither.
 - A wake racing an offload aborts the flip, and the next offload succeeds.
+- A due `cold` row is claimed and offloaded without activating the actor or delivering any command, and a failed offload backs off without a dead letter.
 - A restore to a snapshot taken before a rehydration finds its object.
 - An object-store outage gives `ActorUnavailable` with `retryAfter`, and a later retry with the same command id succeeds once.
 - A shortened state chain is refused while cold actors hold an older version.
