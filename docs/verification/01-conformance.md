@@ -542,7 +542,7 @@ Postgres only (three in-process runners, independent connections):
 - `fires a tick once when the runner delivering it is killed at afterClaim` and `… at beforeOutboxDelete` — the cron half of **Singleton runner dies**: the dead runner's claim holds the row until the lease ends, then a survivor delivers or replays it and rewrites it once.
 - `keeps a singleton's ticks firing after its runner is killed`.
 
-The `cron` benchmark measures tick lateness and the relay claim with 10^5 minutely ticks falling due at one minute boundary on 1, 2, and 4 runners; see [benchmarks](../../benchmarks/README.md). Time zones, fixed intervals, and daylight-saving evidence from [M2](../milestones/M2.md) are not implemented.
+The `cron` benchmark measures tick lateness and the relay claim with 10^5 minutely ticks falling due at one minute boundary on 1, 2, and 4 runners; see [benchmarks](../../benchmarks/README.md) and the [committed results](03-performance.md#cron-m25-132). Time zones, fixed intervals, and daylight-saving evidence from [M2](../milestones/M2.md) are not implemented.
 
 ### Effect cancellation and caps (M2.13)
 

@@ -9,6 +9,9 @@ const MINUTE = 60_000
 
 const WORKERS = 64
 
+/** How the relay claim statement begins; stored query text is cut at 160 characters, before its `SKIP LOCKED`. */
+const RELAY_CLAIM = "WITH intent_candidates"
+
 const databaseNow = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
@@ -85,7 +88,7 @@ const round = (actors: number) =>
   })
 
 const scanMeanMs = (result: CaseResult) =>
-  result.statements?.find((statement) => statement.query.includes("SKIP LOCKED"))?.meanMs ?? -1
+  result.statements?.find((statement) => statement.query.startsWith(RELAY_CLAIM))?.meanMs ?? -1
 
 /**
  * `policy.cron` at scale: every actor has a minutely entry, and all their
@@ -139,7 +142,7 @@ export const cron: Scenario = {
                       yield* Effect.sleep(waitedMs)
                       yield* drained(from, scheduled, actors)
                     }),
-                  listStatements: { including: "SKIP LOCKED" },
+                  listStatements: { including: RELAY_CLAIM },
                 })
 
                 // A short settle catches a tick whose handler ran twice.
