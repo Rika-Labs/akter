@@ -76,6 +76,12 @@ export interface Policy<
    * other type fails at `Actor.make`. Omitted, every type in the tenant may.
    */
   readonly subscribers?: ReadonlyArray<string>
+  /**
+   * How long past `keepEvents` subscriptions to this actor may hold its
+   * events back from pruning. An event older than both is pruned, and a
+   * subscriber behind it receives a `RetentionGap`. Default 7 days.
+   */
+  readonly holdEventsForSubscribers?: Duration.Input
 }
 
 export interface TurnPolicy {
@@ -94,6 +100,7 @@ export interface TurnPolicy {
   readonly reauthorizeMs: number
   readonly keepWorkflowsMs: number
   readonly subscribers: ReadonlyArray<string> | undefined
+  readonly holdEventsMs: number
 }
 
 export const resolvePolicy = (policy: {
@@ -126,5 +133,6 @@ export const resolvePolicy = (policy: {
     ),
     keepWorkflowsMs: horizon(declared?.keepWorkflows ?? "7 days"),
     subscribers: declared?.subscribers === undefined ? undefined : [...declared.subscribers],
+    holdEventsMs: horizon(declared?.holdEventsForSubscribers ?? "7 days"),
   })
 }

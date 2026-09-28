@@ -7,6 +7,8 @@ export interface RetentionPolicy {
   readonly actorType: string
   readonly keepReceiptsMs: number
   readonly keepEventsMs: number
+  /** How long past `keepEventsMs` subscriptions may hold an event back. */
+  readonly holdEventsMs: number
   readonly deliveryMs: number
   readonly keepWorkflowsMs: number
   readonly workflows: boolean
@@ -46,7 +48,10 @@ export interface Swept {
  * newest one it picked, so a retained event always has every later one after
  * it. `event_sequence` lives on the generation row and is never touched, so
  * no cursor is reissued. The prefix stops at the oldest cursor or pending
- * wait of an open workflow execution of that actor, which still reads past it.
+ * wait of an open workflow execution of that actor, which still reads past it,
+ * and at the lowest position an active subscription to that actor has
+ * settled through, unless the events are older than `keepEvents` plus
+ * `holdEventsForSubscribers`.
  *
  * A finished workflow execution goes `keepWorkflows` after it finished; its
  * steps went when it finished. A workflow manifest goes once it is neither
@@ -70,6 +75,7 @@ export const sweep = Effect.fnUntraced(function* (
     const now = yield* databaseTime
     const receiptCutoff = now - receiptMarginMs({ ...policy, retryWindowMs })
     const eventCutoff = now - policy.keepEventsMs
+    const holdCutoff = eventCutoff - policy.holdEventsMs
 
     // Sweeps of one actor type take turns, so two runners, or a sweep and
     // `ActorTest.cleanup`, never lock overlapping event prefixes in opposite orders.
@@ -127,7 +133,16 @@ export const sweep = Effect.fnUntraced(function* (
           LIMIT ${hooks.batchSize}),
         upto AS (
           SELECT p.routing_key, p.tenant_id, p.actor_type, p.actor_id,
-            LEAST(max(p.sequence), COALESCE((
+            LEAST(max(p.sequence),
+              -- Active subscriptions hold what they haven't settled, until
+              -- the hold ends; then their subscribers get a RetentionGap.
+              GREATEST(
+                COALESCE((SELECT min(s.delivered) FROM actor_subscriptions s
+                  WHERE s.routing_key = p.routing_key AND s.tenant_id = p.tenant_id
+                    AND s.source_type = p.actor_type AND s.source_id = p.actor_id AND s.active),
+                  max(p.sequence)),
+                COALESCE(max(p.sequence) FILTER (WHERE p.emitted_at_ms <= ${holdCutoff}), 0)),
+              COALESCE((
               SELECT min(LEAST(x.event_cursor, COALESCE(w.wait_after, x.event_cursor)))
               FROM actor_workflow_executions x
               LEFT JOIN actor_workflow_step w ON w.routing_key = x.routing_key

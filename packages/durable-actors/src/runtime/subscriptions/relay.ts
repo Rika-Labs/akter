@@ -17,6 +17,9 @@ import { ControlPayload, StringsJson, textArray } from "../turn/outbox.ts"
 import { candidates, outboxNow } from "../turn/relay.ts"
 import { deliveryCommandId } from "./identity.ts"
 
+/** How long a row whose declaration was removed stays due before cleanup deletes it. */
+const REMOVED_AFTER_MS = 86_400_000
+
 /** Source-side subscription rows one expansion statement marks at most. */
 const EXPANSION_PAGE = 1000
 
@@ -87,6 +90,11 @@ export interface SubscriptionRelay {
   readonly run: (
     work: SubscriptionWork,
   ) => Effect.Effect<void, SubscriptionError, SqlClient.SqlClient>
+  /** Deletes rows of a subscription this runner no longer declares after a day due. */
+  readonly cleanupRemoved: (
+    subscriberType: string,
+    declared: ReadonlyArray<string>,
+  ) => Effect.Effect<number, SubscriptionError, SqlClient.SqlClient>
   /** Widens a dynamic subscription's rows to the declared event classes, once per startup. */
   readonly widen: (
     subscriberType: string,
@@ -123,7 +131,14 @@ const WireRejected = Schema.TaggedStruct("Rejected", {
   cursor: Schema.String,
 })
 
-const WireDelivery = Schema.Union([WireEvent, WireRejected])
+const WireGap = Schema.TaggedStruct("RetentionGap", {
+  subscription: Schema.String,
+  source: ActorRef,
+  after: Schema.String,
+  resumeAfter: Schema.String,
+})
+
+const WireDelivery = Schema.Union([WireEvent, WireGap, WireRejected])
 
 const encodePayload = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Struct({ value: WireDelivery })),
@@ -380,23 +395,32 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     let after: ReadonlyArray<string> = ["", "", ""]
 
     for (;;) {
+      // The page's key range, read from the key index. The update below bounds
+      // its rows by it rather than joining the page, so a planner working from
+      // stale row counts can't rescan the page for every stored row.
+      const inPage = sql`(s.subscriber_type, s.subscription, s.subscriber_id) > (${after[0]!}, ${after[1]!}, ${after[2]!})
+        AND (s.subscriber_type, s.subscription, s.subscriber_id)
+          <= (SELECT subscriber_type, subscription, subscriber_id FROM last)`
+
       const [page] = yield* sql<{ rows: number; last: string | null }>`
         WITH head AS (
           SELECT event_sequence AS h FROM actor_generations g
           WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}),
-        page AS (
+        page AS MATERIALIZED (
           SELECT s.subscriber_type, s.subscription, s.subscriber_id FROM actor_subscriptions s
           WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)} AND s.active
             AND (s.subscriber_type, s.subscription, s.subscriber_id) > (${after[0]!}, ${after[1]!}, ${after[2]!})
           ORDER BY s.subscriber_type, s.subscription, s.subscriber_id
           LIMIT ${EXPANSION_PAGE}),
+        last AS (
+          SELECT subscriber_type, subscription, subscriber_id FROM page
+          ORDER BY subscriber_type DESC, subscription DESC, subscriber_id DESC LIMIT 1),
         marked AS (
           UPDATE actor_subscriptions s SET marked = greatest(s.marked, head.h),
             due_at_ms = coalesce(s.due_at_ms, ${now()})
-          FROM page, head
-          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
-            AND s.subscriber_type = page.subscriber_type AND s.subscription = page.subscription
-            AND s.subscriber_id = page.subscriber_id AND s.marked < head.h
+          FROM head
+          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)} AND s.active
+            AND ${inPage} AND s.marked < head.h
             -- A row due and unclaimed since its last settle reads through the
             -- head when it is claimed, so it needs no write.
             AND NOT (s.due_at_ms IS NOT NULL AND s.due_at_ms <= ${now()} AND s.attempts = 0)
@@ -406,8 +430,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
                   AND e.sequence > s.delivered AND e.sequence <= head.h AND e.event = ANY(s.events)))
           RETURNING 1)
         SELECT (SELECT count(*) FROM page)::int AS rows,
-          (SELECT json_build_array(subscriber_type, subscription, subscriber_id)::text FROM page
-            ORDER BY subscriber_type DESC, subscription DESC, subscriber_id DESC LIMIT 1) AS last`
+          (SELECT json_build_array(subscriber_type, subscription, subscriber_id)::text FROM last) AS last`
 
       if (page!.rows < EXPANSION_PAGE || page!.last === null) break
       after = yield* decodeStrings(page!.last)
@@ -655,6 +678,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     const batch = yield* sql<{
       head: string
+      oldest: string | null
       sequence: string | null
       event: string | null
       command_id: string | null
@@ -662,6 +686,8 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       emitted_at_ms: string | null
     }>`SELECT (SELECT event_sequence::text FROM actor_generations g
           WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}) AS head,
+        (SELECT min(o.sequence)::text FROM actor_events o
+          WHERE ${eventsOf("o", key, source.tenant, source.actor, source.id)}) AS oldest,
         e.sequence::text AS sequence, e.event, e.command_id, e.value, e.emitted_at_ms::text AS emitted_at_ms
       FROM (VALUES (1)) AS one (x)
       LEFT JOIN LATERAL (
@@ -672,10 +698,134 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         ORDER BY e.sequence LIMIT ${settings.batch}) e ON true`
 
     const head = BigInt(batch[0]!.head)
+    const oldest = batch[0]!.oldest
     const events = batch.filter((event) => event.sequence !== null)
     let progress = BigInt(row.delivered)
+    // Whether the batch's events follow on from `progress` with nothing pruned between.
+    let continuous = true
+    let uncountedGaps = 0
 
-    for (const event of events) {
+    // Answers whether delivery goes on: a failure backs the row off, and a
+    // stale or unsubscribed acknowledgement removes this epoch's row.
+    const settleOutcome = Effect.fnUntraced(function* (
+      outcome: Result.Result<Outcome, ActorError>,
+      position: bigint,
+    ) {
+      const failed = failure(outcome)
+
+      if (failed !== undefined) {
+        yield* backOff(progress, failed)
+
+        return false
+      }
+
+      const settled = (outcome as Result.Success<Outcome, ActorError>).success
+
+      if (
+        Outcome.guards.Acknowledged(settled) &&
+        (settled.reason === "Stale" || settled.reason === "Unsubscribed")
+      ) {
+        yield* deleteRow(row, key, source)
+
+        return false
+      }
+
+      if (Outcome.guards.Acknowledged(settled) && settled.reason === "NotCreated")
+        yield* Effect.logInfo("Subscription event skipped: the subscriber is not created").pipe(
+          Effect.annotateLogs({
+            subscription: `${row.subscriber_type}.${row.subscription}`,
+            cursor: String(position),
+          }),
+        )
+
+      progress = position
+
+      return yield* renew
+    })
+
+    // Never shortens the claim, so a renewal can't undo a lease a test clock moved.
+    const renew = Effect.gen(function* () {
+      const renewed = yield* sql<{ due_at_ms: string }>`UPDATE actor_subscriptions s
+          SET due_at_ms = greatest(s.due_at_ms, ${(yield* databaseTime) + settings.claimLeaseMs()})
+          WHERE ${held()} RETURNING s.due_at_ms::text AS due_at_ms`
+
+      if (renewed.length === 0) {
+        yield* Effect.logWarning("Subscription delivery lost its claim").pipe(
+          Effect.annotateLogs({ subscription: `${row.subscriber_type}.${row.subscription}` }),
+        )
+
+        return false
+      }
+
+      claim.lease = BigInt(renewed[0]!.due_at_ms)
+
+      return true
+    })
+
+    // Pruning removes a prefix, so history after `delivered` is missing when
+    // the oldest retained event is past its successor, or nothing is retained.
+    if (progress < head && (oldest === null || BigInt(oldest) > progress + 1n)) {
+      const resumeAfter = oldest === null ? head : BigInt(oldest) - 1n
+
+      // The detection time fixes the gap's id and its range is kept, so a
+      // redelivery reports the same gap even after pruning advances.
+      const [gap] = yield* sql<{ at: string; through: string }>`UPDATE actor_subscriptions s
+          SET gap_at_ms = coalesce(s.gap_at_ms, ${yield* databaseTime}),
+            gap_through = coalesce(s.gap_through, ${resumeAfter})
+          WHERE ${held()}
+          RETURNING s.gap_at_ms::text AS at, s.gap_through::text AS through`
+
+      if (gap === undefined)
+        return yield* Effect.logWarning("Subscription delivery lost its claim").pipe(
+          Effect.annotateLogs({ subscription: `${row.subscriber_type}.${row.subscription}` }),
+        )
+
+      const through = BigInt(gap.through)
+      continuous = through === resumeAfter
+
+      if (subscription.routed === "id") {
+        // An id route needs the pruned event to name a subscriber.
+        yield* Effect.logWarning("Subscription gap without a recipient").pipe(
+          Effect.annotateLogs({
+            subscription: `${row.subscriber_type}.${row.subscription}`,
+            source: `${source.actor}/${source.id}`,
+            after: String(progress),
+            resumeAfter: String(through),
+          }),
+        )
+        uncountedGaps = 1
+        progress = through
+      } else {
+        const outcome = yield* deliverOne(
+          {
+            tenant: source.tenant,
+            actor: row.subscriber_type,
+            id: subscription.routed === "singleton" ? "singleton" : row.subscriber_id,
+          },
+          subscription.handler,
+          source,
+          {
+            subscription: row.subscription,
+            sourceType: source.actor,
+            sourceId: source.id,
+            epoch: row.epoch,
+            kind: "gap",
+            position: String(through),
+          },
+          Number(gap.at),
+          WireGap.make({
+            subscription: row.subscription,
+            source,
+            after: String(progress),
+            resumeAfter: String(through),
+          }),
+        )
+
+        if (!(yield* settleOutcome(outcome, through))) return
+      }
+    }
+
+    for (const event of continuous ? events : []) {
       const value = decompress(event.value!)
 
       const subscriberId =
@@ -718,45 +868,13 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         }),
       )
 
-      const failed = failure(outcome)
-
-      if (failed !== undefined) return yield* backOff(progress, failed)
-
-      const settled = (outcome as Result.Success<Outcome, ActorError>).success
-
-      if (
-        Outcome.guards.Acknowledged(settled) &&
-        (settled.reason === "Stale" || settled.reason === "Unsubscribed")
-      )
-        return yield* deleteRow(row, key, source)
-
-      if (Outcome.guards.Acknowledged(settled) && settled.reason === "NotCreated")
-        yield* Effect.logInfo("Subscription event skipped: the subscriber is not created").pipe(
-          Effect.annotateLogs({
-            subscription: `${row.subscriber_type}.${row.subscription}`,
-            subscriber: subscriber.id,
-            cursor: event.sequence!,
-          }),
-        )
-
-      progress = BigInt(event.sequence!)
-
-      // Never shortens the claim, so a renewal can't undo a lease a test clock moved.
-      const renewed = yield* sql<{ due_at_ms: string }>`UPDATE actor_subscriptions s
-          SET due_at_ms = greatest(s.due_at_ms, ${(yield* databaseTime) + settings.claimLeaseMs()})
-          WHERE ${held()} RETURNING s.due_at_ms::text AS due_at_ms`
-
-      if (renewed.length === 0)
-        return yield* Effect.logWarning("Subscription delivery lost its claim").pipe(
-          Effect.annotateLogs({ subscription: `${row.subscriber_type}.${row.subscription}` }),
-        )
-
-      claim.lease = BigInt(renewed[0]!.due_at_ms)
+      if (!(yield* settleOutcome(outcome, BigInt(event.sequence!)))) return
     }
 
-    // A short batch scanned every matching event through the head it read.
+    // A short batch scanned every matching event through the head it read;
+    // after a gap older than the pruning now, it stops at the gap to find the next one.
     const delivered =
-      events.length < settings.batch ? (head > progress ? head : progress) : progress
+      continuous && events.length < settings.batch ? (head > progress ? head : progress) : progress
 
     yield* hooks.at("beforeSettle", hookRequest(source, row.subscription, row.subscriber_id))
 
@@ -776,6 +894,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       WITH old AS (SELECT s.events FROM actor_subscriptions s WHERE ${held()}),
       settled AS (
         UPDATE actor_subscriptions s SET delivered = ${delivered}, attempts = 0, last_error = NULL,
+          gaps = s.gaps + ${uncountedGaps}, gap_at_ms = NULL, gap_through = NULL,
           due_at_ms = CASE WHEN ${pending!.due} OR s.marked > ${delivered} THEN ${now()} END,
           events = CASE WHEN s.events @> ${textArray({ sql, values: subscription.events })} THEN s.events
             ELSE ARRAY(SELECT DISTINCT x FROM unnest(s.events || ${textArray({ sql, values: subscription.events })}) AS u(x) ORDER BY x) END
@@ -876,6 +995,46 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     }
   })
 
+  /**
+   * Deletes rows of `subscriberType` whose subscription this runner doesn't
+   * declare once they have been due for a day. Such a row is never claimed
+   * here, so a rolling deploy's newer runners get a day to take it first.
+   */
+  const cleanupRemoved = Effect.fnUntraced(function* (
+    subscriberType: string,
+    declared: ReadonlyArray<string>,
+  ) {
+    const cutoff = (yield* databaseTime) - REMOVED_AFTER_MS
+
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const gone = yield* sql<{
+          routing_key: string
+          tenant_id: string
+          source_type: string
+          source_id: string
+          active: boolean
+          events: string
+        }>`DELETE FROM actor_subscriptions
+          WHERE subscriber_type = ${subscriberType}
+            AND NOT subscription = ANY(${textArray({ sql, values: declared })})
+            AND due_at_ms < ${cutoff}
+          RETURNING routing_key::text AS routing_key, tenant_id, source_type, source_id, active,
+            to_jsonb(events)::text AS events`
+
+        for (const row of gone)
+          if (row.active)
+            yield* removeTags(
+              BigInt(row.routing_key),
+              { tenant: row.tenant_id, actor: row.source_type, id: row.source_id },
+              yield* decodeStrings(row.events),
+            )
+
+        return gone.length
+      }),
+    )
+  })
+
   const run = (work: SubscriptionWork) => {
     const claim = { lease: BigInt(work.claimed_until) }
 
@@ -890,5 +1049,5 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     return running.pipe(Effect.onInterrupt(() => release(work, claim)))
   }
 
-  return { claim, decode, run, widen }
+  return { claim, decode, run, widen, cleanupRemoved }
 })

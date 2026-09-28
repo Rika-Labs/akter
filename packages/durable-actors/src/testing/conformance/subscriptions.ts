@@ -1,4 +1,17 @@
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Match, Schema } from "effect"
+import {
+  Cause,
+  DateTime,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Match,
+  Option,
+  Predicate,
+  Schema,
+  Stream,
+} from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, type Caller, Tenant, User } from "../../index.ts"
 import { InternalActors, Outcome, Request } from "../../handles/actors.ts"
@@ -85,7 +98,25 @@ const SubOrder = Actor.make("SubOrder", {
   key: Schema.String,
   events: [OrderPlaced, OrderCancelled, OrderNoted],
   api: { Place, PlaceMany, CancelOrder, Note, PlaceThenRefuse, PlaceThenDie },
-  policy: { subscribers: ["SubSummary", "SubFollower", "SubDashboard", "SubAuditor"] },
+  policy: {
+    subscribers: ["SubSummary", "SubFollower", "SubDashboard", "SubAuditor", "SubShipment"],
+  },
+})
+
+const Record = Actor.command("Record", {
+  input: Schema.Struct({ customerId: Schema.String, count: Schema.Int }),
+})
+
+/** A source whose events are pruned after an hour, and held for subscribers one hour more. */
+const SubJournal = Actor.make("SubJournal", {
+  key: Schema.String,
+  events: [OrderPlaced],
+  api: { Record },
+  policy: {
+    keepEvents: "1 hour",
+    holdEventsForSubscribers: "1 hour",
+    subscribers: ["SubSummary", "SubFollower", "SubDashboard"],
+  },
 })
 
 const Log = Actor.state({
@@ -105,15 +136,25 @@ const CustomerOrders = Actor.subscription("CustomerOrders", {
   route: (event) => event.customerId,
 })
 
+const CustomerJournals = Actor.subscription("CustomerJournals", {
+  source: SubJournal,
+  events: [OrderPlaced],
+  handler: RecordOrder,
+  route: (event) => event.customerId,
+})
+
 const Touch = Actor.command("Touch")
+
+/** Each delivery's entry, broadcast after its turn commits. */
+const Live = Actor.connection("SummaryLive", { server: Schema.String, client: Schema.String })
 
 /** A routed projection: every order event reaches the customer it names. */
 const SubSummary = Actor.make("SubSummary", {
   key: Schema.String,
   state: Log,
-  api: { Touch },
+  api: { Touch, SummaryLive: Live },
   internal: { RecordOrder },
-  subscriptions: [CustomerOrders],
+  subscriptions: [CustomerOrders, CustomerJournals],
 })
 
 const AuditOrder = Actor.command("AuditOrder", { input: OrderDelivery })
@@ -155,13 +196,23 @@ const Unfollow = Actor.command("Unfollow", { input: Schema.String })
 
 const IntentKeys = Actor.command("IntentKeys", { output: Schema.Array(Schema.String) })
 
+const FollowedJournals = Actor.subscription("FollowedJournals", {
+  source: SubJournal,
+  events: [OrderPlaced],
+  handler: OnOrder,
+})
+
+const FollowJournal = Actor.command("FollowJournal", {
+  input: Schema.Struct({ source: Schema.String, from: Schema.optional(Schema.String) }),
+})
+
 /** A dynamic subscriber: it follows only the orders its turns subscribe to. */
 const SubFollower = Actor.make("SubFollower", {
   key: Schema.String,
   state: Log,
-  api: { Follow, FollowThenRefuse, Unfollow, IntentKeys, Touch },
+  api: { Follow, FollowThenRefuse, Unfollow, IntentKeys, Touch, FollowJournal },
   internal: { OnOrder },
-  subscriptions: [FollowedOrders],
+  subscriptions: [FollowedOrders, FollowedJournals],
 })
 
 const CountOrder = Actor.command("CountOrder", {
@@ -175,13 +226,56 @@ const AllOrders = Actor.subscription("AllOrders", {
   route: Actor.singleton,
 })
 
+const AllJournals = Actor.subscription("AllJournals", {
+  source: SubJournal,
+  events: [OrderPlaced],
+  handler: CountOrder,
+  route: Actor.singleton,
+})
+
 /** Fan-in: every order placed in the tenant reaches the tenant's one dashboard. */
 const SubDashboard = Actor.make("SubDashboard", {
   key: Actor.singleton,
   state: Log,
   api: { Touch },
   internal: { CountOrder },
-  subscriptions: [AllOrders],
+  subscriptions: [AllOrders, AllJournals],
+})
+
+class PaymentSeen extends Actor.Event<PaymentSeen>()("PaymentSeen", {
+  orderId: Schema.String,
+}) {}
+
+const ShipOrder = Actor.workflow("ShipOrder", {
+  input: { orderId: Schema.String },
+  output: Schema.String,
+  key: ({ orderId }) => orderId,
+})
+
+const AwaitPayment = ShipOrder.wait("payment-seen", PaymentSeen)
+
+const PlaceOrder = Actor.command("PlaceOrder", { input: Schema.String, output: Schema.String })
+
+const OnPayment = Actor.command("OnPayment", {
+  input: Actor.Delivery({ source: SubOrder, events: [OrderPlaced] }),
+})
+
+const PaymentUpdates = Actor.subscription("PaymentUpdates", {
+  source: SubOrder,
+  events: [OrderPlaced],
+  handler: OnPayment,
+})
+
+/**
+ * A workflow waits only for its owner's events, so the owner follows the
+ * order and re-emits what the workflow waits for.
+ */
+const SubShipment = Actor.make("SubShipment", {
+  key: Schema.String,
+  events: [PaymentSeen],
+  api: { ShipOrder, PlaceOrder },
+  internal: { OnPayment },
+  subscriptions: [PaymentUpdates],
 })
 
 /** One delivery as a handler logs it: `source#cursor:event`, `source~gap:after-resume`, or `source!rejected:cursor`. */
@@ -253,11 +347,52 @@ const subOrderLayer = SubOrder.toLayer(
 export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
   Layer.mergeAll(
     subOrderLayer,
+    SubJournal.toLayer(
+      Effect.succeed({
+        Record: Effect.fnUntraced(function* ({ customerId, count }) {
+          const turn = yield* SubJournal.Turn
+
+          for (let index = 0; index < count; index++)
+            yield* turn.emit(OrderPlaced.make({ customerId, amount: index }))
+        }),
+      }),
+    ),
     SubSummary.toLayer(
       Effect.succeed({
         Touch: () => Effect.void,
         RecordOrder: Effect.fnUntraced(function* (delivery) {
-          yield* record(fixture, "SubSummary", yield* SubSummary.Turn, delivery)
+          const turn = yield* SubSummary.Turn
+          // Sent only if the turn commits; a declared failure discards it.
+          yield* turn.broadcast(Live, entryOf(delivery))
+          yield* record(fixture, "SubSummary", turn, delivery)
+        }),
+        SummaryLive: { open: () => Effect.void, frame: () => Effect.void },
+      }),
+    ),
+    SubShipment.toLayer(
+      Effect.succeed({
+        PlaceOrder: Effect.fnUntraced(function* (orderId: string) {
+          const turn = yield* SubShipment.Turn
+          // The turn that starts the workflow also subscribes, so both commit together.
+          yield* turn.subscribe(PaymentUpdates, orderId, { from: "start" })
+
+          return yield* (yield* SubShipment.intents(turn.id)).ShipOrder({ orderId })
+        }),
+        OnPayment: Effect.fnUntraced(function* (delivery) {
+          const turn = yield* SubShipment.Turn
+
+          if (!Predicate.isTagged(delivery, "Event")) return
+
+          yield* turn.emit(PaymentSeen.make({ orderId: delivery.source.id }))
+          yield* turn.unsubscribe(PaymentUpdates, delivery.source.id)
+        }),
+        ShipOrder: Effect.fnUntraced(function* ({ orderId }: { readonly orderId: string }) {
+          const paid = yield* AwaitPayment({
+            where: (event) => event.orderId === orderId,
+            timeout: "1 minute",
+          })
+
+          return Option.match(paid, { onNone: () => "unpaid", onSome: () => "paid" })
         }),
       }),
     ),
@@ -276,6 +411,13 @@ export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
         Follow: Effect.fnUntraced(function* ({ source, from }) {
           yield* (yield* SubFollower.Turn).subscribe(
             FollowedOrders,
+            source,
+            from === undefined ? undefined : { from },
+          )
+        }),
+        FollowJournal: Effect.fnUntraced(function* ({ source, from }) {
+          yield* (yield* SubFollower.Turn).subscribe(
+            FollowedJournals,
             source,
             from === undefined ? undefined : { from },
           )
@@ -1597,6 +1739,7 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(handlerRuns(fixture, "SubFollower/forged-follower")).toBe(0)
           expect(yield* (yield* SubFollower.get("forged-follower")).IntentKeys()).toEqual([
             "Follow",
+            "FollowJournal",
             "FollowThenRefuse",
             "IntentKeys",
             "Touch",
@@ -1789,6 +1932,265 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
             { event: "OrderPlaced", rows: 3 },
           ])
           expect(yield* tagMismatches).toEqual([])
+        }),
+      ),
+  },
+]
+
+const journalRow = (source: string, subscriberType: string) =>
+  Effect.gen(function* () {
+    const test = yield* ActorTest
+
+    return (yield* query(
+      (sql) => sql<{ delivered: string; gaps: string; gap_through: string | null }>`
+        SELECT delivered::text AS delivered, gaps::text AS gaps, gap_through::text AS gap_through
+        FROM actor_subscriptions WHERE tenant_id = ${test.tenant} AND source_type = 'SubJournal'
+          AND source_id = ${source} AND subscriber_type = ${subscriberType}`,
+    ))[0]
+  })
+
+const journalEvents = (source: string) =>
+  ActorTest.use((test) =>
+    test
+      .inspect({ tenant: test.tenant, actor: "SubJournal", id: source })
+      .pipe(Effect.map((inspection) => inspection.events)),
+  )
+
+/** Wake, retention holds, gaps, broadcasts, and workflow waits. */
+export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "keeps events above the lowest subscriber cursor inside the hold, then prunes past it and delivers one RetentionGap, then resumes",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const journal = yield* SubJournal.get("hold-j")
+          yield* (yield* SubFollower.get("hold-f")).FollowJournal({ source: "hold-j" })
+          yield* drain
+          fixture.behave = (entry) => (entry.startsWith("SubFollower/hold-f/") ? "defect" : "apply")
+          yield* journal.Record({ customerId: "hold-c", count: 3 })
+          yield* drain
+
+          // Past keepEvents but inside the hold: the blocked follower keeps them.
+          yield* test.advance("90 minutes")
+          yield* test.cleanup
+          expect(yield* journalEvents("hold-j")).toBe(3)
+
+          // Past keepEvents plus the hold: pruned although the follower is behind.
+          yield* test.advance("40 minutes")
+          yield* test.cleanup
+          expect(yield* journalEvents("hold-j")).toBe(0)
+
+          fixture.behave = () => "apply"
+          yield* journal.Record({ customerId: "hold-c", count: 1 })
+          yield* test.advance("300 seconds")
+
+          expect(yield* followerLog("hold-f")).toEqual(["hold-j~gap:0-3", "hold-j#4:OrderPlaced"])
+          expect(yield* journalRow("hold-j", "SubFollower")).toMatchObject({
+            delivered: "4",
+            gap_through: null,
+          })
+        }),
+      ),
+  },
+  {
+    name: 'reports RetentionGap first for a from: "start" subscription after pruning',
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const journal = yield* SubJournal.get("pruned-j")
+          yield* journal.Record({ customerId: "pruned-c", count: 2 })
+          yield* drain
+          yield* test.advance("3 hours")
+          yield* test.cleanup
+          yield* journal.Record({ customerId: "pruned-c", count: 1 })
+          yield* (yield* SubFollower.get("pruned-jf")).FollowJournal({
+            source: "pruned-j",
+            from: "start",
+          })
+          yield* drain
+
+          expect(yield* followerLog("pruned-jf")).toEqual([
+            "pruned-j~gap:0-2",
+            "pruned-j#3:OrderPlaced",
+          ])
+        }),
+      ),
+  },
+  {
+    name: "counts an id-routed gap on the row and delivers a singleton-routed gap",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const journal = yield* SubJournal.get("routegap-j")
+          fixture.behave = (entry) => (entry.includes("/routegap-j#") ? "defect" : "apply")
+          yield* journal.Record({ customerId: "routegap-c", count: 2 })
+          yield* drain
+          yield* test.advance("3 hours")
+          yield* test.cleanup
+          expect(yield* journalEvents("routegap-j")).toBe(0)
+
+          fixture.behave = () => "apply"
+          yield* journal.Record({ customerId: "routegap-c", count: 1 })
+          yield* test.advance("300 seconds")
+
+          // The id route had no event to name a subscriber by, so it counted the gap.
+          expect(yield* logOf("SubSummary", "routegap-c")).toEqual(["routegap-j#3:OrderPlaced"])
+          expect(yield* journalRow("routegap-j", "SubSummary")).toMatchObject({
+            gaps: "1",
+            delivered: "3",
+          })
+          expect(
+            (yield* logOf("SubDashboard", "singleton")).filter((entry) =>
+              entry.startsWith("routegap-j"),
+            ),
+          ).toEqual(["routegap-j~gap:0-2", "routegap-j#3:OrderPlaced"])
+          expect(yield* journalRow("routegap-j", "SubDashboard")).toMatchObject({ gaps: "0" })
+        }),
+      ),
+  },
+  {
+    name: "repeats a gap's id and range on redelivery after pruning advances",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const journal = yield* SubJournal.get("repeat-j")
+          yield* (yield* SubFollower.get("repeat-f")).FollowJournal({ source: "repeat-j" })
+          yield* drain
+          fixture.behave = (entry) =>
+            entry.startsWith("SubFollower/repeat-f/") ? "defect" : "apply"
+          yield* journal.Record({ customerId: "repeat-c", count: 2 })
+          yield* drain
+          yield* test.advance("3 hours")
+          yield* test.cleanup
+
+          // The gap and the next event commit; the relay dies before settling them.
+          fixture.behave = () => "apply"
+          const settle = crashOnce(fixture, "beforeSettle", subscriber("repeat-f"))
+          yield* journal.Record({ customerId: "repeat-c", count: 1 })
+          yield* test.advance("300 seconds")
+          expect(settle.crashed).toBe(true)
+          expect(yield* journalRow("repeat-j", "SubFollower")).toMatchObject({
+            delivered: "0",
+            gap_through: "2",
+          })
+
+          // Pruning moves past event 3 before the redelivery.
+          yield* test.advance("3 hours")
+          yield* test.cleanup
+          expect(yield* journalEvents("repeat-j")).toBe(0)
+          yield* test.advance(CLAIM_LEASE)
+          yield* test.advance("300 seconds")
+
+          expect(yield* followerLog("repeat-f")).toEqual([
+            "repeat-j~gap:0-2",
+            "repeat-j#3:OrderPlaced",
+          ])
+          // The redelivery replayed both receipts: each handler ran once.
+
+          for (const entry of ["repeat-j~gap:0-2", "repeat-j#3:OrderPlaced"])
+            expect(
+              fixture.runs.filter((run) => run === `SubFollower/repeat-f/${entry}`).length,
+            ).toBe(1)
+          expect(yield* journalRow("repeat-j", "SubFollower")).toMatchObject({
+            delivered: "3",
+            gap_through: null,
+          })
+        }),
+      ),
+  },
+  {
+    name: "wakes a hibernated subscriber and commits the delivery",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          yield* (yield* SubFollower.get("sleepy-f")).Follow({ source: "sleepy-o" })
+          yield* drain
+          yield* test.hibernate({ tenant: test.tenant, actor: "SubFollower", id: "sleepy-f" })
+          yield* (yield* SubOrder.get("sleepy-o")).Place({ customerId: "s", amount: 1 })
+          yield* drain
+
+          expect(yield* followerLog("sleepy-f")).toEqual(["sleepy-o#1:OrderPlaced"])
+        }),
+      ),
+  },
+  {
+    name: "flushes a delivery's broadcast to the parked subscriber's connection after commit, and discards it on declared failure",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const ref = { tenant: test.tenant, actor: "SubSummary", id: "live-c" }
+          const connection = yield* test.connect(ref, Live, undefined)
+          // The subscriber parks with the connection open at its holder.
+          yield* test.hibernate(ref)
+          fixture.behave = (entry) => (entry.includes("live-o#1:") ? "refuse" : "apply")
+          const order = yield* SubOrder.get("live-o")
+          yield* order.Place({ customerId: "live-c", amount: 1 })
+          yield* order.Place({ customerId: "live-c", amount: 2 })
+          yield* drain
+
+          const frames = yield* connection.frames.pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.timeout("10 seconds"),
+          )
+
+          expect(Array.from(frames)).toEqual(["live-o#2:OrderPlaced"])
+          expect(yield* logOf("SubSummary", "live-c")).toEqual(["live-o#2:OrderPlaced"])
+          yield* connection.close
+        }),
+      ),
+  },
+  {
+    name: "resolves an owner wait from a subscription delivery that re-emits",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const shipment = yield* SubShipment.get("wf-ship")
+          const execution = yield* shipment.PlaceOrder("wf-order")
+          const workflow = yield* SubShipment.run(ShipOrder, execution)
+          yield* drain
+          yield* (yield* SubOrder.get("wf-order")).Place({ customerId: "wf", amount: 1 })
+          yield* drain
+
+          expect(yield* workflow.result.pipe(Effect.timeout("20 seconds"))).toBe("paid")
+        }),
+      ),
+  },
+  {
+    name: "subscribes in the workflow's start turn and delivers after the start commits",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          // The event is committed before the subscription exists; from: "start" replays it.
+          yield* (yield* SubOrder.get("wf-early")).Place({ customerId: "wf", amount: 1 })
+          const shipment = yield* SubShipment.get("wf-early-ship")
+          const execution = yield* shipment.PlaceOrder("wf-early")
+          const workflow = yield* SubShipment.run(ShipOrder, execution)
+          yield* drain
+
+          expect(yield* workflow.result.pipe(Effect.timeout("20 seconds"))).toBe("paid")
         }),
       ),
   },
