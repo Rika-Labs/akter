@@ -88,6 +88,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 - Deduplication is per tenant only. The same bytes in two tenants are stored twice, so one tenant can never learn what another stores. Within a tenant, the upload response is the same whether or not the bytes already existed. Timing may differ; the uploader already holds the bytes, and the tenant is one trust domain.
 - Every statement is scoped by `tenant_id`, and optional RLS covers the new tables like any other ([contract 10](../contracts/10-security.md)).
 - One content is at most 64 MiB, written in 1 MiB chunks over several statements of the upload transaction. Content doesn't count toward an actor's `policy.maxBlobBytes`, because it isn't the actor's bytes. Per-tenant quotas are left to the application or the hosted plan (open question 4).
+- **Served uploads have their own body limit.** [ADR 0027](0027-served-protocol.md) caps every request body at `limits.requestBytes` (default 1 MiB), which would refuse most uploads. `POST /content` is the one route exempt from that cap. It takes `limits.contentBytes` instead, which defaults to the 64 MiB content limit and can't exceed it. The body is streamed, not buffered: the server hashes it and writes 1 MiB chunks as they arrive. Once the byte count passes the limit, it stops reading and answers `413 InvalidInput { code: "too_large" }`, the same failure ADR 0027 uses, and rolls back the upload transaction so no partial content is written. Every other route keeps `limits.requestBytes`.
 - Grant keys rotate like other deployment secrets. The key id in the grant lets the old key keep verifying for one grant lifetime after rotation.
 
 ## Alternatives rejected
@@ -117,7 +118,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 
 - [Server API](../api/01-server-api.md): `Actor.content(name)`, `Content.upload`, `Content.grant`, and `ContentRef`.
 - [Context](../api/02-context.md): `turn.blob(C).attach/detach/list` and `read.blob(C).get/stream/list`.
-- [Protocol](../contracts/protocol.md): `POST /content`, the grant route, and the served download route for a content entry.
+- [Protocol](../contracts/protocol.md): `POST /content`, the grant route, and the served download route for a content entry. `Actor.serve`'s `limits` gains `contentBytes`, and ADR 0027's body-limit rule gains the `POST /content` exception.
 - [Error model](../contracts/error-model.md): the typed `InvalidContentRef` failure of `attach`, which is an application failure, not an `ActorError` reason.
 
 **Architecture and operations.** [Storage layout](../architecture/03-storage-layout.md) gets the new tables. [Retention](../operations/retention.md) gets the sweep and the grace. The [inspection views](../operations/inspection-views.md) get `durable.contents` and `durable.content_refs`. [Runbooks](../operations/runbooks.md) cover sweep lag and grant-key rotation.
@@ -148,6 +149,7 @@ In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
 
 - `refuses to attach by bare hash, by another tenant's grant, or by an expired grant, and reads nothing without a reference` (hash-knowledge denial)
 - `stores identical uploads once per tenant and twice across tenants` (dedup, and S2)
+- `accepts a served upload above limits.requestBytes up to limits.contentBytes, and answers 413 too_large past it without writing any content`
 - `rolls back an attach and a detach with a declared failure or defect` (T1)
 - `keeps content referenced by one actor after another detaches it`
 - `collects unattached uploads after grant plus grace and never before`
