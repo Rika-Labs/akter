@@ -31,6 +31,25 @@ export interface OptimisticReducer {
   readonly commutative: boolean
 }
 
+/** A connection member as a served WebSocket route sees it. */
+export interface ServedConnection {
+  readonly tag: string
+  readonly params: ValueSchema
+  readonly server: ValueSchema
+  readonly client: ValueSchema
+  readonly errors: ReadonlyArray<DeclaredError>
+  /** False when frames carry no cursors, so clients always resync from state. */
+  readonly stampCursor: boolean
+  /** Decodes a `hello` frame's `params` (`undefined` when absent) into the runtime's encoding. */
+  readonly openParams: (json: Schema.Json | undefined) => Effect.Effect<string, Schema.SchemaError>
+  /** Decodes a client member frame into the runtime's encoding. */
+  readonly clientFrame: (json: Schema.Json) => Effect.Effect<string, Schema.SchemaError>
+  /** A runtime-encoded server frame as the JSON value a client reads. */
+  readonly serverFrame: (encoded: string) => Effect.Effect<Schema.Json, Schema.SchemaError>
+  /** A declared `open` failure, as the runtime stores it, as the JSON a client reads. */
+  readonly openFailure: (encoded: string) => Effect.Effect<Schema.Json, Schema.SchemaError>
+}
+
 export interface ServedDefinition {
   readonly name: string
   readonly key: "keyed" | "singleton" | "minted"
@@ -39,6 +58,8 @@ export interface ServedDefinition {
   readonly encodeId: (id: string) => Effect.Effect<string, Schema.SchemaError>
   /** `api` members only; `internal` commands are never served. */
   readonly members: ReadonlyArray<ServedMember>
+  /** Connection members, served as WebSocket upgrades. */
+  readonly connections: ReadonlyArray<ServedConnection>
   readonly deliveryMs: number
 }
 
@@ -126,5 +147,44 @@ export const servedMember = ({ member, codecs }: ServedMemberSource): ServedMemb
             commutative: member.commutative !== undefined,
           }
         : undefined,
+  }
+}
+
+const ValueJson = Schema.fromJsonString(Schema.Struct({ value: Schema.optionalKey(Schema.Json) }))
+
+const decodeValueJson = Schema.decodeUnknownEffect(ValueJson)
+
+const decodeJsonString = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
+
+export const servedConnection = (member: {
+  readonly tag: string
+  readonly input: ValueSchema
+  readonly server: ValueSchema
+  readonly client: ValueSchema
+  readonly errors: ReadonlyArray<DeclaredError>
+  readonly stampCursor: boolean
+}): ServedConnection => {
+  const valueOf = (schema: ValueSchema) =>
+    Schema.encodeEffect(Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: schema }))))
+
+  const decodeParams = Schema.decodeUnknownEffect(Schema.toCodecJson(member.input))
+  const encodeParams = valueOf(member.input)
+  const decodeClient = Schema.decodeUnknownEffect(Schema.toCodecJson(member.client))
+  const encodeClient = valueOf(member.client)
+
+  return {
+    tag: member.tag,
+    params: member.input,
+    server: member.server,
+    client: member.client,
+    errors: member.errors,
+    stampCursor: member.stampCursor,
+    openParams: (json) =>
+      decodeParams(json ?? null).pipe(Effect.flatMap((value) => encodeParams({ value }))),
+    clientFrame: (json) =>
+      decodeClient(json).pipe(Effect.flatMap((value) => encodeClient({ value }))),
+    serverFrame: (encoded) =>
+      decodeValueJson(encoded).pipe(Effect.map(({ value }) => value ?? null)),
+    openFailure: decodeJsonString,
   }
 }
