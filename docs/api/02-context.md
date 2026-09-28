@@ -39,7 +39,7 @@ Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor
 
 ## Subscriptions
 
-`turn.subscribe(S, sourceId, { from? })` and `turn.unsubscribe(S, sourceId)` (target API, [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md)) start and stop following one source instance through a dynamic `Actor.subscription` (one without `route`). They stage like intents and take effect only if the turn commits. `from` is `"now"` (default), `"start"`, or a cursor to resume after. After `unsubscribe` commits, no further delivery for that source runs the handler. Routed subscriptions are not passed to either.
+`turn.subscribe(S, sourceId, { from? })` and `turn.unsubscribe(S, sourceId)` (M3.7, [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md)) start and stop following one source instance through a dynamic `Actor.subscription` (one without `route`). They stage like intents and take effect only if the turn commits. `from` is `"now"` (default), `"start"`, or a cursor to resume after. After `unsubscribe` commits, no further delivery for that source runs the handler. Routed subscriptions are not passed to either; passing one is a type error. A `from` value that isn't `"now"`, `"start"`, or a canonical cursor is a deterministic defect of the turn, and a cursor past the source's head is refused with a `Rejected` delivery. `Intent.key` and `Intent.cancel` reject keys starting with `$` (or a JSON array whose first element does), which the framework uses for its feed and control rows.
 
 ## Owned rows
 

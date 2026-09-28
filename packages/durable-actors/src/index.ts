@@ -14,6 +14,7 @@ import { ActorStates } from "./state/migration.ts"
 import { blob } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
 import { WorkflowMember } from "./members/workflow.ts"
+import { Delivery, SubscriptionMember } from "./members/subscription.ts"
 import { make as authMake, none as authNone } from "./serve/auth.ts"
 import { jwt } from "./serve/jwt.ts"
 import { serve } from "./serve/layer.ts"
@@ -35,6 +36,10 @@ export const Actor = {
   blob,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
+  /** Declares a subscription to another actor type's committed events. */
+  subscription: SubscriptionMember.make,
+  /** The input schema of a subscription handler: one delivery of a source's events. */
+  Delivery,
   /** Serves actor definitions over HTTP as routes on the application's `HttpRouter`. */
   serve,
   /** Authentication providers for `Actor.serve`; one per served layer. */
@@ -128,6 +133,18 @@ export type { Executors, Handle, Intents, WorkflowHandlers } from "./actor/defin
 export type { Commutative, Reducer } from "./members/reducer.ts"
 
 export type { AnyBlob, Blob } from "./members/blob.ts"
+
+export type {
+  AnySubscription,
+  DeliveredEvent,
+  DeliveredGap,
+  DeliveredRejection,
+  Delivery,
+  Route,
+  SubscribeContext,
+  SubscribeFrom,
+  Subscription,
+} from "./members/subscription.ts"
 
 export type { BlobRead, BlobWrite } from "./state/blob.ts"
 

@@ -108,6 +108,7 @@ export const armTimer = Effect.fnUntraced(function* (
     ],
     replaced: [key],
     effects: [],
+    subscriptions: [],
     cancelledEffects: [],
   })
 })
@@ -234,6 +235,7 @@ export const workflowCommands = ({
   for (const workflow of registration.workflows.values())
     commands.set(workflow.member.tag, {
       internal: false,
+      handler: false,
       run: (request) =>
         Effect.gen(function* () {
           const key = yield* workflow.key(request.payload, request.commandId)
@@ -246,6 +248,7 @@ export const workflowCommands = ({
 
   commands.set(START, {
     internal: true,
+    handler: false,
     run: (request) =>
       Effect.gen(function* () {
         const payload = yield* decodeStart(request.payload).pipe(Effect.orDie)
@@ -260,6 +263,7 @@ export const workflowCommands = ({
 
   commands.set(RESUME, {
     internal: true,
+    handler: false,
     run: (request) =>
       decodeTarget(request.payload).pipe(
         Effect.orDie,
@@ -269,6 +273,7 @@ export const workflowCommands = ({
 
   commands.set(INTERRUPT, {
     internal: false,
+    handler: false,
     run: (request) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient
