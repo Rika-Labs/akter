@@ -4,12 +4,21 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 
+const counts = `SELECT
+  (SELECT count(*)::int FROM actor_receipts WHERE command <> 'Note') AS receipts,
+  (SELECT count(*)::int FROM crash_entries) AS rows,
+  (SELECT count(*)::int FROM actor_events) AS events,
+  (SELECT json_agg(command_id) FROM actor_receipts WHERE command <> 'Note') AS ids,
+  (SELECT json_agg(intent_id) FROM actor_outbox) AS intents,
+  (SELECT json_agg(command_id) FROM actor_receipts WHERE command = 'Note') AS delivered`
+
 describe("owned rows across process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  // `AppendThenRefuse` inserts a row and then fails with a declared error, so
-  // only its terminal receipt may commit.
+  // Each handler inserts a row, emits an event, and sends an intent.
+  // `AppendThenRefuse` then fails with a declared error, so only its terminal
+  // receipt may commit and nothing is ever delivered.
   for (const [handler, point] of (["Append", "AppendThenRefuse"] as const).flatMap((handler) =>
     (["beforeCommit", "afterCommit"] as const).map((point) => [handler, point] as const),
   )) {
@@ -17,8 +26,8 @@ describe("owned rows across process death with Postgres", () => {
 
     it(
       refused
-        ? `rolls back an owned row before a declared failure across SIGKILL ${point} and replays the failure`
-        : `leaves ${point === "beforeCommit" ? "no" : "one"} owned row after SIGKILL ${point} and retries to exactly one`,
+        ? `rolls back an owned row and its notifications before a declared failure across SIGKILL ${point} and replays the failure`
+        : `leaves ${point === "beforeCommit" ? "no" : "one"} owned row after SIGKILL ${point} and retries to exactly one with one delivery`,
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
@@ -79,20 +88,20 @@ describe("owned rows across process death with Postgres", () => {
             yield* child.kill({ killSignal: "SIGKILL" })
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
 
-            const committed = point === "afterCommit" ? 1 : 0
+            const committed = point === "afterCommit"
+            const staged = committed && !refused ? 1 : 0
 
-            // A separate pool sees only what the killed process committed.
-            expect(
-              (yield* Effect.promise(() =>
-                pool.query(
-                  "SELECT (SELECT count(*)::int FROM actor_receipts) AS receipts, (SELECT count(*)::int FROM crash_entries) AS rows, (SELECT json_agg(command_id) FROM actor_receipts) AS ids",
-                ),
-              )).rows,
-            ).toEqual([
+            // A separate pool sees only what the killed process committed. Its
+            // relay never ran the receiver, so a committed intent is still pending.
+            const before = (yield* Effect.promise(() => pool.query(counts))).rows
+            expect(before).toEqual([
               {
-                receipts: committed,
-                rows: refused ? 0 : committed,
-                ids: committed === 1 ? [commandId] : null,
+                receipts: committed ? 1 : 0,
+                rows: staged,
+                events: staged,
+                ids: committed ? [commandId] : null,
+                intents: staged === 1 ? [expect.any(String)] : null,
+                delivered: null,
               },
             ])
 
@@ -105,7 +114,21 @@ describe("owned rows across process death with Postgres", () => {
                 .filter((line) => line.startsWith("RESULT "))
                 .map((line) => line.slice("RESULT ".length)),
             ).toEqual([
-              `{"reply":"${refused ? "Refused" : "1"}","handled":${committed === 1 ? 0 : 1},"receipts":1,"rows":${refused ? 0 : 1}}`,
+              `{"reply":"${refused ? "Refused" : "1"}","handled":${committed ? 0 : 1},"noted":${refused ? 0 : 1},"receipts":1,"rows":${refused ? 0 : 1},"events":${refused ? 0 : 1}}`,
+            ])
+
+            // The receiver committed the intent once, under the id the killed
+            // process staged when it had committed one.
+            const after = (yield* Effect.promise(() => pool.query(counts))).rows
+            expect(after).toEqual([
+              {
+                receipts: 1,
+                rows: refused ? 0 : 1,
+                events: refused ? 0 : 1,
+                ids: [commandId],
+                intents: null,
+                delivered: refused ? null : (before[0].intents ?? [expect.any(String)]),
+              },
             ])
           }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
         ),

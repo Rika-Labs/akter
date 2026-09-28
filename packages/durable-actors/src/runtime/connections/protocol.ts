@@ -4,6 +4,22 @@ import { Rpc } from "effect/unstable/rpc"
 import { ActorError, SessionEnded } from "../../errors/actor.ts"
 import { ActorRef, Caller } from "../../identity/caller.ts"
 
+/**
+ * The framework connection member an event feed opens. It has no handler, and
+ * `$` can't start a declared member's tag, so it never collides with one.
+ */
+export const FEED_MEMBER = "$feed"
+
+/** One committed feed event as its owner broadcasts it; `value` is the stored encoding. */
+export const FeedFrame = Schema.Struct({
+  tag: Schema.String,
+  value: Schema.String,
+  commandId: Schema.String,
+  timestampMs: Schema.Finite,
+})
+
+export type FeedFrame = typeof FeedFrame.Type
+
 /** What an owner sends a holder over its ordered channel. */
 export const HolderItem = Schema.TaggedUnion({
   Frame: {

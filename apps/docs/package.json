@@ -1,0 +1,23 @@
+{
+  "name": "@durable-actors/docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun src/build.ts",
+    "dev": "bun src/build.ts && PORT=${DOCS_PORT:-3002} bun src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/docs/src"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/bun": "1.4.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
