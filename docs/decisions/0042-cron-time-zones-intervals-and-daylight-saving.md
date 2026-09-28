@@ -135,6 +135,7 @@ In this change:
 - [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) section 5: the tick key, the UTC-only rule, and the catch-up rule are amended as above. ADR 0021's text stays as recorded.
 - [Contract 05](../contracts/05-messaging.md): the tick key names the entry's zone or interval.
 - [Contract 08](../contracts/08-background-work.md): zones, intervals, the daylight-saving rule, and catch-up for them.
+- [Dispatch](../architecture/04-dispatch.md) and [storage layout](../architecture/03-storage-layout.md): the tick key format.
 - [Server API](../api/01-server-api.md): the `CRON_TZ=` and `@every` forms and the new keys (target API until the implementation lands).
 - [Decisions index](README.md) and [M2](../milestones/M2.md): list this ADR.
 
