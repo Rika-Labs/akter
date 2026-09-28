@@ -2,7 +2,7 @@
 import { Database } from "@durable-actors/core/runtime"
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Console, Effect, Layer, Redacted } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { HttpRouter, HttpServer } from "effect/unstable/http"
 
 import {
   INSPECTOR_PATH,
@@ -62,17 +62,23 @@ const dev = (args: ReadonlyArray<string>) =>
         ? Database.pglite(options.dataDir === undefined ? {} : { dataDir: options.dataDir })
         : Database.postgres({ url: Redacted.make(options.databaseUrl) })
 
-    const origin = `http://${options.hostname}:${options.port}`
-
-    yield* Console.log(
-      [
-        `durable dev: ${options.entry} on ${options.databaseUrl === undefined ? `PGlite (${options.dataDir ?? "in memory"})` : "Postgres"}`,
-        `  app        ${origin}`,
-        `  inspector  ${origin}${INSPECTOR_PATH} (tenant ${options.tenant})`,
-      ].join("\n"),
+    // Printed once the server listens, so `--port 0` reports the port it was given.
+    const banner = Layer.effectDiscard(
+      HttpServer.addressFormattedWith((origin) =>
+        Console.log(
+          [
+            `durable dev: ${options.entry} on ${options.databaseUrl === undefined ? `PGlite (${options.dataDir ?? "in memory"})` : "Postgres"}`,
+            `  app        ${origin}`,
+            `  inspector  ${origin}${INSPECTOR_PATH} (tenant ${options.tenant})`,
+          ].join("\n"),
+        ),
+      ),
     )
 
-    return HttpRouter.serve(devRoutes({ app, tenant: options.tenant })).pipe(
+    return Layer.mergeAll(
+      HttpRouter.serve(devRoutes({ app, tenant: options.tenant })),
+      banner,
+    ).pipe(
       Layer.provide(BunHttpServer.layer({ port: options.port, hostname: options.hostname })),
       Layer.provide(database),
       Layer.provide(BunCrypto.layer),
