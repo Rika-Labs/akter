@@ -404,7 +404,8 @@ const frameworkDriver = (environment: ConformanceEnvironment) =>
       // A restarted runtime's test clock starts at database time again; move
       // it back to where the old one stood, as real time would be.
       restart: Effect.gen(function* () {
-        const now = (test: ActorTest["Service"]) => test.now.pipe(Effect.map(DateTime.toEpochMillis))
+        const now = (test: ActorTest["Service"]) =>
+          test.now.pipe(Effect.map(DateTime.toEpochMillis))
         const before = yield* inTenant(Effect.flatMap(Effect.service(ActorTest), now))
         yield* environment.restart
         const after = yield* inTenant(Effect.flatMap(Effect.service(ActorTest), now))
