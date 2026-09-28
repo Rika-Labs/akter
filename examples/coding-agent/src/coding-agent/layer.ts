@@ -58,8 +58,11 @@ type Ask = Step<
 
 export const CodingAgentCommands = CodingAgent.toLayer(
   Effect.succeed({
+    // Starting again is a no-op, so a repeated Start never boots a second sandbox.
     Start: Effect.fnUntraced(function* ({ repo }) {
       const turn = yield* CodingAgent.Turn
+
+      if (turn.state.repo !== undefined) return
       yield* turn.state.set({ repo })
       yield* turn.perform(StartSandbox.make({ repo }))
     }),
@@ -180,6 +183,9 @@ export const CodingAgentCommands = CodingAgent.toLayer(
 
 export const CodingAgentReads = CodingAgent.toQueryLayer(
   Effect.succeed({
+    Sandbox: Effect.fnUntraced(function* () {
+      return (yield* CodingAgent.Read).state.sandboxId ?? null
+    }),
     Transcript: Effect.fnUntraced(function* ({ limit }) {
       const rows = yield* (yield* CodingAgent.Read)
         .rows(turns)
@@ -198,8 +204,9 @@ export const CodingAgentEffects = CodingAgent.toEffectLayer(
     return {
       StartSandbox: Effect.fnUntraced(function* ({ repo }) {
         const exec = yield* CodingAgent.Executor
+        const owner = { tenant: exec.ref.tenant, agentId: exec.ref.id }
 
-        return yield* sandboxes.create({ repo, idempotencyKey: exec.effectId })
+        return yield* sandboxes.create({ repo, owner, idempotencyKey: exec.effectId })
       }),
       RunPrompt: Effect.fnUntraced(function* ({ turnId, text, sandboxId }) {
         const exec = yield* CodingAgent.Executor

@@ -105,6 +105,23 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
     }),
   ))
 
+it("starts one sandbox however many times Start is sent", () =>
+  run(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const agent = yield* started("g6")
+      const first = yield* agent.Sandbox()
+      yield* agent.Start({ repo: "github.com/acme/other" })
+      yield* test.advance(0)
+
+      expect(yield* agent.Sandbox()).toBe(first)
+      expect(
+        [...fake.sandboxes.values()].filter(({ owner }) => owner.agentId === "g6"),
+      ).toHaveLength(1)
+      expect(yield* test.receiptsFor(agent.ref, "SandboxReady")).toBe(1)
+    }),
+  ))
+
 it("refuses a second prompt while a turn runs, and drops the reply of an aborted turn", () =>
   run(
     Effect.gen(function* () {

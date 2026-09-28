@@ -106,6 +106,9 @@ export const Transcript = Actor.query("Transcript", {
   ),
 })
 
+/** The sandbox the agent uses now, if any; the reaper kills only sandboxes no agent uses. */
+export const Sandbox = Actor.query("Sandbox", { output: Schema.NullOr(Schema.String) })
+
 /** Implements a task in two turns: one to write it, one to test and commit it. */
 export const Ship = Actor.workflow("Ship", {
   input: { task: Schema.String },
@@ -148,7 +151,7 @@ export const CodingAgent = Actor.make("CodingAgent", {
   tables: [turns],
   events: [SandboxStarted, Prompted, TurnEnded, SandboxPaused],
   effects: [StartSandbox, RunPrompt, PauseSandbox],
-  api: { Start, Prompt, Abort, Transcript, Ship },
+  api: { Start, Prompt, Abort, Sandbox, Transcript, Ship },
   internal: { SandboxReady, Replied, PromptFailed, Idle },
   policy: {
     createdBy: Start,

@@ -1,7 +1,14 @@
 import { Context, Deferred, Effect, Layer, Stream } from "effect"
 
+/** The agent a sandbox was created for, recorded as provider metadata. */
+export interface SandboxOwner {
+  readonly tenant: string
+  readonly agentId: string
+}
+
 export interface SandboxInfo {
   readonly sandboxId: string
+  readonly owner: SandboxOwner
   readonly startedAt: number
   readonly paused: boolean
 }
@@ -16,6 +23,7 @@ export class Sandboxes extends Context.Service<
   {
     readonly create: (request: {
       readonly repo: string
+      readonly owner: SandboxOwner
       readonly idempotencyKey: string
     }) => Effect.Effect<string>
     /** The reply to `text` as it streams; resumes a paused sandbox first. */
@@ -51,12 +59,18 @@ export const fakeSandboxes = (now: () => number = Date.now): FakeSandboxes => ({
 
 export const fakeLayer = (fake: FakeSandboxes) =>
   Layer.succeed(Sandboxes, {
-    create: ({ repo, idempotencyKey }) =>
+    create: ({ repo, owner, idempotencyKey }) =>
       Effect.sync(() => {
         const sandboxId = `sbx-${idempotencyKey}`
 
         if (!fake.sandboxes.has(sandboxId))
-          fake.sandboxes.set(sandboxId, { sandboxId, repo, startedAt: fake.now(), paused: false })
+          fake.sandboxes.set(sandboxId, {
+            sandboxId,
+            owner,
+            repo,
+            startedAt: fake.now(),
+            paused: false,
+          })
 
         return sandboxId
       }),

@@ -5,6 +5,8 @@ import { Config, Crypto, DateTime, Effect, Layer, ManagedRuntime, Redacted } fro
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { fakeLayer, fakeSandboxes } from "../coding-agent/sandbox.ts"
+import { AgentId, CodingAgent } from "../coding-agent/contract.ts"
+import { CodingAgentLive } from "../coding-agent/layer.ts"
 import { SandboxReaper } from "./contract.ts"
 import { SandboxReaperLive } from "./layer.ts"
 
@@ -33,7 +35,7 @@ const database = Effect.gen(function* () {
 
 const live = Layer.unwrap(
   Effect.gen(function* () {
-    return SandboxReaperLive.pipe(
+    return Layer.mergeAll(SandboxReaperLive, CodingAgentLive).pipe(
       Layer.provide(fakeLayer(fake)),
       Layer.provideMerge(
         ActorTest.layer({ database: yield* database, as: User.make({ subject: "ops" }) }),
@@ -46,28 +48,42 @@ const runtime = ManagedRuntime.make(live)
 
 afterAll(() => runtime.dispose())
 
-it("kills only sandboxes older than a day, and records a rerun sweep once", () =>
+it("kills old sandboxes no agent uses, keeps the ones agents still use, and records a rerun sweep once", () =>
   runtime.runPromise(
     Effect.gen(function* () {
       const test = yield* ActorTest
       const now = DateTime.toEpochMillis(yield* DateTime.now)
       const hours = (n: number) => now - n * 3_600_000
 
-      for (const [sandboxId, startedAt] of [
-        ["old", hours(25)],
-        ["fresh", hours(1)],
-      ] as const)
-        fake.sandboxes.set(sandboxId, { sandboxId, repo: "r", startedAt, paused: false })
+      // A live agent whose sandbox is more than a day old.
+      const agent = yield* CodingAgent.get(AgentId.make("owner"))
+      yield* agent.Start({ repo: "r" })
+      yield* test.advance(0)
+      const live = (yield* agent.Sandbox())!
+      fake.sandboxes.set(live, { ...fake.sandboxes.get(live)!, startedAt: hours(30) })
 
-      // The first sweep's result is lost after it killed the sandbox, so the relay runs it again.
+      const sandbox = (sandboxId: string, agentId: string, startedAt: number) =>
+        fake.sandboxes.set(sandboxId, {
+          sandboxId,
+          owner: { tenant: test.tenant, agentId },
+          repo: "r",
+          startedAt,
+          paused: false,
+        })
+
+      sandbox("replaced", "owner", hours(26)) // its agent moved on to another sandbox
+      sandbox("never-ready", "ghost", hours(25)) // its agent never recorded it
+      sandbox("fresh", "ghost", hours(1))
+
+      // The first sweep's result is lost after it killed the orphans, so the relay runs it again.
       yield* test.crashNext("afterExecute")
       const reaper = yield* SandboxReaper.get()
       yield* reaper.Sweep()
 
-      while (fake.sandboxes.has("old")) yield* Effect.sleep("20 millis")
+      while (fake.sandboxes.has("never-ready")) yield* Effect.sleep("20 millis")
       yield* test.advance("2 minutes")
 
-      expect([...fake.sandboxes.keys()]).toEqual(["fresh"])
+      expect([...fake.sandboxes.keys()].sort()).toEqual(["fresh", live].sort())
       expect(yield* test.receiptsFor(reaper.ref, "Swept")).toBe(1)
       expect((yield* test.inspect(reaper.ref)).state).toMatchObject({ sweeps: 1 })
     }),
