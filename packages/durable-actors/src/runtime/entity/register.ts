@@ -353,20 +353,68 @@ export const registerActor = Effect.fnUntraced(function* (
           )
       })
 
-      // Runs `batch`, and with `pipelining` every batch that is already
-      // waiting when the one before it commits. A lone command's span and
-      // logs name the command.
-      const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
-        const { request } = batch[0]!
-        const { ref } = request
-        const lone = batch.length === 1
+      // Each batch's own span and logs: a lone command's name the command
+      // and continue its request's span; a larger batch's link every
+      // command's request span.
+      const observe =
+        (batch: ReadonlyArray<Waiting>) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+          const { request } = batch[0]!
+          const { ref } = request
+          const lone = batch.length === 1
 
-        return executeBatches(
+          return effect.pipe(
+            Effect.annotateLogs(
+              lone
+                ? {
+                    actor: ref.actor,
+                    id: ref.id,
+                    tenant: ref.tenant,
+                    command: request.command,
+                    commandId: request.commandId,
+                  }
+                : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
+            ),
+            // The span's call site is always this file, so a captured stack
+            // trace would cost an Error per turn and name nothing useful.
+            Effect.withSpan(
+              lone
+                ? `durable-actors.${ref.actor}/${request.command}`
+                : `durable-actors.${ref.actor}/batch`,
+              {
+                attributes: lone
+                  ? {
+                      "actor.tenant": ref.tenant,
+                      "actor.id": ref.id,
+                      "command.id": request.commandId,
+                    }
+                  : { "actor.tenant": ref.tenant, "actor.id": ref.id, "batch.size": batch.length },
+                parent: lone
+                  ? Context.getOrUndefined(batch[0]!.context, Tracer.ParentSpan)
+                  : undefined,
+                links: lone
+                  ? []
+                  : batch.flatMap(({ context }) => {
+                      const span = Context.getOrUndefined(context, Tracer.ParentSpan)
+
+                      return span === undefined ? [] : [{ span, attributes: {} }]
+                    }),
+              },
+              { captureStackTrace: false },
+            ),
+          )
+        }
+
+      // Runs `batch`, and with `pipelining` every batch that is already
+      // waiting when the one before it commits.
+      const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) =>
+        executeBatches(
           {
             first: batch,
             next: pipelining ? following : Effect.undefined,
             prepare: owner.prepare(owned),
             committed,
+            observe,
           },
           owned.cache,
           owned.key,
@@ -375,44 +423,7 @@ export const registerActor = Effect.fnUntraced(function* (
           statements,
           waited,
           owner.hasConnections ? owner.list(owned) : undefined,
-        ).pipe(
-          Effect.annotateLogs(
-            lone
-              ? {
-                  actor: ref.actor,
-                  id: ref.id,
-                  tenant: ref.tenant,
-                  command: request.command,
-                  commandId: request.commandId,
-                }
-              : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
-          ),
-          // The span's call site is always this file, so a captured stack
-          // trace would cost an Error per turn and name nothing useful.
-          Effect.withSpan(
-            lone
-              ? `durable-actors.${ref.actor}/${request.command}`
-              : `durable-actors.${ref.actor}/batch`,
-            {
-              attributes: lone
-                ? {
-                    "actor.tenant": ref.tenant,
-                    "actor.id": ref.id,
-                    "command.id": request.commandId,
-                  }
-                : { "actor.tenant": ref.tenant, "actor.id": ref.id, "batch.size": batch.length },
-              links: lone
-                ? []
-                : batch.flatMap(({ context }) => {
-                    const span = Context.getOrUndefined(context, Tracer.ParentSpan)
-
-                    return span === undefined ? [] : [{ span, attributes: {} }]
-                  }),
-            },
-            { captureStackTrace: false },
-          ),
         )
-      }
 
       // A defect aborts the whole batch, and a following batch whose
       // admission was already sent is rolled back unseen with it. A retryable

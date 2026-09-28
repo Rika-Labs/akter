@@ -181,6 +181,10 @@ export interface Run<W extends Delivery, RN, RP, RC> {
   readonly next: Effect.Effect<ReadonlyArray<W> | undefined, never, RN>
   readonly prepare: Effect.Effect<void, never, RP>
   readonly committed: (batch: ReadonlyArray<W>, done: Done) => Effect.Effect<void, never, RC>
+  /** Wraps one batch's handlers, commit, and answers in that batch's own span and logs. */
+  readonly observe: (
+    batch: ReadonlyArray<W>,
+  ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
 /**
@@ -705,59 +709,65 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           while (true) {
             locate(batch, undefined)
 
+            const current = batch
+
             const step = yield* Effect.gen(function* () {
-              yield* replies(admitted)
-              const plan = yield* admission.resume()
-              const following = yield* run.next
-              const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
-              let tag: string | undefined
+              const stepped = yield* Effect.gen(function* () {
+                yield* replies(admitted)
+                const plan = yield* admission.resume()
+                const following = yield* run.next
+                const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
+                let tag: string | undefined
 
-              const commit: ReadonlyArray<Statement> = [
-                ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
-                Effect.map(control(ending), (result) => {
-                  tag = result.command
+                const commit: ReadonlyArray<Statement> = [
+                  ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
+                  Effect.map(control(ending), (result) => {
+                    tag = result.command
 
-                  if (following === undefined) open = false
-                }),
-              ]
+                    if (following === undefined) open = false
+                  }),
+                ]
 
-              if (following === undefined) {
-                yield* pipeline(commit)
+                if (following === undefined) {
+                  yield* pipeline(commit)
 
-                return { plan, ending, tag, next: undefined }
-              }
+                  return { plan, ending, tag, next: undefined }
+                }
 
-              locate(batch, following)
+                locate(batch, following)
 
-              // Built as if this batch commits; its fence proves it did.
-              const upcoming = admit(
-                following,
-                plan.writes === undefined
-                  ? view()
-                  : { generation: plan.generation, state: plan.state },
-                session,
-                [begin],
-              )
+                // Built as if this batch commits; its fence proves it did.
+                const upcoming = admit(
+                  following,
+                  plan.writes === undefined
+                    ? view()
+                    : { generation: plan.generation, state: plan.state },
+                  session,
+                  [begin],
+                )
 
-              const flight = yield* queue({ scope, group: [...commit, ...upcoming.group] })
-              yield* replies(flight.slice(0, commit.length))
+                const flight = yield* queue({ scope, group: [...commit, ...upcoming.group] })
+                yield* replies(flight.slice(0, commit.length))
 
-              return {
-                plan,
-                ending,
-                tag,
-                next: {
-                  batch: following,
-                  admission: upcoming,
-                  admitted: flight.slice(commit.length),
-                },
-              }
-            }).pipe(inTurn, bounded)
+                return {
+                  plan,
+                  ending,
+                  tag,
+                  next: {
+                    batch: following,
+                    admission: upcoming,
+                    admitted: flight.slice(commit.length),
+                  },
+                }
+              }).pipe(inTurn, bounded)
 
-            if (step.ending === "COMMIT" && step.tag !== "COMMIT")
-              return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
+              if (stepped.ending === "COMMIT" && stepped.tag !== "COMMIT")
+                return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
 
-            yield* finish(batch, step.plan)
+              yield* finish(current, stepped.plan)
+
+              return stepped
+            }).pipe(run.observe(current))
 
             if (step.next === undefined) return
 
@@ -797,38 +807,41 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         let batch: ReadonlyArray<W> | undefined = run.first
 
         while (batch !== undefined) {
-          locate(batch, undefined)
+          const admitting: ReadonlyArray<W> = batch
+          locate(admitting, undefined)
           yield* run.prepare
 
           const control = (text: string) => Effect.asVoid(sql.unsafe(text))
           const session = { send: sequential, control, defer: control, withdraw: () => false }
-          const admitting = batch
 
-          const plan = yield* bounded(
-            sql
-              .withTransaction(
-                Effect.gen(function* () {
-                  const admission = admit(admitting, view(), session, [])
-                  yield* sequential(admission.group)
-                  const decided = yield* admission.resume()
+          yield* Effect.gen(function* () {
+            const plan: Plan = yield* bounded(
+              sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    const admission = admit(admitting, view(), session, [])
+                    yield* sequential(admission.group)
+                    const decided = yield* admission.resume()
 
-                  if (decided.writes === undefined)
-                    return yield* Effect.fail(new RolledBack(decided))
+                    if (decided.writes === undefined)
+                      return yield* Effect.fail(new RolledBack(decided))
 
-                  yield* sequential(decided.writes)
+                    yield* sequential(decided.writes)
 
-                  return decided
-                }),
-              )
-              .pipe(
-                Effect.catchIf(
-                  (error) => error instanceof RolledBack,
-                  (rolled) => Effect.succeed(rolled.plan),
+                    return decided
+                  }),
+                )
+                .pipe(
+                  Effect.catchIf(
+                    (error) => error instanceof RolledBack,
+                    (rolled) => Effect.succeed(rolled.plan),
+                  ),
                 ),
-              ),
-          )
+            )
 
-          yield* finish(batch, plan)
+            yield* finish(admitting, plan)
+          }).pipe(run.observe(admitting))
+
           batch = yield* run.next
         }
       })

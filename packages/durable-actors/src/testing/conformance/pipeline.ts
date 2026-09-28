@@ -1,6 +1,17 @@
 import { createServer, connect, type Socket, type AddressInfo } from "node:net"
 import { pgTable, text } from "drizzle-orm/pg-core"
-import { Crypto, Deferred, Effect, Fiber, Layer, Redacted, Schedule, Schema } from "effect"
+import {
+  Crypto,
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  Redacted,
+  Schedule,
+  Option,
+  Schema,
+  Tracer,
+} from "effect"
 import type { Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent, User } from "../../index.ts"
@@ -201,6 +212,8 @@ const withProbe = <A, E>(
     readonly prepare?: boolean
     /** Turn hooks the runner sees at every point no queued fault takes. */
     readonly hooks?: TestHooks
+    /** The runner's tracer, so a case can read the spans turns open. */
+    readonly tracer?: Tracer.Tracer
   },
   body: (
     probe: Probe,
@@ -230,6 +243,7 @@ const withProbe = <A, E>(
                 Layer.provide(Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void })),
               ),
             ),
+            Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
             Layer.provide(
               Layer.succeed(TurnPoolSettings, {
                 stream: () => connect({ host: "127.0.0.1", port, noDelay: true }),
@@ -887,6 +901,51 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             state: { count: 67 },
             receipts: 5,
           })
+        }),
+      )
+    },
+  },
+  {
+    name: "pipeline: each pipelined batch has its own span, not the span of the batch before it",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      const spans: Array<Tracer.NativeSpan> = []
+
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options)
+          spans.push(span)
+
+          return span
+        },
+      })
+
+      return withProbe(environment, { tracer }, () =>
+        Effect.gen(function* () {
+          const meter = yield* Plain.get("spans")
+          yield* meter.Add(1)
+          const held = yield* (yield* Actors).mintCommandId
+          const before = spans.length
+          const first = yield* holding(meter.Add(1).pipe(Actor.commandId(held)))
+          const waiting = yield* enqueue([meter.Add(10), meter.Add(100)].map(Effect.orDie))
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+          yield* Effect.forEach(waiting, Fiber.join)
+
+          // The held command committed alone and the waiting two rode its
+          // commit flight as one batch; each batch has its own turn span.
+          const turns = spans
+            .slice(before)
+            .filter((span) => span.name.startsWith("durable-actors.Plain/"))
+
+          const lone = turns.filter((span) => span.attributes.get("command.id") === held)
+          const batch = turns.filter((span) => span.name === "durable-actors.Plain/batch")
+          expect(lone.map((span) => span.name)).toEqual(["durable-actors.Plain/Add"])
+          expect(batch.map((span) => span.attributes.get("batch.size"))).toEqual([2])
+          expect(batch[0]!.links.length).toBe(2)
+
+          expect(Option.getOrUndefined(batch[0]!.parent)?.spanId === lone[0]!.spanId).toBe(false)
         }),
       )
     },
