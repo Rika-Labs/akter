@@ -10,6 +10,7 @@ import {
   type RetentionGap,
   type UnknownCursor,
 } from "../index.ts"
+import type { ConnectOptions } from "../client/index.ts"
 import type { InternalActors } from "../handles/actors.ts"
 import type { BlobRead, BlobWrite } from "../state/blob.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
@@ -98,6 +99,14 @@ describe("actor declarations", () => {
 
     expectTypeOf<keyof Handle & "Ping">().toEqualTypeOf<"Ping">()
     expectTypeOf<keyof Handle["Live"]>().toEqualTypeOf<"connect">()
+
+    // A connection without params still takes them first, so options are never mistaken for params.
+    expectTypeOf<Parameters<Handle["Live"]["connect"]>>().toEqualTypeOf<
+      [params?: void, options?: ConnectOptions]
+    >()
+    expectTypeOf<Handle["Live"]["connect"]>().parameter(0).toEqualTypeOf<void | undefined>()
+    // @ts-expect-error options can't be passed where the params go
+    expectTypeOf<Handle["Live"]["connect"]>().toBeCallableWith({ signal: AbortSignal.abort() })
   })
 
   it("types stream handles and handlers, and keeps read.follow to stream handlers", () => {

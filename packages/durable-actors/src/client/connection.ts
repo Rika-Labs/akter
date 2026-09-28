@@ -137,6 +137,8 @@ export const connect = <Server, Client>({
         Failure
       >()
 
+      // Read before the socket opens: a provider that throws or rejects fails `connect` with its own error.
+      const credential = yield* authorization
       const ws = new WebSocket(url, SUBPROTOCOL)
       let finished = false
       let highest = -1n
@@ -232,13 +234,15 @@ export const connect = <Server, Client>({
             Queue.offer(messages, ConnectionMessage.ResyncReplayed<Server>()).pipe(
               Effect.andThen(acknowledge),
             ),
+          // A provider that fails leaves the old credential to expire, and the server ends the session then.
           reauthenticate: () =>
             authorization.pipe(
-              Effect.flatMap((credential) =>
-                credential === undefined
+              Effect.flatMap((fresh) =>
+                fresh === undefined
                   ? Effect.void
-                  : write({ t: "reauthenticate", authorization: credential }),
+                  : write({ t: "reauthenticate", authorization: fresh }),
               ),
+              Effect.catchDefect(() => Effect.void),
             ),
           reauthenticated: () => Effect.void,
           end: (message) => failureOf(message.error).pipe(Effect.flatMap(finish)),
@@ -247,14 +251,10 @@ export const connect = <Server, Client>({
 
       ws.onopen = () =>
         run(
-          authorization.pipe(
-            Effect.flatMap((credential) =>
-              write(
-                credential === undefined
-                  ? { t: "hello", params: hello }
-                  : { t: "hello", authorization: credential, params: hello },
-              ),
-            ),
+          write(
+            credential === undefined
+              ? { t: "hello", params: hello }
+              : { t: "hello", authorization: credential, params: hello },
           ),
         )
 
