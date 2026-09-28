@@ -335,6 +335,19 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 - **`turn-batches/waiting-32`:** 3 round trips per operation instead of 4, since the batch's admission rides in the held turn's commit flight; statements are unchanged at 107.03.
 - **`hot-actor` under contention:** `concurrent-8` went from 4 to 4.32–4.44 statements and from 0.5 to 0.36–0.37 round trips per command; `concurrent-64` from 3.2 to 3.28–3.30 statements and from 0.1 to 0.07 round trips. The next batch is now taken while the previous one commits, before that batch's callers have sent their next commands, so batches are a little smaller (more fence and receipt statements per command) but each rides a commit flight (fewer round trips). Throughput and latency moved within run-to-run noise (`concurrent-8` 540–720/second, `concurrent-64` 1,101–1,148/second).
 
+### Failure drills (T7)
+
+`TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/133-m2-exit` at `801336e`; each run prints one `DRILL` line. Postgres 18.6 in Docker, Bun 1.4.2, one 8-vCPU Xeon 8559C machine shared by the five runner processes and Postgres. Workload: three processes, then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
+
+| Metric                                         | Min    | p50    | Max (≈p95 of 10) |
+| ---------------------------------------------- | ------ | ------ | ---------------- |
+| Recovery, kill to the stalled command's commit | 3.36 s | 3.43 s | 4.38 s           |
+| Slowest single operation on a survivor         | 3.36 s | 3.41 s | 3.44 s           |
+| Committed operations per run                   | 306    | 318    | 321              |
+| Lost / duplicated operations                   | 0 / 0  | 0 / 0  | 0 / 0            |
+
+Recovery runs from the kill to the commit of the slowest command the surviving runner started after it: that command was routed to a killed runner's shard and waited for the takeover, so its commit marks the shard serving again. It is bounded by the 3 s shard-lock expiry plus Cluster's shard refresh. With 10 samples, p99 is not meaningful. Committed operations vary because a runner killed mid-operation may commit an `Increment` without its `Send`; those are counted as committed, never lost.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
