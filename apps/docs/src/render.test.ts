@@ -62,19 +62,36 @@ describe("readHeader", () => {
     }),
   )
 
-  it.effect("rejects a published page without its header", () =>
-    Effect.gen(function* () {
-      const untitled = yield* Effect.flip(
-        readHeader({ source: "api/x.md", markdown: "**Responsibility:** y\n" }),
-      )
+  it.effect(
+    "rejects a page whose title or responsibility line is missing or not in its header",
+    () =>
+      Effect.gen(function* () {
+        const untitled = yield* Effect.flip(
+          readHeader({ source: "api/x.md", markdown: "**Responsibility:** y\n" }),
+        )
 
-      const unowned = yield* Effect.flip(readHeader({ source: "api/x.md", markdown: "# T\n" }))
+        const unowned = yield* Effect.flip(readHeader({ source: "api/x.md", markdown: "# T\n" }))
 
-      expect(untitled).toEqual(PageHeaderMissing.make({ source: "api/x.md", field: "title" }))
-      expect(unowned).toEqual(
-        PageHeaderMissing.make({ source: "api/x.md", field: "responsibility" }),
-      )
-    }),
+        const lateTitle = yield* Effect.flip(
+          readHeader({
+            source: "api/x.md",
+            markdown: "Intro\n\n```md\n# Example\n\n**Responsibility:** y\n```\n",
+          }),
+        )
+
+        const lateResponsibility = yield* Effect.flip(
+          readHeader({ source: "api/x.md", markdown: "# T\n\nIntro.\n\n**Responsibility:** y\n" }),
+        )
+
+        expect(untitled).toEqual(PageHeaderMissing.make({ source: "api/x.md", field: "title" }))
+        expect(lateTitle).toEqual(PageHeaderMissing.make({ source: "api/x.md", field: "title" }))
+        expect(lateResponsibility).toEqual(
+          PageHeaderMissing.make({ source: "api/x.md", field: "responsibility" }),
+        )
+        expect(unowned).toEqual(
+          PageHeaderMissing.make({ source: "api/x.md", field: "responsibility" }),
+        )
+      }),
   )
 })
 
