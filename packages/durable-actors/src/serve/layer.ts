@@ -10,7 +10,7 @@ import { ActorError, Unauthorized } from "../errors/actor.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
 import { build, document, memberPath, PROTOCOL_OPERATIONS } from "./api.ts"
-import { type AuthProvider, type Authenticated, withinLimits } from "./auth.ts"
+import { type AuthProvider, type Authenticated, readsCookies, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
 
@@ -189,6 +189,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const origins = new Set(options.origins ?? [])
       const requestBytes = options.limits?.requestBytes ?? 1024 * 1024
       const credentialBytes = options.limits?.credentialBytes ?? 8 * 1024
+      const cookies = readsCookies(options.auth)
       const api = build({ definitions, basePath })
 
       const withProtocol = (
@@ -280,14 +281,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           if (
             (Option.isSome(authorization) && bytes(authorization.value) > credentialBytes) ||
-            (options.auth.cookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes)
+            (cookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes)
           )
             return yield* invalidInput("too_large")
 
           const authenticated: Authenticated = yield* options.auth
             .authenticate({
               headers: request.headers,
-              cookies: options.auth.cookies ? request.cookies : {},
+              cookies: cookies ? request.cookies : {},
             })
             .pipe(
               Effect.provideContext(context),

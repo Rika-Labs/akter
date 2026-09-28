@@ -7,7 +7,7 @@ import {
   OpenApi,
 } from "effect/unstable/httpapi"
 import { declaredStatus, type ServedDefinition, type ServedMember } from "../actor/served.ts"
-import type { AuthProvider } from "./auth.ts"
+import { type AuthProvider, Credential } from "./auth.ts"
 import { Defect, envelope, type WireTag } from "./wire.ts"
 
 const COMMAND_ERRORS = {
@@ -139,8 +139,6 @@ export const build = ({ definitions, basePath }: ServedRoutes) => {
 
 export type ServedApi = ReturnType<typeof build>
 
-const SECURITY_NAME = "bearer"
-
 export interface DocumentOptions {
   readonly api: ServedApi
   readonly auth: AuthProvider<unknown>
@@ -148,10 +146,28 @@ export interface DocumentOptions {
   readonly version: string
 }
 
-/** The OpenAPI 3.1 document of `api`, with the provider's security on every authenticated operation. */
+const schemeName = Credential.$match({
+  Bearer: () => "bearer",
+  Jwt: () => "bearer",
+  Cookie: () => "cookie",
+})
+
+const securityScheme = Credential.$match({
+  Bearer: () => ({ type: "http", scheme: "bearer" }),
+  Jwt: () => ({ type: "http", scheme: "bearer", bearerFormat: "JWT" }),
+  Cookie: ({ name }) => ({ type: "apiKey", in: "cookie", name }),
+})
+
+/**
+ * The OpenAPI 3.1 document of `api`. Every authenticated operation lists the
+ * provider's credentials as alternatives, since any one of them authenticates.
+ */
 export const document = ({ api, auth, title, version }: DocumentOptions) => {
   const spec = OpenApi.fromApi(api)
-  const secured = auth.scheme !== "none"
+
+  const security = auth.credentials.map((credential) => ({
+    [schemeName(credential)]: [],
+  }))
 
   const paths = Object.fromEntries(
     Object.entries(spec.paths).map(([path, item]) => [
@@ -163,10 +179,9 @@ export const document = ({ api, auth, title, version }: DocumentOptions) => {
             ? operation
             : Object.assign({}, operation, {
                 security:
-                  secured &&
-                  !("operationId" in operation && operation.operationId === "durable.protocol")
-                    ? [{ [SECURITY_NAME]: [] }]
-                    : [],
+                  "operationId" in operation && operation.operationId === "durable.protocol"
+                    ? []
+                    : security,
               }),
         ]),
       ),
@@ -179,14 +194,9 @@ export const document = ({ api, auth, title, version }: DocumentOptions) => {
     paths,
     components: {
       ...spec.components,
-      securitySchemes: secured
-        ? {
-            [SECURITY_NAME]:
-              auth.scheme === "jwt"
-                ? { type: "http", scheme: "bearer", bearerFormat: "JWT" }
-                : { type: "http", scheme: "bearer" },
-          }
-        : {},
+      securitySchemes: Object.fromEntries(
+        auth.credentials.map((credential) => [schemeName(credential), securityScheme(credential)]),
+      ),
     },
   }
 }
