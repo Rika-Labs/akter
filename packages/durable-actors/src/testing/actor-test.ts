@@ -43,7 +43,7 @@ import { CleanupHooks, RetryTurn, TurnHooks, type TurnPoint } from "../runtime/t
 import {
   type ProgressClosed,
   type ProgressMessage,
-  ProgressSink,
+  ProgressTap,
 } from "../runtime/effects/progress.ts"
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
@@ -120,7 +120,19 @@ export type TestMessage<Server> =
       readonly cursor?: string | undefined
       readonly event?: string | undefined
     }
-  | Exclude<ClientMessage, { readonly _tag: "Frame" }>
+  | {
+      /** Executor progress: display-only, lossy, and never replayed. */
+      readonly _tag: "Progress"
+      readonly effect: string
+      readonly effectId: string
+      readonly attempt: number
+      readonly seq: number
+      /** The frame as the effect's progress schema encodes it to JSON. */
+      readonly frame: unknown
+    }
+  | Exclude<ClientMessage, { readonly _tag: "Frame" | "Progress" }>
+
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))
 
 const valueCodec = (schema: ValueSchema): Schema.Codec<{ readonly value: unknown }, string> =>
   Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: schema })))
@@ -155,7 +167,7 @@ export const cleanup: Effect.Effect<Swept, never, InternalActors> = Effect.gen(f
 /** A progress message an executor pool sent, and whether `dropProgress` dropped it. */
 export type ProgressRecord = Data.TaggedEnum<{
   Progress: ProgressMessage & { readonly dropped: boolean }
-  ProgressClosed: ProgressClosed
+  ProgressClosed: ProgressClosed & { readonly dropped: boolean }
 }>
 
 export const ProgressRecord = Data.taggedEnum<ProgressRecord>()
@@ -222,8 +234,15 @@ export class ActorTest extends Context.Service<
     ) => Effect.Effect<void>
     /** Every progress message this runner's executor pool sent, in order. */
     readonly progress: Effect.Effect<ReadonlyArray<ProgressRecord>>
+    /**
+     * Sends a progress message to its owner again, as a frame the network
+     * delayed would arrive; for cases about late progress.
+     */
+    readonly resendProgress: (message: ProgressMessage) => Effect.Effect<void>
     /** Drops progress messages matching `predicate` between the pool and the owner. */
-    readonly dropProgress: (predicate: (message: ProgressMessage) => boolean) => Effect.Effect<void>
+    readonly dropProgress: (
+      predicate: (message: ProgressMessage | ProgressClosed) => boolean,
+    ) => Effect.Effect<void>
   }
 >()("@durable-actors/core/testing/actor-test/ActorTest") {
   /**
@@ -259,7 +278,7 @@ export class ActorTest extends Context.Service<
 
         let clockOffset = 0
         const progress: Array<ProgressRecord> = []
-        let dropProgress: (message: ProgressMessage) => boolean = () => false
+        let dropProgress: (message: ProgressMessage | ProgressClosed) => boolean = () => false
 
         const hooks = Layer.mergeAll(
           Layer.succeed(TurnHooks, {
@@ -267,17 +286,20 @@ export class ActorTest extends Context.Service<
               Effect.suspend(() => faults.get(point)?.shift() ?? outer.at(point, request)),
           }),
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
-          Layer.succeed(ProgressSink, {
-            wants: () => true,
+          Layer.succeed(ProgressTap, {
             send: (message) =>
               Effect.sync(() => {
-                progress.push(
-                  ProgressRecord.Progress({ ...message, dropped: dropProgress(message) }),
-                )
+                const dropped = dropProgress(message)
+                progress.push(ProgressRecord.Progress({ ...message, dropped }))
+
+                return !dropped
               }),
             closed: (message) =>
               Effect.sync(() => {
-                progress.push(ProgressRecord.ProgressClosed(message))
+                const dropped = dropProgress(message)
+                progress.push(ProgressRecord.ProgressClosed({ ...message, dropped }))
+
+                return !dropped
               }),
           }),
           // Tests sweep with `cleanup` when they choose, never on a timer
@@ -525,7 +547,8 @@ export class ActorTest extends Context.Service<
                   .open({
                     ref,
                     member: member.tag,
-                    caller: options.as ?? Anonymous.make({}),
+                    // The caller the test runs as, so `Actor.as` opens as someone else.
+                    caller: yield* CurrentCaller,
                     params: encoded,
                   })
                   .pipe(
@@ -546,7 +569,12 @@ export class ActorTest extends Context.Service<
                           ...message,
                           frame: value as C["server"]["Type"],
                         }))
-                      : Effect.succeed(message),
+                      : ClientMessage.guards.Progress(message)
+                        ? Effect.map(decodeJson(message.frame).pipe(Effect.orDie), (frame) => ({
+                            ...message,
+                            frame,
+                          }))
+                        : Effect.succeed(message),
                   ),
                 )
 
@@ -580,6 +608,7 @@ export class ActorTest extends Context.Service<
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
               }, Effect.orDie),
               progress: Effect.sync(() => [...progress]),
+              resendProgress: internalActors.deliverProgress,
               dropProgress: (predicate) =>
                 Effect.sync(() => {
                   dropProgress = predicate
