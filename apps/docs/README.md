@@ -1,6 +1,6 @@
 # Docs site
 
-`@durable-actors/docs` renders the published pages under `docs/` into a static site ([ADR 0042](../../docs/decisions/0042-docs-site.md)). The page list and its order are in `src/pages.ts`; contracts, decisions, and every other repository document are linked on GitHub rather than published.
+`@durable-actors/docs` renders the published pages under `docs/` into a static site ([ADR 0043](../../docs/decisions/0043-docs-site.md)). The page list and its order are in `src/pages.ts`; contracts, decisions, and every other repository document are linked on GitHub rather than published.
 
 ## Build and preview
 
