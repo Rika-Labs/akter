@@ -12,7 +12,7 @@ import {
 import { HttpClient } from "effect/unstable/http"
 import { ActorUnavailable } from "../errors/actor.ts"
 import { User } from "../identity/caller.ts"
-import { type AuthProvider, bearerToken, unauthorized } from "./auth.ts"
+import { type AuthProvider, bearerToken, Credential, unauthorized } from "./auth.ts"
 
 export type Algorithm =
   | "RS256"
@@ -295,8 +295,7 @@ export const jwt = <Keys extends URL | Jwks>(
   })
 
   return {
-    scheme: "jwt",
-    cookies: false,
+    credentials: [Credential.Jwt()],
     authenticate: authenticate as AuthProvider<
       Keys extends URL ? HttpClient.HttpClient : never
     >["authenticate"],

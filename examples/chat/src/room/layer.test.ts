@@ -174,9 +174,9 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       expect(yield* room.Attachment(id)).toEqual(Option.none())
       const sql = yield* SqlClient.SqlClient
       expect(
-        yield* sql<{ bytes: number }>`SELECT COALESCE(sum(octet_length(bytes)), 0)::float8 AS bytes
+        yield* sql<{ chunks: number }>`SELECT count(*)::float8 AS chunks
           FROM actor_blobs WHERE actor_id = ${room.ref.id} AND name = ${id}`,
-      ).toEqual([{ bytes: 0 }])
+      ).toEqual([{ chunks: 0 }])
       expect((yield* room.History({})).map(({ message }) => [message.id, message.body])).toEqual([
         [id, ""],
       ])
@@ -258,5 +258,25 @@ it("relays typing frames to the room's other connections, across hibernation", (
 
       yield* typist.close
       yield* watcher.close
+    }),
+  ))
+
+it("retracts a message and settles its moderation call once", () =>
+  run(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const room = yield* Room.get(RoomId.make("r8"))
+      const id = yield* room.Post({ body: "oops" })
+      yield* room.Retract(id)
+
+      while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
+
+      // Deleted before its claim, reported cancelled mid-call, or already moderated: one fate.
+      const settled =
+        (yield* test.receiptsFor(room.ref, "Moderated")) +
+        (yield* test.receiptsFor(room.ref, "ModerationCancelled"))
+
+      expect(settled <= 1).toBe(true)
+      expect(yield* room.Recent({ limit: 10 })).toEqual([])
     }),
   ))

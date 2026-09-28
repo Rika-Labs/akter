@@ -301,7 +301,13 @@ export const registerActor = Effect.fnUntraced(function* (
             owner.hasConnections ? owner.list(owned) : undefined,
           )
 
-          if (owner.hasConnections) yield* owner.flush(owned, done.broadcasts, done.head)
+          if (owner.hasConnections) {
+            for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
+
+            const feeds = yield* Effect.forEach(done.committed, owner.feedBroadcasts)
+
+            yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat()], done.head)
+          }
 
           return done.settled
         })

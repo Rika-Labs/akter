@@ -117,6 +117,7 @@ export const armTimer = Effect.fnUntraced(function* (
     ],
     replaced: [key],
     effects: [],
+    cancelledEffects: [],
   })
 })
 

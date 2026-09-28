@@ -6,21 +6,23 @@ import { compress } from "../storage/codec.ts"
 import { notifyWaits } from "../workflows/engine.ts"
 
 /**
- * The statement that appends a turn's events inside its transaction. The
- * caller already holds the actor's generation row lock, so reserving the next
- * sequence numbers there gives one gap-free order per actor even when
- * activations race; the counter lives on the generation row so pruning never
- * lets a sequence be reused. The reservation and the insert share a statement,
- * so nothing waits on the reserved numbers.
+ * The statement that appends a turn's events inside its transaction, and the
+ * stamp it records once it replies. The caller already holds the actor's
+ * generation row lock, so reserving the next sequence numbers there gives one
+ * gap-free order per actor even when activations race; the counter lives on
+ * the generation row so pruning never lets a sequence be reused. The
+ * reservation and the insert share a statement, so nothing waits on the
+ * reserved numbers.
  */
-export const eventsStatements = Effect.fnUntraced(function* (
+export const eventsStatement = Effect.fnUntraced(function* (
   request: Request,
   routingKey: bigint,
   events: ReadonlyArray<EmittedEvent>,
 ) {
   const sql = yield* SqlClient.SqlClient
-  const { tenant, actor, id } = request.ref
   const clock = yield* FrameworkClock
+  const { tenant, actor, id } = request.ref
+  const stamp = { emittedAtMs: 0 }
 
   const values = sql.csv(
     events.map(
@@ -29,8 +31,8 @@ export const eventsStatements = Effect.fnUntraced(function* (
     ),
   )
 
-  return [
-    Effect.asVoid(sql`WITH reserved AS (
+  const statement = Effect.map(
+    sql<{ emitted_at_ms: string }>`WITH reserved AS (
       UPDATE actor_generations SET event_sequence = event_sequence + ${events.length}
       WHERE routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}
       RETURNING event_sequence - ${events.length} AS base,
@@ -39,8 +41,14 @@ export const eventsStatements = Effect.fnUntraced(function* (
     INSERT INTO actor_events (routing_key, tenant_id, actor_type, actor_id, sequence, event, command_id, value, emitted_at_ms)
     SELECT ${routingKey}, ${tenant}, ${actor}, ${id}, reserved.base + staged.ordinal, staged.event,
       ${request.commandId}, staged.value, reserved.now
-    FROM reserved, (VALUES ${values}) AS staged (ordinal, event, value)`),
-  ]
+    FROM reserved, (VALUES ${values}) AS staged (ordinal, event, value)
+    RETURNING emitted_at_ms::text AS emitted_at_ms`,
+    (rows) => {
+      stamp.emittedAtMs = Number(rows[0]!.emitted_at_ms)
+    },
+  )
+
+  return { statement, stamp }
 })
 
 /**
@@ -58,16 +66,22 @@ export const notifyEvents = Effect.fnUntraced(function* (
   return tags.length === 0 ? false : yield* notifyWaits(routingKey, request.ref, tags)
 })
 
-/** Appends a turn's events and notifies their waiting workflows, one statement at a time. */
+/**
+ * Appends a turn's events and notifies their waiting workflows, one statement
+ * at a time; the result says whether the relay should wake, and when the
+ * events were stamped.
+ */
 export const appendEvents = Effect.fnUntraced(function* (
   request: Request,
   routingKey: bigint,
   events: ReadonlyArray<EmittedEvent>,
   waited: ReadonlySet<string> = new Set(),
 ) {
-  if (events.length === 0) return false
+  if (events.length === 0) return { notified: false, emittedAtMs: 0 }
 
-  for (const statement of yield* eventsStatements(request, routingKey, events)) yield* statement
+  const { statement, stamp } = yield* eventsStatement(request, routingKey, events)
+  yield* statement
+  const emittedAtMs = stamp.emittedAtMs
 
-  return yield* notifyEvents(request, routingKey, events, waited)
+  return { notified: yield* notifyEvents(request, routingKey, events, waited), emittedAtMs }
 })
