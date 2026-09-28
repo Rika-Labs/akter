@@ -129,7 +129,8 @@ export const actors = (page: ActorsPage) =>
     const after =
       page.after === undefined
         ? sql`TRUE`
-        : sql`(actor_type, actor_id) > (${page.after.actorType}, ${page.after.actorId})`
+        : // The same collation as the ORDER BY, or a cursor could skip or repeat actors.
+          sql`(actor_type COLLATE "C", actor_id COLLATE "C") > (${page.after.actorType}, ${page.after.actorId})`
 
     const rows = yield* sql<ActorRow>`
       SELECT actor_type AS "actorType", actor_id AS "actorId", placement,

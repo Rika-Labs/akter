@@ -83,7 +83,10 @@ const actorPage = (type: string | undefined) => {
   return get(`/actors?${query}`, ActorsPage)
 }
 
-const view = ({ path, params }: Route, now: number) =>
+/** The widest page the API serves; a list shorter than the tenant's count says it is truncated. */
+const LIST = "limit=500"
+
+const view = ({ path, params }: Route, now: number, counts: Overview["counts"]) =>
   Effect.gen(function* () {
     if (path.startsWith("/actor/")) {
       const [, , type = "", id = ""] = path.split("/")
@@ -97,19 +100,35 @@ const view = ({ path, params }: Route, now: number) =>
     }
 
     if (path === "/outbox")
-      return outboxView({ rows: (yield* get("/outbox", OutboxPage)).outbox, now })
+      return outboxView({
+        rows: (yield* get(`/outbox?${LIST}`, OutboxPage)).outbox,
+        total: counts.outbox,
+        now,
+      })
 
     if (path === "/effects")
-      return effectsView({ rows: (yield* get("/effects", EffectsPage)).effects, now })
+      return effectsView({
+        rows: (yield* get(`/effects?${LIST}`, EffectsPage)).effects,
+        total: counts.effects,
+        now,
+      })
 
     if (path === "/dead-letters")
-      return deadLettersView((yield* get("/dead-letters", DeadLettersPage)).deadLetters)
+      return deadLettersView({
+        rows: (yield* get(`/dead-letters?${LIST}`, DeadLettersPage)).deadLetters,
+        total: counts.deadLetters,
+      })
 
     if (path === "/workflows") {
       const all = params.get("status") === "all"
-      const page = yield* get(`/workflows?status=${all ? "all" : "open"}`, WorkflowsPage)
+      const page = yield* get(`/workflows?status=${all ? "all" : "open"}&${LIST}`, WorkflowsPage)
 
-      return workflowsView({ rows: page.workflows, now, all })
+      return workflowsView({
+        rows: page.workflows,
+        total: all ? counts.workflows : counts.openWorkflows,
+        now,
+        all,
+      })
     }
 
     const selected = params.get("type") ?? undefined
@@ -145,7 +164,7 @@ const render = Effect.gen(function* () {
   tenant.textContent = overview.tenant
   tiles.replaceChildren(overviewTiles(overview))
 
-  const content = yield* view(current, now).pipe(
+  const content = yield* view(current, now, overview.counts).pipe(
     Effect.catchTag("NotFound", () => Effect.sync(notFound)),
   )
 
