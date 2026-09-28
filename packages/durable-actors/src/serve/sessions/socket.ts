@@ -45,6 +45,9 @@ const encodeServerMessage = Schema.encodeEffect(Schema.fromJsonString(ServerWire
 // An unknown `t` fails to decode, which ends the session.
 const decodeClientMessage = Schema.decodeUnknownEffect(Schema.fromJsonString(ClientWireMessage))
 
+/** A progress frame as the effect's progress schema encoded it, as the JSON value a client reads. */
+const progressFrame = Schema.decodeEffect(Schema.fromJsonString(Schema.Json))
+
 /** Ends a session: the `end` message's error and the close code after it. */
 class Refusal extends Data.TaggedError("Refusal")<{
   readonly error: ActorError
@@ -263,13 +266,23 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
         deadline: message.deadlineMs,
       }),
     ResyncReplayed: () => Effect.succeed<ServerWireMessage>({ t: "resyncReplayed" }),
-    Progress: () => Effect.die(new Error("Progress has no wire message")),
+    // Progress has its own message, never `frame`, and no cursor: it is not replayed.
+    Progress: (message) =>
+      progressFrame(message.frame).pipe(
+        Effect.orDie,
+        Effect.map((frame): ServerWireMessage => ({
+          t: "progress",
+          effect: message.effect,
+          effectId: message.effectId,
+          attempt: message.attempt,
+          seq: message.seq,
+          frame,
+        })),
+      ),
   })
 
   // The holder's messages, then its ending as the last message and close code.
   const outbound = held.messages.pipe(
-    // The wire has no progress message yet, so WebSocket clients get none.
-    Stream.filter((message) => !ClientMessage.guards.Progress(message)),
     Stream.runForEach((message) => wire(message).pipe(Effect.flatMap(send))),
     Effect.matchEffect({
       onFailure: (error) =>
