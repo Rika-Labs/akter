@@ -70,6 +70,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 - **Content** is stored under the tenant's routing key (tenant placement's hash, whatever the referencing actor's placement), in `tenant_contents` (metadata) and `tenant_content_chunks` (1 MiB chunks). An upload writes it in its own transaction, which touches only the tenant's shard and is not a turn. If the hash already exists, the upload writes no bytes.
 - **References** are rows in `actor_content_refs` on the actor's own shard. `attach` and `detach` write them in the turn, so they commit or roll back with the turn (T1) and never touch the tenant's shard.
 - **Bytes are read only outside turns.** `read.blob(C).get` issues two single-shard statements: the reference on the actor's shard, then the chunks on the tenant's shard. A turn sees names, hashes, and sizes (`list()`), never bytes. On Neki that is what `tx_mode = 'single'` allows.
+- **A read never returns partial bytes.** After it resolves the reference, the read takes every chunk from one `REPEATABLE READ` read-only snapshot on the tenant's shard: a single statement for `get`, and one read-only transaction held for the whole of a `stream`. The sweep deletes a content row and its chunks in one transaction, so that snapshot sees either all the chunks or none of them. The read also checks that the total size matches the size on the reference. If it finds none, the last reference was detached and the content swept after the read began. The read then fails exactly as it would for a name that doesn't exist, which is the result a read starting just after the detach would get. A read never returns truncated or mixed bytes. A `stream` holds its snapshot for at most `commandTimeout`, like any query.
 - **No reference counts.** Nothing increments or decrements a shared counter, so there's no hot row and no cross-shard message to keep in order.
 
 ### 4. Garbage collection: mark and sweep, gated by grants
@@ -153,6 +154,7 @@ In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
 - `never deletes content attached concurrently with a sweep` (Postgres, independent connections: the attach commits between the reference scan and the delete)
 - `never deletes content whose attach checked its grant just before expiry and commits up to commandTimeout later` (Postgres, with the turn held open by a pause hook past the grant's expiry)
 - `hands a fresh grant from one actor's reference to another actor's attach through Content.grant, and refuses a caller whose authorize denies <blob>.grant`
+- `fails a read as a missing name, never with partial bytes, when a detach and a sweep run between resolving the reference and reading the chunks` (Postgres, independent connections, for both get and stream)
 - `never returns a grant for content a concurrent detach and sweep deleted` (Postgres, independent connections: the sweep deletes between the reference read and the raise)
 - `verifies grants under the previous key for one grant lifetime after rotation`
 - `applies 0020_content_blobs to a database that ran the previous migration`
