@@ -40,7 +40,8 @@ export const holderShardGroups = (config: Partial<ShardingConfig.ShardingConfig[
     onNone: () => ({}),
     onSome: (address) => ({
       availableShardGroups: ["default", holderGroup(address)],
-      assignedShardGroups: ["default", holderGroup(address)],
+      // A runner that hosts no actors still hosts its own holder.
+      assignedShardGroups: [...(config.assignedShardGroups ?? ["default"]), holderGroup(address)],
     }),
   })
 
