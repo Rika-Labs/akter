@@ -95,13 +95,11 @@ const program = Effect.gen(function* () {
 
   // A fresh install would take a newer `@effect/platform-node-shared` than the catalog's `effect`
   // supports, through `@effect/platform-bun`'s caret range; generated apps pin it the same way.
-  const rootManifest = yield* Schema.decodeEffect(Manifest)(
-    yield* fs.readFileString(path.join(root, "package.json")),
-  )
-  const catalog = yield* Schema.decodeUnknownEffect(
+  const { workspaces } = yield* Schema.decodeUnknownEffect(
     Schema.Struct({ workspaces: Schema.Struct({ catalog: Dependencies }) }),
-  )(rootManifest)
-  const effect = catalog.workspaces.catalog["effect"]!
+  )(yield* Schema.decodeEffect(Manifest)(yield* fs.readFileString(path.join(root, "package.json"))))
+
+  const effect = workspaces.catalog["effect"]!
 
   // `bun create @durable-actors` runs the `@durable-actors/create` bin; install that bin from its tarball.
   const runner = path.join(work, "runner")
