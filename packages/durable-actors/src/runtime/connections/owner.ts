@@ -127,6 +127,10 @@ export interface ProgressDelivery {
 
 const utf8 = new TextEncoder()
 
+/** A session is stored inside its codec's `{"value":…}` envelope, which the limit does not count. */
+const SESSION_ENVELOPE_BYTES =
+  utf8.encode(JSON.stringify({ value: null })).byteLength - utf8.encode("null").byteLength
+
 const encodeCaller = Schema.encodeEffect(Schema.fromJsonString(Caller))
 
 const decodeCaller = Schema.decodeEffect(Schema.fromJsonString(Caller))
@@ -448,6 +452,16 @@ export const activationOwner = ({
       )
       .pipe(Effect.timeout("2 seconds"), Effect.ignore)
 
+  // Drops what belongs to a generation: whatever runs next acquires a new one,
+  // reloads the rows, and numbers each holder's messages from 1 again, which a
+  // holder requires of every new generation.
+  const forget = (activation: Activation) => {
+    activation.cache.generation = undefined
+    activation.cache.state = undefined
+    activation.rows = undefined
+    activation.channels.clear()
+  }
+
   /** Fences this activation's generation and loads committed state, as a command turn would. */
   const acquire = (activation: Activation) =>
     activation.cache.generation !== undefined && activation.cache.state !== undefined
@@ -479,8 +493,7 @@ export const activationOwner = ({
             activation.cache.generation !== undefined &&
             activation.cache.generation !== row!.generation
           ) {
-            activation.cache.generation = undefined
-            activation.cache.state = undefined
+            forget(activation)
 
             return yield* unavailable("Stale actor generation")
           }
@@ -748,7 +761,8 @@ export const activationOwner = ({
     })
 
   const checkSession = (result: ConnectionResult) =>
-    result.session !== undefined && utf8.encode(result.session).byteLength > MAX_SESSION_BYTES
+    result.session !== undefined &&
+    utf8.encode(result.session).byteLength - SESSION_ENVELOPE_BYTES > MAX_SESSION_BYTES
       ? Effect.die(new Error("Connection session exceeds 16 KiB"))
       : Effect.void
 
@@ -893,8 +907,7 @@ export const activationOwner = ({
           RETURNING connection_id`
 
         if (inserted.length === 0) {
-          activation.cache.generation = undefined
-          activation.cache.state = undefined
+          forget(activation)
 
           return yield* unavailable("Stale actor generation")
         }
@@ -1015,9 +1028,7 @@ export const activationOwner = ({
               RETURNING c.connection_id`
 
             if (written.length === 0) {
-              activation.cache.generation = undefined
-              activation.cache.state = undefined
-              activation.rows = undefined
+              forget(activation)
 
               return yield* unavailable("Stale actor generation")
             }
@@ -1433,9 +1444,11 @@ export const activationOwner = ({
       const read = yield* sql<{
         kind: string
         attempts: number
+        cancelled: boolean
         caller: string
         payload: string
-      }>`SELECT kind, attempts, caller, payload FROM actor_outbox
+      }>`SELECT kind, attempts, cancelled_at_ms IS NOT NULL AS cancelled, caller, payload
+          FROM actor_outbox
           WHERE ${actor} AND intent_id = ${message.effectId}`.pipe(
         Effect.ensuring(Effect.sync(() => activation.checking.delete(message.effectId))),
         Effect.exit,
@@ -1455,7 +1468,7 @@ export const activationOwner = ({
 
       const [row] = read.value
 
-      if (row === undefined || row.kind !== "effect") {
+      if (row === undefined || row.kind !== "effect" || row.cancelled) {
         const closed = closedEffect()
         activation.progress.set(message.effectId, closed)
 
@@ -1629,10 +1642,7 @@ export const activationOwner = ({
       if (activation === undefined) return
       yield* endStreams(activation)
       yield* seal(activation)
-      activation.cache.generation = undefined
-      activation.cache.state = undefined
-      activation.rows = undefined
-      activation.channels.clear()
+      forget(activation)
       activation.opened.clear()
       activation.progress.clear()
       activation.checkFailed.clear()

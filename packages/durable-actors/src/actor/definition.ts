@@ -27,7 +27,7 @@ import {
   outsideTurn,
   type QueryContext,
 } from "../contexts/command.ts"
-import type { ExecutorContext, PerformContext } from "../contexts/effect.ts"
+import type { ExecutorContext, PerformContext, PerformOptions } from "../contexts/effect.ts"
 import type {
   BroadcastContext,
   BroadcastOptions,
@@ -63,7 +63,15 @@ import {
   type EmittedEvent,
   Request,
 } from "../handles/actors.ts"
-import { currentStaging, emptyOutbox, InTurn, openOutbox, stage } from "../handles/intents.ts"
+import {
+  currentStaging,
+  Due,
+  effectKey,
+  emptyOutbox,
+  InTurn,
+  openOutbox,
+  stage,
+} from "../handles/intents.ts"
 
 import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
 import {
@@ -94,7 +102,13 @@ import type {
   ValueSchema,
 } from "../members/command.ts"
 import type { AnyReducer } from "../members/reducer.ts"
-import type { AnyEffect, EffectPolicy, ProgressEffect, ProgressOf } from "../members/effect.ts"
+import {
+  type AnyEffect,
+  CancelledOutcome,
+  type EffectPolicy,
+  type ProgressEffect,
+  type ProgressOf,
+} from "../members/effect.ts"
 import type { NoDatabase } from "../runtime/effects/isolation.ts"
 import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
@@ -446,6 +460,37 @@ const effectTiming = (tag: string, policy: EffectPolicy<AnyEffect, AnyCommand> |
   return timing
 }
 
+/** When and under which key `turn.perform` stages an effect. */
+const performSchedule = (options: PerformOptions | undefined) => {
+  if (options?.key !== undefined) effectKey(options.key)
+
+  if (options?.after !== undefined && options.at !== undefined)
+    throw new Error("turn.perform takes after or at, not both")
+
+  let due: Due | undefined
+
+  if (options?.after !== undefined) {
+    const millis = Duration.toMillis(Duration.fromInputUnsafe(options.after))
+
+    if (!Number.isFinite(millis) || millis < 0)
+      throw new Error("turn.perform after needs a finite, non-negative duration")
+    due = Due.cases.After.make({ millis: Math.ceil(millis) })
+  }
+
+  if (options?.at !== undefined)
+    due = Due.cases.At.make({ epochMillis: DateTime.toEpochMillis(options.at) })
+
+  return { due, key: options?.key }
+}
+
+/** The `onCancelled` input of a cancelled effect whose provider call succeeded. */
+interface CancelledSuccess {
+  readonly effectId: string
+  readonly attempts: number
+  readonly outcome: { readonly _tag: "Succeeded"; readonly value: unknown }
+  readonly ambiguous: boolean
+}
+
 /** `api` and `internal` keys must equal their member's tag. */
 type TagsMatch<Members extends MemberRecord> = {
   readonly [K in keyof Members]: Members[K] & { readonly tag: K }
@@ -613,12 +658,45 @@ const make = <
 
   const effectTimings = new Map<string, ReturnType<typeof effectTiming>>()
 
+  const unrouted = new Set<string>()
+
+  // A keyed effect is one a later turn may cancel; with no route to report
+  // that to, an ambiguous cancellation reaches operators only.
+  const warnUnrouted = (tag: string) =>
+    Effect.suspend(() => {
+      const routes = effectPolicies[tag]
+
+      if (
+        unrouted.has(tag) ||
+        routes?.onCancelled !== undefined ||
+        routes?.onDeadLetter !== undefined
+      )
+        return Effect.void
+      unrouted.add(tag)
+
+      return Effect.logWarning(
+        `Keyed effect ${tag} has neither onCancelled nor onDeadLetter; an ambiguous cancellation is only dead-lettered`,
+      )
+    })
+
   for (const [tag, effectPolicy] of Object.entries(effectPolicies)) {
     if (!effects.has(tag)) throw new Error(`policy.effects.${tag} names no declared effect`)
 
-    for (const route of [effectPolicy?.onSuccess, effectPolicy?.onDeadLetter])
+    for (const route of [
+      effectPolicy?.onSuccess,
+      effectPolicy?.onDeadLetter,
+      effectPolicy?.onCancelled,
+    ])
       if (route !== undefined && !members.includes(route))
         throw new Error(`policy.effects.${tag} routes must name a command of this actor`)
+
+    const perActor = effectPolicy?.concurrency?.perActor
+
+    if (
+      effectPolicy?.concurrency !== undefined &&
+      (perActor === undefined || !Number.isInteger(perActor) || perActor < 1 || perActor > 64)
+    )
+      throw new Error(`policy.effects.${tag}.concurrency.perActor must be an integer from 1 to 64`)
 
     const times = effectPolicy?.retry?.times
 
@@ -1662,7 +1740,10 @@ const make = <
               return id
             })
 
-            const perform = Effect.fnUntraced(function* (instance: { readonly _tag: string }) {
+            const perform = Effect.fnUntraced(function* (
+              instance: { readonly _tag: string },
+              options?: PerformOptions,
+            ) {
               if (!open || (yield* InsideTurn) !== turn)
                 return yield* Effect.die(new Error("Effect capability escaped its turn"))
 
@@ -1671,10 +1752,23 @@ const make = <
               if (declared === undefined)
                 return yield* Effect.die(new Error(`Undeclared effect: ${instance._tag}`))
 
+              const scheduled = yield* Effect.sync(() => performSchedule(options))
+
+              if (scheduled.key !== undefined) yield* warnUnrouted(instance._tag)
+
               outbox.perform({
                 effect: instance._tag,
                 payload: yield* declared(instance).pipe(Effect.orDie),
+                ...scheduled,
               })
+            })
+
+            const cancelEffect = Effect.fnUntraced(function* (key: string) {
+              if (!open || (yield* InsideTurn) !== turn)
+                return yield* Effect.die(new Error("Effect capability escaped its turn"))
+
+              yield* Effect.sync(() => effectKey(key))
+              outbox.cancelEffect(key)
             })
 
             const context: CommandContext<State, Event, Owned, Blobs> &
@@ -1692,6 +1786,7 @@ const make = <
               blob: blob as CommandContext<State, Event, Owned, Blobs>["blob"],
               mint: mint as CommandContext<State>["mint"],
               perform,
+              cancelEffect,
               broadcast: broadcastsTo(broadcasts, escaped),
               connections: (member: AnyConnection): Effect.Effect<ReadonlyArray<ConnectionInfo>> =>
                 Effect.gen(function* () {
@@ -2159,6 +2254,25 @@ const make = <
         const onDeadLetter =
           routes?.onDeadLetter === undefined ? undefined : routeCodec(routes.onDeadLetter)
 
+        const onCancelled =
+          routes?.onCancelled === undefined ? undefined : routeCodec(routes.onCancelled)
+
+        const cancelledRoute = (
+          effect: AnyEffect["Type"],
+          letter: Parameters<RegisteredEffect["cancelled"]>[1] | CancelledSuccess,
+        ): Effect.Effect<EffectRoute | undefined, Schema.SchemaError> =>
+          Effect.gen(function* () {
+            if (onCancelled === undefined) return undefined
+
+            return yield* onCancelled({
+              effectId: letter.effectId,
+              effect,
+              attempts: letter.attempts,
+              outcome: letter.outcome,
+              ambiguous: letter.ambiguous,
+            })
+          })
+
         const { timeoutMs, backoff, progressEveryMs } =
           effectTimings.get(declared.tag) ?? effectTiming(declared.tag, undefined)
 
@@ -2173,6 +2287,8 @@ const make = <
           attempts: 1 + (routes?.retry?.times ?? DEFAULT_EFFECT_RETRIES),
           backoff,
           progressEveryMs: encodeProgress === undefined ? undefined : progressEveryMs,
+          perActor: routes?.concurrency?.perActor,
+          routesCancelled: onCancelled !== undefined,
           execute: Effect.fnUntraced(function* (payload, attempt) {
             const effect = yield* decode(payload).pipe(
               Effect.mapError((error) => ({ cause: String(error), ambiguous: false })),
@@ -2228,18 +2344,58 @@ const make = <
                   Cause.hasInterrupts(exit.cause),
               })
 
-            if (onSuccess === undefined) return undefined
+            // A cancelled effect reports its result to onCancelled; one the
+            // route cannot accept is reported as unknown there.
+            const cancelled =
+              onCancelled === undefined
+                ? undefined
+                : yield* cancelledRoute(effect, {
+                    effectId: context.effectId,
+                    attempts: context.attempt,
+                    outcome: CancelledOutcome.cases.Succeeded.make({ value: exit.value }),
+                    ambiguous: false,
+                  }).pipe(
+                    Effect.catch((error) =>
+                      cancelledRoute(effect, {
+                        effectId: context.effectId,
+                        attempts: context.attempt,
+                        outcome: CancelledOutcome.cases.Unknown.make({
+                          cause: `The onCancelled route cannot accept the result: ${String(error)}`,
+                        }),
+                        ambiguous: true,
+                      }),
+                    ),
+                    Effect.orDie,
+                  )
+
+            if (onSuccess === undefined)
+              return { success: undefined, cancelled, rejected: undefined }
 
             // The provider already applied the call, so a result the route
-            // cannot accept is dead-lettered instead of executed again.
-            return yield* onSuccess(exit.value).pipe(
-              Effect.mapError((error) => ({
-                cause: `The onSuccess route cannot accept the result: ${String(error)}`,
-                ambiguous: true,
-                final: true,
-              })),
-            )
+            // cannot accept is dead-lettered instead of executed again, unless
+            // the effect was cancelled and onCancelled takes the result.
+            const success = yield* onSuccess(exit.value).pipe(Effect.result)
+
+            if (Result.isFailure(success))
+              return {
+                success: undefined,
+                cancelled,
+                rejected: {
+                  cause: `The onSuccess route cannot accept the result: ${String(success.failure)}`,
+                  ambiguous: true,
+                  final: true,
+                },
+              }
+
+            return { success: success.success, cancelled, rejected: undefined }
           }) as RegisteredEffect["execute"],
+          cancelled: Effect.fnUntraced(function* (payload, letter) {
+            const effect = yield* decode(payload).pipe(Effect.option)
+
+            if (Option.isNone(effect)) return undefined
+
+            return yield* cancelledRoute(effect.value, letter)
+          }, Effect.orDie),
           // A payload that no longer decodes is still dead-lettered for
           // operators; only its route, which needs the decoded effect, is skipped.
           deadLetter: Effect.fnUntraced(function* (payload, letter) {

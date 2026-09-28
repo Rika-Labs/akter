@@ -1,0 +1,655 @@
+{
+  "schema": 2,
+  "label": "m3.2-http2",
+  "note": "HTTP/1.1 and cleartext HTTP/2 through Actor.serve (#122)",
+  "profile": "full",
+  "startedAt": "2026-09-28T01:35:50.163Z",
+  "finishedAt": "2026-09-28T01:40:10.132Z",
+  "git": {
+    "sha": "035985197f990a3e55b636442fb778b60ec377cd",
+    "shortSha": "0359851",
+    "branch": "feat/122-http2-cookie-security",
+    "mainBase": "5e7a9acc09cf5fa623171a3a1845da56ef050840",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+    "logicalCpus": 16,
+    "memoryGiB": 31.4,
+    "os": "Linux 6.1.158+",
+    "hostname": "e2b.local",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "http",
+      "description": "Actor.serve over loopback HTTP/1.1 keep-alive and cleartext HTTP/2: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch, the @durable-actors/core/client Promise SDK (also with 1% response loss), and raw requests on one multiplexed HTTP/2 connection, then sequential commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload over both protocols.",
+      "cases": [
+        {
+          "name": "command-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "fetch",
+            "protocol": "http/1.1"
+          },
+          "operations": 3000,
+          "elapsedMs": 16870,
+          "throughput": 177.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 5.62,
+            "min": 4.742,
+            "p50": 5.198,
+            "p90": 6.166,
+            "p95": 7.568,
+            "p99": 13.788,
+            "max": 24.611
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 131.4,
+            "server": null,
+            "clientMsPerOperation": 7.39,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "query-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "fetch",
+            "protocol": "http/1.1"
+          },
+          "operations": 3000,
+          "elapsedMs": 4749,
+          "throughput": 631.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 1.58,
+            "min": 1.284,
+            "p50": 1.501,
+            "p90": 1.673,
+            "p95": 1.805,
+            "p99": 2.533,
+            "max": 14.191
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 113.3,
+            "server": null,
+            "clientMsPerOperation": 1.794,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "command-concurrent-64",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "auth": "none",
+            "via": "fetch",
+            "protocol": "http/1.1"
+          },
+          "operations": 1984,
+          "elapsedMs": 10095,
+          "throughput": 196.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1984,
+            "mean": 325.419,
+            "min": 297.579,
+            "p50": 322.923,
+            "p90": 346.442,
+            "p95": 356.797,
+            "p99": 379.304,
+            "max": 382.164
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 116.7,
+            "server": null,
+            "clientMsPerOperation": 5.937,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "client-command-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "client",
+            "protocol": "http/1.1"
+          },
+          "operations": 3000,
+          "elapsedMs": 17406,
+          "throughput": 172.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 5.794,
+            "min": 4.634,
+            "p50": 5.434,
+            "p90": 6.353,
+            "p95": 7.327,
+            "p99": 14.689,
+            "max": 26.292
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 119.1,
+            "server": null,
+            "clientMsPerOperation": 6.911,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "client-query-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "client",
+            "protocol": "http/1.1"
+          },
+          "operations": 3000,
+          "elapsedMs": 4685,
+          "throughput": 640.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 1.559,
+            "min": 1.281,
+            "p50": 1.489,
+            "p90": 1.619,
+            "p95": 1.695,
+            "p99": 3.2,
+            "max": 14.915
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 114.7,
+            "server": null,
+            "clientMsPerOperation": 1.791,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "client-command-concurrent-64",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "auth": "none",
+            "via": "client",
+            "protocol": "http/1.1"
+          },
+          "operations": 1984,
+          "elapsedMs": 10027,
+          "throughput": 197.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1984,
+            "mean": 323.203,
+            "min": 280.379,
+            "p50": 321.172,
+            "p90": 346.021,
+            "p95": 349.253,
+            "p99": 373.562,
+            "max": 374.754
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 117.1,
+            "server": null,
+            "clientMsPerOperation": 5.917,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "h2-command-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "node:http2",
+            "protocol": "h2c"
+          },
+          "operations": 3000,
+          "elapsedMs": 15713,
+          "throughput": 190.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 5.234,
+            "min": 4.56,
+            "p50": 4.968,
+            "p90": 5.537,
+            "p95": 6.186,
+            "p99": 11.42,
+            "max": 27.033
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 111.5,
+            "server": null,
+            "clientMsPerOperation": 5.839,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "h2-query-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "node:http2",
+            "protocol": "h2c"
+          },
+          "operations": 3000,
+          "elapsedMs": 3993,
+          "throughput": 751.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 1.328,
+            "min": 1.154,
+            "p50": 1.262,
+            "p90": 1.388,
+            "p95": 1.495,
+            "p99": 1.98,
+            "max": 14.832
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 111.5,
+            "server": null,
+            "clientMsPerOperation": 1.485,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "h2-command-concurrent-64",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "auth": "none",
+            "via": "node:http2",
+            "protocol": "h2c"
+          },
+          "operations": 1984,
+          "elapsedMs": 10131,
+          "throughput": 195.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1984,
+            "mean": 324.654,
+            "min": 177.222,
+            "p50": 324.203,
+            "p90": 440.051,
+            "p95": 467.189,
+            "p99": 512.42,
+            "max": 512.565
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 109.6,
+            "server": null,
+            "clientMsPerOperation": 5.597,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "client-command-sequential-1pct-loss",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "client",
+            "protocol": "http/1.1",
+            "loss": "1%"
+          },
+          "operations": 3000,
+          "elapsedMs": 21306,
+          "throughput": 140.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 7.099,
+            "min": 4.831,
+            "p50": 5.389,
+            "p90": 7.208,
+            "p95": 9.156,
+            "p99": 28.017,
+            "max": 161.355
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 102.2,
+            "server": null,
+            "clientMsPerOperation": 7.259,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "duplicateTurns": 0
+          }
+        },
+        {
+          "name": "client-reducer-sequential",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "client",
+            "protocol": "http/1.1"
+          },
+          "operations": 3000,
+          "elapsedMs": 17314,
+          "throughput": 173.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 5.769,
+            "min": 4.836,
+            "p50": 5.262,
+            "p90": 6.474,
+            "p95": 9.042,
+            "p99": 15.025,
+            "max": 27.095
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 124.3,
+            "server": null,
+            "clientMsPerOperation": 7.173,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "optimisticVisibleP50Ms": 0.083,
+            "optimisticVisibleP99Ms": 0.27
+          }
+        },
+        {
+          "name": "command-sequential-jwt",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "jwt-es256",
+            "via": "fetch",
+            "protocol": "http/1.1"
+          },
+          "operations": 2000,
+          "elapsedMs": 11919,
+          "throughput": 167.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 5.957,
+            "min": 5.074,
+            "p50": 5.547,
+            "p90": 6.485,
+            "p95": 8.039,
+            "p99": 13.905,
+            "max": 31.934
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 121.5,
+            "server": null,
+            "clientMsPerOperation": 7.239,
+            "serverMsPerOperation": null
+          },
+          "extra": {}
+        },
+        {
+          "name": "h2-command-sequential-jwt",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "jwt-es256",
+            "via": "node:http2",
+            "protocol": "h2c"
+          },
+          "operations": 2000,
+          "elapsedMs": 11007,
+          "throughput": 181.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 5.501,
+            "min": 4.673,
+            "p50": 5.29,
+            "p90": 5.721,
+            "p95": 6.096,
+            "p99": 11.353,
+            "max": 22.685
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 112.3,
+            "server": null,
+            "clientMsPerOperation": 6.18,
+            "serverMsPerOperation": null
+          },
+          "extra": {}
+        },
+        {
+          "name": "command-sequential-largest-principal",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "largest-principal",
+            "via": "fetch",
+            "protocol": "http/1.1"
+          },
+          "operations": 2000,
+          "elapsedMs": 11222,
+          "throughput": 178.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 5.608,
+            "min": 4.761,
+            "p50": 5.159,
+            "p90": 6.159,
+            "p95": 7.281,
+            "p99": 15.39,
+            "max": 22.999
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 120.7,
+            "server": null,
+            "clientMsPerOperation": 6.774,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "callerBytes": 1020
+          }
+        },
+        {
+          "name": "h2-command-sequential-largest-principal",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "largest-principal",
+            "via": "node:http2",
+            "protocol": "h2c"
+          },
+          "operations": 2000,
+          "elapsedMs": 10675,
+          "throughput": 187.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 5.335,
+            "min": 4.617,
+            "p50": 5.012,
+            "p90": 5.876,
+            "p95": 6.589,
+            "p99": 11.032,
+            "max": 21.622
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 112.9,
+            "server": null,
+            "clientMsPerOperation": 6.027,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "callerBytes": 1020
+          }
+        },
+        {
+          "name": "command-sequential-64kib",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "fetch",
+            "protocol": "http/1.1"
+          },
+          "operations": 2000,
+          "elapsedMs": 15080,
+          "throughput": 132.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 7.537,
+            "min": 5.854,
+            "p50": 7.182,
+            "p90": 8.381,
+            "p95": 10.114,
+            "p99": 17.197,
+            "max": 25.629
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 117.9,
+            "server": null,
+            "clientMsPerOperation": 8.892,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "payloadBytes": 65536
+          }
+        },
+        {
+          "name": "h2-command-sequential-64kib",
+          "parameters": {
+            "actors": 1,
+            "workers": 1,
+            "auth": "none",
+            "via": "node:http2",
+            "protocol": "h2c"
+          },
+          "operations": 2000,
+          "elapsedMs": 14727,
+          "throughput": 135.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 7.36,
+            "min": 5.94,
+            "p50": 7.085,
+            "p90": 8.233,
+            "p95": 8.99,
+            "p99": 16.315,
+            "max": 22.444
+          },
+          "statementsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 111.8,
+            "server": null,
+            "clientMsPerOperation": 8.229,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "payloadBytes": 65536
+          }
+        }
+      ]
+    }
+  ]
+}

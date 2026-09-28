@@ -17,6 +17,7 @@ import { blobs } from "./scenarios/storage/blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { connections } from "./scenarios/connections.ts"
 import { progress } from "./scenarios/progress.ts"
+import { effectConcurrency } from "./scenarios/effect-concurrency.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
 import { retention } from "./scenarios/retention.ts"
@@ -34,6 +35,7 @@ import { manyActors } from "./scenarios/scale/many-actors.ts"
 import { singletonFailover } from "./scenarios/singleton-failover.ts"
 import { retainedHeap } from "./scenarios/scale/retained-heap.ts"
 import { stateSize } from "./scenarios/state-size.ts"
+import { storedOverhead } from "./scenarios/scale/stored-overhead.ts"
 import { subscriptions } from "./scenarios/subscriptions.ts"
 import { workflowCheck } from "./scenarios/workflow-check.ts"
 import { workflows } from "./scenarios/workflows.ts"
@@ -50,9 +52,11 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   events,
   manyActors,
   retainedHeap,
+  storedOverhead,
   outbox,
   ownedRows,
   effectRoundTrip,
+  effectConcurrency,
   multiRunner,
   singletonFailover,
   blobs,

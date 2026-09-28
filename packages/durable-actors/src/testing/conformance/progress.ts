@@ -373,6 +373,12 @@ const Render_ = Actor.command("Render", { input: Schema.String })
 
 const Finished = Actor.command("Finished", { input: Schema.String })
 
+/** Performs Render under the job as its key, so a later turn can cancel it. */
+const RenderKeyed = Actor.command("RenderKeyed", { input: Schema.String })
+
+/** Cancels the keyed Render of a job and tells `Mine` connections in the same turn. */
+const CancelRender = Actor.command("CancelRender", { input: Schema.String })
+
 /** Progress for the performer's own connections only (the default audience). */
 const Mine = Actor.connection("Mine", { server: Rendered, progress: { effects: [Render] } })
 
@@ -405,7 +411,17 @@ const Announce = Actor.command("Announce", { input: Schema.String })
 const Studio = Actor.make("Studio", {
   key: Schema.String,
   effects: [Render],
-  api: { Render: Render_, Mine, Everyone, Quiet, Percent, Busy, Announce },
+  api: {
+    Render: Render_,
+    RenderKeyed,
+    CancelRender,
+    Mine,
+    Everyone,
+    Quiet,
+    Percent,
+    Busy,
+    Announce,
+  },
   internal: { Finished },
   policy: {
     effects: { Render: { onSuccess: Finished, retry: { times: 0 }, progressEvery: "50 millis" } },
@@ -418,6 +434,14 @@ const studioCommands = Studio.toLayer(
   Effect.succeed({
     Render: Effect.fnUntraced(function* (job: string) {
       yield* (yield* Studio.Turn).perform(Render.make({ job }))
+    }),
+    RenderKeyed: Effect.fnUntraced(function* (job: string) {
+      yield* (yield* Studio.Turn).perform(Render.make({ job }), { key: job })
+    }),
+    CancelRender: Effect.fnUntraced(function* (job: string) {
+      const turn = yield* Studio.Turn
+      yield* turn.cancelEffect(job)
+      yield* turn.broadcast(Mine, Rendered.make({ output: `cancelled-${job}` }))
     }),
     Finished: Effect.fnUntraced(function* (output: string) {
       const turn = yield* Studio.Turn
@@ -556,6 +580,47 @@ const sentFor = (id: string, count: number) =>
   })
 
 export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "drops progress after the cancelling commit",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const studio = yield* Studio.get("cancelled")
+          const mine = yield* test.connect(studio.ref, Mine, undefined)
+          const job = yield* plan("cancelled", [10])
+          // Without the pool's close, only the cancelling turn closes the effect on this activation.
+          yield* test.dropProgress(
+            (message) => message.ref.id === "cancelled" && !("seq" in message),
+          )
+          yield* studio.RenderKeyed("cancelled")
+          yield* test.advance(0).pipe(Effect.forkChild)
+          yield* Deferred.succeed(job.go, undefined)
+          expect(progressOf(yield* nextOf(mine))?.frame).toEqual({ percent: 10 })
+
+          yield* studio.CancelRender("cancelled")
+          expect(frameOf(yield* nextOf(mine))).toEqual(
+            Rendered.make({ output: "cancelled-cancelled" }),
+          )
+
+          const [sent] = (yield* test.progress).filter(
+            (record) => record.ref.id === "cancelled" && ProgressRecord.$is("Progress")(record),
+          )
+
+          if (sent === undefined || !ProgressRecord.$is("Progress")(sent))
+            return yield* Effect.die(new Error("No progress was sent"))
+
+          // A frame delayed past the cancel, then one on a new activation, which reads the row.
+          yield* test.resendProgress({ ...sent, seq: sent.seq + 1 })
+          expect(yield* quietFor(mine, "1 second")).toEqual([])
+          yield* test.hibernate(studio.ref)
+          yield* test.resendProgress({ ...sent, seq: sent.seq + 2 })
+          expect(yield* quietFor(mine, "1 second")).toEqual([])
+          yield* test.dropProgress(() => false)
+          yield* Deferred.succeed(job.finish, undefined)
+        }),
+      ),
+  },
   {
     name: "coalesces a paused client's progress per effect at the holder, newest in place",
     run: ({ expect, environment }) =>
