@@ -7,6 +7,7 @@ import {
   Fiber,
   Layer,
   ManagedRuntime,
+  Option,
   Schedule,
   Schema,
   Scope,
@@ -14,6 +15,7 @@ import {
 import { SqlClient, Statement } from "effect/unstable/sql"
 import { Actor, Actors, CurrentCaller, User } from "../index.ts"
 import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
+import { principal } from "../identity/caller.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 import type { InternalActors } from "../handles/actors.ts"
@@ -199,6 +201,8 @@ export interface ConformanceFixture {
   allowed: boolean
   /** Commands the test authorization refuses while `allowed` holds. */
   readonly denied: Set<string>
+  /** Principals that lost access: refused as callers and as `onBehalfOf`, as an application would. */
+  readonly revoked: Set<string>
 }
 
 export interface ConformanceContext {
@@ -323,6 +327,7 @@ const makeFixture = (): ConformanceFixture => ({
   duringQuery: Effect.void,
   allowed: true,
   denied: new Set(),
+  revoked: new Set(),
 })
 
 /**
@@ -1352,7 +1357,15 @@ export const describeConformance = (options: {
               database,
               as: User.make({ subject: "alice" }),
               authorize: (request) =>
-                Effect.sync(() => fixture.allowed && !fixture.denied.has(request.command)),
+                Effect.sync(
+                  () =>
+                    fixture.allowed &&
+                    !fixture.denied.has(request.command) &&
+                    Option.match(principal(request.caller), {
+                      onNone: () => true,
+                      onSome: ({ subject }) => !fixture.revoked.has(subject),
+                    }),
+                ),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
             }),
           ),

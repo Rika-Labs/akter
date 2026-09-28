@@ -33,6 +33,7 @@ export type Scenario =
   | "hold"
   | "compensate-sleep"
   | "compensate-hold"
+  | "compensate-last"
 
 /** Counters and gates the bodies share with the cases, by label and execution key. */
 export interface EngineFixture {
@@ -146,6 +147,11 @@ export const probeBody = <R>({
         return "done"
       case "hold":
         return yield* hold
+      case "compensate-last":
+        yield* compensated
+
+        return yield* hold
+
       case "compensate-hold":
         yield* compensated
         yield* hold

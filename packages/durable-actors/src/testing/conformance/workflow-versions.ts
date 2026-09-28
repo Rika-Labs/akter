@@ -1,6 +1,7 @@
 import {
   Cause,
   Crypto,
+  type Duration,
   Effect,
   Exit,
   Layer,
@@ -19,6 +20,7 @@ import {
 } from "../../runtime/workflows/compatibility.ts"
 import { manifestOf, toJson } from "../../runtime/workflows/manifest.ts"
 import { ActorTest } from "../actor-test.ts"
+import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type { ConformanceCase, ConformanceDatabase } from "../conformance.ts"
 
 interface Variant {
@@ -118,6 +120,21 @@ const MarkedNext = deployment({ versions: { fraud: { current: 2, min: 1 } } })
 const MarkedLater = deployment({ versions: { fraud: { current: 3, min: 2 } } })
 
 const Rested = deployment({ rest: true })
+
+const MarkedCurrent = deployment({ versions: { fraud: { current: 2, min: 0 } } })
+
+const BriefRun = Actor.workflow("Run", { output: Schema.String })
+
+/** Keeps finished executions for `keep`, against the cases' 60-second retry window. */
+const brief = (keep: Duration.Input) => {
+  const Brief = Actor.make("Brief", {
+    key: Schema.String,
+    api: { Run: BriefRun },
+    policy: { keepWorkflows: keep },
+  })
+
+  return Brief.toLayer(Effect.succeed({ Run: () => Effect.succeed("ran") }))
+}
 
 const RestedRelabelled = deployment({ rest: true, labelled: Schema.NonEmptyString })
 
@@ -226,7 +243,118 @@ const manifests = Effect.gen(function* () {
 const hashOf = (target: ReturnType<typeof deployment>) =>
   manifestOf("Versioned", target.Order).pipe(Effect.map(({ hash }) => hash))
 
+const on = <A, E, R>(runner: number, effect: Effect.Effect<A, E, R>) =>
+  ActorCluster.use((cluster) => cluster.on(runner)(effect))
+
+/**
+ * A rolling deploy on two runners: runner 0 serves `next`, runner 1 still
+ * serves `old`. An execution `next` started resumes on `old`, which leaves
+ * it suspended, and then on `next` again, which finishes it.
+ */
+const rollingDeploy = (options: {
+  readonly name: string
+  readonly old: ReturnType<typeof deployment>
+  readonly next: ReturnType<typeof deployment>
+  readonly result: (id: string) => string
+}): ConformanceCase => ({
+  requiresIndependentConnections: true,
+  timeoutMs: 150_000,
+  name: options.name,
+  run: ({ expect, environment }) =>
+    environment.run(
+      Effect.gen(function* () {
+        const { old, next } = options
+        const database = yield* environment.freshDatabase
+
+        const context = yield* Layer.build(
+          ActorTest.cluster({
+            database,
+            runners: 2,
+            shardLockExpiration: "3 seconds",
+            actors: Layer.empty,
+            runnerActors: (runner) =>
+              (runner === 0 ? next.layer : old.layer) as Layer.Layer<never, never, RunnerServices>,
+            as: User.make({ subject: "alice" }),
+          }),
+        )
+
+        yield* Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          let id = ""
+
+          // An owner the newer runner holds, so the execution starts under its code.
+          for (let candidate = 0; id === ""; candidate++) {
+            const ref = (yield* on(0, next.Versioned.get(`rolling-${candidate}`))).ref
+
+            if ((yield* cluster.owner(ref)) === 0) id = `rolling-${candidate}`
+          }
+
+          const executionId = yield* on(0, sleeping(next, id))
+          const ref = (yield* on(0, next.Versioned.get(id))).ref
+          yield* cluster.kill(0)
+          yield* cluster.ready
+
+          // The older runner receives the resume, can't run it, and leaves it suspended.
+          yield* on(
+            1,
+            Effect.gen(function* () {
+              const test = yield* ActorTest
+              yield* test.advance("61 seconds")
+
+              yield* test.receiptsFor(ref, "$workflow/resume").pipe(
+                Effect.repeat({
+                  schedule: Schedule.spaced("50 millis"),
+                  until: (count) => count > 0,
+                }),
+                Effect.timeoutOrElse({
+                  duration: "30 seconds",
+                  orElse: () => Effect.die(new Error("The older runner never received the resume")),
+                }),
+              )
+
+              yield* Effect.sleep("500 millis")
+              expect(yield* status(executionId)).toBe("suspended")
+            }),
+          )
+
+          yield* cluster.restart(0)
+          yield* cluster.kill(1)
+          yield* cluster.ready
+
+          expect(yield* on(0, finish(next, executionId))).toBe(options.result(id))
+        }).pipe(Effect.provideContext(context))
+      }),
+    ),
+})
+
 export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
+  rollingDeploy({
+    name: "workflow versions: suspends an execution with an unregistered step on an older runner and resumes it on a compatible runner (rolling deploy)",
+    old: Base,
+    next: Audited,
+    result: (id) => `r-${id}:label:v0`,
+  }),
+  rollingDeploy({
+    name: "workflow versions: suspends an execution whose marker is outside an older runner's min..current and resumes it on a compatible runner (rolling deploy)",
+    old: Marked,
+    next: MarkedCurrent,
+    result: (id) => `r-${id}:label:v2`,
+  }),
+  {
+    name: "workflows: refuses startup when keepWorkflows is below the retry window",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          expect(yield* refusal(yield* environment.freshDatabase, brief("59 seconds"))).toContain(
+            "Actor Brief keepWorkflows is shorter than the retry window",
+          )
+          expect(
+            yield* deploy(yield* environment.freshDatabase, brief("60 seconds"), Effect.void),
+          ).toBe(undefined)
+        }),
+      ),
+  },
   {
     requiresIndependentConnections: true,
     name: "workflow versions: records markers at start and reads 0 for executions older than the marker, across a restart",
