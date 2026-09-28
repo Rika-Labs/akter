@@ -165,6 +165,7 @@ const DrawerLive = (fixture: BlobsFixture) =>
         yield* blob.set("kept", bytes("overwritten"))
         yield* blob.append("kept", bytes("-appended"))
         yield* blob.compact("kept")
+        yield* blob.delete("kept")
         yield* blob.set(name, bytes(name))
         yield* blob.append(name, bytes(name))
         yield* turn.state.set({ notes: turn.state.notes + 1 })

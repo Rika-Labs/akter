@@ -9,3 +9,7 @@ export type { Options } from "./layer.ts"
 export { checkWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
 
 export type { Incompatibility } from "./workflows/compatibility.ts"
+
+export { Inspector } from "./inspector/layer.ts"
+
+export type { InspectorOptions } from "./inspector/layer.ts"
