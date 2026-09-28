@@ -1,6 +1,6 @@
 # ADR 0025: `turn.mint` — deterministic child actors minted in a turn
 
-**Status:** proposed (2026-09-26)
+**Status:** accepted (2026-09-28, Dallen, with every proposed default; proposed 2026-09-26). M2.15 implemented it before acceptance. The amendments listed under [behaviour changes](#behaviour-changes-against-existing-contracts) have landed; the [decided questions](#decided-questions) record the defaults.
 
 ## Context
 
@@ -169,11 +169,13 @@ Added in M2.15 under `tooling/benchmarks`:
 - Five repeats after warm-up; report coefficient of variation and rerun if it exceeds 10 %.
 - Expected: no statement beyond the intents already staged. The Statements baseline must not change for existing scenarios.
 
-## Open questions for Dallen (proposed defaults)
+## Decided questions
 
-1. **Require `createdBy` on the child?** Default: yes; without it the parent-only creation check has nothing to guard.
-2. **Require a creating intent for every minted id?** Default: yes, the turn dies otherwise.
-3. **Optional label, `turn.mint(Child, { label })`, replacing the ordinal?** Default: not now; ordinals are enough and labels can be added under a new domain string.
-4. **Record parent–child links (a `children` table or index)?** Default: no; inspection can read the parent's outbox and receipts.
-5. **`turn.mint` in workflow bodies?** Default: no; workflows mint through a command turn.
-6. **Id version 8 with SHA-256 and the domain string `durable-actors/mint/v1`?** Default: yes.
+Dallen accepted every proposed default on 2026-09-28.
+
+1. **Require `createdBy` on the child?** Yes; without it the parent-only creation check has nothing to guard.
+2. **Require a creating intent for every minted id?** Yes, the turn dies otherwise.
+3. **Optional label, `turn.mint(Child, { label })`, replacing the ordinal?** Not now; ordinals are enough and labels can be added under a new domain string.
+4. **Record parent–child links (a `children` table or index)?** No; inspection can read the parent's outbox and receipts.
+5. **`turn.mint` in workflow bodies?** No; workflows mint through a command turn.
+6. **Id version 8 with SHA-256 and the domain string `durable-actors/mint/v1`?** Yes.
