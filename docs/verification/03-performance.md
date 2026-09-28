@@ -337,9 +337,9 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 
 ### Commutative merging (P6, #161)
 
-`2026-09-28-b75859f-p6-merging-postgres.json` is one `ci` profile run on the same VM; an earlier run of the same commit recorded the same counts for the new case.
+`2026-09-28-b75859f-p6-merging-postgres.json` is one `ci` profile run on the same VM. `2026-09-28-ef1a2f8-p6-merging-per-call-postgres.json` reruns `turn-batches` after the merged case moved to per-call counts; two more runs matched it within 0.0002 statements per call.
 
-- **`turn-batches/merged-1024`:** each operation holds one turn open, queues 1,024 calls of a commutative reducer behind it, and releases it. It costs 3,083.8 statements and 3 round trips: the held turn's commit carries the merged batch's admission, then one commit writes one state row and 1,024 receipts. Almost all of the statements are the 3 per call outside the turn (command id minting, the pre-delivery receipt read, and the expiry recheck); the merged turn itself is about 9. Unmerged, the same 1,025 calls cost about 7,175 statements and 2,050 round trips. A round takes about 0.8 s p50 on this VM, dominated by the 1,024 calls' client-side work (1.1 s of client CPU per round).
+- **`turn-batches/merged-1024`:** each round holds one turn open, queues 1,024 calls of a commutative reducer behind it, and releases it. A round costs about 3,084 statements and 3 round trips: the held turn's commit carries the merged batch's admission, then one commit writes one state row and 1,024 receipts. The case reports them per call (3.0086 statements and 0.0029 round trips), because a round lasts most of a second and background work such as relay polls lands in it a varying number of times: per round, two runs of one commit differed by 0.5 statements, past the gate's tolerance. Almost all of the statements are the 3 per call outside the turn (command id minting, the pre-delivery receipt read, and the expiry recheck); the merged turn itself is about 9. Unmerged, the same 1,025 calls cost about 7,175 statements and 2,050 round trips. A round takes about 0.8 s p50 on this VM, dominated by the 1,024 calls' client-side work (1.1 s of client CPU per round).
 - Every other case is within the gate's tolerance.
 
 ### Recommendations (not applied)
