@@ -26,7 +26,7 @@ packages/
   postgres/                 @durable-actors/postgres   control-plane database: schema per domain, migrations/, bin/migrate.ts
   ui/                       @durable-actors/ui         exempt: StyleX compile unit (see tooling/structure/src/exemptions.ts)
 examples/                   runnable examples that double as the end-to-end corpus
-  counter/  chat/  coding-agent/  orders/
+  counter/  chat/  coding-agent/  orders/  subscriptions/
 infra/                      @durable-actors/infra      Alchemy: alchemy.run.ts, src/railway/, docker/<app>/Dockerfile
 tooling/
   oxlint/                   @durable-actors/oxlint     anti-slop rules, directives check, per-file structure rules

@@ -157,6 +157,8 @@ export const executeTurn = Effect.fnUntraced(function* (
         generation: current,
         state: cache.state,
         wake: false,
+        cancelled: false,
+        cancelledIds: [],
         broadcasts: [],
         head: admission.head,
         committed: {
@@ -261,7 +263,14 @@ export const executeTurn = Effect.fnUntraced(function* (
       !admission.created
 
     if (creates) yield* sql`UPDATE actor_generations SET created = true WHERE ${actorRow}`
-    const wake = (yield* writeOutbox(routingKey, request.ref, result.outbox)) || notified
+
+    const {
+      wake: written,
+      cancelled,
+      cancelledIds,
+    } = yield* writeOutbox(routingKey, request.ref, result.outbox)
+
+    const wake = written || notified
     const encoded = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
     yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
       VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${request.commandId}, ${request.command}, ${hash}, ${callerKey(request.caller)}, ${encoded}, ${commandTimes(request.commandId).expiresAt})`
@@ -272,6 +281,8 @@ export const executeTurn = Effect.fnUntraced(function* (
       generation: current,
       state: next,
       wake,
+      cancelled,
+      cancelledIds,
       broadcasts: Outcome.guards.Success(result.outcome) ? (result.broadcasts ?? []) : [],
       head: String(BigInt(admission.head) + BigInt(result.events.length)),
       committed: {
@@ -303,10 +314,14 @@ export const executeTurn = Effect.fnUntraced(function* (
 
   if (done.wake) yield* (yield* OutboxRuntime).wake
 
+  if (done.cancelled) yield* (yield* OutboxRuntime).cancelled
+
   return {
     outcome: done.outcome,
     broadcasts: done.broadcasts,
     head: done.head,
     committed: done.committed,
+    /** Started effects this turn cancelled. */
+    cancelledEffects: done.cancelledIds,
   }
 })

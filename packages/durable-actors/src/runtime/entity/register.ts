@@ -277,16 +277,23 @@ export const registerActor = Effect.fnUntraced(function* (
             )
 
             // A route turn's command id is its effect id: its progress stops before the route's broadcasts.
-            if (owner.hasProgress && !Outcome.guards.Defect(done.outcome))
+            if (owner.hasProgress && !Outcome.guards.Defect(done.outcome)) {
               yield* owner.closeProgress(owned, payload.commandId)
 
+              // A turn that cancelled a running effect stops its progress before its own broadcasts.
+              for (const effectId of done.cancelledEffects)
+                yield* owner.closeProgress(owned, effectId)
+            }
+
             // Stream followers wake when a commit advances the activation's head.
-            if (owner.hasConnections || owner.hasStreams)
+            if (owner.hasConnections || owner.hasStreams) {
+              yield* (yield* TurnHooks).at("beforeFlush", payload)
               yield* owner.flush(
                 owned,
                 [...done.broadcasts, ...(yield* owner.feedBroadcasts(done.committed))],
                 done.head,
               )
+            }
 
             return done.outcome
           }).pipe(

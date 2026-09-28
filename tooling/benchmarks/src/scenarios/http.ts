@@ -16,9 +16,9 @@ import {
   HttpClient,
   HttpClientError,
   HttpClientRequest,
-  HttpClientResponse,
   HttpRouter,
 } from "effect/unstable/http"
+import { connect, type Http2Failure, listen } from "../http2.ts"
 import { load } from "../measure.ts"
 import { Probe } from "../probe/contract.ts"
 import { ReducerProbe } from "../probe/reducers.ts"
@@ -26,7 +26,7 @@ import { type ActorServices, type CaseResult, measure, type Scenario } from "../
 
 const ProtocolInfo = Schema.Struct({ retryWindowMs: Schema.Int, now: Schema.Int })
 
-type Failure = HttpClientError.HttpClientError | PlatformError.PlatformError
+type Failure = HttpClientError.HttpClientError | PlatformError.PlatformError | Http2Failure
 
 type CallError = Failure | Cause.UnknownError
 
@@ -35,11 +35,24 @@ interface Caller {
   readonly query: (id: string) => Effect.Effect<unknown, CallError>
 }
 
-interface Served {
-  readonly url: string
+type RequestHeaders = Readonly<Record<string, string>>
+
+/** One request over the server's protocol; fails on a status outside 2xx. */
+type Send = (
+  method: "GET" | "POST",
+  path: string,
+  headers: RequestHeaders,
+  body?: string,
+) => Effect.Effect<string, Failure>
+
+/** Raw requests with a command id minted from the `/protocol` offset, over either protocol. */
+interface Endpoint {
   readonly command: (id: string, amount: number) => Effect.Effect<string, Failure>
   readonly weigh: (id: string, blob: string) => Effect.Effect<string, Failure>
   readonly query: (id: string) => Effect.Effect<string, Failure>
+}
+
+interface Served extends Endpoint {
   /** The same calls through `@durable-actors/core/client`, which mints ids, decodes replies, and tracks tokens. */
   readonly client: Caller
   /** The Promise client over a connection that loses every hundredth command response after the server sent it. */
@@ -149,33 +162,30 @@ const losing = () => {
   }
 }
 
-/** Serves the probe from a listening Bun server; every request crosses loopback through `fetch`. */
-const serve = Effect.fnUntraced(function* (auth: Auth = none) {
+/** The probe's `Actor.serve` layer as a web handler, disposed with the scope. */
+const handler = Effect.fnUntraced(function* (auth: Auth) {
   const services = yield* Effect.context<ActorServices>()
-  const crypto = Context.get(yield* Layer.build(BunCrypto.layer), Crypto.Crypto)
-
-  const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient).pipe(
-    HttpClient.filterStatusOk,
-  )
 
   const app = Actor.serve({ actors: [Probe, ReducerProbe], auth: auth.provider }).pipe(
     Layer.provide(Layer.succeedContext(services)),
   )
 
   const web = HttpRouter.toWebHandler(app, { disableLogger: true })
-  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => web.handler(req) })
+  yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
 
-  yield* Effect.addFinalizer(() =>
-    Effect.promise(() => server.stop(true)).pipe(
-      Effect.andThen(Effect.promise(() => web.dispose())),
-    ),
+  return (request: Request) => web.handler(request)
+})
+
+const decodeProtocol = Schema.decodeEffect(Schema.fromJsonString(ProtocolInfo))
+
+/** Commands, 64 KiB payloads, and queries through `send`, as a thin client that keeps a clock offset sends them. */
+const endpoint = Effect.fnUntraced(function* (auth: Auth, send: Send) {
+  const crypto = Context.get(yield* Layer.build(BunCrypto.layer), Crypto.Crypto)
+
+  const protocol = yield* send("GET", "/protocol", {}).pipe(
+    Effect.flatMap(decodeProtocol),
+    Effect.orDie,
   )
-
-  const url = `http://127.0.0.1:${server.port}`
-
-  const protocol = yield* client
-    .get(`${url}/protocol`)
-    .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(ProtocolInfo)), Effect.orDie)
 
   const offset = protocol.now - (yield* Clock.currentTimeMillis)
 
@@ -186,23 +196,48 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
     return `v1.${issued}.${issued + protocol.retryWindowMs}.${yield* crypto.randomUUIDv4}`
   })
 
-  const post = (path: string, body: string, key?: string) =>
+  const headers: RequestHeaders =
+    auth.authorization === undefined
+      ? { "content-type": "application/json" }
+      : { "content-type": "application/json", authorization: auth.authorization }
+
+  const query = (path: string, body: string) => send("POST", path, headers, body)
+
+  const command = (path: string, body: string) =>
+    mint.pipe(
+      Effect.flatMap((key) => send("POST", path, { ...headers, "idempotency-key": key }, body)),
+    )
+
+  return {
+    command: (id, amount) => command(`/actors/Probe/${id}/Add`, String(amount)),
+    weigh: (id, blob) => command(`/actors/Probe/${id}/Weigh`, JSON.stringify(blob)),
+    query: (id) => query(`/actors/Probe/${id}/Peek`, "null"),
+  } satisfies Endpoint
+})
+
+/** Serves the probe from a listening Bun server over HTTP/1.1; every request crosses loopback through `fetch`. */
+const serve = Effect.fnUntraced(function* (auth: Auth = none) {
+  const handle = yield* handler(auth)
+
+  const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient).pipe(
+    HttpClient.filterStatusOk,
+  )
+
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: handle })
+  yield* Effect.addFinalizer(() => Effect.promise(() => server.stop(true)))
+  const url = `http://127.0.0.1:${server.port}`
+
+  const send: Send = (method, path, headers, body) =>
     Effect.gen(function* () {
-      const base = HttpClientRequest.post(`${url}${path}`).pipe(
-        HttpClientRequest.bodyText(body, "application/json"),
+      const request = HttpClientRequest.make(method)(`${url}${path}`, { headers })
+
+      const response = yield* client.execute(
+        body === undefined
+          ? request
+          : HttpClientRequest.bodyText(request, body, headers["content-type"]),
       )
 
-      const authorized =
-        auth.authorization === undefined
-          ? base
-          : HttpClientRequest.setHeader(base, "authorization", auth.authorization)
-
-      const request =
-        key === undefined
-          ? authorized
-          : HttpClientRequest.setHeader(authorized, "idempotency-key", key)
-
-      return yield* (yield* client.execute(request)).text
+      return yield* response.text
     })
 
   const probes = Probe.client({ baseUrl: url })
@@ -210,14 +245,7 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
   const reducers = ReducerProbe.client({ baseUrl: url })
 
   return {
-    url,
-    command: (id, amount) =>
-      mint.pipe(Effect.flatMap((key) => post(`/actors/Probe/${id}/Add`, String(amount), key))),
-    weigh: (id, blob) =>
-      mint.pipe(
-        Effect.flatMap((key) => post(`/actors/Probe/${id}/Weigh`, JSON.stringify(blob), key)),
-      ),
-    query: (id) => post(`/actors/Probe/${id}/Peek`, "null"),
+    ...(yield* endpoint(auth, send)),
     client: {
       command: (id, amount) => Effect.tryPromise(() => probes.get(id).Add(amount)),
       query: (id) => Effect.tryPromise(() => probes.get(id).Peek()),
@@ -247,38 +275,53 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
   } satisfies Served
 })
 
+/** Serves the same layer over cleartext HTTP/2; every caller's request is a stream on one shared connection. */
+const serveHttp2 = Effect.fnUntraced(function* (auth: Auth = none) {
+  const url = yield* listen(yield* handler(auth))
+
+  return yield* endpoint(auth, yield* connect(url))
+})
+
 /** Commands and queries through `Actor.serve`; compare with hot-actor and query-latency for the embedded cost. */
 export const http: Scenario = {
   name: "http",
   description:
-    "Actor.serve over loopback HTTP/1.1 keep-alive: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch and then the @durable-actors/core/client Promise SDK (also with 1% response loss), then sequential commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload.",
+    "Actor.serve over loopback HTTP/1.1 keep-alive and cleartext HTTP/2: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch, the @durable-actors/core/client Promise SDK (also with 1% response loss), and raw requests on one multiplexed HTTP/2 connection, then sequential commands with an ES256 JWT, the largest allowed principal, and a 64 KiB payload over both protocols.",
   run: (context) =>
     Effect.gen(function* () {
       const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
-      for (const via of ["fetch", "client"] as const) {
-        const prefix = via === "fetch" ? "" : "client-"
-        const pick = (served: Served): Caller => (via === "fetch" ? served : served.client)
+      const callers = [
+        { prefix: "", via: "fetch", protocol: "http/1.1", open: () => serve() },
+        {
+          prefix: "client-",
+          via: "client",
+          protocol: "http/1.1",
+          open: () => Effect.map(serve(), (served): Caller => served.client),
+        },
+        { prefix: "h2-", via: "node:http2", protocol: "h2c", open: () => serveHttp2() },
+      ] as const
 
+      for (const { prefix, via, protocol, open } of callers) {
         results.push(
           yield* context.withRuntime({}, (instruments) =>
             Effect.scoped(
               Effect.gen(function* () {
-                const served = yield* serve()
+                const caller = yield* open()
                 yield* load({
                   workers: 1,
                   operations: 100,
-                  operation: () => pick(served).command("hot", 1),
+                  operation: () => caller.command("hot", 1),
                 })
 
                 return yield* measure({
                   name: `${prefix}command-sequential`,
-                  parameters: { actors: 1, workers: 1, auth: "none", via },
+                  parameters: { actors: 1, workers: 1, auth: "none", via, protocol },
                   instruments,
                   workers: 1,
                   operations: quick ? 300 : 3000,
-                  operation: () => pick(served).command("hot", 1),
+                  operation: () => caller.command("hot", 1),
                   listStatements: true,
                 })
               }),
@@ -290,21 +333,21 @@ export const http: Scenario = {
           yield* context.withRuntime({}, (instruments) =>
             Effect.scoped(
               Effect.gen(function* () {
-                const served = yield* serve()
-                yield* pick(served).command("read", 1).pipe(Effect.orDie)
+                const caller = yield* open()
+                yield* caller.command("read", 1).pipe(Effect.orDie)
                 yield* load({
                   workers: 1,
                   operations: 100,
-                  operation: () => pick(served).query("read"),
+                  operation: () => caller.query("read"),
                 })
 
                 return yield* measure({
                   name: `${prefix}query-sequential`,
-                  parameters: { actors: 1, workers: 1, auth: "none", via },
+                  parameters: { actors: 1, workers: 1, auth: "none", via, protocol },
                   instruments,
                   workers: 1,
                   operations: quick ? 300 : 3000,
-                  operation: () => pick(served).query("read"),
+                  operation: () => caller.query("read"),
                   listStatements: true,
                 })
               }),
@@ -316,21 +359,21 @@ export const http: Scenario = {
           yield* context.withRuntime({}, (instruments) =>
             Effect.scoped(
               Effect.gen(function* () {
-                const served = yield* serve()
+                const caller = yield* open()
                 const actors = 1000
                 yield* load({
                   workers: 32,
                   operations: actors,
-                  operation: (actor) => pick(served).command(`hot-${actor}`, 1),
+                  operation: (actor) => caller.command(`hot-${actor}`, 1),
                 })
 
                 return yield* measure({
                   name: `${prefix}command-concurrent-64`,
-                  parameters: { actors, workers: 64, auth: "none", via },
+                  parameters: { actors, workers: 64, auth: "none", via, protocol },
                   instruments,
                   workers: 64,
                   durationMs: quick ? 2000 : 10_000,
-                  operation: (index) => pick(served).command(`hot-${index % actors}`, 1),
+                  operation: (index) => caller.command(`hot-${index % actors}`, 1),
                 })
               }),
             ),
@@ -353,7 +396,14 @@ export const http: Scenario = {
 
               const result = yield* measure({
                 name: "client-command-sequential-1pct-loss",
-                parameters: { actors: 1, workers: 1, auth: "none", via: "client", loss: "1%" },
+                parameters: {
+                  actors: 1,
+                  workers: 1,
+                  auth: "none",
+                  via: "client",
+                  protocol: "http/1.1",
+                  loss: "1%",
+                },
                 instruments,
                 workers: 1,
                 operations,
@@ -388,7 +438,13 @@ export const http: Scenario = {
 
               const result = yield* measure({
                 name: "client-reducer-sequential",
-                parameters: { actors: 1, workers: 1, auth: "none", via: "client" },
+                parameters: {
+                  actors: 1,
+                  workers: 1,
+                  auth: "none",
+                  via: "client",
+                  protocol: "http/1.1",
+                },
                 instruments,
                 workers: 1,
                 operations: quick ? 300 : 3000,
@@ -418,49 +474,48 @@ export const http: Scenario = {
         name: string,
         auth: Auth,
         extra: Readonly<Record<string, number | string>>,
-        operation: (served: Served) => Effect.Effect<string, Failure>,
+        operation: (served: Endpoint) => Effect.Effect<string, Failure>,
       ) =>
-        context.withRuntime({}, (instruments) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const served = yield* serve(auth)
-              yield* load({ workers: 1, operations: 50, operation: () => operation(served) })
+        Effect.gen(function* () {
+          for (const [prefix, via, protocol, open] of [
+            ["", "fetch", "http/1.1", serve],
+            ["h2-", "node:http2", "h2c", serveHttp2],
+          ] as const)
+            results.push(
+              yield* context.withRuntime({}, (instruments) =>
+                Effect.scoped(
+                  Effect.gen(function* () {
+                    const served = yield* open(auth)
+                    yield* load({ workers: 1, operations: 50, operation: () => operation(served) })
 
-              return yield* measure({
-                name,
-                parameters: { actors: 1, workers: 1, auth: auth.name },
-                instruments,
-                workers: 1,
-                operations: quick ? 200 : 2000,
-                operation: () => operation(served),
-                extra,
-              })
-            }),
-          ),
-        )
+                    return yield* measure({
+                      name: `${prefix}${name}`,
+                      parameters: { actors: 1, workers: 1, auth: auth.name, via, protocol },
+                      instruments,
+                      workers: 1,
+                      operations: quick ? 200 : 2000,
+                      operation: () => operation(served),
+                      extra,
+                    })
+                  }),
+                ),
+              ),
+            )
+        })
 
-      results.push(
-        yield* sequential("command-sequential-jwt", yield* jwtAuth, {}, (served) =>
-          served.command("hot", 1),
-        ),
+      yield* sequential("command-sequential-jwt", yield* jwtAuth, {}, (served) =>
+        served.command("hot", 1),
       )
 
-      results.push(
-        yield* sequential(
-          "command-sequential-largest-principal",
-          largest,
-          { callerBytes },
-          (served) => served.command("hot", 1),
-        ),
+      yield* sequential(
+        "command-sequential-largest-principal",
+        largest,
+        { callerBytes },
+        (served) => served.command("hot", 1),
       )
 
-      results.push(
-        yield* sequential(
-          "command-sequential-64kib",
-          none,
-          { payloadBytes: BLOB.length },
-          (served) => served.weigh("payload", BLOB),
-        ),
+      yield* sequential("command-sequential-64kib", none, { payloadBytes: BLOB.length }, (served) =>
+        served.weigh("payload", BLOB),
       )
 
       return results
