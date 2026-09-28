@@ -5,14 +5,17 @@ import { Effect, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { afterAll, expect, it } from "vitest"
 import { RoomLive } from "./room/layer.ts"
-import { ModerationApi } from "./room/moderation.ts"
+import { ModerationApi, Moderators } from "./room/moderation.ts"
 import { routes } from "./server.ts"
 
 const web = HttpRouter.toWebHandler(
   routes.pipe(
     Layer.provide(
       RoomLive.pipe(
-        Layer.provide(Layer.succeed(ModerationApi, { check: () => Effect.succeed(false) })),
+        Layer.provide([
+          Layer.succeed(ModerationApi, { check: () => Effect.succeed(false) }),
+          Moderators.layer,
+        ]),
         Layer.provideMerge(ActorTest.layer({ as: User.make({ subject: "ada" }) })),
       ),
     ),
