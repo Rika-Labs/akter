@@ -499,17 +499,30 @@ export const actorView = ({
   )
 }
 
+// A tenant-wide list is one page; say so when the tenant has more rows than it shows.
+const truncated = (length: number, total: number) =>
+  length < total
+    ? h(
+        "p",
+        { class: "hint" },
+        `Showing the first ${length} of ${total}. Open an actor for its own rows.`,
+      )
+    : null
+
 /** The tenant's pending intents and timers. */
 export const outboxView = ({
   rows,
+  total,
   now,
 }: {
   readonly rows: ReadonlyArray<OutboxRow>
+  readonly total: number
   readonly now: number
 }) =>
   section(
     "Outbox and timers",
-    String(rows.length),
+    shown(rows.length, total),
+    truncated(rows.length, total),
     table(
       ["Actor", ...OUTBOX_HEADERS],
       rows.map((row) => outboxRow(row, now, true)),
@@ -520,14 +533,17 @@ export const outboxView = ({
 /** The tenant's effects in flight. */
 export const effectsView = ({
   rows,
+  total,
   now,
 }: {
   readonly rows: ReadonlyArray<EffectRow>
+  readonly total: number
   readonly now: number
 }) =>
   section(
     "Effects",
-    String(rows.length),
+    shown(rows.length, total),
+    truncated(rows.length, total),
     table(
       ["Actor", ...EFFECT_HEADERS],
       rows.map((row) => effectRow(row, now, true)),
@@ -536,11 +552,18 @@ export const effectsView = ({
   )
 
 /** The tenant's dead letters. */
-export const deadLettersView = (rows: ReadonlyArray<DeadLetterRow>) =>
+export const deadLettersView = ({
+  rows,
+  total,
+}: {
+  readonly rows: ReadonlyArray<DeadLetterRow>
+  readonly total: number
+}) =>
   section(
     "Dead letters",
-    String(rows.length),
+    shown(rows.length, total),
     h("p", { class: "hint" }, "Retrying a dead letter waits for audited repair (M4.6)."),
+    truncated(rows.length, total),
     table(
       ["Actor", ...DEAD_LETTER_HEADERS],
       rows.map((row) => deadLetterRow(row, true)),
@@ -551,16 +574,19 @@ export const deadLettersView = (rows: ReadonlyArray<DeadLetterRow>) =>
 /** The tenant's workflow executions. */
 export const workflowsView = ({
   rows,
+  total,
   now,
   all,
 }: {
   readonly rows: ReadonlyArray<WorkflowRow>
+  readonly total: number
   readonly now: number
   readonly all: boolean
 }) =>
   section(
     "Workflows",
-    String(rows.length),
+    shown(rows.length, total),
+    truncated(rows.length, total),
     h(
       "nav",
       { class: "filters" },
