@@ -17,7 +17,9 @@ type Probe = Effect.Success<ReturnType<typeof BatchProbe.get>>
  * alone, and the waiting calls commit as one batch. `waiting-32` queues 32
  * commands, one batch of 32 turns; `merged-1024` queues 1,024 calls of a
  * commutative reducer, one merged turn with a receipt per call. Every round
- * forms the same batch, so its statements and round trips are exact.
+ * forms the same batch. A merged round lasts most of a second, long enough
+ * for background work to land in it a varying number of times, so that case
+ * reports statements and round trips per call (the held turn's included).
  */
 export const turnBatches: Scenario = {
   name: "turn-batches",
@@ -33,6 +35,8 @@ export const turnBatches: Scenario = {
         readonly waiting: number
         readonly operations: number
         readonly call: (probe: Probe) => Effect.Effect<unknown, ActorError>
+        /** Calls a reported statement or round trip is divided over: 1 per round, or the round's calls. */
+        readonly calls: number
       }) =>
         context.withRuntime({}, (instruments) =>
           Effect.gen(function* () {
@@ -67,6 +71,7 @@ export const turnBatches: Scenario = {
               workers: 1,
               operations: options.operations,
               operation: round,
+              calls: options.calls,
             })
           }),
         )
@@ -77,12 +82,14 @@ export const turnBatches: Scenario = {
           waiting: WAITING,
           operations: quick ? 30 : 300,
           call: (probe) => probe.Add(1),
+          calls: 1,
         }),
         yield* rounds({
           name: `merged-${MERGED}`,
           waiting: MERGED,
           operations: quick ? 10 : 100,
           call: (probe) => probe.Tick(1),
+          calls: MERGED + 1,
         }),
       ] satisfies ReadonlyArray<CaseResult>
     }),
