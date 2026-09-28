@@ -26,7 +26,7 @@ import { ActorError, NotCreated, RunnerAtCapacity, Unauthorized } from "../error
 import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
-import { build, document, memberPath, PROTOCOL_OPERATIONS } from "./api.ts"
+import { build, document, memberPath, PROTOCOL_OPERATIONS, schemeName } from "./api.ts"
 import { type AuthProvider, type Authenticated, readsCookies, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
@@ -123,6 +123,29 @@ const pathId = Effect.fnUntraced(function* (definition: ServedDefinition) {
   return yield* definition.decodeId(raw).pipe(Effect.mapError((error) => undecodable(error)))
 })
 
+/** Same origin: the `Origin` names the request URL's scheme and the `Host` it was sent to. */
+export const isSameOrigin = ({
+  request,
+  origin,
+}: {
+  readonly request: HttpServerRequest.HttpServerRequest
+  readonly origin: string
+}) => {
+  const host = Headers.get(request.headers, "host")
+
+  if (Option.isNone(host)) return false
+
+  if (!URL.canParse(request.originalUrl)) return false
+
+  try {
+    const parsed = new URL(origin)
+
+    return parsed.host === host.value && parsed.protocol === new URL(request.originalUrl).protocol
+  } catch {
+    return false
+  }
+}
+
 const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
 
 /** Sockets awaiting `hello`, per runtime, across every `Actor.serve` layer it runs. */
@@ -201,6 +224,16 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           new Error(`Actor.serve: openapi.path ${openapiPath} collides with a protocol route`),
         )
 
+      // The document names one security scheme per kind, so a second credential of a kind would vanish from it.
+      const schemes = options.auth.credentials.map(schemeName)
+
+      if (new Set(schemes).size !== schemes.length)
+        return yield* Effect.die(
+          new Error(
+            `Actor.serve: the auth provider declares more than one credential documented as the same OpenAPI scheme (${schemes.join(", ")})`,
+          ),
+        )
+
       const actors = yield* InternalActors
 
       if (actors.retryWindowMs < MIN_RETRY_WINDOW_MS)
@@ -254,24 +287,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           : stamped
       }
 
-      const isSameOrigin = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
-        const host = Headers.get(request.headers, "host")
-
-        if (Option.isNone(host)) return false
-
-        if (!URL.canParse(request.originalUrl)) return false
-
-        try {
-          const parsed = new URL(origin)
-
-          return (
-            parsed.host === host.value && parsed.protocol === new URL(request.originalUrl).protocol
-          )
-        } catch {
-          return false
-        }
-      }
-
       // Every route: origin before authentication, then the protocol version.
       const guard = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.gen(function* () {
@@ -280,7 +295,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           if (
             Option.isSome(origin) &&
             !origins.has(origin.value) &&
-            !isSameOrigin(request, origin.value)
+            !isSameOrigin({ request, origin: origin.value })
           )
             return yield* invalidInput("origin_not_allowed")
 
