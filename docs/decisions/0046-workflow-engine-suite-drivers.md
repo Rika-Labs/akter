@@ -1,4 +1,4 @@
-# ADR 0044: The shared workflow-engine suite runs through engine drivers
+# ADR 0046: The shared workflow-engine suite runs through engine drivers
 
 **Status:** proposed (2026-09-28).
 
