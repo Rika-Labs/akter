@@ -342,6 +342,20 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           // Read after the kill, the row holds the dead runner's last refresh.
           const held = yield* lockOf(survivor, ref)
 
+          // Every refresh rewrites `acquired_at`, so the takeover is read as
+          // soon as the row names another runner; a later read would hold a
+          // refresh instead.
+          const taken = yield* lockOf(survivor, ref).pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced("20 millis"),
+              until: ({ address }) => address !== held.address,
+            }),
+            Effect.timeoutOrElse({
+              duration: "30 seconds",
+              orElse: () => Effect.die(new Error("Timed out waiting for the shard's takeover")),
+            }),
+          )
+
           yield* awaitThat(() => loopsOf(ref.tenant).length > before, "a survivor's loop")
           const successor = loopsOf(ref.tenant)[before]!
 
@@ -351,13 +365,12 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
             "the survivor's loop to tick",
           )
 
-          const taken = yield* lockOf(survivor, ref)
           const next = (yield* cluster.owner(ref))!
 
           expect(next === owner).toBe(false)
-          expect(taken.address === held.address).toBe(false)
           // No survivor took the shard while the dead runner's lock was live.
-          expect(taken.acquired - held.acquired >= EXPIRATION_SECONDS * 1000).toBe(true)
+          const expired = held.acquired + EXPIRATION_SECONDS * 1000
+          expect(taken.acquired >= expired).toBe(true)
           expect(taken.acquired >= killed).toBe(true)
 
           // Exactly one survivor started a loop, and the dead runner's
@@ -367,7 +380,9 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           expect(runs(log).slice(-2)).toEqual([loop.id, successor.id])
           expect(contiguous(log)).toBe(true)
           const resumed = log.find(({ by }) => by === successor.id)!
-          expect(resumed.at >= taken.acquired).toBe(true)
+          // The survivor committed only after the dead runner's lock expired,
+          // whatever refreshes its own lock has had since.
+          expect(resumed.at >= expired).toBe(true)
 
           // The dead runner's loop winds down; the survivor's keeps going.
           yield* awaitThat(() => !loop.live, "the dead runner's loop to stop")
