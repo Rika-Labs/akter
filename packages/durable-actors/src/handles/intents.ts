@@ -106,6 +106,8 @@ interface Minted {
 interface Staging {
   readonly sender: ActorRef
   readonly commandId: string
+  /** The sender's event sequence before this turn's emits. */
+  readonly head: string
   readonly onBehalfOf: Principal | undefined
   readonly minted: Map<string, Minted>
   open: boolean
@@ -132,10 +134,12 @@ const creates = (intent: StagedIntent, child: ActorRef, createdBy: string) =>
 export const openOutbox = ({
   sender,
   commandId,
+  head,
   onBehalfOf,
 }: {
   readonly sender: ActorRef
   readonly commandId: string
+  readonly head: string
   readonly onBehalfOf: Principal | undefined
 }) => {
   const marker = InTurn.of({ turn: Symbol() })
@@ -143,6 +147,7 @@ export const openOutbox = ({
   const staging: Staging = {
     sender,
     commandId,
+    head,
     onBehalfOf,
     minted: new Map(),
     open: true,

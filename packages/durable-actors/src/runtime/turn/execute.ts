@@ -439,7 +439,7 @@ export const executeTurn = Effect.fnUntraced(function* (
     const business = yield* Effect.gen(function* () {
       yield* hooks.at("beforeHandler", request)
 
-      return yield* command.run(request, [...committed], connections)
+      return yield* command.run(request, [...committed], { head: admitted.head, connections })
     }).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
 
     const result: BusinessResult = Result.isSuccess(business) ? business.success : business.failure

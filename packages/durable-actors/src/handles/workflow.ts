@@ -14,13 +14,18 @@ export const INTERRUPT = "$workflow/interrupt"
 /** Names one execution in a resume or interrupt payload. */
 export const Target = Schema.fromJsonString(Schema.Struct({ executionId: Schema.String }))
 
-/** A workflow start staged as an intent; `startedBy` is the staging turn when it is the owner's. */
+/**
+ * A workflow start staged as an intent. `after` is the owner's event
+ * sequence before the staging turn's emits when the owner staged it, so its
+ * waits see every owner event from that turn on, even ones committed before
+ * the start is delivered.
+ */
 export const StartPayload = Schema.fromJsonString(
   Schema.Struct({
     workflow: Schema.String,
     input: Schema.String,
     key: Schema.String,
-    startedBy: Schema.NullOr(Schema.String),
+    after: Schema.NullOr(Schema.String),
   }),
 )
 

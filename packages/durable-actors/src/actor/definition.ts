@@ -1690,7 +1690,13 @@ const make = <
           run: Effect.fnUntraced(function* (
             request: Request,
             rows: ReadonlyArray<readonly [string, string]>,
-            listConnections?: ConnectionLister,
+            {
+              head,
+              connections: listConnections,
+            }: {
+              readonly head: string
+              readonly connections?: ConnectionLister | undefined
+            },
           ) {
             let open = true
             const broadcasts: Array<Broadcast> = []
@@ -1786,6 +1792,7 @@ const make = <
             const outbox = openOutbox({
               sender: request.ref,
               commandId: request.commandId,
+              head,
               onBehalfOf: Option.getOrUndefined(principal(request.caller)),
             })
 
@@ -2639,7 +2646,7 @@ const make = <
                   workflow: member.tag,
                   input: payload,
                   key,
-                  startedBy: own ? current.commandId : null,
+                  after: own ? current.head : null,
                 }).pipe(Effect.orDie),
               })
 

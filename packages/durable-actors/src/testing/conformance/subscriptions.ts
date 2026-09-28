@@ -1174,6 +1174,49 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "leases the rows an expansion makes due and starts their delivery without a claim pass",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          yield* (yield* SubFollower.get("lease-follower")).Follow({ source: "lease-order" })
+          yield* drain
+
+          // Expansion waits, briefly, for the follower's delivery to start: a
+          // leased row starts before its feed's expansion ends, a row left due
+          // only after a later claim pass.
+          const order: Array<string> = []
+          const claimed = yield* Deferred.make<void>()
+          fixture.hook = (point, request) => {
+            if (point === "afterClaim" && request.commandId === "lease-follower") {
+              order.push("delivery")
+
+              return Deferred.succeed(claimed, undefined).pipe(Effect.asVoid)
+            }
+
+            if (point === "afterExpand" && request.ref.id === "lease-order")
+              return Deferred.await(claimed).pipe(
+                Effect.timeout("2 seconds"),
+                Effect.ignore,
+                Effect.andThen(Effect.sync(() => order.push("expanded"))),
+              )
+
+            return Effect.void
+          }
+
+          yield* (yield* SubOrder.get("lease-order")).Place({ customerId: "l", amount: 1 })
+          yield* drain
+
+          expect(order).toEqual(["delivery", "expanded"])
+          expect(yield* followerLog("lease-follower")).toEqual(["lease-order#1:OrderPlaced"])
+          expect(yield* sourceRows("lease-order")).toMatchObject([
+            { delivered: "1", due: false, attempts: 0 },
+          ])
+        }),
+      ),
+  },
+  {
     name: "loses no wake when a commit races a settle or an expansion",
     run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
       run(
@@ -2202,6 +2245,7 @@ const withCluster = <A, E>(
   fixture: SubscriptionsFixture,
   runners: number,
   body: Effect.Effect<A, E, ActorCluster>,
+  holdersOnly?: ReadonlyArray<number>,
 ) =>
   environment.run(
     Effect.gen(function* () {
@@ -2212,6 +2256,7 @@ const withCluster = <A, E>(
         ActorTest.cluster({
           database,
           runners,
+          holdersOnly,
           shardLockExpiration: "3 seconds",
           actors: subscriptionsLayer(fixture),
           as: User.make({ subject: "alice" }),
@@ -2227,6 +2272,62 @@ const on = <A, E, R>(runner: number, effect: Effect.Effect<A, E, R>) =>
   ActorCluster.use((cluster) => cluster.on(runner)(effect))
 
 export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "wakes a subscriber parked on another runner and flushes the delivery's broadcast to its holder",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        3,
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          // Runner 0 holds the connection and is never assigned the subscriber's shard.
+          const holder = cluster.on(0)
+          const tenant = yield* holder(ActorTest.use((test) => Effect.succeed(test.tenant)))
+          const ref = { tenant, actor: "SubSummary", id: "cross-c" }
+          yield* holder(
+            SubSummary.get("cross-c").pipe(Effect.flatMap((summary) => summary.Touch())),
+          )
+
+          const connection = yield* holder(
+            ActorTest.use((test) => test.connect(ref, Live, undefined)),
+          )
+
+          const generation = holder(
+            ActorTest.use((test) => test.inspect(ref)).pipe(
+              Effect.map(({ generation }) => BigInt(generation!)),
+            ),
+          )
+
+          // The subscriber parks on its owner with the connection still open at the holder.
+          const owner = yield* cluster.owner(ref)
+          expect(owner === undefined || owner === 0).toBe(false)
+          yield* cluster.on(owner!)(ActorTest.use((test) => test.hibernate(ref)))
+          const parked = yield* generation
+
+          yield* holder(
+            SubOrder.get("cross-o").pipe(
+              Effect.flatMap((order) => order.Place({ customerId: "cross-c", amount: 1 })),
+            ),
+          )
+
+          const frames = yield* connection.frames.pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.timeout("30 seconds"),
+          )
+
+          expect(Array.from(frames)).toEqual(["cross-o#1:OrderPlaced"])
+          expect((yield* generation) > parked).toBe(true)
+          expect(yield* holder(logOf("SubSummary", "cross-c"))).toEqual(["cross-o#1:OrderPlaced"])
+          yield* connection.close
+        }),
+        [0],
+      ),
+  },
   {
     name: "applies one source's events in cursor order under redelivery and two runners",
     requiresIndependentConnections: true,

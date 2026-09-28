@@ -88,6 +88,41 @@ export const BeatFollower = Actor.make("BeatFollower", {
   subscriptions: [Beats],
 })
 
+const Doze = Actor.subscription("Doze", {
+  source: PulseSource,
+  events: [Pulsed],
+  handler: Read,
+  route: (event) => event.reader,
+})
+
+/** A routed subscriber that hibernates soon after each turn, so every delivery wakes it. */
+export const PulseSleeper = Actor.make("PulseSleeper", {
+  key: Schema.NonEmptyString,
+  state: Actor.state(Applied.fields),
+  api: { Touch },
+  internal: { Read },
+  subscriptions: [Doze],
+  policy: { hibernateAfter: "100 millis" },
+})
+
+const OnPoison = Actor.command("OnPoison", {
+  input: Actor.Delivery({ source: BeatSource, events: [Beat] }),
+})
+
+const Poisoned = Actor.subscription("Poisoned", {
+  source: BeatSource,
+  events: [Beat],
+  handler: OnPoison,
+})
+
+/** A dynamic subscriber of `BeatSource` whose handler always dies, so its row backs off. */
+export const PoisonFollower = Actor.make("PoisonFollower", {
+  key: Schema.NonEmptyString,
+  api: { Follow },
+  internal: { OnPoison },
+  subscriptions: [Poisoned],
+})
+
 /** Deliveries a benchmark waits for, by the event's key or `follower/n`. */
 export const applied = new Map<string, Deferred.Deferred<void>>()
 
@@ -171,6 +206,22 @@ export const SubscriptionProbeLive = Layer.mergeAll(
       Read: Effect.fnUntraced(function* () {
         yield* count(yield* PulseReader.Turn)
       }),
+    }),
+  ),
+  PulseSleeper.toLayer(
+    Effect.succeed({
+      Touch: () => Effect.void,
+      Read: Effect.fnUntraced(function* () {
+        yield* count(yield* PulseSleeper.Turn)
+      }),
+    }),
+  ),
+  PoisonFollower.toLayer(
+    Effect.succeed({
+      Follow: Effect.fnUntraced(function* (source: string) {
+        yield* (yield* PoisonFollower.Turn).subscribe(Poisoned, source)
+      }),
+      OnPoison: () => Effect.die("poison delivery"),
     }),
   ),
   BeatFollower.toLayer(
