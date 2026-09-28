@@ -2,15 +2,19 @@ import { PgClient, PgTypes } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
 import {
   Cause,
+  Clock,
   Context,
   Crypto,
+  Deferred,
   Duration,
   Effect,
   Fiber,
   Layer,
   Option,
   Result,
+  Schedule,
   Schema,
+  Stream,
 } from "effect"
 import {
   ClusterError,
@@ -32,6 +36,7 @@ import {
   Timeout,
   MailboxFull,
   RunnerAtCapacity,
+  SessionEnded,
 } from "../errors/actor.ts"
 import {
   Actors,
@@ -57,6 +62,7 @@ import {
 } from "./entity/register.ts"
 import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
+import { StreamFailed, StreamItem } from "./connections/protocol.ts"
 import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER } from "./connections/protocol.ts"
 import { replayEvents } from "./events/replay.ts"
@@ -64,6 +70,7 @@ import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./tu
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime, textArray } from "./turn/outbox.ts"
+import { turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import {
   type LocalSubscription,
@@ -190,6 +197,12 @@ export class RunnerWiring extends Context.Service<
 
 /** How long registering a source waits for the subscriber types routing from it to register. */
 const ROUTED_SUBSCRIBER_WAIT_MS = 5000
+
+/** How often a subscriber checks that a stream's owner on another runner is alive. */
+const OWNER_CHECK_INTERVAL = "1 second"
+
+const activationEnded = () =>
+  ActorError.make({ reason: SessionEnded.make({ cause: "ActivationEnded", resync: false }) })
 
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
@@ -343,7 +356,7 @@ export const layer = (options: Options) => {
 
       const allow = Effect.fnUntraced(function* (
         request: Request,
-        kind: "command" | "query" = "command",
+        kind: "command" | "query" | "stream" = "command",
       ) {
         if (!(yield* options.authorize({ ...(yield* authorizedAs(request)), kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
@@ -804,10 +817,11 @@ export const layer = (options: Options) => {
               ),
             )
 
-          const { isResident, owner } = yield* registerActor(registration, transport).pipe(
-            Effect.provideContext(services),
-            Effect.provideService(OutboxRuntime, outbox),
-          )
+          const { isResident, owner } = yield* registerActor(
+            registration,
+            transport,
+            options.authorize,
+          ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
 
           yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
           yield* requireRoutedSubscribers(registration.name).pipe(
@@ -1007,6 +1021,106 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
+        subscribe: (request) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const registration = registrations.get(request.ref.actor)
+
+              if (registration === undefined || !registration.streams.has(request.command))
+                return yield* ActorError.make({
+                  reason: ActorUnavailable.make({ cause: new Error("Stream not registered") }),
+                })
+
+              yield* allow(request, "stream")
+
+              const client = (yield* sharding.makeClient(connectionEntity(request.ref.actor)))(
+                yield* entityId(request.ref),
+              )
+
+              const authorizedUntil =
+                (yield* Clock.currentTimeMillis) +
+                frameworkClock.offsetMillis() +
+                registration.policy.reauthorizeMs
+
+              // The owner the stream runs on, once it answers; a runner that
+              // stops answering ends the stream as its activation would.
+              const started = yield* Deferred.make<{ owner: string; ownerEpoch: string }>()
+              const lost = yield* Deferred.make<never, ActorError>()
+              let owner: { owner: string; ownerEpoch: string } | undefined
+
+              yield* Deferred.await(started).pipe(
+                Effect.flatMap(({ owner, ownerEpoch }) =>
+                  owner === transport.holder
+                    ? Effect.never
+                    : transport.ping(owner, ownerEpoch).pipe(
+                        Effect.repeat({
+                          schedule: Schedule.spaced(OWNER_CHECK_INTERVAL),
+                          while: (alive) => alive,
+                        }),
+                        Effect.andThen(Deferred.fail(lost, activationEnded())),
+                      ),
+                ),
+                Effect.forkScoped,
+              )
+
+              let finished = false
+
+              return client
+                .Subscribe({
+                  member: request.command,
+                  caller: request.caller,
+                  input: request.payload,
+                  authorizedUntil,
+                })
+                .pipe(
+                  Stream.tap((item) =>
+                    Effect.gen(function* () {
+                      if (StreamItem.guards.Done(item)) finished = true
+
+                      if (!StreamItem.guards.Started(item)) return
+
+                      // Cluster resends a request whose runner died; a stream never resumes by itself.
+                      if (owner !== undefined) return yield* activationEnded()
+                      owner = item
+                      yield* Deferred.succeed(started, item)
+                    }),
+                  ),
+                  Stream.takeWhile((item) => !StreamItem.guards.Done(item)),
+                  Stream.filter(StreamItem.guards.Element),
+                  Stream.map((item) => item.value),
+                  // Only `Done` ends a stream cleanly; anything else is its activation ending.
+                  Stream.concat(
+                    Stream.fromEffect(
+                      Effect.suspend(() => (finished ? Effect.void : activationEnded())),
+                    ).pipe(Stream.drain),
+                  ),
+                  Stream.interruptWhen(Deferred.await(lost)),
+                  Stream.catchCause(
+                    (cause): Stream.Stream<never, ActorError | { readonly failure: string }> => {
+                      const failure = Cause.findErrorOption(cause)
+
+                      if (Option.isSome(failure)) {
+                        if (Schema.is(ActorError)(failure.value)) return Stream.fail(failure.value)
+
+                        if (Schema.is(StreamFailed)(failure.value))
+                          return Stream.fail({ failure: failure.value.value })
+                      }
+
+                      if (Cause.hasInterruptsOnly(cause)) return Stream.fromEffect(Effect.interrupt)
+
+                      // Before the owner answered, the subscription never started.
+                      return Stream.fail(
+                        owner === undefined
+                          ? ActorError.make({
+                              reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                            })
+                          : activationEnded(),
+                      )
+                    },
+                  ),
+                )
+            }).pipe(Effect.provideContext(services)),
+          ),
         transport,
         holder,
         hibernate: (ref) =>
@@ -1157,12 +1271,17 @@ export const layer = (options: Options) => {
 
 export const Database = {
   /**
-   * `maxConnections` defaults to 50. A command holds one connection for its
-   * whole turn, so a pool smaller than the commands in flight queues callers
-   * behind it; the pool opens connections only as load needs them. Keep the
-   * sum across runners below the server's `max_connections`.
+   * A runner holds two pools. Turns lease sessions from the turn pool,
+   * `maxConnections` (default 50): a command holds one session for its whole
+   * turn, so a pool smaller than the commands in flight queues callers behind
+   * it. Queries, the relay, migrations, and cluster storage use the off-turn
+   * pool, `offTurnConnections` (default 10). Both open connections only as
+   * load needs them. Keep the sum of both across runners below the server's
+   * `max_connections`.
    */
-  postgres: (options: Omit<PgClient.PgPoolConfig, "types">) => {
+  postgres: (
+    options: Omit<PgClient.PgPoolConfig, "types"> & { readonly offTurnConnections?: number },
+  ) => {
     const types = PgTypes.makeRegistry()
     // rc.116 lacks regclass decoding, used by Sql Migrator on restart. Remove after Effect #8309.
     types.register(2205, {
@@ -1175,7 +1294,12 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    return PgClient.layer({ ...options, maxConnections: options.maxConnections ?? 50, types })
+    const { offTurnConnections, ...pool } = options
+
+    return Layer.merge(
+      PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+      turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+    )
   },
   pglite,
 }

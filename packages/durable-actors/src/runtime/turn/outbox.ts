@@ -1,5 +1,5 @@
 import { Context, Crypto, Effect, Match, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/unstable/sql"
 import type { RegisteredSubscription } from "../../handles/actors.ts"
 import {
   Due,
@@ -8,7 +8,7 @@ import {
   type StagedSubscription,
 } from "../../handles/intents.ts"
 import { type ActorRef, Caller, System } from "../../identity/caller.ts"
-import { databaseTime } from "./admission.ts"
+import { databaseTime, FrameworkClock } from "./admission.ts"
 
 /**
  * The due-work bucket: the top eight bits of `routing_key`. Every runner's
@@ -77,52 +77,77 @@ export const controlKey = (change: Pick<StagedSubscription, "subscription" | "so
 
 export const CallerJson = Schema.fromJsonString(Caller)
 
+/** What the relay needs to hear once a turn's outbox writes commit. */
+export interface OutboxReplies {
+  /** Some row is due now, so the relay should wake. */
+  wake: boolean
+  /** The turn cancelled an effect attempt that is running. */
+  cancelled: boolean
+}
+
 /**
- * Writes one turn's intents and effects inside its transaction: deletes
- * committed rows whose keys the turn replaced or cancelled, cancels committed
- * effects whose keys it cancelled or performed again, then inserts the staged
- * rows.
- * Returns whether any row is now due, so the caller can wake the relay after
- * commit, and whether it cancelled a running attempt.
+ * The statements that write one turn's intents and effects inside its
+ * transaction: a delete of committed rows whose keys the turn replaced, the
+ * cancellation of committed effects whose keys it cancelled or performed
+ * again, then an insert of the staged rows. `now` is the database time due
+ * times are measured from; it is read only when there are rows to insert.
+ * No statement takes a parameter from another's reply, so they can be sent as
+ * one group; `replies` is complete once every statement has replied.
  */
-export const writeOutbox = Effect.fnUntraced(function* (
+export const outboxStatements = Effect.fnUntraced(function* <R>(
   routingKey: bigint,
   sender: ActorRef,
   outbox: StagedOutbox,
+  databaseNow: Effect.Effect<number, SqlError.SqlError, R>,
+  commit?: { readonly slackMs: number },
 ) {
   const sql = yield* SqlClient.SqlClient
+  const clock = yield* FrameworkClock
   const { tenant, actor, id } = sender
+  const statements: Array<Effect.Effect<void, SqlError.SqlError>> = []
+  const replies: OutboxReplies = { wake: false, cancelled: false }
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant}
     AND actor_type = ${actor} AND actor_id = ${id}`
 
-  if (outbox.replaced.length > 0)
-    yield* sql`DELETE FROM actor_outbox WHERE ${actorRow} AND timer_key IN ${sql.in(outbox.replaced)}`
+  // The database clock when the statement runs, on the framework's time line.
+  const statementNow = sql`floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint + ${clock.offsetMillis()}`
 
-  let dueNow = false
-  let cancelledRunning = false
+  if (outbox.replaced.length > 0)
+    statements.push(
+      Effect.asVoid(
+        sql`DELETE FROM actor_outbox WHERE ${actorRow} AND timer_key IN ${sql.in(outbox.replaced)}`,
+      ),
+    )
 
   if (outbox.cancelledEffects.length > 0) {
     const keys = sql.in(outbox.cancelledEffects.map(effectKey))
-    const at = yield* databaseTime
 
     // A never-claimed effect goes. A claim that won the row lock first makes
     // this delete skip it, and the update below, a later statement, then sees
     // it running.
-    yield* sql`DELETE FROM actor_outbox WHERE ${actorRow} AND kind = 'effect'
-      AND timer_key IN ${keys} AND attempts = 0 AND NOT running`
+    statements.push(
+      Effect.asVoid(sql`DELETE FROM actor_outbox WHERE ${actorRow} AND kind = 'effect'
+        AND timer_key IN ${keys} AND attempts = 0 AND NOT running`),
+    )
 
     // A started effect keeps its row as evidence and gives up its key; one not
     // running now is settled by the next claim, a running one by its attempt
     // or, once its lease ends, by any runner.
-    const marked = yield* sql<{ running: boolean }>`UPDATE actor_outbox
-      SET cancelled_at_ms = ${at}, timer_key = NULL, waiting = false,
-        due_at_ms = CASE WHEN running THEN due_at_ms ELSE least(due_at_ms, ${at}) END
-      WHERE ${actorRow} AND kind = 'effect' AND timer_key IN ${keys}
-      RETURNING running`
-
-    cancelledRunning = marked.some((row) => row.running)
-    dueNow ||= marked.some((row) => !row.running)
+    statements.push(
+      Effect.map(
+        sql<{ running: boolean }>`UPDATE actor_outbox
+          SET cancelled_at_ms = stamp.at, timer_key = NULL, waiting = false,
+            due_at_ms = CASE WHEN running THEN due_at_ms ELSE least(due_at_ms, stamp.at) END
+          FROM (SELECT ${statementNow} AS at) AS stamp
+          WHERE ${actorRow} AND kind = 'effect' AND timer_key IN ${keys}
+          RETURNING running`,
+        (marked) => {
+          replies.cancelled ||= marked.some((row) => row.running)
+          replies.wake ||= marked.some((row) => !row.running)
+        },
+      ),
+    )
   }
 
   if (
@@ -130,21 +155,21 @@ export const writeOutbox = Effect.fnUntraced(function* (
     outbox.effects.length === 0 &&
     outbox.subscriptions.length === 0
   )
-    return { wake: dueNow, cancelled: cancelledRunning }
+    return { statements, replies }
 
   const crypto = yield* Crypto.Crypto
   const { retryWindowMs } = yield* OutboxRuntime
-  const now = yield* databaseTime
-  dueNow ||= outbox.subscriptions.length > 0
+  const now = yield* databaseNow
+  replies.wake ||= outbox.subscriptions.length > 0
   const rows = []
 
   // The row id is the receiver's command id: an intent's, or an effect's
   // route's. Its expiry keeps that receipt at least one retry window past the
   // due time.
-  const rowId = (dueAt: number) =>
+  const rowId = (dueAt: number, slackMs = 0) =>
     crypto.randomUUIDv4.pipe(
       Effect.orDie,
-      Effect.map((uuid) => `v1.${now}.${Math.max(dueAt, now) + retryWindowMs}.${uuid}`),
+      Effect.map((uuid) => `v1.${now}.${Math.max(dueAt, now) + slackMs + retryWindowMs}.${uuid}`),
     )
 
   const dueOf = (due: Due | undefined) =>
@@ -155,14 +180,28 @@ export const writeOutbox = Effect.fnUntraced(function* (
           At: ({ epochMillis }) => epochMillis,
         })
 
+  // When `now` was read before the handler ran, a relative delay is moved to
+  // the commit statement's clock, and its receipt horizon covers the turn's
+  // longest possible run.
+  const delayed: Array<string> = []
+
+  const rowIdOf = Effect.fnUntraced(function* (due: Due | undefined, dueAt: number) {
+    const relative = commit !== undefined && due?._tag === "After"
+    const rowIdentity = yield* rowId(dueAt, relative ? commit.slackMs : 0)
+
+    if (relative) delayed.push(rowIdentity)
+
+    return rowIdentity
+  })
+
   for (const intent of outbox.intents) {
     const dueAt = dueOf(intent.due)
 
-    dueNow ||= dueAt <= now
+    replies.wake ||= dueAt <= now
 
     rows.push({
       routing_key: routingKey,
-      intent_id: yield* rowId(dueAt),
+      intent_id: yield* rowIdOf(intent.due, dueAt),
       kind: "intent",
       bucket: bucketOf(routingKey),
       due_at_ms: dueAt,
@@ -185,11 +224,11 @@ export const writeOutbox = Effect.fnUntraced(function* (
   for (const effect of outbox.effects) {
     const dueAt = dueOf(effect.due)
 
-    dueNow ||= dueAt <= now
+    replies.wake ||= dueAt <= now
 
     rows.push({
       routing_key: routingKey,
-      intent_id: yield* rowId(dueAt),
+      intent_id: yield* rowIdOf(effect.due, dueAt),
       kind: "effect",
       bucket: bucketOf(routingKey),
       due_at_ms: dueAt,
@@ -207,7 +246,8 @@ export const writeOutbox = Effect.fnUntraced(function* (
     })
   }
 
-  if (rows.length > 0) yield* sql`INSERT INTO actor_outbox ${sql.insert(rows)}`
+  if (rows.length > 0)
+    statements.push(Effect.asVoid(sql`INSERT INTO actor_outbox ${sql.insert(rows)}`))
 
   // Each change moves the subscriber's cursor row to a new epoch, kept
   // forever so the epoch never goes back, and stages the control row that
@@ -226,30 +266,60 @@ export const writeOutbox = Effect.fnUntraced(function* (
       Match.orElse((cursor) => cursor),
     )
 
-    yield* sql`WITH cursor AS (
-        INSERT INTO actor_subscription_cursors (routing_key, tenant_id, actor_type, actor_id,
-          subscription, source_type, source_id, epoch, active, applied)
-        VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${change.subscription},
-          ${change.source.actor}, ${change.source.id}, 1, ${subscribe}, ${subscribe ? applied : "-1"})
-        ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id)
-        DO UPDATE SET epoch = actor_subscription_cursors.epoch + 1, active = EXCLUDED.active,
-          applied = CASE WHEN EXCLUDED.active THEN EXCLUDED.applied
-            ELSE actor_subscription_cursors.applied END
-        RETURNING epoch)
-      INSERT INTO actor_outbox (routing_key, intent_id, kind, bucket, due_at_ms, scheduled_at_ms,
-        tenant_id, actor_type, actor_id, timer_key, target_type, target_id, command, payload, caller)
-      SELECT ${routingKey}, ${yield* rowId(now)}, 'control', ${bucketOf(routingKey)}, ${now}, ${now},
-        ${tenant}, ${actor}, ${id}, ${controlKey(change)}, ${change.source.actor}, ${change.source.id},
-        ${change.subscription},
-        json_build_object('op', ${change.op}::text, 'epoch', cursor.epoch::text,
-          'start', ${change.from}::text, 'events', to_jsonb(${textArray({ sql, values: change.events })}))::text,
-        ${caller}
-      FROM cursor
-      ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, timer_key) WHERE timer_key IS NOT NULL
-      DO UPDATE SET intent_id = EXCLUDED.intent_id, payload = EXCLUDED.payload,
-        due_at_ms = EXCLUDED.due_at_ms, scheduled_at_ms = EXCLUDED.scheduled_at_ms,
-        attempts = 0, last_error = NULL`
+    statements.push(
+      Effect.asVoid(sql`WITH cursor AS (
+          INSERT INTO actor_subscription_cursors (routing_key, tenant_id, actor_type, actor_id,
+            subscription, source_type, source_id, epoch, active, applied)
+          VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${change.subscription},
+            ${change.source.actor}, ${change.source.id}, 1, ${subscribe}, ${subscribe ? applied : "-1"})
+          ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id)
+          DO UPDATE SET epoch = actor_subscription_cursors.epoch + 1, active = EXCLUDED.active,
+            applied = CASE WHEN EXCLUDED.active THEN EXCLUDED.applied
+              ELSE actor_subscription_cursors.applied END
+          RETURNING epoch)
+        INSERT INTO actor_outbox (routing_key, intent_id, kind, bucket, due_at_ms, scheduled_at_ms,
+          tenant_id, actor_type, actor_id, timer_key, target_type, target_id, command, payload, caller)
+        SELECT ${routingKey}, ${yield* rowId(now)}, 'control', ${bucketOf(routingKey)}, ${now}, ${now},
+          ${tenant}, ${actor}, ${id}, ${controlKey(change)}, ${change.source.actor}, ${change.source.id},
+          ${change.subscription},
+          json_build_object('op', ${change.op}::text, 'epoch', cursor.epoch::text,
+            'start', ${change.from}::text, 'events', to_jsonb(${textArray({ sql, values: change.events })}))::text,
+          ${caller}
+        FROM cursor
+        ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, timer_key) WHERE timer_key IS NOT NULL
+        DO UPDATE SET intent_id = EXCLUDED.intent_id, payload = EXCLUDED.payload,
+          due_at_ms = EXCLUDED.due_at_ms, scheduled_at_ms = EXCLUDED.scheduled_at_ms,
+          attempts = 0, last_error = NULL`),
+    )
   }
 
-  return { wake: dueNow, cancelled: cancelledRunning }
+  if (delayed.length > 0) {
+    const shift = sql`${statementNow} - ${now}`
+
+    statements.push(
+      Effect.asVoid(sql`UPDATE actor_outbox
+        SET due_at_ms = due_at_ms + ${shift}, scheduled_at_ms = scheduled_at_ms + ${shift},
+          ready_at_ms = ready_at_ms + ${shift}
+        WHERE routing_key = ${routingKey} AND intent_id IN ${sql.in(delayed)}`),
+    )
+  }
+
+  return { statements, replies }
+})
+
+/**
+ * Writes one turn's intents and effects now, reading the database time when it
+ * needs it. Returns whether any row is now due, so the caller can wake the
+ * relay after commit, and whether it cancelled a running attempt.
+ */
+export const writeOutbox = Effect.fnUntraced(function* (
+  routingKey: bigint,
+  sender: ActorRef,
+  outbox: StagedOutbox,
+) {
+  const staged = yield* outboxStatements(routingKey, sender, outbox, databaseTime)
+
+  for (const statement of staged.statements) yield* statement
+
+  return staged.replies
 })

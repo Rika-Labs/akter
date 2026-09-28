@@ -30,6 +30,13 @@ export interface CaseResult {
    * count.
    */
   readonly statementsPerOperation: number | null
+  /**
+   * Round trips turns waited for on their sessions per attempted operation,
+   * counted by a relay in front of the turn pool (Postgres only). One round
+   * trip carries a whole statement group, so this is what latency pays per
+   * operation, apart from the statements the count above records.
+   */
+  readonly roundTripsPerOperation: number | null
   readonly statements: ReadonlyArray<StatementCount> | null
   readonly activity: Activity | null
   /**
@@ -180,7 +187,11 @@ export const measure = Effect.fnUntraced(function* <E, R>(
 ) {
   const instruments = options.instruments
 
-  if (instruments !== undefined) yield* instruments.resetStatements
+  if (instruments !== undefined) {
+    yield* instruments.resetStatements
+    yield* instruments.resetFlights
+  }
+
   const serverCpu = instruments?.serverCpuSeconds
   const serverBefore = serverCpu === undefined ? undefined : yield* serverCpu
   const clientBefore = process.cpuUsage()
@@ -195,6 +206,7 @@ export const measure = Effect.fnUntraced(function* <E, R>(
   const client = process.cpuUsage(clientBefore)
   const serverAfter = serverCpu === undefined ? undefined : yield* serverCpu
   const statements = instruments === undefined ? undefined : yield* instruments.statements
+  const flights = instruments === undefined ? undefined : yield* instruments.flights
   const succeeded = result.samples.length
   const attempted = succeeded + result.errors
 
@@ -219,6 +231,10 @@ export const measure = Effect.fnUntraced(function* <E, R>(
       statements === undefined || attempted === 0
         ? null
         : Math.round((statements.calls / attempted) * 100) / 100,
+    roundTripsPerOperation:
+      flights === undefined || attempted === 0
+        ? null
+        : Math.round((flights / attempted) * 100) / 100,
     statements: options.listStatements === true ? (statements?.top ?? null) : null,
     activity: activity ?? null,
     cpu: {
