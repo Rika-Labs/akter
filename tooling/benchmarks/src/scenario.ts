@@ -7,6 +7,7 @@ import type { Activity, Backend, Instruments, StatementCount } from "./backend.t
 import { type Limit, load, now, type Summary, summarize, throughput } from "./measure.ts"
 import { afterCommit } from "./probe/effects.ts"
 import { ProbeLive } from "./probe/layer.ts"
+import { SubscriptionProbeLive, subscriptionCommitted } from "./probe/subscriptions.ts"
 
 export type Profile = "quick" | "full"
 
@@ -59,13 +60,21 @@ export type ActorServices = Layer.Success<ReturnType<typeof runtimeLayer>> | Sql
 // lands inside another case's measurement.
 const hooks = Layer.mergeAll(
   Layer.succeed(TurnHooks, {
-    at: (point, request) => (point === "afterCommit" ? afterCommit(request) : Effect.void),
+    at: (point, request) =>
+      point === "afterCommit"
+        ? Effect.andThen(afterCommit(request), subscriptionCommitted(request))
+        : Effect.void,
   }),
   Layer.succeed(CleanupHooks, { batchSize: 1000, afterBatch: Effect.void, periodic: false }),
 )
 
-const runtimeLayer = (maxResidentActors: number | undefined) =>
-  ProbeLive.pipe(
+// Subscription probes register only for the cases that use them: a runner
+// with a subscriber type adds subscription probes to every relay claim.
+const probes = (subscriptions: boolean | undefined) =>
+  subscriptions === true ? Layer.merge(ProbeLive, SubscriptionProbeLive) : ProbeLive
+
+const runtimeLayer = (maxResidentActors: number | undefined, subscriptions?: boolean) =>
+  probes(subscriptions).pipe(
     Layer.provideMerge(
       Actors.layer({ authorize: () => Effect.succeed(true), maxResidentActors }).pipe(
         Layer.provide(hooks),
@@ -89,7 +98,12 @@ export interface ScenarioContext {
    * case inherits another's activations, caches, or rows.
    */
   readonly withRuntime: <A, E>(
-    options: { readonly maxConnections?: number; readonly maxResidentActors?: number },
+    options: {
+      readonly maxConnections?: number
+      readonly maxResidentActors?: number
+      /** Registers the subscription probes too. */
+      readonly subscriptions?: boolean
+    },
     body: (instruments: Instruments | undefined) => Effect.Effect<A, E, ActorServices>,
   ) => Effect.Effect<A, E>
 }
@@ -131,7 +145,7 @@ export const withRuntime =
               database: database.url,
               runners,
               shardLockExpiration: SHARD_LOCK_EXPIRATION,
-              actors: ProbeLive,
+              actors: probes(options.subscriptions),
               authorize: () => Effect.succeed(true),
               maxResidentActors: options.maxResidentActors,
             }).pipe(Layer.provide([BunCrypto.layer, hooks])),
@@ -143,7 +157,9 @@ export const withRuntime =
         }
 
         const services = yield* Layer.build(
-          runtimeLayer(options.maxResidentActors).pipe(Layer.provideMerge(database.layer)),
+          runtimeLayer(options.maxResidentActors, options.subscriptions).pipe(
+            Layer.provideMerge(database.layer),
+          ),
         )
 
         return yield* body(database.instruments).pipe(Effect.provideContext(services))

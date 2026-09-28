@@ -16,6 +16,7 @@ import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
+import { hashedPayload } from "../subscriptions/identity.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
@@ -66,6 +67,38 @@ interface Admission {
   readonly payload_hash: string | null
   readonly outcome: string | null
   readonly head: string
+  /** The subscriber's cursor row for a subscription delivery, read with the fence. */
+  readonly sub_epoch?: string | null
+  readonly sub_active?: boolean | null
+  readonly sub_applied?: string | null
+}
+
+type Acknowledgement = (typeof Outcome.cases.Acknowledged.Type)["reason"]
+
+/**
+ * How the subscriber's cursor row settles a subscription delivery before its
+ * handler runs: undefined runs the handler. A row of a newer epoch makes the
+ * delivery stale, an inactive row at its epoch means it was unsubscribed, and
+ * a position at or below `applied` was already applied. A dynamic
+ * subscription always has a row, so only a routed one (epoch 0) creates it.
+ */
+const acknowledgement = (
+  delivery: NonNullable<Request["delivery"]>,
+  admission: Admission,
+): Acknowledgement | undefined => {
+  const epoch = BigInt(delivery.epoch)
+
+  if (admission.sub_epoch == null) return epoch > 0n ? "Stale" : undefined
+
+  const stored = BigInt(admission.sub_epoch)
+
+  if (stored !== epoch) return "Stale"
+
+  if (admission.sub_active !== true) return "Unsubscribed"
+
+  if (delivery.kind === "rejected") return undefined
+
+  return BigInt(admission.sub_applied!) >= BigInt(delivery.position) ? "AlreadyApplied" : undefined
 }
 
 /**
@@ -131,7 +164,8 @@ interface Plan {
   readonly committed: Omit<CommittedEvents, "emittedAtMs">
   /** Filled in as the commit group replies, so read only after it has. */
   readonly outbox: OutboxReplies
-  readonly emitted: { readonly emittedAtMs: number }
+  /** Filled in as the commit group replies: the stamp, and whether a subscription feed row is due. */
+  readonly emitted: { readonly emittedAtMs: number; readonly fed: boolean }
 }
 
 class RolledBack {
@@ -170,6 +204,42 @@ export const executeTurn = Effect.fnUntraced(function* (
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
+  const delivery = request.delivery
+
+  const cursorRow =
+    delivery === undefined
+      ? undefined
+      : sql`${actorRow} AND subscription = ${delivery.subscription}
+          AND source_type = ${delivery.sourceType} AND source_id = ${delivery.sourceId}`
+
+  // A delivery reads its cursor row in the fenced admission statement; other
+  // turns keep the statement unchanged.
+  const cursorColumns =
+    delivery === undefined
+      ? sql.literal("")
+      : sql`, c.epoch::text AS sub_epoch, c.active AS sub_active, c.applied::text AS sub_applied`
+
+  const cursorJoin =
+    delivery === undefined
+      ? sql.literal("")
+      : sql`LEFT JOIN actor_subscription_cursors c ON c.routing_key = g.routing_key
+          AND c.tenant_id = g.tenant_id AND c.actor_type = g.actor_type AND c.actor_id = g.actor_id
+          AND c.subscription = ${delivery.subscription} AND c.source_type = ${delivery.sourceType}
+          AND c.source_id = ${delivery.sourceId}`
+
+  // A routed subscriber's row starts at epoch 0 with its first delivery.
+  const applyCursor = (position: string) =>
+    Effect.asVoid(sql`INSERT INTO actor_subscription_cursors (routing_key, tenant_id, actor_type, actor_id,
+        subscription, source_type, source_id, epoch, active, applied)
+      VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${delivery!.subscription},
+        ${delivery!.sourceType}, ${delivery!.sourceId}, 0, true, ${position})
+      ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id)
+      DO UPDATE SET applied = greatest(actor_subscription_cursors.applied, EXCLUDED.applied)
+      WHERE actor_subscription_cursors.epoch = 0`)
+
+  // A delivery's canonical payload binds its identity, not the event's bytes.
+  const canonical = yield* hashedPayload(request)
+
   const turn = Effect.fnUntraced(function* (session: Session, begin: ReadonlyArray<Statement>) {
     const cold = cache.generation === undefined
 
@@ -199,11 +269,13 @@ export const executeTurn = Effect.fnUntraced(function* (
         sql<Admission>`
           SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
             g.generation::text AS generation, g.created,
-            ${request.payload}::jsonb::text AS canonical,
+            ${canonical}::jsonb::text AS canonical,
             r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
+            ${cursorColumns}
           FROM actor_generations g
           LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
             AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = ${request.commandId}
+          ${cursorJoin}
           WHERE g.routing_key = ${routingKey} AND g.tenant_id = ${tenant}
             AND g.actor_type = ${actor} AND g.actor_id = ${id}
           FOR UPDATE OF g`,
@@ -266,7 +338,7 @@ export const executeTurn = Effect.fnUntraced(function* (
         head: admitted.head,
         committed: { after: admitted.head, events: [], commandId: request.commandId },
         outbox: { wake: false, cancelled: false },
-        emitted: { emittedAtMs: 0 },
+        emitted: { emittedAtMs: 0, fed: false },
       } satisfies Plan
     }
 
@@ -292,8 +364,60 @@ export const executeTurn = Effect.fnUntraced(function* (
     if (command.internal && !isSystem(request.caller))
       return yield* Effect.die(new Error("Internal commands require a System caller"))
 
-    if (policy.createdBy !== undefined && !admitted.created && policy.createdBy !== request.command)
+    // Acknowledged without running the handler; a cold activation keeps the
+    // generation it acquired, as a replay does.
+    const acknowledged = (reason: Acknowledgement, writes: ReadonlyArray<Statement> = []) =>
+      ({
+        writes: cold || writes.length > 0 ? writes : undefined,
+        outcome: Outcome.cases.Acknowledged.make({ reason }),
+        generation: current,
+        state: cold ? undefined : cache.state,
+        wake: false,
+        broadcasts: [],
+        head: admitted.head,
+        committed: { after: admitted.head, events: [], commandId: request.commandId },
+        outbox: { wake: false, cancelled: false },
+        emitted: { emittedAtMs: 0, fed: false },
+      }) satisfies Plan
+
+    // Only the relay's subscription deliveries reach a handler, and only a
+    // handler takes one, so no caller can reach it around the cursor or route.
+    if (command.handler || delivery !== undefined) {
+      const caller = request.caller
+
+      if (
+        !command.handler ||
+        delivery === undefined ||
+        !isSystem(caller) ||
+        caller.source !== "subscription" ||
+        caller.ref?.actor !== delivery.sourceType ||
+        caller.ref.id !== delivery.sourceId
+      )
+        return yield* Effect.die(
+          new Error("Subscription handlers accept only subscription deliveries"),
+        )
+
+      if (caller.ref.tenant !== tenant)
+        return yield* Effect.die(new Error("A subscription delivery crosses tenants"))
+
+      const reason = acknowledgement(delivery, admitted)
+
+      if (reason !== undefined) return acknowledged(reason)
+    }
+
+    if (
+      policy.createdBy !== undefined &&
+      !admitted.created &&
+      policy.createdBy !== request.command
+    ) {
+      // A routed event for a subscriber its creating command hasn't created
+      // is skipped, and the cursor keeps a stale redelivery of it from
+      // running after another command creates the subscriber.
+      if (delivery !== undefined && delivery.epoch === "0" && delivery.kind === "event")
+        return acknowledged("NotCreated", [applyCursor(delivery.position)])
+
       return yield* ActorError.make({ reason: NotCreated.make({}) })
+    }
 
     // A minted actor is created only by the relay delivering the creating
     // intent its parent's turn staged and committed: the proof binds the id to
@@ -315,7 +439,7 @@ export const executeTurn = Effect.fnUntraced(function* (
     const business = yield* Effect.gen(function* () {
       yield* hooks.at("beforeHandler", request)
 
-      return yield* command.run(request, [...committed], connections)
+      return yield* command.run(request, [...committed], { head: admitted.head, connections })
     }).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
 
     const result: BusinessResult = Result.isSuccess(business) ? business.success : business.failure
@@ -365,7 +489,7 @@ export const executeTurn = Effect.fnUntraced(function* (
     const events =
       result.events.length > 0
         ? yield* eventsStatement(request, routingKey, result.events)
-        : { statement: undefined, stamp: { emittedAtMs: 0 } }
+        : { statement: undefined, stamp: { emittedAtMs: 0, fed: false } }
 
     if (events.statement !== undefined) writes.push(events.statement)
 
@@ -391,6 +515,19 @@ export const executeTurn = Effect.fnUntraced(function* (
     )
 
     writes.push(...outbox.statements)
+
+    // The delivery's position is applied with its receipt, declared failures included.
+    if (delivery !== undefined)
+      writes.push(
+        delivery.kind === "rejected"
+          ? Effect.asVoid(sql`UPDATE actor_subscription_cursors SET active = false
+              WHERE ${cursorRow!} AND epoch = ${delivery.epoch}`)
+          : delivery.epoch === "0"
+            ? applyCursor(delivery.position)
+            : Effect.asVoid(sql`UPDATE actor_subscription_cursors SET applied = ${delivery.position}
+                WHERE ${cursorRow!} AND epoch = ${delivery.epoch}`),
+      )
+
     const encoded = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
     writes.push(
       Effect.asVoid(sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
@@ -455,7 +592,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   cache.generation = done.generation
   cache.state = done.state
 
-  if (done.wake || done.outbox.wake) yield* (yield* OutboxRuntime).wake
+  if (done.wake || done.outbox.wake || done.emitted.fed) yield* (yield* OutboxRuntime).wake
 
   if (done.outbox.cancelled) yield* (yield* OutboxRuntime).cancelled
 
