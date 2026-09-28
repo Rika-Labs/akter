@@ -71,6 +71,7 @@ import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./tu
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime } from "./turn/outbox.ts"
+import { turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import { sweep } from "./storage/retention.ts"
 import { acceptWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
@@ -1148,12 +1149,17 @@ export const layer = (options: Options) => {
 
 export const Database = {
   /**
-   * `maxConnections` defaults to 50. A command holds one connection for its
-   * whole turn, so a pool smaller than the commands in flight queues callers
-   * behind it; the pool opens connections only as load needs them. Keep the
-   * sum across runners below the server's `max_connections`.
+   * A runner holds two pools. Turns lease sessions from the turn pool,
+   * `maxConnections` (default 50): a command holds one session for its whole
+   * turn, so a pool smaller than the commands in flight queues callers behind
+   * it. Queries, the relay, migrations, and cluster storage use the off-turn
+   * pool, `offTurnConnections` (default 10). Both open connections only as
+   * load needs them. Keep the sum of both across runners below the server's
+   * `max_connections`.
    */
-  postgres: (options: Omit<PgClient.PgPoolConfig, "types">) => {
+  postgres: (
+    options: Omit<PgClient.PgPoolConfig, "types"> & { readonly offTurnConnections?: number },
+  ) => {
     const types = PgTypes.makeRegistry()
     // rc.116 lacks regclass decoding, used by Sql Migrator on restart. Remove after Effect #8309.
     types.register(2205, {
@@ -1166,7 +1172,12 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    return PgClient.layer({ ...options, maxConnections: options.maxConnections ?? 50, types })
+    const { offTurnConnections, ...pool } = options
+
+    return Layer.merge(
+      PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+      turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+    )
   },
   pglite,
 }

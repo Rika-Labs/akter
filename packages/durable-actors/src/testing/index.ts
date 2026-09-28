@@ -35,4 +35,6 @@ export type {
 
 export { CleanupHooks, TurnHooks } from "../runtime/turn/hooks.ts"
 
+export { TurnPoolSettings } from "../runtime/turn/pipeline.ts"
+
 export type { TurnPoint } from "../runtime/turn/hooks.ts"
