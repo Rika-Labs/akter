@@ -5,7 +5,7 @@
 **Owner role:** operations.
 **Change policy:** a change requires operator review; a breaking change ships as a new view name ([ADR 0028](../decisions/0028-sql-inspection-views.md)).
 
-Migration `0013_inspection_views` creates the `durable` schema. Its views are the supported way for `psql`, Grafana, Metabase, or any SQL tool to read committed runtime state. The `actor_*` tables underneath are private runtime storage: read the views, never the tables, and never write to either. ADR 0028 is proposed; the views exist on any database that ran `0013`, and their shape may still change before the ADR is accepted.
+Migration `0013_inspection_views` creates the `durable` schema. Its views are the supported way for `psql`, Grafana, Metabase, or any SQL tool to read committed runtime state. The `actor_*` tables underneath are private runtime storage: read the views, never the tables, and never write to either. Version 1 of every view is public contract under ADR 0028: a column it exposes keeps its name, meaning, and type, and any other change ships as a new view.
 
 Everything a view shows is committed. A turn that rolls back (a defect, a crash before commit, lost authority) leaves no row in any view; a declared failure leaves only its receipt.
 
@@ -71,7 +71,7 @@ That role reads every view and gets `permission denied` on every `actor_*` table
 
 A role also holds every privilege granted to `PUBLIC`, and these grants are not limited to `durable`: `EXECUTE` on functions by default, `USAGE` on schema `public`, and any table grant made to `PUBLIC`. To keep the role view-only, audit and revoke those grants, for example `REVOKE ALL ON SCHEMA public FROM PUBLIC` and `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`, or point the tool at a database where `PUBLIC` holds nothing else.
 
-Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows, but nothing enforces the filter yet: until the framework's RLS policies ship (M4.5), treat view access as operator access to every tenant in the database.
+Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows, but nothing enforces the filter yet: until the framework's RLS policies ship (M4.5), treat view access as operator access to every tenant in the database. When those policies ship, the views are recreated with `security_invoker = true`, so the base-table policies apply to the reading role; the columns and version 1 stay the same.
 
 ## Example queries
 
