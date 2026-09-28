@@ -38,7 +38,15 @@ import {
   StartPayload,
   Target,
 } from "../../handles/workflow.ts"
-import { type ActorRef, Caller, type Principal, principal, System } from "../../identity/caller.ts"
+import {
+  type ActorRef,
+  Caller,
+  CurrentCaller,
+  type Principal,
+  principal,
+  System,
+  Tenant,
+} from "../../identity/caller.ts"
 import { decodeExecutionId, encodeExecutionId } from "../../identity/execution.ts"
 import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
@@ -707,8 +715,19 @@ export const activationEngine = (options: {
 
                 entry.activities += 1
 
+                // Calls from the step act for the execution, in the owner's tenant, not
+                // for whatever caller the runtime's own context happens to hold.
                 const exit = yield* run.pipe(
                   Effect.provideService(CurrentCallPhase, CallPhase.Activity({ nextCommandId })),
+                  Effect.provideService(
+                    CurrentCaller,
+                    System.make({
+                      source: "workflow",
+                      ref,
+                      onBehalfOf: Option.getOrUndefined(onBehalfOf),
+                    }),
+                  ),
+                  Effect.provideService(Tenant, ref.tenant),
                   Effect.ensuring(Effect.sync(() => (entry.activities -= 1))),
                 )
 

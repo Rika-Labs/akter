@@ -10,7 +10,7 @@ import {
   Schema,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, InvalidExecutionId, Unauthorized, User } from "../../index.ts"
+import { Actor, type Caller, InvalidExecutionId, System, Unauthorized, User } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -21,9 +21,15 @@ export interface WorkflowsFixture {
   readonly runs: Map<string, number>
   /** Holds the first run of a `block` activity until the case releases it. */
   blocked: Deferred.Deferred<void> | undefined
+  /** The caller and tenant of every `Ledger.Charge` turn. */
+  readonly charges: Array<{ readonly caller: Caller; readonly tenant: string }>
 }
 
-export const workflowsFixture = (): WorkflowsFixture => ({ runs: new Map(), blocked: undefined })
+export const workflowsFixture = (): WorkflowsFixture => ({
+  runs: new Map(),
+  blocked: undefined,
+  charges: [],
+})
 
 class Paid extends Actor.Event<Paid>()("Paid", { orderId: Schema.String, amount: Schema.Int }) {}
 
@@ -84,20 +90,24 @@ const Shipper = Actor.make("Shipper", {
 const bump = (fixture: WorkflowsFixture, key: string) =>
   Effect.sync(() => fixture.runs.set(key, (fixture.runs.get(key) ?? 0) + 1))
 
-const LedgerLive = Ledger.toLayer(
-  Effect.succeed({
-    Charge: Effect.fnUntraced(function* () {
-      const turn = yield* Ledger.Turn
-      yield* turn.state.set({ count: turn.state.count + 1 })
+const ledgerLive = (fixture: WorkflowsFixture) =>
+  Ledger.toLayer(
+    Effect.succeed({
+      Charge: Effect.fnUntraced(function* () {
+        const turn = yield* Ledger.Turn
+        yield* Effect.sync(() =>
+          fixture.charges.push({ caller: turn.caller, tenant: turn.ref.tenant }),
+        )
+        yield* turn.state.set({ count: turn.state.count + 1 })
 
-      return turn.state.count
+        return turn.state.count
+      }),
     }),
-  }),
-)
+  )
 
 export const workflowsLayer = (fixture: WorkflowsFixture) =>
   Layer.mergeAll(
-    LedgerLive,
+    ledgerLive(fixture),
     Shipper.toLayer(
       Effect.succeed({
         Begin: Effect.fnUntraced(function* (input: {
@@ -193,6 +203,7 @@ const reset = (fixture: WorkflowsFixture) =>
   Effect.sync(() => {
     fixture.runs.clear()
     fixture.blocked = undefined
+    fixture.charges.length = 0
   })
 
 const EXPIRATION_SECONDS = 3
@@ -666,6 +677,38 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* run.result).toBe("r-charge-1-2:v2")
           const ledger = yield* Ledger.get("c1")
           expect(yield* test.receiptsFor(ledger.ref, "Charge")).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "workflows: activity actor calls act for the execution in the owner's tenant",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const shipper = yield* Shipper.get("acting").pipe(
+            Actor.as(User.make({ subject: "carol" })),
+          )
+          const run = yield* shipper.Ship({ orderId: "c2", sku: "charge" })
+          yield* run.result
+          expect(fixture.workflows.charges).toEqual([
+            {
+              caller: System.make({
+                source: "workflow",
+                ref: shipper.ref,
+                onBehalfOf: { subject: "carol" },
+              }),
+              tenant: shipper.ref.tenant,
+            },
+            {
+              caller: System.make({
+                source: "workflow",
+                ref: shipper.ref,
+                onBehalfOf: { subject: "carol" },
+              }),
+              tenant: shipper.ref.tenant,
+            },
+          ])
         }),
       ),
   },
