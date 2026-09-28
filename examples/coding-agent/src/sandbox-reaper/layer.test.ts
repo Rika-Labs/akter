@@ -80,7 +80,11 @@ it("kills old sandboxes no agent uses, keeps the ones agents still use, and reco
       const reaper = yield* SandboxReaper.get()
       yield* reaper.Sweep()
 
-      while (fake.sandboxes.has("never-ready")) yield* Effect.sleep("20 millis")
+      // Waits, without moving the clock, until the first sweep has crashed; advancing while it
+      // still ran would move its lease with the clock.
+      yield* test.advance(0)
+      expect(fake.sandboxes.has("never-ready")).toBe(false)
+      expect(yield* test.receiptsFor(reaper.ref, "Swept")).toBe(0)
       yield* test.advance("2 minutes")
 
       expect([...fake.sandboxes.keys()].sort()).toEqual(["fresh", live].sort())
