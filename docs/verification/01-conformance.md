@@ -490,7 +490,7 @@ The client cases live in [`conformance/transports.ts`](../../packages/durable-ac
 - `client opens a connection with typed frames both ways, rejects a declared open failure or a failing headers provider, and ends on close` — `Banned` is rejected as its class, and `cursor` is the baseline. The greeting, a sent frame's echo, and a normal end all arrive in order. A `headers` provider that rejects fails `connect` with its own error, read before the socket opens, instead of leaving it pending.
 - `client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates` (Postgres, two runners) — `Resync { after: "1" }`, `onResync` with `"1"` (which throws, and the resync is still acknowledged), then `ResyncReplayed`, then the next live frame.
 
-[`client/connection.test.ts`](../../packages/durable-actors/src/client/connection.test.ts) runs the client against a stand-in WebSocket server that sends what it likes:
+[`client/sessions/connection.test.ts`](../../packages/durable-actors/src/client/sessions/connection.test.ts) runs the client against a stand-in WebSocket server that sends what it likes:
 
 - `ends with a decode failure on a frame whose event cursor is not a position` — the frames iterator rejects with `TransportError` `decode` instead of hanging.
 - `keeps the connection when the headers provider fails a renewal` — a `reauthenticate` request whose provider rejects sends nothing, and the next frame still arrives.

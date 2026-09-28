@@ -13,11 +13,11 @@ export type {
 
 export type { PendingInput } from "./optimistic.ts"
 
-export type { ClientConnection, ConnectionMessage, ConnectOptions } from "./connection.ts"
+export type { ClientConnection, ConnectionMessage, ConnectOptions } from "./sessions/connection.ts"
 
-export type { FeedEntry, FeedOptions } from "./feed.ts"
+export type { FeedEntry, FeedOptions } from "./sessions/feed.ts"
 
-export type { StreamOptions } from "./stream.ts"
+export type { StreamOptions } from "./sessions/stream.ts"
 
 export type { Failure } from "./transport.ts"
 

@@ -1,8 +1,8 @@
 import { Effect, Schema } from "effect"
 import { afterEach, describe, expect, it } from "vitest"
-import { ActorError, TransportError } from "../errors/actor.ts"
-import { Actor } from "../index.ts"
-import { SUBPROTOCOL, type ServerWireMessage } from "../serve/frames.ts"
+import { ActorError, TransportError } from "../../errors/actor.ts"
+import { Actor } from "../../index.ts"
+import { SUBPROTOCOL, type ServerWireMessage } from "../../serve/frames.ts"
 
 const Live = Actor.connection("Live", { client: Schema.String, server: Schema.String })
 

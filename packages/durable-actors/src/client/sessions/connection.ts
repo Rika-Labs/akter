@@ -1,9 +1,9 @@
 import { Data, Deferred, Effect, Match, Option, Predicate, Queue, Schema, Stream } from "effect"
-import type { ServedConnection } from "../actor/served.ts"
-import { ActorError, SessionEnded, TransportError } from "../errors/actor.ts"
-import type { ValueSchema } from "../members/command.ts"
-import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../serve/frames.ts"
-import { decodeFailure, type Failure, transport } from "./transport.ts"
+import type { ServedConnection } from "../../actor/served.ts"
+import { ActorError, SessionEnded, TransportError } from "../../errors/actor.ts"
+import type { ValueSchema } from "../../members/command.ts"
+import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../../serve/frames.ts"
+import { decodeFailure, type Failure, transport } from "../transport.ts"
 
 /** What a connection's client receives, in order: member frames and the holder's resync notices. */
 export type ConnectionMessage<Frame> = Data.TaggedEnum<{
