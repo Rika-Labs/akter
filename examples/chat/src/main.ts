@@ -11,7 +11,7 @@ import { Actors, Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer, Redacted, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { RoomLive } from "./room/layer.ts"
-import { ModerationApi } from "./room/moderation.ts"
+import { ModerationApi, Moderators } from "./room/moderation.ts"
 import { routes } from "./server.ts"
 
 const runtime = Layer.unwrap(
@@ -19,7 +19,7 @@ const runtime = Layer.unwrap(
     const database = yield* Config.String("DATABASE_URL")
 
     return RoomLive.pipe(
-      Layer.provide(ModerationApi.layer),
+      Layer.provide([ModerationApi.layer, Moderators.layer]),
       Layer.provideMerge(
         Actors.layer({
           authorize: ({ caller, ref }) =>
