@@ -27,7 +27,7 @@ const serverBody = [
   'and [a titled link](02-context.md "Context") and [a reference][ref]. Code keeps its text:',
   "",
   "```md",
-  "[not a link](02-context.md)",
+  "[not a link](02-context.md) and [contract 02](../contracts/02-command-turns.md),",
   "```",
   "",
   "[ref]: ../quickstart.md",
@@ -121,7 +121,9 @@ describe("renderMarkdownCopy", () => {
       expect(copy).toContain(`[contract 02](${blob}/docs/contracts/02-command-turns.md)`)
       expect(copy).toContain('[a titled link](02-context.md "Context")')
       expect(copy).toContain(`[ref]: ${blob}/docs/quickstart.md`)
-      expect(copy).toContain("```md\n[not a link](02-context.md)\n```")
+      expect(copy).toContain(
+        "```md\n[not a link](02-context.md) and [contract 02](../contracts/02-command-turns.md),\n```",
+      )
     }),
   )
 })
