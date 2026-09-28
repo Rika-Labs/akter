@@ -5,6 +5,8 @@ import type { Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent, User } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
+import { TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
+import type { Request } from "../../handles/actors.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest } from "../actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
@@ -48,6 +50,13 @@ const Plain = Actor.make("Plain", {
   api: { Add, Defer },
   internal: { Remind },
 })
+
+const AddPayload = Schema.fromJsonString(Schema.Struct({ value: Schema.Finite }))
+
+/** A runner's turn hooks: an effect at each fault point. */
+interface TestHooks {
+  readonly at: (point: TurnPoint, request: Request) => Effect.Effect<void>
+}
 
 interface Probe {
   /** Client writes sent after the server last answered: one per round trip. */
@@ -188,7 +197,11 @@ const relay = (url: URL, probe: Probe) =>
  */
 const withProbe = <A, E>(
   environment: ConformanceEnvironment,
-  options: { readonly prepare?: boolean },
+  options: {
+    readonly prepare?: boolean
+    /** Turn hooks the runner sees at every point no queued fault takes. */
+    readonly hooks?: TestHooks
+  },
   body: (
     probe: Probe,
     database: Redacted.Redacted<string>,
@@ -213,7 +226,9 @@ const withProbe = <A, E>(
               ActorTest.layer({
                 database,
                 as: User.make({ subject: "alice" }),
-              }),
+              }).pipe(
+                Layer.provide(Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void })),
+              ),
             ),
             Layer.provide(
               Layer.succeed(TurnPoolSettings, {
@@ -825,5 +840,55 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* reminders)[0]!.count).toBe(2)
         }),
       ),
+  },
+  {
+    name: "pipeline: a defect after a batch commits restarts the activation, and every caller gets its committed outcome",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      // Fails the afterCommit point once for each listed amount, with a defect
+      // that is not retryable, as a failing broadcast flush would.
+      const failing = new Set([2, 20])
+
+      const hooks: TestHooks = {
+        at: (point, request) =>
+          point !== "afterCommit" || request.command !== "Add"
+            ? Effect.void
+            : Schema.decodeEffect(AddPayload)(request.payload).pipe(
+                Effect.orDie,
+                Effect.flatMap(({ value }) =>
+                  failing.delete(value)
+                    ? Effect.die(new Error("Defect after commit"))
+                    : Effect.void,
+                ),
+              ),
+      }
+
+      return withProbe(environment, { hooks }, (probe) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("after-commit-defect")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          // A lone command: committed, then the defect; its caller still
+          // gets the committed count, not `Defect`, and the handler ran once.
+          const handled = probe.handled
+          expect(yield* meter.Add(2)).toBe(3)
+          expect(probe.handled).toBe(handled + 1)
+
+          // A batch whose first caller's answer fails after the shared commit.
+          const first = yield* holding(meter.Add(4))
+          const waiting = yield* enqueue([meter.Add(20), meter.Add(40)].map(Effect.orDie))
+          yield* first.release
+          expect(yield* Fiber.join(first.fiber)).toBe(7)
+          expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual([27, 67])
+          expect(probe.handled).toBe(handled + 4)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 67 },
+            receipts: 5,
+          })
+        }),
+      )
+    },
   },
 ]
