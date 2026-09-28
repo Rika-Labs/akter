@@ -1398,6 +1398,30 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
+  {
+    name: "fails Actor.serve at startup when a provider declares two credentials of one OpenAPI scheme",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const internal = Layer.succeed(InternalActors, yield* InternalActors)
+
+          for (const credentials of [
+            [Credential.Cookie({ name: "a" }), Credential.Cookie({ name: "b" })],
+            [Credential.Bearer(), Credential.Jwt()],
+          ]) {
+            const exit = yield* HttpRouter.toHttpEffect(
+              Actor.serve({ actors: [HttpRoom], auth: { ...tokens, credentials } }).pipe(
+                Layer.provide(internal),
+              ),
+            ).pipe(Effect.exit)
+
+            expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+              "more than one credential documented as the same OpenAPI scheme",
+            )
+          }
+        }),
+      ),
+  },
 ]
 
 /** A declaration file names the unique symbols these actors inherit only through a module that exports them. */
