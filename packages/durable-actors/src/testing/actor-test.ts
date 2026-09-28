@@ -48,6 +48,7 @@ import {
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
 import { type ClusterOptions, clusterLayer } from "./cluster.ts"
+import { type Simulation, type SimulationOptions, simulate } from "./simulate.ts"
 
 /**
  * Present while `ActorTest.cluster` builds one of its runners: the runner
@@ -192,6 +193,8 @@ export class ActorTest extends Context.Service<
       readonly reached: Effect.Effect<void>
       readonly release: Effect.Effect<void>
     }>
+    /** Removes every queued `crashNext` and `pauseNext` fault and returns the points they were queued at. */
+    readonly clearFaults: Effect.Effect<ReadonlyArray<TurnPoint>>
     readonly invalidate: (ref: ActorRef) => Effect.Effect<void>
     /**
      * Opens a connection to `ref` through this runner's in-process transport,
@@ -249,6 +252,19 @@ export class ActorTest extends Context.Service<
    */
   static readonly cluster = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>) =>
     clusterLayer(options)
+
+  /**
+   * Runs `program` on the current test runtime under a fault schedule drawn
+   * from `seed`, then checks exactly-once receipts and outbox delivery; a
+   * failure dies with the seed that reproduces it.
+   */
+  static readonly simulate = <E, R>(
+    options: SimulationOptions,
+    program: (simulation: Simulation) => Effect.Effect<void, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      return yield* simulate(yield* ActorTest)(options, program)
+    })
 
   static readonly layer = (options: TestOptions) =>
     Layer.unwrap(
@@ -353,6 +369,12 @@ export class ActorTest extends Context.Service<
               }) as ActorTest["Service"]["actor"],
               crashNext: (point) =>
                 addFault(point, Effect.die(RetryTurn.make({ message: `Injected ${point} crash` }))),
+              clearFaults: Effect.sync(() => {
+                const left = Array.from(faults, ([point, queue]) => queue.map(() => point)).flat()
+                faults.clear()
+
+                return left
+              }),
               pauseNext: Effect.fnUntraced(function* (point: TurnPoint) {
                 const reached = yield* Deferred.make<void>()
                 const release = yield* Deferred.make<void>()
