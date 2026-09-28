@@ -26,7 +26,7 @@ import { ActorError, NotCreated, RunnerAtCapacity, Unauthorized } from "../error
 import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
-import { build, document, memberPath, PROTOCOL_OPERATIONS } from "./api.ts"
+import { build, document, memberPath, PROTOCOL_OPERATIONS, schemeName } from "./api.ts"
 import { type AuthProvider, type Authenticated, readsCookies, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
@@ -199,6 +199,16 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       )
         return yield* Effect.die(
           new Error(`Actor.serve: openapi.path ${openapiPath} collides with a protocol route`),
+        )
+
+      // The document names one security scheme per kind, so a second credential of a kind would vanish from it.
+      const schemes = options.auth.credentials.map(schemeName)
+
+      if (new Set(schemes).size !== schemes.length)
+        return yield* Effect.die(
+          new Error(
+            `Actor.serve: the auth provider declares more than one credential documented as the same OpenAPI scheme (${schemes.join(", ")})`,
+          ),
         )
 
       const actors = yield* InternalActors
