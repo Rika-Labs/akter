@@ -43,4 +43,11 @@ Queries take no `Idempotency-Key` and can be retried freely.
 
 ## Authentication
 
-The document's `securitySchemes` come from the server's auth provider. Send credentials in `authorization` (or cookies for a cookie-reading provider); never in the URL. A `401` carries `www-authenticate: Bearer`.
+The document's `securitySchemes` come from the server's auth provider, and every operation except `durable.protocol` lists them as alternatives, any one of which authenticates:
+
+| Scheme   | Provider                                                        | Send                                                   |
+| -------- | --------------------------------------------------------------- | ------------------------------------------------------ |
+| `bearer` | `Actor.auth.jwt` (`bearerFormat: JWT`), `Actor.auth.make`       | `authorization: Bearer <token>`                        |
+| `cookie` | `Actor.auth.make({ cookies: { name } })`, an `apiKey` in cookie | the cookie `name`, as a browser or cookie jar sends it |
+
+A server under `Actor.auth.none` declares no schemes. Never put a credential in the URL. A `401` carries `www-authenticate: Bearer` whatever the scheme.
