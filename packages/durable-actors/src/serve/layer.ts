@@ -100,6 +100,29 @@ const pathId = Effect.fnUntraced(function* (definition: ServedDefinition) {
   return yield* definition.decodeId(raw).pipe(Effect.mapError((error) => undecodable(error)))
 })
 
+/** Same origin: the `Origin` names the request URL's scheme and the `Host` it was sent to. */
+export const isSameOrigin = ({
+  request,
+  origin,
+}: {
+  readonly request: HttpServerRequest.HttpServerRequest
+  readonly origin: string
+}) => {
+  const host = Headers.get(request.headers, "host")
+
+  if (Option.isNone(host)) return false
+
+  if (!URL.canParse(request.originalUrl)) return false
+
+  try {
+    const parsed = new URL(origin)
+
+    return parsed.host === host.value && parsed.protocol === new URL(request.originalUrl).protocol
+  } catch {
+    return false
+  }
+}
+
 const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
 
 const resolve = (actor: { readonly name: string }): ServedDefinition => {
@@ -211,24 +234,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           : stamped
       }
 
-      const isSameOrigin = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
-        const host = Headers.get(request.headers, "host")
-
-        if (Option.isNone(host)) return false
-
-        if (!URL.canParse(request.originalUrl)) return false
-
-        try {
-          const parsed = new URL(origin)
-
-          return (
-            parsed.host === host.value && parsed.protocol === new URL(request.originalUrl).protocol
-          )
-        } catch {
-          return false
-        }
-      }
-
       // Every route: origin before authentication, then the protocol version.
       const guard = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.gen(function* () {
@@ -237,7 +242,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           if (
             Option.isSome(origin) &&
             !origins.has(origin.value) &&
-            !isSameOrigin(request, origin.value)
+            !isSameOrigin({ request, origin: origin.value })
           )
             return yield* invalidInput("origin_not_allowed")
 

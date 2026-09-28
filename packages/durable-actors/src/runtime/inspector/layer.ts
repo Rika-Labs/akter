@@ -1,10 +1,16 @@
 import { type Cause, Effect, Option, Schema } from "effect"
-import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import {
+  Headers,
+  HttpRouter,
+  type HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { Anonymous, User } from "../../identity/caller.ts"
 import { type AuthProvider, withinLimits } from "../../serve/auth.ts"
-import { actorErrorResponse, Defect, undecodable } from "../../serve/wire.ts"
+import { isSameOrigin } from "../../serve/layer.ts"
+import { actorErrorResponse, Defect, invalidInput, undecodable } from "../../serve/wire.ts"
 import * as Queries from "./queries.ts"
 
 export interface InspectorOptions<R> {
@@ -61,7 +67,8 @@ const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>)
 
 /**
  * Serves read-only JSON over the `durable` inspection views as routes on the
- * application's `HttpRouter`. Each request is authenticated, and every read
+ * application's `HttpRouter`. A request from another browser origin is
+ * refused with `403` before authentication; each other request is authenticated, and every read
  * is filtered to the principal's tenant and runs in a read-only transaction.
  *
  * - `GET /overview`: the view catalog and the tenant's row counts.
@@ -111,6 +118,12 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
           `${basePath}${path}` as HttpRouter.PathInput,
           (request: HttpServerRequest.HttpServerRequest) =>
             Effect.gen(function* () {
+              // A browser page on another origin is refused before its credentials are read.
+              const origin = Headers.get(request.headers, "origin")
+
+              if (Option.isSome(origin) && !isSameOrigin({ request, origin: origin.value }))
+                return yield* invalidInput("origin_not_allowed")
+
               const tenant = yield* authenticate(request)
 
               const decoded = yield* HttpRouter.schemaParams(params).pipe(
