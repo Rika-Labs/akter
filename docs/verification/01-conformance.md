@@ -58,6 +58,7 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `rejects an expired identity after receipt pruning and runtime restart`
 - `isolates durable state between fresh layer builds`
 - `retains bounded heap for touched actors once every activation hibernates`: touches 1,000 actors, waits for every activation to hibernate, and allows under 10 retained objects and 1 KiB of JavaScript heap per actor (the #41 leak retained about 95 objects and 11 KiB)
+- `retains bounded heap per command once Cluster forgets processed request ids` (Postgres only; PGlite's heap shrinks by about one object per command between rounds for several rounds): sends three rounds of 4,096 commands to the same 32 actors, the first to warm up, and measures the heap after each later round plus one 10-second Cluster message poll, allowing under 0.5 retained objects and 64 bytes per command; a command sent with a saved id before the rounds is answered from its receipt after them without running again. Under `MessageStorage.layerNoop` every command's request id stayed in Cluster's processed set: the case fails with 1.02 objects per command on Postgres 18.6 (heap bytes per command varied from 35 to 237 between runs with where the set's table doubles), against −0.10 objects and −3 bytes with `directMessages` (#46)
 
 Event cases live in [`conformance/events.ts`](../../packages/durable-actors/src/testing/conformance/events.ts) and join the same list:
 

@@ -327,10 +327,10 @@ const makeFixture = (): ConformanceFixture => ({
 
 /**
  * The shared durable-turn conformance cases. Cases flagged
- * `requiresIndependentConnections` need a real second database connection —
- * either to read committed state while a turn holds its transaction open, or
- * to take a competing row lock — and never run on single-connection backends
- * such as PGlite.
+ * `requiresIndependentConnections` need real Postgres: a second database
+ * connection to read committed state while a turn holds its transaction open
+ * or to take a competing row lock, or a database outside the JavaScript heap
+ * they measure. They never run on single-connection backends such as PGlite.
  */
 export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
