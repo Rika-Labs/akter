@@ -130,7 +130,7 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 
 ## Migration
 
-Uses the reserved `0019_content_blobs`. It creates `tenant_contents`, `tenant_content_chunks`, and `actor_content_refs`, the latter with a composite foreign key to `actor_generations` and a `(tenant_id, hash)` index. There is no foreign key from references or chunks to `tenant_contents`, per ADR 0006.
+Uses the reserved `0020_content_blobs`. It creates `tenant_contents`, `tenant_content_chunks`, and `actor_content_refs`, the latter with a composite foreign key to `actor_generations` and a `(tenant_id, hash)` index. There is no foreign key from references or chunks to `tenant_contents`, per ADR 0006.
 
 ## Open questions for Dallen, with recommended defaults
 
@@ -155,7 +155,7 @@ In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
 - `hands a fresh grant from one actor's reference to another actor's attach through Content.grant, and refuses a caller whose authorize denies <blob>.grant`
 - `never returns a grant for content a concurrent detach and sweep deleted` (Postgres, independent connections: the sweep deletes between the reference read and the raise)
 - `verifies grants under the previous key for one grant lifetime after rotation`
-- `applies 0019_content_blobs to a database that ran the previous migration`
+- `applies 0020_content_blobs to a database that ran the previous migration`
 
 Benchmark `content-blobs`: deduplication ratio and bytes stored for a skewed upload set, upload and attach latency, read latency, and sweep cost per thousand candidates.
 
