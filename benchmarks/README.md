@@ -79,7 +79,7 @@ Every feature ships with a scenario. A pull request that adds a durable mechanis
 | Singleton uniqueness and failover              | #50          | `singleton-failover`                                 |
 | Multi-runner relay and executor pool (M2.4)    | #96          | `outbox`, `effect-round-trip` with `--runners 1,2,4` |
 | Connections and parking (M2.10)                | #119         | `connections`                                        |
-| `Actor.stream` and `read.follow` (M2.10)       | this PR      | `connections` (`stream-subscribe`, `stream-follow`)  |
+| `Actor.stream` and `read.follow` (M2.10)       | #165         | `connections` (`stream-subscribe`, `stream-follow`)  |
 | Blobs                                          | #61          | `blobs`, which lands with #61                        |
 | SQL inspection views                           | CR.4 (#88)   | `inspection-views`                                   |
 | Retention, replay pages, emit budget           | #17          | `retention`, `events`                                |
