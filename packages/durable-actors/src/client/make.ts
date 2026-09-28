@@ -24,9 +24,9 @@ import type { AnyMember, MemberRecord, ValueSchema } from "../members/command.ts
 import type { AnyConnection } from "../members/connection.ts"
 import type { AnyStream } from "../members/stream.ts"
 import type { EventClass } from "../members/event.ts"
-import { type ClientConnection, type ConnectOptions, connect } from "./connection.ts"
-import { type FeedEntry, type FeedOptions, feedStream } from "./feed.ts"
-import { type StreamOptions, subscription } from "./stream.ts"
+import { type ClientConnection, type ConnectOptions, connect } from "./sessions/connection.ts"
+import { type FeedEntry, type FeedOptions, feedStream } from "./sessions/feed.ts"
+import { type StreamOptions, subscription } from "./sessions/stream.ts"
 import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
 import { Optimistic, type PendingInput } from "./optimistic.ts"
 import {

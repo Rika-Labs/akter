@@ -1,9 +1,9 @@
 import { Effect, Option, Queue, Schema, Stream } from "effect"
-import type { ServedMember } from "../actor/served.ts"
-import type { ValueSchema } from "../members/command.ts"
-import { TransportError } from "../errors/actor.ts"
+import type { ServedMember } from "../../actor/served.ts"
+import type { ValueSchema } from "../../members/command.ts"
+import { TransportError } from "../../errors/actor.ts"
 import { parse } from "./feed.ts"
-import { decodeFailure, type Failure, transport } from "./transport.ts"
+import { decodeFailure, type Failure, transport } from "../transport.ts"
 
 export interface StreamOptions {
   /** Ends the subscription. */

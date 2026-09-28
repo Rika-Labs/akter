@@ -1,8 +1,8 @@
 import { Duration, Effect, Option, Queue, Random, Schema, Stream } from "effect"
-import { ActorError, TransportError, Unauthorized } from "../errors/actor.ts"
-import { RetentionGap, UnknownCursor } from "../errors/events.ts"
-import type { EventClass } from "../members/event.ts"
-import { decodeFailure, type Failure, transport } from "./transport.ts"
+import { ActorError, TransportError, Unauthorized } from "../../errors/actor.ts"
+import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
+import type { EventClass } from "../../members/event.ts"
+import { decodeFailure, type Failure, transport } from "../transport.ts"
 
 /** One committed event a feed delivered, with the cursor to resume after it. */
 export interface FeedEntry<E> {
