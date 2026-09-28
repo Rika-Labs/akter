@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",
+    "@effect/platform-node-shared": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {

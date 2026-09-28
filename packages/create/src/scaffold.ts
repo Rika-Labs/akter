@@ -11,6 +11,9 @@ export type Template = typeof Template.Type
 export const versions = {
   "@durable-actors/core": "0.1.0-alpha.0",
   "@effect/platform-bun": "4.0.0-rc.116",
+  // `@effect/platform-bun` takes this with a caret range; pinning it keeps a newer release from
+  // importing `effect` modules the pinned `effect` lacks.
+  "@effect/platform-node-shared": "4.0.0-rc.116",
   "@effect/sql-pg": "4.0.0-rc.116",
   "@effect/sql-pglite": "4.0.0-rc.116",
   "drizzle-orm": "1.0.0-rc.5-5935859",
@@ -76,6 +79,7 @@ export const parseArguments = Effect.fn("parseArguments")(function* (args: Reado
 const runtimeDependencies = [
   "@durable-actors/core",
   "@effect/platform-bun",
+  "@effect/platform-node-shared",
   "@effect/sql-pg",
   "@effect/sql-pglite",
   "drizzle-orm",
