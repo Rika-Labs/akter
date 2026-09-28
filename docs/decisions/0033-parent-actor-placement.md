@@ -109,7 +109,7 @@ c1.<byte length of the parent id>.<parent id>.<local id>
 
 ## Migration
 
-Needs one framework migration: relax `actor_placements`' check to allow `parent` and add `parent_type`. It is none of the reserved `0017`–`0019`. Recommended: reserve the next free number when this ADR is accepted (today `0020`, or `0021` if ADR 0032 is accepted first, moving `0020_adoption` from wave 9 up), as `00NN_parent_placement`. If a slice merges a migration first, the milestone rule applies and this one takes the next number above the highest merged migration.
+Needs one framework migration: relax `actor_placements`' check to allow `parent` and add `parent_type`. It is none of the reserved M4 migrations (`0018_rls`, `0019_commit_version`, `0020_content_blobs`). Recommended: reserve the next free number when this ADR is accepted (today `0021`, or `0022` if ADR 0032 is accepted first, moving `0021_adoption` from wave 9 up), as `00NN_parent_placement`. If a slice merges a migration first, the milestone rule applies and this one takes the next number above the highest merged migration.
 
 ## Open questions for Dallen, with recommended defaults
 
