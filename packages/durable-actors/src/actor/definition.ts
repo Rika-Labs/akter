@@ -110,6 +110,7 @@ import { type ActorClient, type ClientOptions, clientOf } from "../client/make.t
 import {
   checkDeclaredErrors,
   type ServedDefinition,
+  servedConnection,
   servedDefinitions,
   servedMember,
 } from "./served.ts"
@@ -2301,6 +2302,7 @@ const make = <
     members: Object.values(api)
       .filter((member) => member.kind !== "connection" && member.kind !== "workflow")
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
+    connections: connectionMembers.map(servedConnection),
     deliveryMs: policy.deliveryMs,
   }
 

@@ -1,4 +1,4 @@
-import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
+import { BunCrypto, BunHttpServer, BunFileSystem } from "@effect/platform-bun"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Cause, Clock, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
@@ -21,6 +21,7 @@ afterAll(() => harness.dispose())
 const backend: ConformanceBackend = {
   independentConnections: false,
   services: BunCrypto.layer,
+  httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>
     harness.runPromise(
       Effect.gen(function* () {
