@@ -77,6 +77,10 @@ const decodeServer = Schema.decodeUnknownOption(Schema.fromJsonString(ServerWire
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
+/** A frame's event cursor as a position, or `undefined` for text that isn't one. */
+const eventPosition = (cursor: string) =>
+  Option.getOrUndefined(Schema.decodeOption(Schema.BigIntFromString)(cursor))
+
 const ended = (cause: SessionEnded["cause"], resync: boolean) =>
   ActorError.make({ reason: SessionEnded.make({ cause, resync }) })
 
@@ -172,7 +176,10 @@ export const connect = <Server, Client>({
             Effect.suspend(() => {
               // After a resync, a frame whose event the client already had is a duplicate.
               if (message.event !== undefined) {
-                const event = BigInt(message.event)
+                const event = eventPosition(message.event)
+
+                // A cursor that isn't a position is as broken as a frame that doesn't decode.
+                if (event === undefined) return finish(undecodable())
 
                 if (event <= highest) return Effect.void
 
@@ -242,7 +249,7 @@ export const connect = <Server, Client>({
                   ? Effect.void
                   : write({ t: "reauthenticate", authorization: fresh }),
               ),
-              Effect.catchDefect(() => Effect.void),
+              Effect.ignoreCause,
             ),
           reauthenticated: () => Effect.void,
           end: (message) => failureOf(message.error).pipe(Effect.flatMap(finish)),
