@@ -145,9 +145,16 @@ export const connectionEntity = (name: string) => {
 export const registerActor = Effect.fnUntraced(function* (
   registration: Registration,
   transport: Transport,
+  authorize: Authorize,
 ) {
   const sharding = yield* Sharding.Sharding
-  const owner = activationOwner({ registration, transport })
+
+  const owner = activationOwner({
+    registration,
+    transport,
+    authorize,
+    clock: yield* FrameworkClock,
+  })
 
   const ownedOf = (entityId: string) =>
     Effect.flatMap(Effect.orDie(decodeEntityId(entityId)), ([tenant, id]) => {
@@ -301,7 +308,8 @@ export const registerActor = Effect.fnUntraced(function* (
             owner.hasConnections ? owner.list(owned) : undefined,
           )
 
-          if (owner.hasConnections) {
+          // Stream followers wake when a commit advances the activation's head.
+          if (owner.hasConnections || owner.hasStreams) {
             for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
 
             const feeds = yield* Effect.forEach(done.committed, owner.feedBroadcasts)
@@ -540,14 +548,19 @@ export const registerActor = Effect.fnUntraced(function* (
 
   yield* register
 
-  if (owner.hasConnections)
+  if (owner.hasConnections || owner.hasStreams)
     yield* sharding.registerEntity(
       connections,
       Effect.gen(function* () {
         const { entityId } = yield* Entity.CurrentAddress
         const owned = yield* ownedOf(entityId)
 
+        // A move, shutdown, or eviction ends the activation, and its streams with it.
+        yield* Effect.addFinalizer(() => owner.endStreams(owned))
+
         return connections.of({
+          Subscribe: ({ payload }) =>
+            owner.subscribe(owned, payload).pipe(Stream.provideContext(connectionServices)),
           Open: ({ payload }) =>
             owner.open(owned, payload).pipe(Effect.provideContext(connectionServices)),
           Frame: ({ payload }) =>
@@ -560,6 +573,8 @@ export const registerActor = Effect.fnUntraced(function* (
       }),
       { concurrency: "unbounded", maxIdleTime: registration.policy.idleMs },
     )
+
+  if (owner.hasStreams) yield* owner.watchStreams.pipe(Effect.forkScoped)
 
   // Every runner serves the singleton's entity, so its shard lock and the
   // generation fence keep each tenant's instance to one activation. One
