@@ -21,12 +21,15 @@ import {
   HttpRouter,
   HttpServer,
 } from "effect/unstable/http"
+import { Socket } from "effect/unstable/socket"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, User } from "../../index.ts"
 import { ActorError, TransportError, Unauthorized } from "../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import { InternalActors } from "../../handles/actors.ts"
 import type { ActorRef } from "../../identity/caller.ts"
+import { servedDefinitions } from "../../actor/served.ts"
+import { socketSession } from "../../serve/socket.ts"
 import { type Authenticated, bearerToken } from "../../serve/auth.ts"
 import { ClientWireMessage, SUBPROTOCOL, ServerWireMessage } from "../../serve/frames.ts"
 import type { ServeOptions } from "../../serve/layer.ts"
@@ -1672,6 +1675,73 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             expect(resyncs).toEqual(["1"])
             yield* Effect.promise(() => connection.close())
           }).pipe(Effect.provideContext(context))
+        }),
+      ),
+  },
+  {
+    name: "ends a WebSocket session whose socket can no longer be written, and deletes its row",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const actors = yield* InternalActors
+          const ref = (yield* SocketRoom.get("ws-unwritable")).ref
+
+          const hello = yield* encodeClient({ t: "hello", params: { name: "alice" } }).pipe(
+            Effect.orDie,
+          )
+
+          let pulled = false
+          let writes = 0
+
+          // A half-open peer: `hello` arrives, then nothing, and the first frame after `open` can't be written.
+          const socket = Socket.make({
+            reader: Effect.succeed({
+              pull: Effect.suspend(() => {
+                if (pulled) return Effect.never
+
+                pulled = true
+
+                return Effect.succeed([hello] as const)
+              }),
+              upgrade: () => Effect.void,
+            }),
+            writer: Effect.succeed({
+              write: () =>
+                Effect.suspend(() => {
+                  writes += 1
+
+                  return writes > 1
+                    ? Effect.fail(
+                        Socket.SocketError.make({
+                          reason: Socket.SocketWriteError.make({ cause: new Error("peer gone") }),
+                        }),
+                      )
+                    : Effect.void
+                }),
+              writeAll: () => Effect.void,
+            }),
+          })
+
+          const principal = { tenant: test.tenant, caller: User.make({ subject: "alice" }) }
+
+          yield* socketSession({
+            socket,
+            connection: servedDefinitions
+              .get(SocketRoom)!
+              .connections.find((connection) => connection.tag === Chat.tag)!,
+            holder: actors.holder,
+            ref: () => ref,
+            upgrade: principal,
+            authenticate: () => Effect.succeed(principal),
+            greeted: Effect.void,
+          }).pipe(Effect.scoped, Effect.timeout("10 seconds"), Effect.orDie)
+
+          expect(writes).toBe(2)
+
+          yield* Effect.gen(function* () {
+            while ((yield* rows(ref)).connections > 0) yield* Effect.sleep("20 millis")
+          }).pipe(Effect.timeout("10 seconds"), Effect.orDie)
         }),
       ),
   },
