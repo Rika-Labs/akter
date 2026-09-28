@@ -148,6 +148,60 @@ describe("actor declarations", () => {
     expectTypeOf<keyof Served & "Feed">().toEqualTypeOf<never>()
   })
 
+  it("types read.progress and rejects progress of undeclared or progress-less effects", () => {
+    class Render extends Actor.effect<Render>()("Render", {
+      input: { job: Schema.String },
+      progress: Schema.Struct({ percent: Schema.Finite }),
+    }) {}
+
+    class Plain extends Actor.effect<Plain>()("Plain", { input: { job: Schema.String } }) {}
+
+    const Percent = Actor.stream("Percent", {
+      output: Schema.Finite,
+      progress: { effects: [Render] },
+    })
+
+    const Studio = Actor.make("ProgressStudio", {
+      key: Schema.String,
+      effects: [Render],
+      api: { Percent },
+    })
+
+    const layer = Studio.toLayer(
+      Effect.succeed({
+        Percent: () =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const read = yield* Studio.Read
+
+              return read.progress(Render).pipe(Stream.map((entry) => entry.frame.percent))
+            }),
+          ),
+      }),
+    )
+
+    expectTypeOf(layer).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+
+    const Watch = Actor.connection("Watch", {
+      server: Schema.String,
+      progress: { effects: [Render] },
+    })
+
+    expect(() => Actor.make("Unlisted", { key: Schema.String, api: { Watch } })).toThrow(
+      "not a declared effect",
+    )
+
+    const Loose = Actor.connection("Loose", {
+      server: Schema.String,
+      // @ts-expect-error only effects that declare a progress schema report progress
+      progress: { effects: [Plain] },
+    })
+
+    expect(() =>
+      Actor.make("Progressless", { key: Schema.String, effects: [Plain], api: { Loose } }),
+    ).toThrow("progress schema")
+  })
+
   it("lets a turn mint only unkeyed actors that declare createdBy", () => {
     const Open = Actor.command("Open")
     const Mint = Actor.command("Mint")
@@ -651,5 +705,136 @@ describe("actor declarations", () => {
       // @ts-expect-error blobs takes Actor.blob values
       Actor.make("Fake", { blobs: [{ name: "files" }], api: { Put } }),
     ).toThrow("Actor.blob")
+  })
+
+  it("types subscriptions, their handlers, and turn.subscribe, and rejects bad declarations", () => {
+    class Placed extends Actor.Event<Placed>()("Placed", { customer: Schema.String }) {}
+
+    class Cancelled extends Actor.Event<Cancelled>()("Cancelled", { customer: Schema.String }) {}
+
+    class Other extends Actor.Event<Other>()("Other", {}) {}
+
+    const Noop = Actor.command("Noop")
+    const Order = Actor.make("SubTypeOrder", { events: [Placed, Cancelled], api: { Noop } })
+
+    const Picky = Actor.make("SubTypePicky", {
+      events: [Placed],
+      api: { Noop },
+      policy: { subscribers: ["SubTypeAllowed"] },
+    })
+
+    const Record = Actor.command("Record", {
+      input: Actor.Delivery({ source: Order, events: [Placed, Cancelled] }),
+    })
+
+    const Routed = Actor.subscription("Routed", {
+      source: Order,
+      events: [Placed, Cancelled],
+      handler: Record,
+      route: (event) => {
+        expectTypeOf(event).toEqualTypeOf<Placed | Cancelled>()
+
+        return event.customer
+      },
+    })
+
+    const Dynamic = Actor.subscription("Dynamic", {
+      source: Order,
+      events: [Placed, Cancelled],
+      handler: Record,
+    })
+
+    expect(() =>
+      Actor.subscription("Undeclared", {
+        source: Order,
+        // @ts-expect-error the source doesn't declare Other
+        events: [Other],
+        handler: Record,
+      }),
+    ).toThrow("does not declare event Other")
+
+    const Narrow = Actor.command("Narrow", { input: Schema.String })
+
+    Actor.subscription("Mismatch", {
+      source: Order,
+      events: [Placed],
+      // @ts-expect-error the handler's input doesn't accept the delivery
+      handler: Narrow,
+    })
+
+    const Summary = Actor.make("SubTypeSummary", {
+      key: Schema.String,
+      api: { Noop },
+      internal: { Record },
+      subscriptions: [Routed, Dynamic],
+    })
+
+    type Subscribe = (typeof Summary.Turn)["Service"]["subscribe"]
+
+    expectTypeOf<Parameters<Subscribe>[0]>().toEqualTypeOf<typeof Dynamic>()
+    // @ts-expect-error a routed subscription can't be subscribed to from a turn
+    const _routed: Parameters<Subscribe>[0] = Routed
+    expectTypeOf<keyof Effect.Success<ReturnType<typeof Summary.intents>>>().toEqualTypeOf<
+      "ref" | "Noop"
+    >()
+
+    expect(() =>
+      Actor.make("SubTypeTwice", {
+        key: Schema.String,
+        api: { Noop },
+        internal: { Record },
+        subscriptions: [Dynamic, Dynamic],
+      }),
+    ).toThrow("Duplicate subscription: Dynamic")
+    expect(() =>
+      Actor.make("SubTypePublic", {
+        key: Schema.String,
+        api: { Record },
+        subscriptions: [Dynamic],
+      }),
+    ).toThrow("must be a command in internal")
+
+    const PickyRecord = Actor.command("PickyRecord", {
+      input: Actor.Delivery({ source: Picky, events: [Placed] }),
+    })
+
+    const FromPicky = Actor.subscription("FromPicky", {
+      source: Picky,
+      events: [Placed],
+      handler: PickyRecord,
+    })
+
+    expect(() =>
+      Actor.make("SubTypeExcluded", {
+        key: Schema.String,
+        api: { Noop },
+        internal: { PickyRecord },
+        subscriptions: [FromPicky],
+      }),
+    ).toThrow("policy.subscribers does not allow SubTypeExcluded")
+    expect(
+      Actor.make("SubTypeAllowed", {
+        key: Schema.String,
+        api: { Noop },
+        internal: { PickyRecord },
+        subscriptions: [FromPicky],
+      }).name,
+    ).toBe("SubTypeAllowed")
+    expect(() =>
+      Actor.make("SubTypeSingletonRoute", {
+        key: Schema.String,
+        api: { Noop },
+        internal: { Record },
+        subscriptions: [
+          Actor.subscription("ToSingleton", {
+            source: Order,
+            events: [Placed, Cancelled],
+            handler: Record,
+            route: Actor.singleton,
+          }),
+        ],
+      }),
+    ).toThrow("is keyed")
+    expect(() => Intent.key("$feed")).toThrow("reserved")
   })
 })

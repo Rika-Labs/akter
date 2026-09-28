@@ -22,6 +22,7 @@ import {
   type CommandContext,
   type EventEntry,
   InsideTurn,
+  type ProgressEntry,
   InStream,
   type Mintable,
   outsideTurn,
@@ -55,6 +56,7 @@ import {
   ConnectionPhase,
   type RegisteredEffect,
   type RegisteredQuery,
+  type RegisteredSubscription,
   type RegisteredStream,
   type EventReader,
   type StoredEvent,
@@ -94,6 +96,8 @@ import {
 import { isMintedId } from "../identity/mint.ts"
 import { type AnyBlob, isBlob } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
+import { isCursor } from "../runtime/events/replay.ts"
+import { SubscriptionFailure } from "../errors/subscription.ts"
 import type {
   AnyCommand,
   AnyMember,
@@ -103,6 +107,12 @@ import type {
   ValueSchema,
 } from "../members/command.ts"
 import type { AnyReducer } from "../members/reducer.ts"
+import type {
+  AnySubscription,
+  SourceDefinition,
+  SubscribeContext,
+  SubscribeFrom,
+} from "../members/subscription.ts"
 import {
   type AnyEffect,
   CancelledOutcome,
@@ -196,6 +206,16 @@ type Key = KeySchema | SingletonKey | undefined
 
 // Actors a turn may mint, with the command that alone creates each.
 const mintables = new WeakMap<object, { readonly name: string; readonly createdBy: string }>()
+
+// What a subscriber needs of each definition it may subscribe to.
+const sources = new WeakMap<
+  SourceDefinition,
+  {
+    readonly singleton: boolean
+    readonly subscribers: ReadonlyArray<string> | undefined
+    readonly decodeId: (id: string) => Effect.Effect<string, Schema.SchemaError>
+  }
+>()
 
 const isUUIDv7 = Schema.is(Schema.String.check(Schema.isUUID(7)))
 
@@ -518,6 +538,7 @@ interface Definition<
   Tables extends ReadonlyArray<AnyOwnedTable>,
   Effects extends ReadonlyArray<AnyEffect>,
   Blobs extends ReadonlyArray<AnyBlob>,
+  Subs extends ReadonlyArray<AnySubscription>,
 > {
   readonly key?: Key
   /** Which rows share a shard: the tenant (default) or each actor on its own. */
@@ -539,6 +560,11 @@ interface Definition<
   /** `Actor.effect` classes this actor's turns may `perform`. */
   readonly effects?: Effects
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>, Effects[number]>
+  /**
+   * `Actor.subscription` members: other actors' committed events this actor
+   * receives through internal handler commands.
+   */
+  readonly subscriptions?: Subs
 }
 
 const encodeTarget = Schema.encodeEffect(Target)
@@ -559,9 +585,10 @@ const make = <
   const Effects extends ReadonlyArray<AnyEffect> = readonly [],
   const P extends Policy<CommandsOf<Api> | Values<Internal>, Effects[number]> = {},
   const B extends ReadonlyArray<AnyBlob> = [],
+  const Subs extends ReadonlyArray<AnySubscription> = readonly [],
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B> & {
+  definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B, Subs> & {
     readonly key?: K
     readonly policy?: P
   },
@@ -641,6 +668,18 @@ const make = <
         ] as const,
     ),
   )
+
+  // Effects some member receives executor progress of; each must be declared with a progress schema.
+  const progressEffects = new Set<string>()
+
+  for (const member of [...connectionMembers, ...streamMembers])
+    for (const declared of member.progress?.effects ?? []) {
+      if (effects.get(declared.tag) !== declared || declared.progress === undefined)
+        throw new Error(
+          `${member.tag} lists progress of ${declared.tag}, which is not a declared effect with a progress schema`,
+        )
+      progressEffects.add(declared.tag)
+    }
 
   const effectPolicies: Readonly<Record<string, EffectPolicy<AnyEffect, AnyCommand> | undefined>> =
     definition.policy?.effects ?? {}
@@ -818,6 +857,93 @@ const make = <
 
   const encodeId = Schema.encodeEffect(idSchema)
 
+  const subscriptions: ReadonlyArray<AnySubscription> = definition.subscriptions ?? []
+  const subscriptionTags = new Set<string>()
+  // Commands only subscription deliveries reach.
+  const handlerTags = new Set<string>()
+
+  for (const declared of subscriptions) {
+    if (declared?.kind !== "subscription")
+      throw new Error("subscriptions takes Actor.subscription values")
+
+    if (subscriptionTags.has(declared.tag))
+      throw new Error(`Duplicate subscription: ${declared.tag}`)
+    subscriptionTags.add(declared.tag)
+
+    if (internal[declared.handler.tag] !== declared.handler)
+      throw new Error(`Subscription ${declared.tag}'s handler must be a command in internal`)
+    handlerTags.add(declared.handler.tag)
+
+    const source = sources.get(declared.source)
+
+    if (source === undefined)
+      throw new Error(`Subscription ${declared.tag}'s source must be an Actor.make definition`)
+
+    if (source.subscribers !== undefined && !source.subscribers.includes(name))
+      throw new Error(
+        `${declared.source.name} policy.subscribers does not allow ${name} (subscription ${declared.tag})`,
+      )
+
+    const toSingleton = declared.route !== undefined && !Predicate.isFunction(declared.route)
+
+    if (isSingleton && declared.route !== undefined && !toSingleton)
+      throw new Error(`Singleton ${name} routes subscription ${declared.tag} with Actor.singleton`)
+
+    if (!isSingleton && toSingleton)
+      throw new Error(
+        `Subscription ${declared.tag} routes to Actor.singleton, but ${name} is keyed`,
+      )
+  }
+
+  const registeredSubscriptions: ReadonlyArray<RegisteredSubscription> = subscriptions.map(
+    (declared) => {
+      const decoders = new Map(
+        declared.events.map(
+          (event) =>
+            [
+              event.identifier,
+              Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(event))),
+            ] as const,
+        ),
+      )
+
+      const route = declared.route
+
+      return {
+        tag: declared.tag,
+        sourceType: declared.source.name,
+        handler: declared.handler.tag,
+        events: declared.events.map((event) => event.identifier),
+        retired: declared.retired,
+        routed: route === undefined ? undefined : Predicate.isFunction(route) ? "id" : "singleton",
+        route: (tag, value, source) =>
+          Effect.gen(function* () {
+            if (!Predicate.isFunction(route)) return "singleton"
+
+            const decode = decoders.get(tag)
+
+            if (decode === undefined)
+              return yield* SubscriptionFailure.make({
+                message: `Subscription ${declared.tag} names no ${tag}`,
+              })
+
+            const event = yield* decode(value)
+
+            const id = yield* Effect.try({
+              try: () => route(event, source),
+              catch: (cause) => SubscriptionFailure.make({ message: String(cause) }),
+            })
+
+            return yield* decodeId(id)
+          }).pipe(
+            Effect.catchTag("SchemaError", (error) =>
+              Effect.fail(SubscriptionFailure.make({ message: error.message })),
+            ),
+          ),
+      }
+    },
+  )
+
   type Creating = P extends { readonly createdBy: infer C extends AnyCommand } ? C["tag"] : never
 
   type BoundedMailbox = P extends { readonly mailboxCapacity: number } ? true : false
@@ -838,7 +964,8 @@ const make = <
     Turn,
     CommandContext<State, Event, Owned, Blobs> &
       PerformContext<Effects[number]> &
-      BroadcastContext<ConnectionsOf<Api>>
+      BroadcastContext<ConnectionsOf<Api>> &
+      SubscribeContext<Subs[number]>
   >()(`durable-actors/Turn/${name}`) {}
 
   class Executor extends Context.Service<Executor, ExecutorContext<Effects[number]>>()(
@@ -889,9 +1016,24 @@ const make = <
       decode: workflowExits.get(member.tag)!.decode,
     })
 
-  class Read extends Context.Service<Read, QueryContext<State, Event, Owned, Blobs>>()(
-    `durable-actors/Read/${name}`,
-  ) {}
+  class Read extends Context.Service<
+    Read,
+    QueryContext<State, Event, Owned, Blobs, Effects[number]>
+  >()(`durable-actors/Read/${name}`) {}
+
+  const progressCodecs = new Map(
+    [...progressEffects].map((tag) => {
+      const declared = effects.get(tag)!
+
+      return [
+        tag,
+        {
+          effect: Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(declared))),
+          frame: Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(declared.progress!))),
+        },
+      ] as const
+    }),
+  )
 
   const entryOf = <E extends Event>(event: E, stored: StoredEvent) =>
     Effect.map(
@@ -1130,6 +1272,12 @@ const make = <
                   return yield* yield* decodeError(outcome.value).pipe(Effect.orDie)
                 }
 
+                // Handles never deliver subscriptions, so nothing acknowledges them.
+                if (Outcome.guards.Acknowledged(outcome))
+                  return yield* Effect.die(
+                    new Error(`Unexpected ${outcome.reason} acknowledgement`),
+                  )
+
                 return (yield* decodeOutput(outcome.value).pipe(Effect.orDie)).value
               })
             },
@@ -1243,6 +1391,13 @@ const make = <
 
     return {
       stampCursor: member.stampCursor,
+      progress:
+        member.progress === undefined
+          ? undefined
+          : {
+              effects: new Set(member.progress.effects.map((effect) => effect.tag)),
+              to: member.progress.to,
+            },
       hasResync: entry.resync !== undefined,
       run: Effect.fnUntraced(function* (input, phase) {
         let open = true
@@ -1433,6 +1588,7 @@ const make = <
     const { decodeInput, encodeOutput, isError, encodeError } = codecs.get(member.tag)!
 
     return {
+      progress: new Set(member.progress?.effects.map((effect) => effect.tag) ?? []),
       run: (payload: string, input: StreamInput) =>
         Stream.unwrap(
           Effect.gen(function* () {
@@ -1462,7 +1618,7 @@ const make = <
               false,
             )
 
-            const context: QueryContext<State, Event, Owned, Blobs> = {
+            const context: QueryContext<State, Event, Owned, Blobs, Effects[number]> = {
               id: input.ref.id,
               ref: input.ref,
               caller: input.caller,
@@ -1482,6 +1638,33 @@ const make = <
                   : input
                       .follow(event.identifier, options?.after)
                       .pipe(Stream.mapEffect((stored) => entryOf(event, stored))),
+              progress: <E extends Extract<Effects[number], ProgressEffect>>(
+                effect: E,
+                options?: { readonly effectId?: string | undefined },
+              ) => {
+                const codecs = progressCodecs.get(effect.tag)
+
+                if (codecs === undefined || member.progress?.effects.includes(effect) !== true)
+                  return Stream.die(
+                    new Error(`Stream ${member.tag} does not list progress of ${effect.tag}`),
+                  )
+
+                return input.progress(effect.tag, options?.effectId).pipe(
+                  Stream.mapEffect((stored) =>
+                    Effect.gen(function* () {
+                      const entry: ProgressEntry<E> = {
+                        effectId: stored.effectId,
+                        effect: (yield* codecs.effect(stored.effect)) as E["Type"],
+                        attempt: stored.attempt,
+                        seq: stored.seq,
+                        frame: (yield* codecs.frame(stored.frame)) as ProgressOf<E>,
+                      }
+
+                      return entry
+                    }).pipe(Effect.orDie),
+                  ),
+                )
+              },
             }
 
             const { value } = yield* decodeInput(payload).pipe(Effect.orDie)
@@ -1566,10 +1749,17 @@ const make = <
 
         commands.set(member.tag, {
           internal: internalMembers.has(member),
+          handler: handlerTags.has(member.tag),
           run: Effect.fnUntraced(function* (
             request: Request,
             rows: ReadonlyArray<readonly [string, string]>,
-            listConnections?: ConnectionLister,
+            {
+              head,
+              connections: listConnections,
+            }: {
+              readonly head: string
+              readonly connections?: ConnectionLister | undefined
+            },
           ) {
             let open = true
             const broadcasts: Array<Broadcast> = []
@@ -1665,6 +1855,7 @@ const make = <
             const outbox = openOutbox({
               sender: request.ref,
               commandId: request.commandId,
+              head,
               onBehalfOf: Option.getOrUndefined(principal(request.caller)),
             })
 
@@ -1719,6 +1910,42 @@ const make = <
               })
             })
 
+            const changeSubscription = (op: "subscribe" | "remove") =>
+              Effect.fnUntraced(function* (
+                declared: AnySubscription,
+                id: string,
+                options?: { readonly from?: SubscribeFrom },
+              ) {
+                yield* escaped("Subscription")
+
+                if (!subscriptions.includes(declared) || declared.route !== undefined)
+                  return yield* Effect.die(
+                    new Error(`${declared.tag} is not a dynamic subscription of ${name}`),
+                  )
+
+                const source = sources.get(declared.source)!
+                const from = options?.from ?? "now"
+
+                if (from !== "now" && from !== "start" && !isCursor(from))
+                  return yield* Effect.die(
+                    new Error(`subscribe from is "now", "start", or a cursor, not ${from}`),
+                  )
+
+                outbox.subscribe({
+                  subscription: declared.tag,
+                  source: ActorRef.make({
+                    tenant: request.ref.tenant,
+                    actor: declared.source.name,
+                    id: source.singleton
+                      ? "singleton"
+                      : yield* source.decodeId(id).pipe(Effect.orDie),
+                  }),
+                  op,
+                  from,
+                  events: declared.events.map((event) => event.identifier),
+                })
+              })
+
             const cancelEffect = Effect.fnUntraced(function* (key: string) {
               if (!open || (yield* InsideTurn) !== turn)
                 return yield* Effect.die(new Error("Effect capability escaped its turn"))
@@ -1729,7 +1956,14 @@ const make = <
 
             const context: CommandContext<State, Event, Owned, Blobs> &
               PerformContext<Effects[number]> &
-              BroadcastContext<ConnectionsOf<Api>> = {
+              BroadcastContext<ConnectionsOf<Api>> & {
+                readonly subscribe: (
+                  declared: AnySubscription,
+                  id: string,
+                  options?: { readonly from?: SubscribeFrom },
+                ) => Effect.Effect<void>
+                readonly unsubscribe: (declared: AnySubscription, id: string) => Effect.Effect<void>
+              } = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -1744,6 +1978,8 @@ const make = <
               perform,
               cancelEffect,
               broadcast: broadcastsTo(broadcasts, escaped),
+              subscribe: changeSubscription("subscribe"),
+              unsubscribe: (declared, id) => changeSubscription("remove")(declared, id),
               connections: (member: AnyConnection): Effect.Effect<ReadonlyArray<ConnectionInfo>> =>
                 Effect.gen(function* () {
                   yield* escaped("Connections")
@@ -1867,6 +2103,7 @@ const make = <
 
         const single: RegisteredCommand = {
           internal: false,
+          handler: false,
           run: Effect.fnUntraced(function* (request, rows) {
             return yield* reduceOnce(rows, yield* decodeInput(request))
           }),
@@ -1998,6 +2235,8 @@ const make = <
           policy,
           tables,
           blobs,
+          subscriptions: registeredSubscriptions,
+          subscribers: policy.subscribers,
         }
 
         if (!isSingleton) {
@@ -2140,7 +2379,7 @@ const make = <
               false,
             )
 
-            const context: QueryContext<State, Event, Owned, Blobs> = {
+            const context: QueryContext<State, Event, Owned, Blobs, Effects[number]> = {
               id: request.ref.id,
               ref: request.ref,
               caller: request.caller,
@@ -2153,6 +2392,8 @@ const make = <
               blob,
               follow: () =>
                 Stream.die(new Error("read.follow is only available in stream handlers")),
+              progress: () =>
+                Stream.die(new Error("Progress is only available in stream handlers")),
             }
 
             return yield* Effect.gen(function* () {
@@ -2406,6 +2647,7 @@ const make = <
 
       yield* actors.registerEffects({
         name,
+        progress: progressEffects,
         services: services as Context.Context<never>,
         effects: registered,
       })
@@ -2437,9 +2679,11 @@ const make = <
     return yield* getHandle(yield* internalActors.mintActorId, false)
   })
 
+  type Delivered = Omit<All, Subs[number]["handler"]["tag"]>
+
   const getIntents = Effect.fnUntraced(function* (
     id: string,
-  ): Effect.fn.Return<Intents<All>, never, InTurn> {
+  ): Effect.fn.Return<Intents<Delivered>, never, InTurn> {
     const { marker, staging } = yield* currentStaging()
 
     const target = ActorRef.make({
@@ -2449,18 +2693,23 @@ const make = <
       id: isSingleton ? "singleton" : yield* decodeId(id).pipe(Effect.orDie),
     })
 
+    // A subscription handler is reachable only through its subscriber's cursor.
     const methods = Object.fromEntries(
-      members.map((member) => {
+      members.flatMap((member) => {
+        if (handlerTags.has(member.tag)) return []
+
         const { encodeInput } = codecs.get(member.tag)!
 
         return [
-          member.tag,
-          (input: typeof member.input.Type) =>
-            Effect.gen(function* () {
-              const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+          [
+            member.tag,
+            (input: typeof member.input.Type) =>
+              Effect.gen(function* () {
+                const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-              yield* stage(marker, { target, command: member.tag, payload })
-            }),
+                yield* stage(marker, { target, command: member.tag, payload })
+              }),
+          ] as const,
         ]
       }),
     )
@@ -2500,7 +2749,7 @@ const make = <
                   workflow: member.tag,
                   input: payload,
                   key,
-                  startedBy: own ? current.commandId : null,
+                  after: own ? current.head : null,
                 }).pipe(Effect.orDie),
               })
 
@@ -2510,7 +2759,7 @@ const make = <
       }),
     )
 
-    return { ...methods, ...starts, ref: target } as Intents<All>
+    return { ...methods, ...starts, ref: target } as Intents<Delivered>
   })
 
   /** Reattaches to an execution by id, without contacting its owner. */
@@ -2575,6 +2824,8 @@ const make = <
     name,
     state: stateSchema,
     api: definition.api as Api,
+    /** Event classes this actor emits, which subscriptions to it may name. */
+    events: (definition.events ?? []) as Events,
     Turn,
     Read,
     Connection,
@@ -2599,8 +2850,8 @@ const make = <
      * an id that fails the key schema is a deterministic defect.
      */
     intents: (isSingleton ? () => getIntents("singleton") : getIntents) as K extends SingletonKey
-      ? () => Effect.Effect<Intents<All>, never, InTurn>
-      : (id: string) => Effect.Effect<Intents<All>, never, InTurn>,
+      ? () => Effect.Effect<Intents<Delivered>, never, InTurn>
+      : (id: string) => Effect.Effect<Intents<Delivered>, never, InTurn>,
     /**
      * A Promise client of this actor's public members over `Actor.serve`'s
      * HTTP protocol, for browsers and other code that doesn't run Effect.
@@ -2625,6 +2876,12 @@ const make = <
   })
 
   if (mintable) mintables.set(actor, { name, createdBy: policy.createdBy! })
+
+  sources.set(actor, {
+    singleton: isSingleton,
+    subscribers: policy.subscribers,
+    decodeId: (id) => decodeId(id),
+  })
 
   return actor as typeof actor &
     DefinitionWithInternal<Handle<All, Creating, BoundedMailbox>> &

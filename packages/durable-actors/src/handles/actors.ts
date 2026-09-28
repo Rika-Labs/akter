@@ -1,7 +1,9 @@
 import type { Transport } from "../runtime/connections/transport.ts"
 import type { Holder } from "../runtime/connections/holder.ts"
+import type { ProgressMessage } from "../runtime/effects/progress.ts"
 import { Context, Effect, type Exit, Schema, Scope, type Stream } from "effect"
 import type { ActorError } from "../errors/actor.ts"
+import type { SubscriptionFailure } from "../errors/subscription.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
 import type { ConnectionCommands } from "../identity/command.ts"
@@ -20,9 +22,34 @@ export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
   Failure: { value: Schema.String },
   Defect: { cause: Schema.Defect() },
+  /**
+   * A subscription delivery the subscriber settled without running its
+   * handler; only the relay sees it, and it commits no receipt.
+   */
+  Acknowledged: {
+    reason: Schema.Literals(["AlreadyApplied", "Stale", "Unsubscribed", "NotCreated"]),
+  },
 })
 
 export type Outcome = typeof Outcome.Type
+
+/**
+ * What a subscription delivery carries beside its command id: the source-side
+ * row it came from, the subscription's epoch, and the source position it
+ * applies. Only the relay sets it; the subscriber's cursor row is checked and
+ * advanced against it in the delivery's own turn.
+ */
+export const SubscriptionEnvelope = Schema.Struct({
+  subscription: Schema.NonEmptyString,
+  sourceType: Schema.NonEmptyString,
+  sourceId: Schema.NonEmptyString,
+  epoch: Schema.String,
+  kind: Schema.Literals(["event", "gap", "rejected"]),
+  /** An event's cursor, a gap's `resumeAfter`, or a rejected subscription's cursor. */
+  position: Schema.String,
+})
+
+export type SubscriptionEnvelope = typeof SubscriptionEnvelope.Type
 
 export const Request = Schema.Struct({
   ref: ActorRef,
@@ -36,6 +63,7 @@ export const Request = Schema.Struct({
    * waits for the turn cannot run the command again.
    */
   external: Schema.optionalKey(Schema.Boolean),
+  delivery: Schema.optionalKey(SubscriptionEnvelope),
 })
 
 export type Request = typeof Request.Type
@@ -94,10 +122,16 @@ export type EventReader = (
 
 export interface RegisteredCommand {
   readonly internal: boolean
+  /** Named as a subscription's handler: only subscription deliveries reach it. */
+  readonly handler: boolean
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
-    connections?: ConnectionLister,
+    turn: {
+      /** The actor's event sequence before this turn's emits. */
+      readonly head: string
+      readonly connections?: ConnectionLister | undefined
+    },
   ) => Effect.Effect<BusinessResult, BusinessResult>
   /**
    * A commutative reducer's merged turn: the inputs of `requests`, combined
@@ -148,6 +182,10 @@ export interface ConnectionResult {
 
 export interface RegisteredConnection {
   readonly stampCursor: boolean
+  /** Effect tags whose progress this member receives, and its audience. */
+  readonly progress:
+    | { readonly effects: ReadonlySet<string>; readonly to: "performer" | "all" }
+    | undefined
   readonly hasResync: boolean
   /** Fails with an encoded declared error only while opening. */
   readonly run: (
@@ -169,9 +207,24 @@ export interface StreamInput {
     tag: string,
     after: string | undefined,
   ) => Stream.Stream<StoredEvent, UnknownCursor | RetentionGap>
+  /** Accepted progress of one effect tag from now on; empty for a tag the member does not list. */
+  readonly progress: (tag: string, effectId: string | undefined) => Stream.Stream<StoredProgress>
+}
+
+/** One accepted progress frame, still encoded. */
+export interface StoredProgress {
+  readonly effectId: string
+  /** The effect's encoded input, as performed. */
+  readonly effect: string
+  readonly attempt: number
+  readonly seq: number
+  /** The frame, JSON-encoded under the effect's progress schema. */
+  readonly frame: string
 }
 
 export interface RegisteredStream {
+  /** Effect tags whose progress the handler may read. */
+  readonly progress: ReadonlySet<string>
   /** Encoded elements; a declared failure is encoded, anything else is a defect. */
   readonly run: (
     payload: string,
@@ -261,6 +314,8 @@ export interface RegisteredEffect {
 
 export interface EffectRegistration {
   readonly name: string
+  /** Effect tags some connection or stream member of the actor receives progress of. */
+  readonly progress: ReadonlySet<string>
   /** The effect layer's build context; executor attempts run in it. */
   readonly services: Context.Context<never>
   readonly effects: ReadonlyMap<string, RegisteredEffect>
@@ -310,6 +365,34 @@ export interface Registration {
   readonly feeds: ReadonlySet<string>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
+  /** The subscriptions this actor type declares, as its subscriber. */
+  readonly subscriptions: ReadonlyArray<RegisteredSubscription>
+  /** `policy.subscribers` of this actor type as a source; undefined allows every type. */
+  readonly subscribers: ReadonlyArray<string> | undefined
+}
+
+/** One `Actor.subscription` of a registered subscriber type. */
+export interface RegisteredSubscription {
+  readonly tag: string
+  readonly sourceType: string
+  /** The internal command deliveries run. */
+  readonly handler: string
+  /** Event tags this declaration delivers. */
+  readonly events: ReadonlyArray<string>
+  /** Event tags it once delivered; rows carrying them stay claimable and skip them. */
+  readonly retired: ReadonlyArray<string>
+  /** How a routed subscription names its subscriber; undefined for a dynamic one. */
+  readonly routed: "id" | "singleton" | undefined
+  /**
+   * The subscriber id of one event of a routed subscription: decodes the
+   * stored event, applies `route`, and checks the id against the subscriber's
+   * key schema. Fails when any step fails.
+   */
+  readonly route: (
+    tag: string,
+    value: string,
+    source: ActorRef,
+  ) => Effect.Effect<string, SubscriptionFailure>
 }
 
 /** A workflow member bound to its body when the actor's layer was built. */
@@ -362,6 +445,8 @@ export class InternalActors extends Context.Service<
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /** Sends one progress message to its actor's owner as an executor pool would; for tests. */
+    readonly deliverProgress: (message: ProgressMessage) => Effect.Effect<void>
     /** Whether the actor has a generation row, read without waking or creating it. */
     readonly exists: (ref: ActorRef) => Effect.Effect<boolean, ActorError>
     /**

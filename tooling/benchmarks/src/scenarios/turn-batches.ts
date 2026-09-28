@@ -1,5 +1,5 @@
 import { Deferred, Effect, Fiber } from "effect"
-import { BatchProbe, expectArrivals, gate } from "../probe/batches.ts"
+import { BatchProbe, expectArrivals, gate } from "../probe/turns/batches.ts"
 import type { ActorError } from "@durable-actors/core"
 import { type CaseResult, measure, type Scenario } from "../scenario.ts"
 
