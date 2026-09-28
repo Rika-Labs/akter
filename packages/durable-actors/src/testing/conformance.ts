@@ -63,12 +63,14 @@ import {
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
+import { pipelineConformance } from "./conformance/pipeline.ts"
 import {
   connectionsConformance,
   connectionsFixture,
   type ConnectionsFixture,
   connectionsLayer,
 } from "./conformance/connections.ts"
+import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import {
@@ -380,6 +382,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...effectsConformance,
   ...progressConformance,
   ...multiRunnerConformance,
+  ...pipelineConformance,
   ...relayConformance,
   ...relayClusterConformance,
   ...effectControlConformance,
@@ -391,6 +394,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...retentionConformance,
   ...workflowsConformance,
   ...connectionsConformance,
+  ...streamsConformance,
   ...transportsConformance,
   ...workflowVersionsConformance,
   {
@@ -1425,6 +1429,7 @@ export const describeConformance = (options: {
     propertiesLayer,
     workflowsLive(fixture.workflows),
     connectionsLayer(fixture.connections),
+    streamsLayer,
     transportsLayer,
     mintLayer,
   )

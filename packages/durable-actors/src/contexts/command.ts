@@ -1,4 +1,4 @@
-import { Context, type DateTime, Effect, Option } from "effect"
+import { Context, type DateTime, Effect, Option, type Stream } from "effect"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import type { ActorRef, Caller, Principal } from "../identity/caller.ts"
 import type { AnyBlob } from "../members/blob.ts"
@@ -105,4 +105,22 @@ export interface QueryContext<
   readonly group: Group
   /** This actor's committed entries of a declared blob. */
   readonly blob: (blob: Blobs) => BlobRead
+  /**
+   * Committed events of one declared class after the exclusive `after`
+   * cursor, then each one as its turn commits, with no gap or repeat between
+   * the two. Only stream handlers provide `InStream`, so a query that follows
+   * leaves an unsatisfiable requirement; the stream ends with its activation.
+   */
+  readonly follow: <E extends Event>(
+    event: E,
+    options?: { readonly after?: string | undefined },
+  ) => Stream.Stream<EventEntry<E["Type"]>, UnknownCursor | RetentionGap, InStream>
 }
+
+/**
+ * Provided only while a stream handler runs. `read.follow` requires it and
+ * `X.toLayer` removes it from stream handler requirements.
+ */
+export class InStream extends Context.Service<InStream, { readonly stream: symbol }>()(
+  "@durable-actors/core/contexts/command/InStream",
+) {}
