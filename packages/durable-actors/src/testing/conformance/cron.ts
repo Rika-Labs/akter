@@ -490,7 +490,9 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const how of ["key", "cancel"] as const) {
             const exit = yield* heartbeat.Hijack(how).pipe(Effect.exit)
-            expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain("Intent.key values starting with $ are reserved")
+            expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+              "Intent.key values starting with $ are reserved",
+            )
           }
 
           expect(yield* ticksOf(heartbeat.ref)).toEqual(rows)
