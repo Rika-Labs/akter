@@ -2,7 +2,7 @@ import { BunCrypto } from "@effect/platform-bun"
 import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { Config, Effect, Layer, ManagedRuntime, Option } from "effect"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -46,6 +46,15 @@ const app = () =>
   )
 
 const key = crypto.randomUUID()
+
+// Opening a new PGlite directory runs initdb inside WebAssembly (about 2 s on a
+// laptop, over 5 s on a busy CI runner), and a new database then applies the
+// framework's migrations. Do that once here, so no test's own timeout pays for it.
+beforeAll(async () => {
+  const runtime = app()
+  await runtime.runPromise(Effect.void)
+  await runtime.dispose()
+}, 60_000)
 
 test("a retried command replays its receipt instead of counting twice", async () => {
   const runtime = harness()
