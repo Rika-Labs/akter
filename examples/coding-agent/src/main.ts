@@ -3,7 +3,7 @@
 // otherwise an in-memory PGlite, and a stand-in sandbox provider:
 //   bun run start "add a --dry-run flag"
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Actor, System, User } from "@durable-actors/core"
+import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { Config, Console, Effect, Layer, Option, Schema } from "effect"
 import { AgentId, CodingAgent } from "./coding-agent/contract.ts"
@@ -26,12 +26,13 @@ const live = Layer.mergeAll(CodingAgentLive, SandboxReaperLive).pipe(
   Layer.provide(fakeLayer(fakeSandboxes())),
   Layer.provideMerge(
     Actors.layer({
-      // The demo user, and the workflow and relay calls the actors make for themselves.
+      // The demo user; relay deliveries and workflow step commands skip this hook.
       authorize: ({ caller, ref, kind }) =>
         Effect.succeed(
           (kind === "command" || kind === "query") &&
             ref.tenant === tenant &&
-            ((Schema.is(User)(caller) && caller.subject === "demo") || Schema.is(System)(caller)),
+            Schema.is(User)(caller) &&
+            caller.subject === "demo",
         ),
     }),
   ),

@@ -794,6 +794,15 @@ const make = <
       id: isSingleton ? "singleton" : yield* decodeId(id).pipe(Effect.orDie),
     })
 
+    // A step's calls continue accepted work, like relay delivery: they skip the
+    // external access and expiry checks, and the engine bounds their ids' expiry.
+    const send = (request: Request) =>
+      Effect.flatMap(CurrentCallPhase, (phase) =>
+        CallPhase.$is("Activity")(phase)
+          ? internalActors.deliver(request)
+          : internalActors.execute(request),
+      )
+
     // A workflow body sends only from inside a step, whose attempt derives each call's id.
     const callable = Effect.gen(function* () {
       if (CallPhase.$is("Body")(yield* CurrentCallPhase))
@@ -844,7 +853,7 @@ const make = <
                   if (member.key !== undefined) yield* checkKey(member.key(input))
                   const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-                  const outcome = yield* internalActors.execute(
+                  const outcome = yield* send(
                     Request.make({
                       ref,
                       caller,
@@ -905,7 +914,7 @@ const make = <
                     ? yield* internalActors.query(
                         Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
                       )
-                    : yield* internalActors.execute(
+                    : yield* send(
                         Request.make({
                           ref,
                           caller,

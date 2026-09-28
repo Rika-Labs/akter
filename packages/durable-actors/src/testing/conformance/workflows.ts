@@ -681,11 +681,13 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "workflows: activity actor calls act for the execution in the owner's tenant",
+    name: "workflows: activity actor calls act for the execution in the owner's tenant, past authorize",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture.workflows)
+          // Step calls skip external authorization, as relay delivery does.
+          fixture.denied.add("Charge")
 
           const shipper = yield* Shipper.get("acting").pipe(
             Actor.as(User.make({ subject: "carol" })),
@@ -703,7 +705,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           }
 
           expect(fixture.workflows.charges).toEqual([charge, charge])
-        }),
+        }).pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Charge")))),
       ),
   },
   {

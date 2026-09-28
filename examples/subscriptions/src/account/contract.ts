@@ -115,8 +115,8 @@ export const Cancel = Actor.command("Cancel")
 
 /**
  * Records the outcome of `Collect`. It is public because a workflow reaches
- * its owner through an ordinary handle; `authorize` admits only the owner's
- * own workflow, as it does for `Collect`.
+ * its owner through an ordinary handle; `authorize` refuses it to every
+ * external caller, as it does `Collect`.
  */
 export const Settle = Actor.command("Settle", { input: Settlement })
 

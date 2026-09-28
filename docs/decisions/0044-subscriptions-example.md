@@ -17,7 +17,7 @@
 ## Decision
 
 - **Place.** The example is the workspace package `examples/subscriptions`, named `@durable-actors/subscriptions`. It follows the other examples: one actor folder (`src/account/{contract,layer,authorize,gateway}.ts` with its test beside it), a runnable `src/main.ts`, and `test` / `test:integration` scripts that run the same cases on PGlite and on a fresh Postgres database.
-- **Scope.** An `Account` actor owns its invoices as rows. Its first invoice is issued once a card reaches the provider, and `Renew` issues each later one; `policy.cron` drives `Renew` once M2.5 is on main. A `Collect` workflow charges an invoice, waits up to three days for a newer card after a decline, retries twice, and reports back through `Settle`. `authorize` admits `Collect` and `Settle` only from the account's own System callers.
+- **Scope.** An `Account` actor owns its invoices as rows. Its first invoice is issued once a card reaches the provider, and `Renew` issues each later one; `policy.cron` drives `Renew` once M2.5 is on main. A `Collect` workflow charges an invoice, waits up to three days for a newer card after a decline, retries twice, and reports back through `Settle`. `authorize` refuses `Collect` and `Settle` to every external caller; the account starts collections through intents, and step calls to its commands skip `authorize`.
 - **Provider.** The payment provider is an in-memory stand-in behind a `PaymentGateway` service. The example claims no provider behaviour: it shows where the idempotency keys go (the effect id for attaching a card, the execution id and step name for a charge) and counts calls per key in its tests.
 
 ## Alternatives
