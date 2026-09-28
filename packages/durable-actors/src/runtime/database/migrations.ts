@@ -423,6 +423,14 @@ export const migrations = {
       ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, command, ready_at_ms, intent_id)
       WHERE kind = 'effect' AND NOT running`
   }),
+  // An attempt can end an effect before its retries run out, as when its
+  // route rejects the result. `final_attempt` records which attempt did, with
+  // the outcome, so a dead letter that fails to commit is retried without
+  // another provider call and still reports the attempts actually made.
+  "0016_final_effect_failures": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_outbox ADD COLUMN final_attempt integer`
+  }),
 }
 
 /**
