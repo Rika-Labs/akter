@@ -1054,6 +1054,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
               ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
             )
 
+          // The fresh credential itself may have expired while the check ran.
+          if (expiresAt !== undefined && answered >= expiresAt)
+            return yield* fail(credentialExpired)
+
           connection.lastAuthorized = at
           connection.expiresAt = expiresAt
         }),
