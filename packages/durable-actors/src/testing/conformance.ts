@@ -79,6 +79,14 @@ import {
 } from "./conformance/outbox.ts"
 import { propertiesConformance, propertiesLayer } from "./conformance/properties.ts"
 import {
+  effectControlClusterConformance,
+  effectControlConformance,
+  effectControlEffects,
+  effectControlFixture,
+  effectControlLayer,
+  type EffectControlFixture,
+} from "./conformance/effect-control.ts"
+import {
   relayClusterConformance,
   relayConformance,
   relayEffects,
@@ -207,6 +215,7 @@ export interface ConformanceFixture {
   readonly progress: ProgressFixture
   readonly blobs: BlobsFixture
   readonly relay: RelayFixture
+  readonly effectControl: EffectControlFixture
   readonly retention: RetentionFixture
   readonly workflows: WorkflowsFixture
   readonly connections: ConnectionsFixture
@@ -335,6 +344,7 @@ const makeFixture = (): ConformanceFixture => ({
   progress: progressFixture(),
   blobs: blobsFixture(),
   relay: relayFixture(),
+  effectControl: effectControlFixture(),
   retention: retentionFixture(),
   workflows: workflowsFixture(),
   connections: connectionsFixture(),
@@ -372,6 +382,8 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...multiRunnerConformance,
   ...relayConformance,
   ...relayClusterConformance,
+  ...effectControlConformance,
+  ...effectControlClusterConformance,
   ...singletonConformance,
   ...blobsConformance,
   ...inspectionViewsConformance,
@@ -1407,6 +1419,8 @@ export const describeConformance = (options: {
     inspectorLayer,
     relayLayer(fixture.relay),
     relayEffects(fixture.relay),
+    effectControlLayer,
+    effectControlEffects(fixture.effectControl),
     retentionLayer(fixture.retention),
     propertiesLayer,
     workflowsLive(fixture.workflows),
