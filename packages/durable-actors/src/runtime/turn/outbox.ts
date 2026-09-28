@@ -53,7 +53,8 @@ export const ControlPayload = Schema.fromJsonString(
   Schema.Struct({
     op: Schema.Literals(["subscribe", "remove"]),
     epoch: Schema.String,
-    from: Schema.String,
+    /** Where a subscribe starts: `"now"`, `"start"`, or an exclusive cursor. */
+    start: Schema.String,
     events: Schema.Array(Schema.String),
   }),
 )
@@ -191,7 +192,7 @@ export const writeOutbox = Effect.fnUntraced(function* (
         ${tenant}, ${actor}, ${id}, ${controlKey(change)}, ${change.source.actor}, ${change.source.id},
         ${change.subscription},
         json_build_object('op', ${change.op}::text, 'epoch', cursor.epoch::text,
-          'from', ${change.from}::text, 'events', to_jsonb(${textArray({ sql, values: change.events })}))::text,
+          'start', ${change.from}::text, 'events', to_jsonb(${textArray({ sql, values: change.events })}))::text,
         ${caller}
       FROM cursor
       ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, timer_key) WHERE timer_key IS NOT NULL

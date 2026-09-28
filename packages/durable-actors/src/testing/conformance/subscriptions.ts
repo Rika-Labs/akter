@@ -81,8 +81,7 @@ const PlaceThenRefuse = Actor.command("PlaceThenRefuse", {
 
 const PlaceThenDie = Actor.command("PlaceThenDie", { input: Schema.String })
 
-/** @internal */
-export const SubOrder = Actor.make("SubOrder", {
+const SubOrder = Actor.make("SubOrder", {
   key: Schema.String,
   events: [OrderPlaced, OrderCancelled, OrderNoted],
   api: { Place, PlaceMany, CancelOrder, Note, PlaceThenRefuse, PlaceThenDie },
@@ -109,7 +108,7 @@ const CustomerOrders = Actor.subscription("CustomerOrders", {
 const Touch = Actor.command("Touch")
 
 /** A routed projection: every order event reaches the customer it names. */
-export const SubSummary = Actor.make("SubSummary", {
+const SubSummary = Actor.make("SubSummary", {
   key: Schema.String,
   state: Log,
   api: { Touch },
@@ -157,7 +156,7 @@ const Unfollow = Actor.command("Unfollow", { input: Schema.String })
 const IntentKeys = Actor.command("IntentKeys", { output: Schema.Array(Schema.String) })
 
 /** A dynamic subscriber: it follows only the orders its turns subscribe to. */
-export const SubFollower = Actor.make("SubFollower", {
+const SubFollower = Actor.make("SubFollower", {
   key: Schema.String,
   state: Log,
   api: { Follow, FollowThenRefuse, Unfollow, IntentKeys, Touch },
@@ -832,7 +831,7 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: 'runs no stale-epoch delivery after unsubscribe and resubscribe from "start", and applies the new epoch from cursor 1',
+    name: 'runs no stale-epoch delivery after unsubscribe and resubscribe with from: "start", and applies the new epoch from cursor 1',
     run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
       run(
         environment,

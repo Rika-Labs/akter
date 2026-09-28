@@ -91,14 +91,14 @@ export type Route<E> = RouteFunction<E> | { readonly _tag: "Singleton" }
  */
 export interface Subscription<
   Tag extends string,
-  S extends SourceDefinition,
   E extends ReadonlyArray<EventClass>,
   Routed extends boolean,
   H extends AnyCommand = AnyCommand,
 > {
   readonly kind: "subscription"
   readonly tag: Tag
-  readonly source: S
+  /** The source definition, typed loosely so a subscriber's type doesn't embed its source's. */
+  readonly source: SourceDefinition
   readonly events: E
   readonly retired: ReadonlyArray<string>
   readonly handler: H
@@ -106,12 +106,7 @@ export interface Subscription<
   readonly routed: Routed
 }
 
-export type AnySubscription = Subscription<
-  string,
-  SourceDefinition,
-  ReadonlyArray<EventClass>,
-  boolean
->
+export type AnySubscription = Subscription<string, ReadonlyArray<EventClass>, boolean>
 
 /** A handler command whose input doesn't accept the subscription's deliveries fails to compile. */
 type Accepting<H extends AnyCommand, E> = [Delivery<E>] extends [H["input"]["Type"]]
@@ -148,7 +143,7 @@ export interface SubscriptionFunction {
     options: SubscriptionOptions<S, E, H & Accepting<H, E[number]["Type"]>> & {
       readonly route: Route<E[number]["Type"]>
     },
-  ): Subscription<Tag, S, E, true, H>
+  ): Subscription<Tag, E, true, H>
   <
     const Tag extends string,
     const S extends SourceDefinition,
@@ -157,7 +152,7 @@ export interface SubscriptionFunction {
   >(
     tag: Tag,
     options: SubscriptionOptions<S, E, H & Accepting<H, E[number]["Type"]>>,
-  ): Subscription<Tag, S, E, false, H>
+  ): Subscription<Tag, E, false, H>
 }
 
 const subscription = ((

@@ -498,9 +498,9 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
         const refused =
           change.op === "subscribe" &&
-          change.from !== "now" &&
-          change.from !== "start" &&
-          BigInt(change.from) > head
+          change.start !== "now" &&
+          change.start !== "start" &&
+          BigInt(change.start) > head
 
         if (existing !== undefined && BigInt(existing.epoch) >= epoch)
           // Only a refused subscribe leaves a tombstone at its own epoch.
@@ -522,7 +522,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           return refused
         }
 
-        const delivered = Match.value(change.from).pipe(
+        const delivered = Match.value(change.start).pipe(
           Match.when("now", () => head),
           Match.when("start", () => 0n),
           Match.orElse((cursor) => BigInt(cursor)),
@@ -566,14 +566,14 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           sourceId: source.id,
           epoch: change.epoch,
           kind: "rejected",
-          position: change.from,
+          position: change.start,
         },
         Number(row.scheduled_at_ms),
         WireRejected.make({
           subscription: row.command,
           source,
           reason: "UnknownCursor",
-          cursor: change.from,
+          cursor: change.start,
         }),
       )
 
