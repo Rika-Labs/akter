@@ -60,7 +60,7 @@ class ChargeCard extends Actor.effect<ChargeCard>()("ChargeCard", {
 ### 2. The version is stored beside the value
 
 - `actor_events` gains `payload_version integer NOT NULL DEFAULT 0`. `turn.emit` writes the class's current version.
-- `actor_outbox` gains the same column. Effect rows get the effect's current version; intent rows keep `0` (command inputs are out of scope, §6).
+- `actor_outbox` gains the same column. Effect rows get the effect's current version; intent rows keep `0` (command inputs are out of scope, §6). When the relay settles an effect, it rewrites the row into its `onSuccess` or `onDeadLetter` route intent in one statement, and that statement also sets `payload_version` back to `0`, because the row now carries a command input.
 - `actor_dead_letters` gains the same column and copies it from the effect row.
 - Existing rows get `0`, which is correct: they were written before any chain existed. Postgres adds a `NOT NULL` column with a constant default without rewriting the table.
 
@@ -155,6 +155,7 @@ In `conformance/payload-migrations.ts`, on PGlite and Postgres:
 - `stores the current payload version with each emitted event and performed effect`
 - `runs a pending effect written at an older version with the upcast payload`
 - `delivers an onDeadLetter route with the upcast effect and keeps the dead letter's version`
+- `resets payload_version to 0 when a settled effect row becomes its route intent`
 - `fails a read as a defect, never a skip, when an upcast throws or the stored version is newer than the chain`
 - `refuses startup after a rollback past a recorded version, and when a shortened chain drops a version still retained`
 - `seeds version 0 for existing rows, so the first shortened chain after the migration is refused while version-0 values remain`
