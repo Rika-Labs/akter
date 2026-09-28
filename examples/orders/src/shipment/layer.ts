@@ -1,0 +1,32 @@
+import { Effect, Layer } from "effect"
+import { Shipment } from "./contract.ts"
+import { ShipmentReads } from "./queries.ts"
+
+const moveTo = Effect.fnUntraced(function* (status: "ready" | "cancelled") {
+  const { state } = yield* Shipment.Turn
+  yield* state.set({ order: state.order, package: state.package, skus: state.skus, status })
+})
+
+export const ShipmentCommands = Shipment.toLayer(
+  Effect.succeed({
+    Open: Effect.fnUntraced(function* ({ order, package: pkg, skus }) {
+      yield* (yield* Shipment.Turn).state.set({ order, package: pkg, skus, status: "pending" })
+    }),
+
+    // Intents have no delivery order, so a Release can reach a shipment only
+    // after its Open: before that the child does not exist and the relay retries.
+    Release: Effect.fnUntraced(function* () {
+      const turn = yield* Shipment.Turn
+
+      if (turn.state.status === "pending") yield* moveTo("ready")
+    }),
+
+    Cancel: Effect.fnUntraced(function* () {
+      const turn = yield* Shipment.Turn
+
+      if (turn.state.status === "pending") yield* moveTo("cancelled")
+    }),
+  }),
+)
+
+export const ShipmentLive = Layer.mergeAll(ShipmentCommands, ShipmentReads)

@@ -286,6 +286,8 @@ export interface Registration {
   ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
   readonly connections: ReadonlyMap<string, RegisteredConnection>
   readonly streams: ReadonlyMap<string, RegisteredStream>
+  /** Tags of the events this actor type serves as event feeds. */
+  readonly feeds: ReadonlySet<string>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
 }
@@ -342,6 +344,22 @@ export class InternalActors extends Context.Service<
     readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
     /** Sends one progress message to its actor's owner as an executor pool would; for tests. */
     readonly deliverProgress: (message: ProgressMessage) => Effect.Effect<void>
+    /** Whether the actor has a generation row, read without waking or creating it. */
+    readonly exists: (ref: ActorRef) => Effect.Effect<boolean, ActorError>
+    /**
+     * Reads up to `limit` committed events of `tags` after an exclusive
+     * cursor, like a query, without waking the actor; an actor with no
+     * generation row fails `NotCreated` and gets none.
+     */
+    readonly readFeed: (
+      ref: ActorRef,
+      tags: ReadonlyArray<string>,
+      after: string | undefined,
+      limit: number,
+    ) => Effect.Effect<
+      ReadonlyArray<StoredEvent & { readonly tag: string }>,
+      ActorError | UnknownCursor | RetentionGap
+    >
     /**
      * Subscribes to a stream member on the actor's owner: `request.command`
      * is the member and `request.payload` its encoded input. Elements arrive

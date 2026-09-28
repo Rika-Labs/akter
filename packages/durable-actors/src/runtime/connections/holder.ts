@@ -44,6 +44,9 @@ export const RESYNC_DEADLINE_MS = 30_000
 /** A third owner loss within this window ends the connection instead of resyncing again. */
 export const RESYNC_WINDOW_MS = 300_000
 
+/** Inbound frames a connection may have in flight before its transport stops reading. */
+export const MAX_INFLIGHT_FRAMES = 32
+
 const TICK = "100 millis"
 
 const OWNER_CHECK_MS = 1_000
@@ -65,6 +68,14 @@ export interface HeldConnection {
   readonly send: (frame: string) => Effect.Effect<void, ActorError>
   /** Tells the holder the client finished its replay after `Resync`. */
   readonly resyncDone: Effect.Effect<void>
+  /** Waits until fewer than `MAX_INFLIGHT_FRAMES` inbound frames are in flight, or the session ended. */
+  readonly writable: Effect.Effect<void>
+  /**
+   * Renews the session's authorization for the same caller, as a fresh
+   * credential does: `authorize` runs again, and the credential's own expiry,
+   * if any, becomes the session's new cap.
+   */
+  readonly reauthenticate: (expiresAt: number | undefined) => Effect.Effect<void, ActorError>
   readonly close: Effect.Effect<void>
 }
 
@@ -141,7 +152,8 @@ export interface HolderOptions {
     readonly caller: Caller
     readonly ref: ActorRef
     readonly command: string
-    readonly kind: "open" | "reauthorize"
+    readonly kind: "open" | "feed" | "reauthorize"
+    readonly of?: "open" | "feed"
   }) => Effect.Effect<boolean>
 }
 
@@ -150,12 +162,18 @@ interface Held {
   readonly ref: ActorRef
   readonly key: string
   readonly member: string
+  /** A feed's event tags, each authorized on its own; `undefined` for a connection member. */
+  readonly feed: ReadonlyArray<string> | undefined
   readonly caller: Caller
   readonly type: HeldActorType
   readonly outbound: Queue.Queue<ClientMessage, ActorError | Cause.Done>
   readonly secret: string
   readonly inbound: Array<{ readonly frame: string; readonly issuedAt: number }>
   readonly wake: Queue.Queue<void>
+  /** Signalled whenever an inbound frame leaves the queue or the session ends. */
+  readonly drained: Queue.Queue<void>
+  /** The credential's own expiry, which caps authorization regardless of `reauthorizeEvery`. */
+  expiresAt: number | undefined
   open: boolean
   ended: boolean
   outFrames: number
@@ -196,6 +214,12 @@ interface HeldActor {
   owner: string
   ownerEpoch: string
   lastCheck: number
+  /**
+   * No owner message applied yet. A holder forgets an actor once it holds no
+   * connection to it, while the owner's channel keeps counting, so the first
+   * message after that sets the position instead of reading as a gap.
+   */
+  fresh: boolean
   readonly connections: Map<string, Held>
 }
 
@@ -255,6 +279,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       owner: "",
       ownerEpoch: "",
       lastCheck: 0,
+      fresh: true,
       connections: new Map(),
     }
 
@@ -297,6 +322,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         yield* Effect.ignore(Queue.clear(connection.outbound))
       yield* Queue.fail(connection.outbound, error)
       yield* Queue.offer(connection.wake, undefined)
+      yield* Queue.offer(connection.drained, undefined)
 
       if (deleteOwnRow) yield* deleteRow(connection)
     })
@@ -489,6 +515,13 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       // Late messages from a dead or superseded generation are dropped.
       if (!(yield* observe(actor, message))) return { wrongEpoch: false, unknown }
 
+      // An owner acknowledges each message before sending the next, so the first one
+      // this record sees follows everything its connections could have missed.
+      if (actor.fresh) {
+        actor.fresh = false
+        actor.seq = message.seq - 1
+      }
+
       // A redelivered message was already applied.
       if (message.seq <= actor.seq) return { wrongEpoch: false, unknown }
 
@@ -519,7 +552,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
                 }
 
                 // Nothing reaches a client past its authorization bound.
-                if (at >= authorizedUntil(connection)) return end(connection, unauthorized, true)
+                if (at >= authorizedUntil(connection))
+                  return end(connection, lapsed(connection, at), true)
 
                 const out = ClientMessage.cases.Frame.make({
                   frame: frame.frame,
@@ -630,17 +664,30 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     )
 
   const authorizedUntil = (connection: Held) =>
-    connection.lastAuthorized + connection.type.reauthorizeMs
+    Math.min(
+      connection.lastAuthorized + connection.type.reauthorizeMs,
+      connection.expiresAt ?? Number.POSITIVE_INFINITY,
+    )
 
   const unauthorized = ActorError.make({
     reason: Unauthorized.make({ code: "reauthorization_unavailable" }),
   })
 
+  const credentialExpired = ActorError.make({ reason: Unauthorized.make({ code: "expired" }) })
+
+  // A session past its credential's expiry says so; otherwise its last check is too old.
+  const lapsed = (connection: Held, at: number) =>
+    connection.expiresAt !== undefined && at >= connection.expiresAt
+      ? credentialExpired
+      : unauthorized
+
   // Nothing reaches the owner once the connection's authorization has lapsed.
   const expired = (connection: Held) =>
     Effect.gen(function* () {
-      if ((yield* now) < authorizedUntil(connection)) return false
-      yield* end(connection, unauthorized, true)
+      const at = yield* now
+
+      if (at < authorizedUntil(connection)) return false
+      yield* end(connection, lapsed(connection, at), true)
 
       return true
     })
@@ -708,6 +755,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         const bytes = utf8.encode(frame).byteLength
         connection.inBytes -= bytes
         heldBytes -= bytes
+        yield* Queue.offer(connection.drained, undefined)
         connection.nextSeq += 1
         const seq = connection.nextSeq
 
@@ -748,26 +796,45 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       }
     })
 
+  // A connection is checked as its member; a feed as each event tag it reads, all of which must pass.
+  const check = (
+    session: { readonly caller: Caller; readonly ref: ActorRef; readonly member: string },
+    feed: ReadonlyArray<string> | undefined,
+    kind: "first" | "reauthorize",
+  ) =>
+    feed === undefined
+      ? options.authorize({
+          caller: session.caller,
+          ref: session.ref,
+          command: session.member,
+          kind: kind === "first" ? "open" : "reauthorize",
+          of: kind === "first" ? undefined : "open",
+        })
+      : Effect.forEach(feed, (tag) =>
+          options.authorize({
+            caller: session.caller,
+            ref: session.ref,
+            command: tag,
+            kind: kind === "first" ? "feed" : "reauthorize",
+            of: kind === "first" ? undefined : "feed",
+          }),
+        ).pipe(Effect.map((answers) => answers.every(Boolean)))
+
   const reauthorize = (connection: Held, at: number) =>
     Effect.gen(function* () {
       connection.checking = true
 
-      const allowed = yield* options
-        .authorize({
-          caller: connection.caller,
-          ref: connection.ref,
-          command: connection.member,
-          kind: "reauthorize",
-        })
-        .pipe(Effect.exit)
+      const allowed = yield* check(connection, connection.feed, "reauthorize").pipe(Effect.exit)
 
       connection.checking = false
 
       if (connection.ended) return
 
+      const answered = yield* now
+
       // An answer that arrives past the bound cannot extend it; the session already lapsed.
-      if (Exit.isSuccess(allowed) && allowed.value && (yield* now) >= authorizedUntil(connection))
-        yield* end(connection, unauthorized, true)
+      if (Exit.isSuccess(allowed) && allowed.value && answered >= authorizedUntil(connection))
+        yield* end(connection, lapsed(connection, answered), true)
       else if (Exit.isSuccess(allowed) && allowed.value) connection.lastAuthorized = at
       else if (Exit.isSuccess(allowed))
         yield* end(
@@ -823,14 +890,15 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         continue
       }
 
+      // The credential's expiry caps the session; buffered frames go with it.
+      if (connection.expiresAt !== undefined && at >= connection.expiresAt) {
+        yield* end(connection, credentialExpired, true)
+
+        continue
+      }
+
       if (at >= connection.lastAuthorized + every) {
-        yield* end(
-          connection,
-          ActorError.make({
-            reason: Unauthorized.make({ code: "reauthorization_unavailable" }),
-          }),
-          true,
-        )
+        yield* end(connection, unauthorized, true)
 
         continue
       }
@@ -890,6 +958,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     readonly member: string
     readonly caller: Caller
     readonly params: string
+    /** The credential's own expiry, if it has one; the session never outlives it. */
+    readonly expiresAt?: number | undefined
+    /** The event tags of a feed, which opens the framework feed member. */
+    readonly feed?: ReadonlyArray<string> | undefined
   }) {
     const type = options.actorType(request.ref.actor)
 
@@ -911,12 +983,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         reason: ActorUnavailable.make({ cause: new Error("Holder is at its connection limit") }),
       })
 
-    const allowed = yield* options.authorize({
-      caller: request.caller,
-      ref: request.ref,
-      command: request.member,
-      kind: "open",
-    })
+    if (request.expiresAt !== undefined && (yield* now) >= request.expiresAt)
+      return yield* credentialExpired
+
+    const allowed = yield* check(request, request.feed, "first")
 
     if (!allowed)
       return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
@@ -926,12 +996,15 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       ref: request.ref,
       key: actorKey(request.ref),
       member: request.member,
+      feed: request.feed,
       caller: request.caller,
       type,
       outbound: yield* Queue.unbounded<ClientMessage, ActorError | Cause.Done>(),
       secret: connectionSecret(yield* crypto.randomBytes(32).pipe(Effect.orDie)),
       inbound: [],
       wake: yield* Queue.sliding<void>(1),
+      drained: yield* Queue.sliding<void>(1),
+      expiresAt: request.expiresAt,
       open: false,
       ended: false,
       outFrames: 0,
@@ -1069,6 +1142,41 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
             yield* push(connection, message, false)
         yield* Queue.offer(connection.wake, undefined)
       }),
+      writable: Effect.gen(function* () {
+        while (!connection.ended && connection.inbound.length >= MAX_INFLIGHT_FRAMES)
+          yield* Queue.take(connection.drained)
+      }),
+      reauthenticate: (expiresAt) =>
+        Effect.gen(function* () {
+          const fail = (error: ActorError) =>
+            Effect.andThen(end(connection, error, true), Effect.fail(error))
+
+          if (connection.ended) return yield* ended("ClientClosed", false)
+          const at = yield* now
+
+          if (expiresAt !== undefined && at >= expiresAt) return yield* fail(credentialExpired)
+
+          const allowed = yield* check(connection, connection.feed, "reauthorize")
+
+          if (connection.ended) return yield* ended("ClientClosed", false)
+          const answered = yield* now
+
+          // A renewal that lands past the bound can't revive a lapsed session.
+          if (answered >= authorizedUntil(connection))
+            return yield* fail(lapsed(connection, answered))
+
+          if (!allowed)
+            return yield* fail(
+              ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
+            )
+
+          // The fresh credential itself may have expired while the check ran.
+          if (expiresAt !== undefined && answered >= expiresAt)
+            return yield* fail(credentialExpired)
+
+          connection.lastAuthorized = at
+          connection.expiresAt = expiresAt
+        }),
       close: Effect.gen(function* () {
         if (connection.ended) return
         const cause = SessionEnded.make({ cause: "ClientClosed", resync: false })
@@ -1096,7 +1204,13 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     ),
   )
 
-  return { open, deliver, size: () => held.size }
+  return {
+    open,
+    deliver,
+    size: () => held.size,
+    /** The clock authorization and credential expiry are measured on, in epoch milliseconds. */
+    now,
+  }
 })
 
 export type Holder = Effect.Success<ReturnType<typeof connectionHolder>>
