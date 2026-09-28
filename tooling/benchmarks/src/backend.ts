@@ -25,6 +25,8 @@ export interface Instruments {
   readonly statements: Effect.Effect<{
     readonly calls: number
     readonly top: ReadonlyArray<StatementCount>
+    /** Every statement, most-called first; `top` is its first 16. */
+    readonly all: ReadonlyArray<StatementCount>
   }>
   readonly sampleActivity: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
@@ -182,13 +184,16 @@ export const postgres = (external: string | undefined) =>
             AND s.query NOT LIKE '%cluster_%' AND s.query NOT LIKE '%pg_locks%'
           ORDER BY s.calls DESC`
 
+        const all = top.map((row) => ({
+          query: row.query.replace(/\s+/g, " ").slice(0, 160),
+          calls: Number(row.calls),
+          meanMs: Math.round(row.mean * 1000) / 1000,
+        }))
+
         return {
           calls: top.reduce((sum, row) => sum + Number(row.calls), 0),
-          top: top.slice(0, 16).map((row) => ({
-            query: row.query.replace(/\s+/g, " ").slice(0, 160),
-            calls: Number(row.calls),
-            meanMs: Math.round(row.mean * 1000) / 1000,
-          })),
+          top: all.slice(0, 16),
+          all,
         }
       }).pipe(Effect.orDie)
 

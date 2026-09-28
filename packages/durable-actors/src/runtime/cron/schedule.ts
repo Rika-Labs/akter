@@ -174,29 +174,25 @@ export const writeTicks = Effect.fnUntraced(function* (
     })
   }
 
-  const insert = (batch: ReadonlyArray<TickInsert>) =>
-    sql<{ timer_key: string }>`INSERT INTO actor_outbox ${sql.insert(batch)}
-      ON CONFLICT DO NOTHING RETURNING timer_key`
-
-  const written = new Set((yield* insert(rows)).map((row) => row.timer_key))
-  const held = rows.filter((row) => !written.has(row.timer_key))
-
-  if (held.length === 0) return
-
-  const freed = new Set(
-    (yield* sql<{ timer_key: string }>`WITH legacy AS (
-        SELECT intent_id, timer_key FROM actor_outbox
-        WHERE routing_key = ${routingKey} AND tenant_id = ${ref.tenant}
-          AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
-          AND timer_key IN ${sql.in(held.map((row) => row.timer_key))}
-          AND strpos(caller, ${CRON_CALLER}) = 0
-      )
-      UPDATE actor_outbox o SET timer_key = NULL FROM legacy l
-      WHERE o.routing_key = ${routingKey} AND o.intent_id = l.intent_id
-      RETURNING l.timer_key`).map((row) => row.timer_key),
+  // A conflict with a cron row changes nothing and returns nothing. A conflict
+  // with an application intent is a no-op update that returns that intent,
+  // so the usual first turn, whose ticks are already pending, stays one statement.
+  const legacy = (yield* sql<{ timer_key: string; intent_id: string }>`INSERT INTO actor_outbox AS o
+      ${sql.insert(rows)}
+      ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, timer_key)
+        WHERE timer_key IS NOT NULL
+      DO UPDATE SET timer_key = o.timer_key WHERE strpos(o.caller, ${CRON_CALLER}) = 0
+      RETURNING o.timer_key, o.intent_id`).filter(
+    (row) => !rows.some((tick) => tick.intent_id === row.intent_id),
   )
 
-  if (freed.size > 0) yield* insert(held.filter((row) => freed.has(row.timer_key)))
+  if (legacy.length === 0) return
+
+  yield* sql`UPDATE actor_outbox SET timer_key = NULL
+    WHERE routing_key = ${routingKey} AND intent_id IN ${sql.in(legacy.map((row) => row.intent_id))}`
+
+  const freed = new Set(legacy.map((row) => row.timer_key))
+  yield* sql`INSERT INTO actor_outbox ${sql.insert(rows.filter((row) => freed.has(row.timer_key)))}`
 })
 
 /**
