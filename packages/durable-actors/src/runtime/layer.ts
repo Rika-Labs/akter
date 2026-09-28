@@ -71,6 +71,7 @@ import { decodeResult } from "./workflows/engine.ts"
 import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
+import { directMessages } from "./topology/messages.ts"
 import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -900,12 +901,12 @@ export const layer = (options: Options) => {
         ? "memory"
         : "sql"
 
-      // Commands are direct, so Cluster keeps no message storage; durable
-      // intents will use the actor-shard outbox instead.
+      // Commands are direct, so Cluster keeps no messages; durable intents
+      // use the actor-shard outbox instead.
       const sharding = (
         wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))
       ).pipe(
-        Layer.provideMerge(MessageStorage.layerNoop),
+        Layer.provideMerge(directMessages),
         Layer.provide([
           runnerStorage === "memory"
             ? Layer.effect(
