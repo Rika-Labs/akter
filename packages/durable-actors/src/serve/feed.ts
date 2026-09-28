@@ -163,6 +163,8 @@ export const feedStream = ({
                 // The holder resyncs a feed itself: once the new owner answers, reread and go on.
                 Resync: () => Effect.void,
                 ResyncReplayed: () => catchUp.pipe(Effect.andThen(connection.resyncDone)),
+                // A feed lists no effect, so the owner never sends it progress.
+                Progress: () => Effect.void,
               }),
             ),
           ),

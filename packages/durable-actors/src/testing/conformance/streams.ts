@@ -345,12 +345,22 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const journal = yield* Journal.get("streams-limit")
 
-          yield* Effect.forEach(
-            Array.from({ length: 256 }),
-            () => Effect.flatMap(open(journal.Flood()), (pull) => read(pull, 1)),
-            { concurrency: 32, discard: true },
+          // All at once: the limit holds however the subscriptions interleave on the owner.
+          const opened = yield* Effect.forEach(
+            Array.from({ length: 260 }),
+            () => Effect.flatMap(open(journal.Flood()), (pull) => read(pull, 1)).pipe(Effect.exit),
+            { concurrency: "unbounded" },
           )
 
+          const refused = opened.filter(Exit.isFailure)
+
+          expect(opened.filter(Exit.isSuccess).length).toBe(256)
+          expect(refused.length).toBe(4)
+          expect(
+            refused.map((exit) =>
+              reasonOf(Option.getOrUndefined(Cause.findErrorOption(exit.cause))),
+            ),
+          ).toEqual(Array.from({ length: 4 }, () => RunnerAtCapacity.make({})))
           expect(reasonOf(yield* endOf(journal.Count(1)))).toMatchObject(RunnerAtCapacity.make({}))
         }),
       ),

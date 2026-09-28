@@ -176,6 +176,60 @@ describe("actor declarations", () => {
     expectTypeOf<keyof Served & "Feed">().toEqualTypeOf<never>()
   })
 
+  it("types read.progress and rejects progress of undeclared or progress-less effects", () => {
+    class Render extends Actor.effect<Render>()("Render", {
+      input: { job: Schema.String },
+      progress: Schema.Struct({ percent: Schema.Finite }),
+    }) {}
+
+    class Plain extends Actor.effect<Plain>()("Plain", { input: { job: Schema.String } }) {}
+
+    const Percent = Actor.stream("Percent", {
+      output: Schema.Finite,
+      progress: { effects: [Render] },
+    })
+
+    const Studio = Actor.make("ProgressStudio", {
+      key: Schema.String,
+      effects: [Render],
+      api: { Percent },
+    })
+
+    const layer = Studio.toLayer(
+      Effect.succeed({
+        Percent: () =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const read = yield* Studio.Read
+
+              return read.progress(Render).pipe(Stream.map((entry) => entry.frame.percent))
+            }),
+          ),
+      }),
+    )
+
+    expectTypeOf(layer).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+
+    const Watch = Actor.connection("Watch", {
+      server: Schema.String,
+      progress: { effects: [Render] },
+    })
+
+    expect(() => Actor.make("Unlisted", { key: Schema.String, api: { Watch } })).toThrow(
+      "not a declared effect",
+    )
+
+    const Loose = Actor.connection("Loose", {
+      server: Schema.String,
+      // @ts-expect-error only effects that declare a progress schema report progress
+      progress: { effects: [Plain] },
+    })
+
+    expect(() =>
+      Actor.make("Progressless", { key: Schema.String, effects: [Plain], api: { Loose } }),
+    ).toThrow("progress schema")
+  })
+
   it("lets a turn mint only unkeyed actors that declare createdBy", () => {
     const Open = Actor.command("Open")
     const Mint = Actor.command("Mint")

@@ -29,8 +29,9 @@ import {
   type ConnectionResult,
   type OpenConnection,
   type Registration,
+  type StoredProgress,
 } from "../../handles/actors.ts"
-import { type ActorRef, Caller } from "../../identity/caller.ts"
+import { type ActorRef, Caller, type Principal, principal } from "../../identity/caller.ts"
 import type { ConnectionCommands } from "../../identity/command.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
@@ -70,6 +71,65 @@ const FOLLOW_PAGE = 1_000
 
 /** How often the owner checks its subscriptions' authorization and windows. */
 const STREAM_TICK = "100 millis"
+
+/** Progress frames one actor accepts per second, with a burst of as many. */
+const PROGRESS_PER_SECOND = 20
+
+/** How long an effect check's answer stands before a later frame reads the row again. */
+const EFFECT_CHECK_MS = 5_000
+
+/** How long after a failed effect check the next one waits. */
+const EFFECT_CHECK_RETRY_MS = 1_000
+
+/** Clock skew allowed between the executor's lease deadline and the owner's clock. */
+const PROGRESS_SKEW_MS = 1_000
+
+/** Progress entries one `read.progress` subscription buffers; the oldest goes first. */
+const STREAM_PROGRESS_BUFFER = 16
+
+/** What this activation knows of one effect's progress. */
+interface EffectProgress {
+  /** False once the effect's route or settle committed, or its row is gone. */
+  open: boolean
+  checkedAt: number
+  /** The last frame, check, or close; the record goes `PROGRESS_RECORD_MS` after it. */
+  touchedAt: number
+  attempt: number
+  seq: number
+  readonly principal: Option.Option<Principal>
+  /** The effect's encoded input, for stream subscribers. */
+  readonly payload: string
+  /** Channels this activation forwarded the effect's progress to. */
+  readonly holders: Set<string>
+}
+
+/** How long a progress record stays after its last frame, check, or close. */
+const PROGRESS_RECORD_MS = 60_000
+
+const closedEffect = (at: number): EffectProgress => ({
+  open: false,
+  checkedAt: at,
+  touchedAt: at,
+  attempt: 0,
+  seq: 0,
+  principal: Option.none(),
+  payload: "",
+  holders: new Set(),
+})
+
+const samePrincipal = (a: Option.Option<Principal>, b: Option.Option<Principal>) =>
+  Option.isSome(a) && Option.isSome(b) && a.value.subject === b.value.subject
+
+/** One progress message from an executor pool, as the owner receives it. */
+export interface ProgressDelivery {
+  readonly ref: ActorRef
+  readonly effectId: string
+  readonly effect: string
+  readonly attempt: number
+  readonly seq: number
+  readonly leaseUntil: number
+  readonly frame: string
+}
 
 const utf8 = new TextEncoder()
 
@@ -139,6 +199,21 @@ export interface Activation {
   advanced: Deferred.Deferred<void>
   /** Open stream subscriptions, which end with this activation. */
   readonly streams: Set<Subscription>
+  /** Progress of effects this activation received frames for. */
+  readonly progress: Map<string, EffectProgress>
+  /** Effect ids whose check is reading the database now. */
+  readonly checking: Set<string>
+  /** When each effect's check last failed, so the next waits. */
+  readonly checkFailed: Map<string, number>
+  readonly listeners: Set<{
+    readonly tag: string
+    readonly effectId: string | undefined
+    readonly queue: Queue.Queue<StoredProgress>
+  }>
+  progressTokens: number
+  progressRefilledAt: number
+  /** When `progress` was last swept of records nothing touched for `PROGRESS_RECORD_MS`. */
+  progressSweptAt: number
   /** The highest commit whose frames all went out to their holders. */
   through: string
   readonly channels: Map<string, Channel>
@@ -196,6 +271,16 @@ export const activationOwner = ({
   const hasConnections = registration.connections.size > 0 || registration.feeds.size > 0
 
   const hasStreams = registration.streams.size > 0
+
+  // Effect tags some member of this actor type receives progress of.
+  const wanted = new Set([
+    ...[...registration.connections.values()].flatMap((member) => [
+      ...(member.progress?.effects ?? []),
+    ]),
+    ...[...registration.streams.values()].flatMap((member) => [...member.progress]),
+  ])
+
+  const hasProgress = wanted.size > 0
 
   const now = Effect.map(Clock.currentTimeMillis, (millis) => millis + clock.offsetMillis())
 
@@ -258,6 +343,13 @@ export const activationOwner = ({
           head: "0",
           advanced: Deferred.makeUnsafe<void>(),
           streams: new Set(),
+          progress: new Map(),
+          checking: new Set(),
+          checkFailed: new Map(),
+          listeners: new Set(),
+          progressTokens: PROGRESS_PER_SECOND,
+          progressRefilledAt: 0,
+          progressSweptAt: 0,
           through: "0",
           channels: new Map(),
           flush: Semaphore.makeUnsafe(1),
@@ -1148,17 +1240,6 @@ export const activationOwner = ({
 
         if (!allowed) return yield* unauthorized("access_denied")
 
-        if (activation.streams.size >= MAX_ACTOR_STREAMS)
-          return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
-
-        yield* acquire(activation).pipe(
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        )
-
-        const sql = yield* SqlClient.SqlClient
-
         const queue = yield* Queue.bounded<
           StreamItem,
           ActorError | typeof StreamFailed.Type | Cause.Done
@@ -1186,7 +1267,15 @@ export const activationOwner = ({
             }),
         }
 
-        activation.streams.add(subscription)
+        // Checked and taken in one step: concurrent subscriptions cannot all pass the limit.
+        const admitted = yield* Effect.sync(() => {
+          if (activation.streams.size >= MAX_ACTOR_STREAMS) return false
+          activation.streams.add(subscription)
+
+          return true
+        })
+
+        if (!admitted) return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -1196,6 +1285,14 @@ export const activationOwner = ({
             if (producer !== undefined) yield* Fiber.interrupt(producer)
           }),
         )
+
+        yield* acquire(activation).pipe(
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        )
+
+        const sql = yield* SqlClient.SqlClient
 
         const offer = (item: StreamItem) =>
           Effect.gen(function* () {
@@ -1213,6 +1310,7 @@ export const activationOwner = ({
             state: [...(activation.cache.state ?? new Map<string, string>())],
             events: events(activation, sql),
             follow: follow(activation, sql),
+            progress: (tag, effectId) => progressFeed(activation, tag, effectId),
           })
           .pipe(
             Stream.runForEach((value) => offer(StreamItem.cases.Element.make({ value }))),
@@ -1314,6 +1412,272 @@ export const activationOwner = ({
       }
   }).pipe(Effect.repeat(Schedule.spaced(STREAM_TICK)), Effect.asVoid)
 
+  // A stream subscriber's live progress: a sliding buffer, so a slow reader loses the oldest.
+  const progressFeed = (activation: Activation, tag: string, effectId: string | undefined) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const queue = yield* Queue.sliding<StoredProgress>(STREAM_PROGRESS_BUFFER)
+        const listener = { tag, effectId, queue }
+
+        yield* Effect.acquireRelease(
+          Effect.sync(() => activation.listeners.add(listener)),
+          () => Effect.sync(() => activation.listeners.delete(listener)),
+        )
+
+        return Stream.fromQueue(queue)
+      }),
+    )
+
+  const takeProgressToken = (activation: Activation, at: number) => {
+    activation.progressTokens = Math.min(
+      PROGRESS_PER_SECOND,
+      activation.progressTokens +
+        ((at - activation.progressRefilledAt) * PROGRESS_PER_SECOND) / 1000,
+    )
+    activation.progressRefilledAt = at
+
+    if (activation.progressTokens < 1) return false
+    activation.progressTokens -= 1
+
+    return true
+  }
+
+  /**
+   * Whether the effect is still open: one indexed read of its outbox row per
+   * effect id per `EFFECT_CHECK_MS`. A row that is gone or no longer an effect
+   * closes it for this activation.
+   */
+  const checkEffect = (activation: Activation, message: ProgressDelivery, at: number) =>
+    Effect.gen(function* () {
+      const current = activation.progress.get(message.effectId)
+
+      if (current !== undefined && (!current.open || at - current.checkedAt < EFFECT_CHECK_MS))
+        return current
+
+      const failed = activation.checkFailed.get(message.effectId)
+
+      if (failed !== undefined && at - failed < EFFECT_CHECK_RETRY_MS) return undefined
+
+      const sql = yield* SqlClient.SqlClient
+      const actor = yield* where(activation)
+      activation.checking.add(message.effectId)
+
+      const read = yield* sql<{
+        kind: string
+        attempts: number
+        cancelled: boolean
+        caller: string
+        payload: string
+      }>`SELECT kind, attempts, cancelled_at_ms IS NOT NULL AS cancelled, caller, payload
+          FROM actor_outbox
+          WHERE ${actor} AND intent_id = ${message.effectId}`.pipe(
+        Effect.ensuring(Effect.sync(() => activation.checking.delete(message.effectId))),
+        Effect.exit,
+      )
+
+      if (Exit.isFailure(read)) {
+        activation.checkFailed.set(message.effectId, at)
+
+        return undefined
+      }
+
+      activation.checkFailed.delete(message.effectId)
+      // A route or settle that committed while the check read keeps the effect closed.
+      const closedMeanwhile = activation.progress.get(message.effectId)
+
+      if (closedMeanwhile !== undefined && !closedMeanwhile.open) return closedMeanwhile
+
+      const [row] = read.value
+
+      if (row === undefined || row.kind !== "effect" || row.cancelled) {
+        const closed = closedEffect(at)
+        activation.progress.set(message.effectId, closed)
+
+        return closed
+      }
+
+      // The row has not counted this attempt yet; this frame is not proven open.
+      if (row.attempts < message.attempt) return undefined
+
+      // A concurrent check may have stored the effect meanwhile: every frame shares one record,
+      // so its order and holders stay whole.
+      const stored = activation.progress.get(message.effectId)
+
+      if (stored !== undefined && stored.open) {
+        stored.checkedAt = at
+        stored.touchedAt = at
+
+        return stored
+      }
+
+      const checked: EffectProgress = {
+        open: true,
+        checkedAt: at,
+        touchedAt: at,
+        attempt: 0,
+        seq: 0,
+        principal: principal(yield* decodeCaller(row.caller).pipe(Effect.orDie)),
+        payload: row.payload,
+        holders: new Set(),
+      }
+
+      activation.progress.set(message.effectId, checked)
+
+      return checked
+    })
+
+  const after = (message: ProgressDelivery, effect: EffectProgress) =>
+    message.attempt > effect.attempt ||
+    (message.attempt === effect.attempt && message.seq > effect.seq)
+
+  /**
+   * Admits one executor progress frame and forwards it through this
+   * activation's ordered channels to the member connections that want it,
+   * and to stream subscribers. Every refusal drops the frame; nothing here
+   * fails, writes, or closes a session.
+   */
+  const progress = (activation: Activation, message: ProgressDelivery) =>
+    Effect.gen(function* () {
+      const { ref } = activation
+
+      if (
+        message.ref.tenant !== ref.tenant ||
+        message.ref.actor !== ref.actor ||
+        message.ref.id !== ref.id ||
+        !wanted.has(message.effect)
+      )
+        return
+
+      const at = yield* now
+
+      // A record nothing touched for a while goes; a late frame for it runs the effect check again.
+      if (at - activation.progressSweptAt >= PROGRESS_RECORD_MS) {
+        activation.progressSweptAt = at
+
+        for (const [effectId, record] of activation.progress)
+          if (at - record.touchedAt >= PROGRESS_RECORD_MS) activation.progress.delete(effectId)
+      }
+
+      if (at > message.leaseUntil + PROGRESS_SKEW_MS) return
+      const known = activation.progress.get(message.effectId)
+
+      if (known !== undefined && (!known.open || !after(message, known))) return
+
+      if (!takeProgressToken(activation, at)) return
+
+      yield* acquire(activation)
+      yield* load(activation)
+      const effect = yield* checkEffect(activation, message, at)
+
+      if (effect === undefined) return
+
+      yield* activation.flush.withPermit(
+        Effect.gen(function* () {
+          // The route may have closed the effect, or a later frame arrived, while this one waited;
+          // the activation's shared record decides, never a copy taken before the permit.
+          if (activation.progress.get(message.effectId) !== effect) return
+
+          if (!effect.open || !after(message, effect)) return
+          effect.attempt = message.attempt
+          effect.seq = message.seq
+          effect.touchedAt = at
+
+          const perChannel = new Map<Channel, Map<string, Array<string>>>()
+
+          for (const row of activation.rows?.values() ?? []) {
+            const wants = registration.connections.get(row.member)?.progress
+
+            if (
+              wants === undefined ||
+              !wants.effects.has(message.effect) ||
+              row.buffered !== undefined ||
+              (wants.to === "performer" && !samePrincipal(principal(row.caller), effect.principal))
+            )
+              continue
+
+            const channel = channelOf(activation, row.holder, row.holderEpoch)
+            const members = perChannel.get(channel) ?? new Map<string, Array<string>>()
+            members.set(row.member, [...(members.get(row.member) ?? []), row.connectionId])
+            perChannel.set(channel, members)
+          }
+
+          for (const [channel, members] of perChannel) {
+            effect.holders.add(`${channel.holder}|${channel.epoch}`)
+            yield* send(
+              activation,
+              channel,
+              [...members].map(([member, to]) =>
+                HolderItem.cases.Progress.make({
+                  member,
+                  to,
+                  effect: message.effect,
+                  effectId: message.effectId,
+                  attempt: message.attempt,
+                  seq: message.seq,
+                  frame: message.frame,
+                }),
+              ),
+            )
+          }
+
+          for (const listener of activation.listeners)
+            if (
+              listener.tag === message.effect &&
+              (listener.effectId === undefined || listener.effectId === message.effectId)
+            )
+              Queue.offerUnsafe(listener.queue, {
+                effectId: message.effectId,
+                effect: effect.payload,
+                attempt: message.attempt,
+                seq: message.seq,
+                frame: message.frame,
+              })
+        }),
+      )
+    }).pipe(Effect.catchCause((cause) => Effect.logDebug("Progress frame dropped", cause)))
+
+  /**
+   * Closes an effect's progress on this activation, once its route turn (whose
+   * command id is the effect id) commits or its settle is reported: holders
+   * that received its progress discard what they still buffer, before the
+   * route's own broadcasts.
+   */
+  const closeProgress = (activation: Activation, effectId: string) =>
+    Effect.suspend(() => {
+      const effect = activation.progress.get(effectId)
+
+      if (effect === undefined && !activation.checking.has(effectId)) return Effect.void
+
+      return activation.flush.withPermit(
+        Effect.gen(function* () {
+          const current = activation.progress.get(effectId)
+          activation.progress.set(effectId, closedEffect(yield* now))
+
+          if (current === undefined || !current.open) return
+
+          current.open = false
+
+          for (const name of current.holders) {
+            const channel = activation.channels.get(name)
+
+            if (channel !== undefined)
+              yield* send(activation, channel, [HolderItem.cases.ProgressEnd.make({ effectId })])
+          }
+        }),
+      )
+    })
+
+  const progressClosed = (
+    activation: Activation,
+    message: { readonly ref: ActorRef; readonly effectId: string; readonly attempt: number },
+  ) => {
+    const effect = activation.progress.get(message.effectId)
+
+    return effect !== undefined && message.attempt < effect.attempt
+      ? Effect.void
+      : closeProgress(activation, message.effectId)
+  }
+
   // Ends an activation as idle expiry would: holders get a seal, and whatever
   // runs next re-acquires the generation and sees `resumed === true`.
   const hibernate = (entityId: string) =>
@@ -1325,6 +1689,8 @@ export const activationOwner = ({
       yield* seal(activation)
       forget(activation)
       activation.opened.clear()
+      activation.progress.clear()
+      activation.checkFailed.clear()
       activation.head = "0"
       activation.through = "0"
     })
@@ -1333,6 +1699,10 @@ export const activationOwner = ({
     activations,
     hasConnections,
     hasStreams,
+    hasProgress,
+    progress,
+    closeProgress,
+    progressClosed,
     feedBroadcasts,
     hibernate,
     subscribe,
