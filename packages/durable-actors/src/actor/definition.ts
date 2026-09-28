@@ -1338,6 +1338,7 @@ const make = <
                 blobs,
                 guard: escaped("Blob"),
                 maxBytes: policy.blobMaxBytes,
+                maxEntries: policy.blobMaxEntries,
               },
               true,
             )
@@ -1781,6 +1782,7 @@ const make = <
                 blobs,
                 guard: escaped("Blob"),
                 maxBytes: policy.blobMaxBytes,
+                maxEntries: policy.blobMaxEntries,
               },
               false,
             )

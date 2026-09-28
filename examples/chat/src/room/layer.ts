@@ -79,12 +79,12 @@ export const RoomCommands = Room.toLayer(
 
       if (!flagged) return
 
-      // An emptied entry holds no bytes against the room's blob quota.
+      // Deleting the entry frees its bytes and its slot in the room's blob quotas.
       const attached = yield* turn.rows(messages).one({ where: { id } })
       yield* turn.rows(messages).delete().where({ id })
 
       if (Option.isSome(attached) && attached.value.attachment === id)
-        yield* turn.blob(Attachments).set(id, new Uint8Array())
+        yield* turn.blob(Attachments).delete(id)
     }),
 
     ModerationFailed: Effect.fnUntraced(function* (dead) {

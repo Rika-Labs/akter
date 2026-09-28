@@ -174,9 +174,9 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       expect(yield* room.Attachment(id)).toEqual(Option.none())
       const sql = yield* SqlClient.SqlClient
       expect(
-        yield* sql<{ bytes: number }>`SELECT COALESCE(sum(octet_length(bytes)), 0)::float8 AS bytes
+        yield* sql<{ chunks: number }>`SELECT count(*)::float8 AS chunks
           FROM actor_blobs WHERE actor_id = ${room.ref.id} AND name = ${id}`,
-      ).toEqual([{ bytes: 0 }])
+      ).toEqual([{ chunks: 0 }])
       expect((yield* room.History({})).map(({ message }) => [message.id, message.body])).toEqual([
         [id, ""],
       ])
