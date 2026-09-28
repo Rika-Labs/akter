@@ -323,14 +323,14 @@ const retryDelay = (retry: Retry, clock: DatabaseClock) => (attempted: Attempted
 
 const joinUrl = (baseUrl: string, path: string) => `${baseUrl.replace(/\/+$/, "")}${path}`
 
-/** A connection's WebSocket URL: the base URL, resolved against the page when relative, as `ws:` or `wss:`. */
-const socketUrl = (baseUrl: string, path: string) => {
-  const url = new URL(
-    joinUrl(baseUrl, path),
-    "location" in globalThis ? globalThis.location.href : undefined,
-  )
+/**
+ * A connection's WebSocket URL from its route's URL, resolved against the page
+ * when relative: `wss:` for `https:` or `wss:`, and `ws:` otherwise.
+ */
+export const socketUrl = (route: string) => {
+  const url = new URL(route, "location" in globalThis ? globalThis.location.href : undefined)
 
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+  url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:"
 
   return url.href
 }
@@ -759,7 +759,7 @@ export const clientOf =
                 Effect.runPromise(path(member.tag)).then((memberPath) =>
                   connect({
                     member,
-                    url: socketUrl(options.baseUrl, memberPath),
+                    url: socketUrl(joinUrl(options.baseUrl, memberPath)),
                     authorization,
                     params,
                     options: connectOptions ?? {},

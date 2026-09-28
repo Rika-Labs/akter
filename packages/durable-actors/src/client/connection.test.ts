@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import { ActorError, TransportError } from "../errors/actor.ts"
 import { Actor } from "../index.ts"
 import { SUBPROTOCOL, type ServerWireMessage } from "../serve/frames.ts"
+import { socketUrl } from "./make.ts"
 
 const Live = Actor.connection("Live", { client: Schema.String, server: Schema.String })
 
@@ -110,4 +111,13 @@ describe("client connections against a misbehaving server", () => {
         yield* Effect.promise(() => connection.close())
       }),
     ))
+})
+
+describe("socketUrl", () => {
+  it("keeps TLS: https and wss routes open wss sockets, http and ws ones ws", () => {
+    expect(socketUrl("https://a.test/api/x")).toBe("wss://a.test/api/x")
+    expect(socketUrl("wss://a.test/api/x")).toBe("wss://a.test/api/x")
+    expect(socketUrl("http://a.test/x")).toBe("ws://a.test/x")
+    expect(socketUrl("ws://a.test/x")).toBe("ws://a.test/x")
+  })
 })
