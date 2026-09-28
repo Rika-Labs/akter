@@ -93,6 +93,38 @@ const linkDelimiters = [
   ["]: ", " "],
 ] as const
 
+const fenceOpening = /^ {0,3}(`{3,}|~{3,})/
+
+/**
+ * Applies `rewrite` to the Markdown outside fenced code blocks, so an example
+ * that happens to contain a link's exact text is copied unchanged.
+ */
+const outsideFences = (markdown: string, rewrite: (text: string) => string) => {
+  const segments: Array<string> = []
+  let prose: Array<string> = []
+  let fence: string | undefined
+
+  for (const line of markdown.split("\n")) {
+    const marker = fenceOpening.exec(line)?.[1]
+
+    if (fence === undefined && marker !== undefined) {
+      if (prose.length > 0) segments.push(rewrite(prose.join("\n")))
+      prose = []
+      fence = marker
+      segments.push(line)
+    } else if (fence !== undefined) {
+      segments.push(line)
+
+      if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length)
+        fence = undefined
+    } else prose.push(line)
+  }
+
+  if (prose.length > 0) segments.push(rewrite(prose.join("\n")))
+
+  return segments.join("\n")
+}
+
 /**
  * The page's Markdown with its links rewritten for the site: published pages
  * point at their `.md` copies and everything else in the repository at GitHub.
@@ -109,16 +141,18 @@ export const renderMarkdownCopy = (input: {
       input.published,
     )
 
-    let markdown = input.page.markdown
+    return outsideFences(input.page.markdown, (prose) => {
+      let text = prose
 
-    for (const [href, target] of targets) {
-      if (target === href) continue
+      for (const [href, target] of targets) {
+        if (target === href) continue
 
-      for (const [before, after] of linkDelimiters)
-        markdown = markdown.replaceAll(`${before}${href}${after}`, `${before}${target}${after}`)
-    }
+        for (const [before, after] of linkDelimiters)
+          text = text.replaceAll(`${before}${href}${after}`, `${before}${target}${after}`)
+      }
 
-    return markdown
+      return text
+    })
   })
 
 const htmlAttribute = / (href|src)="([^"]*)"/g
