@@ -70,7 +70,7 @@ A column, rather than a reserved field inside the value, keeps values in the cla
 
 - **Events** decode through the chain from their stored version on every read: `read.events`, connection contexts, served feeds, subscription deliveries, and workflow waits. Stored events are never rewritten, so history stays exactly what the turn committed, and no operation touches every stored event.
 - **Effects** decode through the chain on each attempt. A dead letter decodes through the chain when the relay builds its `onDeadLetter` route input, so the route receives the current shape.
-- **Failure stays loud.** A stored version newer than the code's chain, or an upcast that throws or produces an invalid value, is a deterministic defect for that read, as for state. For an effect attempt it is a non-ambiguous attempt failure, as today. Contract 05's rule that replay never silently skips an event still holds.
+- **Failure stays loud.** A stored version newer than the code's chain, or an upcast that throws or produces an invalid value, is a deterministic defect for that read, as for state. For an effect attempt, the failure happens before the executor is called, so this attempt never reached the provider. The attempt fails and is retried, but it never clears the row's ambiguity: if an earlier attempt recorded `ambiguous: true` (a defect, or a crash after the call may have started), the row and any dead letter keep it. Only a typed executor failure makes an attempt non-ambiguous, as [contract 08](../contracts/08-background-work.md) says. Today's code reports a decode failure as non-ambiguous and overwrites the flag; M4.7 changes that to keep the flag. Contract 05's rule that replay never silently skips an event still holds.
 - **Receipts don't change.** A subscription delivery's receipt binds the delivery identity, not the re-encoded event ([contract 04](../contracts/04-receipts.md)), so upcasting a redelivered event does not cause `CommandConflict`.
 
 ### 4. A deploy that would strand a stored value is refused
@@ -160,6 +160,7 @@ In `conformance/payload-migrations.ts`, on PGlite and Postgres:
 - `delivers an onDeadLetter route with the upcast effect and keeps the dead letter's version`
 - `resets payload_version to 0 when a settled effect row becomes its route intent`
 - `fails a read as a defect, never a skip, when an upcast throws or the stored version is newer than the chain`
+- `keeps an earlier attempt's ambiguity on the row and in the dead letter when a later attempt fails to decode its payload`
 - `refuses startup after a rollback past a recorded version, and when a shortened chain drops a version still retained`
 - `seeds version 0 for existing rows, so the first shortened chain after the migration is refused while version-0 values remain`
 - `refuses a shortened chain after the retention horizon until durable payloads clear finds no row of the dropped version, and refuses again after restoring a snapshot taken before the clear`
