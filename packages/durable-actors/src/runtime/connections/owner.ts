@@ -1483,14 +1483,24 @@ export const activationOwner = ({
       // The row has not counted this attempt yet; this frame is not proven open.
       if (row.attempts < message.attempt) return undefined
 
+      // A concurrent check may have stored the effect meanwhile: every frame shares one record,
+      // so its order and holders stay whole.
+      const stored = activation.progress.get(message.effectId)
+
+      if (stored !== undefined && stored.open) {
+        stored.checkedAt = at
+
+        return stored
+      }
+
       const checked: EffectProgress = {
         open: true,
         checkedAt: at,
-        attempt: current?.attempt ?? 0,
-        seq: current?.seq ?? 0,
+        attempt: 0,
+        seq: 0,
         principal: principal(yield* decodeCaller(row.caller).pipe(Effect.orDie)),
         payload: row.payload,
-        holders: current?.holders ?? new Set(),
+        holders: new Set(),
       }
 
       activation.progress.set(message.effectId, checked)
@@ -1537,7 +1547,10 @@ export const activationOwner = ({
 
       yield* activation.flush.withPermit(
         Effect.gen(function* () {
-          // The route may have closed the effect, or a later frame arrived, while this one waited.
+          // The route may have closed the effect, or a later frame arrived, while this one waited;
+          // the activation's shared record decides, never a copy taken before the permit.
+          if (activation.progress.get(message.effectId) !== effect) return
+
           if (!effect.open || !after(message, effect)) return
           effect.attempt = message.attempt
           effect.seq = message.seq
