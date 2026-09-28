@@ -161,9 +161,12 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       yield* test.crashNext("afterExecute")
       const id = yield* room.Post({ body: "buy spam", file: bytes })
 
+      // Waits, without moving the clock, until the first attempt has crashed; advancing while it
+      // still ran would move its lease with the clock.
+      yield* test.advance(0)
+      expect([...provider.calls].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([1])
+
       // The crashed attempt keeps its lease; the relay retries once the lease has passed.
-      while (![...provider.calls.keys()].some((key) => !before.has(key)))
-        yield* Effect.sleep("20 millis")
       yield* test.advance("2 minutes")
       yield* moderated(room, 1)
 

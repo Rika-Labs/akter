@@ -622,7 +622,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
                 }
 
                 // Nothing reaches a client past its authorization bound.
-                if (at >= authorizedUntil(connection)) return end(connection, unauthorized, true)
+                if (at >= authorizedUntil(connection))
+                  return end(connection, lapsed(connection, at), true)
 
                 return pushProgress(
                   connection,
