@@ -109,10 +109,31 @@ const tickId = (now: number, dueAt: number, retryWindowMs: number) =>
     return `v1.${now}.${Math.max(dueAt, now) + retryWindowMs}.${uuid}`
   })
 
+/** A tick row as `writeTicks` inserts it. */
+type TickInsert = {
+  readonly routing_key: bigint
+  readonly intent_id: string
+  readonly kind: "intent"
+  readonly bucket: number
+  readonly due_at_ms: number
+  readonly scheduled_at_ms: number
+  readonly tenant_id: string
+  readonly actor_type: string
+  readonly actor_id: string
+  readonly timer_key: string
+  readonly target_type: string
+  readonly target_id: string
+  readonly command: string
+  readonly payload: string
+  readonly caller: string
+}
+
 /**
  * Writes the first tick of every entry `ref` has no pending tick for. The
  * timer-key unique index makes concurrent writers, and entries that already
- * tick, no-ops.
+ * tick, no-ops. An application timer staged under an entry's key before
+ * `$cron:` was reserved gives the key up and stays due as a plain intent, so
+ * it still fires once and the entry ticks from this write on.
  */
 export const writeTicks = Effect.fnUntraced(function* (
   routingKey: bigint,
@@ -129,7 +150,7 @@ export const writeTicks = Effect.fnUntraced(function* (
     Effect.orDie,
   )
 
-  const rows = []
+  const rows: Array<TickInsert> = []
 
   for (const entry of entries) {
     const dueAt = nextTick(entry, now)
@@ -153,7 +174,29 @@ export const writeTicks = Effect.fnUntraced(function* (
     })
   }
 
-  yield* sql`INSERT INTO actor_outbox ${sql.insert(rows)} ON CONFLICT DO NOTHING`
+  const insert = (batch: ReadonlyArray<TickInsert>) =>
+    sql<{ timer_key: string }>`INSERT INTO actor_outbox ${sql.insert(batch)}
+      ON CONFLICT DO NOTHING RETURNING timer_key`
+
+  const written = new Set((yield* insert(rows)).map((row) => row.timer_key))
+  const held = rows.filter((row) => !written.has(row.timer_key))
+
+  if (held.length === 0) return
+
+  const freed = new Set(
+    (yield* sql<{ timer_key: string }>`WITH legacy AS (
+        SELECT intent_id, timer_key FROM actor_outbox
+        WHERE routing_key = ${routingKey} AND tenant_id = ${ref.tenant}
+          AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
+          AND timer_key IN ${sql.in(held.map((row) => row.timer_key))}
+          AND strpos(caller, ${CRON_CALLER}) = 0
+      )
+      UPDATE actor_outbox o SET timer_key = NULL FROM legacy l
+      WHERE o.routing_key = ${routingKey} AND o.intent_id = l.intent_id
+      RETURNING l.timer_key`).map((row) => row.timer_key),
+  )
+
+  if (freed.size > 0) yield* insert(held.filter((row) => freed.has(row.timer_key)))
 })
 
 /**

@@ -162,6 +162,7 @@ export const cron: Scenario = {
 
       const summary = summarize(lateness)
       const last = rounds.at(-1)!
+      const drainMs = rounds.reduce((total, result) => total + result.elapsedMs, 0)
 
       return [
         {
@@ -174,8 +175,9 @@ export const cron: Scenario = {
             repeats,
           },
           operations: lateness.length,
-          elapsedMs: rounds.reduce((total, result) => total + result.elapsedMs, 0),
-          throughput: Math.round((lateness.length * 1000) / Math.max(1, summary.max)),
+          elapsedMs: drainMs,
+          // Ticks per second of drain, as other scenarios divide operations by elapsed time.
+          throughput: Math.round((lateness.length * 1000) / Math.max(1, drainMs)),
           latencyMs: summary,
           extra: {
             latenessP50Ms: summary.p50,
