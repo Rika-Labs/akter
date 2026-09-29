@@ -10,6 +10,7 @@ import {
   useConnection,
   useEventFeed,
   useQuery,
+  useWatch,
 } from "./index.ts"
 import { keepLast } from "./connection.ts"
 
@@ -17,7 +18,7 @@ class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
 
 const Post = Actor.command("Post", { input: Schema.String })
 
-const Count = Actor.query("Count", { output: Schema.Finite })
+const Count = Actor.query("Count", { output: Schema.Finite, watch: true })
 
 const Presence = Actor.connection("Presence", { server: Schema.String, client: Schema.String })
 
@@ -38,19 +39,20 @@ const Page = () => {
   const post = useCommand(rooms, (text: string, options) => room.Post(text, options))
   const count = useQuery((options) => room.Count(options), [room])
   const feed = useEventFeed(room, Posted, { storageKey: "r1" })
+  const watched = useWatch((options) => room.Count.watch(options), [room])
   const presence = useConnection(room.Presence, undefined)
 
   return createElement(
     "p",
     null,
-    `${post.state.status} ${String(count.loading)} ${feed.entries.length} ${presence.status} ${JSON.stringify(state ?? null)}`,
+    `${post.state.status} ${String(count.loading)} ${feed.entries.length} ${String(watched.data)} ${presence.status} ${JSON.stringify(state ?? null)}`,
   )
 }
 
 describe("@durable-actors/react", () => {
   it("renders on a server without fetching, connecting, or touching browser globals", () => {
     expect("window" in globalThis).toBe(false)
-    expect(renderToString(createElement(Page))).toBe("<p>idle true 0 connecting null</p>")
+    expect(renderToString(createElement(Page))).toBe("<p>idle true 0 undefined connecting null</p>")
   })
 
   it("keeps at most `keep` recent connection frames, and none for zero", () => {

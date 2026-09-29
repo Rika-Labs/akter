@@ -26,6 +26,7 @@ import type { EventClass } from "../members/event.ts"
 import { type ClientConnection, type ConnectOptions, connect } from "./sessions/connection.ts"
 import { type FeedEntry, type FeedOptions, feedStream } from "./sessions/feed.ts"
 import { type StreamOptions, subscription } from "./sessions/stream.ts"
+import { type WatchOptions, watchStream } from "./sessions/watch.ts"
 import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
 import { Optimistic, type PendingInput } from "./optimistic.ts"
 import {
@@ -76,14 +77,27 @@ export interface CommandOptions extends QueryOptions {
   readonly commandId?: string
 }
 
-type Call<M extends AnyMember> = M["input"]["Type"] extends void
+/**
+ * The `watch` of a query declared `watch: true`: an `AsyncIterable` of the
+ * query's current result and then its newest result after each change. It is
+ * state, not history: intermediate results are skipped and a reconnect sends the
+ * current result first, never one older than one already delivered.
+ */
+export type WatchCall<M extends AnyMember> = (
+  ...args: M["input"]["Type"] extends void
+    ? [options?: WatchOptions]
+    : [input: M["input"]["Type"], options?: WatchOptions]
+) => AsyncIterable<M["output"]["Type"]>
+
+type Call<M extends AnyMember> = (M["input"]["Type"] extends void
   ? (
       options?: M["kind"] extends "query" ? QueryOptions : CommandOptions,
     ) => Promise<M["output"]["Type"]>
   : (
       input: M["input"]["Type"],
       options?: M["kind"] extends "query" ? QueryOptions : CommandOptions,
-    ) => Promise<M["output"]["Type"]>
+    ) => Promise<M["output"]["Type"]>) &
+  (M extends { readonly watch: true } ? { readonly watch: WatchCall<M> } : unknown)
 
 /**
  * A handle's view of its actor's state: the committed state it last learned,
@@ -779,9 +793,58 @@ export const clientOf =
       const path = (member: string) =>
         segment.pipe(Effect.map((encoded) => `/actors/${definition.name}${encoded}/${member}`))
 
+      const watching =
+        (member: ServedMember) =>
+        (...args: ReadonlyArray<unknown>) => {
+          const isVoid = isVoidInput(member)
+          const watchOptions: WatchOptions = (isVoid ? args[0] : args[1]) ?? {}
+
+          const body = Schema.encodeUnknownEffect(Schema.toCodecJson(member.input))(
+            isVoid ? undefined : args[0],
+          ).pipe(
+            Effect.flatMap((json) =>
+              json === undefined ? Effect.succeedNone : Effect.asSome(encodeJson(json)),
+            ),
+            Effect.map(Option.getOrUndefined),
+            Effect.mapError(invalid),
+          )
+
+          return Stream.toAsyncIterable(
+            watchStream({
+              member,
+              declared: declaredDecoder(member),
+              options: watchOptions,
+              token: () => origin.token.value,
+              open: (version, signal) =>
+                Effect.gen(function* () {
+                  const payload = yield* body
+                  const headers = new Headers(yield* provided)
+                  headers.set("accept", "text/event-stream")
+                  headers.set("durable-protocol", "1")
+
+                  if (payload !== undefined) headers.set("content-type", "application/json")
+
+                  if (version !== undefined) headers.set("durable-min-version", version)
+
+                  const url = joinUrl(options.baseUrl, `${yield* path(member.tag)}/watch`)
+
+                  return yield* Effect.tryPromise({
+                    try: () => fetch(url, { method: "POST", headers, body: payload, signal }),
+                    catch: networkFailure,
+                  })
+                }),
+            }),
+          )
+        }
+
       const created = {
         ...Object.fromEntries(
-          definition.members.map((member) => [member.tag, method(member, segment, store)]),
+          definition.members.map((member) => [
+            member.tag,
+            member.watch
+              ? Object.assign(method(member, segment, store), { watch: watching(member) })
+              : method(member, segment, store),
+          ]),
         ),
         ...Object.fromEntries(
           definition.connections.map((member) => [
