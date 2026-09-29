@@ -1,4 +1,4 @@
-import { Effect, Exit, Option, Result, Schema } from "effect"
+import { Crypto, Effect, Exit, Option, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
@@ -14,11 +14,12 @@ import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
+import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
-import { FrameworkClock } from "./admission.ts"
+import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
@@ -196,6 +197,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   statements: boolean,
   waited: ReadonlySet<string> = new Set(),
   connections?: ConnectionLister,
+  cron: ReadonlyArray<CronEntry> = [],
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
@@ -323,13 +325,28 @@ export const executeTurn = Effect.fnUntraced(function* (
     const current = cold ? bumped! : admitted.generation
     const hash = yield* hashCanonical(admitted.canonical)
 
+    // The first turn a generation commits schedules every entry not yet
+    // ticking, from the database clock after its handler ran, so a first tick
+    // is never due before the turn that writes it.
+    const ticks =
+      cold && cron.length > 0
+        ? Effect.gen(function* () {
+            const now = yield* databaseTime
+            const services = yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>()
+
+            return [
+              writeTicks(routingKey, request.ref, cron, now).pipe(Effect.provideContext(services)),
+            ]
+          })
+        : Effect.succeed([])
+
     if (admitted.outcome !== null) {
       const outcome = yield* checkReceipt(request, hash, admitted as StoredReceipt)
 
       // A cold activation keeps the generation it acquired, so work the
       // replay wakes runs under it; a warm one has nothing to commit.
       return {
-        writes: cold ? [] : undefined,
+        writes: cold ? yield* ticks : undefined,
         outcome,
         generation: current,
         state: cold ? undefined : cache.state,
@@ -514,7 +531,7 @@ export const executeTurn = Effect.fnUntraced(function* (
       { slackMs: policy.executionMs },
     )
 
-    writes.push(...outbox.statements)
+    writes.push(...outbox.statements, ...(yield* ticks))
 
     // The delivery's position is applied with its receipt, declared failures included.
     if (delivery !== undefined)
