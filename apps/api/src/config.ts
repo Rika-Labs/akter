@@ -22,8 +22,12 @@ const Environment = Schema.Struct({
   AXIOM_DATASET: Schema.optional(Required),
 })
 
+/**
+ * Validates the environment into the API's configuration, treating empty
+ * variables as unset. Throws without schema errors in the message, because
+ * startup logs must not echo secret input.
+ */
 export function loadConfig(env: Record<string, string | undefined> = process.env) {
-  // Never include schema errors in startup logs: they may contain secret input.
   const decoded = Schema.decodeUnknownExit(Environment)(
     Object.fromEntries(Object.entries(env).filter(([, value]) => value !== "")),
   )
@@ -103,4 +107,5 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
 }
 
+/** The validated API configuration. */
 export type Config = ReturnType<typeof loadConfig>
