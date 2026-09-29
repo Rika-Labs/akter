@@ -30,7 +30,7 @@ import {
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core"
 import { Cause, Effect, Option, Predicate } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { checkOwnedTable } from "../database/tenancy.ts"
+import { checkOwnedTable, inTenant, TenantScope } from "../database/tenancy.ts"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
 import {
   OWNERSHIP,
@@ -345,6 +345,7 @@ export const bindTables = Effect.fnUntraced(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
   const connection = yield* Effect.serviceOption(sql.transactionService)
+  const { role } = yield* TenantScope
 
   // Writes join the turn's transaction or do not run at all.
   if (write && Option.isNone(connection))
@@ -357,10 +358,11 @@ export const bindTables = Effect.fnUntraced(function* (
       Option.isNone(database)
         ? Effect.die(new Error("Owned tables need a PgClient or PgliteClient database"))
         : Effect.suspend(build).pipe(
+            // Reads outside a transaction, as in a stream handler, take their own tenant transaction.
             (effect) =>
               Option.isSome(connection)
                 ? Effect.provideService(effect, sql.transactionService, connection.value)
-                : effect,
+                : inTenant({ sql, role, tenant: scope.ref.tenant })(effect),
             // Drizzle wraps the driver's failure; the SqlError inside decides
             // whether the turn is retried or is a deterministic defect.
             Effect.catch((error) => {

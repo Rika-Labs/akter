@@ -1,5 +1,6 @@
 import { Cause, Effect, Option, Predicate, Result, Schema, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
+import { inTenant, TenantScope } from "../database/tenancy.ts"
 import { InvalidContentRef } from "../../errors/content.ts"
 import { ContentRef } from "../../identity/content.ts"
 import { type AnyBlob, isContent } from "../../members/blob.ts"
@@ -45,6 +46,7 @@ export const bindBlobs = Effect.fnUntraced(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
   const connection = yield* Effect.serviceOption(sql.transactionService)
+  const { role } = yield* TenantScope
 
   if (write && Option.isNone(connection))
     return yield* Effect.die(new Error("Blob writes need the turn transaction"))
@@ -98,10 +100,11 @@ export const bindBlobs = Effect.fnUntraced(function* (
 
   const run = <A, E>(effect: Effect.Effect<A, E>) =>
     effect.pipe(
+      // Reads outside a transaction, as in a stream handler, take their own tenant transaction.
       (bound) =>
         Option.isSome(connection)
           ? Effect.provideService(bound, sql.transactionService, connection.value)
-          : bound,
+          : inTenant({ sql, role, tenant: ref.tenant })(bound),
       // The SqlError itself decides whether the turn retries or is a defect.
       Effect.orDie,
     )
