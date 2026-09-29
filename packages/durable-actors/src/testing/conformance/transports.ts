@@ -140,7 +140,6 @@ const socketLayer = SocketRoom.toLayer(
   }),
 )
 
-// Each step reports its percentage and pauses, so reports keep coming while a client watches.
 const renderLayer = SocketRoom.toEffectLayer(
   Effect.succeed({
     Render: Effect.fnUntraced(function* ({ steps }) {
@@ -478,7 +477,6 @@ const headerSocket = (host: string, id: string, authorization: string) =>
     let pending = new Uint8Array(0)
     let handshake = true
 
-    // Server frames are unmasked; this client reads text and close frames only.
     const read = (chunk: Uint8Array) => {
       const joined = new Uint8Array(pending.length + chunk.length)
       joined.set(pending)
@@ -545,7 +543,6 @@ const headerSocket = (host: string, id: string, authorization: string) =>
 
     const status = yield* Deferred.await(upgraded)
 
-    // Client frames are masked; a zero mask keeps the payload as it is.
     const send = (message: ClientWireMessage) =>
       encodeClient(message).pipe(
         Effect.orDie,
@@ -614,7 +611,6 @@ const feed = (host: string, id: string, query: string, headers: Readonly<Record<
 
     let text = ""
 
-    // Closing the scope interrupts the read, which aborts the request.
     yield* response.stream.pipe(
       Stream.decodeText,
       Stream.runForEach((chunk) =>
@@ -736,26 +732,21 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           expect(open.baseline).toBe("1")
           expect(open.reauthenticateBy).toBe(undefined)
 
-          // The open handler's frame follows `open`, stamped with the flushed-through cursor.
           const greeting = yield* ws.next()
           expect(yield* frameOf(greeting)).toEqual(Hello.make({ name: "alice", resumed: false }))
           expect(greeting).toMatchObject({ cursor: "1" })
 
-          // A client frame runs the handler, whose command's broadcast comes back stamped with
-          // the flushed-through watermark it was sent above.
           yield* ws.send(yield* say("hi"))
           const hi = yield* ws.next()
           expect(yield* frameOf(hi)).toEqual(Said.make({ text: "hi" }))
           expect(hi).toMatchObject({ cursor: "1" })
           expect(Predicate.hasProperty(hi, "event")).toBe(false)
 
-          // A command sent over HTTP (or in process) reaches the socket after it commits.
           yield* room.Post("live")
           const live = yield* ws.next()
           expect(yield* frameOf(live)).toEqual(Said.make({ text: "live" }))
           expect(live).toMatchObject({ cursor: "2" })
 
-          // A frame sent from an event entry carries that event's own cursor to deduplicate on.
           yield* ws.send(yield* say("history"))
           const history = [yield* ws.next(), yield* ws.next(), yield* ws.next()]
 
@@ -764,7 +755,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           ).toEqual(["1", "2", "3"])
           expect((yield* rows(room.ref)).connections).toBe(1)
 
-          // A client that closes its socket ends the session and its row goes.
           yield* ws.close
           expect((yield* ws.closed).code).toBe(1000)
 
@@ -784,11 +774,9 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           const ref = (yield* SocketRoom.get("ws-silent")).ref
           const ws = yield* socket(host, "ws-silent")
 
-          // Upgraded but silent: no generation row, no connection row, no turn.
           yield* Effect.sleep("500 millis")
           expect(yield* rows(ref)).toEqual({ connections: 0, generations: 0 })
 
-          // A first message that isn't `hello` ends the session without waking anything.
           const early = yield* socket(host, "ws-silent")
           yield* early.send(yield* say("hi"))
           expect(yield* endReason(yield* early.next())).toMatchObject({
@@ -828,18 +816,15 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             }),
           ).toBe(101)
           expect(yield* upgradeStatus(host, "ws-refused", {})).toBe(400)
-          // The server selects the first offered subprotocol, so ours must come first.
           expect(
             yield* upgradeStatus(host, "ws-refused", {
               "Sec-WebSocket-Protocol": `chat, ${SUBPROTOCOL}`,
             }),
           ).toBe(400)
-          // A bad upgrade credential is refused before the upgrade.
           expect(
             yield* upgradeStatus(host, "ws-refused", { ...protocol, Authorization: "Bearer nope" }),
           ).toBe(401)
 
-          // Sockets that never say hello hold their places until their deadline.
           const silent = yield* Effect.forEach(
             Array.from({ length: 1_000 }, (_, index) => index),
             () => socket(host, "ws-crowd"),
@@ -850,7 +835,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* upgradeStatus(host, "ws-crowd", protocol)).toBe(503)
           yield* Effect.forEach(silent, (ws) => ws.close, { discard: true })
 
-          // Closed sockets free their places.
           yield* Effect.gen(function* () {
             while ((yield* upgradeStatus(host, "ws-crowd", protocol)) !== 101)
               yield* Effect.sleep("50 millis")
@@ -865,7 +849,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const { host, token } = yield* setup(environment)
 
-          // No credential anywhere: Unauthorized before anything wakes.
           const missing = yield* socket(host, "ws-auth")
           yield* missing.send({ t: "hello", params: { name: "alice" } })
           expect(yield* endReason(yield* missing.next())).toMatchObject({
@@ -874,7 +857,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect((yield* missing.closed).code).toBe(1008)
 
-          // A non-browser client authenticates the upgrade and sends a bare hello.
           const upgraded = yield* headerSocket(host, "ws-auth", token("bob"))
           expect(upgraded.status).toBe(101)
           yield* upgraded.send({ t: "hello", params: { name: "bob" } })
@@ -883,7 +865,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             Hello.make({ name: "bob", resumed: false }),
           )
 
-          // Both credentials must name the same caller.
           const mixed = yield* headerSocket(host, "ws-auth", token("bob"))
           yield* mixed.send({
             t: "hello",
@@ -896,7 +877,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect((yield* mixed.closed).code).toBe(1008)
 
-          // An expired credential in hello is refused with its code.
           const expired = yield* socket(host, "ws-auth")
           yield* expired.send({
             t: "hello",
@@ -908,7 +888,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             code: "expired",
           })
 
-          // Undecodable params are InvalidInput, and a declared open failure is sent as itself.
           const bad = yield* socket(host, "ws-auth")
           yield* bad.send({ t: "hello", authorization: token(), params: { nom: "x" } })
           expect(yield* endReason(yield* bad.next())).toMatchObject({
@@ -937,14 +916,12 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
 
           const forged = yield* socket(host, "ws-envelope")
           yield* greet(forged, token())
-          // An unsolicited `resyncDone` is consumed by the holder and changes nothing.
           yield* forged.send({ t: "resyncDone", through: "99" })
           yield* forged.send(yield* say("whoami"))
           expect(yield* frameOf(yield* forged.next())).toEqual(
             Hello.make({ name: "alice", resumed: false }),
           )
 
-          // A member frame that looks like the holder's control message is still a member frame.
           const resync = yield* encodeForged(ForgedResync.make({ after: "0" })).pipe(Effect.orDie)
           yield* forged.send({ t: "frame", frame: resync })
           expect(yield* endReason(yield* forged.next())).toMatchObject({
@@ -953,14 +930,12 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect((yield* forged.closed).code).toBe(4400)
 
-          // A command never travels over the socket.
           const unknown = yield* socket(host, "ws-envelope")
           yield* greet(unknown, token())
           yield* unknown.sendRaw(`{"t":"command","member":"Post","input":"x"}`)
           expect(yield* endReason(yield* unknown.next())).toMatchObject({ tag: "InvalidInput" })
           expect((yield* unknown.closed).code).toBe(4400)
 
-          // A second hello is not a message a session accepts.
           const again = yield* socket(host, "ws-envelope")
           yield* greet(again, token())
           yield* again.send({ t: "hello", authorization: token(), params: { name: "alice" } })
@@ -1004,7 +979,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           const expiring = (subject: string, ms: number) =>
             Effect.map(holder.now, (now) => `Bearer ${test.tenant}:${subject}:${now + ms}`)
 
-          // Asked at half the credential's remaining life; a fresh one extends the session.
           const renewing = yield* socket(host, "ws-renew")
           const open = yield* greet(renewing, yield* expiring("alice", 3_000))
           expect(open.reauthenticateBy === undefined).toBe(false)
@@ -1019,14 +993,12 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(yield* renewing.next()).toEqual({ t: "reauthenticated", by: fresh })
 
-          // Past the old credential's expiry the session still delivers.
           yield* Effect.sleep("2 seconds")
           yield* renewing.send(yield* say("whoami"))
           expect(yield* frameOf(yield* renewing.next())).toEqual(
             Hello.make({ name: "alice", resumed: false }),
           )
 
-          // Without an answer, the session ends at the credential's expiry.
           const silent = yield* socket(host, "ws-renew")
           yield* greet(silent, yield* expiring("alice", 2_000))
           expect(yield* endReason((yield* silent.until("end", 10_000)).at(-1))).toMatchObject({
@@ -1035,7 +1007,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect((yield* silent.closed).code).toBe(1008)
 
-          // A renewal for a different caller ends the session: identity never changes mid-session.
           const swapped = yield* socket(host, "ws-renew")
           yield* greet(swapped, yield* expiring("alice", 60_000))
           yield* swapped.send({
@@ -1088,7 +1059,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           yield* greet(ws, token())
 
           yield* test.hibernate(room.ref)
-          // Nothing arrives while parked, and the socket stays open.
           expect(yield* ws.poll(500)).toEqual(Option.none())
 
           yield* ws.send(yield* say("whoami"))
@@ -1096,7 +1066,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             Hello.make({ name: "alice", resumed: true }),
           )
 
-          // A command that wakes the actor reaches the parked socket too.
           yield* test.hibernate(room.ref)
           yield* room.Post("wake")
           expect(yield* frameOf(yield* ws.next())).toEqual(Said.make({ text: "wake" }))
@@ -1153,7 +1122,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             const cluster = yield* ActorCluster
             yield* cluster.ready
 
-            // Runner 0 holds the socket; find an actor runner 1 owns.
             let target: ActorRef | undefined
 
             for (let index = 0; target === undefined && index < 200; index++) {
@@ -1179,7 +1147,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
 
             yield* cluster.kill(1)
 
-            // The holder keeps the socket and asks the client to resync from the last cursor it proved.
             expect(yield* ws.next(60_000)).toEqual({
               t: "resync",
               after: "1",
@@ -1187,12 +1154,10 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
               deadline: 30_000,
             })
 
-            // The new owner's resync handler replays, then the holder says so.
             const replay = yield* ws.until("resyncReplayed", 60_000)
             expect(replay.at(-1)).toEqual({ t: "resyncReplayed" })
             expect(replay.filter((message) => message.t === "frame")).toEqual([])
 
-            // A broadcast committed before the client acknowledges waits for it.
             yield* post("during")
             expect(yield* ws.poll(1_000)).toEqual(Option.none())
 
@@ -1217,7 +1182,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           yield* room.Note("not served")
           yield* room.Tell("two")
 
-          // Commits race the open and its first read.
           const racing = yield* Effect.forEach(
             Array.from({ length: 20 }, (_, index) => index),
             (index) => room.Tell(`race-${index}`),
@@ -1235,7 +1199,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           const received = yield* take(opened.messages, 23)
           const cursors = received.map((message) => Number(message.id))
 
-          // Every Said event once, in cursor order; the Noted event between them is not served.
           expect(cursors).toEqual([...cursors].sort((left, right) => left - right))
           expect(new Set(cursors).size).toBe(23)
           expect(cursors.includes(2)).toBe(false)
@@ -1263,7 +1226,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect((yield* take(after.messages, 2)).map((message) => message.id)).toEqual(["3", "4"])
 
-          // Last-Event-ID overrides `after`, as a browser's own reconnect sends it.
           const resumed = yield* feed(host, "sse-resume", "event=Said&after=0", {
             authorization: token(),
             "last-event-id": "3",
@@ -1284,7 +1246,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(malformed.status).toBe(404)
 
-          // Pruning removes a prefix; a cursor before it can't resume without a gap.
           const sql = yield* SqlClient.SqlClient
           yield* sql`DELETE FROM actor_events WHERE tenant_id = ${room.ref.tenant}
             AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id} AND sequence <= 2`.pipe(
@@ -1339,7 +1300,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           expect(tooMany.status).toBe(400)
           expect(yield* feedReason(tooMany.body)).toMatchObject({ code: "too_many_filters" })
 
-          // Unauthenticated feeds run nothing.
           const anonymous = yield* feed(host, "sse-filters", "event=Said", {})
           expect(anonymous.status).toBe(401)
         }),
@@ -1356,7 +1316,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           yield* room.Tell("before")
 
           yield* Effect.gen(function* () {
-            // `authorize` sees the event tag as the command of a feed.
             fixture.denied.add("Said")
 
             const refused = yield* feed(host, "sse-revoke", "event=Said", {
@@ -1406,7 +1365,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             code: "expired",
           })
 
-          // Committed while the client was away; the reconnect resumes after its last cursor.
           yield* room.Tell("while away")
 
           const again = yield* feed(host, "sse-expiry", "event=Said", {
@@ -1447,7 +1405,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           const opened = yield* feed(host, "sse-lag", "event=Said", { authorization: token() })
           yield* take(opened.messages, 1)
 
-          // One turn's 1,100 frames overflow the holder's 1,024-frame buffer at once.
           yield* room.Burst(1_100)
 
           const received = yield* take(opened.messages, 1_100)
@@ -1508,7 +1465,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             yield* cluster.kill(1)
             yield* tell("after")
 
-            // No control message reaches the client: the next message is the next event.
             const [next] = yield* take(opened.messages, 1, 60_000)
             expect(next!.id).toBe("2")
             expect(yield* textOf(next!)).toBe("after")
@@ -1529,7 +1485,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           const send = yield* FetchHttpClient.Fetch
           let dropped = false
 
-          // The first feed response is cut after its first event, as a lost connection would be.
           const flaky = (input: RequestInfo | URL, init?: RequestInit) =>
             send(input, init).then((response) => {
               requests.push(new Headers(init?.headers).get("last-event-id"))
@@ -1549,7 +1504,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
 
                     if (end === -1) return controller.enqueue(chunk.value)
 
-                    // Only the first complete message gets through.
                     controller.enqueue(new TextEncoder().encode(text.slice(0, end + 2)))
                     void reader.cancel()
                     controller.error(new Error("connection lost"))
@@ -1571,7 +1525,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
 
           const [first, second] = yield* iterated.pipe(Stream.take(2), Stream.runCollect)
 
-          // A later event reaches a new iteration from the cursor it resumes after.
           const resumed = FeedRoom.client({
             baseUrl: `http://${host}/api`,
             headers: { authorization: token() },
@@ -1589,7 +1542,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
 
           const received = [first, second, third]
           expect(received).toEqual(["1:one", "2:two", "3:three"])
-          // The reopened request resumed after the one event it had delivered.
           expect(requests.slice(0, 2)).toEqual([null, "1"])
         }),
       ),
@@ -1608,7 +1560,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           const services = yield* Effect.context<never>()
           let opened = 0
 
-          // Each request carries a fresh credential that expires 1.5 seconds later.
           const handle = FeedRoom.client({
             baseUrl: `http://${host}/api`,
             headers: () =>
@@ -1707,7 +1658,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.promise(() => connection.close())
           expect((yield* next).done).toBe(true)
 
-          // A provider that rejects, such as a failed token refresh, fails `connect` with its own error.
           const refresh = new Error("token refresh failed")
 
           const failing = SocketRoom.client({
@@ -1746,7 +1696,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           const iterator = connection.messages[Symbol.asyncIterator]()
           yield* room.Start(10)
 
-          // Progress is not a member frame: its own `t`, and no cursor or event to resume from.
           const [wire] = (yield* ws.until("progress")).filter((message) => message.t === "progress")
           expect(wire).toMatchObject({ t: "progress", effect: "Render", attempt: 1 })
           expect(
@@ -1755,7 +1704,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           expect(wire?.t === "progress" && wire.seq >= 1).toBe(true)
           expect(Schema.is(Percent)(wire?.t === "progress" ? wire.frame : undefined)).toBe(true)
 
-          // The client decodes the frame with Render's progress schema.
           const received = yield* Effect.promise(() => iterator.next())
           const progress = received.value?._tag === "Progress" ? received.value : undefined
           expect([progress?.effect, progress?.attempt]).toEqual(["Render", 1])
@@ -1815,7 +1763,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
               handle.Chat.connect(
                 { name: "alice" },
                 {
-                  // A callback that throws still lets the resync be acknowledged.
                   onResync: ({ after }) => {
                     resyncs.push(after)
                     throw new Error("the page failed to reload")
@@ -1834,7 +1781,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
               }),
             )
 
-            // Each message as its tag and what it carries, for comparison.
             const seen = next.pipe(
               Effect.map((message) =>
                 message === undefined
@@ -1854,7 +1800,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             yield* cluster.kill(1)
             expect(yield* seen).toEqual({ tag: "Resync", after: "1", reason: "OwnerLost" })
 
-            // The member's resync handler replays nothing new; the replay is reported, and the client acknowledged it.
             expect(yield* seen).toEqual({ tag: "ResyncReplayed" })
             yield* post("after")
             expect(yield* seen).toEqual({ tag: "Frame", frame: Said.make({ text: "after" }) })
@@ -1880,7 +1825,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           let pulled = false
           let writes = 0
 
-          // A half-open peer: `hello` arrives, then nothing, and the first frame after `open` can't be written.
           const socket = Socket.make({
             reader: Effect.succeed({
               pull: Effect.suspend(() => {
@@ -1993,7 +1937,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(refused).toBeInstanceOf(Refused)
 
-          // A live stream: the committed text, then one committed while subscribed.
           const heard = yield* Stream.fromAsyncIterable(handle.Heard({}), asFailure).pipe(
             Stream.tap((text) => (text === "one" ? room.Tell("two") : Effect.void)),
             Stream.take(2),

@@ -33,7 +33,6 @@ const Journal = Actor.make("StreamJournal", {
   key: Schema.String,
   events: [Noted],
   api: { Note, Notes, Count, Flood },
-  // Short enough that a subscription outlives several idle periods in one case.
   policy: { hibernateAfter: "1 second" },
 })
 
@@ -171,7 +170,6 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
           const [first] = yield* take(journal.Notes({}), 1)
           expect(first?.text).toBe("one")
 
-          // Replay after `one`, then turns that commit while the replay runs and after it.
           const pull = yield* open(journal.Notes({ after: first!.cursor }))
           const replayed = yield* read(pull, 2)
 
@@ -237,7 +235,6 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
           )
           const generation = (yield* test.inspect(journal.ref)).generation
 
-          // Three idle periods pass with no command; the open subscription keeps the activation.
           yield* Effect.sleep("3500 millis")
           yield* journal.Note("two")
           yield* Effect.sleep("100 millis").pipe(
@@ -252,7 +249,6 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
           expect(reason).toMatchObject({ cause: "ActivationEnded", resync: false })
           expect(Schema.is(SessionEnded)(reason) && reason.isRetryable).toBe(true)
 
-          // Subscribing again from the last cursor misses and repeats nothing.
           yield* journal.Note("three")
           const [resumed] = yield* take(journal.Notes({ after: seen.at(-1)!.cursor }), 1)
           expect(resumed?.text).toBe("three")
@@ -323,10 +319,8 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
           const journal = yield* Journal.get("streams-slow")
           const pull = yield* open(journal.Flood())
           yield* read(pull, 1)
-          // The subscriber stops reading; the owner's window fills and stays full.
           yield* Effect.sleep("1 second")
           yield* test.advance("31 seconds")
-          // Reading again before the owner's next check would empty the window.
           yield* Effect.sleep("500 millis")
 
           const slow = yield* Effect.gen(function* () {
@@ -345,7 +339,6 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const journal = yield* Journal.get("streams-limit")
 
-          // All at once: the limit holds however the subscriptions interleave on the owner.
           const opened = yield* Effect.forEach(
             Array.from({ length: 260 }),
             () => Effect.flatMap(open(journal.Flood()), (pull) => read(pull, 1)).pipe(Effect.exit),
@@ -392,7 +385,6 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(reasonOf(lost)).toMatchObject({ cause: "ActivationEnded" })
 
-          // The survivor takes the actor; subscribing from the last cursor continues exactly.
           yield* cluster.on(0)(journal.Note("after"))
           const [after] = yield* cluster.on(0)(take(journal.Notes({ after: before!.cursor }), 1))
           expect(after?.text).toBe("after")
@@ -420,7 +412,6 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
               Effect.sync(() => written.push(text)),
             )
 
-          // Each owner writes three events, then dies; the next owner continues the stream.
           yield* Effect.forEach(["a1", "a2", "a3"], note(0), { discard: true })
           yield* cluster.kill(1)
           yield* Effect.forEach(["b1", "b2", "b3"], note(0), { discard: true })

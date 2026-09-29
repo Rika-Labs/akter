@@ -295,10 +295,8 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
         3,
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
-          // Nothing called the singleton: the runtime woke it, and its loop ticks.
           const { ref, loop, before } = yield* settled
 
-          // Every runner's commands reach the same activation.
           for (const runner of [0, 1, 2]) yield* tickFrom(runner, `runner-${runner}`)
 
           yield* awaitLog(
@@ -308,9 +306,6 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           )
           const log = yield* logOf(2)
 
-          // Rebalancing while runners joined may have moved the singleton, but
-          // no two loops were ever live together and no activation committed
-          // after its successor had.
           expect(peakOf(ref.tenant)).toBe(1)
           expect(loopsOf(ref.tenant).length).toBe(before)
           expect(liveOf(ref.tenant)).toEqual([loop])
@@ -338,8 +333,6 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const database = yield* environment.freshDatabase
 
-          // A subscriber type that routes from Beacon and is never registered
-          // holds the source's registration back for the subscribers' wait.
           yield* Effect.gen(function* () {
             const context = yield* Layer.build(singletonCluster(database, 1))
 
@@ -384,12 +377,8 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           const survivor = (owner + 1) % 3
           const killed = (yield* lockOf(survivor, ref)).now
           yield* cluster.kill(owner)
-          // Read after the kill, the row holds the dead runner's last refresh.
           const held = yield* lockOf(survivor, ref)
 
-          // Every refresh rewrites `acquired_at`, so the takeover is read as
-          // soon as the row names another runner; a later read would hold a
-          // refresh instead.
           const taken = yield* lockOf(survivor, ref).pipe(
             Effect.repeat({
               schedule: Schedule.spaced("20 millis"),
@@ -413,23 +402,17 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           const next = (yield* cluster.owner(ref))!
 
           expect(next === owner).toBe(false)
-          // No survivor took the shard while the dead runner's lock was live.
           const expired = held.acquired + EXPIRATION_SECONDS * 1000
           expect(taken.acquired >= expired).toBe(true)
           expect(taken.acquired >= killed).toBe(true)
 
-          // Exactly one survivor started a loop, and the dead runner's
-          // activation committed nothing after the survivor's first commit.
           expect(loopsOf(ref.tenant).length).toBe(before + 1)
           expect(unbroken(log)).toBe(true)
           expect(runs(log).slice(-2)).toEqual([loop.id, successor.id])
           expect(contiguous(log)).toBe(true)
           const resumed = log.find(({ by }) => by === successor.id)!
-          // The survivor committed only after the dead runner's lock expired,
-          // whatever refreshes its own lock has had since.
           expect(resumed.at >= expired).toBe(true)
 
-          // The dead runner's loop winds down; the survivor's keeps going.
           yield* awaitThat(() => !loop.live, "the dead runner's loop to stop")
           expect(liveOf(ref.tenant)).toEqual([successor])
           expect(successor.refused).toEqual([])
@@ -465,9 +448,6 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           )
           expect(yield* cluster.owner(ref)).toBe(rival)
 
-          // The zombie still believes it owns the singleton's shard, but its
-          // lease in the database lapsed: its loop stopped before the rival's
-          // started, and it built no new activation while paused.
           expect(zombie.live).toBe(false)
           expect(zombie.stoppedAt! < successor.startedAt).toBe(true)
           yield* Effect.sleep(`${EXPIRATION_SECONDS} seconds`)
@@ -482,7 +462,6 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* heartbeat.resume
           yield* cluster.ready
-          // Rebalancing once the runner rejoins may move the singleton again.
           const live = yield* steady(rival, ref.tenant)
           yield* tickFrom(paused, "after-resume")
 

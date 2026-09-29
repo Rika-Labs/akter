@@ -31,7 +31,6 @@ export const labels = Actor.table(
 
 const unowned = pgTable("conformance_unowned", { id: text("id").primaryKey() })
 
-// Wrapped but listed by no actor type, as a handler could do to reach framework tables.
 const receipts = Actor.table(
   pgTable("actor_receipts", {
     command_id: text("command_id").primaryKey(),
@@ -216,22 +215,18 @@ const Label = Actor.command("Label", {
 
 const Shelf = Actor.make("Shelf", { key: Schema.String, tables: [labels], api: { Label } })
 
-// A plain object Drizzle would render as SQL; it would close the scope's parentheses.
 const sqlLookalike = { getSQL: () => drizzleSql.raw("'zzz')) or ((true") } as never
 
 const escape = "'zzz')) or ((true"
 
-// A date that also looks like SQL to Drizzle.
 const sqlDate = (text: string) =>
   Object.assign(DateTime.toDateUtc(DateTime.makeUnsafe(0)), {
     getSQL: () => drizzleSql.raw(text),
   }) as never
 
-// SQL hidden from Object.keys, so a copy would drop it but the original would render.
 const hiddenSql = (text: string) =>
   Object.defineProperty({}, "getSQL", { value: () => drizzleSql.raw(text) }) as never
 
-// Safe on the first reads, then raw SQL: only a value read once can be trusted.
 const shifting = <T>(safe: T, evil: T, safeReads: number) => {
   let reads = 0
 
@@ -242,7 +237,6 @@ const shifting = <T>(safe: T, evil: T, safeReads: number) => {
   }
 }
 
-// Rows seen through the loosest static type, as code bypassing the declared table types would.
 const misuse = (loose: ScopedRows<AnyOwnedTable>, kind: typeof Misuse.Type) => {
   switch (kind) {
     case "ownerInsert":
@@ -527,7 +521,6 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
           const abroad = yield* Notebook.get("shared-id").pipe(Actor.tenant(`${test.tenant}-b`))
           const all = [home, neighbor, abroad]
 
-          // Interleaved: each step runs the same business-only call on every actor.
           for (const notebook of all)
             expect(yield* notebook.Write({ id: "n1", body: "one" })).toBe(1)
 
@@ -606,7 +599,6 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
               message,
             )
 
-          // Nothing partial survives: not the attacker's first insert, not a receipt.
           expect(yield* test.inspect(attacker.ref)).toMatchObject({ ...rowsOf(0), receipts: 0 })
           expect(yield* victim.List()).toEqual([{ id: "v", body: "victim", rank: 0 }])
         }),
@@ -702,7 +694,6 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(leaks).toEqual(Object.fromEntries(Smuggle.literals.map((kind) => [kind, []])))
 
-          // A balanced "or true" stays inside the framework's parenthesized scope.
           const everything = yield* reader.Everything()
           expect(everything).toContain(`a-${t}`)
           expect(everything.filter((body) => body.includes(other))).toEqual([])
@@ -769,7 +760,6 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
           yield* Deferred.await(reached)
           fixture.tables.hold = Effect.void
 
-          // The held turn keeps its row uncommitted; an equal key of another actor must not wait on it.
           expect(
             yield* second.Write({ id: "same", body: "same" }).pipe(Effect.timeout("5 seconds")),
           ).toBe(1)
@@ -831,7 +821,6 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
             .Write({ id: "locked", body: "locked" })
             .pipe(Effect.forkChild)
 
-          // Longer than the default 2 s lockWait, so at least one attempt times out.
           yield* Effect.sleep("3 seconds")
           yield* lock.query("ROLLBACK")
           expect(yield* Fiber.join(writer)).toBe(1)
