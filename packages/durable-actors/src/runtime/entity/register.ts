@@ -52,25 +52,31 @@ import { count, Metrics, record } from "../telemetry/metrics.ts"
 import { requestAttributes, SpanNames, triggerOf } from "../telemetry/spans.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
-// Commands are direct: the Cluster message is volatile and the receipt
-// committed inside the turn is the only durable admission record.
-// A lost runner loses only uncommitted work, which the caller retries by id.
-// `Wake` builds the activation without running a turn.
+/**
+ * Commands are direct: the Cluster message is volatile and the receipt
+ * committed inside the turn is the only durable admission record.
+ * A lost runner loses only uncommitted work, which the caller retries by id.
+ * `Wake` builds the activation without running a turn.
+ */
 const makeCommandEntity = (name: string) =>
   Entity.make(name, [
     Rpc.make("Execute", { payload: Request, success: Executed, error: ActorError }),
     Rpc.make("Wake"),
   ]).annotateRpcs(ClusterSchema.Uninterruptible, true)
 
-// Cluster entity ids name the tenant and actor id together.
+/**
+ * Cluster entity ids name the tenant and actor id together.
+ */
 const EntityId = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String]))
 
 const encodeEntityIdOf = Schema.encodeEffect(EntityId)
 
-// A retryable turn failure, and a handler rebuilt after a death, wait
-// `RESTART_BASE × 2^n`, capped at `RESTART_CAP`, where `n` counts the
-// activation's failures and rebuilds since its last settled turn: prompt after
-// a one-off failure, bounded for an actor whose turn fails on every attempt.
+/**
+ * A retryable turn failure, and a handler rebuilt after a death, wait
+ * `RESTART_BASE × 2^n`, capped at `RESTART_CAP`, where `n` counts the
+ * activation's failures and rebuilds since its last settled turn: prompt after
+ * a one-off failure, bounded for an actor whose turn fails on every attempt.
+ */
 const RESTART_BASE = Duration.millis(50)
 
 const RESTART_CAP = Duration.seconds(5)
@@ -89,31 +95,42 @@ const outcomeOf = (outcome: Outcome, replayed = false) =>
         Acknowledged: () => "acknowledged",
       })
 
+/** Encodes a tenant and actor id as the Cluster entity id. */
 export const encodeEntityId = (tenantAndId: readonly [string, string]) =>
   encodeEntityIdOf(tenantAndId)
 
 const decodeEntityId = Schema.decodeEffect(EntityId)
 
-// How often a singleton's keeper re-wakes the default tenant's instance, and
-// so bounds how long after its shard moves the instance is resident again.
+/**
+ * How often a singleton's keeper re-wakes the default tenant's instance, and
+ * so bounds how long after its shard moves the instance is resident again.
+ */
 const SINGLETON_WAKE_INTERVAL = Duration.seconds(1)
 
-// Cluster's lifetime of one entity, shared by every handler a defect restart
-// rebuilds within it.
+/**
+ * Cluster's lifetime of one entity, shared by every handler a defect restart
+ * rebuilds within it.
+ */
 const entityScope = () =>
   Effect.serviceOption(
     Context.Service<Scope.Scope>("effect/cluster/internal/CurrentActivationScope"),
   )
 
-// The current handler's scope within each entity scope.
+/**
+ * The current handler's scope within each entity scope.
+ */
 const handlerScopes = new WeakMap<Scope.Scope, Scope.Closeable>()
 
-// Rebuilds of each entity scope's handler since its last settled turn; absent
-// until the first build, so only a rebuild waits.
+/**
+ * Rebuilds of each entity scope's handler since its last settled turn; absent
+ * until the first build, so only a rebuild waits.
+ */
 const restarts = new WeakMap<Scope.Scope, number>()
 
-// Per entity scope, the command ids of a batch a retryable defect aborted;
-// they outlive the handler the defect rebuilt, so each runs alone once.
+/**
+ * Per entity scope, the command ids of a batch a retryable defect aborted;
+ * they outlive the handler the defect rebuilt, so each runs alone once.
+ */
 const aloneAfterFailure = new WeakMap<Scope.Scope, Set<string>>()
 
 /** A command in an activation's mailbox and the caller waiting on its reply. */
@@ -131,8 +148,10 @@ interface Waiting {
   queued: boolean
 }
 
-// Defects that say nothing about the command: the activation restarts and
-// the caller retries the same id.
+/**
+ * Defects that say nothing about the command: the activation restarts and
+ * the caller retries the same id.
+ */
 const retryable = (cause: Cause.Cause<unknown>) => {
   const defect = Cause.squash(cause)
 
@@ -141,8 +160,11 @@ const retryable = (cause: Cause.Cause<unknown>) => {
 
 const commandEntities = new Map<string, ReturnType<typeof makeCommandEntity>>()
 
-// Sharding keeps one RPC client per entity object, by identity, until the
-// runtime closes; a fresh entity per command would retain a client per command.
+/**
+ * Sharding keeps one RPC client per entity object, by identity, until the
+ * runtime closes; a fresh entity per command would retain a client per command.
+ */
+/** The command entity definition for an actor type, created once per name. */
 export const commandEntity = (name: string) => {
   const cached = commandEntities.get(name)
 
@@ -156,6 +178,7 @@ export const commandEntity = (name: string) => {
 
 const connectionEntities = new Map<string, ReturnType<typeof connectionsEntity>>()
 
+/** The connection entity definition for an actor type, created once per name. */
 export const connectionEntity = (name: string) => {
   const cached = connectionEntities.get(name)
 
@@ -167,6 +190,43 @@ export const connectionEntity = (name: string) => {
   return entity
 }
 
+/**
+ * Registers an actor type's command entity with Cluster and starts its
+ * activations, worker, and singleton keeper.
+ *
+ * - One worker per handler runs queued commands as turn batches in delivery
+ *   order, so an activation has one transaction in flight. Commands enqueue
+ *   synchronously when Cluster delivers the request, and replies follow the
+ *   batch's commit; broadcasts go out first. With `pipelining`, the next batch
+ *   already waiting is taken while the previous one commits.
+ * - A retryable failure committed nothing. The worker ends the activation,
+ *   waits its backoff, starts the next one in place, and only then answers each
+ *   unanswered command `ActorUnavailable`, so a caller never retries into the
+ *   closed activation and never waits out its delivery timeout when Cluster
+ *   would drop a re-sent command mid-restart (as during a database failover).
+ *   Restarts never overlap because the one worker serializes them.
+ * - A defect aborts the whole batch; a following batch whose admission was
+ *   already sent is rolled back unseen. After a deterministic defect the
+ *   failed batch's commands rerun one per transaction so one bad command cannot
+ *   keep rolling back its neighbours, and a lone command answers `Defect`.
+ *   Defect hooks do not run, since they can loop on corrupt state. A defect
+ *   after the batch committed lets redelivered commands replay their receipts.
+ * - Restart backoff is kept per activation, because Cluster's own is shared by
+ *   every entity of the type and never resets.
+ * - Each handler's resources live in a child of the entity's scope, closed when
+ *   a rebuild supersedes it, the handler closes, or the entity ends, because a
+ *   defect during shutdown can drop the superseded handler's own scope.
+ * - Full-mailbox and full-runner rejections share one Cluster error; only an
+ *   activation already resident can have a full mailbox, and a rebuilt handler
+ *   can overlap its predecessor, hence the count.
+ * - A singleton starts only on the runner holding its shard's lease. Every
+ *   runner serves its entity, and one keeper re-wakes the default tenant's
+ *   instance so it moves to a survivor. A failing singleton build answers every
+ *   command with its defect instead of retrying forever.
+ * - A draining runner refuses a batch, or interrupts its run at the deadline,
+ *   and every unanswered caller retries elsewhere.
+ * - The turn span carries no captured stack: its call site is always this file.
+ */
 export const registerActor = Effect.fnUntraced(function* (
   registration: Registration,
   transport: Transport,
@@ -207,7 +267,6 @@ export const registerActor = Effect.fnUntraced(function* (
 
   const workflowRoutes = workflowCommands({ registration, routingKeyOf, services })
 
-  // Event classes some workflow of this actor waits for; only these check waits on append.
   const waited = new Set(
     [...registration.workflows.values()].flatMap((workflow) =>
       [...workflow.member.registry.steps.values()].flatMap((step) =>
@@ -216,9 +275,6 @@ export const registerActor = Effect.fnUntraced(function* (
     ),
   )
 
-  // Cluster reports a full mailbox and a full runner with the same error; only
-  // an activation that is already resident can have a full mailbox. A handler
-  // rebuilt after a defect can overlap its predecessor, hence the count.
   const resident = new Map<string, number>()
 
   const lease = registration.singleton
@@ -234,10 +290,6 @@ export const registerActor = Effect.fnUntraced(function* (
   const register = sharding.registerEntity(
     entity,
     Effect.gen(function* () {
-      // A defect restart rebuilds the handler, and a defect while the entity
-      // shuts down can drop the superseded handler's scope. Each handler's
-      // resources live in a child of the entity's own scope instead, closed
-      // when a rebuild supersedes it, the handler closes, or the entity ends.
       const activation = yield* entityScope().pipe(
         Effect.flatMap(
           Option.match({
@@ -247,8 +299,6 @@ export const registerActor = Effect.fnUntraced(function* (
         ),
       )
 
-      // Cluster's own restart backoff is shared by every entity of the type
-      // and never resets, so the wait is kept per activation here instead.
       const rebuilt = restarts.get(activation)
 
       restarts.set(activation, rebuilt === undefined ? 0 : rebuilt + 1)
@@ -267,13 +317,8 @@ export const registerActor = Effect.fnUntraced(function* (
           ? undefined
           : ShardId.toString(yield* entity.getShardId(ClusterEntityId.make(entityId)))
 
-      // A singleton starts only on the runner holding its shard's lease, and
-      // its background work stops as soon as the lease lapses.
       if (lease !== undefined && !(yield* lease.holds(shard!))) return yield* leaseLost
 
-      // What one activation holds: its resources' scope, its connection
-      // state, its handlers, and its workflow engine. A retryable turn
-      // failure ends it and starts the next in place, as a restart would.
       interface Current {
         readonly scope: Scope.Closeable
         readonly owned: Effect.Success<ReturnType<typeof ownedOf>>
@@ -283,9 +328,6 @@ export const registerActor = Effect.fnUntraced(function* (
 
       let lost = false
 
-      // The handler's own scope holds its residency, its worker, and every
-      // activation it starts, so the actor stays resident while an activation
-      // restarts and the worker outlives the activation it ends.
       const handler = yield* Scope.fork(activation)
 
       handlerScopes.set(activation, handler)
@@ -319,13 +361,8 @@ export const registerActor = Effect.fnUntraced(function* (
             Effect.forkIn(scope),
           )
 
-        // Entered in the activation's own scope, so ending the activation
-        // seals its broadcasts and, unless its connection entity still holds
-        // it, drops its cached state and generation.
         const owned = yield* ownedOf(entityId).pipe(Scope.provide(scope))
 
-        // A singleton builds here, on its owner; a failing build answers every
-        // command with its defect instead of retrying the activation forever.
         const activated = yield* registration
           .activate(ActorRef.make({ tenant, actor: registration.name, id }))
           .pipe(Scope.provide(scope), Effect.exit)
@@ -348,22 +385,17 @@ export const registerActor = Effect.fnUntraced(function* (
       const policy = registration.policy
       const statements = registration.tables.length > 0 || registration.blobs.length > 0
 
-      // Commands wait here in delivery order; one worker runs them as turn
-      // batches, so an activation still has one transaction in flight.
       const waiting: Array<Waiting> = []
       const ready = Latch.makeUnsafe(false)
       const alone = aloneAfterFailure.get(activation) ?? new Set<string>()
       aloneAfterFailure.set(activation, alone)
 
-      // Replies follow the commit: each command's caller hears its outcome
-      // only after the batch that ran it committed.
       const settle = Effect.fnUntraced(function* (
         entry: Waiting,
         exit: Exit.Exit<Executed, ActorError>,
       ) {
         const { request } = entry
 
-        // The turn settled, so the next retryable death waits the base delay again.
         if (Exit.isSuccess(exit)) restarts.set(activation, 0)
 
         if (Exit.isSuccess(exit) && !Outcome.guards.Defect(exit.value.outcome)) {
@@ -389,18 +421,12 @@ export const registerActor = Effect.fnUntraced(function* (
         yield* Deferred.done(entry.reply, exit)
       })
 
-      // Set once the worker has stopped for a handler restart, so a command
-      // arriving before Cluster rebuilds the handler is refused, not queued
-      // for a worker that no longer runs.
       let ended = false
 
       const restartIncomplete = Effect.die(
         RetryTurn.make({ message: "Activation restart did not complete" }),
       )
 
-      // A defect that restarts the handler answers every unanswered caller of
-      // the batch with it, and Cluster redelivers those commands to the
-      // rebuilt handler. This worker stops, so it never runs beside it.
       const restart = (batch: ReadonlyArray<Waiting>, cause: Cause.Cause<unknown>) =>
         Effect.sync(() => {
           ended = true
@@ -415,18 +441,6 @@ export const registerActor = Effect.fnUntraced(function* (
           Effect.andThen(Effect.interrupt),
         )
 
-      // A retryable failure committed nothing. The worker ends the activation,
-      // waits its backoff, starts the next one in place, and only then answers
-      // each unanswered command of the batch `ActorUnavailable`, so a caller
-      // never retries into the closed activation. Answering here, instead of
-      // dying so Cluster restarts the entity and re-sends the commands, keeps a
-      // caller from waiting out its delivery timeout: Cluster drops a re-sent
-      // command whose turn fails again mid-restart, as a refused connection
-      // does during a database failover. Commands still waiting, and a
-      // following batch that was rolled back unseen, stay queued and run on the
-      // new activation. The one worker runs batches and restarts in turn, so no
-      // two restarts overlap; if the start fails, the handler restarts as for
-      // any other defect.
       const restartActivation = (
         batch: ReadonlyArray<Waiting>,
         orphan: ReadonlyArray<Waiting>,
@@ -464,9 +478,6 @@ export const registerActor = Effect.fnUntraced(function* (
           Effect.catchCause((failed) => restart([...batch, ...orphan], failed)),
         )
 
-      // Resolved when a batch is taken, not when its command queued: the
-      // handlers belong to the activation that runs them, and a restart
-      // replaces it.
       const resolve = (batch: Array<Waiting>) => {
         const { activated } = current
 
@@ -480,12 +491,8 @@ export const registerActor = Effect.fnUntraced(function* (
         return batch
       }
 
-      // Every command the current run has taken, so a drain can answer them.
       let taken: Array<Waiting> = []
 
-      // The next batch already waiting, taken while the previous one commits
-      // so its admission rides in the same flight. Nothing waits for one, and
-      // a draining runner starts none.
       const following = Effect.gen(function* () {
         if (
           lost ||
@@ -504,11 +511,8 @@ export const registerActor = Effect.fnUntraced(function* (
         return batch.length > 0 ? batch : undefined
       })
 
-      // The outcome label of each command of a batch that committed.
       const labelled = new WeakMap<ReadonlyArray<Waiting>, ReadonlyArray<string>>()
 
-      // Connection broadcasts of a batch go out once it commits, and then
-      // each caller hears its own outcome.
       const committed = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>, done: Done) {
         const { owned } = current
 
@@ -533,9 +537,6 @@ export const registerActor = Effect.fnUntraced(function* (
         yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
         yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
 
-        // A route turn's command id is its effect id: its progress stops
-        // before the route's broadcasts, as does the progress of every
-        // running effect the batch cancelled.
         if (owner.hasProgress) {
           for (const [index, settled] of done.settled.entries())
             if (Result.isSuccess(settled) && !Outcome.guards.Defect(settled.success))
@@ -544,7 +545,6 @@ export const registerActor = Effect.fnUntraced(function* (
           for (const effectId of done.cancelledEffects) yield* owner.closeProgress(owned, effectId)
         }
 
-        // Stream followers wake when a commit advances the activation's head.
         if (owner.hasConnections || owner.hasStreams) {
           for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
 
@@ -562,9 +562,6 @@ export const registerActor = Effect.fnUntraced(function* (
           )
       })
 
-      // Each batch's own span and logs: a lone command's name the command
-      // and continue its request's span; a larger batch's link every
-      // command's request span.
       const observe =
         (batch: ReadonlyArray<Waiting>) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) => {
@@ -594,8 +591,6 @@ export const registerActor = Effect.fnUntraced(function* (
                   if (labels === undefined && Exit.isFailure(exit)) {
                     if (Cause.hasInterruptsOnly(exit.cause)) return
 
-                    // A deterministic defect aborts a larger batch; its commands
-                    // rerun alone and are counted then.
                     if (!retryable(exit.cause) && !lone) return
 
                     const deterministic = !retryable(exit.cause)
@@ -646,8 +641,6 @@ export const registerActor = Effect.fnUntraced(function* (
                     }
                   : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
               ),
-              // The span's call site is always this file, so a captured stack
-              // trace would cost an Error per turn and name nothing useful.
               Effect.withSpan(
                 lone ? SpanNames.turn(ref.actor, request.command) : SpanNames.batch(ref.actor),
                 {
@@ -676,8 +669,6 @@ export const registerActor = Effect.fnUntraced(function* (
           )
         }
 
-      // Runs `batch`, and with `pipelining` every batch that is already
-      // waiting when the one before it commits.
       const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
         const { owned } = current
 
@@ -701,15 +692,6 @@ export const registerActor = Effect.fnUntraced(function* (
         )
       }
 
-      // A defect aborts the whole batch, and a following batch whose
-      // admission was already sent is rolled back unseen with it. A retryable
-      // defect restarts the activation; the redelivered commands of a failed
-      // batch then run alone. So does any defect once the batch committed,
-      // while its callers were being answered: the redelivered commands
-      // replay their receipts rather than run again or answer `Defect`. After a deterministic defect the following
-      // batch goes back to the head of the mailbox, and the failed batch's
-      // commands run one per transaction, so one bad command cannot keep
-      // rolling back its neighbours; a lone command answers `Defect`.
       const recover: (
         stopped: Stopped<Waiting>,
       ) => Effect.Effect<void, SqlError.SqlError, Entity.CurrentAddress | Sharding.Sharding> =
@@ -732,9 +714,6 @@ export const registerActor = Effect.fnUntraced(function* (
             const { request } = batch[0]!
             const defect = Cause.squash(cause)
 
-            // Deterministic defects run no user code, because a defect hook
-            // can loop on corrupt state; the turn span and this log carry the
-            // cause for operators.
             yield* Effect.logError("Deterministic actor defect", Cause.die(defect)).pipe(
               Effect.annotateLogs({
                 actor: request.ref.actor,
@@ -771,8 +750,6 @@ export const registerActor = Effect.fnUntraced(function* (
 
           taken = [...batch]
 
-          // A command queued before a restart ran into an activation whose
-          // build failed: it answers with that failure, as a new one would.
           if (Exit.isFailure(current.activated)) {
             const { cause } = current.activated
 
@@ -788,9 +765,6 @@ export const registerActor = Effect.fnUntraced(function* (
             continue
           }
 
-          // A draining runner refuses the batch, or interrupts its run at the
-          // deadline, and every caller the run took but has not answered
-          // retries elsewhere.
           yield* gate
             .run(
               Effect.gen(function* () {
@@ -825,11 +799,6 @@ export const registerActor = Effect.fnUntraced(function* (
 
             return ended ? restartIncomplete : Effect.void
           }),
-        // Enqueues synchronously, when Cluster delivers the request, so the
-        // mailbox keeps delivery order; the reply is awaited outside the
-        // server's one-at-a-time limit, which the worker enforces instead.
-        // The server starts the forked effect in the same call, so the entry
-        // has its context before the worker can take it.
         Execute: ({ payload }) => {
           if (lost) return leaseLost
 
@@ -862,9 +831,6 @@ export const registerActor = Effect.fnUntraced(function* (
             Effect.gen(function* () {
               entry.context = yield* Effect.context<never>()
 
-              // An idle worker waits for this signal, so the hook runs while
-              // the command is waiting but not yet taken. The worker takes an
-              // entry only once its own hook has finished.
               yield* (yield* TurnHooks).at("queued", payload).pipe(
                 Effect.ensuring(
                   Effect.sync(() => {
@@ -884,8 +850,6 @@ export const registerActor = Effect.fnUntraced(function* (
       concurrency: 1,
       maxIdleTime: registration.policy.idleMs,
       mailboxCapacity: registration.policy.mailboxCapacity,
-      // The handler build waits each activation's own backoff; Cluster's
-      // shared one would slow every later restart of the type to its cap.
       defectRetryPolicy: Schedule.forever,
     },
   )
@@ -902,7 +866,6 @@ export const registerActor = Effect.fnUntraced(function* (
         const { entityId } = yield* Entity.CurrentAddress
         const owned = yield* ownedOf(entityId)
 
-        // A move, shutdown, or eviction ends the activation, and its streams with it.
         yield* Effect.addFinalizer(() => owner.endStreams(owned))
 
         return connections.of({
@@ -927,10 +890,6 @@ export const registerActor = Effect.fnUntraced(function* (
 
   if (owner.hasStreams) yield* owner.watchStreams.pipe(Effect.forkScoped)
 
-  // Every runner serves the singleton's entity, so its shard lock and the
-  // generation fence keep each tenant's instance to one activation. One
-  // keeper, on whichever runner Cluster runs it, keeps the default tenant's
-  // instance resident and so moves it, and its background loop, to a survivor.
   if (registration.singleton) {
     const ref = ActorRef.make({
       tenant: registration.tenant,
