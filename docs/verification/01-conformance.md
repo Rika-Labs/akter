@@ -639,6 +639,8 @@ The Playwright tests live in [`apps/e2e/offline.e2e.ts`](../../apps/e2e/offline.
 - `queues posts while offline and applies each exactly once, in order, when the network returns` — with the context offline, three posts queue with distinct ids and the server's history is unchanged. When the network returns, one post's first reply is lost after the server committed it. The history is `zero`, `one`, `two`, `three` with no repeat, and the server answered each queued id once.
 - `keeps queued posts across a reload and delivers them under the same ids when the API returns` — with the API cut, two posts queue and the page reloads. The reloaded page lists the same ids, and once the API is back the history holds each post once, in order.
 
+**Executed 2026-09-30 (M6.5, branch `feat/339-offline-command-queue` merged with `main` at `47951173`):** Bun 1.4.2, PGlite 0.5.8, Postgres on `127.0.0.1:5432`. All nine `conformance/offline.ts` cases passed on PGlite and on Postgres (`conformance/offline.test.ts`), the 36 existing `client` cases still passed on PGlite, `client/offline/queue.test.ts` (21) and `store.test.ts` (11) passed, and both Playwright tests passed in headless Chromium against the chat example on a free local port. CI's verify is the authority for the rest.
+
 Not covered: Firefox and Safari; ordering between two tabs on one store; the browser clearing its storage; a wall clock that is far from the server's on a page that never reached it.
 
 ### Multi-runner relay (M2.4)
