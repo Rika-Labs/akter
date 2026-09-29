@@ -3,10 +3,10 @@ import { defineConfig, devices } from "@playwright/test"
 const inCI = process.env.CI === "true"
 
 /**
- * Browser test configuration. It starts the chat example on in-memory PGlite
- * and serves it to the tests in `chat.e2e.ts`, `react.e2e.ts`, and
- * `cursors.e2e.ts`, and the counter example, also on in-memory PGlite, to the
- * tests in `counter.e2e.ts`.
+ * Browser test configuration. It starts the console preview, then the chat
+ * example on in-memory PGlite for `chat.e2e.ts`, `react.e2e.ts` and
+ * `cursors.e2e.ts`, and the counter example on in-memory PGlite for
+ * `counter.e2e.ts`.
  */
 export default defineConfig({
   testDir: ".",

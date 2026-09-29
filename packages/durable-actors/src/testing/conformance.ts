@@ -1522,6 +1522,12 @@ interface ConformanceStore {
  * `cases` when given. The same case names run on every backend; cases that
  * need independent SQL connections or an edge are reported through
  * `registrar.skip` when the backend cannot provide them.
+ *
+ * Some cases stop the suite's runtime and restart it when they finish. A case
+ * that times out never reaches that restart, because the test runner abandons
+ * its effect instead of interrupting it, so every case starts by restarting a
+ * runtime left stopped. One timed-out case then fails alone, not every case
+ * after it.
  */
 export const describeConformance = (options: {
   readonly name: string
@@ -1701,7 +1707,10 @@ export const describeConformance = (options: {
 
       registrar.it(
         conformanceCase.name,
-        () => conformanceCase.run({ expect: registrar.expect, environment, fixture }),
+        () =>
+          Effect.runPromise(
+            Effect.suspend(() => (current === undefined ? environment.restart : Effect.void)),
+          ).then(() => conformanceCase.run({ expect: registrar.expect, environment, fixture })),
         conformanceCase.timeoutMs,
       )
     }
