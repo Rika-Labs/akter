@@ -5,6 +5,7 @@ import {
   AppealDecided,
   Attachments,
   AwaitDecision,
+  Digest,
   MessagePosted,
   messages,
   messagesDdl,
@@ -240,6 +241,15 @@ export const RoomEffects = Room.toEffectLayer(
   }),
 )
 
+export const DigestCommands = Digest.toLayer(
+  Effect.succeed({
+    Send: Effect.fnUntraced(function* () {
+      const turn = yield* Digest.Turn
+      yield* turn.state.set({ sent: turn.state.sent + 1 })
+    }),
+  }),
+)
+
 /**
  * Creates the table as a drizzle-kit migration would, then registers the
  * room's commands and reads; its executors are `RoomEffects`.
@@ -248,7 +258,7 @@ export const RoomHandlers = Layer.unwrap(
   Effect.gen(function* () {
     yield* (yield* SqlClient.SqlClient).unsafe(messagesDdl)
 
-    return Layer.mergeAll(RoomCommands, ThreadCommands, RoomReads)
+    return Layer.mergeAll(RoomCommands, ThreadCommands, DigestCommands, RoomReads)
   }).pipe(Effect.orDie),
 )
 

@@ -12,6 +12,11 @@ const horizon = (duration: Duration.Input) =>
     Duration.toMillis(duration),
   )
 
+/** The commands a `policy.cron` entry may target: those that take no input. */
+export type CronTarget<Command extends AnyCommand> = AnyCommand extends Command
+  ? AnyCommand
+  : Extract<Command, { readonly input: Schema.Void }>
+
 /** Serializable actor policies; each key has exactly one meaning and one default. */
 export interface Policy<
   Command extends AnyCommand = AnyCommand,
@@ -63,6 +68,21 @@ export interface Policy<
   /** Per declared effect, keyed by tag: `retry`, `onSuccess`, and `onDeadLetter`. */
   readonly effects?: EffectPolicies<Effects, Command>
   /**
+   * Schedules mapped to the zero-input command each tick runs with a
+   * `System({ source: "cron" })` caller. A key is a five- or six-field cron
+   * expression evaluated in UTC, the same prefixed `CRON_TZ=<IANA zone> ` to
+   * evaluate it in that zone, or `@every <duration>` (at least 1 second) to
+   * fire on every multiple of the duration since the Unix epoch. In a zone, a
+   * time a spring-forward gap skips fires once at the first instant after the
+   * gap, and a time a fall-back transition repeats fires once, at its first
+   * occurrence. A tick fires at most once per scheduled time, never overlaps
+   * the previous tick of its entry, and after downtime fires once rather than
+   * once per missed time.
+   */
+  readonly cron?: Readonly<Record<string, CronTarget<Command>>>
+  /** A tick later than this after its scheduled time is skipped. Default 1 day. */
+  readonly cronSkipIfOlderThan?: Duration.Input
+  /**
    * Whether open connections keep the activation awake. `"park"` (default)
    * lets it hibernate with sockets open at their holders; `"keepAwake"`
    * counts an open connection as activity.
@@ -99,6 +119,7 @@ export interface TurnPolicy {
   readonly connections: "park" | "keepAwake"
   readonly reauthorizeMs: number
   readonly keepWorkflowsMs: number
+  readonly cronSkipMs: number
   readonly subscribers: ReadonlyArray<string> | undefined
   readonly holdEventsMs: number
 }
@@ -132,6 +153,7 @@ export const resolvePolicy = (policy: {
       Duration.toMillis(declared?.reauthorizeEvery ?? "60 seconds"),
     ),
     keepWorkflowsMs: horizon(declared?.keepWorkflows ?? "7 days"),
+    cronSkipMs: horizon(declared?.cronSkipIfOlderThan ?? "1 day"),
     subscribers: declared?.subscribers === undefined ? undefined : [...declared.subscribers],
     holdEventsMs: horizon(declared?.holdEventsForSubscribers ?? "7 days"),
   })

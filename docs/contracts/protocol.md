@@ -15,6 +15,21 @@ Commands MUST map committed outputs and declared failures through receipts. Fram
 
 The Effect handle, Promise client from `@durable-actors/core/client`, HTTP, WebSocket, and SSE adapters MUST preserve these semantics rather than define independent lifecycle states. Public spans MUST use `durable-actors.<Actor>/<Command>`.
 
+## Hosted assertions ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md))
+
+Target, built by M4.8. A hosted edge forwards each request with a `durable-assertion` header: a compact JWS with `alg` `EdDSA` (Ed25519), `typ` `durable-assertion+jwt`, and a `kid`. Its claims are `iss`, `aud` (the deployment), `region`, `iat`, `exp`, `tenant`, `caller`, `actor`, `id`, `member`, `cid` when the request carries a command id, `sid` on streaming assertions, and `req`, the lowercase hex SHA-256 of this UTF-8 string with lines joined by `\n`:
+
+```text
+durable-assertion/v1
+<method>
+<path, percent-encoding normalised to uppercase hex, no dot segments>
+<query parameters sorted by name then value, each percent-encoded, joined by &>
+<Idempotency-Key header value, or empty>
+<lowercase hex SHA-256 of the body bytes exactly as forwarded>
+```
+
+A reauthentication assertion's string is `durable-assertion/v1`, `REAUTHENTICATE`, the session's upgrade path, and the `sid`. The runner rebuilds the string from what it received; any difference is `Unauthorized` `invalid_credentials` before any turn.
+
 ## Served mapping ([ADR 0027](../decisions/0027-served-protocol.md))
 
 M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, and OpenAPI; M3.3 serves connection members as WebSocket sessions, declared `feeds` as SSE event feeds, and `Actor.stream` members over SSE. Evidence: [`conformance/http.ts`](../verification/01-conformance.md#served-http-m32) and [`conformance/transports.ts`](../verification/01-conformance.md#served-websocket-connections-m33).
@@ -22,5 +37,9 @@ M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, 
 - Each public member has one route under the server's base path: `POST /actors/{Actor}/{id}/{Member}` for commands, reducers, queries, and workflow starts; `GET …/events?event=…&after=…` for the events an actor type declares in `feeds`, over SSE; `POST …/{Stream}` for streams over SSE; and a WebSocket upgrade at `…/{Connection}`. Singletons omit `{id}`. Internal members have no route and answer like unknown ones.
 - A command carries its v1 id in `Idempotency-Key`. A command without one is rejected before any turn, and the server never mints an id for a caller. Clients mint ids against the database clock, learned from `GET /protocol` and the `durable-now` response header, or obtained from `POST /command-ids`, and never mint a replacement for a sent id on their own.
 - Tenant and caller come only from the configured auth provider, never from the path, a header the client controls, or a frame.
-- Queries may carry `durable-min-version`, and command responses will carry `durable-version`, the read-your-writes token; both are inert until read-your-writes replicas ship. `Actor.serve` does not issue `durable-version` yet (commit versions arrive with `0019_commit_version`, M4.9), so the Promise client's token is forward-compatible plumbing and gives no read-your-writes guarantee today.
+- Queries may carry `durable-min-version`, and command responses will carry `durable-version`, the read-your-writes token; both are inert until read-your-writes replicas ship. `Actor.serve` does not issue `durable-version` yet (commit versions arrive with M4.9, which stores nothing new; ADR 0052 records why), so the Promise client's token is forward-compatible plumbing and gives no read-your-writes guarantee today.
 - WebSocket messages are JSON with a `t` discriminator. Member frames travel only inside `frame`, so framework control frames (`hello`, `open`, `resync`, `resyncReplayed`, `resyncDone`, `reauthenticate`, `reauthenticated`, `end`) can never be confused with them. Executor progress for a member that lists effects arrives as its own server message, `t: "progress"` with `effect`, `effectId`, `attempt`, `seq`, and `frame`, and no `cursor` or `event`; clients ignore a `t` they don't know. SSE feed messages carry the event cursor as their `id`, and `Last-Event-ID` resumes after it.
+
+## Content routes ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md))
+
+Target, built by M4.13. `POST /content` uploads bytes and answers a `ContentRef` (`hash`, `size`, `grant`); the server computes the SHA-256. It is the one route exempt from `limits.requestBytes`: it takes `limits.contentBytes` (default and maximum 64 MiB), streams the body into 1 MiB chunks, and past the limit answers `413 InvalidInput { code: "too_large" }` and writes nothing. `POST /actors/{Actor}/{id}/content/{blob}/{name}/grant` issues a fresh grant for an entry the actor references, after `authorize` allows `<blob>.grant`. A served download route streams a content entry's bytes through the actor's reference.

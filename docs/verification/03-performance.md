@@ -41,7 +41,10 @@ These run on dedicated hardware in [#66](https://github.com/Rika-Labs/durable-ac
 - **72-hour soak:** vacuum progress, transaction-ID age, WAL bytes per turn, full-page-image ratio, replica lag, and relay lag.
 - **Workflows** (ADR 0022; M2.7's `workflow` scenario): statements and milliseconds per recorded activity step, resume latency after a runner kill, sleep lateness against the due time, and recovery resume turns per running execution. The emit-path wait lookup must not change the statement count for actor types without waits.
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
-- **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region.
+- **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region. Deferred to L.1 ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)).
+- **Content blobs** (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)): deduplication ratio and bytes stored for a skewed upload set, upload and attach latency, read latency, and sweep cost per thousand candidates.
+- **File-backed PGlite** (M4.14, [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)): turn and wake latency and throughput at several `dataDir` sizes; the largest measured size bounds the claim.
+- **Cold wakes** (L.2, [ADR 0036](../decisions/0036-cold-tier.md)): latency of a cold wake against the wake-latency target plus one object GET.
 
 ## M1 close (cloud VM)
 
@@ -517,6 +520,23 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 - **PGlite's single connection sets its pace:** 18.3 op/s for `place` (p50 51.6 ms), 15.6 for `place-to-paid`, and 45.5 with 16 callers.
 
 The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault point, the time from the SIGKILL until the order was paid on the replacement runner: under 1 s when nothing was claimed (`beforeHandler:Place`, `beforeCommit:Place`, and both `beforeOutboxDelete` points), and about 3.1 s when the killed runner held a claim (`afterCommit:Place`, `afterClaim`, and both executor points), bounded by the drill's 3-second relay and executor leases. Every run applied one charge per order; at `afterExecute:Charge` the provider saw two calls for the key.
+
+### Cron (M2.5, #132)
+
+`2026-09-28-094b4a3-m2.5-cron-runners-{1,2,4}-postgres.json` run `bun run bench --backend postgres --scenario cron --runners <n>` (full profile), once per runner count, on branch `feat/51-cron` at `094b4a3` (clean tree, merged with `main` at `910e60d`). Postgres 18.6 ran as a local server with `pg_stat_statements` preloaded and default durability (`fsync`, `synchronous_commit`, and `full_page_writes` on), through `BENCH_DATABASE_URL`, so server CPU isn't recorded. Bun 1.4.2 and Effect 4.0.0-rc.116 ran on one Amp orb (E2B cloud VM, 16 vCPUs of an Intel Xeon at 2.60 GHz, 31 GiB), shared by the client, the in-process runners, and Postgres. Each run has 3 rounds. Each round creates 10^5 `CronProbe` actors on a fresh database, each declaring `* * * * *`, moves every tick to one minute boundary, and waits until every actor's tick has run. Creation takes 4–7 minutes, so every actor has hibernated by the boundary, and each tick is a wake turn in a new generation.
+
+| Runners | Ticks  | Errors / duplicate ids | Drain, 3 rounds | Ticks/s | Lateness p50 / p99 / max | Round p99s      | Statements/tick | Claim mean (calls, last round) |
+| ------- | ------ | ---------------------- | --------------- | ------- | ------------------------ | --------------- | --------------- | ------------------------------ |
+| 1       | 3×10^5 | 0 / 0                  | 1,125 s         | 267     | 133 s / 297 s / 392 s    | 289, 305, 294 s | 13.35           | 1.106 ms (42,624)              |
+| 2       | 3×10^5 | 0 / 0                  | 1,234 s         | 243     | 149 s / 350 s / 433 s    | 318, 353, 352 s | 12.86           | 1.175 ms (41,360)              |
+| 4       | 3×10^5 | 0 / 0                  | 1,789 s         | 168     | 157 s / 376 s / 658 s    | 331, 386, 350 s | 16.83           | 1.187 ms (53,944)              |
+
+- **Every tick fires once.** Each round ran each of its 10^5 actors' ticks, and no handler run repeated a command id at any runner count.
+- **Lateness is drain time.** All 10^5 ticks fall due at one instant, and the runtime runs them as fast as one process can wake actors: about 267 wake turns per second with one runner, with the benchmark process at 113% CPU. The median tick is late by about half the drain. So on this VM, 10^5 actors on a minutely schedule can't keep up in one process: a boundary takes over 6 minutes to drain, and actors that fired early fire again at the next boundaries meanwhile (the scenario counts each actor's first run only).
+- **More in-process runners are slower here.** 2 and 4 runners share the same process and CPU, and they contend for the same due rows, so throughput falls to 243 and 168 ticks/s, and statements per tick rise at 4 runners from claims that find their candidates taken. This matches the [multi-runner relay](#multi-runner-relay-m24-96) result and says nothing about separate machines.
+- **The relay claim stays about 1.1–1.2 ms** at each runner count while 10^5 ticks are due. It takes about three ticks per claim.
+- **A woken actor's tick write is one statement.** Its first turn re-inserts its pending tick, and the unique index rejects it: 121,158 calls for about 122,000 deliveries in the one-runner round, at 0.066 ms. Before `094b4a3`, the release of pre-reservation `$cron:` intents ran as a second statement on each of those turns (96,439 calls in a round at `bc723f5`). It now runs only when such an intent holds a key.
+- **The claim mean is read from `statements`.** At `094b4a3`, the scenario's `relayClaimMeanMs` is -1 because it searched for `SKIP LOCKED`, which falls past the 160 characters of query text the harness stores. The claim mean above is read from the listed `WITH intent_candidates …` statement, and the scenario now matches that prefix.
 
 ### Failure drills (T7)
 
