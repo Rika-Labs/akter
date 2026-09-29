@@ -12,6 +12,8 @@ import { SandboxReaperLive } from "./layer.ts"
 
 const fake = fakeSandboxes()
 
+const HOUR = 3_600_000
+
 // The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
 const database = Effect.gen(function* () {
   if ((yield* Config.String("CODING_AGENT_BACKEND")) === "pglite") return undefined
@@ -48,7 +50,7 @@ const runtime = ManagedRuntime.make(live)
 
 afterAll(() => runtime.dispose())
 
-it("kills old sandboxes no agent uses, keeps the ones agents still use, and records a rerun sweep once", () =>
+it("sweeps on the hour, kills old sandboxes no agent uses, keeps the ones in use, and records a rerun sweep once", () =>
   runtime.runPromise(
     Effect.gen(function* () {
       const test = yield* ActorTest
@@ -75,14 +77,14 @@ it("kills old sandboxes no agent uses, keeps the ones agents still use, and reco
       sandbox("never-ready", "ghost", hours(25)) // its agent never recorded it
       sandbox("fresh", "ghost", hours(1))
 
-      // The first sweep's result is lost after it killed the orphans, so the relay runs it again.
+      // The hourly tick's sweep kills the orphans, then loses its result, so the relay runs it again.
       yield* test.crashNext("afterExecute")
       const reaper = yield* SandboxReaper.get()
-      yield* reaper.Sweep()
+      const at = (yield* test.now).epochMilliseconds
+      yield* test.advance(Math.ceil((at + 1) / HOUR) * HOUR - at)
+      expect(yield* test.receiptsFor(reaper.ref, "Sweep")).toBe(1)
 
-      // Waits, without moving the clock, until the first sweep has crashed; advancing while it
-      // still ran would move its lease with the clock.
-      yield* test.advance(0)
+      // The advance waited for the attempt, so it has crashed and its lease has not moved.
       expect(fake.sandboxes.has("never-ready")).toBe(false)
       expect(yield* test.receiptsFor(reaper.ref, "Swept")).toBe(0)
       yield* test.advance("2 minutes")
