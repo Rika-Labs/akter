@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto"
 import { type APIRequestContext, expect, type Page, test } from "@playwright/test"
 import { proxy } from "./proxy.ts"
 
-// The chat room with @durable-actors/react, served by examples/chat/src/web/serve.ts.
+/**
+ * The chat room with @durable-actors/react, served by
+ * examples/chat/src/web/serve.ts.
+ */
 const CHAT = "http://127.0.0.1:3003"
 
 const bearer = (user: string) => ({ authorization: `Bearer ${user}` })
@@ -45,7 +48,6 @@ test("useCommand retries a command after its responses were lost and the server 
   const keys: Array<string | undefined> = []
   let lose = true
 
-  // Every response to the post is lost until the test lets one through; the server commits the first.
   await page.route(`**/api/actors/Room/${room}/Post`, async (route) => {
     keys.push(route.request().headers()["idempotency-key"])
     const response = await route.fetch()
@@ -57,7 +59,6 @@ test("useCommand retries a command after its responses were lost and the server 
   await expect(page.getByTestId("user")).toHaveText("alice")
   await say(page, "once")
 
-  // The client gives up after its timeout; the hook keeps the intent and offers a retry.
   await expect(page.getByTestId("post-status")).toContainText("not confirmed", { timeout: 10_000 })
   const commandId = await page.getByTestId("post-status").getAttribute("data-command-id")
   expect(commandId).toMatch(/^v1\./)
@@ -66,7 +67,6 @@ test("useCommand retries a command after its responses were lost and the server 
   await page.getByRole("button", { name: "Retry" }).click()
   await expect(page.getByTestId("post-status")).toHaveText("success")
 
-  // Every attempt, the client's own retries and the user's, carried the intent's one id.
   expect(keys.length).toBeGreaterThan(1)
   expect(new Set(keys)).toEqual(new Set([commandId]))
   expect(await history(request, room)).toEqual(["once"])
@@ -97,7 +97,6 @@ test("useEventFeed resumes after a dropped connection and after a reload with no
     await expect(page.getByTestId("messages").locator("li")).toHaveText(["alice: one", "bob: two"])
     await expect(page.getByTestId("cursor")).toHaveText("2")
 
-    // A reload resumes after the stored cursor: nothing already shown repeats, and what commits next arrives.
     await page.reload()
     await expect(page.getByTestId("cursor")).toHaveText("2")
     await expect(page.getByTestId("presence")).toHaveText("open")
@@ -123,7 +122,6 @@ test("useActorState shows an optimistic reaction at once and settles on the comm
   request,
 }) => {
   const room = roomOf("react-state")
-  // A connection never creates its actor, so a first post does.
   await post(request, room, "bob", "hello")
   await page.goto(`${CHAT}/react/rooms/${room}?user=alice`)
   await expect(page.getByTestId("presence")).toHaveText("open")

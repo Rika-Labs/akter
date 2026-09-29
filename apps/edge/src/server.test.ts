@@ -112,14 +112,12 @@ const startEdge = Effect.fnUntraced(function* (options: {
     assertionLifetime: Duration.seconds(options.assertionSeconds ?? 10),
     apiKeySession: Duration.seconds(options.apiKeySessionSeconds ?? 300),
     pollEvery: Duration.millis(200),
-    // Runners in these cases reread the key set every second and start after it is published.
     publicationLead: Duration.zero,
     requestBytes: 1024 * 1024,
   }
 
   const edge = yield* makeEdge(edgeOptions).pipe(Effect.provideContext(control))
 
-  // The control plane's key-set endpoint, as runners fetch it.
   const keySet = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",

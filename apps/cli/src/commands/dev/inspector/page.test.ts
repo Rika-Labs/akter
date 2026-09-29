@@ -41,7 +41,6 @@ describe("inspector page", () => {
         const script = yield* fetch("/_durable/inspector/client.js")
         expect(script).toMatchObject({ status: 200, type: "text/javascript; charset=utf-8" })
 
-        // The bundle carries the API paths the client reads.
         for (const route of ["/overview", "/actor?", "/dead-letters", "/workflows?status="])
           expect(script.body).toContain(route)
       }).pipe(Effect.scoped, Effect.runPromise),

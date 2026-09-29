@@ -14,6 +14,10 @@ import { edgeKeysRoute } from "./edge/keys.ts"
 import type { Config } from "./config.ts"
 import { HealthLive } from "./health.ts"
 
+/**
+ * The API's routes with their services: database, auth, email (captured or
+ * Resend), Polar or disabled billing, and observability.
+ */
 export const applicationLayer = (config: Config) => {
   const database = databaseLayer(config.databaseUrl)
 
@@ -40,5 +44,6 @@ export const applicationLayer = (config: Config) => {
   )
 }
 
+/** A web `fetch` handler serving `applicationLayer`. */
 export const makeHandler = (config: Config) =>
   HttpRouter.toWebHandler(applicationLayer(config), { disableLogger: true })

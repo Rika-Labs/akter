@@ -15,6 +15,10 @@ export const splitKey = (key: string) => {
   return { deployment: key.slice(0, slash), tenant: key.slice(slash + 1) }
 }
 
+/**
+ * Handlers for `TenantHome`; `Create` checks the deployment and its primary
+ * region before inserting the directory row.
+ */
 export const TenantHomeCommands = TenantHome.toLayer(
   Effect.gen(function* () {
     const deployments = yield* Deployments

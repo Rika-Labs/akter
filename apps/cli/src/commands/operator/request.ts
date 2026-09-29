@@ -5,6 +5,7 @@ import { UsageError } from "../workflows/check.ts"
 /** The environment variable an operator command reads its bearer token from, unless `--token-env` names another. */
 export const TOKEN_ENV = "DURABLE_OPERATOR_TOKEN"
 
+/** No runner at `url` answered. */
 export class RunnerUnreachable extends Schema.TaggedError<RunnerUnreachable>()(
   "RunnerUnreachable",
   { url: Schema.String, message: Schema.String },
