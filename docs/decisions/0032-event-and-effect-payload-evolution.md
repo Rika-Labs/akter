@@ -62,7 +62,7 @@ class ChargeCard extends Actor.effect<ChargeCard>()("ChargeCard", {
 - `actor_events` gains `payload_version integer NOT NULL`. `turn.emit` writes the class's current version.
 - `actor_outbox` gains the same column. Effect rows get the effect's current version; intent rows keep `0` (command inputs are out of scope, §6). When the relay settles an effect, it rewrites the row into its `onSuccess` or `onDeadLetter` route intent in one statement, and that statement also sets `payload_version` back to `0`, because the row now carries a command input.
 - `actor_dead_letters` gains the same column and copies it from the effect row.
-- Nothing is released, so no stored value predates this column. Version `0` is simply the first shape of a class, the one with no chain steps.
+- Nothing is released, so there is no older data to carry forward. The migration refuses a database that already holds rows in `actor_events`, `actor_outbox`, or `actor_dead_letters`, as `0003_routing_state` refused a non-empty foundation database; a development database is recreated, as the milestone plan already requires. Every value is therefore written by code that records its version (§4). Version `0` is simply the first shape of a class, the one with no chain steps.
 
 A column, rather than a reserved field inside the value, keeps values in the class's own encoding, lets SQL and the [inspection views](0028-sql-inspection-views.md) show the version, and lets the startup check (§4) read versions without decompressing values.
 
@@ -158,6 +158,7 @@ In `conformance/payload-migrations.ts`, on PGlite and Postgres:
 
 - `upcasts version-0 events written before a chain step was added through the chain in read.events, feeds, and subscription deliveries`
 - `stores the current payload version with each emitted event and performed effect`
+- `refuses 0021_payload_versions on a database that already holds events, outbox rows, or dead letters`
 - `runs a pending effect written at an older version with the upcast payload`
 - `delivers an onDeadLetter route with the upcast effect and keeps the dead letter's version`
 - `resets payload_version to 0 when a settled effect row becomes its route intent`
