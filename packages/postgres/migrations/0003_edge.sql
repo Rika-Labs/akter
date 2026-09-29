@@ -12,7 +12,8 @@ CREATE INDEX deployment_host_deployment_idx ON deployment_host (deployment_id);
 CREATE TABLE deployment_runner (
   deployment_id text NOT NULL REFERENCES deployment(id) ON DELETE CASCADE,
   region text NOT NULL,
-  url text NOT NULL,
+  -- The runner's origin, without a path: the edge appends each request's own path.
+  url text NOT NULL CHECK (url ~ '^https?://[^/?#]+$'),
   -- The runner's `Actor.serve` base path, where the edge pushes key-set refreshes; trailing
   -- slashes are ignored, as `Actor.serve` ignores them, so `/` is the root. Client
   -- requests are forwarded with their own path, which already includes it.

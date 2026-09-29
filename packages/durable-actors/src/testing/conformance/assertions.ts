@@ -831,6 +831,7 @@ const bearerHeaders = (key: string) => ({ authorization: `Bearer ${key}` })
  */
 const delayingProxy = Effect.fnUntraced(function* (target: string) {
   const delays = new Map<string, number>()
+  const failures = new Map<string, number>()
   const arrived: Array<string> = []
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
   const context = yield* Effect.context<never>()
@@ -841,6 +842,16 @@ const delayingProxy = Effect.fnUntraced(function* (target: string) {
       const body = new Uint8Array(yield* Effect.promise(() => request.arrayBuffer()))
 
       arrived.push(path)
+
+      const failing = failures.get(path) ?? 0
+
+      // Unavailable, as a runner that is restarting or briefly unreachable would be.
+      if (failing > 0) {
+        failures.set(path, failing - 1)
+
+        return new Response(null, { status: 503 })
+      }
+
       yield* Effect.sleep(delays.get(path.split("/")[3] ?? "") ?? 0)
 
       const forwarded = HttpClientRequest.make(request.method === "GET" ? "GET" : "POST")(
@@ -875,6 +886,8 @@ const delayingProxy = Effect.fnUntraced(function* (target: string) {
   return {
     url: `http://127.0.0.1:${server.port}`,
     delay: (id: string, ms: number) => Effect.sync(() => delays.set(id, ms)),
+    /** Answers the next `times` requests for `path` with 503. */
+    fail: (path: string, times: number) => Effect.sync(() => failures.set(path, times)),
     arrived: Effect.sync(() => arrived.length),
   }
 })
@@ -1083,8 +1096,12 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             }),
           )
 
-          // `/` is the root base path, as `Actor.serve` reads it.
-          yield* edge.addRunner({ region: REGION, url: runner.url, basePath: "/" })
+          // The first push fails, as it would for a runner that is briefly unreachable, so the
+          // edge must push again. `/` is the root base path, as `Actor.serve` reads it.
+          const door = yield* delayingProxy(runner.url)
+
+          yield* door.fail(KEY_REFRESH_PATH, 1)
+          yield* edge.addRunner({ region: REGION, url: door.url, basePath: "/" })
 
           const send = yield* clientFor(edge.url)
           const tenant = yield* tenantOf
