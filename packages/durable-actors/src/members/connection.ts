@@ -32,11 +32,12 @@ export interface Connection<
  * whom: `"performer"` (the default) only connections whose caller has the
  * performing turn's principal, `"all"` every open connection of the member.
  */
-export interface ConnectionProgress {
+interface ConnectionProgress {
   readonly effects: ReadonlyArray<ProgressEffect>
   readonly to: "performer" | "all"
 }
 
+/** Any connection member, whatever its schemas. */
 export type AnyConnection = Connection<
   string,
   ValueSchema,
@@ -82,7 +83,6 @@ const make = <
     }
   },
 ): Connection<Tag, Params, Server, Client, Session, Errors> => {
-  // `$` names framework members, such as the one an event feed opens.
   if (tag.startsWith("$")) throw new Error(`Connection ${tag} may not start with $`)
 
   for (const schema of [options.server, options.client])
@@ -108,4 +108,15 @@ const make = <
   }
 }
 
+/**
+ * `Connection.make` is `Actor.connection`: declares a connection by tag.
+ * `server` types the frames sent to the client; `params` the open input,
+ * `client` the frames it may send, and `session` the per-connection state
+ * handlers may set. Throws when the tag starts with `$`, which names framework
+ * members such as the one an event feed opens, or when a frame schema uses a
+ * reserved control tag (`Resync`, `ResyncReplayed`, `ResyncDone`).
+ *
+ * @example
+ * const Room = Actor.connection("Room", { server: Message, client: Say })
+ */
 export const Connection = { make }

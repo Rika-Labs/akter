@@ -17,6 +17,7 @@ export interface Stream<
   readonly progress: { readonly effects: ReadonlyArray<ProgressEffect> } | undefined
 }
 
+/** Any stream member, whatever its schemas. */
 export type AnyStream = Stream<string, ValueSchema, ValueSchema, ReadonlyArray<DeclaredError>>
 
 const make = <
@@ -41,4 +42,12 @@ const make = <
   progress: options.progress,
 })
 
+/**
+ * `StreamMember.make` is `Actor.stream`: declares a live, read-only feed by
+ * tag. `output` types each element; `input` defaults to `void`, and `progress`
+ * lists the effects whose executor progress the handler may follow.
+ *
+ * @example
+ * const Ticks = Actor.stream("Ticks", { output: Schema.Int })
+ */
 export const StreamMember = { make }

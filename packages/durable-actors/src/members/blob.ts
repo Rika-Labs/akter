@@ -24,18 +24,20 @@ export interface ContentBlob<Name extends string = string> {
   readonly name: Name
 }
 
+/** Any declared content, whatever its name. */
 export type AnyContent = ContentBlob<string>
 
 /** Anything an actor lists in `blobs`: its own mutable bytes or references to shared content. */
 export type AnyBlob = Blob<string> | AnyContent
 
-// Only values made here are blobs, so a look-alike object cannot name another namespace.
+/** Only values made by `blob` and `content` are registered, so a look-alike object cannot name another namespace. */
 const declared = new WeakSet<object>()
 
+/** Whether `value` was made by `blob` or `content`. */
 export const isBlob = (value: unknown): value is AnyBlob =>
   value instanceof Object && declared.has(value)
 
-// Tolerates a value that is not a blob at all, which the declared-blob check then refuses.
+/** Whether a declared blob is content. Tolerates a value that is not a blob at all, which the declared-blob check then refuses. */
 export const isContent = (value: AnyBlob): value is AnyContent =>
   Predicate.hasProperty(value, "kind") && value.kind === "content"
 
@@ -56,10 +58,20 @@ const declare = <Kind extends "blob" | "content", const Name extends string>(
   return value
 }
 
-/** Declares binary storage an actor lists in `blobs`; the name keys its rows. */
+/**
+ * `Actor.blob`: declares binary storage an actor lists in `blobs`; the name
+ * keys its entries. Throws unless `name` is 1-80 letters, digits, `-` or `_`,
+ * starting with a letter.
+ *
+ * @example
+ * const Avatar = Actor.blob("avatar")
+ */
 export const blob = <const Name extends string>(name: Name): Blob<Name> =>
   declare("blob", name) as Blob<Name>
 
-/** Declares shared content an actor lists in `blobs`; the name keys its references. */
+/**
+ * Declares shared content an actor lists in `blobs`; the name keys its
+ * references. The name rules are those of `blob`.
+ */
 export const content = <const Name extends string>(name: Name): ContentBlob<Name> =>
   declare("content", name) as ContentBlob<Name>
