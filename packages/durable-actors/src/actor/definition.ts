@@ -1273,6 +1273,19 @@ const make = <
           : yield* connectionCommands(`${ref.tenant}\u0000${ref.actor}\u0000${ref.id}`, command)
       })
 
+    const callIdOnce = (command: string) => {
+      const lock = Semaphore.makeUnsafe(1)
+      let identity: string | undefined
+
+      return lock.withPermit(
+        Effect.gen(function* () {
+          if (identity === undefined) identity = yield* callId(command)
+
+          return identity
+        }),
+      )
+    }
+
     const methods = Object.fromEntries(
       (includeInternal ? all : Object.values(api))
         .filter((member) => member.kind !== "connection")
@@ -1315,16 +1328,7 @@ const make = <
             return [
               member.tag,
               (input: typeof member.input.Type) => {
-                const lock = Semaphore.makeUnsafe(1)
-                let identity: string | undefined
-
-                const identify = lock.withPermit(
-                  Effect.gen(function* () {
-                    if (identity === undefined) identity = yield* callId(member.tag)
-
-                    return identity
-                  }),
-                )
+                const identify = callIdOnce(member.tag)
 
                 return Effect.gen(function* () {
                   yield* outsideTurn
@@ -1371,16 +1375,7 @@ const make = <
           return [
             member.tag,
             (input: typeof member.input.Type) => {
-              const lock = Semaphore.makeUnsafe(1)
-              let identity: string | undefined
-
-              const identify = lock.withPermit(
-                Effect.gen(function* () {
-                  if (identity === undefined) identity = yield* callId(member.tag)
-
-                  return identity
-                }),
-              )
+              const identify = callIdOnce(member.tag)
 
               return Effect.gen(function* () {
                 yield* outsideTurn
@@ -1947,7 +1942,7 @@ const make = <
                 .encode(event)
                 .pipe(Effect.orDie)
 
-              emittedBytes += new TextEncoder().encode(value).byteLength
+              emittedBytes += utf8.encode(value).byteLength
 
               if (emittedBytes > MAX_EMIT_BYTES)
                 return yield* Effect.die(
@@ -2730,7 +2725,7 @@ const make = <
                 : target !== declared || encodeProgress === undefined
                   ? Effect.logWarning("Progress frame does not match the running effect")
                   : encodeProgress(frame).pipe(
-                      Effect.map((json) => new TextEncoder().encode(json)),
+                      Effect.map((json) => utf8.encode(json)),
                       Effect.matchEffect({
                         onFailure: (error) =>
                           Effect.logWarning("Progress frame did not encode", String(error)),
