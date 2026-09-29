@@ -1,5 +1,6 @@
 import {
   Cause,
+  Clock,
   Context,
   type Crypto,
   Deferred,
@@ -7,6 +8,7 @@ import {
   Effect,
   Exit,
   Latch,
+  Metric,
   Option,
   Result,
   Schedule,
@@ -43,6 +45,9 @@ import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 import type { TurnGate } from "../drain.ts"
+import { DefectLog } from "../telemetry/defects.ts"
+import { count, Metrics, record } from "../telemetry/metrics.ts"
+import { requestAttributes, SpanNames, triggerOf } from "../telemetry/spans.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
@@ -70,6 +75,17 @@ const RESTART_CAP = Duration.seconds(5)
 
 const restartDelay = (restarts: number) =>
   Duration.min(Duration.times(RESTART_BASE, 2 ** restarts), RESTART_CAP)
+
+/** The `outcome` attribute of `durable-actors.turns` and of the turn span. */
+const outcomeOf = (outcome: Outcome, replayed = false) =>
+  replayed
+    ? "replay"
+    : Outcome.match(outcome, {
+        Success: () => "success",
+        Failure: () => "failure",
+        Defect: () => "defect",
+        Acknowledged: () => "acknowledged",
+      })
 
 export const encodeEntityId = (tenantAndId: readonly [string, string]) =>
   encodeEntityIdOf(tenantAndId)
@@ -157,6 +173,10 @@ export const registerActor = Effect.fnUntraced(function* (
   writable: Effect.Effect<void, ActorError>,
 ) {
   const sharding = yield* Sharding.Sharding
+
+  const defects = yield* DefectLog
+  const typeAttributes = { actor_type: registration.name }
+  const activations = Metric.withAttributes(Metrics.activations, typeAttributes)
 
   const owner = activationOwner({
     registration,
@@ -267,14 +287,17 @@ export const registerActor = Effect.fnUntraced(function* (
         )
 
       yield* Effect.acquireRelease(
-        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
+        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
+          Effect.andThen(count(Metrics.activationsStarted, typeAttributes, 1)),
+          Effect.andThen(Metric.modify(activations, 1)),
+        ),
         () =>
           Effect.sync(() => {
-            const count = resident.get(entityId)! - 1
+            const left = resident.get(entityId)! - 1
 
-            if (count === 0) resident.delete(entityId)
-            else resident.set(entityId, count)
-          }),
+            if (left === 0) resident.delete(entityId)
+            else resident.set(entityId, left)
+          }).pipe(Effect.andThen(Metric.modify(activations, -1))),
       ).pipe(Scope.provide(scope))
 
       const owned = yield* ownedOf(entityId)
@@ -363,9 +386,33 @@ export const registerActor = Effect.fnUntraced(function* (
         return batch.length > 0 ? batch : undefined
       })
 
+      // The outcome label of each command of a batch that committed.
+      const labelled = new WeakMap<ReadonlyArray<Waiting>, ReadonlyArray<string>>()
+
       // Connection broadcasts of a batch go out once it commits, and then
       // each caller hears its own outcome.
       const committed = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>, done: Done) {
+        const labels = done.settled.map((settled, index) =>
+          Result.isSuccess(settled)
+            ? outcomeOf(settled.success, done.replays.has(index))
+            : "rejected",
+        )
+
+        labelled.set(batch, labels)
+        yield* Effect.annotateCurrentSpan({ "actor.generation": done.generation })
+
+        if (batch.length === 1 && Result.isSuccess(done.settled[0]!))
+          yield* Effect.annotateCurrentSpan({
+            "turn.replayed": done.replays.has(0),
+            "turn.outcome": labels[0]!,
+          })
+
+        yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
+        yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
+        yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
+        yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
+        yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
+
         // A route turn's command id is its effect id: its progress stops
         // before the route's broadcasts, as does the progress of every
         // running effect the batch cancelled.
@@ -403,44 +450,106 @@ export const registerActor = Effect.fnUntraced(function* (
           const { ref } = request
           const lone = batch.length === 1
 
-          return effect.pipe(
-            Effect.annotateLogs(
-              lone
-                ? {
-                    actor: ref.actor,
-                    id: ref.id,
-                    tenant: ref.tenant,
-                    command: request.command,
-                    commandId: request.commandId,
-                  }
-                : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
-            ),
-            // The span's call site is always this file, so a captured stack
-            // trace would cost an Error per turn and name nothing useful.
-            Effect.withSpan(
-              lone
-                ? `durable-actors.${ref.actor}/${request.command}`
-                : `durable-actors.${ref.actor}/batch`,
-              {
-                attributes: lone
-                  ? {
-                      "actor.tenant": ref.tenant,
-                      "actor.id": ref.id,
-                      "command.id": request.commandId,
-                    }
-                  : { "actor.tenant": ref.tenant, "actor.id": ref.id, "batch.size": batch.length },
-                parent: lone
-                  ? Context.getOrUndefined(batch[0]!.context, Tracer.ParentSpan)
-                  : undefined,
-                links: lone
-                  ? []
-                  : batch.flatMap(({ context }) => {
-                      const span = Context.getOrUndefined(context, Tracer.ParentSpan)
+          return Effect.flatMap(Clock.currentTimeMillis, (started) =>
+            Effect.forEach(
+              batch,
+              ({ request: queued }) =>
+                queued.queuedAtMs === undefined
+                  ? Effect.void
+                  : record(
+                      Metrics.mailboxAge,
+                      typeAttributes,
+                      Math.max(0, started - queued.queuedAtMs),
+                    ),
+              { discard: true },
+            ).pipe(
+              Effect.andThen(effect),
+              Effect.onExit((exit) =>
+                Effect.gen(function* () {
+                  const labels = labelled.get(batch)
+                  const elapsed = (yield* Clock.currentTimeMillis) - started
 
-                      return span === undefined ? [] : [{ span, attributes: {} }]
-                    }),
-              },
-              { captureStackTrace: false },
+                  if (labels === undefined && Exit.isFailure(exit)) {
+                    if (Cause.hasInterruptsOnly(exit.cause)) return
+
+                    // A deterministic defect aborts a larger batch; its commands
+                    // rerun alone and are counted then.
+                    if (!retryable(exit.cause) && !lone) return
+
+                    const deterministic = !retryable(exit.cause)
+
+                    if (deterministic) {
+                      const span = yield* Effect.currentSpan.pipe(Effect.option)
+
+                      yield* defects.record({
+                        span: SpanNames.turn(ref.actor, request.command),
+                        traceId: Option.isSome(span) ? span.value.traceId : "",
+                        spanId: Option.isSome(span) ? span.value.spanId : "",
+                        atMs: yield* Clock.currentTimeMillis,
+                        tenant: ref.tenant,
+                        actorType: ref.actor,
+                        actorId: ref.id,
+                        command: request.command,
+                        commandId: request.commandId,
+                        trigger: triggerOf(request),
+                        cause: Cause.pretty(Cause.die(Cause.squash(exit.cause))),
+                      })
+                      yield* Effect.annotateCurrentSpan({ "turn.outcome": "defect" })
+                    }
+
+                    yield* count(
+                      Metrics.turns,
+                      { ...typeAttributes, outcome: deterministic ? "defect" : "retried" },
+                      batch.length,
+                    )
+                    yield* record(Metrics.turnDuration, typeAttributes, elapsed)
+
+                    return
+                  }
+
+                  for (const label of labels ?? [])
+                    yield* count(Metrics.turns, { ...typeAttributes, outcome: label }, 1)
+
+                  yield* record(Metrics.turnDuration, typeAttributes, elapsed)
+                }),
+              ),
+              Effect.annotateLogs(
+                lone
+                  ? {
+                      actor: ref.actor,
+                      id: ref.id,
+                      tenant: ref.tenant,
+                      command: request.command,
+                      commandId: request.commandId,
+                    }
+                  : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
+              ),
+              // The span's call site is always this file, so a captured stack
+              // trace would cost an Error per turn and name nothing useful.
+              Effect.withSpan(
+                lone ? SpanNames.turn(ref.actor, request.command) : SpanNames.batch(ref.actor),
+                {
+                  kind: lone ? "server" : "internal",
+                  attributes: lone
+                    ? requestAttributes(request)
+                    : {
+                        "actor.tenant": ref.tenant,
+                        "actor.id": ref.id,
+                        "batch.size": batch.length,
+                      },
+                  parent: lone
+                    ? Context.getOrUndefined(batch[0]!.context, Tracer.ParentSpan)
+                    : undefined,
+                  links: lone
+                    ? []
+                    : batch.flatMap(({ context }) => {
+                        const span = Context.getOrUndefined(context, Tracer.ParentSpan)
+
+                        return span === undefined ? [] : [{ span, attributes: {} }]
+                      }),
+                },
+                { captureStackTrace: false },
+              ),
             ),
           )
         }

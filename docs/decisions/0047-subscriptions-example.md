@@ -1,6 +1,6 @@
 # ADR 0047: The billing example is `examples/subscriptions`
 
-**Status:** proposed (2026-09-28).
+**Status:** accepted (2026-09-30, Dallen; proposed 2026-09-28).
 
 **Responsibility:** decide where M3.6's billing example lives and what it may claim.
 

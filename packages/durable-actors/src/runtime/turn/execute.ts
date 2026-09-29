@@ -1,4 +1,4 @@
-import { Cause, Crypto, Effect, Exit, Option, Result, Schema } from "effect"
+import { Cause, Clock, Crypto, Effect, Exit, Option, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
@@ -18,6 +18,8 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
+import { Metrics, record } from "../telemetry/metrics.ts"
+import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
@@ -229,6 +231,10 @@ interface Plan {
   /** Each events statement's stamp, and whether a subscription feed row is due. */
   readonly emitted: ReadonlyArray<{ readonly emittedAtMs: number; readonly fed: boolean }>
   readonly outbox: ReadonlyArray<OutboxReplies>
+  /** The positions in `settled` that answered from a stored receipt without running a handler. */
+  readonly replays: ReadonlySet<number>
+  /** What the commit group writes, for the runner's growth metrics. */
+  readonly written: Written
 }
 
 /** One `actor_receipts` row a batch commits. */
@@ -244,6 +250,16 @@ type ReceiptRow = {
   readonly outcome: string
   readonly expires_at_ms: number
 }
+
+/** Rows a committed turn adds; nothing when it replays, acknowledges, or rolls back. */
+export interface Written {
+  readonly receipts: number
+  readonly events: number
+  readonly intents: number
+  readonly effects: number
+}
+
+const nothingWritten: Written = { receipts: 0, events: 0, intents: 0, effects: 0 }
 
 /** The activation as a batch's handlers find it: its fenced generation and state. */
 interface View {
@@ -262,6 +278,11 @@ export interface Done {
   readonly committed: ReadonlyArray<CommittedEvents>
   /** Started effects the batch's commands cancelled. */
   readonly cancelledEffects: ReadonlyArray<string>
+  readonly generation: string
+  /** The positions in `settled` that answered from a stored receipt. */
+  readonly replays: ReadonlySet<number>
+  /** Rows the batch committed; none when it rolled back. */
+  readonly written: Written
 }
 
 /**
@@ -525,6 +546,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       // Broadcasts of committed successes, and how many events the batch appends.
       const broadcasts: Array<Broadcast> = []
       let events = 0
+      let intents = 0
+      let effects = 0
+      const replays = new Set<number>()
       const committed: Array<Omit<CommittedEvents, "emittedAtMs">> = []
       const emitted: Array<{ readonly emittedAtMs: number; readonly fed: boolean }> = []
       // Cursor rows as the batch's earlier deliveries left them, so a later
@@ -545,7 +569,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             Effect.result,
           )
 
-          replayed ||= Result.isSuccess(replay)
+          if (Result.isSuccess(replay)) {
+            replayed = true
+            replays.add(index)
+          }
+
           settled.push(replay)
           continue
         }
@@ -706,6 +734,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         }
 
         events += result.events.length
+        intents += result.outbox.intents.length
+        effects += result.outbox.effects.length
 
         if (Outcome.guards.Success(result.outcome)) broadcasts.push(...(result.broadcasts ?? []))
 
@@ -778,6 +808,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           committed: [],
           emitted: [],
           outbox: [],
+          replays,
+          written: nothingWritten,
         } satisfies Plan
 
       const writes: Array<Statement> = []
@@ -827,6 +859,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         committed,
         emitted,
         outbox: outboxes,
+        replays,
+        written: { receipts: receipts.length, events, intents, effects },
       } satisfies Plan
     })
 
@@ -874,6 +908,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         emittedAtMs: plan.emitted[index]!.emittedAtMs,
       })),
       cancelledEffects: plan.outbox.flatMap((replies) => replies.cancelledIds),
+      generation: plan.generation,
+      replays: plan.replays,
+      written: plan.writes === undefined ? nothingWritten : plan.written,
     })
 
     answering = false
@@ -916,7 +953,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     Effect.scoped(
       Effect.gen(function* () {
         const scope = yield* Effect.scope
+        const leasing = yield* Clock.currentTimeMillis
         const connection = yield* turns.lease
+        yield* record(Metrics.poolWait, {}, (yield* Clock.currentTimeMillis) - leasing)
         let open = false
         const deferred: Array<string> = []
 
@@ -1028,7 +1067,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 locate(batch, following)
 
                 if (!chained) {
-                  yield* pipeline(commit)
+                  yield* ending === "COMMIT"
+                    ? pipeline(commit).pipe(Effect.withSpan(SpanNames.commit))
+                    : pipeline(commit)
 
                   return { plan, ending, tag, following, next: undefined }
                 }
@@ -1038,7 +1079,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 ])
 
                 const flight = yield* queue({ scope, group: [...commit, ...upcoming.group] })
-                yield* replies(flight.slice(0, commit.length))
+
+                const answered = replies(flight.slice(0, commit.length))
+
+                yield* ending === "COMMIT"
+                  ? answered.pipe(Effect.withSpan(SpanNames.commit))
+                  : answered
 
                 return {
                   plan,
@@ -1121,7 +1167,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                     if (decided.writes === undefined)
                       return yield* Effect.fail(new RolledBack(decided))
 
-                    yield* sequential(decided.writes)
+                    yield* sequential(decided.writes).pipe(Effect.withSpan(SpanNames.commit))
 
                     return decided
                   }),
