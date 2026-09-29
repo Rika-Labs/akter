@@ -141,8 +141,8 @@ export const Invoices = Actor.query("Invoices", {
   ),
 })
 
-// Internal: only System callers (cron, and the effect route) reach them.
-/** Issues the next period's invoice. */
+// Internal: only System callers (cron and the effect route) reach them.
+/** Issues the next period's invoice; cron sends it at midnight UTC on the 1st of each month. */
 export const Renew = Actor.command("Renew")
 
 /** A card reached the provider; the first one issues the first invoice. */
@@ -158,6 +158,7 @@ export const Account = Actor.make("Account", {
   internal: { Renew, CardAttached },
   policy: {
     createdBy: Subscribe,
+    cron: { "0 0 1 * *": Renew },
     effects: { AttachCard: { onSuccess: CardAttached } },
   },
 })
