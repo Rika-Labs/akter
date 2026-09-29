@@ -64,10 +64,10 @@ export interface ClientConnection<Server, Client> {
   /** The flushed-through event cursor when it opened: replay events after it to catch up. */
   readonly cursor: string | undefined
   /**
-   * Every message in order. The iteration ends when the connection closes
-   * normally and throws its `ActorError` otherwise; a dropped socket is
-   * `SessionEnded` `HolderLost` with `resync: true`. Consume either this or
-   * `frames`, not both.
+   * Every message in order. The iteration ends when this client closes the
+   * connection and throws its `ActorError` otherwise: `SessionEnded`
+   * `ServerClosed` when the actor closed it, and `HolderLost` with
+   * `resync: true` for a dropped socket. Consume either this or `frames`, not both.
    */
   readonly messages: AsyncIterable<ConnectionMessage<Server>>
   /** The member frames of `messages`, without the resync notices or progress. */
