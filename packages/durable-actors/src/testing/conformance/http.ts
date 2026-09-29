@@ -450,6 +450,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               const report = yield* RuntimeControl.use((control) =>
                 control.drain({ deadline: "5 seconds" }),
               )
+
               expect(report.outcome).toBe("clean")
 
               expect(yield* server.send("/ready", { method: "GET" })).toMatchObject({
@@ -462,6 +463,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
                 key: yield* server.mint(),
                 body: { text: "late" },
               })
+
               expect(refused.status).toBe(503)
               expect(yield* reasonOf(refused.body)).toEqual({ tag: "ActorUnavailable" })
             }),
@@ -487,6 +489,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
                   body: { text: "held" },
                 })
                 .pipe(Effect.forkChild)
+
               yield* pause.reached
 
               const drain = yield* RuntimeControl.use((control) =>
@@ -499,6 +502,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
                   until: (reply) => reply.status === 503,
                 }),
               )
+
               expect(draining.body).toEqual({ ready: false, reason: "draining" })
 
               yield* pause.release
