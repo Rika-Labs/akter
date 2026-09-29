@@ -203,6 +203,15 @@ M4.8's tenant directory (`packages/postgres/migrations/0002_tenant_directory.sql
 - **The primary-region check.** `TenantHome` reads the deployment's `primary_region` through the `Deployments` service, outside the turn's transaction, because a turn reads only its own rows. A deployment's primary region never changes, so the read can't race the write.
 - **The CLI.** `durable tenants create` runs `TenantHome` embedded against the control-plane database, like `durable workflows check`, and takes `--deployment`, `--database-url`, and `--operator` (the attributed caller) until the control-plane API and operator credentials (M4.6) exist.
 
+M4.8's edge (`apps/edge`) settles these:
+
+- **Sockets authenticate in `hello`.** The edge verifies an upgrade's credential, a `hello`'s, or both, and requires them to prove the same caller. It then sends the runner a `hello` whose credential is the session's assertion, so runners never need a header on the upstream upgrade.
+- **API-key sessions.** A hosted API key has no expiry, so the edge sets `cexp` to now plus `EDGE_API_KEY_SESSION` (default 5 minutes). The runner then asks the client to reauthenticate at least that often, and the edge refuses a revoked key's renewal, which closes the session. A JWT session's `cexp` is the JWT's `exp`.
+- **Publication lead.** The edge publishes its configured public keys at startup and signs only with a key published for at least 5 minutes, the runners' refresh interval, so §3's "published at least one polling interval before the edge signs with it" holds by construction.
+- **Forwarding attempts.** The edge tries the region's ready runners in turn with one assertion and stops at its `exp`, so it never retries on an expired assertion.
+- **Credential types.** A bearer token with three dot-separated parts is a JWT; any other token is a hosted API key.
+- **Not built in M4.8.** Writers for hosts, runners, API keys, and JWT settings (the `Deployment` and `Runners` actors and the accounts API keys own them), rate limits, TLS from edge to runners, and the revocation push.
+
 ## Revisit when
 
 - An application needs one tenant's actor to call another tenant's actor.

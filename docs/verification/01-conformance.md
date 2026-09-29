@@ -429,7 +429,14 @@ The cases live in [`conformance/assertions.ts`](../../packages/durable-actors/sr
 - `accepts a rotated key during overlap and refuses a revoked key within the polling bound` — a key-set URL reread every second: both keys work while both are published, and the removed key is refused one interval after removal.
 - `refuses a reauthentication assertion whose sid belongs to another session` — a renewal bound to the session's own `sid` is `reauthenticated` with its `cexp`; one for another session, or an open assertion reused as a renewal, ends the session with `Unauthorized` `invalid_credentials` and close `1008`.
 
-Not covered yet: the edge half (header stripping, revocation at the edge, the tenant directory, and WebSocket reauthentication through the edge), which arrives with `apps/edge`.
+The edge half is in the same file, as `edgeConformance`. `describeConformance` runs it only for a backend that supplies a `ConformanceEdge`, and reports it as skipped otherwise. [`apps/edge/src/server.test.ts`](../../apps/edge/src/server.test.ts) supplies the real edge on Postgres: a control-plane database with `packages/postgres`'s migrations, a deployment and host, runners registered in `deployment_runner`, and the key set served by `publishedKeys` as `apps/api` serves it at `/edge/keys`. Each runner is a real `Actor.serve` with `Actor.auth.assertion` pointed at that key set.
+
+- `strips a client-supplied durable-assertion and takes the caller only from the assertion` — a client's own `durable-assertion` beside its API key never reaches the runner. Without a credential the edge forwards no assertion, so a client-supplied one alone is `missing_credentials`.
+- `refuses new requests from a revoked caller at the edge, and admits in-flight ones only within the assertion lifetime` — two requests are authenticated, then the API key is revoked. A new request is `401` at the edge and never reaches the runner. The in-flight request that reaches the runner within the 1-second lifetime is admitted. The one a proxy holds past the lifetime plus skew is refused as `expired`, with no receipt.
+- `reauthenticates a WebSocket session through the edge and closes it at the revocation bound` — `hello` with an API key opens a session capped by the key's session bound, not the assertion's `exp`. A renewal through the edge moves the bound on. After revocation, the edge refuses the next renewal and the session ends `Unauthorized` `invalid_credentials` with close `1008`.
+- `routes a tenant with no directory row to the primary region and never writes a row` — counting proxies show which region's runner each request reached. A tenant without a row goes to the primary region, and a tenant with a row goes to its region. Routing writes nothing. A row added later reroutes the tenant once the directory's version moves past the edge's cached absence.
+
+`apps/api/src/app.test.ts` checks that `/edge/keys` publishes only unrevoked, unexpired keys. Not covered yet: JWT-authenticated requests through the edge (the edge reuses `Actor.auth.jwt`, which `serve/jwt.test.ts` covers), TLS between edge and runners, and rate limits.
 
 ### Promise client (M3.4)
 
