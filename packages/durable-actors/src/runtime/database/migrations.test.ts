@@ -114,4 +114,75 @@ describe("migrations with Postgres", () => {
         }),
       ),
     ))
+
+  it("applies 0022_parent_placement to a database that ran the previous migrations", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
+          const name = `migrations_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+
+          const admin = yield* Effect.acquireRelease(
+            Effect.sync(() => new Pool({ connectionString: database.href })),
+            (pool) => Effect.promise(() => pool.end()),
+          )
+
+          yield* Effect.acquireRelease(
+            Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
+            () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
+          )
+          database.pathname = `/${name}`
+
+          const client = yield* Layer.build(
+            Database.postgres({ url: Redacted.make(database.href) }),
+          )
+
+          const migrate = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+            Effect.provide(effect, client)
+
+          yield* migrate(
+            migrator(Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0022"))),
+          )
+
+          yield* migrate(
+            Effect.flatMap(
+              SqlClient.SqlClient,
+              (sql) => sql`INSERT INTO actor_placements (actor_type, placement, encoding)
+                VALUES ('Order', 'actor', 1), ('Room', 'tenant', 1)`,
+            ),
+          )
+
+          expect(yield* migrate(migrator(migrations))).toEqual([[22, "parent_placement"]])
+
+          const rows = yield* migrate(
+            Effect.flatMap(
+              SqlClient.SqlClient,
+              (sql) => sql`SELECT actor_type, placement, parent_type FROM actor_placements
+                ORDER BY actor_type`,
+            ),
+          )
+
+          expect(rows).toEqual([
+            { actor_type: "Order", placement: "actor", parent_type: null },
+            { actor_type: "Room", placement: "tenant", parent_type: null },
+          ])
+
+          const insert = (placement: string, parent: string | null) =>
+            migrate(
+              Effect.flatMap(
+                SqlClient.SqlClient,
+                (
+                  sql,
+                ) => sql`INSERT INTO actor_placements (actor_type, placement, encoding, parent_type)
+                  VALUES (${`T${placement}${parent ?? ""}`}, ${placement}, 1, ${parent})`,
+              ),
+            ).pipe(Effect.exit)
+
+          expect(Exit.isSuccess(yield* insert("parent", "Order"))).toBe(true)
+          expect(Exit.isFailure(yield* insert("parent", null))).toBe(true)
+          expect(Exit.isFailure(yield* insert("actor", "Order"))).toBe(true)
+          expect(Exit.isFailure(yield* insert("region", null))).toBe(true)
+        }),
+      ),
+    ))
 })

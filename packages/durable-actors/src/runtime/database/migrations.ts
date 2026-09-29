@@ -500,6 +500,17 @@ export const migrations = {
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),
+  // A parent-placed type routes through its parent type's placement, so the
+  // parent is part of the record a later build must match.
+  "0022_parent_placement": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_placements ADD COLUMN parent_type text,
+        DROP CONSTRAINT actor_placements_placement_check,
+        ADD CONSTRAINT actor_placements_placement_check
+          CHECK (placement IN ('tenant', 'actor', 'parent')),
+        ADD CONSTRAINT actor_placements_parent_type_check
+          CHECK ((placement = 'parent') = (parent_type IS NOT NULL))`
+  }),
 }
 
 /**

@@ -24,7 +24,7 @@ import { ActorError } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
-import { routingKey } from "../storage/codec.ts"
+import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { executeTurn } from "../turn/execute.ts"
 import { activationOwner, type Authorize } from "../connections/owner.ts"
@@ -273,6 +273,7 @@ export const registerActor = Effect.fnUntraced(function* (
               owned.key,
               registration.policy,
               registration.mintable,
+              parentPlacement(registration.placement)?.parent,
               registration.tables.length > 0 || registration.blobs.length > 0,
               waited,
               owner.hasConnections ? owner.list(owned) : undefined,

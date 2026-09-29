@@ -1,6 +1,6 @@
 import { Actor } from "@durable-actors/core"
 import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
-import { Effect, Layer, Option, Schema } from "effect"
+import { Deferred, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 
 /** An owned table: the framework adds and scopes routing_key, tenant_id, and actor_id. */
@@ -92,5 +92,126 @@ export const LedgerLive = Layer.unwrap(
     for (const statement of ENTRIES_DDL) yield* sql.unsafe(statement)
 
     return Layer.mergeAll(LedgerCommands, LedgerReads)
+  }).pipe(Effect.orDie),
+)
+
+/** Rows of `ParentedItem`, which live on their root's shard. */
+export const parentedItems = Actor.table(
+  pgTable("bench_parented_items", { id: text("id").primaryKey(), label: text("label").notNull() }),
+)
+
+/** Rows of `SpreadItem`, which live on each item's own shard. */
+export const spreadItems = Actor.table(
+  pgTable("bench_spread_items", { id: text("id").primaryKey(), label: text("label").notNull() }),
+)
+
+const ITEMS_DDL = ["bench_parented_items", "bench_spread_items"].map(
+  (table) => `CREATE TABLE IF NOT EXISTS ${table} (
+  routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL,
+  id text NOT NULL, label text NOT NULL,
+  PRIMARY KEY (routing_key, tenant_id, actor_id, id))`,
+)
+
+export const Notify = Actor.command("Notify", {
+  input: Schema.Struct({ item: Schema.String, parented: Schema.Boolean, label: Schema.String }),
+})
+
+export const FamilyLabels = Actor.query("FamilyLabels", { output: Schema.Int })
+
+/** An actor-placed root whose items are placed either on it or on their own shards. */
+export const FamilyRoot = Actor.make("FamilyRoot", {
+  key: Schema.NonEmptyString,
+  placement: "actor",
+  api: { Notify, FamilyLabels },
+})
+
+export const Mark = Actor.command("Mark", { input: Schema.String })
+
+export const ItemLabels = Actor.query("ItemLabels", { output: Schema.Int })
+
+export const ParentedItem = Actor.make("ParentedItem", {
+  key: Schema.NonEmptyString,
+  placement: { parent: FamilyRoot },
+  tables: [parentedItems],
+  api: { Mark },
+})
+
+export const SpreadItem = Actor.make("SpreadItem", {
+  key: Schema.NonEmptyString,
+  placement: "actor",
+  tables: [spreadItems],
+  api: { Mark, ItemLabels },
+})
+
+/** Pending item marks by label, completed by the item's turn. */
+export const marks = new Map<string, Deferred.Deferred<void>>()
+
+const marked = (label: string) =>
+  Effect.suspend(() => {
+    const pending = marks.get(label)
+
+    return pending === undefined ? Effect.void : Deferred.succeed(pending, undefined)
+  }).pipe(Effect.asVoid)
+
+/** A spread item's id: the root's id and the item's, as an application would key it. */
+export const spreadId = ({ root, item }: { readonly root: string; readonly item: string }) =>
+  `${root}/${item}`
+
+/** Creates the item tables as a drizzle-kit migration would, then registers the family. */
+export const FamilyLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    for (const statement of ITEMS_DDL) yield* sql.unsafe(statement)
+
+    return Layer.mergeAll(
+      FamilyRoot.toLayer(
+        Effect.succeed({
+          Notify: Effect.fnUntraced(function* ({ item, parented, label }) {
+            const turn = yield* FamilyRoot.Turn
+
+            yield* parented
+              ? (yield* ParentedItem.intents(ParentedItem.idOf(turn.id, item))).Mark(label)
+              : (yield* SpreadItem.intents(spreadId({ root: turn.id, item }))).Mark(label)
+          }),
+        }),
+      ),
+      FamilyRoot.toQueryLayer(
+        Effect.succeed({
+          FamilyLabels: Effect.fnUntraced(function* () {
+            const rows = yield* (yield* FamilyRoot.Read).group((db) =>
+              db.select({ label: parentedItems.label }).from(parentedItems),
+            )
+
+            return rows.length
+          }),
+        }),
+      ),
+      ParentedItem.toLayer(
+        Effect.succeed({
+          Mark: Effect.fnUntraced(function* (label: string) {
+            const turn = yield* ParentedItem.Turn
+            yield* turn.rows(parentedItems).upsert({ id: "mark", label })
+            yield* marked(label)
+          }),
+        }),
+      ),
+      SpreadItem.toLayer(
+        Effect.succeed({
+          Mark: Effect.fnUntraced(function* (label: string) {
+            const turn = yield* SpreadItem.Turn
+            yield* turn.rows(spreadItems).upsert({ id: "mark", label })
+            yield* marked(label)
+          }),
+        }),
+      ),
+      SpreadItem.toQueryLayer(
+        Effect.succeed({
+          ItemLabels: Effect.fnUntraced(function* () {
+            return yield* (yield* SpreadItem.Read).rows(spreadItems).count()
+          }),
+        }),
+      ),
+    )
   }).pipe(Effect.orDie),
 )

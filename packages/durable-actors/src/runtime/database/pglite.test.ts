@@ -146,6 +146,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [22, "parent_placement"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
             { blobs: "actor_blobs" },
@@ -180,6 +181,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [22, "parent_placement"],
           ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
@@ -224,6 +226,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [22, "parent_placement"],
           ])
           expect(
             yield* sql`SELECT intent_id, due_at_ms::int AS due, scheduled_at_ms FROM actor_outbox`,
@@ -273,6 +276,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [22, "parent_placement"],
           ])
           expect(
             yield* sql`SELECT intent_id, running, maybe_applied, ready_at_ms::int AS ready,
@@ -350,6 +354,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [22, "parent_placement"],
           ])
           expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(
             11,
@@ -416,6 +421,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [22, "parent_placement"],
           ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
@@ -452,6 +458,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [22, "parent_placement"],
           ])
           // A row written before the column retries by its attempt count, as it did.
           expect(yield* sql`SELECT intent_id, attempts, final_attempt FROM actor_outbox`).toEqual([
@@ -483,7 +490,10 @@ describe("PGlite migrations", () => {
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
               actor_type, actor_id, target_type, target_id, command, payload, caller)
             VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
-          expect(yield* migrate).toEqual([[17, "subscriptions"]])
+          expect(yield* migrate).toEqual([
+            [17, "subscriptions"],
+            [22, "parent_placement"],
+          ])
           // Pending intents survive; the outbox now takes feed and control rows too.
           expect(yield* sql`SELECT intent_id, kind FROM actor_outbox`).toEqual([
             { intent_id: "pending", kind: "intent" },
@@ -543,6 +553,7 @@ describe("PGlite migrations", () => {
             { migration_id: 15 },
             { migration_id: 16 },
             { migration_id: 17 },
+            { migration_id: 22 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

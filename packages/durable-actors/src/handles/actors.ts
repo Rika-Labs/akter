@@ -6,6 +6,7 @@ import type { ActorError } from "../errors/actor.ts"
 import type { SubscriptionFailure } from "../errors/subscription.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { Placement } from "../runtime/storage/codec.ts"
 import type { ConnectionCommands } from "../identity/command.ts"
 import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
@@ -325,7 +326,7 @@ export interface RegisteredQuery {
 
 export interface QueryRegistration {
   readonly name: string
-  readonly placement: "tenant" | "actor"
+  readonly placement: Placement
   /** `commandTimeout`: a query's reads are cancelled on the server past it. */
   readonly timeoutMs: number
   readonly tables: ReadonlyArray<AnyOwnedTable>
@@ -340,7 +341,7 @@ export interface Registration {
   readonly mintable: boolean
   /** The deployment's default tenant: the ambient `Tenant` when the actor's layer is built. */
   readonly tenant: string
-  readonly placement: "tenant" | "actor"
+  readonly placement: Placement
   readonly policy: TurnPolicy
   readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly blobs: ReadonlyArray<AnyBlob>
