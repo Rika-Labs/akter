@@ -77,20 +77,16 @@ export const archivingPostgres = Effect.fnUntraced(function* () {
 
   const address = (at: number) => `-h 127.0.0.1 -p ${at} -U project`
 
-  const admin = yield* Effect.gen(function* () {
-    const pool = yield* open(port, "postgres")
+  const admin = yield* open(port, "postgres")
 
-    yield* until(
-      Effect.tryPromise(() => pool.query("SELECT 1")).pipe(
-        Effect.as(true),
-        Effect.catch(() => Effect.succeed(false)),
-      ),
-      "the archiving server",
-      "60 seconds",
-    )
-
-    return pool
-  })
+  yield* until(
+    Effect.tryPromise(() => admin.query("SELECT 1")).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    ),
+    "the archiving server",
+    "60 seconds",
+  )
 
   yield* exec(`pg_basebackup ${address(port)} -D /recoveries/base -X stream -c fast`)
 
