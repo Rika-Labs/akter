@@ -9,9 +9,9 @@ The intended deployment has one shared relational database and one `Actors.layer
 
 - **Embedded:** provide `Actors.layer` from `@durable-actors/core/runtime` inside the application.
 - **Served:** add `Actor.serve` for HTTP, WebSocket, SSE, and OpenAPI access.
-- **Hosted:** deploy served containers on our runners behind `apps/edge`, with Neki and parked sockets.
+- **Hosted:** deploy served containers on our runners behind `apps/edge`, with Neki; runners hold parked sockets.
 
-The hosted control plane uses `packages/deployments`: `Deployment`, the `Runners` singleton, and `UsageMeter` run embedded in `apps/api`. `apps/edge` resolves deployment hosts to runners, converts API keys to `Principal`, enforces limits, and owns parked client sockets. Infrastructure is Alchemy plus Railway.
+The hosted control plane uses `packages/deployments`: `Deployment`, the `Runners` singleton, and `UsageMeter` run embedded in `apps/api`. `apps/edge` resolves deployment hosts to runners, converts API keys to `Principal`, routes each tenant to its home region from the tenant directory, signs a per-request assertion, enforces limits, and proxies client sockets to the runners that hold them ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)). Infrastructure is Alchemy plus Railway.
 
 The planned `durable` CLI lives in `apps/cli`: `login`, `dev`, `deploy`, `migrate`, and `dead-letters`. These commands are not implemented; the package has no bin until the first command exists. Customer-served deployments do not require the hosted control plane.
 
@@ -57,3 +57,7 @@ durable tenants create acme --deployment dep-1 --region us-east \
 ```
 
 It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `durable tenants move` arrives with L.1.
+
+## Embedded PGlite in production
+
+Target, built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). One process embeds `Actors.layer`, and optionally `Actor.serve`, with `Database.pglite({ dataDir })` on a local Linux or macOS filesystem. The layer locks the `dataDir`, so a second process fails with `DataDirLocked`. It recovers from a process crash to the last commit, but power-loss durability is not claimed. It runs one turn or query at a time on one connection, with no replicas, failover, or multi-runner support. Back it up by stopping the process and copying the `dataDir`. Move to Postgres with `DATABASE_URL` when those limits bind.
