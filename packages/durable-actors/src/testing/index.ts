@@ -1,6 +1,6 @@
 export { ActorTest, cleanup, sweepContent } from "./actor-test.ts"
 
-export type { TestConnection, TestMessage } from "./actor-test.ts"
+export type { FaultOptions, TestConnection, TestMessage } from "./actor-test.ts"
 
 export { ActorCluster } from "./cluster.ts"
 
@@ -15,6 +15,23 @@ export type {
   SimulationReport,
   SimulationStep,
 } from "./simulate.ts"
+
+export {
+  CLUSTER_SIMULATION_SEEDS,
+  clusterSimulationSeeds,
+  FAILOVER_SIMULATION_SEEDS,
+  failoverSimulationSeeds,
+  NIGHTLY_CLUSTER_SIMULATION_SEEDS,
+  NIGHTLY_FAILOVER_SIMULATION_SEEDS,
+} from "./simulate-cluster.ts"
+
+export type {
+  ClusterSimulation,
+  ClusterSimulationFault,
+  ClusterSimulationOptions,
+  ClusterSimulationReport,
+  ClusterSimulationStep,
+} from "./simulate-cluster.ts"
 
 export type { ClusterOptions, RunnerServices } from "./cluster.ts"
 
