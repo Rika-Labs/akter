@@ -65,7 +65,7 @@ export interface Simulation {
 }
 
 /** A small seeded generator, so the schedule never depends on the runtime's own randomness. */
-const generator = (seed: string) => {
+export const generator = (seed: string) => {
   let state = 2166136261
 
   for (const char of seed) state = Math.imul(state ^ char.charCodeAt(0), 16777619)
@@ -86,7 +86,49 @@ const crashPoint: Partial<Record<SimulationFault | "none", TurnPoint>> = {
 }
 
 /** Settling rounds before undelivered outbox rows count as lost. */
-const SETTLE_ROUNDS = 5
+export const SETTLE_ROUNDS = 5
+
+const schedule = (steps: ReadonlyArray<{ readonly label: string; readonly fault: string }>) =>
+  steps.map(({ label, fault }) => `${label}:${fault}`).join(" ")
+
+/**
+ * Runs a simulation's `run`, then reports it: a defect or a violation dies
+ * with the seed and the schedule drawn, and `cleanup` runs however `run` ends.
+ */
+export const conclude = <Step extends { readonly label: string; readonly fault: string }, E, R>({
+  seed,
+  steps,
+  violations,
+  run,
+  cleanup,
+}: {
+  readonly seed: string
+  readonly steps: ReadonlyArray<Step>
+  readonly violations: ReadonlyArray<string>
+  readonly run: Effect.Effect<void, E, R>
+  readonly cleanup: Effect.Effect<unknown>
+}): Effect.Effect<{ readonly seed: string; readonly steps: ReadonlyArray<Step> }, never, R> =>
+  Effect.gen(function* () {
+    yield* run.pipe(
+      Effect.ensuring(cleanup),
+      Effect.catchCause((cause) =>
+        Effect.die(
+          new Error(
+            `Simulation failed with seed ${seed} after ${steps.length} steps\n${Cause.pretty(cause)}\nschedule: ${schedule(steps)}`,
+          ),
+        ),
+      ),
+    )
+
+    if (violations.length > 0)
+      return yield* Effect.die(
+        new Error(
+          `Simulation failed with seed ${seed}\n${violations.join("\n")}\nschedule: ${schedule(steps)}`,
+        ),
+      )
+
+    return { seed, steps }
+  })
 
 /**
  * Runs `program` against `test`'s runtime under a fault
@@ -198,27 +240,13 @@ export const simulate =
           ),
         )
 
-      yield* run.pipe(
-        Effect.ensuring(test.clearFaults),
-        Effect.catchCause((cause) =>
-          Effect.die(
-            new Error(
-              `Simulation failed with seed ${options.seed} after ${steps.length} steps\n${Cause.pretty(cause)}`,
-            ),
-          ),
-        ),
-      )
-
-      if (violations.length > 0)
-        return yield* Effect.die(
-          new Error(
-            `Simulation failed with seed ${options.seed}\n${violations.join("\n")}\nschedule: ${steps
-              .map(({ label, fault }) => `${label}:${fault}`)
-              .join(" ")}`,
-          ),
-        )
-
-      return { seed: options.seed, steps }
+      return yield* conclude({
+        seed: options.seed,
+        steps,
+        violations,
+        run,
+        cleanup: test.clearFaults,
+      })
     })
 
 /** Seeds pull requests run: `0` to `19`. */
