@@ -1,6 +1,6 @@
 # ADR 0031: Hosted ingress, the tenant directory, and regions
 
-**Status:** proposed (2026-09-28).
+**Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.8 builds the single-region edge; regions and tenant moves are L.1.
 
 **Responsibility:** decide how the hosted edge authenticates a request and hands it to a runner, where each tenant's home region is recorded and read, and how regions will work when they are built.
 
@@ -124,6 +124,8 @@ The assertion is a compact JWS.
 
 ## Amendments on acceptance
 
+These landed with the acceptance, as labelled targets until the slice builds them.
+
 **Contracts.**
 
 - [10 security](../contracts/10-security.md): replace the generic hosted-assertion paragraph with this profile: Ed25519 only, at most 60 seconds, `aud` and `region` checks, the canonical request binding, the 5-minute key-set bound, header stripping, and streaming re-assertion.
@@ -156,14 +158,16 @@ The assertion is a compact JWS.
 
 None in the framework for M4. The directory lives in the control-plane database and uses `packages/postgres` migrations, not the framework's `actor_migrations` ids. L.1's tenant fence needs one framework migration, numbered when L.1 is scheduled.
 
-## Open questions for Dallen, with recommended defaults
+## Decided questions
 
-1. **Custom auth code in hosted deployments.** Recommended default: not supported in M4. Hosted deployments use hosted API keys and declarative JWT settings. Alternatives: run `Actor.auth.make` providers on runners and route every request to the primary region, which gives up regions; or sandbox providers at the edge, which needs a threat-model review.
-2. **How fast a revoked signing key stops working, and the assertion lifetime.** Recommended default: a push on revocation, plus polling every 5 minutes as the bound. Alternative: 1-minute polling, which costs more control-plane reads. The assertion lifetime defaults to 10 seconds, which bounds how long a request authenticated just before a caller's revocation can still be admitted. Alternative: ADR 0027's 60-second cap, which tolerates slower forwarding.
-3. **A replay cache.** Recommended default: none, because receipts and request binding cover replay. Alternative: a per-runner `jti` cache for 60 seconds.
-4. **When to build the directory.** Recommended default: in M4.8 with only the primary region, so the lookup, the absent-row rule, and the cache are exercised before L.1. Alternative: wait for L.1 and route everything to the one region until then.
-5. **Edge-held sockets.** Recommended default: not in M4; the edge proxies and holders stay in runners. Alternative: move parking to the edge, which needs its own ADR amending ADR 0023.
-6. **Tenant move downtime.** Recommended default: accept a pause per tenant that grows with the tenant's data. Alternative: an online move with logical replication and a short cutover, which is much more work and needs Neki evidence.
+Dallen accepted every recommended default on 2026-09-28.
+
+1. **Custom auth code in hosted deployments.** Decided: not supported in M4. Hosted deployments use hosted API keys and declarative JWT settings. Rejected alternatives: run `Actor.auth.make` providers on runners and route every request to the primary region, which gives up regions; or sandbox providers at the edge, which needs a threat-model review.
+2. **How fast a revoked signing key stops working, and the assertion lifetime.** Decided: a push on revocation, plus polling every 5 minutes as the bound. Rejected alternative: 1-minute polling, which costs more control-plane reads. The assertion lifetime defaults to 10 seconds, which bounds how long a request authenticated just before a caller's revocation can still be admitted. Rejected alternative: ADR 0027's 60-second cap, which tolerates slower forwarding.
+3. **A replay cache.** Decided: none, because receipts and request binding cover replay. Rejected alternative: a per-runner `jti` cache for 60 seconds.
+4. **When to build the directory.** Decided: in M4.8 with only the primary region, so the lookup, the absent-row rule, and the cache are exercised before L.1. Rejected alternative: wait for L.1 and route everything to the one region until then.
+5. **Edge-held sockets.** Decided: not in M4; the edge proxies and holders stay in runners. Rejected alternative: move parking to the edge, which needs its own ADR amending ADR 0023.
+6. **Tenant move downtime.** Decided: accept a pause per tenant that grows with the tenant's data. Rejected alternative: an online move with logical replication and a short cutover, which is much more work and needs Neki evidence.
 
 ## Evidence required
 

@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Schema } from "effect"
 
@@ -141,10 +141,21 @@ export const PromptFailed = Actor.command("PromptFailed", { input: Actor.DeadLet
 
 export const Idle = Actor.command("Idle", { input: Schema.Struct({ token: Schema.String }) })
 
-/** One turn's reply as the executor writes it: live, never stored, and lossy under load. */
+/** A piece of the reply as the executor writes it: live, never stored, and lossy under load. */
+export const Delta = Schema.TaggedStruct("Delta", { text: Schema.String })
+
+/** How the turn ended and its whole reply, from the committed `TurnEnded` event. */
+export const Ended = Schema.TaggedStruct("Ended", { outcome: Outcome, text: Schema.String })
+
+/**
+ * One turn's reply: deltas while it is written, then `Ended` once the turn
+ * commits its end, and the stream completes. A client that subscribes late or
+ * misses deltas still gets the whole reply in `Ended`.
+ */
 export const Streaming = Actor.stream("Streaming", {
   input: Schema.Struct({ turnId: Schema.String }),
-  output: Schema.String,
+  output: Schema.Union([Delta, Ended]),
+  errors: [UnknownCursor, RetentionGap],
   progress: { effects: [RunPrompt] },
 })
 
