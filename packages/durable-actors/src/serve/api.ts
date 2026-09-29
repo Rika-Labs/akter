@@ -84,6 +84,21 @@ const ProtocolInfo = Schema.Struct({
   now: Schema.Int,
 }).annotate({ identifier: "Protocol" })
 
+const ReadinessReason = Schema.Literals([
+  "draining",
+  "drained",
+  "storage",
+  "routing",
+  "unregistered",
+])
+
+const Ready = Schema.Struct({ ready: Schema.Literal(true) }).annotate({ identifier: "Ready" })
+
+const NotReady = Schema.Struct({ ready: Schema.Literal(false), reason: ReadinessReason }).annotate({
+  identifier: "NotReady",
+  httpApiStatus: 503,
+})
+
 export const MintedCommandId = Schema.Struct({ commandId: Schema.String }).annotate({
   identifier: "MintedCommandId",
 })
@@ -257,6 +272,16 @@ const PROTOCOL_GROUP = "durable"
 export const PROTOCOL_OPERATIONS: ReadonlySet<string> = new Set([
   `${PROTOCOL_GROUP}.protocol`,
   `${PROTOCOL_GROUP}.commandIds`,
+  `${PROTOCOL_GROUP}.ready`,
+])
+
+/** Paths of the protocol routes under the base path; `openapi.path` may not take one. */
+export const PROTOCOL_PATHS: ReadonlySet<string> = new Set(["/protocol", "/command-ids", "/ready"])
+
+/** Protocol operations that take no credentials. */
+const UNAUTHENTICATED: ReadonlySet<string> = new Set([
+  `${PROTOCOL_GROUP}.protocol`,
+  `${PROTOCOL_GROUP}.ready`,
 ])
 
 export interface ServedRoutes {
@@ -269,6 +294,10 @@ export const build = ({ definitions, basePath }: ServedRoutes) => {
     HttpApiGroup.make(PROTOCOL_GROUP).add(
       HttpApiEndpoint.get("protocol", `${basePath}/protocol` as `/${string}`, {
         success: ProtocolInfo,
+      }),
+      HttpApiEndpoint.get("ready", `${basePath}/ready` as `/${string}`, {
+        success: Ready,
+        error: NotReady,
       }),
       HttpApiEndpoint.post("commandIds", `${basePath}/command-ids` as `/${string}`, {
         success: MintedCommandId,
@@ -354,7 +383,7 @@ export const document = ({ api, auth, title, version }: DocumentOptions) => {
             ? operation
             : Object.assign({}, operation, {
                 security:
-                  "operationId" in operation && operation.operationId === "durable.protocol"
+                  "operationId" in operation && UNAUTHENTICATED.has(operation.operationId)
                     ? []
                     : security,
               }),

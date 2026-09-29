@@ -229,6 +229,9 @@ const CLEANUP_INTERVAL = "1 minute"
 /** How long readiness waits for the database before it reports storage unavailable. */
 const READINESS_STORAGE_TIMEOUT = "2 seconds"
 
+/** How long readiness reuses its last storage answer. */
+const READINESS_CACHE = "1 second"
+
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
@@ -1294,24 +1297,35 @@ export const layer = (options: Options) => {
           ),
       })
 
+      // An embedded PGlite has one connection, which a turn holds for its
+      // whole transaction, so a probe would queue behind any long turn and
+      // report the runner unready; the in-process database is usable for as
+      // long as this layer is. On Postgres probes may come often and
+      // unauthenticated, so the database answers at most once a second.
+      const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
+
+      const storage = embedded
+        ? Effect.succeed(true)
+        : yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+
+            return yield* sql`SELECT 1`.pipe(
+              Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
+              Effect.map(Option.isSome),
+              Effect.orElseSucceed(() => false),
+            )
+          }).pipe(Effect.provideContext(services), Effect.cachedWithTTL(READINESS_CACHE))
+
       const serving = Effect.gen(function* () {
         if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
 
         if (registrations.size + queryRegistrations.size + effectRegistrations.size === 0)
           return { ready: false, reason: "unregistered" } as const
 
-        const sql = yield* SqlClient.SqlClient
-
-        const answered = yield* sql`SELECT 1`.pipe(
-          Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
-          Effect.map(Option.isSome),
-          Effect.orElseSucceed(() => false),
-        )
-
-        return answered
+        return (yield* storage)
           ? ({ ready: true } as const)
           : ({ ready: false, reason: "storage" } as const)
-      }).pipe(Effect.provideContext(services)) satisfies Effect.Effect<Readiness>
+      }) satisfies Effect.Effect<Readiness>
 
       const control = runtimeControl({
         gate,

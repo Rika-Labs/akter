@@ -26,7 +26,15 @@ import { ActorError, NotCreated, RunnerAtCapacity, Unauthorized } from "../error
 import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
-import { build, document, memberPath, PROTOCOL_OPERATIONS, schemeName } from "./api.ts"
+import {
+  build,
+  document,
+  memberPath,
+  PROTOCOL_OPERATIONS,
+  PROTOCOL_PATHS,
+  schemeName,
+} from "./api.ts"
+import { RuntimeControl } from "../runtime/drain.ts"
 import {
   type AuthProvider,
   type Authenticated,
@@ -192,8 +200,8 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
 
 /**
  * Serves `actors`' public commands, reducers, and queries over HTTP by adding
- * routes to the `HttpRouter`, plus `/protocol`, `/command-ids`, and, when
- * configured, the OpenAPI document.
+ * routes to the `HttpRouter`, plus `/protocol`, `/command-ids`, `/ready`, and,
+ * when configured, the OpenAPI document.
  */
 export const serve = <R = never>(options: ServeOptions<R>) =>
   HttpRouter.use(
@@ -225,8 +233,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
       if (
         openapiPath !== undefined &&
-        (openapiPath === "/protocol" ||
-          openapiPath === "/command-ids" ||
+        (PROTOCOL_PATHS.has(openapiPath) ||
           openapiPath === "/actors" ||
           openapiPath.startsWith("/actors/"))
       )
@@ -245,6 +252,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         )
 
       const actors = yield* InternalActors
+      const control = yield* RuntimeControl
 
       if (actors.retryWindowMs < MIN_RETRY_WINDOW_MS)
         return yield* Effect.die(
@@ -782,6 +790,20 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               protocol: PROTOCOL,
               retryWindowMs: actors.retryWindowMs,
               now: clock.now(),
+            }),
+          ),
+        ),
+      )
+
+      // Probes carry no credentials, and a stale answer would route traffic to a draining runner.
+      yield* router.add(
+        "GET",
+        `${basePath}/ready` as HttpRouter.PathInput,
+        respond(() =>
+          Effect.map(control.readiness, (readiness) =>
+            HttpServerResponse.jsonUnsafe(readiness, {
+              status: readiness.ready ? 200 : 503,
+              headers: { "cache-control": "no-store" },
             }),
           ),
         ),

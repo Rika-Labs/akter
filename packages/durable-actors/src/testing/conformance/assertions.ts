@@ -14,6 +14,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effe
 import { Actor, Unauthorized, User } from "../../index.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { InternalActors } from "../../handles/actors.ts"
+import type { RuntimeControl } from "../../runtime/drain.ts"
 import type { AssertionClaims, AssertionKey } from "../../serve/assertion/verify.ts"
 import type { AuthProvider } from "../../serve/auth.ts"
 import {
@@ -139,10 +140,14 @@ interface AssertedServer {
 /** Serves `HttpRoom` with `auth` from a real listening Bun server for the rest of the scope. */
 const serveAsserted = Effect.fnUntraced(function* (
   auth: AuthProvider<HttpClient.HttpClient> | AuthProvider,
-): Effect.fn.Return<AssertedServer, never, InternalActors | Crypto.Crypto | Scope.Scope> {
+): Effect.fn.Return<
+  AssertedServer,
+  never,
+  InternalActors | RuntimeControl | Crypto.Crypto | Scope.Scope
+> {
   const actors = yield* InternalActors
   const random = yield* Crypto.Crypto
-  const context = yield* Effect.context<InternalActors>()
+  const context = yield* Effect.context<InternalActors | RuntimeControl>()
   const fetchLayer = yield* Layer.build(FetchHttpClient.layer)
   const client = Context.get(fetchLayer, HttpClient.HttpClient)
 

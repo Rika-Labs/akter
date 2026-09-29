@@ -27,6 +27,7 @@ import { Actor, User } from "../../index.ts"
 import { ActorError, TransportError, Unauthorized } from "../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import { InternalActors } from "../../handles/actors.ts"
+import type { RuntimeControl } from "../../runtime/drain.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { servedDefinitions } from "../../actor/served.ts"
 import { socketSession } from "../../serve/sessions/socket.ts"
@@ -244,8 +245,8 @@ export const transportsLayer = Layer.mergeAll(socketLayer, renderLayer, feedLaye
 export const serveSockets = Effect.fnUntraced(function* (
   environment: ConformanceEnvironment,
   options?: Partial<ServeOptions<never>>,
-): Effect.fn.Return<string, never, InternalActors | Scope.Scope> {
-  const context = yield* Effect.context<InternalActors>()
+): Effect.fn.Return<string, never, InternalActors | RuntimeControl | Scope.Scope> {
+  const context = yield* Effect.context<InternalActors | RuntimeControl>()
 
   const app = Actor.serve({
     actors: [SocketRoom, FeedRoom],

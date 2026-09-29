@@ -34,6 +34,7 @@ import {
   type Reason,
 } from "../../errors/actor.ts"
 import { InternalActors } from "../../handles/actors.ts"
+import { RuntimeControl } from "../../runtime/drain.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { type AuthProvider, type AuthRequest, Credential } from "../../serve/auth.ts"
 import type { ServeOptions } from "../../serve/layer.ts"
@@ -283,11 +284,11 @@ interface Server {
 /** Serves the HTTP actors from a real listening Bun server for the rest of the scope. */
 export const serveHttp = Effect.fnUntraced(function* (
   options?: Partial<ServeOptions<never>>,
-): Effect.fn.Return<Server, never, InternalActors | Crypto.Crypto | Scope.Scope> {
+): Effect.fn.Return<Server, never, InternalActors | RuntimeControl | Crypto.Crypto | Scope.Scope> {
   const actors = yield* InternalActors
   const crypto = yield* Crypto.Crypto
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
-  const context = yield* Effect.context<InternalActors>()
+  const context = yield* Effect.context<InternalActors | RuntimeControl>()
 
   const app = Actor.serve({ actors: served, auth: tokens, ...options }).pipe(
     Layer.provide(Layer.succeedContext(context)),
@@ -398,7 +399,11 @@ const securityOf = (server: Server) =>
       const distinct = new Map(
         Object.values(spec.paths)
           .flatMap((methods) => Object.values(methods))
-          .filter((operation) => operation.operationId !== "durable.protocol")
+          .filter(
+            (operation) =>
+              operation.operationId !== "durable.protocol" &&
+              operation.operationId !== "durable.ready",
+          )
           .map((operation) => [JSON.stringify(operation.security), operation.security]),
       )
 
@@ -428,6 +433,105 @@ export const tenantOf = Effect.gen(function* () {
 })
 
 export const httpConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "answers /ready without credentials: 200 while serving, then 503 drained, and refuses commands",
+    run: ({ expect, environment }) =>
+      Effect.runPromise(
+        Effect.promise(() =>
+          environment.run(
+            Effect.gen(function* () {
+              const server = yield* serveHttp()
+              const token = `${yield* tenantOf}:alice`
+              const ready = yield* server.send("/ready", { method: "GET" })
+              expect(ready).toMatchObject({ status: 200, body: { ready: true } })
+              expect(ready.headers.get("cache-control")).toBe("no-store")
+              expect(ready.headers.get("durable-protocol")).toBe("1")
+
+              const report = yield* RuntimeControl.use((control) =>
+                control.drain({ deadline: "5 seconds" }),
+              )
+
+              expect(report.outcome).toBe("clean")
+
+              expect(yield* server.send("/ready", { method: "GET" })).toMatchObject({
+                status: 503,
+                body: { ready: false, reason: "drained" },
+              })
+
+              const refused = yield* server.send("/actors/HttpRoom/drained/Post", {
+                token,
+                key: yield* server.mint(),
+                body: { text: "late" },
+              })
+
+              expect(refused.status).toBe(503)
+              expect(yield* reasonOf(refused.body)).toEqual({ tag: "ActorUnavailable" })
+            }),
+          ),
+        ).pipe(Effect.ensuring(environment.restart)),
+      ),
+  },
+  {
+    name: "stays ready while a command is in flight, then answers /ready with 503 draining while a drain waits for it, and it still commits",
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      Effect.runPromise(
+        Effect.promise(() =>
+          environment.run(
+            Effect.gen(function* () {
+              const server = yield* serveHttp()
+              const token = `${yield* tenantOf}:alice`
+              const entered = yield* Deferred.make<void>()
+              const release = yield* Deferred.make<void>()
+
+              // Only this command waits on the gate, so no other turn on the runtime is held.
+              gate.hold = Deferred.succeed(entered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+              )
+
+              const held = yield* server
+                .send("/actors/HttpRoom/in-flight/Hold", { token, key: yield* server.mint() })
+                .pipe(Effect.forkChild)
+
+              yield* Deferred.await(entered)
+
+              // A long turn is not a storage outage, even on a one-connection
+              // database; waiting out the storage check's cache makes it re-probe.
+              yield* Effect.sleep("1100 millis")
+
+              expect(yield* server.send("/ready", { method: "GET" })).toMatchObject({
+                status: 200,
+                body: { ready: true },
+              })
+
+              const drain = yield* RuntimeControl.use((control) =>
+                control.drain({ deadline: "30 seconds" }),
+              ).pipe(Effect.forkChild)
+
+              const draining = yield* server.send("/ready", { method: "GET" }).pipe(
+                Effect.repeat({
+                  schedule: Schedule.spaced("10 millis"),
+                  until: (reply) => reply.status === 503,
+                }),
+              )
+
+              expect(draining.body).toEqual({ ready: false, reason: "draining" })
+
+              yield* Deferred.succeed(release, undefined)
+              expect((yield* Fiber.join(drain)).outcome).toBe("clean")
+              expect(yield* Fiber.join(held)).toMatchObject({ status: 200, body: 1 })
+            }),
+          ),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              gate.hold = Effect.void
+            }),
+          ),
+          Effect.ensuring(environment.restart),
+        ),
+      ),
+  },
   {
     name: "gives concurrent requests with different tokens different principals",
     run: ({ expect, environment }) =>
@@ -982,6 +1086,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               "HttpTicket.Join",
               "durable.commandIds",
               "durable.protocol",
+              "durable.ready",
             ].sort(),
           )
 
@@ -998,7 +1103,8 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               isCommand ? ["idempotency-key"] : [],
             )
             expect(operation.security.length === 0).toBe(
-              operation.operationId === "durable.protocol",
+              operation.operationId === "durable.protocol" ||
+                operation.operationId === "durable.ready",
             )
 
             if (path === "/actors/HttpRoom/{id}/Crash" || path === "/actors/HttpRoom/{id}/Hold")
@@ -1384,7 +1490,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const internal = Layer.succeed(InternalActors, yield* InternalActors)
 
-          for (const path of ["/protocol", "/command-ids", "/actors/Room"] as const) {
+          for (const path of ["/protocol", "/command-ids", "/ready", "/actors/Room"] as const) {
             const exit = yield* HttpRouter.toHttpEffect(
               Actor.serve({ actors: [HttpRoom], auth: tokens, openapi: { path } }).pipe(
                 Layer.provide(internal),
