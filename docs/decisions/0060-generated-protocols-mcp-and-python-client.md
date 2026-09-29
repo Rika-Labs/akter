@@ -1,4 +1,4 @@
-# ADR 0058: Generated protocols: an MCP endpoint and a Python client derived from the served OpenAPI document
+# ADR 0060: Generated protocols: an MCP endpoint and a Python client derived from the served OpenAPI document
 
 **Status:** proposed (2026-09-30). It gates M6.6 ([#337](https://github.com/Rika-Labs/durable-actors/issues/337)) and is the fifth item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. It builds on [ADR 0027](0027-served-protocol.md) without changing its wire. When accepted it amends [rule 41](../../.amp/rules/quality/41-no-ai-only-surface.md), the [server API](../api/01-server-api.md), [generating clients](../api/05-generated-clients.md), and the [post-foundation sketch](../api/post-foundation-sketches.md).
 

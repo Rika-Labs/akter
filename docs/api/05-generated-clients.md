@@ -54,7 +54,7 @@ A server under `Actor.auth.none` declares no schemes. Never put a credential in 
 
 ## MCP
 
-`Actor.serve` with `mcp: { path: "/mcp" }` serves the same members as MCP tools, derived from the same OpenAPI document ([ADR 0058](../decisions/0058-generated-protocols-mcp-and-python-client.md)). The endpoint speaks MCP revision 2026-07-28 over Streamable HTTP and nothing earlier: send each JSON-RPC message as its own `POST` with `MCP-Protocol-Version`, `Mcp-Method`, and (for `tools/call`) `Mcp-Name` headers, and the protocol version and client capabilities in `params._meta`. Send the same credentials as any route.
+`Actor.serve` with `mcp: { path: "/mcp" }` serves the same members as MCP tools, derived from the same OpenAPI document ([ADR 0060](../decisions/0060-generated-protocols-mcp-and-python-client.md)). The endpoint speaks MCP revision 2026-07-28 over Streamable HTTP and nothing earlier: send each JSON-RPC message as its own `POST` with `MCP-Protocol-Version`, `Mcp-Method`, and (for `tools/call`) `Mcp-Name` headers, and the protocol version and client capabilities in `params._meta`. Send the same credentials as any route.
 
 - Tool names are operation ids, `<Actor>.<Member>`. `durable.commandIds` mints a command id.
 - Arguments: `id` (the actor's key; absent for a singleton), `commandId` (commands and reducers only), and `input`.
