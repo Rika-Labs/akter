@@ -79,7 +79,7 @@ export const Delivery = <
     }),
   ])
 
-// Declared as a method so a route of specific events still fits `AnySubscription`.
+/** Declared as a method so a route of specific events still fits `AnySubscription`. */
 type RouteFunction<E> = { route(event: E, source: ActorRef): string }["route"]
 
 /** A routed subscription's route: the subscriber's id for one event, or every event to the tenant's singleton. */
@@ -106,6 +106,7 @@ export interface Subscription<
   readonly routed: Routed
 }
 
+/** Any subscription, whatever its source and events. */
 export type AnySubscription = Subscription<string, ReadonlyArray<EventClass>, boolean>
 
 /** A handler command whose input doesn't accept the subscription's deliveries fails to compile. */
@@ -210,7 +211,21 @@ const subscription = ((
   }
 }) as SubscriptionFunction
 
-/** `Actor.subscription`. */
+/**
+ * `SubscriptionMember.make` is `Actor.subscription`; see `SubscriptionFunction`
+ * for the routed and dynamic forms. Throws on an invalid tag, no events, an
+ * event the source does not declare, a duplicate or retired-and-delivered tag,
+ * a handler that is not a command, or a `route` that is neither a function nor
+ * `Actor.singleton`.
+ *
+ * @example
+ * const OnPosted = Actor.subscription("OnPosted", {
+ *   source: Feed,
+ *   events: [Posted],
+ *   handler: Record,
+ *   route: (event, source) => source.id,
+ * })
+ */
 export const SubscriptionMember = { make: subscription }
 
 /** Where a new dynamic subscription starts: after its registration, from the first retained event, or after a cursor. */
