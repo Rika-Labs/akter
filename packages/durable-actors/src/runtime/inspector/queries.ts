@@ -131,7 +131,10 @@ export interface ActorsPage extends Page {
   readonly after?: ActorIdentity | undefined
 }
 
-/** The tenant's actors in `(actor_type, actor_id)` order, one page after `after`. */
+/**
+ * The tenant's actors in `(actor_type, actor_id)` order, one page after `after`. The cursor
+ * comparison uses the same `C` collation as the ORDER BY, or a cursor could skip or repeat actors.
+ */
 export const actors = (page: ActorsPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
@@ -140,8 +143,7 @@ export const actors = (page: ActorsPage) =>
     const after =
       page.after === undefined
         ? sql`TRUE`
-        : // The same collation as the ORDER BY, or a cursor could skip or repeat actors.
-          sql`(actor_type COLLATE "C", actor_id COLLATE "C") > (${page.after.actorType}, ${page.after.actorId})`
+        : sql`(actor_type COLLATE "C", actor_id COLLATE "C") > (${page.after.actorType}, ${page.after.actorId})`
 
     const rows = yield* sql<ActorRow>`
       SELECT actor_type AS "actorType", actor_id AS "actorId", placement,
