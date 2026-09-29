@@ -49,26 +49,33 @@ Row-level security is opt-in defense in depth under the mandatory `tenant_id` pr
 To opt in:
 
 1. Run the framework and owned-table migrations, for example by starting one runner without the option.
-2. As the table owner, create the tenant role, grant it the tables, grant it to the runtime's login, and give it the inspection views. Replace `public` with the runtime's schema and `runtime_login` with its login:
+2. As the table owner, create the tenant role and a separate view-owner role, and hand the inspection views to the view owner. Replace `public` with the runtime's schema and `runtime_login` with its login:
 
    ```sql
    CREATE ROLE durable_tenant NOLOGIN;
    GRANT USAGE ON SCHEMA public TO durable_tenant;
    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO durable_tenant;
    GRANT durable_tenant TO runtime_login;
-   GRANT CREATE ON SCHEMA durable TO durable_tenant;
+
+   CREATE ROLE durable_views NOLOGIN;
+   GRANT USAGE ON SCHEMA public TO durable_views;
+   GRANT SELECT ON ALL TABLES IN SCHEMA public TO durable_views;
+   GRANT durable_views TO CURRENT_USER;
+   GRANT CREATE ON SCHEMA durable TO durable_views;
    DO $$ DECLARE v record; BEGIN
      FOR v IN SELECT relname FROM pg_class WHERE relnamespace = 'durable'::regnamespace AND relkind = 'v'
-     LOOP EXECUTE format('ALTER VIEW durable.%I OWNER TO durable_tenant', v.relname); END LOOP;
+     LOOP EXECUTE format('ALTER VIEW durable.%I OWNER TO durable_views', v.relname); END LOOP;
    END $$;
-   REVOKE CREATE ON SCHEMA durable FROM durable_tenant;
+   REVOKE CREATE ON SCHEMA durable FROM durable_views;
    ```
+
+   `durable_views` must not be a superuser or have `BYPASSRLS`, must not own a table with RLS on, and must not be granted to `durable_tenant`. Otherwise the views would ignore the policies, or the role that runs turns could alter or drop a view.
 
 3. Start every runner with `Actors.layer({ authorize, rowLevelSecurity: { role: "durable_tenant" } })`.
 
-Command turns and queries then run as `durable_tenant` with their actor's tenant set, and the inspection views return only the tenant the reader's transaction names. The relay, executors, retention, and other cross-tenant framework work keep the connecting role. With the option on, queries cost two more statements (`BEGIN` and `COMMIT` around the tenant settings); turns cost nothing more.
+Command turns, queries, and every read that serves a caller outside a turn (feed pages, workflow polls, and the reads a stream or connection handler makes) then run as `durable_tenant` with their actor's tenant set, and the inspection views return only the tenant the reader's transaction names. The relay, executors, retention, and other cross-tenant framework work keep the connecting role. With the option on, each query or read outside a turn costs a transaction (`BEGIN`, the tenant settings, `COMMIT`); turns cost nothing more.
 
-Rerun step 2 after any migration that adds a table or a view. Until then, a runner with the option refuses to start and names the object ([runbooks](runbooks.md)). The role must not be a superuser or have `BYPASSRLS`, and the runtime's login must be able to `SET ROLE` to it.
+Rerun step 2 after any migration that adds a table or a view; a new view stays with the migrating role until you do. Until then, a runner with the option refuses to start and names the object ([runbooks](runbooks.md)). The role must not be a superuser or have `BYPASSRLS`, and the runtime's login must be able to `SET ROLE` to it.
 
 ## Readiness and bounded graceful drain
 

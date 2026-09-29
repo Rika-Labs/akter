@@ -30,6 +30,7 @@ import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { executeTurn } from "../turn/execute.ts"
 import { activationOwner, type Authorize } from "../connections/owner.ts"
+import { TenantScope } from "../database/tenancy.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
@@ -153,6 +154,7 @@ export const registerActor = Effect.fnUntraced(function* (
     transport,
     authorize,
     clock: yield* FrameworkClock,
+    role: (yield* TenantScope).role,
   })
 
   const ownedOf = (entityId: string) =>
