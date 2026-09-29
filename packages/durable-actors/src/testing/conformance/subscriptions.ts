@@ -363,7 +363,6 @@ export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
         Touch: () => Effect.void,
         RecordOrder: Effect.fnUntraced(function* (delivery) {
           const turn = yield* SubSummary.Turn
-          // Sent only if the turn commits; a declared failure discards it.
           yield* turn.broadcast(Live, entryOf(delivery))
           yield* record(fixture, "SubSummary", turn, delivery)
         }),
@@ -374,7 +373,6 @@ export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
       Effect.succeed({
         PlaceOrder: Effect.fnUntraced(function* (orderId: string) {
           const turn = yield* SubShipment.Turn
-          // The turn that starts the workflow also subscribes, so both commit together.
           yield* turn.subscribe(PaymentUpdates, orderId, { from: "start" })
 
           return yield* (yield* SubShipment.intents(turn.id)).ShipOrder({ orderId })
@@ -675,6 +673,7 @@ const run = <A, E>(
     }),
   )
 
+/** Subscription cases: routing, start positions, delivery, and failure handling of event subscriptions. */
 export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "routes each event to the id route returns",
@@ -696,7 +695,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
             "route-1#3:OrderCancelled",
           ])
           expect(yield* logOf("SubSummary", "route-bob")).toEqual(["route-2#1:OrderPlaced"])
-          // One routed row per source and subscription, caught up through the head.
           expect(yield* sourceRows("route-1", "SubSummary")).toEqual([
             {
               subscriber_type: "SubSummary",
@@ -860,7 +858,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           const order = yield* SubOrder.get("reject-order")
           yield* order.PlaceMany({ customerId: "reject-x", count: 2 })
           const follower = yield* SubFollower.get("reject-follower")
-          // The requested cursor becomes the subscriber's `applied`; Rejected still runs.
           yield* follower.Follow({ source: "reject-order", from: "9" })
           yield* drain
 
@@ -882,7 +879,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
             { subscriber_id: "reject-follower", epoch: "1", active: false, due: false },
           ])
 
-          // No later event of the source reaches the rejected subscription.
           yield* order.Place({ customerId: "reject-x", amount: 3 })
           yield* drain
           expect(yield* followerLog("reject-follower")).toEqual(["reject-order!rejected:9"])
@@ -929,7 +925,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* Fiber.join(draining)
           yield* drain
 
-          // The delivery carried epoch 1; the subscriber's row was at epoch 2.
           expect(handlerRuns(fixture, "SubFollower/inflight-follower")).toBe(0)
           expect(yield* followerLog("inflight-follower")).toEqual([])
           expect(yield* sourceRows("inflight-order")).toMatchObject([
@@ -950,8 +945,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           const follower = yield* SubFollower.get("order-follower")
           const pause = yield* test.pauseNext("afterClaim")
           yield* follower.Follow({ source: "order-order" })
-          // The subscribe control is claimed and held; the unsubscribe replaces
-          // its row, and another pass registers it first.
           const draining = yield* drain.pipe(Effect.forkChild)
           yield* pause.reached
           yield* follower.Unfollow("order-order")
@@ -1005,7 +998,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* Fiber.join(draining)
           yield* drain
 
-          // The epoch-1 delivery was stale; epoch 3 replays cursor 1 once.
           expect(yield* followerLog("resub-follower")).toEqual(["resub-order#1:OrderPlaced"])
           expect(handlerRuns(fixture, "SubFollower/resub-follower")).toBe(1)
           expect(yield* cursorRows("SubFollower", "resub-follower")).toMatchObject([
@@ -1031,7 +1023,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.crashNext("beforeOutboxDelete")
           yield* (yield* SubFollower.get("rerun-follower")).Follow({ source: "rerun-order" })
           yield* drain
-          // Registered, but the control row survived the crash.
           expect(yield* outboxOf("SubFollower", "rerun-follower", "control")).toBe(1)
           const registered = yield* sourceRows("rerun-order")
           yield* order.Place({ customerId: "x", amount: 2 })
@@ -1086,7 +1077,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
               yield* (yield* SubFollower.get(`${source}-f${index}`)).Follow({ source })
             yield* drain
 
-            // Held after the feed row's claim, so it can be counted before expansion deletes it.
             const pause = yield* test.pauseNext("afterClaim")
             yield* (yield* SubOrder.get(source)).PlaceMany({ customerId: "f", count: 3 })
             const draining = yield* drain.pipe(Effect.forkChild)
@@ -1112,7 +1102,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
         environment,
         fixture,
         Effect.gen(function* () {
-          // OrderNoted has no subscription anywhere; OrderPlaced has only routed ones.
           yield* (yield* SubOrder.get("quiet-order")).Note("nobody listens")
           expect(yield* outboxOf("SubOrder", "quiet-order", "feed")).toBe(0)
           expect(yield* sourceRows("quiet-order")).toEqual([])
@@ -1159,7 +1148,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           )
           expect(nodes.some((node) => node["Node Type"] === "Seq Scan")).toBe(false)
           expect(explained.Plan["Actual Rows"]).toBe(0)
-          // A key lookup reads a handful of index pages, not the 10^5 rows beside it.
           expect(
             nodes.reduce(
               (sum, node) => sum + node["Shared Hit Blocks"] + node["Shared Read Blocks"],
@@ -1184,9 +1172,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* (yield* SubFollower.get("lease-follower")).Follow({ source: "lease-order" })
           yield* drain
 
-          // Expansion waits, briefly, for the follower's delivery to start: a
-          // leased row starts before its feed's expansion ends, a row left due
-          // only after a later claim pass.
           const order: Array<string> = []
           const claimed = yield* Deferred.make<void>()
           fixture.hook = (point, request) => {
@@ -1229,15 +1214,12 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* (yield* SubFollower.get("race-follower")).Follow({ source: "race-order" })
           yield* drain
 
-          // The settle reads "no matching event after delivered" and pauses;
-          // a commit and its expansion land before it writes.
           const pause = yield* test.pauseNext("afterSettleSnapshot")
           yield* order.Place({ customerId: "r", amount: 1 })
           const draining = yield* drain.pipe(Effect.forkChild)
           yield* pause.reached
           yield* order.Place({ customerId: "r", amount: 2 })
 
-          // The relay's own pass expands the second commit's feed meanwhile.
           for (;;) {
             if ((yield* outboxOf("SubOrder", "race-order", "feed")) === 0) break
             yield* Effect.sleep("20 millis")
@@ -1305,7 +1287,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           yield* (yield* SubFollower.get("pruned-follower")).Follow({ source: "pruned-order" })
           yield* drain
-          // The subscriber commits; the relay dies before its settle.
           crashOnce(fixture, "beforeSettle", subscriber("pruned-follower"))
           yield* (yield* SubOrder.get("pruned-order")).Place({ customerId: "p", amount: 1 })
           yield* drain
@@ -1336,7 +1317,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* (yield* SubFollower.get("crash-follower")).Follow({ source: "crash-order" })
           yield* drain
 
-          // The subscriber's delivery turn dies before its commit, once.
           const commit = crashOnce(fixture, "beforeCommit", subscriber("crash-follower"))
           yield* order.Place({ customerId: "c", amount: 1 })
           yield* drain
@@ -1418,7 +1398,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* (yield* SubOrder.get("declared-order")).PlaceMany({ customerId: "d", count: 2 })
           yield* drain
 
-          // The refused delivery committed only its receipt, and the next one followed.
           expect(yield* followerLog("declared-follower")).toEqual(["declared-order#2:OrderPlaced"])
           expect(yield* cursorRows("SubFollower", "declared-follower")).toMatchObject([
             { applied: "2" },
@@ -1451,7 +1430,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* (yield* SubOrder.get("deploy-order")).Place({ customerId: "d", amount: 1 })
           yield* drain
 
-          // The same delivery re-encoded with a field a newer schema added.
           const redelivered = yield* deliveryRequest({
             subscriber: "deploy-follower",
             source: "deploy-order",
@@ -1501,7 +1479,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(new Set(ids).size).toBe(ids.length)
-          // A redelivery repeats its id.
           expect(
             yield* deliveryCommandId({
               subscriber,
@@ -1539,8 +1516,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
             cursor: "1",
           })
 
-          // An external caller can't present the envelope, the subscription
-          // caller, or the derived id.
           const withEnvelope = yield* executeForTest(delivery).pipe(Effect.flip)
           expect(withEnvelope.reason._tag).toBe("Unauthorized")
 
@@ -1721,7 +1696,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* logOf("SubSummary", "blocked-first")).toEqual([])
           expect(yield* logOf("SubSummary", "blocked-second")).toEqual([])
-          // The auditor's own row of the same source is not held back.
           expect(yield* logOf("SubAuditor", "blocked-first")).toEqual([
             "blocked-order#1:OrderPlaced",
           ])
@@ -1785,7 +1759,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
         fixture,
         Effect.gen(function* () {
           const test = yield* ActorTest
-          // SubSummary is keyed by a string; an empty id fails its key schema.
           const order = yield* SubOrder.get("badroute-order")
           yield* order.Place({ customerId: "", amount: 1 })
           yield* order.Place({ customerId: "badroute-ok", amount: 1 })
@@ -1794,7 +1767,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           const [summary] = yield* sourceRows("badroute-order", "SubSummary")
           expect(summary!.delivered).toBe("0")
           expect(summary!.last_error?.startsWith("Route failed")).toBe(true)
-          // Later events wait behind the undeliverable one.
           expect(yield* logOf("SubSummary", "badroute-ok")).toEqual([])
           yield* test.advance(CLAIM_LEASE)
           expect(yield* logOf("SubSummary", "badroute-ok")).toEqual([])
@@ -1821,7 +1793,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* drain
 
           expect(yield* followerLog("tenant-follower")).toEqual([])
-          // The other tenant's routed subscriber got its own event.
 
           const { state } = yield* test.inspect({
             tenant: other,
@@ -1912,7 +1883,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
               const test = yield* ActorTest
               yield* (yield* SubFollower.get("widen-follower")).Follow({ source: "widen-order" })
               yield* drain
-              // The row as a deployment that declared only OrderPlaced left it.
               yield* query(
                 (sql) => sql`UPDATE actor_subscriptions SET events = ARRAY['OrderPlaced']
                   WHERE tenant_id = ${test.tenant} AND source_id = 'widen-order'
@@ -1929,7 +1899,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           ),
         )
 
-        // A runner starting with the wider declaration widens the row once.
         yield* environment.restart
 
         yield* Effect.promise(() =>
@@ -1964,7 +1933,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fails registration of a source served without a subscriber type that routes from it",
-    // Two runtimes share one fresh database, which PGlite can't give two layer builds.
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       environment.run(
@@ -1973,8 +1941,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
 
           const runtime = <A>(record: Effect.Effect<A, never, SqlClient.SqlClient>) =>
             Layer.build(
-              // Fresh, so this runtime registers the source itself rather than
-              // reusing the build the shared runtime already made.
               Layer.fresh(subOrderLayer).pipe(
                 Layer.provideMerge(
                   ActorTest.layer({ database, authorize: () => Effect.succeed(true) }),
@@ -1986,9 +1952,7 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
               Effect.exit,
             )
 
-          // With no routed declaration recorded, the source registers alone.
           const alone = yield* runtime(
-            // A subscriber type on another runner records its routed declaration.
             query(
               (
                 sql,
@@ -2045,7 +2009,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
             { event: "OrderCancelled", rows: 2 },
             { event: "OrderPlaced", rows: 2 },
           ])
-          // The first routed commit inserts the routed rows and adds their tags.
           yield* (yield* SubOrder.get("tags-order")).Place({ customerId: "tags-x", amount: 1 })
           yield* drain
           expect(yield* counts()).toEqual([
@@ -2101,12 +2064,10 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
           yield* journal.Record({ customerId: "hold-c", count: 3 })
           yield* drain
 
-          // Past keepEvents but inside the hold: the blocked follower keeps them.
           yield* test.advance("90 minutes")
           yield* test.cleanup
           expect(yield* journalEvents("hold-j")).toBe(3)
 
-          // Past keepEvents plus the hold: pruned although the follower is behind.
           yield* test.advance("40 minutes")
           yield* test.cleanup
           expect(yield* journalEvents("hold-j")).toBe(0)
@@ -2170,7 +2131,6 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
           yield* journal.Record({ customerId: "routegap-c", count: 1 })
           yield* test.advance("300 seconds")
 
-          // The id route had no event to name a subscriber by, so it counted the gap.
           expect(yield* logOf("SubSummary", "routegap-c")).toEqual(["routegap-j#3:OrderPlaced"])
           expect(yield* journalRow("routegap-j", "SubSummary")).toMatchObject({
             gaps: "1",
@@ -2203,7 +2163,6 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
           yield* test.advance("3 hours")
           yield* test.cleanup
 
-          // The gap and the next event commit; the relay dies before settling them.
           fixture.behave = () => "apply"
           const settle = crashOnce(fixture, "beforeSettle", subscriber("repeat-f"))
           yield* journal.Record({ customerId: "repeat-c", count: 1 })
@@ -2214,7 +2173,6 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
             gap_through: "2",
           })
 
-          // Pruning moves past event 3 before the redelivery.
           yield* test.advance("3 hours")
           yield* test.cleanup
           expect(yield* journalEvents("repeat-j")).toBe(0)
@@ -2225,7 +2183,6 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
             "repeat-j~gap:0-2",
             "repeat-j#3:OrderPlaced",
           ])
-          // The redelivery replayed both receipts: each handler ran once.
 
           for (const entry of ["repeat-j~gap:0-2", "repeat-j#3:OrderPlaced"])
             expect(
@@ -2266,7 +2223,6 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
           const test = yield* ActorTest
           const ref = { tenant: test.tenant, actor: "SubSummary", id: "live-c" }
           const connection = yield* test.connect(ref, Live, undefined)
-          // The subscriber parks with the connection open at its holder.
           yield* test.hibernate(ref)
           fixture.behave = (entry) => (entry.includes("live-o#1:") ? "refuse" : "apply")
           const order = yield* SubOrder.get("live-o")
@@ -2311,7 +2267,6 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
         environment,
         fixture,
         Effect.gen(function* () {
-          // The event is committed before the subscription exists; from: "start" replays it.
           yield* (yield* SubOrder.get("wf-early")).Place({ customerId: "wf", amount: 1 })
           const shipment = yield* SubShipment.get("wf-early-ship")
           const execution = yield* shipment.PlaceOrder("wf-early")
@@ -2356,6 +2311,7 @@ const withCluster = <A, E>(
 const on = <A, E, R>(runner: number, effect: Effect.Effect<A, E, R>) =>
   ActorCluster.use((cluster) => cluster.on(runner)(effect))
 
+/** Multi-runner subscription cases: subscribers wake across runners and one source's events apply in cursor order under redelivery. */
 export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "wakes a subscriber parked on another runner and flushes the delivery's broadcast to its holder",
@@ -2369,7 +2325,6 @@ export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
           yield* cluster.ready
-          // Runner 0 holds the connection and is never assigned the subscriber's shard.
           const holder = cluster.on(0)
           const tenant = yield* holder(ActorTest.use((test) => Effect.succeed(test.tenant)))
           const ref = { tenant, actor: "SubSummary", id: "cross-c" }
@@ -2387,7 +2342,6 @@ export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
             ),
           )
 
-          // The subscriber parks on its owner with the connection still open at the holder.
           const owner = yield* cluster.owner(ref)
           expect(owner === undefined || owner === 0).toBe(false)
           yield* cluster.on(owner!)(ActorTest.use((test) => test.hibernate(ref)))
@@ -2431,7 +2385,6 @@ export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
               Effect.flatMap(SubFollower.get(id), (f) => f.Follow({ source: "cluster-order" })),
             )
 
-          // Every follower is registered at the source before it publishes.
           for (;;) {
             const registered = yield* on(0, sourceRows("cluster-order"))
 
@@ -2439,7 +2392,6 @@ export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
             yield* Effect.sleep("50 millis")
           }
 
-          // One delivery defects once on each runner, so its row is redelivered after the lease.
           const defected = new Set<string>()
           fixture.behave = (entry) => {
             if (entry.includes("#2:") && !defected.has(entry)) {
@@ -2473,7 +2425,6 @@ export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
             yield* Effect.sleep("100 millis")
           }
 
-          // Each follower committed each event once, whichever runner delivered it.
           for (const id of followers)
             expect(
               yield* on(
