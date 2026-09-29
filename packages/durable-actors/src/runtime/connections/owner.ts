@@ -304,13 +304,16 @@ export const activationOwner = ({
           : [],
       ),
       ({ event, cursor }) =>
-        encodeFeedFrame({
-          tag: event.tag,
-          value: event.value,
-          commandId: committed.commandId,
-          timestampMs: committed.emittedAtMs,
-        }).pipe(
-          Effect.orDie,
+        // Under a writeVersion the stored value is older; a feed serves the current shape.
+        registration.upcastEvent(event.tag, event.version, event.value).pipe(
+          Effect.flatMap((value) =>
+            encodeFeedFrame({
+              tag: event.tag,
+              value,
+              commandId: committed.commandId,
+              timestampMs: committed.emittedAtMs,
+            }).pipe(Effect.orDie),
+          ),
           Effect.map((frame): Broadcast => ({ member: FEED_MEMBER, frame, event: cursor })),
         ),
     )

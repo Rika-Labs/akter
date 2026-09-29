@@ -13,3 +13,7 @@ export type { Incompatibility } from "./workflows/compatibility.ts"
 export { Inspector } from "./inspector/layer.ts"
 
 export type { InspectorOptions } from "./inspector/layer.ts"
+
+export { checkPayloads, clearPayloads, formatPayloadProblem } from "./payloads/versions.ts"
+
+export type { ClearResult, PayloadProblem } from "./payloads/versions.ts"

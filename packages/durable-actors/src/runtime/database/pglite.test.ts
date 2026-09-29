@@ -53,6 +53,11 @@ describeConformance({
 })
 
 describe("PGlite migrations", () => {
+  // Upgrades of databases holding rows stop before 0021, which refuses them.
+  const beforePayloadVersions = migrator(
+    Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0021")),
+  )
+
   it("owns a fresh database per layer build and closes both instances", () =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -146,6 +151,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [21, "payload_versions"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
             { blobs: "actor_blobs" },
@@ -180,6 +186,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [21, "payload_versions"],
           ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
@@ -216,7 +223,7 @@ describe("PGlite migrations", () => {
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
               actor_type, actor_id, target_type, target_id, command, payload, caller)
             VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
-          expect(yield* migrate).toEqual([
+          expect(yield* beforePayloadVersions).toEqual([
             [11, "relay"],
             [12, "workflows"],
             [13, "inspection_views"],
@@ -269,7 +276,7 @@ describe("PGlite migrations", () => {
                 'effect', 1, true, 'Attempt 1 ended without reporting an outcome'),
               (1, 'intent', 0, 44, 44, 't', 'Sender', 's', 'Sink', 'k', 'Deliver', '{}', '{}',
                 'intent', 0, false, NULL)`
-          expect(yield* migrate).toEqual([
+          expect(yield* beforePayloadVersions).toEqual([
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
@@ -350,6 +357,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [21, "payload_versions"],
           ])
           expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(
             11,
@@ -416,6 +424,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [21, "payload_versions"],
           ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
@@ -449,7 +458,7 @@ describe("PGlite migrations", () => {
               attempts, last_error)
             VALUES (1, 'failed', 0, 42, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
               'effect', 1, 'typed')`
-          expect(yield* migrate).toEqual([
+          expect(yield* beforePayloadVersions).toEqual([
             [16, "final_effect_failures"],
             [17, "subscriptions"],
           ])
@@ -457,7 +466,34 @@ describe("PGlite migrations", () => {
           expect(yield* sql`SELECT intent_id, attempts, final_attempt FROM actor_outbox`).toEqual([
             { intent_id: "failed", attempts: 1, final_attempt: null },
           ])
-          expect(yield* migrate).toEqual([])
+          expect(yield* beforePayloadVersions).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("refuses 0021_payload_versions on a database that already holds events, outbox rows, or dead letters", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* beforePayloadVersions
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (1, 't', 'Sender', 's')`
+          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
+              actor_type, actor_id, target_type, target_id, command, payload, caller)
+            VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
+
+          const refused = yield* Effect.exit(migrate)
+          expect(Exit.isFailure(refused)).toBe(true)
+          expect(Cause.pretty((refused as Exit.Failure<unknown, unknown>).cause)).toContain(
+            "recreate this development database",
+          )
+
+          yield* sql`DELETE FROM actor_outbox`
+          expect(yield* migrate).toEqual([[21, "payload_versions"]])
         }),
       )
       .finally(() => runtime.dispose())
@@ -483,7 +519,7 @@ describe("PGlite migrations", () => {
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
               actor_type, actor_id, target_type, target_id, command, payload, caller)
             VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
-          expect(yield* migrate).toEqual([[17, "subscriptions"]])
+          expect(yield* beforePayloadVersions).toEqual([[17, "subscriptions"]])
           // Pending intents survive; the outbox now takes feed and control rows too.
           expect(yield* sql`SELECT intent_id, kind FROM actor_outbox`).toEqual([
             { intent_id: "pending", kind: "intent" },
@@ -504,7 +540,7 @@ describe("PGlite migrations", () => {
               due: "actor_subscriptions_due",
             },
           ])
-          expect(yield* migrate).toEqual([])
+          expect(yield* beforePayloadVersions).toEqual([])
         }),
       )
       .finally(() => runtime.dispose())
@@ -543,6 +579,7 @@ describe("PGlite migrations", () => {
             { migration_id: 15 },
             { migration_id: 16 },
             { migration_id: 17 },
+            { migration_id: 21 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

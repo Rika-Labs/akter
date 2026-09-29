@@ -500,6 +500,81 @@ export const migrations = {
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),
+  // Stored events and effect payloads carry the version of their class's
+  // migration chain they were written at; readers upcast from it. A settled
+  // effect row becomes its route intent and goes back to 0. The two tables
+  // let startup refuse a deploy that would strand a stored version:
+  // `actor_payload_versions` records each version some runtime has written,
+  // and `actor_payload_writers` is each runtime's heartbeat per version it
+  // writes, which a clear waits out before it scans.
+  // Nothing written before it has a recorded version, so a database that
+  // already holds events or effect rows is refused rather than guessed at.
+  "0021_payload_versions": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    const [held] = yield* sql<{ held: boolean }>`SELECT
+      EXISTS (SELECT 1 FROM actor_events) OR EXISTS (SELECT 1 FROM actor_outbox)
+        OR EXISTS (SELECT 1 FROM actor_dead_letters) AS held`
+
+    if (held?.held === true)
+      return yield* new Migrator.MigrationError({
+        kind: "BadState",
+        message:
+          "Migration 0021_payload_versions needs a database without events, outbox rows, or dead letters; recreate this development database",
+      })
+    yield* sql`ALTER TABLE actor_events ADD COLUMN payload_version integer NOT NULL DEFAULT 0
+      CHECK (payload_version >= 0)`
+    yield* sql`ALTER TABLE actor_outbox ADD COLUMN payload_version integer NOT NULL DEFAULT 0
+      CHECK (payload_version >= 0)`
+    yield* sql`ALTER TABLE actor_dead_letters ADD COLUMN payload_version integer NOT NULL DEFAULT 0
+      CHECK (payload_version >= 0)`
+    yield* sql`CREATE TABLE actor_payload_versions (
+        actor_type text NOT NULL,
+        kind text NOT NULL CHECK (kind IN ('event', 'effect')),
+        tag text NOT NULL,
+        version integer NOT NULL CHECK (version >= 0),
+        first_written_at_ms bigint NOT NULL,
+        superseded_at_ms bigint,
+        cleared_at_ms bigint,
+        PRIMARY KEY (actor_type, kind, tag, version)
+      )`
+    yield* sql`CREATE TABLE actor_payload_writers (
+        runtime_id text NOT NULL,
+        actor_type text NOT NULL,
+        kind text NOT NULL CHECK (kind IN ('event', 'effect')),
+        tag text NOT NULL,
+        version integer NOT NULL CHECK (version >= 0),
+        window_ms bigint NOT NULL CHECK (window_ms > 0),
+        refreshed_at_ms bigint NOT NULL,
+        PRIMARY KEY (runtime_id, actor_type, kind, tag, version)
+      )`
+    yield* sql`CREATE INDEX actor_payload_writers_version
+      ON actor_payload_writers (actor_type, kind, tag, version, refreshed_at_ms)`
+    // Columns are added at the end, which a view version allows.
+    yield* sql`CREATE OR REPLACE VIEW durable.events AS
+      SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key, p.placement,
+        e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
+        e.emitted_at_ms, to_timestamp(e.emitted_at_ms::float8 / 1000) AS emitted_at,
+        e.payload_version
+      FROM actor_events e
+      LEFT JOIN actor_placements p ON p.actor_type = e.actor_type`
+    yield* sql`CREATE OR REPLACE VIEW durable.effects AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+        o.intent_id AS effect_id, o.command AS effect, o.payload, o.caller,
+        o.attempts, o.last_error, o.ambiguous,
+        o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at,
+        o.payload_version
+      FROM actor_outbox o
+      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+      WHERE o.kind = 'effect'`
+    yield* sql`CREATE OR REPLACE VIEW durable.dead_letters AS
+      SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
+        d.effect_id, d.effect, d.payload, d.attempts, d.cause, d.ambiguous,
+        d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at,
+        d.payload_version
+      FROM actor_dead_letters d
+      LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+  }),
 }
 
 /**

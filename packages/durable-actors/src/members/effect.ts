@@ -1,5 +1,6 @@
 import { type Duration, Schema } from "effect"
 import type { AnyCommand, ValueSchema } from "./command.ts"
+import { declareChain, type PayloadMigrations } from "./payload.ts"
 
 /**
  * An `Actor.effect` class: a schema-backed request for external I/O whose
@@ -37,6 +38,8 @@ export type ProgressOf<E extends ProgressEffect> = E["progress"]["Type"]
  * the schema of the executor's return value and defaults to `void`.
  * `progress`, when declared, is the schema of the transient frames its
  * executor may report before the result commits; they are never state.
+ * `migrations` upcasts payloads stored at older versions before each attempt
+ * and before a dead letter's route; `writeVersion` is as for events.
  */
 export const effect =
   <Self = never>() =>
@@ -51,12 +54,15 @@ export const effect =
       readonly input?: Fields
       readonly success?: Success
       readonly progress?: Progress
+      readonly migrations?: PayloadMigrations
+      readonly writeVersion?: number
     },
   ): [Self] extends [never]
     ? "Missing Self generic: Actor.effect<Self>()(tag, options)"
     : EffectClass<Self, Tag, Fields, Success, Progress> => {
     if (tag.length === 0) throw new Error("Actor.effect needs a non-empty tag")
     const base = Schema.TaggedClass<unknown>()(tag, options?.input ?? {})
+    declareChain(base, `Effect ${tag}`, (options?.input ?? {}) as never, options)
 
     return Object.assign(class extends base {}, {
       tag,

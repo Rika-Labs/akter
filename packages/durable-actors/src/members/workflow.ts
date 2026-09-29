@@ -2,6 +2,7 @@ import { Cause, Duration, Effect, Exit, Option, Schema } from "effect"
 import { CurrentWorkflow, RecordedExit, type StepIdentity } from "../contexts/workflow.ts"
 import type { DeclaredError, Member, ValueSchema } from "./command.ts"
 import type { EventClass } from "./event.ts"
+import { payloadCodec } from "./payload.ts"
 
 type Fields = Readonly<Record<string, ValueSchema>>
 
@@ -284,7 +285,7 @@ const make = <
   ): Wait<Name, Ev> => {
     register({ name, kind: "wait", schemas: [event], event: event.identifier })
     const self = identity(name, "wait")
-    const decode = Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(event)))
+    const codec = payloadCodec(event, event.identifier)
 
     const call = (waitOptions?: {
       readonly where?: (event: Ev["Type"]) => boolean
@@ -304,19 +305,26 @@ const make = <
         const matched = yield* (yield* engine).wait(
           self,
           event.identifier,
-          (value) =>
-            where === undefined
-              ? Effect.succeed(true)
-              : decode(value).pipe(
-                  Effect.map((decoded) => where(decoded as Ev["Type"])),
-                  Effect.orDie,
-                ),
+          // The wait records the event as the current class encodes it.
+          (value, version) =>
+            codec.decode(value, version).pipe(
+              Effect.flatMap((decoded) =>
+                where === undefined || where(decoded as Ev["Type"])
+                  ? Effect.map(codec.upcast(value, version), Option.some)
+                  : Effect.succeed(Option.none()),
+              ),
+              Effect.orDie,
+            ),
           timeoutMs,
         )
 
         if (Option.isNone(matched)) return Option.none<Ev["Type"]>()
 
-        return Option.some((yield* decode(matched.value).pipe(Effect.orDie)) as Ev["Type"])
+        return Option.some(
+          (yield* codec
+            .decode(matched.value, codec.chain.current)
+            .pipe(Effect.orDie)) as Ev["Type"],
+        )
       })
 
     return Object.assign(call, { stepName: name, kind: "wait" as const })

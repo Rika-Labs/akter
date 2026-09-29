@@ -3,6 +3,7 @@ import { PgliteClient } from "@effect/sql-pglite"
 import {
   Cause,
   Clock,
+  Semaphore,
   Context,
   Crypto,
   Deferred,
@@ -81,6 +82,15 @@ import {
 import type { Placement } from "./storage/codec.ts"
 import { sweep } from "./storage/retention.ts"
 import { acceptWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
+import {
+  DEFAULT_WRITER_WINDOW_MS,
+  dropWriters,
+  findPayloadProblems,
+  formatPayloadProblem,
+  recordPayloadVersions,
+  refreshWriters,
+} from "./payloads/versions.ts"
+import type { PayloadDeclaration } from "../members/payload.ts"
 import { decodeResult, RECOVERY_MS } from "./workflows/engine.ts"
 import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
@@ -140,6 +150,14 @@ export interface Options {
     /** Matching events one claimed subscription row delivers before it settles. Default 16. */
     readonly subscriptionBatch?: number
   }
+  /**
+   * How long this runtime keeps writing event and effect payload versions
+   * without refreshing its writer rows; it refreshes every half window and
+   * refuses new turns once a window passes without a refresh, so
+   * `durable payloads clear` can tell when no turn still writes an old
+   * version. Default 2 minutes, at least 1 second.
+   */
+  readonly payloadWriterWindow?: Duration.Input
   /** The effect executor pool of this runner. */
   readonly executors?: {
     /** Effect attempts running at once. Default 64. */
@@ -249,6 +267,13 @@ export const layer = (options: Options) => {
   }
 
   const subscriptionConcurrency = Count.make(options.relay?.subscriptionConcurrency ?? 16)
+
+  const writerWindowMs =
+    options.payloadWriterWindow === undefined
+      ? DEFAULT_WRITER_WINDOW_MS
+      : millis(options.payloadWriterWindow)
+
+  if (writerWindowMs < 1000) throw new Error("payloadWriterWindow must be at least 1 second")
   const subscriptionBatch = Count.make(options.relay?.subscriptionBatch ?? 16)
 
   const runtime = Layer.effectContext(
@@ -263,6 +288,12 @@ export const layer = (options: Options) => {
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
       const effectRegistrations = new Map<string, EffectRegistration>()
+      // Payload versions this runtime's turns write, heartbeat under its own id.
+      const runtimeId = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+      const frameworkClock = yield* FrameworkClock
+      const writerDeclarations: Array<PayloadDeclaration> = []
+      // Local time of the last refresh sent that succeeded; the gate never reads the database.
+      let refreshedAt: number | undefined
 
       const services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
@@ -394,6 +425,66 @@ export const layer = (options: Options) => {
               `Actor ${registration.name} placement differs from the deployment; migrate explicitly`,
             ),
           )
+      })
+
+      /**
+       * Refuses a layer that can't read every payload version the database
+       * may hold, as a placement or workflow mismatch is refused. `writes`
+       * names the actor type whose turns the layer runs, for the removed-class check.
+       */
+      const checkPayloadVersions = Effect.fnUntraced(function* (
+        name: string,
+        declarations: ReadonlyArray<PayloadDeclaration>,
+        writes?: { readonly actorType: string; readonly events: ReadonlyArray<string> },
+      ) {
+        const problems = yield* findPayloadProblems(
+          declarations,
+          writes === undefined ? [] : [writes],
+        ).pipe(Effect.provideContext(services), Effect.orDie)
+
+        if (problems.length > 0)
+          return yield* Effect.die(
+            new Error(
+              [
+                `Actor ${name} cannot read every stored payload version; deploy refused`,
+                ...problems.map(formatPayloadProblem),
+              ].join("\n"),
+            ),
+          )
+      })
+
+      // One refresh at a time: concurrent layer builds would otherwise
+      // upsert the same rows in different orders. The time is taken before
+      // the statement is sent, so the gate's window can only end early.
+      const refreshing = Semaphore.makeUnsafe(1)
+
+      const refreshPayloadWriters = Effect.gen(function* () {
+        if (writerDeclarations.length === 0) return
+        const sentAt = yield* Clock.currentTimeMillis
+        yield* refreshWriters(runtimeId, writerWindowMs, writerDeclarations)
+        refreshedAt = sentAt
+      }).pipe(
+        refreshing.withPermits(1),
+        Effect.provideContext(services),
+        Effect.provideService(FrameworkClock, frameworkClock),
+      )
+
+      /**
+       * A runtime that could not refresh its writer rows within the window
+       * may already count as gone to `durable payloads clear`, so it starts
+       * no turn until a refresh succeeds. The check is local.
+       */
+      const writable = Effect.gen(function* () {
+        if (refreshedAt === undefined) return
+
+        if ((yield* Clock.currentTimeMillis) - refreshedAt > writerWindowMs)
+          return yield* ActorError.make({
+            reason: ActorUnavailable.make({
+              cause: new Error(
+                "This runtime's payload writer rows are older than its window; turns wait for a refresh",
+              ),
+            }),
+          })
       })
 
       const entityId = (ref: ActorRef) => encodeEntityId([ref.tenant, ref.id]).pipe(Effect.orDie)
@@ -740,8 +831,14 @@ export const layer = (options: Options) => {
               effect,
               registered: {
                 ...registered,
-                execute: (payload: string, context: Parameters<typeof registered.execute>[1]) =>
-                  registered.execute(payload, context).pipe(withoutDatabase(registration.services)),
+                execute: (
+                  payload: string,
+                  version: number,
+                  context: Parameters<typeof registered.execute>[2],
+                ) =>
+                  registered
+                    .execute(payload, version, context)
+                    .pipe(withoutDatabase(registration.services)),
               },
             })),
           ),
@@ -764,33 +861,37 @@ export const layer = (options: Options) => {
 
       yield* relay.run.pipe(Effect.forkIn(scope))
 
-      const frameworkClock = yield* FrameworkClock
       const cleanupHooks = yield* CleanupHooks
 
+      // A sweep refreshes the writer rows too, as the loop below does.
       const cleanup = Effect.suspend(() =>
-        sweep(
-          Array.from(registrations.values(), ({ name, policy }) => ({
-            actorType: name,
-            keepReceiptsMs: policy.keepReceiptsMs,
-            keepEventsMs: policy.keepEventsMs,
-            holdEventsMs: policy.holdEventsMs,
-            deliveryMs: policy.deliveryMs,
-            keepWorkflowsMs: policy.keepWorkflowsMs,
-            workflows: sweepsWorkflows.has(name),
-          })),
-          retryWindowMs,
-        ).pipe(
-          // Rows of a subscription a registered subscriber type no longer
-          // declares go a day after they fall due.
-          Effect.tap(() =>
-            Effect.forEach(
-              [...registrations.values()],
-              (registration) =>
-                subscriptions.cleanupRemoved(
-                  registration.name,
-                  registration.subscriptions.map((declared) => declared.tag),
+        refreshPayloadWriters.pipe(Effect.orDie).pipe(
+          Effect.andThen(
+            sweep(
+              Array.from(registrations.values(), ({ name, policy }) => ({
+                actorType: name,
+                keepReceiptsMs: policy.keepReceiptsMs,
+                keepEventsMs: policy.keepEventsMs,
+                holdEventsMs: policy.holdEventsMs,
+                deliveryMs: policy.deliveryMs,
+                keepWorkflowsMs: policy.keepWorkflowsMs,
+                workflows: sweepsWorkflows.has(name),
+              })),
+              retryWindowMs,
+            ).pipe(
+              // Rows of a subscription a registered subscriber type no longer
+              // declares go a day after they fall due.
+              Effect.tap(() =>
+                Effect.forEach(
+                  [...registrations.values()],
+                  (registration) =>
+                    subscriptions.cleanupRemoved(
+                      registration.name,
+                      registration.subscriptions.map((declared) => declared.tag),
+                    ),
+                  { discard: true },
                 ),
-              { discard: true },
+              ),
             ),
           ),
         ),
@@ -798,6 +899,29 @@ export const layer = (options: Options) => {
         Effect.provideContext(services),
         Effect.provideService(FrameworkClock, frameworkClock),
         Effect.provideService(CleanupHooks, cleanupHooks),
+      )
+
+      // Writer rows refresh every half window whatever the sweep schedule, so
+      // a runtime whose refreshes keep succeeding never stops its turns.
+      yield* Effect.sleep(writerWindowMs / 2).pipe(
+        Effect.andThen(
+          refreshPayloadWriters.pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("Payload writer refresh failed", cause),
+            ),
+          ),
+        ),
+        Effect.forever,
+        Effect.forkIn(scope),
+      )
+
+      yield* Effect.addFinalizer(() =>
+        dropWriters(runtimeId).pipe(
+          Effect.provideContext(services),
+          Effect.catchCause((cause) => Effect.logWarning("Payload writer rows not dropped", cause)),
+        ),
       )
 
       // Horizons are days long, so a sweep a minute keeps up; each batch is
@@ -904,10 +1028,30 @@ export const layer = (options: Options) => {
               ),
             )
 
+          yield* checkPayloadVersions(registration.name, registration.payloads, {
+            actorType: registration.name,
+            events: registration.payloads
+              .filter((declared) => declared.writes && declared.kind === "event")
+              .map((declared) => declared.tag),
+          })
+
+          // Recorded and heartbeat before the type takes any shard, so no turn
+          // writes a version the database doesn't know is being written.
+          yield* recordPayloadVersions(registration.payloads).pipe(
+            Effect.provideContext(services),
+            Effect.provideService(FrameworkClock, frameworkClock),
+            Effect.orDie,
+          )
+
+          for (const declared of registration.payloads)
+            if (declared.writes) writerDeclarations.push(declared)
+          yield* refreshPayloadWriters.pipe(Effect.orDie)
+
           const { isResident, owner } = yield* registerActor(
             registration,
             transport,
             options.authorize,
+            writable,
           ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
 
           yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
@@ -953,6 +1097,7 @@ export const layer = (options: Options) => {
           )
 
           for (const table of registration.tables) checked.add(table)
+          yield* checkPayloadVersions(registration.name, registration.payloads)
           queryRegistrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
@@ -964,6 +1109,7 @@ export const layer = (options: Options) => {
         registerEffects: Effect.fnUntraced(function* (registration: EffectRegistration) {
           if (effectRegistrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate effect layer: ${registration.name}`))
+          yield* checkPayloadVersions(registration.name, registration.payloads)
           effectRegistrations.set(registration.name, registration)
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
@@ -1020,7 +1166,20 @@ export const layer = (options: Options) => {
             // A feed never creates an actor, so a missing generation row is an answer, not a wake.
             if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
 
-            return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
+            const events = yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
+
+            // Clients read the current shape, whatever version each event was written at.
+            return yield* Effect.forEach(events, (event) =>
+              registration.upcastEvent(event.tag, event.version, event.value).pipe(
+                Effect.map((value) => ({
+                  cursor: event.cursor,
+                  tag: event.tag,
+                  commandId: event.commandId,
+                  value,
+                  timestampMs: event.timestampMs,
+                })),
+              ),
+            )
           },
           Effect.provideContext(services),
           Effect.catchIf(SqlError.isSqlError, (cause) =>

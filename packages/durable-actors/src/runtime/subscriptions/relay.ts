@@ -752,15 +752,17 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       event: string | null
       command_id: string | null
       value: Uint8Array | null
+      payload_version: number | null
       emitted_at_ms: string | null
     }>`SELECT (SELECT event_sequence::text FROM actor_generations g
           WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}) AS head,
         (SELECT min(o.sequence)::text FROM actor_events o
           WHERE ${eventsOf("o", key, source.tenant, source.actor, source.id)}) AS oldest,
-        e.sequence::text AS sequence, e.event, e.command_id, e.value, e.emitted_at_ms::text AS emitted_at_ms
+        e.sequence::text AS sequence, e.event, e.command_id, e.value, e.payload_version,
+        e.emitted_at_ms::text AS emitted_at_ms
       FROM (VALUES (1)) AS one (x)
       LEFT JOIN LATERAL (
-        SELECT sequence, event, command_id, value, emitted_at_ms FROM actor_events e
+        SELECT sequence, event, command_id, value, payload_version, emitted_at_ms FROM actor_events e
         WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
           AND e.sequence > ${BigInt(row.delivered)}
           AND e.event = ANY(${textArray({ sql, values: subscription.events })})
@@ -895,7 +897,15 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     }
 
     for (const event of continuous ? events : []) {
-      const value = decompress(event.value!)
+      // The subscriber reads the current shape; a value its chain can't read
+      // backs the row off at this event rather than skipping it.
+      const upcast = yield* subscription
+        .upcast(event.event!, event.payload_version!, decompress(event.value!))
+        .pipe(Effect.result)
+
+      if (Result.isFailure(upcast))
+        return yield* backOff(progress, `Event does not decode: ${upcast.failure.message}`)
+      const value = upcast.success
 
       const subscriberId =
         subscription.routed === undefined
