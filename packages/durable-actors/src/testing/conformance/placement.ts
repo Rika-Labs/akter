@@ -3,7 +3,9 @@ import { Cause, Effect, Exit, Layer, Option, Result, Schema } from "effect"
 import { Headers, HttpRouter } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent, Unauthorized, User } from "../../index.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import type { InternalActors } from "../../handles/actors.ts"
+import type { ContentStore } from "../../handles/content.ts"
+import type { RuntimeControl } from "../../runtime/drain.ts"
 import { childId, parseChildId } from "../../identity/child.ts"
 import { deriveMintId } from "../../identity/mint.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
@@ -21,6 +23,7 @@ const shipmentRows = Actor.table(
   }),
 )
 
+// What drizzle-kit generates for the owned tables, row-level security policy included.
 const placementDdl = [
   `CREATE TABLE IF NOT EXISTS placement_orders (
     routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL, id text NOT NULL,
@@ -28,6 +31,15 @@ const placementDdl = [
   `CREATE TABLE IF NOT EXISTS placement_shipments (
     routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL, id text NOT NULL,
     carrier text NOT NULL, PRIMARY KEY (routing_key, tenant_id, actor_id, id))`,
+  ...["placement_orders", "placement_shipments"].flatMap((table) => [
+    `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`,
+    `DO $$ BEGIN
+      CREATE POLICY durable_tenant ON ${table} AS PERMISSIVE FOR ALL TO public
+        USING (tenant_id = current_setting('durable.tenant', true))
+        WITH CHECK (tenant_id = current_setting('durable.tenant', true));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$`,
+  ]),
 ]
 
 const labels = Actor.blob("placementLabels")
@@ -285,7 +297,7 @@ const reasonOf = (body: Schema.Json | undefined) =>
 
 /** Serves the placement actors in memory and returns a request sender. */
 const served = Effect.fnUntraced(function* (tenant: string) {
-  const context = yield* Effect.context<InternalActors>()
+  const context = yield* Effect.context<InternalActors | RuntimeControl | ContentStore>()
 
   const web = HttpRouter.toWebHandler(
     Actor.serve({ actors: [Order, Shipment, Parcel], auth: Actor.auth.make(bearer) }).pipe(

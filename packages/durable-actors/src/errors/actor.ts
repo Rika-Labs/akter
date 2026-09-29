@@ -57,6 +57,7 @@ export class InvalidInput extends Schema.TaggedError<InvalidInput>()("InvalidInp
     "origin_not_allowed",
     "unknown_event",
     "too_many_filters",
+    "unknown_content",
   ]),
   issues: Schema.optionalKey(Schema.Array(InputIssue)),
 }) {}

@@ -47,13 +47,16 @@ export const routingKey = ({
     })
   }
 
-  const value =
-    placement === "tenant"
-      ? JSON.stringify([PLACEMENT_ENCODING, "tenant", ref.tenant])
-      : JSON.stringify([PLACEMENT_ENCODING, "actor", ref.tenant, ref.actor, ref.id])
+  if (placement === "tenant") return tenantRoutingKey(ref.tenant)
+
+  const value = JSON.stringify([PLACEMENT_ENCODING, "actor", ref.tenant, ref.actor, ref.id])
 
   return BigInt.asIntN(64, Bun.hash.xxHash3(value))
 }
+
+/** The shard key of a tenant: its tenant-placed actors and its shared content live there. */
+export const tenantRoutingKey = (tenant: string): bigint =>
+  BigInt.asIntN(64, Bun.hash.xxHash3(JSON.stringify([PLACEMENT_ENCODING, "tenant", tenant])))
 
 /**
  * Stored state values are opaque zstd-compressed JSON: SQL never reads state,

@@ -112,12 +112,20 @@ export const spreadItems = Actor.table(
   pgTable("bench_spread_items", { id: text("id").primaryKey(), label: text("label").notNull() }),
 )
 
-const ITEMS_DDL = ["bench_parented_items", "bench_spread_items"].map(
-  (table) => `CREATE TABLE IF NOT EXISTS ${table} (
+// What drizzle-kit generates for the item tables, row-level security policy included.
+const ITEMS_DDL = ["bench_parented_items", "bench_spread_items"].flatMap((table) => [
+  `CREATE TABLE IF NOT EXISTS ${table} (
   routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL,
   id text NOT NULL, label text NOT NULL,
   PRIMARY KEY (routing_key, tenant_id, actor_id, id))`,
-)
+  `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`,
+  `DO $$ BEGIN
+    CREATE POLICY durable_tenant ON ${table} AS PERMISSIVE FOR ALL TO public
+      USING (tenant_id = current_setting('durable.tenant', true))
+      WITH CHECK (tenant_id = current_setting('durable.tenant', true));
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END $$`,
+])
 
 export const Notify = Actor.command("Notify", {
   input: Schema.Struct({ item: Schema.String, parented: Schema.Boolean, label: Schema.String }),

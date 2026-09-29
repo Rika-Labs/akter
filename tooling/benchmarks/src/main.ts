@@ -14,6 +14,7 @@ import { type Backend, type BackendName, pglite, postgres } from "./backend.ts"
 import { machine, runtimeVersions, source } from "./environment.ts"
 import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { blobs } from "./scenarios/storage/blobs.ts"
+import { contentBlobs } from "./scenarios/content-blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { connections } from "./scenarios/connections.ts"
 import { progress } from "./scenarios/progress.ts"
@@ -63,6 +64,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   multiRunner,
   singletonFailover,
   blobs,
+  contentBlobs,
   reducers,
   capacity,
   inspectionViews,

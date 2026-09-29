@@ -12,7 +12,7 @@ import {
 } from "../index.ts"
 import type { ConnectOptions } from "../client/index.ts"
 import type { InternalActors } from "../handles/actors.ts"
-import type { BlobRead, BlobWrite } from "../state/blob.ts"
+import type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "../state/blob.ts"
 import { resolveCron } from "../runtime/cron/schedule.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 
@@ -717,8 +717,11 @@ describe("actor declarations", () => {
 
     type ReadOf = (typeof Box.Read)["Service"]
 
-    expectTypeOf<ReturnType<TurnOf["blob"]>>().toEqualTypeOf<BlobWrite>()
-    expectTypeOf<ReturnType<ReadOf["blob"]>>().toEqualTypeOf<BlobRead>()
+    const _typed = (read: ReadOf, turn: TurnOf) => {
+      expectTypeOf(turn.blob(Files)).toEqualTypeOf<BlobWrite>()
+      expectTypeOf(read.blob(Files)).toEqualTypeOf<BlobRead>()
+    }
+
     expectTypeOf<keyof BlobRead>().toEqualTypeOf<"get">()
     expectTypeOf<Parameters<TurnOf["blob"]>[0]>().toEqualTypeOf<typeof Files>()
 
@@ -737,6 +740,43 @@ describe("actor declarations", () => {
       // @ts-expect-error blobs takes Actor.blob values
       Actor.make("Fake", { blobs: [{ name: "files" }], api: { Put } }),
     ).toThrow("Actor.blob")
+  })
+  it("declares content beside blobs; turns attach references and never read bytes", () => {
+    const Files = Actor.blob("files")
+    const Attachments = Actor.content("attachments")
+    const Put = Actor.command("Put")
+    const Peek = Actor.query("Peek")
+
+    const Box = Actor.make("ContentBox", {
+      key: Schema.String,
+      blobs: [Files, Attachments],
+      api: { Put, Peek },
+    })
+
+    type TurnOf = (typeof Box.Turn)["Service"]
+
+    type ReadOf = (typeof Box.Read)["Service"]
+
+    const _typed = (read: ReadOf, turn: TurnOf) => {
+      expectTypeOf(turn.blob(Attachments)).toEqualTypeOf<ContentWrite>()
+      expectTypeOf(read.blob(Attachments)).toEqualTypeOf<ContentRead>()
+      expectTypeOf(turn.blob(Files)).toEqualTypeOf<BlobWrite>()
+    }
+
+    expectTypeOf<keyof ContentWrite>().toEqualTypeOf<"attach" | "detach" | "list">()
+    expectTypeOf<keyof ContentRead>().toEqualTypeOf<"get" | "stream" | "list">()
+
+    const _misuse = (read: ReadOf, turn: TurnOf) => [
+      // @ts-expect-error a turn never reads content bytes
+      turn.blob(Attachments).get("a"),
+      // @ts-expect-error a query never attaches
+      read.blob(Attachments).attach("a", { hash: "", size: 0, grant: "" }),
+    ]
+
+    expect(() => Actor.content("has space")).toThrow("Blob name")
+    expect(() =>
+      Actor.make("TwiceContent", { blobs: [Files, Actor.content("files")], api: { Put } }),
+    ).toThrow("listed twice")
   })
   it("parses cron schedules and rejects bad expressions, duplicates, and targets", () => {
     const Tick = Actor.command("Tick")
