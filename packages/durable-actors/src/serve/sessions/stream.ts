@@ -21,7 +21,9 @@ const end = (body: Schema.Json) =>
  * A subscription as SSE text: each element as `event: element` with its
  * encoded value as `data`, then one `end` message: `null` when the stream
  * ended by itself, else the `ActorError` envelope or the member's declared
- * error that ended it. Streams have no cursor, so there is no `id`.
+ * error that ended it. Streams have no cursor, so there is no `id`. A comment
+ * line is sent every `FEED_KEEPALIVE_MS` so idle proxies don't close a quiet
+ * stream.
  */
 export const streamResponse = (
   elements: Stream.Stream<string, ActorError | { readonly failure: string }>,
@@ -42,7 +44,6 @@ export const streamResponse = (
           : decodeDeclared(error.failure).pipe(Effect.orDie, Effect.flatMap(end)),
       ),
     ),
-    // A comment line keeps idle proxies from closing a quiet stream.
     Stream.merge(
       Stream.tick(FEED_KEEPALIVE_MS).pipe(
         Stream.drop(1),

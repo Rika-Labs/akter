@@ -16,6 +16,7 @@ export interface AuthRequest {
   readonly credential?: string
 }
 
+/** What a provider resolves a request to: who is calling, in which tenant, and until when. */
 export interface Authenticated {
   readonly caller: typeof User.Type | typeof Anonymous.Type
   readonly tenant: string
@@ -28,6 +29,7 @@ export interface Authenticated {
   readonly binding?: Binding
 }
 
+/** Ties a credential to one request, so a captured credential cannot be replayed on another. */
 export interface Binding {
   /** The SHA-256 hex of the canonical request string. */
   readonly request: string
@@ -47,6 +49,7 @@ export type Credential = Data.TaggedEnum<{
   Assertion: {}
 }>
 
+/** Constructors and matchers for `Credential`. */
 export const Credential = Data.taggedEnum<Credential>()
 
 /** One way to authenticate every request an `Actor.serve` layer answers. */
@@ -70,6 +73,7 @@ export interface AuthProvider<R = never> {
   ) => Effect.Effect<void, Unauthorized | ActorUnavailable, R>
 }
 
+/** An `Unauthorized` failure with the given reason code. */
 export const unauthorized = (code: Unauthorized["code"]) => Unauthorized.make({ code })
 
 /**
@@ -97,6 +101,7 @@ export const none: AuthProvider = {
   authenticate: () => Effect.succeed({ caller: Anonymous.make({}), tenant: "default" }),
 }
 
+/** Verifies a request's credential; fails `Unauthorized` when it is missing, invalid, or expired. */
 export type Authenticate<R> = (
   request: AuthRequest,
 ) => Effect.Effect<Authenticated, Unauthorized, R>
@@ -118,10 +123,20 @@ export type MakeOptions<R> =
       readonly bearer?: boolean
     }
 
-// RFC 6265's cookie-name: an RFC 9110 token.
+/** RFC 6265's cookie-name, which is an RFC 9110 token. */
 const cookieName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
 
-/** A custom provider: an `authenticate` function that reads a bearer token, or options naming a cookie. */
+/**
+ * A custom provider: an `authenticate` function that reads a bearer token, or
+ * options naming a cookie. Throws when the cookie name is not an HTTP token.
+ *
+ * @example
+ * ```ts
+ * Actor.auth.make((request) =>
+ *   Effect.succeed({ caller: User.make({ subject: "ada" }), tenant: "acme" }),
+ * )
+ * ```
+ */
 export const make = <R = never>(provider: Authenticate<R> | MakeOptions<R>): AuthProvider<R> => {
   if (Predicate.isFunction(provider))
     return { credentials: [Credential.Bearer()], authenticate: provider }
@@ -153,11 +168,12 @@ const isTenant = Schema.is(Tenant)
 const utf8 = new TextEncoder()
 
 /** Maximum UTF-8 bytes of a `User.subject`. */
-export const SUBJECT_BYTES = 512
+const SUBJECT_BYTES = 512
 
 /** Maximum UTF-8 bytes of the JSON-encoded caller. */
-export const CALLER_BYTES = 1024
+const CALLER_BYTES = 1024
 
+/** Whether the tenant is a valid id and, for a `User`, its subject and encoded caller fit their byte limits. */
 export const withinLimits = (authenticated: Authenticated) => {
   if (!isTenant(authenticated.tenant)) return false
 

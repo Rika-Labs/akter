@@ -94,7 +94,6 @@ const LedgerLive = Layer.mergeAll(
       const calls = yield* Config.String("PGLITE_CALLS").pipe(Config.withDefault(""), Effect.orDie)
 
       return {
-        // The provider's own record of calls, which outlives this process.
         Charge: Effect.fnUntraced(function* ({ amount }) {
           const exec = yield* Ledger.Executor
           yield* fs.writeFileString(calls, `${exec.effectId}\n`, { flag: "a" }).pipe(Effect.orDie)
@@ -111,7 +110,6 @@ const RETRY_WINDOW_MS = 60_000
 const runtime = (dataDir: string, hang: ReadonlyArray<string>) =>
   LedgerLive.pipe(
     Layer.provideMerge(
-      // Short leases, so work a killed process claimed is taken back within seconds.
       Actors.layer({
         authorize: () => Effect.succeed(true),
         retryWindowMs: RETRY_WINDOW_MS,
@@ -210,7 +208,6 @@ const program = Effect.gen(function* () {
   const commandId = yield* Config.String("PGLITE_COMMAND_ID").pipe(Config.withDefault(""))
   const [step, detail = ""] = mode.split(":")
 
-  // A turn killed at a crash point, then its retry in a fresh process.
   if (step === "turn") {
     return yield* within(
       runtime(dataDir, detail === "recover" ? [] : [detail]),
@@ -226,7 +223,6 @@ const program = Effect.gen(function* () {
     )
   }
 
-  // Holds the dataDir open until killed, or reports why it could not open it.
   if (step === "open") {
     return yield* Layer.build(runtime(dataDir, [])).pipe(
       Effect.andThen(Console.log("OPEN")),
@@ -238,8 +234,6 @@ const program = Effect.gen(function* () {
     )
   }
 
-  // An intent and an effect committed together; the relay dies after the
-  // receiver commits and after the provider call, before either settles.
   if (step === "deliver") {
     return yield* within(
       runtime(dataDir, detail === "crash" ? ["beforeOutboxDelete", "afterExecute"] : []),
@@ -255,7 +249,6 @@ const program = Effect.gen(function* () {
 
         yield* until(stateOf("payer", "charged"), (value) => value === "9")
         yield* until(stateOf("payee", "count"), (value) => value !== undefined)
-        // Let any duplicate delivery or settle land before counting.
         yield* Effect.sleep("1500 millis")
         const sql = yield* SqlClient.SqlClient
 
@@ -271,7 +264,6 @@ const program = Effect.gen(function* () {
     )
   }
 
-  // Commits one command whose id expires soon and stops cleanly.
   if (step === "deposit") {
     return yield* within(
       runtime(dataDir, []),
@@ -284,7 +276,6 @@ const program = Effect.gen(function* () {
     )
   }
 
-  // On a restored copy: waits for both ids to expire and retries them.
   if (step === "restored") {
     return yield* within(
       runtime(dataDir, []),

@@ -17,7 +17,6 @@ import {
   InvalidCommandId,
   InvalidInput,
   Timeout,
-  TransportError,
   Unauthorized,
 } from "../errors/actor.ts"
 import type { AnyMember, MemberRecord, ValueSchema } from "../members/command.ts"
@@ -39,8 +38,8 @@ import {
   decodeSuccess,
   type Failure,
   type Reply,
+  networkFailure,
   retryAfterHeader,
-  transport,
 } from "./transport.ts"
 
 type HeadersValue = Readonly<Record<string, string>> | Headers | Array<[string, string]>
@@ -48,9 +47,14 @@ type HeadersValue = Readonly<Record<string, string>> | Headers | Array<[string, 
 /** Headers sent with every attempt; a function is called again for each attempt, including retries. */
 export type HeadersProvider = HeadersValue | (() => HeadersValue | Promise<HeadersValue>)
 
+/** Options of `X.client`. */
 export interface ClientOptions {
   /** Where `Actor.serve` is mounted, absolute or relative to the page. */
   readonly baseUrl: string
+  /**
+   * Headers for every request. A connection sends the `authorization` header
+   * in `hello` instead, because browsers can't set headers on a WebSocket.
+   */
   readonly headers?: HeadersProvider
   /** How long one call, retries included, may wait. Defaults to 60,000. */
   readonly timeoutInMs?: number
@@ -63,12 +67,15 @@ export interface ClientOptions {
   readonly commandIds?: "client" | "server"
 }
 
+/** Options of one query call. */
 export interface QueryOptions {
   /** Stops waiting; server work already accepted is not cancelled. */
   readonly signal?: AbortSignal
+  /** Overrides `ClientOptions.timeoutInMs` for this call. */
   readonly timeoutInMs?: number
 }
 
+/** Options of one command call. */
 export interface CommandOptions extends QueryOptions {
   /** Sent as `Idempotency-Key` on every attempt; minted once when omitted. */
   readonly commandId?: string
@@ -86,6 +93,10 @@ type Call<M extends AnyMember> = M["input"]["Type"] extends void
 /**
  * A handle's view of its actor's state: the committed state it last learned,
  * from a reducer's reply or `reconcile`, with its pending reducer inputs applied.
+ * Reducer calls send one at a time, so each reply is the committed state
+ * before every later pending input. The view has settled before the caller's
+ * own callbacks run, and a listener that calls another reducer queues it
+ * behind the current one.
  */
 export interface ClientState<State> {
   /** Committed state plus pending inputs; undefined until committed state is known. */
@@ -100,6 +111,7 @@ export interface ClientState<State> {
 
 /** A connection member: `connect` opens one session over WebSocket. */
 export interface ConnectionClient<M extends AnyConnection> {
+  /** Opens a session; the `authorization` header from `headers` travels in `hello`. */
   readonly connect: (
     ...args: M["input"]["Type"] extends void
       ? [params?: M["input"]["Type"], options?: ConnectOptions]
@@ -127,7 +139,9 @@ export type ClientHandle<
       ? StreamCall<Members[K]>
       : Call<Members[K]>
 } & {
+  /** The actor type's name and this handle's id. */
   readonly ref: { readonly actor: string; readonly id: Id }
+  /** The handle's committed and optimistic state. */
   readonly state: ClientState<State>
   /**
    * The actor's committed `event`s after `options.after`, over its event feed,
@@ -139,6 +153,7 @@ export type ClientHandle<
   ) => AsyncIterable<FeedEntry<E["Type"]>>
 }
 
+/** The client of one actor type: `get` (and `create` for minted ids) return handles. */
 export type ActorClient<
   Members extends MemberRecord,
   Kind extends ServedDefinition["key"],
@@ -162,10 +177,13 @@ const DEFAULT_TIMEOUT_MS = 60_000
 
 const MAX_BACKOFF_MS = 2_000
 
+/** Ids a client remembers minting per origin, so it can tell whether one might have been admitted; the oldest go first. */
 const MINTED_LIMIT = 1_024
 
+/** Base URLs whose clock and token state are shared per process; the least recently used go first. */
 const ORIGIN_LIMIT = 64
 
+/** Handles kept per client. */
 const HANDLE_LIMIT = 1_024
 
 /** State every client of one base URL shares: the database clock, the retry window, and the token. */
@@ -261,8 +279,6 @@ const tracked = <A, E>(use: MintedUse | undefined, request: Effect.Effect<A, E>)
           ),
         )
       })
-
-const network = () => transport(TransportError.make({ code: "network", retryable: true }))
 
 const invalid = () => ActorError.make({ reason: InvalidInput.make({ code: "decode" }) })
 
@@ -420,7 +436,20 @@ const outputDecoder = (member: ServedMember) => {
     json === null ? decode(null).pipe(Effect.catch(() => decode(undefined))) : decode(json)
 }
 
-/** The Promise client of one served actor type, typed by its caller. */
+/**
+ * The Promise client of one served actor type, typed by its caller.
+ *
+ * Every response carries `durable-now`, so each round trip refreshes the
+ * database clock, except a 504, which waited out a deadline and says little
+ * about when it was stamped. `/protocol` is read again when no recent clock
+ * sample remains, since the offset may have drifted, and a `window` rejection
+ * clears the cached window because a deployment at this URL may have changed
+ * it. Without a usable clock sample, such as after a slow `/protocol`, the
+ * server mints the id instead. An unanswered command's outcome is unknown, so
+ * its `Timeout` carries the id a caller retries later. Past 1,024 handles the
+ * least recently used other handle with nothing pending and no listener is
+ * dropped.
+ */
 export const clientOf =
   <Client>(definition: ServedDefinition) =>
   (options: ClientOptions): Client => {
@@ -436,12 +465,10 @@ export const clientOf =
         : Effect.succeed(headers)
     })
 
-    // Browsers can't set headers on a WebSocket, so a connection sends this credential in `hello`.
     const authorization = provided.pipe(
       Effect.map((headers) => new Headers(headers).get("authorization") ?? undefined),
     )
 
-    // Every response carries `durable-now`, so each round trip refreshes the clock.
     const send = (request: Request) =>
       Effect.gen(function* () {
         const headers = new Headers(yield* provided)
@@ -460,13 +487,12 @@ export const clientOf =
               body: request.body,
               signal,
             }),
-          catch: network,
+          catch: networkFailure,
         })
 
-        const text = yield* Effect.tryPromise({ try: () => response.text(), catch: network })
+        const text = yield* Effect.tryPromise({ try: () => response.text(), catch: networkFailure })
         const now = response.headers.get("durable-now")
 
-        // A 504 waited out a deadline, so its round trip says little about when it was stamped.
         if (now !== null && response.status !== 504)
           clock.observe(sentAt, clock.localNow(), Number(now))
         origin.token.observe(response.headers.get("durable-version"))
@@ -478,7 +504,6 @@ export const clientOf =
 
     const isOk = (reply: Reply) => reply.status >= 200 && reply.status < 300
 
-    // `/protocol` is read again when no recent clock sample remains, since the offset may have drifted.
     const retryWindow = Effect.suspend(() => {
       const cached = origin.window
 
@@ -512,7 +537,6 @@ export const clientOf =
       Effect.map((minted) => minted.commandId),
     )
 
-    // Without a usable clock sample, e.g. after a slow `/protocol`, the server mints instead.
     const mintLocal = Effect.gen(function* () {
       const window = yield* retryWindow
 
@@ -548,7 +572,6 @@ export const clientOf =
       const loop: Effect.Effect<A, Failure> = attempt.pipe(
         Effect.catch((attempted) =>
           Effect.gen(function* () {
-            // A deployment at this URL may have changed its window; the next mint asks again.
             if (
               isFramework(attempted.failure) &&
               isInvalidCommandId(attempted.failure.reason) &&
@@ -573,7 +596,6 @@ export const clientOf =
         ),
       )
 
-      // The outcome of an unanswered command is unknown; its id is what a caller retries later.
       const unanswered = Effect.suspend(() => {
         const id = commandId()
 
@@ -608,7 +630,10 @@ export const clientOf =
       return Effect.runPromise(Effect.raceFirst(bounded, aborted))
     }
 
-    /** Encodes one call's input now and returns what sends it, with a decoded copy of that input. */
+    /**
+     * Encodes one call's input now, so every attempt under one id sends the same
+     * bytes, and returns what sends it, with a decoded copy of that input.
+     */
     const prepare = (
       member: ServedMember,
       segment: Effect.Effect<string, ActorError>,
@@ -619,7 +644,6 @@ export const clientOf =
       const isQuery = member.kind === "query"
       let commandId = isQuery ? undefined : call.commandId
 
-      // Encoded once at call time, so every attempt under one id sends the same bytes.
       const body = Effect.runSyncExit(
         Schema.encodeUnknownEffect(Schema.toCodecJson(member.input))(
           isVoid ? undefined : args[0],
@@ -718,12 +742,10 @@ export const clientOf =
 
         const entry = { member: member.tag, input: input.value, reducer }
 
-        // One at a time, so each reply is the committed state before every later pending input.
         const previous = store.queue
         const settled = send(previous)
         store.queue = Promise.allSettled([previous, settled]).then(() => undefined)
 
-        // Registered before the caller's own callbacks, so the view has settled when they run.
         void settled.then(
           (value) => {
             store.confirm(
@@ -736,7 +758,6 @@ export const clientOf =
           },
         )
 
-        // Last, so a listener that calls another reducer queues it behind this one.
         store.add(entry)
 
         return settled
@@ -819,7 +840,7 @@ export const clientOf =
 
                       return yield* Effect.tryPromise({
                         try: () => fetch(url, { method: "POST", headers, body: payload, signal }),
-                        catch: network,
+                        catch: networkFailure,
                       })
                     }),
                 }),
@@ -849,7 +870,7 @@ export const clientOf =
                         headers,
                         signal,
                       }),
-                    catch: network,
+                    catch: networkFailure,
                   })
                 }),
             }),
@@ -871,7 +892,6 @@ export const clientOf =
       handles.set(id, created)
       stores.set(id, store)
 
-      // Past the limit, the least recently used other handle with nothing pending and no listener goes.
       if (handles.size > HANDLE_LIMIT)
         for (const key of handles.keys())
           if (key !== id && stores.get(key)?.isIdle === true) {

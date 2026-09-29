@@ -95,6 +95,7 @@ const failed = (settled: Settled<unknown>) => (settled.ok ? undefined : settled.
 const json = (status: number, body: Schema.Json) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
+/** Client cases: optimistic reducers apply at once, converge on committed replies, and roll back when the server rejects them. */
 export const clientConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "client applies a reducer at once and converges on each committed reply, reapplying later pending inputs",
@@ -117,14 +118,12 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           expect(tallies.get("converge")).toBe(tally)
           expect(tally.state.current).toBe(undefined)
 
-          // Unknown committed state stays unknown until the first reply.
           const unseen = tally.Add({ by: 1 })
           expect(tally.state.current).toBe(undefined)
           expect(tally.state.pending).toEqual([{ member: "Add", input: { by: 1 } }])
           expect(yield* Effect.promise(() => unseen)).toEqual({ count: 1 })
           expect(tally.state.current).toEqual({ count: 1 })
 
-          // Another writer commits; the handle's next reply brings its change in.
           yield* Effect.promise(() => HttpTally.client(options).get("converge").Add({ by: 4 }))
 
           const input = { by: 2 }
@@ -174,7 +173,6 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           tally.state.reconcile(yield* Effect.promise(() => tally.Snapshot()))
           expect(tally.state.current).toEqual({ count: 0 })
 
-          // Committed elsewhere, so the handle's copy of committed state is stale.
           yield* Effect.promise(() => HttpTally.client(options).get("rejected").Add({ by: 8 }))
 
           const rejected = tally.Add({ by: 5 })
@@ -546,7 +544,6 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           const server = yield* serveHttp()
           const tenant = yield* tenantOf
 
-          // A protocol answer with the wrong window makes the client mint an id the server refuses.
           let protocols = 0
           let refuse: Schema.Json | undefined
 
@@ -580,14 +577,12 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(wire.commands("Post").length).toBe(1)
 
-          // The refusal drops the cached window, so the next command learns the real one.
           const next = yield* settle(() => room.Post({ text: "b" }))
           expect(next).toEqual({ ok: true, value: 1 })
           expect(protocols).toBe(2)
           const keys = keysOf(wire.commands("Post"))
           expect(keys[1]).not.toBe(keys[0])
 
-          // An id that already committed is never reported as unadmitted.
           const committed = keys[1]!
 
           refuse = yield* actorErrorBody(
@@ -604,7 +599,6 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
             neverAdmitted: false,
           })
 
-          // A refusal while another attempt with the same id is unanswered proves nothing.
           let concurrentRefusal: Schema.Json | undefined
 
           const concurrentWire = recording((sent) =>
@@ -866,7 +860,6 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           const server = yield* serveHttp()
           const tenant = yield* tenantOf
 
-          // Each first Hold meets a gateway error, so the wait is stopped during a retry.
           const failed = new Set<string>()
 
           const wire = recording((sent) => {

@@ -4,8 +4,9 @@ import { databaseTime } from "../turn/admission.ts"
 import { Metrics, record } from "./metrics.ts"
 
 /** Claims at or above this count mark a row as stuck, for intents and subscriptions alike. */
-export const STUCK_ATTEMPTS = 8
+const STUCK_ATTEMPTS = 8
 
+/** An actor type's event-retention settings, in milliseconds, as the sampler reads them. */
 export interface SampledType {
   readonly actorType: string
   readonly keepEventsMs: number
@@ -18,7 +19,9 @@ export interface SampledType {
  * outbox and due subscription rows are the relay's backlog, and events past
  * `keepEvents` stay only while something pins them. A series that stops
  * appearing is reported as 0 once, so a recovered subscription or an emptied
- * kind does not keep its last value.
+ * kind does not keep its last value. Only due or backing-off subscription rows
+ * have undelivered events, which the partial due index covers, and pinned
+ * events past `keepEvents` are read from the pinned rows alone.
  */
 export const databaseSampler = () => {
   const reported = new Map<
@@ -62,7 +65,6 @@ export const databaseSampler = () => {
       outbox.find((row) => row.kind === "intent")?.stuck ?? 0,
     )
 
-    // Only due or backing-off rows have undelivered events; the partial due index covers them.
     const subscriptions = yield* sql<{
       subscriber_type: string
       subscription: string
@@ -103,7 +105,6 @@ export const databaseSampler = () => {
     set(Metrics.relayLag, { kind: "subscription" }, subscriptionLag)
     set(Metrics.stuckRows, { kind: "subscription" }, subscriptionStuck)
 
-    // Events past keepEvents stay only while a hold pins them, so this reads the pinned rows alone.
     for (const type of types) {
       const cutoff = now - type.keepEventsMs
       const holdCutoff = cutoff - type.holdEventsMs

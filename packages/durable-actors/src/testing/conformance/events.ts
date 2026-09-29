@@ -21,7 +21,6 @@ class Posted extends Actor.Event<Posted>()("Posted", { body: Schema.String }) {}
 
 class Archived extends Actor.Event<Archived>()("Archived", {}) {}
 
-// Shares a declared tag but not its schema, so only a runtime check can tell them apart.
 class Stray extends Actor.Event<Stray>()("Posted", { body: Schema.Finite }) {}
 
 class Closed extends Schema.TaggedError<Closed>()("Closed", {}) {}
@@ -165,6 +164,7 @@ export const prune = Effect.fnUntraced(function* (id: string, through: number) {
     WHERE tenant_id = ${test.tenant} AND actor_type = 'Feed' AND actor_id = ${id} AND sequence <= ${through}`
 }, Effect.orDie)
 
+/** Event cases: events append only on commit, replay in order after an exclusive cursor, and are discarded on declared failures and defects. */
 export const eventsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "appends events only on commit and replays one class in order after an exclusive cursor",
@@ -202,7 +202,6 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
           expect(bodies(yield* other.History({}))).toEqual(["elsewhere"])
           expect(yield* test.inspect(feed.ref)).toMatchObject({ receipts: 4, events: 4 })
 
-          // A replayed command id returns its receipt without appending again.
           expect(yield* feed.Post("a").pipe(Actor.commandId(first))).toBe(first)
           expect(yield* test.inspect(feed.ref)).toMatchObject({ receipts: 4, events: 4 })
         }),
@@ -306,7 +305,6 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* feed.History({ after: "1" }).pipe(Effect.flip)).toEqual(
             RetentionGap.make({ cursor: "1" }),
           )
-          // The gap is judged across every class, since pruning removes all of them.
           expect(yield* feed.History({ after: "1", archived: true }).pipe(Effect.flip)).toEqual(
             RetentionGap.make({ cursor: "1" }),
           )
@@ -318,7 +316,6 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
           )
           expect(yield* feed.History({ after: "4" })).toEqual([])
 
-          // Pruning never lets a cursor be reissued.
           yield* feed.Post("e")
           expect(cursors(yield* feed.History({ after: "4" }))).toEqual(["5"])
         }),
@@ -388,8 +385,6 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
           const key = routingKey({ ref: feed.ref, placement: "tenant" })
           const { tenant, actor, id } = feed.ref
 
-          // Each rival turn takes authority the way a new activation does, on its
-          // own pooled connection, and appends through the runtime's own path.
           const rival = (index: number) =>
             sql
               .withTransaction(
@@ -422,8 +417,6 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
               )
               .pipe(Effect.orDie)
 
-          // The rival blocks on the owner's generation lock, then takes authority,
-          // so the owner's next turn must fail its fence and reacquire.
           const pause = yield* test.pauseNext("beforeHandler")
           const held = yield* feed.Post("held").pipe(Effect.forkChild)
           yield* pause.reached
@@ -463,7 +456,6 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
           ).toBe(true)
           const inspection = yield* test.inspect(feed.ref)
           expect(inspection).toMatchObject({ receipts: 13, events: 25 })
-          // One owner acquisition, twelve rival takeovers, and at least one reacquisition.
           expect(Number(inspection.generation) >= 14).toBe(true)
         }),
       ),

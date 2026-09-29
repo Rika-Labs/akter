@@ -197,7 +197,6 @@ const Shipper = Actor.make("Shipper", {
   api: { Ship, Quote, Pay, Begin, Attributed, Loose, Watch, Defer },
 })
 
-// The shared engine suite's workflow, compiled to typed step constructors.
 const Probe = Actor.workflow("Probe", {
   input: ProbeInput,
   output: Schema.String,
@@ -289,8 +288,6 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
 
           return yield* (yield* Shipper.intents(turn.id)).Ship(input)
         }),
-        // Stages a start without emitting, delivered late enough that an
-        // owner event can commit before the execution exists.
         Defer: Effect.fnUntraced(function* (input: {
           readonly orderId: string
           readonly sku: string
@@ -425,7 +422,6 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
                 const first = yield* ledger.Charge(sku).pipe(Effect.orDie)
                 const gate = fixture.blocked
 
-                // Holds the first run between its two calls, so a rerun repeats the first.
                 if (sku.includes("block") && gate !== undefined) {
                   fixture.blocked = undefined
                   yield* Deferred.await(gate)
@@ -443,7 +439,6 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
                 yield* Deferred.await(gate)
               }
 
-              // Called after the gate, so a case can move the clock past the id's expiry first.
               if (sku.startsWith("late"))
                 return `r-${sku}-${yield* (yield* Ledger.get(input.orderId)).Charge(sku).pipe(Effect.orDie)}`
 
@@ -642,8 +637,6 @@ const frameworkDriver = (environment: ConformanceEnvironment) =>
             test.advance(Duration.sum(Duration.fromInputUnsafe(duration), Duration.seconds(1))),
           ),
         ),
-      // A restarted runtime's test clock starts at database time again; move
-      // it back to where the old one stood, as real time would be.
       restart: Effect.gen(function* () {
         const now = (test: ActorTest["Service"]) =>
           test.now.pipe(Effect.map(DateTime.toEpochMillis))
@@ -690,6 +683,7 @@ const engineConformance: ReadonlyArray<ConformanceCase> = [
   },
 ]
 
+/** Workflow cases: stable execution ids, once-recorded activities, interrupts, and recovery. */
 export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
   ...engineConformance,
   {
@@ -709,8 +703,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             "the activity to start",
           )
 
-          // The framework clock never moves, so the 30-second recovery timer
-          // can't fire: only the live loop's own replay can record the interrupt.
           yield* run.interrupt
 
           const exit = yield* run.result.pipe(
@@ -805,11 +797,9 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             sql<{ status: string }>`SELECT status FROM durable.workflows
               WHERE execution_id = ${run.executionId}`.pipe(Effect.map((rows) => rows[0]?.status))
 
-          // Parked on the first clock.
           yield* suspendedRow(run.executionId)
           expect(yield* status()).toBe("suspended")
 
-          // Resumed: the activity after the clock is running.
           yield* test.advance("6 seconds")
 
           yield* eventually(
@@ -819,7 +809,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* status()).toBe("running")
 
-          // Parked again on the second clock.
           yield* Deferred.succeed(gate, undefined)
           yield* suspendedRow(run.executionId)
           expect(yield* status()).toBe("suspended")
@@ -1137,8 +1126,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const owner = (yield* cluster.owner(ref))!
           const survivor = (owner + 1) % cluster.runners
 
-          // A live workflow run is not a turn, so the drain is clean; the run
-          // ends, unrecorded, when the drained runner's layer closes.
           expect(
             yield* on(
               owner,
@@ -1345,7 +1332,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             { kind: "timer", routing_key: expected },
           ])
 
-          // No workflow row sits under another routing key for this owner.
           const [strays] = yield* sql<{ count: number }>`
             SELECT count(*)::int AS count FROM actor_workflow_step
             WHERE tenant_id = ${shipper.ref.tenant} AND actor_id = 'routed'
@@ -1373,7 +1359,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(foreign).toBeInstanceOf(InvalidExecutionId)
-          // The id names the Ship member, so another member of the owner rejects it too.
           expect(yield* Shipper.run(Quote, run.executionId).pipe(Effect.flip)).toBeInstanceOf(
             InvalidExecutionId,
           )
@@ -1392,7 +1377,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           yield* suspendedRow(run.executionId)
           fixture.revoked.add("alice")
 
-          // New external calls from the revoked caller are refused.
           expect(yield* shipper.Pay({ orderId: "h2", amount: 1 }).pipe(Effect.flip)).toMatchObject({
             reason: Unauthorized.make({ code: "access_denied" }),
           })
@@ -1431,7 +1415,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* run.result.pipe(Effect.flip)).toMatchObject(denied)
           expect(yield* run.interrupt.pipe(Effect.flip)).toMatchObject(denied)
 
-          // Another caller with access still reads it; the revoked one never did.
           const polled = yield* Shipper.run(Ship, run.executionId).pipe(
             Effect.flatMap((reattached) => reattached.poll),
             Actor.as(User.make({ subject: "bob" })),
@@ -1505,7 +1488,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             "the activity to start",
           )
 
-          // Past the attempt's derived-id expiry, minus the delivery bound.
           yield* test.advance("61 seconds")
           yield* Deferred.succeed(gate, undefined)
           const exit = yield* run.result.pipe(Effect.exit)
@@ -1548,10 +1530,8 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
 
             if (!interrupted) expect(exit).toEqual(Exit.succeed("held"))
             outcomes.add(interrupted ? "interrupted" : "completed")
-            // Compensation runs exactly when the interrupt won.
             expect(engine.runs.get(`compensate:${key}`) ?? 0).toBe(interrupted ? 1 : 0)
 
-            // One terminal result: a second interrupt and a second read change nothing.
             yield* run.interrupt
             const again = yield* run.result.pipe(Effect.exit)
             expect(Exit.isFailure(again) && Exit.hasInterrupts(again)).toBe(interrupted)
@@ -1586,7 +1566,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             "the activity to start",
           )
 
-          // As if another runner acquired the owner while this activation's activity ran.
           yield* sql`UPDATE actor_generations SET generation = generation + 1
             WHERE tenant_id = ${shipper.ref.tenant} AND actor_type = 'Shipper' AND actor_id = 'stale'`
 
@@ -1597,7 +1576,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             sql<{ exit: boolean }>`SELECT exit IS NOT NULL AS exit FROM actor_workflow_step
               WHERE execution_id = ${run.executionId} AND step = 'reserve'`
 
-          // The stale settle wrote nothing.
           expect(yield* pending()).toEqual([{ exit: false }])
           yield* test.invalidate(shipper.ref)
           yield* test.advance("31 seconds")
@@ -1624,9 +1602,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             "the first call",
           )
 
-          // The activation goes away mid-activity; the recovery timer reruns the attempt.
-          // The cases' retry window is 60 seconds, so the 30-second recovery would put
-          // the rerun past the expiry bound (production's window is a day): fire it now.
           yield* test.invalidate(shipper.ref)
           const sql = yield* SqlClient.SqlClient
           const now = DateTime.toEpochMillis(yield* test.now)
@@ -1635,7 +1610,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance("1 second")
           expect(yield* run.result).toBe("r-charge-block-1-2:v2")
           expect(fixture.workflows.runs.get("reserve:rc1")).toBe(2)
-          // The rerun's first call replayed its receipt: two receiver turns, not three.
           expect(yield* test.receiptsFor(ledger.ref, "Charge")).toBe(2)
           yield* Deferred.succeed(gate, undefined)
         }),
@@ -1716,7 +1690,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const run = yield* shipper.Ship({ orderId: "mk1", sku: "sleep-mk" })
           yield* suspendedRow(run.executionId)
 
-          // As if the execution had started under an older `current`.
           yield* sql`UPDATE actor_workflow_step SET version = 1
             WHERE execution_id = ${run.executionId} AND kind = 'version'`
 
@@ -1750,7 +1723,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             "the activity before the wait",
           )
 
-          // The event commits after the start and before the wait registers.
           yield* shipper.Pay({ orderId: "w2-between", amount: 4 })
           yield* Deferred.succeed(gate, undefined)
           expect(yield* run.result).toBe("paid-4")
@@ -1768,7 +1740,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const pause = yield* test.pauseNext("beforeWorkflowSuspend")
           const run = yield* shipper.Watch({ mode: "plain", orderId: "w2-suspending" })
 
-          // The wait registered and scanned nothing; the run has not suspended yet.
           yield* pause.reached
           yield* shipper.Pay({ orderId: "w2-suspending", amount: 5 })
           yield* pause.release
@@ -1788,7 +1759,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const shipper = yield* Shipper.get("w2-live")
           const run = yield* shipper.Watch({ mode: "race", orderId: "w2-live" })
 
-          // The wait is registered and parked while the other branch's activity still runs.
           yield* eventually(
             Effect.gen(function* () {
               const rows = yield* sql<{ step: string }>`SELECT step FROM actor_workflow_step
@@ -1877,7 +1847,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
             const [wait] = yield* sql<{ due: string }>`SELECT due_at_ms::text AS due
               FROM actor_workflow_step WHERE execution_id = ${run.executionId} AND step = 'first'`
 
-            // Round 0 commits the event just before the deadline; the rest race it.
             if (round === 0) {
               yield* test.advance("59 seconds")
               yield* shipper.Pay({ orderId, amount: round })
@@ -1896,11 +1865,9 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
               FROM actor_events WHERE actor_type = 'Shipper' AND actor_id = ${orderId}
                 AND tenant_id = ${shipper.ref.tenant}`
 
-            // An event committed by the deadline always wins over the timeout.
             if (Number(event!.at) <= Number(wait!.due)) expect(result).toBe(`paid-${round}`)
             else expect([`paid-${round}`, "unpaid"]).toContain(result)
 
-            // One recorded exit: every later read agrees.
             expect(yield* (yield* Shipper.run(Watch, run.executionId)).result).toBe(result)
           }
         }),
@@ -1957,7 +1924,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const recorded = yield* due()
           yield* test.advance("5 seconds")
 
-          // A replay mid-sleep on a fresh activation.
           yield* test.invalidate(shipper.ref)
           const now = DateTime.toEpochMillis(yield* test.now)
           yield* sql`UPDATE actor_outbox SET due_at_ms = ${now}
@@ -1999,7 +1965,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const run = yield* keeper.Held({})
           yield* suspendedRow(run.executionId)
 
-          // Scanned past these by the wait, but still above its `wait_after`.
           for (const amount of [4, 5]) yield* keeper.Emit({ orderId: "noise", amount })
           yield* Effect.sleep("200 millis")
           yield* test.advance("2 hours")
@@ -2009,7 +1974,6 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           yield* keeper.Emit({ orderId: "k", amount: 6 })
           expect(yield* run.result).toBe("paid-6")
 
-          // Once the execution finishes, nothing pins them.
           yield* test.advance("2 hours")
           yield* test.cleanup
           expect(yield* sequences()).toEqual([])

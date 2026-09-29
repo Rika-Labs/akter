@@ -244,6 +244,7 @@ const SECOND_KEY = {
   secret: Redacted.make("a second durable-actors content grant key for rotation"),
 }
 
+/** Content-blob cases: grants, per-tenant deduplication, chunked storage up to 64 MiB, and refusal of unauthorized attaches. */
 export const contentConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "refuses to attach by bare hash, by another tenant's grant, or by an expired grant, and reads nothing without a reference",
@@ -271,7 +272,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           )
           expect(yield* refusal("resized", { ...ref, size: ref.size + 1 })).toBe("invalid")
 
-          // The same bytes in another tenant yield a grant this tenant can't use.
           const foreign = yield* upload(bytes).pipe(
             Effect.provideService(Tenant, `other-${yield* unique}`),
           )
@@ -284,7 +284,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* doc.Listed()).toEqual([])
           expect(yield* doc.Text("bare")).toEqual(Option.none())
 
-          // A hash alone reads nothing: this actor holds no reference to it.
           const other = yield* Document.get("denied-reader")
           expect(yield* other.Text(ref.hash)).toEqual(Option.none())
         }),
@@ -305,7 +304,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           yield* upload(bytes).pipe(Effect.provideService(Tenant, `other-${yield* unique}`))
           expect(yield* stored(first.hash)).toEqual({ contents: 2, chunks: 2 })
 
-          // Both references read the one stored copy.
           const a = yield* Document.get("dedup-a")
           const b = yield* Document.get("dedup-b")
           yield* a.Attach({ name: "logo", ref: first })
@@ -399,7 +397,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           expect(refused.text.includes('"code":"too_large"')).toBe(true)
           expect(yield* count).toBe(before)
 
-          // The served download and grant routes reach content through the actor.
           const doc = yield* Document.get("served")
           yield* doc.Attach({ name: "notes", ref })
 
@@ -429,7 +426,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(missing.status).toBe(404)
 
-          // The OpenAPI document lists every content route.
           const spec = yield* server.send("/openapi.json", { method: "GET" })
 
           expect(
@@ -501,7 +497,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const internal = yield* InternalActors
           const ref = yield* upload(yield* fresh("orphan"))
 
-          // One hour of grant, 24 hours of grace, a 30-second turn, and 60 seconds of skew.
           yield* test.advance("1 hour")
           yield* test.advance("24 hours")
           yield* test.advance("88 seconds")
@@ -512,7 +507,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* internal.sweepContent) >= 1).toBe(true)
           expect(yield* stored(ref.hash)).toEqual({ contents: 0, chunks: 0 })
 
-          // The periodic cleanup sweeps content too, claiming each tenant at most once an hour.
           const again = yield* upload(yield* fresh("orphan-again"))
           yield* test.advance(COLLECTED_AFTER)
           expect((yield* test.cleanup).contents >= 1).toBe(true)
@@ -536,8 +530,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const sweep = yield* internal.sweepContent.pipe(Effect.forkScoped)
           yield* paused.reached
 
-          // The sweep picked the content and found no reference; a new upload
-          // grants it again and an attach commits before the delete.
           const regranted = yield* upload(bytes)
           const doc = yield* Document.get("race-attach")
           yield* doc.Attach({ name: "file", ref: regranted })
@@ -561,12 +553,10 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const early = yield* upload(yield* fresh("skew-early"))
           const late = yield* upload(yield* fresh("skew-late"))
 
-          // Five seconds more than S left: attachable.
           yield* test.advance("58 minutes")
           yield* test.advance("55 seconds")
           yield* doc.Attach({ name: "early", ref: early })
 
-          // Less than S left, though the grant has not expired yet.
           yield* test.advance("10 seconds")
           const refused = yield* doc.Attach({ name: "late", ref: late }).pipe(Effect.flip)
           expect(refused).toEqual(InvalidContentRef.make({ reason: "expired" }))
@@ -584,7 +574,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const database = yield* environment.freshDatabase
           const gate = yield* Deferred.make<void>()
 
-          // No grace and no skew margin: only the turn bound keeps the content.
           yield* onRuntime(
             environment,
             { database, content: { keys: [TEST_CONTENT_KEY], grace: 0, skew: 0 } },
@@ -595,14 +584,12 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
               const ref = yield* upload(bytes)
               const doc = yield* Document.get("held")
 
-              // The attach checks the grant with half a second left, then waits.
               yield* test.advance("59 minutes")
               yield* test.advance("59500 millis")
               fixture.content.held = Deferred.await(gate)
               const attach = yield* doc.AttachHeld({ name: "file", ref }).pipe(Effect.forkScoped)
               yield* Effect.sleep("300 millis")
 
-              // Well within the 30-second turn, the grant expires and a sweep runs.
               yield* test.advance("5 seconds")
               expect(yield* internal.sweepContent).toBe(0)
               yield* Deferred.succeed(gate, undefined)
@@ -627,7 +614,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const target = yield* Document.get("handoff-target")
           yield* source.Attach({ name: "file", ref: yield* upload(bytes) })
 
-          // The upload's own grant has expired; the reference still yields a fresh one.
           yield* test.advance("2 hours")
           const granted = yield* Content.grant(Document, "handoff-source", Attachments, "file")
           expect(Option.isSome(granted)).toBe(true)
@@ -710,7 +696,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          // One runtime at a time on the retained database, which PGlite needs.
           yield* environment.stop
 
           const signed = yield* onRuntime(

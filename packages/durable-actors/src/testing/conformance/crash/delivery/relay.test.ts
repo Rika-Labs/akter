@@ -65,7 +65,6 @@ describe("outbox relay process death with Postgres", () => {
             yield* child.kill({ killSignal: "SIGKILL" })
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
 
-            // The sender committed its intent; the receiver committed only past its own commit.
             expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
               { sent: 1, received, outbox: 1 },
             ])

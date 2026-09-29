@@ -155,7 +155,6 @@ export const probeBody = <R>({
       case "compensate-hold":
         yield* compensated
         yield* hold
-        // Where an engine that lets the activity finish observes the interrupt.
         yield* primitives.sleep("nap", LONG_SLEEP)
 
         return "done"
@@ -270,7 +269,6 @@ export const engineCases: ReadonlyArray<EngineCase> = [
         ])
         yield* driver.advance(SHORT_SLEEP)
         expect(yield* awaitComplete(run)).toEqual(Exit.succeed("ok-3"))
-        // The replay returned the final attempt's exit without running any attempt again.
         expect([1, 2, 3, 4].map((attempt) => runsOf(fixture, `flaky-${attempt}`, key))).toEqual([
           1, 1, 1, 0,
         ])
@@ -313,7 +311,6 @@ export const engineCases: ReadonlyArray<EngineCase> = [
         expectInterrupted(expect, yield* awaitComplete(run))
         expect(runsOf(fixture, "compensate", key)).toBe(1)
         expect(runsOf(fixture, "once", key)).toBe(1)
-        // Interrupting a finished execution changes nothing.
         yield* run.interrupt
         expectInterrupted(expect, yield* awaitComplete(run))
         expect(runsOf(fixture, "compensate", key)).toBe(1)
@@ -331,7 +328,6 @@ export const engineCases: ReadonlyArray<EngineCase> = [
           what: "the activity to start",
         })
         yield* run.interrupt
-        // An engine may let the running activity finish before it interrupts.
         yield* Deferred.succeed(gate, undefined)
         expectInterrupted(expect, yield* awaitComplete(run))
         expect(runsOf(fixture, "compensate", key)).toBe(1)
@@ -384,7 +380,6 @@ export const engineCases: ReadonlyArray<EngineCase> = [
           what: "the activity to start",
         })
         const polled = yield* run.poll
-        // The expected divergence: ours reads its row, Cluster has no reply yet.
         expect(Option.isSome(polled) ? polled.value._tag : "None").toBe(driver.pollWhileRunning)
         yield* Deferred.succeed(gate, undefined)
         expect(yield* awaitComplete(run)).toEqual(Exit.succeed("held"))

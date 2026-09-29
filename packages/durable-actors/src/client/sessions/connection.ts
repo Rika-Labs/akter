@@ -1,11 +1,11 @@
 import { Data, Deferred, Effect, Match, Option, Predicate, Queue, Schema, Stream } from "effect"
 import type { ServedConnection } from "../../actor/served.ts"
-import { ActorError, SessionEnded, TransportError } from "../../errors/actor.ts"
+import { ActorError, SessionEnded } from "../../errors/actor.ts"
 import type { ValueSchema } from "../../members/command.ts"
 import type { AnyConnection } from "../../members/connection.ts"
 import type { ProgressEffect } from "../../members/effect.ts"
 import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../../serve/frames.ts"
-import { decodeFailure, type Failure, transport } from "../transport.ts"
+import { decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
 
 /**
  * One effect's progress as its client receives it: the effect's tag and a
@@ -72,13 +72,15 @@ const ConnectionMessage = Data.taggedEnum<ConnectionMessageDefinition>()
 
 type FrameMessage<Frame> = Extract<Messages<Frame>, { readonly _tag: "Frame" }>
 
+/** Options of one `connect` call. */
 export interface ConnectOptions {
   /** Stops waiting for the connection to open. */
   readonly signal?: AbortSignal
   /**
    * Resynchronizes after an owner loss: replay events after `after`, or reload
    * state. The connection acknowledges the resync once this settles; without
-   * it, the resync is acknowledged at once and only seen in `messages`.
+   * it, the resync is acknowledged at once and only seen in `messages`. A
+   * callback that throws, at once or later, still settles the acknowledgment.
    */
   readonly onResync?: (resync: { readonly after: string | undefined }) => void | Promise<void>
 }
@@ -89,6 +91,7 @@ export interface ClientConnection<
   Client,
   Progress extends ProgressUpdate = ProgressUpdate,
 > {
+  /** The server's id for this connection. */
   readonly connectionId: string
   /** The flushed-through event cursor when it opened: replay events after it to catch up. */
   readonly cursor: string | undefined
@@ -101,11 +104,13 @@ export interface ClientConnection<
   readonly messages: AsyncIterable<ConnectionMessage<Server, Progress>>
   /** The member frames of `messages`, without the resync notices or progress. */
   readonly frames: AsyncIterable<Server>
+  /** Sends one frame; rejects with `SessionEnded` `HolderLost` once the session ended or its socket stopped being open. */
   readonly send: (frame: Client) => Promise<void>
+  /** Closes the connection. The `messages` iteration then ends without an error. */
   readonly close: () => Promise<void>
 }
 
-export interface SocketSource {
+interface SocketSource {
   readonly member: ServedConnection
   readonly url: string
   /** The `authorization` credential to send in `hello` and `reauthenticate`, read afresh each time. */
@@ -137,8 +142,6 @@ const ended = (cause: SessionEnded["cause"], resync: boolean) =>
 
 const holderLost = ended("HolderLost", true)
 
-const undecodable = () => TransportError.make({ code: "decode", retryable: false }).pipe(transport)
-
 const isClientClosed = (failure: Failure) =>
   Schema.is(ActorError)(failure) &&
   Schema.is(SessionEnded)(failure.reason) &&
@@ -152,6 +155,20 @@ const DONE = "done"
  * params, then member frames both ways. It resolves once the server sent
  * `open`, and rejects with the declared `open` failure or the `ActorError`
  * that refused it.
+ *
+ * The credential is read before the socket opens, so a provider that throws
+ * or rejects fails `connect` with its own error; it is read again for each
+ * renewal, and a provider that fails then leaves the old credential to expire,
+ * which the server ends the session at. Incoming messages are handled one at
+ * a time, in arrival order, with the socket's close after them. A message
+ * with a `t` this client doesn't know is ignored, as the protocol says; one
+ * that is broken ends the session, as does a frame cursor that isn't a
+ * position. Nothing reads the socket once the session ends, so a failure this
+ * client detected closes it too. After a resync, a frame whose event the
+ * client already had is a duplicate and is dropped. Progress is lossy by
+ * design: one this client can't read is dropped and the session goes on. The
+ * holder ignores a resync acknowledgment before the member's own replay; a
+ * second one after it is harmless.
  */
 export const connect = <Server, Client>({
   member,
@@ -190,7 +207,7 @@ export const connect = <Server, Client>({
               ),
             )
 
-      const hello = yield* encodeParams(params).pipe(Effect.mapError(undecodable))
+      const hello = yield* encodeParams(params).pipe(Effect.mapError(undecodableFailure))
       const messages = yield* Queue.unbounded<ConnectionMessage<Server>, Failure | typeof DONE>()
       const inbox = yield* Queue.unbounded<string>()
 
@@ -199,7 +216,6 @@ export const connect = <Server, Client>({
         Failure
       >()
 
-      // Read before the socket opens: a provider that throws or rejects fails `connect` with its own error.
       const credential = yield* authorization
       const ws = new WebSocket(url, SUBPROTOCOL)
       let finished = false
@@ -219,7 +235,6 @@ export const connect = <Server, Client>({
           if (finished) return
           finished = true
 
-          // Nothing reads the socket after this, so a failure this client detected closes it too.
           if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
             ws.close(1000)
 
@@ -227,7 +242,6 @@ export const connect = <Server, Client>({
           yield* Deferred.fail(opened, failure)
         })
 
-      // The holder ignores an acknowledgment before the member's own replay; a second one after it is harmless.
       const acknowledge = Effect.suspend(() =>
         resync?.settled === true ? write({ t: "resyncDone" }) : Effect.void,
       )
@@ -236,12 +250,10 @@ export const connect = <Server, Client>({
         decodeFrame(message.frame).pipe(
           Effect.flatMap((decoded) =>
             Effect.suspend(() => {
-              // After a resync, a frame whose event the client already had is a duplicate.
               if (message.event !== undefined) {
                 const event = eventPosition(message.event)
 
-                // A cursor that isn't a position is as broken as a frame that doesn't decode.
-                if (event === undefined) return finish(undecodable())
+                if (event === undefined) return finish(undecodableFailure())
 
                 if (event <= highest) return Effect.void
 
@@ -258,11 +270,10 @@ export const connect = <Server, Client>({
               )
             }),
           ),
-          Effect.catch(() => finish(undecodable())),
+          Effect.catch(() => finish(undecodableFailure())),
           Effect.asVoid,
         )
 
-      // Progress is lossy by design: one this client can't read is dropped, and the session goes on.
       const progress = (message: Extract<ServerWireMessage, { readonly t: "progress" }>) =>
         Option.match(Option.fromNullishOr(progressDecoders.get(message.effect)), {
           onNone: () => Effect.void,
@@ -289,7 +300,6 @@ export const connect = <Server, Client>({
         const state = { settled: false }
         resync = state
 
-        // A callback that throws, at once or later, still settles the acknowledgment.
         const settle = Effect.promise(() =>
           Promise.resolve()
             .then(() => options.onResync?.({ after: message.after }))
@@ -327,7 +337,6 @@ export const connect = <Server, Client>({
               Effect.andThen(acknowledge),
             ),
           progress,
-          // A provider that fails leaves the old credential to expire, and the server ends the session then.
           reauthenticate: () =>
             authorization.pipe(
               Effect.flatMap((fresh) =>
@@ -353,7 +362,6 @@ export const connect = <Server, Client>({
 
       ws.onmessage = (event) => Queue.offerUnsafe(inbox, String(event.data))
 
-      // Messages are handled one at a time, in arrival order, and the close after them.
       ws.onclose = () => Queue.offerUnsafe(inbox, DONE)
 
       run(
@@ -361,13 +369,12 @@ export const connect = <Server, Client>({
           Effect.flatMap((text) =>
             text === DONE
               ? finish(holderLost)
-              : // A `t` this client doesn't know is ignored, as the protocol says; a broken message ends the session.
-                Option.match(decodeTagged(text), {
-                  onNone: () => finish(undecodable()),
+              : Option.match(decodeTagged(text), {
+                  onNone: () => finish(undecodableFailure()),
                   onSome: ({ t }) =>
                     KNOWN.has(t)
                       ? Option.match(decodeServer(text), {
-                          onNone: () => finish(undecodable()),
+                          onNone: () => finish(undecodableFailure()),
                           onSome: handle,
                         })
                       : Effect.void,
@@ -415,8 +422,7 @@ export const connect = <Server, Client>({
         send: (value) =>
           Effect.runPromiseWith(services)(
             encodeFrame(value).pipe(
-              Effect.mapError(undecodable),
-              // A frame can't be sent once the session ended or its socket stopped being open.
+              Effect.mapError(undecodableFailure),
               Effect.flatMap((json) =>
                 finished || ws.readyState !== WebSocket.OPEN
                   ? Effect.fail(holderLost)

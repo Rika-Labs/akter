@@ -26,7 +26,9 @@ export const FEED_KEY = "$feed"
  * says the relay should wake. The upsert resets `attempts`, so a relay
  * expanding the feed while this commits keeps it due. Routed subscriptions
  * registered here that name an emitted class get their missing source-side
- * rows first, starting at this turn's first event.
+ * rows first, starting at this turn's first event. Those rows are widened,
+ * never narrowed, so an older runner cannot shrink one back; each inserted row
+ * and each added tag enters the tag summary.
  */
 export const eventsStatement = Effect.fnUntraced(function* (
   request: Request,
@@ -59,8 +61,6 @@ export const eventsStatement = Effect.fnUntraced(function* (
     System.make({ source: "actor", ref: request.ref }),
   ).pipe(Effect.orDie)
 
-  // Rows are widened, never narrowed, so an older runner can't shrink one
-  // back; each inserted row and each added tag enters the tag summary.
   const routedRows =
     routed.length === 0
       ? sql.literal("")

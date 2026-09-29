@@ -24,8 +24,6 @@ const count = Actor.state({
   count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
-// Long enough that a caller admitted behind PGlite's single connection
-// still commits before its deadline on a loaded machine.
 const Unbounded = Actor.make("CapacityUnbounded", {
   key: Schema.NonEmptyString,
   state: count,
@@ -40,8 +38,6 @@ const Bounded = Actor.make("CapacityBounded", {
   policy: { deliveryTimeout: "5 seconds", mailboxCapacity: 1 },
 })
 
-// Cluster's idle sweep runs every 5 seconds at its fastest, so a waiting
-// caller sees a slot free within about that long.
 const Sleepy = Actor.make("CapacitySleepy", {
   key: Schema.NonEmptyString,
   state: count,
@@ -49,7 +45,6 @@ const Sleepy = Actor.make("CapacitySleepy", {
   policy: { deliveryTimeout: "20 seconds", hibernateAfter: "1 second" },
 })
 
-// Default policies: it never hibernates during a case, so it keeps its slot.
 const WarmUp = Actor.make("CapacityWarmUp", { key: Schema.NonEmptyString, api: { Touch } })
 
 const CapacityLive = Layer.mergeAll(
@@ -102,8 +97,6 @@ const withCapacity = <A, E>(
       const crypto = yield* Crypto.Crypto
       const database = yield* environment.freshDatabase
 
-      // Fresh, or Cluster's Sharding layer is shared with the suite's runtime
-      // through the memo map and keeps its runner limit.
       const services = yield* Layer.build(
         Layer.fresh(
           CapacityLive.pipe(
@@ -133,6 +126,7 @@ const reasonOf = (exit: Exit.Exit<unknown, unknown>) => {
     : "other"
 }
 
+/** Capacity cases: a caller over capacity gets `RunnerAtCapacity` after `deliveryTimeout`, while a resident bounded actor with a full mailbox reports `MailboxFull`. */
 export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "over-capacity load on an unbounded mailbox fails RunnerAtCapacity after deliveryTimeout, never MailboxFull",
@@ -145,7 +139,6 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const ids = Array.from({ length: 32 }, (_, index) => `actor-${index}`)
 
-          // Two callers per actor, all at once: activations race for 8 slots.
           const outcomes = yield* Effect.forEach(
             [...ids, ...ids],
             (id) =>
@@ -176,7 +169,6 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const { id, exit, elapsedMs } of rejected) {
             expect(admitted.has(id)).toBe(false)
-            // Retried for the whole delivery timeout before giving up.
             expect(elapsedMs >= 4500).toBe(true)
             expect(Exit.findErrorOption(exit)).toMatchObject({
               value: { reason: RunnerAtCapacity.make({}), isRetryable: true },
@@ -206,7 +198,6 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "a resident bounded actor with a full mailbox still reports MailboxFull",
-    // The held turn keeps its transaction open, which blocks PGlite's only connection.
     requiresIndependentConnections: true,
     timeoutMs: 30_000,
     run: ({ environment, expect }) =>
@@ -226,7 +217,6 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
             value: { reason: MailboxFull.make({}) },
           })
           yield* Deferred.succeed(release, undefined)
-          // Only the second caller is under test; the held one may pass its own deadline.
           yield* Fiber.await(held)
           hold = Effect.void
         }),

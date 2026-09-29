@@ -12,7 +12,6 @@ class ProviderDown extends Schema.TaggedError<ProviderDown>()("ProviderDown", {}
 
 class Charge extends Actor.effect<Charge>()("Charge", { input: { amount: Schema.Finite } }) {}
 
-// Its success type is wider than its route's input, so its only result is final.
 class Gauge extends Actor.effect<Gauge>()("Gauge", {
   input: { value: Schema.Finite },
   success: Schema.Finite,
@@ -41,7 +40,6 @@ const Buyer = Actor.make("ProcessBuyer", {
   policy: {
     effects: {
       Charge: { retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed },
-      // Retries remain after its final failure, which recovery must not use.
       Gauge: { retry: { times: 2 }, onSuccess: Gauged, onDeadLetter: GaugeFailed },
     },
   },
@@ -53,9 +51,6 @@ const runtime = Layer.unwrap(
     const effect = yield* Config.String("CRASH_EFFECT")
     const database = yield* Config.String("CRASH_DATABASE_URL")
 
-    // The fake provider counts every call it receives under its idempotency
-    // key, then refuses a charge, so its single attempt dead-letters, and
-    // returns a gauge's result that its route rejects.
     const provider = new Pool({ connectionString: database, max: 1 })
     yield* Effect.addFinalizer(() => Effect.promise(() => provider.end()))
 
@@ -98,8 +93,6 @@ const runtime = Layer.unwrap(
       ),
     )
 
-    // Only the dead-letter transaction and its route's delivery stop, so the
-    // buyer's turn commits first.
     const hooks = Layer.succeed(TurnHooks, {
       at: (point, request) =>
         point === mode && (request.command === effect || request.command === `${effect}Failed`)
@@ -107,7 +100,6 @@ const runtime = Layer.unwrap(
           : Effect.void,
     })
 
-    // The recovering process runs past the crashed attempt's backoff.
     const clock = Layer.succeed(FrameworkClock, {
       offsetMillis: () => (mode === "recover" ? 120_000 : 0),
     })
@@ -123,8 +115,6 @@ const runtime = Layer.unwrap(
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
 
-// A crashed process leaves the exhausted effect or its dead-letter route in
-// actor_outbox; a fresh process must settle it into one letter and one route.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
   const effect = yield* Config.String("CRASH_EFFECT")
@@ -151,7 +141,6 @@ const program = Effect.gen(function* () {
     Schema.fromJsonString(Schema.Struct({ routedId: Schema.String, state: Schema.String })),
   )({ routedId: rows[0]!.routed_id, state: decompress(rows[0]!.state_bytes) })
 
-  // Tagged so the parent ignores runtime logs that share stdout.
   yield* Console.log(`RESULT ${result}`)
 }).pipe(Effect.timeout("10 seconds"))
 

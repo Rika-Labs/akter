@@ -18,8 +18,6 @@ const harness = ManagedRuntime.make(BunFileSystem.layer)
 
 afterAll(() => harness.dispose())
 
-// PGlite supplies a single serialized connection; independent-connection cases
-// are reported skipped below and run on real Postgres instead.
 const backend: ConformanceBackend = {
   independentConnections: false,
   services: BunCrypto.layer,
@@ -34,7 +32,6 @@ const backend: ConformanceBackend = {
         return {
           database: { dataDir },
           freshDatabase: Effect.succeed({}),
-          // A stopped copy of the data directory is PGlite's backup.
           copy: (database) =>
             Effect.gen(function* () {
               if (
@@ -138,7 +135,6 @@ describe("PGlite migrations", () => {
   it("refuses to start when a registered migration below the latest applied one was skipped", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
-    // A database that recorded 13 while 12 was never applied.
     const throughRelay = migrator(
       Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0012")),
     )
@@ -217,7 +213,6 @@ describe("PGlite migrations", () => {
   })
 })
 
-// Effect rows as capped performs see them.
 const sender = ActorRef.make({ tenant: "t", actor: "Sender", id: "s" })
 
 interface Row {
@@ -277,7 +272,6 @@ describe("capped effect order", () => {
           yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
           VALUES (1, 't', 'Sender', 's')`
 
-          // Performed by an earlier turn at 1000.
           yield* insert([
             { id: "earlier", due: 1000, scheduled: 1000, ready: 1000 },
             { id: "running", due: 61_000, scheduled: 1000, ready: 999, running: true },
@@ -285,7 +279,6 @@ describe("capped effect order", () => {
             { id: "other-type", command: "Other", due: 1000, scheduled: 1000, ready: 1500 },
           ])
 
-          // One turn at 1000: three due now, one delayed to 5000.
           yield* insert([
             { id: "a", due: 1000, scheduled: 1000, ready: 1000 },
             { id: "later", due: 5000, scheduled: 5000, ready: 5000 },
@@ -304,8 +297,6 @@ describe("capped effect order", () => {
             ],
           })
 
-          // Behind the earlier turn's row, in perform order; neither the later reminder nor another
-          // type's row pushes them back.
           expect(yield* ready(["a", "b", "c", "later"])).toEqual({
             a: 1001,
             b: 1002,
@@ -313,7 +304,6 @@ describe("capped effect order", () => {
             later: 5000,
           })
 
-          // A later turn in the same millisecond still goes after them.
           yield* insert([{ id: "d", due: 1000, scheduled: 1000, ready: 1000 }])
           yield* orderCapped({
             sql,
