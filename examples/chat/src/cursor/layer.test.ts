@@ -17,7 +17,10 @@ import { afterAll, expect, it } from "vitest"
 import { Cursor, DocId, Here, Joined, Left, Live, Moved } from "./contract.ts"
 import { CursorLive } from "./layer.ts"
 
-// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/**
+ * The same cases run on PGlite (`test`) and on a fresh Postgres database
+ * (`test:integration`).
+ */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("CHAT_BACKEND")) === "pglite") return undefined
 
@@ -83,14 +86,12 @@ it("shows who is here, relays moves, and announces joins and leaves, across hibe
       expect(yield* blue.next).toEqual(Here.make({ peers: [peer(red.connectionId, "red")] }))
       expect(yield* red.next).toEqual(Joined.make({ peer: peer(blue.connectionId, "blue") }))
 
-      // A parked document wakes for the frame and relays it to everyone else.
       yield* test.hibernate(doc.ref)
       yield* red.send({ x: 10, y: 20 })
       expect(yield* blue.next).toEqual(
         Moved.make({ connectionId: red.connectionId, at: { x: 10, y: 20 } }),
       )
 
-      // A late joiner sees the last position of each cursor.
       const green = yield* open(doc.ref, "green")
       const here = yield* green.next
       expect(Schema.is(Here)(here) && byColor(here.peers)).toEqual([
