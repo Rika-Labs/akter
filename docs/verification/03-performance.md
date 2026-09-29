@@ -43,7 +43,7 @@ These run on dedicated hardware in [#66](https://github.com/Rika-Labs/durable-ac
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
 - **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region. Deferred to L.1 ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)).
 - **Content blobs** (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)): deduplication ratio and bytes stored for a skewed upload set, upload and attach latency, read latency, and sweep cost per thousand candidates.
-- **File-backed PGlite** (M4.14, [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)): turn and wake latency and throughput at several `dataDir` sizes; the largest measured size bounds the claim.
+- **File-backed PGlite** (M4.14, [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)): turn and wake latency and throughput at several `dataDir` sizes; the largest measured size bounds the claim. Measured below under [Embedded PGlite](#embedded-pglite-m414).
 - **Cold wakes** (L.2, [ADR 0036](../decisions/0036-cold-tier.md)): latency of a cold wake against the wake-latency target plus one object GET.
 
 ## M1 close (cloud VM)
@@ -595,6 +595,21 @@ The `content-blobs` scenario ([`6b35562-m4.13-content-blobs`](../../benchmarks/r
 | Lost / duplicated operations                   | 0 / 0  | 0 / 0  | 0 / 0            |
 
 Recovery runs from the kill to the commit of the slowest command the first runner, which stays up and serving throughout, started after it on one of the killed runner's shards. Each runner reports the shards its commands went to, and the drill reads the killed runner's shards from `cluster_locks` just before the kill and asserts at least one such command, so the measured command provably waited on a dead runner's shard and its commit marks that shard serving again. It is bounded by the 3 s shard-lock expiry plus Cluster's shard refresh, and can be under 3 s because the dead runner's last lock refresh predates the kill. Until [#219](https://github.com/Rika-Labs/durable-actors/issues/219) the first runner started its operations before the other two were up and could finish them all before the kill, which left no post-kill command on it to measure and the kill not under load. With 10 samples, p99 is not meaningful. Committed operations vary because a runner killed mid-operation may commit an `Increment` without its `Send`; those are counted as committed, never lost.
+
+### Embedded PGlite (M4.14)
+
+`2026-09-29-378a83d-m4.14-embedded-pglite-file.json` runs `bun run bench --profile full --backend pglite-file --scenario embedded-pglite --label m4.14-embedded` on `378a83d`: PGlite 0.5.8 (Postgres 18.3), Bun 1.4.2, on an Amp orb (an E2B cloud sandbox VM, 16 logical CPUs of an Intel Xeon at 2.60 GHz, 31.4 GiB, Linux 6.1). Each case's `dataDir` is a fresh directory under `/tmp` on ext4. One run; nothing else ran during it.
+
+| Stored actors | Database size | Warm turn p50 / p99 (ms) | Wake p50 / p99 (ms) | 16 callers (op/s) |
+| ------------- | ------------- | ------------------------ | ------------------- | ----------------- |
+| 0             | 9.6 MB        | 4.53 / 13.2              | 6.06 / 16.0         | 219               |
+| 10,000        | 17.1 MB       | 4.50 / 11.1              | 5.84 / 13.6         | 213               |
+| 100,000       | 82.4 MB       | 4.49 / 10.8              | 5.76 / 10.0         | 213               |
+
+- A turn takes about 4.5 ms and costs about 5 ms of CPU, whatever the stored size up to 100,000 actors. On one connection turns run one after another, so 16 callers get the same ~213 turns per second as one, and each waits about 16 turns (p50 74 ms).
+- A wake after hibernation adds about 1.5 ms for the generation fence and the state read. Every measured wake took a new generation (`reactivatedFraction` 1).
+- The largest measured database is 82 MB (100,000 seeded actors, each with a 256-byte state value and one receipt). ADR 0035 claims nothing larger.
+- These numbers include the WAL writes a file-backed `dataDir` makes on every commit. They do not measure power-loss durability, which is not claimed.
 
 ### Failure drill II: Postgres primary failover (T10)
 

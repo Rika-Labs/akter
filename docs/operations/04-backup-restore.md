@@ -83,7 +83,7 @@ Retained receipt and effect horizons bound what a restore can deduplicate; see [
 
 ## Embedded PGlite
 
-Target, built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). The only supported backup is a stopped copy: stop the process, which releases the `dataDir` lock, copy the directory, and start again. Restore copies it back while the process is stopped. A copy taken while the process runs is not a backup. An in-process `pg_dump` waits for a `pgDump` build compatible with the pinned PGlite. The command-expiry check and effect reconciliation above still apply, and there is no point-in-time recovery.
+Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)) and verified by `restores a stopped copy and refuses expired command ids after restore` in [`conformance/crash/pglite-production.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/pglite-production.test.ts). The only supported backup is a stopped copy: stop the process, which releases the `dataDir` lock, copy the directory, and start again. Restore copies it back while the process is stopped. A copy taken while the process runs is not a backup. An in-process `pg_dump` waits for a `pgDump` build compatible with the pinned PGlite. The command-expiry check and effect reconciliation above still apply, and there is no point-in-time recovery.
 
 ## Cold tier
 
