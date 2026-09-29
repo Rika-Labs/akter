@@ -35,14 +35,25 @@ export interface EdgeOptions {
 
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(SigningKey)))
 
+/** Whether `lifetime` is a whole number of seconds from 1 to 60, as assertion claims need. */
+export const isAssertionLifetime = (lifetime: Duration.Duration) => {
+  const ms = Duration.toMillis(lifetime)
+
+  return ms % 1000 === 0 && ms >= 1000 && ms <= 60_000
+}
+
 /** The edge's configuration from its environment. */
 export const loadOptions = Effect.gen(function* () {
   const lifetime = yield* Config.Duration("EDGE_ASSERTION_LIFETIME").pipe(
     Config.withDefault(Duration.seconds(10)),
   )
 
-  if (Duration.isGreaterThan(lifetime, Duration.seconds(60)))
-    return yield* Effect.die(new Error("EDGE_ASSERTION_LIFETIME is at most 60 seconds"))
+  // Claims carry whole seconds, so a fractional lifetime would be floored, and one under a
+  // second would sign assertions whose `exp` equals `iat`, which runners refuse.
+  if (!isAssertionLifetime(lifetime))
+    return yield* Effect.die(
+      new Error("EDGE_ASSERTION_LIFETIME is a whole number of seconds from 1 to 60"),
+    )
 
   const keys = yield* Config.Redacted("EDGE_SIGNING_KEYS")
 

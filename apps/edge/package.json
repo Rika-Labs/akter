@@ -6,7 +6,8 @@
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/edge/src"
+    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/edge/src",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/edge/src/config.test.ts"
   },
   "dependencies": {
     "@durable-actors/core": "workspace:*",

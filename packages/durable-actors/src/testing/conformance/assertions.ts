@@ -984,9 +984,23 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api" })
+          // A registered runner that refuses connections: the edge must try the next one.
+          yield* edge.addRunner({ region: REGION, url: "http://127.0.0.1:9", basePath: "/api" })
 
           const tenant = yield* tenantOf
           const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          // The edge rotates its runner order per socket, so one of two opens starts at the dead one.
+          const probe = yield* socket(new URL(edge.url).host, "through-edge")
+
+          yield* probe.send({
+            t: "hello",
+            authorization: `Bearer ${key}`,
+            params: { name: "alice" },
+          })
+          yield* opened(yield* probe.next())
+          yield* probe.close
+
           const ws = yield* socket(new URL(edge.url).host, "through-edge")
 
           yield* ws.send({ t: "hello", authorization: `Bearer ${key}`, params: { name: "alice" } })

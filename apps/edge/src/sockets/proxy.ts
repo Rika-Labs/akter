@@ -145,23 +145,46 @@ export const proxySocket = Effect.fnUntraced(function* (
     )
   }
 
-  const opened = yield* Deferred.make<boolean>()
-  const runner = routed.urls[0]!.replace(/^http/, "ws")
+  // Like HTTP forwarding, try each ready runner of the region in turn until one accepts.
+  const connect = (url: string) =>
+    Effect.gen(function* () {
+      const opened = yield* Deferred.make<boolean>()
+      const socket = new WebSocket(`${url.replace(/^http/, "ws")}${target}`, [SUBPROTOCOL])
 
-  upstream = new WebSocket(`${runner}${target}`, [SUBPROTOCOL])
-  upstream.binaryType = "arraybuffer"
-  upstream.onopen = () => Deferred.doneUnsafe(opened, Effect.succeed(true))
+      socket.onopen = () => Deferred.doneUnsafe(opened, Effect.succeed(true))
+      socket.onclose = () => Deferred.doneUnsafe(opened, Effect.succeed(false))
 
-  upstream.onmessage = (event: MessageEvent<string | ArrayBuffer>) =>
+      const accepted = yield* Deferred.await(opened).pipe(
+        Effect.timeoutOption(edge.options.assertionLifetime),
+        Effect.map(Option.getOrElse(() => false)),
+      )
+
+      if (!accepted) socket.close()
+
+      return accepted ? Option.some(socket) : Option.none()
+    })
+
+  for (const url of routed.urls) {
+    const connected = yield* connect(url)
+
+    if (Option.isSome(connected)) {
+      upstream = connected.value
+      break
+    }
+  }
+
+  if (upstream === undefined) return yield* end(unavailable("No runner accepted the socket"))
+
+  const open = upstream
+  open.binaryType = "arraybuffer"
+
+  open.onmessage = (event: MessageEvent<string | ArrayBuffer>) =>
     ws.send(Predicate.isString(event.data) ? event.data : new Uint8Array(event.data))
 
-  upstream.onclose = (event: CloseEvent) => {
-    Deferred.doneUnsafe(opened, Effect.succeed(false))
+  open.onclose = (event: CloseEvent) => {
     Queue.offerUnsafe(inbox, Inbound.Closed())
     ws.close(sendable(event.code), event.reason)
   }
-
-  if (!(yield* Deferred.await(opened))) return
 
   upstream.send(greeting)
 
