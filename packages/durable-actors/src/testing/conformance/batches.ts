@@ -126,6 +126,8 @@ export const enqueue = Effect.fnUntraced(function* <A, R>(
     fibers.push(yield* Effect.forkChild(call))
     yield* queued.reached
     yield* queued.release
+    // The hook resumes on the next tick, and the command joins a batch only once it has finished.
+    yield* Effect.yieldNow
   }
 
   return fibers

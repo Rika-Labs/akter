@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { Database } from "@durable-actors/core/runtime"
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Console, Effect, Layer, Redacted } from "effect"
-import { HttpRouter, HttpServer } from "effect/unstable/http"
+import { Clock, Config, Console, Effect, Layer, Option, Redacted } from "effect"
+import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
 
 import {
   INSPECTOR_PATH,
@@ -11,7 +11,14 @@ import {
   devRoutes,
   parseDev,
 } from "./commands/dev/run.ts"
+import {
+  USAGE as DEFECTS_USAGE,
+  formatDefects,
+  listDefects,
+  parseList,
+} from "./commands/defects/list.ts"
 import { USAGE, actorsOf, check, loadEntry, parseCheck } from "./commands/workflows/check.ts"
+import { USAGE as PAYLOADS_USAGE, parsePayloads, payloads } from "./commands/payloads/run.ts"
 import {
   USAGE as TENANTS_USAGE,
   controlPlane,
@@ -56,6 +63,36 @@ const workflowsCheck = (args: ReadonlyArray<string>) =>
     }),
   )
 
+const payloadsCommand = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const options = yield* parsePayloads(args)
+    const module = yield* loadEntry(options.entry)
+    const actors = yield* actorsOf({ module, entry: options.entry })
+
+    const services = yield* Layer.build(
+      Database.postgres({ url: Redacted.make(options.databaseUrl) }).pipe(
+        Layer.provideMerge(BunCrypto.layer),
+      ),
+    )
+
+    const { output, exitCode } = yield* payloads({
+      command: options.command,
+      actors,
+      json: options.json,
+    }).pipe(Effect.provideContext(services))
+
+    yield* Console.log(output)
+    yield* Effect.sync(() => {
+      process.exitCode = exitCode
+    })
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      SqlError: (error) => fail(`Cannot read payload versions: ${error.message}`),
+      UsageError: (error) => fail(`${error.message}\n${PAYLOADS_USAGE}`),
+    }),
+  )
+
 // Runs until interrupted: the entry's app and the inspector on one server.
 const dev = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -94,6 +131,27 @@ const dev = (args: ReadonlyArray<string>) =>
     Effect.catchTag("UsageError", (error) => fail(`${error.message}\n${DEV_USAGE}`)),
   )
 
+const defectsList = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const options = yield* parseList({ args, nowMs: yield* Clock.currentTimeMillis })
+    const token = yield* Config.option(Config.Redacted(options.tokenEnv))
+    const services = yield* Layer.build(FetchHttpClient.layer)
+
+    const defects = yield* listDefects(
+      options,
+      Option.match(token, { onNone: () => undefined, onSome: (value) => Redacted.value(value) }),
+    ).pipe(Effect.provideContext(services))
+
+    yield* Console.log(formatDefects({ defects, json: options.json }))
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      UsageError: (error) => fail(`${error.message}\n${DEFECTS_USAGE}`),
+      RunnerUnreachable: (error) => fail(`Cannot read defects from ${error.url}: ${error.message}`),
+      ConfigError: (error) => fail(`Cannot read the operator token: ${error.message}`),
+    }),
+  )
+
 const tenantsCreate = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const options = yield* parseCreate(args)
@@ -116,10 +174,14 @@ const program = Effect.gen(function* () {
 
   if (group === "workflows" && command === "check") return yield* workflowsCheck(args)
 
+  if (group === "defects" && command === "list") return yield* defectsList(args)
+
+  if (group === "payloads") return yield* payloadsCommand(process.argv.slice(3))
+
   if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
 
   return yield* fail(
-    `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${TENANTS_USAGE}`,
+    `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${DEFECTS_USAGE}\n${PAYLOADS_USAGE}\n${TENANTS_USAGE}`,
   )
 })
 

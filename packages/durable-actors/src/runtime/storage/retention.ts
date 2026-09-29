@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { databaseTime } from "../turn/admission.ts"
 import { CleanupHooks } from "../turn/hooks.ts"
+import { count, Metrics } from "../telemetry/metrics.ts"
 
 export interface RetentionPolicy {
   readonly actorType: string
@@ -32,6 +33,8 @@ export interface Swept {
   readonly receipts: number
   readonly events: number
   readonly workflows: number
+  /** Unreferenced content rows deleted after their grant horizon. */
+  readonly contents: number
 }
 
 /**
@@ -114,6 +117,7 @@ export const sweep = Effect.fnUntraced(function* (
         FROM gone`)
 
       receipts += pruned!.count
+      yield* count(Metrics.receiptsPruned, { actor_type: policy.actorType }, pruned!.count)
 
       if (pruned!.count === 0) break
       from = pruned!.last ?? from
@@ -160,6 +164,7 @@ export const sweep = Effect.fnUntraced(function* (
         FROM gone`)
 
       events += pruned!.count
+      yield* count(Metrics.eventsPruned, { actor_type: policy.actorType }, pruned!.count)
 
       if (pruned!.count === 0) break
       from = pruned!.last ?? from
@@ -204,5 +209,5 @@ export const sweep = Effect.fnUntraced(function* (
               AND x.manifest_hash = m.manifest_hash AND x.status <> 'finished')`)
   }
 
-  return { receipts, events, workflows } satisfies Swept
+  return { receipts, events, workflows } satisfies Omit<Swept, "contents">
 })

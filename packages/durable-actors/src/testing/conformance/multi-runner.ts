@@ -281,6 +281,8 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
 
               yield* queued.reached
               yield* queued.release
+              // The hook resumes on the next tick, and the call joins a batch only once it has finished.
+              yield* Effect.yieldNow
               calls.push({ runner, commandId })
             }
 

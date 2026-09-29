@@ -6,6 +6,7 @@ import type { ActorError } from "../errors/actor.ts"
 import type { SubscriptionFailure } from "../errors/subscription.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { Placement } from "../runtime/storage/codec.ts"
 import type { ConnectionCommands } from "../identity/command.ts"
 import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
@@ -18,6 +19,7 @@ import type { BlobAccess, BlobScope } from "../state/blob.ts"
 import type { AnyOwnedTable, TableAccess, TableScope } from "../tables/owned.ts"
 import type { RecordedExit, StoredResult, WorkflowContext } from "../contexts/workflow.ts"
 import type { AnyWorkflow } from "../members/workflow.ts"
+import type { PayloadDeclaration } from "../members/payload.ts"
 
 export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
@@ -65,6 +67,12 @@ export const Request = Schema.Struct({
    */
   external: Schema.optionalKey(Schema.Boolean),
   delivery: Schema.optionalKey(SubscriptionEnvelope),
+  /**
+   * When the admitting runner sent the command to its owner, by that
+   * runner's clock; the owner reports the wait as mailbox age. Not part of
+   * the command's identity.
+   */
+  queuedAtMs: Schema.optionalKey(Schema.Finite),
 })
 
 export type Request = typeof Request.Type
@@ -105,12 +113,16 @@ export type ConnectionLister = (member: string) => Effect.Effect<ReadonlyArray<O
 export interface EmittedEvent {
   readonly tag: string
   readonly value: string
+  /** The payload version `value` is encoded at. */
+  readonly version: number
 }
 
 export interface StoredEvent {
   readonly cursor: string
   readonly commandId: string
   readonly value: string
+  /** The payload version `value` was written at; readers upcast it through the class's chain. */
+  readonly version: number
   readonly timestampMs: number
 }
 
@@ -246,6 +258,12 @@ export interface EffectFailure {
   readonly ambiguous: boolean
   /** Retrying cannot help, so the effect is dead-lettered now. */
   readonly final?: boolean
+  /**
+   * The executor never ran, as when the stored payload does not decode, so
+   * this attempt applied nothing and the row keeps what earlier attempts may
+   * have applied; `ambiguous` is ignored.
+   */
+  readonly notStarted?: boolean
 }
 
 /** What the relay gives one attempt; the executor sees it as `X.Executor`. */
@@ -274,6 +292,7 @@ export interface RegisteredEffect {
    */
   readonly execute: (
     payload: string,
+    version: number,
     context: AttemptContext,
   ) => Effect.Effect<
     {
@@ -287,6 +306,7 @@ export interface RegisteredEffect {
   /** The `onCancelled` route for a cancelled effect without a result, if declared. */
   readonly cancelled: (
     payload: string,
+    version: number,
     letter: {
       readonly effectId: string
       readonly attempts: number
@@ -297,6 +317,7 @@ export interface RegisteredEffect {
   /** The `onDeadLetter` route for an exhausted effect, if declared. */
   readonly deadLetter: (
     payload: string,
+    version: number,
     letter: {
       readonly effectId: string
       readonly attempts: number
@@ -313,6 +334,8 @@ export interface EffectRegistration {
   /** The effect layer's build context; executor attempts run in it. */
   readonly services: Context.Context<never>
   readonly effects: ReadonlyMap<string, RegisteredEffect>
+  /** The effect classes the layer reads, for the startup payload check. */
+  readonly payloads: ReadonlyArray<PayloadDeclaration>
 }
 
 /** A query reads committed state; it never activates, fences, or receipts. */
@@ -327,12 +350,14 @@ export interface RegisteredQuery {
 
 export interface QueryRegistration {
   readonly name: string
-  readonly placement: "tenant" | "actor"
+  readonly placement: Placement
   /** `commandTimeout`: a query's reads are cancelled on the server past it. */
   readonly timeoutMs: number
   readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly blobs: ReadonlyArray<AnyBlob>
   readonly queries: ReadonlyMap<string, RegisteredQuery>
+  /** The event classes the layer reads, for the startup payload check. */
+  readonly payloads: ReadonlyArray<PayloadDeclaration>
 }
 
 export interface Registration {
@@ -342,7 +367,7 @@ export interface Registration {
   readonly mintable: boolean
   /** The deployment's default tenant: the ambient `Tenant` when the actor's layer is built. */
   readonly tenant: string
-  readonly placement: "tenant" | "actor"
+  readonly placement: Placement
   readonly policy: TurnPolicy
   readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly blobs: ReadonlyArray<AnyBlob>
@@ -365,6 +390,16 @@ export interface Registration {
   readonly subscriptions: ReadonlyArray<RegisteredSubscription>
   /** `policy.subscribers` of this actor type as a source; undefined allows every type. */
   readonly subscribers: ReadonlyArray<string> | undefined
+  /**
+   * Every event and effect class the layer writes or reads, its
+   * subscriptions' source events included, for the startup payload check.
+   */
+  readonly payloads: ReadonlyArray<PayloadDeclaration>
+  /**
+   * A stored event of this type as the current class encodes it; a value
+   * the chain cannot read is a defect. Unchanged at the current version.
+   */
+  readonly upcastEvent: (tag: string, version: number, value: string) => Effect.Effect<string>
 }
 
 /** One `Actor.subscription` of a registered subscriber type. */
@@ -388,6 +423,15 @@ export interface RegisteredSubscription {
     tag: string,
     value: string,
     source: ActorRef,
+  ) => Effect.Effect<string, SubscriptionFailure>
+  /**
+   * A stored source event as the subscriber's class encodes it; fails when
+   * the chain cannot read it, so the delivery backs off instead of skipping.
+   */
+  readonly upcast: (
+    tag: string,
+    version: number,
+    value: string,
   ) => Effect.Effect<string, SubscriptionFailure>
 }
 
@@ -434,6 +478,11 @@ export class InternalActors extends Context.Service<
     /** Runs one retention sweep now; used by `ActorTest.cleanup`. */
     readonly cleanup: Effect.Effect<Swept>
     /**
+     * Sweeps every tenant's unreferenced content now, whenever each was last
+     * swept, and returns how many contents it deleted; for tests.
+     */
+    readonly sweepContent: Effect.Effect<number>
+    /**
      * Moves the leases of this runner's running effect attempts forward and
      * runs `jump`, with no relay pass between them; used by `ActorTest.advance`.
      */
@@ -448,7 +497,8 @@ export class InternalActors extends Context.Service<
     /**
      * Reads up to `limit` committed events of `tags` after an exclusive
      * cursor, like a query, without waking the actor; an actor with no
-     * generation row fails `NotCreated` and gets none.
+     * generation row fails `NotCreated` and gets none. Values are upcast to
+     * the current version of their class.
      */
     readonly readFeed: (
       ref: ActorRef,
@@ -456,7 +506,7 @@ export class InternalActors extends Context.Service<
       after: string | undefined,
       limit: number,
     ) => Effect.Effect<
-      ReadonlyArray<StoredEvent & { readonly tag: string }>,
+      ReadonlyArray<Omit<StoredEvent, "version"> & { readonly tag: string }>,
       ActorError | UnknownCursor | RetentionGap
     >
     /**
@@ -505,7 +555,11 @@ export class InternalActors extends Context.Service<
 export class Actors extends Context.Service<
   Actors,
   {
-    /** Mints a command id for `Actor.commandId`, so a caller can retry one operation across processes. */
-    readonly mintCommandId: Effect.Effect<string>
+    /**
+     * Mints a command id for `Actor.commandId`, so a caller can retry one
+     * operation across processes. It reads the database clock, so it fails
+     * `ActorUnavailable` while the database is unreachable.
+     */
+    readonly mintCommandId: Effect.Effect<string, ActorError>
   }
 >()("@durable-actors/core/handles/actors") {}

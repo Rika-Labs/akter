@@ -1,8 +1,8 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actors } from "@durable-actors/core/runtime"
 import { ActorCluster, ActorTest, CleanupHooks, TurnHooks } from "@durable-actors/core/testing"
-import { Effect, Layer } from "effect"
-import type { SqlClient } from "effect/unstable/sql"
+import { Context, Effect, Layer, Redacted } from "effect"
+import { SqlClient } from "effect/unstable/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"
 import { type Limit, load, now, type Summary, summarize, throughput } from "./measure.ts"
 import { queued } from "./probe/turns/batches.ts"
@@ -80,12 +80,25 @@ const hooks = Layer.mergeAll(
 const probes = (subscriptions: boolean | undefined) =>
   subscriptions === true ? Layer.merge(ProbeLive, SubscriptionProbeLive) : ProbeLive
 
-const runtimeLayer = (maxResidentActors: number | undefined, subscriptions?: boolean) =>
+// The `Shelf` probe declares content, so every runtime needs a grant key.
+const BENCH_CONTENT_KEY = {
+  id: "bench",
+  secret: Redacted.make("durable-actors benchmark content grant key only"),
+}
+
+const runtimeLayer = (
+  maxResidentActors: number | undefined,
+  subscriptions?: boolean,
+  rowLevelSecurity?: { readonly role: string },
+) =>
   probes(subscriptions).pipe(
     Layer.provideMerge(
-      Actors.layer({ authorize: () => Effect.succeed(true), maxResidentActors }).pipe(
-        Layer.provide(hooks),
-      ),
+      Actors.layer({
+        authorize: () => Effect.succeed(true),
+        maxResidentActors,
+        content: { keys: [BENCH_CONTENT_KEY] },
+        rowLevelSecurity,
+      }).pipe(Layer.provide(hooks)),
     ),
     Layer.provide(BunCrypto.layer),
     Layer.orDie,
@@ -110,6 +123,8 @@ export interface ScenarioContext {
       readonly maxResidentActors?: number
       /** Registers the subscription probes too. */
       readonly subscriptions?: boolean
+      /** Runs turns and queries under row-level security as a fresh tenant role (Postgres only). */
+      readonly rowLevelSecurity?: boolean
     },
     body: (instruments: Instruments | undefined) => Effect.Effect<A, E, ActorServices>,
   ) => Effect.Effect<A, E>
@@ -124,6 +139,49 @@ export interface Scenario {
 }
 
 export const DEFAULT_POOL = 10
+
+let tenantRoles = 0
+
+/**
+ * Migrates the case database with a runtime of its own, then runs the
+ * deployment guide's row-level security script for a fresh role, which is
+ * dropped before the database is.
+ */
+const grantTenantRole = Effect.fnUntraced(function* (database: {
+  readonly layer: Layer.Layer<SqlClient.SqlClient>
+}) {
+  tenantRoles += 1
+  const role = `bench_tenant_${process.pid}_${tenantRoles}`
+
+  yield* Layer.build(runtimeLayer(undefined).pipe(Layer.provideMerge(database.layer))).pipe(
+    Effect.scoped,
+  )
+
+  const sql = Context.get(yield* Layer.build(database.layer), SqlClient.SqlClient)
+
+  for (const statement of [
+    `CREATE ROLE ${role} NOLOGIN`,
+    `GRANT USAGE ON SCHEMA public TO ${role}`,
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
+    `GRANT ${role} TO CURRENT_USER`,
+    `GRANT CREATE ON SCHEMA durable TO ${role}`,
+    `DO $$ DECLARE v record; BEGIN
+      FOR v IN SELECT relname FROM pg_class WHERE relnamespace = 'durable'::regnamespace AND relkind = 'v'
+      LOOP EXECUTE format('ALTER VIEW durable.%I OWNER TO %I', v.relname, '${role}'); END LOOP;
+    END $$`,
+    `REVOKE CREATE ON SCHEMA durable FROM ${role}`,
+  ])
+    yield* sql.unsafe(statement).pipe(Effect.orDie)
+
+  yield* Effect.addFinalizer(() =>
+    Effect.forEach(
+      [`REASSIGN OWNED BY ${role} TO CURRENT_USER`, `DROP OWNED BY ${role}`, `DROP ROLE ${role}`],
+      (statement) => sql.unsafe(statement),
+    ).pipe(Effect.ignore),
+  )
+
+  return { role }
+})
 
 // Well past a case's length, so no runner's shard locks expire while it runs.
 const SHARD_LOCK_EXPIRATION = "30 seconds"
@@ -163,8 +221,14 @@ export const withRuntime =
           )
         }
 
+        if (options.rowLevelSecurity === true && database.url === undefined)
+          return yield* Effect.die(new Error("rowLevelSecurity needs the postgres backend"))
+
+        const rowLevelSecurity =
+          options.rowLevelSecurity === true ? yield* grantTenantRole(database) : undefined
+
         const services = yield* Layer.build(
-          runtimeLayer(options.maxResidentActors, options.subscriptions).pipe(
+          runtimeLayer(options.maxResidentActors, options.subscriptions, rowLevelSecurity).pipe(
             Layer.provideMerge(database.layer),
           ),
         )

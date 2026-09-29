@@ -1,8 +1,9 @@
-import { is, type InferInsertModel, type InferSelectModel, type SQL } from "drizzle-orm"
+import { is, sql, type InferInsertModel, type InferSelectModel, type SQL } from "drizzle-orm"
 import {
   bigint,
   ForeignKeyBuilder,
   IndexBuilder,
+  pgPolicy,
   PgTable,
   PrimaryKeyBuilder,
   primaryKey,
@@ -22,6 +23,7 @@ import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core"
 import type { EffectPgDatabase } from "drizzle-orm/effect-postgres"
 import type { Effect, Option } from "effect"
 import type { ActorRef } from "../identity/caller.ts"
+import type { Placement } from "../runtime/storage/codec.ts"
 
 /** Ownership column keys, which are also their SQL names. */
 export const OWNERSHIP = ["routing_key", "tenant_id", "actor_id"] as const
@@ -189,7 +191,7 @@ export type Group = <A>(
 /** Who the rows belong to and how long a bound capability lives. */
 export interface TableScope {
   readonly ref: ActorRef
-  readonly placement: "tenant" | "actor"
+  readonly placement: Placement
   /** The tables the actor type declares; `rows` refuses any other. */
   readonly tables: ReadonlyArray<AnyOwnedTable>
   /** Dies once the capability is used outside the turn or query that received it. */
@@ -319,6 +321,11 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
 
     const [first, ...rest] = [...owner, ...key.map((column) => self[column]!)]
     result.push(primaryKey({ name: primaryName, columns: [first!, ...rest] }))
+
+    // The tenant policy the framework tables carry: the table owner is exempt,
+    // and a runtime with row-level security sees only each transaction's tenant.
+    const scoped = sql`tenant_id = current_setting('durable.tenant', true)`
+    result.push(pgPolicy("durable_tenant", { for: "all", using: scoped, withCheck: scoped }))
 
     return result
   }

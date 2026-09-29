@@ -437,7 +437,7 @@ The `subscriptions` scenario now also runs the built feature ([`b63a32a-m3.7-sub
 - **Waking a hibernated subscriber adds nothing measurable** at this scale: the trip, including the new activation, stays at about 14 ms.
 - **A poison row doesn't hold its neighbours back.** Beside one follower whose handler always dies, the other 63 drain the same backlog about 5% slower. The poison row backs off on its own, as the per-row hold requires.
 - **An expansion page is bounded by its key range.** A first run of the full profile stalled in `prune-beside-10000-subscriptions`. With 10^4 freshly seeded rows and no statistics yet, the planner joined the expansion page to `actor_subscriptions` as a nested loop and rescanned the page for every stored row, about 10^7 comparisons per statement. The updates now bound their rows by the page's key range, and the page and leased set are materialized.
-- **Metrics:** the subscription metrics ADR 0026 names are not emitted yet; they wait for the M4.3 observability layer.
+- **Metrics:** M4.3 emits the subscription metrics ADR 0026 names, as `durable-actors.subscription.lag_events`, `.lag_ms`, `.pinned_events`, and `.undeliverable_gaps`, and `durable-actors.relay.stuck_rows` ([ADR 0049](../decisions/0049-observability-names-metrics-and-defect-spans.md)).
 
 ### Effect cancellation and per-actor caps (M2.13)
 
@@ -560,6 +560,42 @@ The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault
 - **A woken actor's tick write is one statement.** Its first turn re-inserts its pending tick, and the unique index rejects it: 121,158 calls for about 122,000 deliveries in the one-runner round, at 0.066 ms.
 - **The claim mean is read from `statements`.** At `094b4a3`, the scenario's `relayClaimMeanMs` is -1 because it searched for `SKIP LOCKED`, which falls past the 160 characters of query text the harness stores. The claim mean above is read from the listed `WITH intent_candidates …` statement, and the scenario now matches that prefix.
 
+### Row-level security (M4.5, #232)
+
+`2026-09-29-b54c241-m4.5-rls-postgres.json` runs `bun run bench --backend postgres --scenario rls` (full profile) on branch `feat/232-row-level-security` at `b54c241` (clean tree). Postgres 18 ran as a local server with `pg_stat_statements` preloaded and default durability, through `BENCH_DATABASE_URL`, so server CPU isn't recorded. Bun 1.4.2 and Effect 4.0.0-rc.116 ran on one Amp orb (E2B cloud VM, 16 vCPUs of an Intel Xeon at 2.60 GHz, 31 GiB), shared by the client, the runtime, and Postgres. Each case is one warm actor with 1,000 owned rows and one caller, first with the runtime as the exempt table owner, then with `rowLevelSecurity` on ([ADR 0051](../decisions/0051-row-level-security.md)).
+
+| Case                  | Off: p50 / p99 ms | On: p50 / p99 ms | Statements off → on | Round trips off → on |
+| --------------------- | ----------------- | ---------------- | ------------------- | -------------------- |
+| Command turn          | 2.39 / 6.40       | 2.70 / 6.56      | 7 → 7               | 2 → 2                |
+| State query           | 0.19 / 0.46       | 0.51 / 0.91      | 1 → 2               | 0 → 0                |
+| Owned-row insert turn | 2.73 / 6.63       | 3.09 / 7.86      | 7 → 7               | 3 → 3                |
+| Owned-row point query | 0.49 / 1.05       | 0.80 / 1.76      | 2 → 3               | 0 → 0                |
+
+- **Turns pay no statement or round trip.** The role and tenant settings ride on the `set_config` statement a turn already opens with. The latency difference is within run-to-run noise: an earlier run on the same commit measured the turn at 3.34 ms off and 3.07 ms on.
+- **Queries pay their transaction.** With RLS on, a query runs as `BEGIN`, one `set_config` statement, its reads, and `COMMIT`. That adds about 0.3 ms at p50 here. `pg_stat_statements` counts transaction control once per distinct text, so the statement column shows only the `set_config` statement.
+- **The policy predicate costs nothing measurable here.** Each scoped statement already filters on `tenant_id`.
+
+### Content blobs (M4.13, #222)
+
+The `content-blobs` scenario ([`6b35562-m4.13-content-blobs`](../../benchmarks/results/2026-09-29-6b35562-m4.13-content-blobs-postgres.json), full profile, Postgres 18.6 with `pg_stat_statements`, one orb VM shared with the runtime) measures the built feature. Latency is from one run; statements per operation are the stable number.
+
+| Case                                              | Rate      | p50 / p99 ms | Stmts/op |
+| ------------------------------------------------- | --------- | ------------ | -------- |
+| dedup-skewed (2,000 uploads of 64 KiB, 200 items) | 1,766/s   | 4.1 / 13.7   | 1.11     |
+| upload-4k                                         | 840/s     | 1.1 / 2.3    | 2        |
+| upload-1024k                                      | 81.7/s    | 11.8 / 23.5  | 2.03     |
+| upload-8192k                                      | 12.5/s    | 78.2 / 97.4  | 9.06     |
+| attach (warm turn)                                | 275.9/s   | 3.5 / 8.6    | 7.01     |
+| read-4k (`get` in a query)                        | 1,736.8/s | 0.53 / 1.06  | 3        |
+| read-1024k                                        | 279.8/s   | 2.8 / 16.6   | 3        |
+| sweep-1000 (1,000 candidates, half referenced)    | one sweep | 17.8         | 11       |
+
+- **Deduplication.** The skewed set uploaded 131,072,000 bytes and stored 13,107,200: a ratio of 10, one copy per distinct item. A duplicate upload costs the upsert alone (1.11 statements per upload on average), so repeated uploads of popular content are cheaper than new ones.
+- **Upload cost** is one upsert plus one statement per 1 MiB chunk (8 MiB: 9 statements), in one transaction on the tenant's shard.
+- **Attach** is a warm turn whose content statement replaces a state write: 7.01 statements, the same as `hot-actor`.
+- **Reads** are the reference on the actor's shard and one statement for every chunk on the tenant's, plus the query's own statement.
+- **Sweep:** 1,000 candidates, half of them referenced, took 18 ms and 11 statements: the tenant list, the turn bound, and per batch of 500 a candidate read, a reference scan, and one delete of content and chunks.
+
 ### Failure drills (T7)
 
 `TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `fix/219-drill-start-gate` (`main` at `aa8af52` plus the fix); each run prints one `DRILL` line. Postgres 18.6 installed in an Amp orb, Bun 1.4.2, one machine shared by the five runner processes and Postgres. Workload: three processes that start their operations together once all three are ready (the first holds at its 60th until the kill), then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
@@ -572,6 +608,50 @@ The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault
 | Lost / duplicated operations                   | 0 / 0  | 0 / 0  | 0 / 0            |
 
 Recovery runs from the kill to the commit of the slowest command the first runner, which stays up and serving throughout, started after it on one of the killed runner's shards. Each runner reports the shards its commands went to, and the drill reads the killed runner's shards from `cluster_locks` just before the kill and asserts at least one such command, so the measured command provably waited on a dead runner's shard and its commit marks that shard serving again. It is bounded by the 3 s shard-lock expiry plus Cluster's shard refresh, and can be under 3 s because the dead runner's last lock refresh predates the kill. Until [#219](https://github.com/Rika-Labs/durable-actors/issues/219) the first runner started its operations before the other two were up and could finish them all before the kill, which left no post-kill command on it to measure and the kill not under load. With 10 samples, p99 is not meaningful. Committed operations vary because a runner killed mid-operation may commit an `Increment` without its `Send`; those are counted as committed, never lost.
+
+### Failure drill II: Postgres primary failover (T10)
+
+`bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/failover.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/223-failover-drill` (`main` at `7fef2da` plus [#244](https://github.com/Rika-Labs/durable-actors/pull/244) and this drill); each run prints one `FAILOVER` line. Machine: one Amp orb (E2B cloud VM, 16 vCPUs of an Intel Xeon at 2.60 GHz, 31 GiB), running Bun 1.4.2, the three runner processes, and Docker 29.8.1.
+
+**Setup.** The drill starts its own Postgres 18.6 primary and a streaming standby as `postgres:18.6` containers on the host network. The standby is taken with `pg_basebackup -R`. Once it streams, the primary is switched to synchronous replication: `synchronous_standby_names = '*'` with `synchronous_commit` on. Runners reach the database only through a TCP endpoint in the test process, which stands in for the DNS name or virtual IP a hosted failover moves.
+
+**Workload.** Three runner processes ([`runner.ts`](../../packages/durable-actors/src/testing/conformance/crash/drills/runner.ts), the T7 runner) start together. Each runs 120 sequential operations of an `Increment` plus a `Send` whose `Add` crosses the relay, each command under a minted id retried until it commits. Shard locks expire after 3 s and relay claims after 5 s.
+
+**The failure.** Once every runner has done 30 operations, the endpoint holds the database's replies, as a partition would, until the primary shows a committed `Increment` or `Send` receipt that no caller has heard of. Then:
+
+1. The primary container gets SIGKILL, which takes every backend and the WAL sender with it.
+2. The endpoint drops every connection.
+3. `pg_promote()` runs on the standby, and the endpoint moves to it.
+
+Failure detection, which a failover manager adds before promoting, is not in these numbers.
+
+| Metric                                                      | Min    | p50     | Max (≈p95 of 10) |
+| ----------------------------------------------------------- | ------ | ------- | ---------------- |
+| Commit-unknown commands per run (resolved through receipts) | 1      | 2       | 3                |
+| Promotion: kill to `pg_promote()` returning                 | 0.20 s | 0.25 s  | 0.31 s           |
+| Recovery: kill to every runner committing again             | 0.37 s | 30.10 s | 30.13 s          |
+| Slowest single operation                                    | 1.05 s | 30.12 s | 30.14 s          |
+| Committed operations per run                                | 360    | 360     | 360              |
+| Lost / duplicated operations                                | 0 / 0  | 0 / 0   | 0 / 0            |
+
+- **No lost or duplicated work.** Every run committed all 360 operations once. Every command a runner heard acknowledged, and every receipt the old primary showed while replies were held, is on the promoted primary. The counter and receiver totals equal their receipt counts.
+- **Commit-unknown resolves through receipts.** 18 commands, over the 10 runs, had committed on the primary with their replies still in flight when it died. Each caller's retry under the same id was answered from the receipt the standby had received, without a second transition.
+- **Recovery is bimodal: about 0.4 s, or the whole 30 s `deliveryTimeout`.** 2 runs recovered in 0.37 s and 0.42 s. In the other 8, one command caught by the failover waited out its caller's `deliveryTimeout` (30 s by default), and its retry then committed at once.
+  - The cause is in Effect Cluster ([#243](https://github.com/Rika-Labs/durable-actors/issues/243)). A turn that fails with a retryable SQL error restarts its entity, and Cluster re-sends the command to the rebuilt handler. If that re-sent turn fails again before the rebuild completes, because the database is still unreachable, Cluster drops the second defect: the command is never run again or answered.
+  - The longer the database is out of reach, the likelier this is. It hit 8 of 10 runs here, where promotion takes about 250 ms. A failover manager that spends seconds detecting the failure widens that window; that case is untested.
+  - Until #243 is fixed, a failover costs some callers `deliveryTimeout`.
+- **A mint during the outage used to kill its caller.** Before [#244](https://github.com/Rika-Labs/durable-actors/pull/244), a command-id mint that reached the database while it was unreachable died instead of failing `ActorUnavailable`. That took down a whole runner process that minted 16 ms before the kill. The drill's runner retries its mint like any command.
+
+Not covered:
+
+- failure detection time;
+- a standby on another host or zone, where synchronous commit costs a network round trip per turn;
+- asynchronous replication, which [deployment](../operations/01-deployment.md#postgres-primary-failover) rules out;
+- shard ownership by session advisory locks (the drill runs `shardLockDisableAdvisory: true`, as T7 does);
+- the promoted primary's own replacement standby;
+- more than one failover per run.
+
+With 10 samples, p99 is not meaningful.
 
 ### Recommendations (not applied)
 

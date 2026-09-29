@@ -21,6 +21,8 @@ import { progressPool } from "../effects/progress.ts"
 import { CRON_PREFIX } from "../cron/key.ts"
 import { type CronSchedule, cronTicks } from "../cron/schedule.ts"
 import { TurnHooks } from "./hooks.ts"
+import { count as tally, Metrics } from "../telemetry/metrics.ts"
+import { SpanNames } from "../telemetry/spans.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
 import type {
@@ -87,6 +89,8 @@ interface ClaimedRow {
   readonly target_id: string
   readonly command: string
   readonly payload: string
+  /** The payload version of an effect row's `payload`; 0 for every other kind. */
+  readonly payload_version: number
   readonly caller: string
   /** The claim's `due_at_ms`, which every settling write of an intent names. */
   readonly claimed_until: string
@@ -107,7 +111,7 @@ interface ClaimedEffect extends ClaimedRow {
 const claimedColumns = (sql: SqlClient.SqlClient) =>
   sql`o.kind, o.routing_key::text AS routing_key, o.intent_id, o.attempts, o.last_error,
     o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.target_id, o.command,
-    o.payload, o.caller, o.due_at_ms::text AS claimed_until, o.timer_key,
+    o.payload, o.payload_version, o.caller, o.due_at_ms::text AS claimed_until, o.timer_key,
     o.scheduled_at_ms::text AS scheduled_at, o.cancelled_at_ms IS NOT NULL AS cancelled,
     o.maybe_applied`
 
@@ -266,7 +270,7 @@ export const claimDue = ({
 
     for (const result of subscriptions.results)
       results.push(sql`SELECT 'work'::text, NULL::text, NULL::text, 0, NULL::text, false,
-          NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text,
+          NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, 0,
           NULL::text, NULL::text, NULL::text, NULL::text, false, false, 0, false,
           claimed.work
         FROM (${result}) AS claimed`)
@@ -451,14 +455,33 @@ export const claimCapped = ({
     }),
   )
 
-/** Makes the oldest waiting row of `group` due now, after one of its attempts settled. */
-const wakeWaiting = (sql: SqlClient.SqlClient, group: CappedGroup, at: number) =>
+/**
+ * Makes the oldest waiting row of `group` due now, after one of its attempts
+ * settled. It runs outside the group's lock, so a claim may be taking that
+ * row at the same moment: it skips a row a claim holds, and the outer guard
+ * refuses a row that is running by the time the update reaches it. Without
+ * both, a wake that waited on a claim's row lock would move the claimed
+ * attempt's lease end to now, and the cap would stop counting it while it
+ * still runs.
+ */
+export const wakeWaiting = ({
+  sql,
+  group,
+  at,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly group: CappedGroup
+  readonly at: number
+}) =>
   sql`UPDATE actor_outbox SET due_at_ms = least(due_at_ms, ${at}), waiting = false
-    WHERE (routing_key, intent_id) IN (
-      SELECT o.routing_key, o.intent_id FROM actor_outbox o
-      WHERE ${groupRow(sql, group)} AND o.waiting AND o.cancelled_at_ms IS NULL
-      ORDER BY o.ready_at_ms, o.intent_id LIMIT 1
-    ) RETURNING 1`
+    WHERE waiting AND NOT running AND cancelled_at_ms IS NULL
+      AND (routing_key, intent_id) IN (
+        SELECT o.routing_key, o.intent_id FROM actor_outbox o
+        WHERE ${groupRow(sql, group)} AND o.waiting AND NOT o.running
+          AND o.cancelled_at_ms IS NULL
+        ORDER BY o.ready_at_ms, o.intent_id LIMIT 1
+        FOR UPDATE OF o SKIP LOCKED
+      ) RETURNING 1`
 
 /** One row reporting `kind`'s candidates when its claim took none of them. */
 const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
@@ -466,7 +489,7 @@ const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
   const found = sql.literal(`${kind}_candidates`)
 
   return sql`SELECT ${`skipped-${kind}`}::text, NULL, NULL, 0, NULL, false, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, false, (SELECT count(*) FROM ${found})::int,
+      NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, false, false, (SELECT count(*) FROM ${found})::int,
       false, NULL::text
     WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
@@ -670,6 +693,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         )
         yield* sql`UPDATE actor_outbox SET due_at_ms = ${(yield* databaseTime) + backoffMs(row.attempts)}
           WHERE ${claim}`
+        yield* tally(Metrics.relayRetried, { kind: "intent" }, 1)
       })
 
     return yield* Effect.gen(function* () {
@@ -699,7 +723,25 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       if (tick) yield* ticks.settleFired(row, claim)
       else yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
+
+      yield* tally(Metrics.relayDelivered, { kind: "intent" }, 1)
     }).pipe(
+      Effect.withSpan(
+        SpanNames.relayIntent,
+        {
+          kind: "producer",
+          attributes: {
+            "actor.type": row.target_type,
+            "actor.tenant": row.tenant_id,
+            "actor.id": row.target_id,
+            "command.name": row.command,
+            "command.id": row.intent_id,
+            "relay.attempt": row.attempts,
+            "relay.timer": row.timer_key !== null,
+          },
+        },
+        { captureStackTrace: false },
+      ),
       // An interrupted delivery (shutdown) makes its row due at once; a receiver
       // that already committed it replays the receipt on redelivery.
       Effect.onInterrupt(() =>
@@ -767,7 +809,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           route === undefined
             ? yield* sql`DELETE FROM actor_outbox WHERE ${guard} RETURNING 1`
             : yield* sql`UPDATE actor_outbox SET kind = 'intent', command = ${route.command},
-                payload = ${route.payload}, due_at_ms = ${at}, scheduled_at_ms = ${at},
+                payload = ${route.payload}, payload_version = 0, due_at_ms = ${at}, scheduled_at_ms = ${at},
                 attempts = 0, last_error = NULL, ambiguous = false, running = false,
                 timer_key = NULL
               WHERE ${guard} RETURNING 1`
@@ -791,7 +833,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           if (
             !(yield* settleTo(
-              yield* registered.deadLetter(row.payload, letter),
+              yield* registered.deadLetter(row.payload, row.payload_version, letter),
               sql`${attemptRow(attempts)} AND cancelled_at_ms IS ${sql.literal(
                 cancelled ? "NOT NULL" : "NULL",
               )}`,
@@ -802,11 +844,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
           yield* Effect.logWarning("Effect dead-lettered after its last attempt", cause).pipe(
             annotate,
           )
+          yield* tally(Metrics.deadLetters, { actor_type: row.actor_type, effect: row.command }, 1)
           yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id, tenant_id, actor_type,
-              actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
+              actor_id, effect, payload, payload_version, attempts, cause, ambiguous, dead_at_ms)
             VALUES (${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
-              ${row.actor_id}, ${row.command}, ${row.payload}, ${attempts}, ${cause}, ${ambiguous},
-              ${yield* databaseTime})`
+              ${row.actor_id}, ${row.command}, ${row.payload}, ${row.payload_version}, ${attempts},
+              ${cause}, ${ambiguous}, ${yield* databaseTime})`
 
           // Only the fault hook needs the request, so an unreadable one must not block the letter.
           const request = yield* requestOf(row, "sender").pipe(Effect.option)
@@ -829,7 +872,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         const ambiguous = known === "Unknown"
 
         if (registered.routesCancelled) {
-          const route = yield* registered.cancelled(row.payload, {
+          const route = yield* registered.cancelled(row.payload, row.payload_version, {
             effectId: row.intent_id,
             attempts,
             outcome: { _tag: known, cause },
@@ -981,7 +1024,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       // Racing stops and awaits the renewal fiber before any settling write, so
       // a late renewal can't overwrite a failure's backoff with a fresh lease.
       const outcome = yield* registered
-        .execute(row.payload, {
+        .execute(row.payload, row.payload_version, {
           effectId: row.intent_id,
           attempt,
           principal: principal(request.caller),
@@ -990,6 +1033,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
           report: slot.offer,
         })
         .pipe(
+          Effect.withSpan(
+            SpanNames.effect(row.actor_type, row.command),
+            {
+              kind: "client",
+              attributes: {
+                "actor.type": row.actor_type,
+                "actor.tenant": row.tenant_id,
+                "actor.id": row.actor_id,
+                "effect.name": row.command,
+                "effect.id": row.intent_id,
+                "effect.attempt": attempt,
+              },
+            },
+            { captureStackTrace: false },
+          ),
           Effect.result,
           Effect.raceFirst(renewals),
           Effect.raceFirst(deadline),
@@ -1038,9 +1096,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           if (registered.routesCancelled && reported !== undefined) {
             const recorded = yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id,
-              tenant_id, actor_type, actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
+              tenant_id, actor_type, actor_id, effect, payload, payload_version, attempts, cause,
+              ambiguous, dead_at_ms)
             SELECT ${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
-              ${row.actor_id}, ${row.command}, ${row.payload}, ${attempt},
+              ${row.actor_id}, ${row.command}, ${row.payload}, ${row.payload_version}, ${attempt},
               'Succeeded after it was cancelled', true, ${yield* databaseTime}
             WHERE EXISTS (
               SELECT 1 FROM actor_outbox WHERE ${sql`routing_key = ${routingKey}`}
@@ -1109,7 +1168,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
         // The first success of any attempt wins; the row stops being an effect.
         if (yield* settleSuccess(routes.success, sql`${effectRow} AND cancelled_at_ms IS NULL`))
-          return
+          return yield* tally(Metrics.relayDelivered, { kind: "effect" }, 1)
 
         // Cancelled meanwhile: the result is reported as the cancellation's outcome.
         if (
@@ -1127,23 +1186,29 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       if (failure === undefined) return
 
-      const { cause, ambiguous, final } = failure
+      const { cause, final, notStarted } = failure
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 
       // The outcome is recorded first, so a failed dead-letter transaction is
       // retried with this attempt's cause rather than the claim's, and a final
       // failure, which the next claim reads as exhaustion even with retries
-      // left, is never followed by another attempt.
+      // left, is never followed by another attempt. An attempt that never
+      // started applied nothing: the row stays as ambiguous as its earlier
+      // attempts left it, which `maybe_applied` records.
       const recorded = yield* sql<{
         cancelled: boolean
         maybe_applied: boolean
+        ambiguous: boolean
       }>`UPDATE actor_outbox
-        SET last_error = ${cause}, ambiguous = ${ambiguous}, running = false,
-          final_failure = ${final === true},
+        SET last_error = ${cause},
+          ambiguous = ${notStarted === true ? sql`maybe_applied` : sql`${failure.ambiguous}`},
+          running = false, final_failure = ${final === true},
           due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
         WHERE ${attemptRow(attempt)}
-        RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`
+        RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied, ambiguous`
+
+      const ambiguous = recorded[0]?.ambiguous ?? failure.ambiguous
 
       if (recorded.length === 0 && rejected !== undefined && Result.isSuccess(outcome))
         return yield* recordLate(outcome.success)
@@ -1174,6 +1239,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         Effect.annotateLogs({ attempt, ambiguous }),
         annotate,
       )
+      yield* tally(Metrics.relayRetried, { kind: "effect" }, 1)
     }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })
 
@@ -1210,7 +1276,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       : attempt.pipe(
           Effect.ensuring(
             Effect.gen(function* () {
-              const woke = yield* wakeWaiting(sql, groupOf(row), yield* databaseTime)
+              const woke = yield* wakeWaiting({ sql, group: groupOf(row), at: yield* databaseTime })
 
               if (woke.length > 0) yield* Queue.offer(signals, undefined)
             }).pipe(Effect.ignore),

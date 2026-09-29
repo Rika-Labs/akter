@@ -33,7 +33,10 @@ export const merges = ({
  * Removes the next batch from the front of `waiting`, in delivery order: the
  * first command, then each command behind it that is already waiting, up to
  * `BATCH_CAP` turns. Consecutive calls of one commutative reducer are one
- * merged turn of up to `MERGE_CAP` calls. Nothing waits for more to arrive.
+ * merged turn of up to `MERGE_CAP` calls. Nothing waits for more to arrive. A
+ * command joins a batch only once its own `queued` hook has finished, so the
+ * batch stops at the first command that is still in it, and takes nothing when
+ * that is the first.
  *
  * A batch stops before a command id it already holds, so a retry queued
  * behind its original resolves through the receipt the original commits. It
@@ -41,16 +44,21 @@ export const merges = ({
  * batch of its own, once: these are the commands of a batch that failed, run
  * one per transaction until each has been processed.
  */
-export const takeBatch = <W extends Mergeable>({
+export const takeBatch = <
+  W extends Mergeable & {
+    /** Set once the request's `queued` hook has finished. */
+    readonly queued: boolean
+  },
+>({
   waiting,
   alone,
 }: {
   readonly waiting: Array<W>
   readonly alone: Set<string>
 }): Array<W> => {
-  const first = waiting.shift()
+  if (waiting[0]?.queued !== true) return []
 
-  if (first === undefined) return []
+  const first = waiting.shift()!
 
   if (alone.delete(first.request.commandId)) return [first]
 
@@ -63,7 +71,7 @@ export const takeBatch = <W extends Mergeable>({
     const next = waiting[0]!
     const { commandId } = next.request
 
-    if (ids.has(commandId) || alone.has(commandId)) break
+    if (!next.queued || ids.has(commandId) || alone.has(commandId)) break
 
     const joins = merged > 0 && merged < MERGE_CAP && merges({ previous: batch.at(-1)!, next })
 

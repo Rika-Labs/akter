@@ -16,6 +16,8 @@ import { TurnHooks } from "../turn/hooks.ts"
 import { ControlPayload, StringsJson, textArray } from "../turn/outbox.ts"
 import { candidates, outboxNow } from "../turn/relay.ts"
 import { deliveryCommandId } from "./identity.ts"
+import { count, Metrics } from "../telemetry/metrics.ts"
+import { SpanNames } from "../telemetry/spans.ts"
 
 /** How long a row whose declaration was removed stays due before cleanup deletes it. */
 const REMOVED_AFTER_MS = 86_400_000
@@ -739,6 +741,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             last_error = ${cause},
             due_at_ms = ${(yield* databaseTime) + backoff(row.attempts, settings)}
           WHERE ${held()}`
+        yield* count(Metrics.relayRetried, { kind: "subscription" }, 1)
       })
 
     if (local === undefined) return yield* backOff(BigInt(row.delivered), "Undeclared subscription")
@@ -752,15 +755,17 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       event: string | null
       command_id: string | null
       value: Uint8Array | null
+      payload_version: number | null
       emitted_at_ms: string | null
     }>`SELECT (SELECT event_sequence::text FROM actor_generations g
           WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}) AS head,
         (SELECT min(o.sequence)::text FROM actor_events o
           WHERE ${eventsOf("o", key, source.tenant, source.actor, source.id)}) AS oldest,
-        e.sequence::text AS sequence, e.event, e.command_id, e.value, e.emitted_at_ms::text AS emitted_at_ms
+        e.sequence::text AS sequence, e.event, e.command_id, e.value, e.payload_version,
+        e.emitted_at_ms::text AS emitted_at_ms
       FROM (VALUES (1)) AS one (x)
       LEFT JOIN LATERAL (
-        SELECT sequence, event, command_id, value, emitted_at_ms FROM actor_events e
+        SELECT sequence, event, command_id, value, payload_version, emitted_at_ms FROM actor_events e
         WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
           AND e.sequence > ${BigInt(row.delivered)}
           AND e.event = ANY(${textArray({ sql, values: subscription.events })})
@@ -895,7 +900,15 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     }
 
     for (const event of continuous ? events : []) {
-      const value = decompress(event.value!)
+      // The subscriber reads the current shape; a value its chain can't read
+      // backs the row off at this event rather than skipping it.
+      const upcast = yield* subscription
+        .upcast(event.event!, event.payload_version!, decompress(event.value!))
+        .pipe(Effect.result)
+
+      if (Result.isFailure(upcast))
+        return yield* backOff(progress, `Event does not decode: ${upcast.failure.message}`)
+      const value = upcast.success
 
       const subscriberId =
         subscription.routed === undefined
@@ -984,9 +997,16 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     )
 
     if (!settled)
-      yield* Effect.logWarning("Subscription settle lost its claim").pipe(
+      return yield* Effect.logWarning("Subscription settle lost its claim").pipe(
         Effect.annotateLogs({ subscription: `${row.subscriber_type}.${row.subscription}` }),
       )
+
+    yield* count(Metrics.relayDelivered, { kind: "subscription" }, 1)
+    yield* count(
+      Metrics.undeliverableGaps,
+      { subscriber_type: row.subscriber_type, subscription: row.subscription },
+      uncountedGaps,
+    )
   })
 
   // Shutdown releases a claim at once instead of leaving it until its lease
@@ -1109,7 +1129,22 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     const running: Effect.Effect<void, SubscriptionError, SqlClient.SqlClient> =
       work.kind === "subscription"
-        ? deliverRow(work, claim)
+        ? deliverRow(work, claim).pipe(
+            Effect.withSpan(
+              SpanNames.relaySubscription,
+              {
+                kind: "producer",
+                attributes: {
+                  "actor.type": work.subscriber_type,
+                  "actor.tenant": work.tenant_id,
+                  "subscription.name": work.subscription,
+                  "subscription.source_type": work.source_type,
+                  "relay.attempt": work.attempts,
+                },
+              },
+              { captureStackTrace: false },
+            ),
+          )
         : Match.value(work.kind).pipe(
             Match.when("feed", () => expand(work, handoff)),
             Match.orElse(() => register(work)),
