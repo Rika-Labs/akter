@@ -65,7 +65,6 @@ export function tallyFlakes(runs: ReadonlyArray<StressRun>): ReadonlyArray<Flake
 
       for (const test of cases) record(`${file.name} > ${test.fullName}`, run)
 
-      // A file can fail outside its cases, e.g. at import or in a hook, as well as in them.
       if (file.status === "failed" && (cases.length === 0 || file.message !== ""))
         record(`${file.name} (file failed)`, run)
     }

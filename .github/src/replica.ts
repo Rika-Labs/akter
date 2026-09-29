@@ -1,9 +1,11 @@
-// Starts a physical streaming replica of the Postgres server at
-// TEST_DATABASE_URL and prints its connection string, for the read-your-writes
-// conformance cases. It runs from `check:ci`, because the evidence gate refuses
-// a pull request that changes the verification workflow. Without
-// TEST_DATABASE_URL or Docker it prints nothing, so the replica cases are
-// skipped; in CI that is an error instead.
+/**
+ * Starts a physical streaming replica of the Postgres server at
+ * TEST_DATABASE_URL and prints its connection string, for the read-your-writes
+ * conformance cases. It runs from `check:ci`, because the evidence gate refuses
+ * a pull request that changes the verification workflow. Without
+ * TEST_DATABASE_URL or Docker it prints nothing, so the replica cases are
+ * skipped; in CI that is an error instead.
+ */
 import { Effect } from "effect"
 
 const CONTAINER = "durable-replica"
@@ -33,6 +35,10 @@ const unavailable = (reason: string) =>
     ? Effect.void
     : Effect.die(new Error(`CI needs a streaming replica: ${reason}`))
 
+/**
+ * The server behind TEST_DATABASE_URL is the container publishing its port, and the official image
+ * admits replication connections only over loopback.
+ */
 const program = Effect.gen(function* () {
   const primary = Bun.env["TEST_DATABASE_URL"]
 
@@ -44,7 +50,6 @@ const program = Effect.gen(function* () {
   const port = url.port === "" ? "5432" : url.port
   const user = decodeURIComponent(url.username)
 
-  // The server behind TEST_DATABASE_URL is the container publishing its port.
   const [container] = (yield* must(["docker", "ps", "--filter", `publish=${port}`, "-q"]))
     .split("\n")
     .filter((id) => id !== "")
@@ -53,7 +58,6 @@ const program = Effect.gen(function* () {
 
   const image = yield* must(["docker", "inspect", "-f", "{{.Config.Image}}", container])
 
-  // The official image admits replication connections only over loopback.
   yield* must([
     "docker",
     "exec",

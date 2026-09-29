@@ -21,7 +21,7 @@ const CountingModeration = Layer.succeed(ModerationApi, {
     }),
 })
 
-// The same case runs on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/** The same case runs on PGlite (`test`) and on a fresh Postgres database (`test:integration`). */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("CHAT_BACKEND")) === "pglite") return undefined
 
@@ -89,7 +89,6 @@ it(
           expect((yield* test.inspect(room.ref)).state).toMatchObject({ reactions })
           expect(yield* test.receiptsFor(room.ref, "Post")).toBe(posted.length)
 
-          // A rolled-back post never performed its moderation call, and a committed one performed it once.
           expect([...provider.calls].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual(
             posted.map(() => 1),
           )
