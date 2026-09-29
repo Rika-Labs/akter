@@ -503,13 +503,16 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const tenant = yield* tenantOf
           const request = yield* command(server, "expiring", "Hold")
 
-          // Past its expiry by 4 seconds, which the 5-second skew still admits.
+          // Just past its expiry, which the 5-second skew still admits with room to spare.
+          const iat = Math.floor((yield* Clock.currentTimeMillis) / 1000) - 10
+          const exp = iat + 9
+
           const late = yield* assertionFor({
             edge,
             server,
             request,
             tenant,
-            change: (claims) => ({ ...claims, iat: claims.iat - 10, exp: claims.iat - 4 }),
+            change: (claims) => ({ ...claims, iat, exp }),
           })
 
           const entered = yield* Deferred.make<void>()
@@ -522,9 +525,18 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const before = runs.count
           const call = yield* asserted(server, request, late).pipe(Effect.forkChild)
 
-          yield* Deferred.await(entered)
-          // Now the assertion is past the skew as well.
-          yield* Effect.sleep("1500 millis")
+          // A refused request never enters the handler; its reply fails the case instead of a hang.
+          const admitted = yield* Effect.raceFirst(
+            Deferred.await(entered).pipe(Effect.as(undefined)),
+            Fiber.join(call),
+          )
+
+          expect(admitted).toBe(undefined)
+
+          // Hold the turn until the assertion is past the skew as well.
+          while ((yield* Clock.currentTimeMillis) <= (exp + 5) * 1000 + 200)
+            yield* Effect.sleep("100 millis")
+
           gate.hold = Effect.void
           yield* Deferred.succeed(release, undefined)
 
