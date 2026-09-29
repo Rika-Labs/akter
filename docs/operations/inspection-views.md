@@ -188,4 +188,6 @@ Keyed lookups stay sub-millisecond; anything filtered by tenant or identity alon
 
 ## Accepted additions
 
-Targets from the accepted M4 ADRs, added at the end of each view as ADR 0028 allows: `payload_version` on `durable.events`, `durable.effects`, and `durable.dead_letters` (M4.7, [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)); new views `durable.contents` and `durable.content_refs` (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)); and, when L.2 builds the cold tier, a cold marker on `durable.actors` ([ADR 0036](../decisions/0036-cold-tier.md)).
+Built by M4.13 ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)): `durable.contents` (tenant, routing key, hash, size, `granted_until_ms`, and the tenant's last sweep as `swept_at_ms`) and `durable.content_refs` (each actor's references with its placement, blob, name, hash, and size), version 1 in `durable.views`.
+
+Targets from the accepted M4 ADRs, added at the end of each view as ADR 0028 allows: `payload_version` on `durable.events`, `durable.effects`, and `durable.dead_letters` (M4.7, [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)); and, when L.2 builds the cold tier, a cold marker on `durable.actors` ([ADR 0036](../decisions/0036-cold-tier.md)).

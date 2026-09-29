@@ -87,7 +87,12 @@ import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
 import { directMessages } from "./topology/messages.ts"
-import { bindBlobs } from "./turn/blobs.ts"
+import { bindBlobs, type ContentBinding } from "./turn/blobs.ts"
+import { ContentStore } from "../handles/content.ts"
+import { type AnyBlob, isContent } from "../members/blob.ts"
+import { type GrantKey, grantKeys } from "./content/grant.ts"
+import { MAX_CONTENT_BYTES, tenantContent } from "./content/store.ts"
+import { ContentHooks } from "./turn/hooks.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import { checkReceipt } from "./turn/receipt.ts"
@@ -101,10 +106,12 @@ export interface Options {
     /**
      * What is being authorized: `command` for commands and reducers, `query`
      * for queries, `open` for a connection, `feed` for an event feed (with
-     * `command` set to the event tag), and `reauthorize` for a live session's
-     * periodic check; hooks should deny kinds they do not know.
+     * `command` set to the event tag), `reauthorize` for a live session's
+     * periodic check, and `content` for a content operation on the actor, with
+     * `command` set to `<blob>.grant` or `<blob>.get`; hooks should deny kinds
+     * they do not know.
      */
-    readonly kind: "command" | "query" | "open" | "stream" | "feed" | "reauthorize"
+    readonly kind: "command" | "query" | "open" | "stream" | "feed" | "reauthorize" | "content"
     /** On `reauthorize`, what the session is: an `open` connection, a `stream`, or a `feed`. */
     readonly of?: "open" | "stream" | "feed"
   }) => Effect.Effect<boolean>
@@ -141,6 +148,25 @@ export interface Options {
     readonly subscriptionConcurrency?: number
     /** Matching events one claimed subscription row delivers before it settles. Default 16. */
     readonly subscriptionBatch?: number
+  }
+  /**
+   * Shared content (`Actor.content`). Required when an actor type declares
+   * content or code uploads it.
+   */
+  readonly content?: {
+    /**
+     * Grant keys. The first signs; every listed key verifies. To rotate, put
+     * the new key first, keep the old one listed for one grant lifetime (an
+     * hour), then remove it.
+     */
+    readonly keys: ReadonlyArray<GrantKey>
+    /** How long unreferenced content is kept after its last grant expires. Default 24 hours. */
+    readonly grace?: Duration.Input
+    /**
+     * The most any two shards' database clocks may differ; attaches demand
+     * this much remaining grant validity and the sweep waits it out. Default 60 seconds.
+     */
+    readonly skew?: Duration.Input
   }
   /** The effect executor pool of this runner. */
   readonly executors?: {
@@ -269,6 +295,24 @@ export const layer = (options: Options) => {
     cancelCheckMs,
   }
 
+  const contentGraceMs = Duration.toMillis(
+    Duration.fromInputUnsafe(options.content?.grace ?? "24 hours"),
+  )
+
+  const contentSkewMs = Duration.toMillis(
+    Duration.fromInputUnsafe(options.content?.skew ?? "60 seconds"),
+  )
+
+  if (
+    !Number.isSafeInteger(contentGraceMs) ||
+    contentGraceMs < 0 ||
+    !Number.isSafeInteger(contentSkewMs) ||
+    contentSkewMs < 0
+  )
+    throw new Error(
+      "content.grace and content.skew must be finite, non-negative whole milliseconds",
+    )
+
   const subscriptionConcurrency = Count.make(options.relay?.subscriptionConcurrency ?? 16)
   const subscriptionBatch = Count.make(options.relay?.subscriptionBatch ?? 16)
 
@@ -290,6 +334,33 @@ export const layer = (options: Options) => {
       >()
 
       const database = yield* rowsDatabase
+      const clockOffset = yield* FrameworkClock
+
+      // Grants are bound to the database's deployment id, so another
+      // deployment's grants never verify here.
+      const content =
+        options.content === undefined
+          ? undefined
+          : tenantContent({
+              grants: yield* grantKeys(
+                options.content.keys,
+                (yield* (yield* SqlClient.SqlClient)<{ deployment_id: string }>`
+                  SELECT deployment_id FROM actor_deployment`.pipe(Effect.orDie))[0]!.deployment_id,
+              ),
+              graceMs: contentGraceMs,
+              skewMs: contentSkewMs,
+              singleConnection: Option.isSome(
+                yield* Effect.serviceOption(PgliteClient.PgliteClient),
+              ),
+              offset: () => clockOffset.offsetMillis(),
+              hooks: yield* ContentHooks,
+            })
+
+      const contentBinding: ContentBinding | undefined =
+        content === undefined
+          ? undefined
+          : { store: content, skewMs: contentSkewMs, offset: () => clockOffset.offsetMillis() }
+
       // Turns run through the gate so a drain can refuse new ones and interrupt the rest.
       const gate = turnGate()
 
@@ -479,6 +550,24 @@ export const layer = (options: Options) => {
                 .join(", ")}); register their layers on every runner that serves ${sourceType}`,
             ),
           )
+      })
+
+      const declaresContent = (registration: { readonly blobs: ReadonlyArray<AnyBlob> }) =>
+        registration.blobs.some(isContent)
+
+      const requireContent = (name: string) =>
+        content === undefined
+          ? Effect.die(new Error(`Actor ${name} declares content; give the runtime content.keys`))
+          : Effect.void
+
+      // The sweep waits out the longest turn that may attach content, across
+      // every runner of the deployment; the value only grows.
+      const recordContentTurn = Effect.fnUntraced(function* (registration: Registration) {
+        const sql = yield* SqlClient.SqlClient
+        yield* sql`INSERT INTO actor_content_types (actor_type, turn_ms)
+          VALUES (${registration.name}, ${registration.policy.executionMs})
+          ON CONFLICT (actor_type) DO UPDATE
+          SET turn_ms = greatest(actor_content_types.turn_ms, EXCLUDED.turn_ms)`
       })
 
       // An unreachable database fails the read as ActorUnavailable, which a
@@ -831,6 +920,13 @@ export const layer = (options: Options) => {
               { discard: true },
             ),
           ),
+          // Each tenant's content goes at most once an hour, whichever runner claims it.
+          Effect.flatMap((swept) =>
+            Effect.map(
+              content === undefined ? Effect.succeed(0) : content.sweep(false),
+              (contents) => ({ ...swept, contents }),
+            ),
+          ),
         ),
       ).pipe(
         Effect.provideContext(services),
@@ -875,7 +971,12 @@ export const layer = (options: Options) => {
         mintCommandId,
         tables: (scope, write) =>
           bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
-        blobs: (scope, write) => bindBlobs(scope, write).pipe(Effect.provideContext(services)),
+        blobs: (scope, write) =>
+          bindBlobs(scope, write, contentBinding).pipe(Effect.provideContext(services)),
+        sweepContent:
+          content === undefined
+            ? Effect.succeed(0)
+            : content.sweep(true).pipe(Effect.provideContext(services), Effect.orDie),
         registered: (actor) => ({
           commands: registrations.has(actor),
           queries: queryRegistrations.has(actor),
@@ -888,6 +989,15 @@ export const layer = (options: Options) => {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
+
+          if (declaresContent(registration)) {
+            yield* requireContent(registration.name)
+            yield* recordContentTurn(registration).pipe(
+              Effect.provideContext(services),
+              Effect.orDie,
+            )
+          }
+
           yield* checkTables(
             registration.name,
             registration.tables,
@@ -976,6 +1086,9 @@ export const layer = (options: Options) => {
           if (queryRegistrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
+
+          if (declaresContent(registration)) yield* requireContent(registration.name)
+
           yield* checkTables(
             registration.name,
             registration.tables,
@@ -1337,7 +1450,96 @@ export const layer = (options: Options) => {
         scope,
       })
 
+      const toUnavailable = (cause: SqlError.SqlError) =>
+        Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) }))
+
+      const configured = Effect.suspend(() =>
+        content === undefined
+          ? Effect.die(new Error("Content needs the runtime's content.keys"))
+          : Effect.succeed(content),
+      )
+
+      // The actor's reference to content, read on the actor's shard after
+      // `authorize` allows the operation; none for a name or blob it doesn't hold.
+      const contentEntry = Effect.fnUntraced(
+        function* (ref: ActorRef, caller: Caller, blob: string, name: string, operation: string) {
+          const registration = registrations.get(ref.actor) ?? queryRegistrations.get(ref.actor)
+
+          if (registration === undefined)
+            return yield* ActorError.make({
+              reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+            })
+
+          if (
+            !(yield* options.authorize({
+              caller,
+              ref,
+              command: `${blob}.${operation}`,
+              kind: "content",
+            }))
+          )
+            return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+
+          if (!registration.blobs.some((declared) => declared.name === blob && isContent(declared)))
+            return Option.none()
+
+          const sql = yield* SqlClient.SqlClient
+
+          const [found] = yield* sql<{ hash: string; size: number }>`
+            SELECT hash, size::float8 AS size FROM actor_content_refs
+            WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
+              AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
+              AND blob = ${blob} AND name = ${name}`
+
+          const timeoutMs =
+            "policy" in registration ? registration.policy.executionMs : registration.timeoutMs
+
+          return Option.map(Option.fromUndefinedOr(found), (row) => ({ ...row, timeoutMs }))
+        },
+        Effect.provideContext(services),
+        Effect.catchTag("SqlError", toUnavailable),
+      )
+
+      const contentStore = ContentStore.of({
+        uploadBytes: (tenant, bytes) =>
+          Effect.flatMap(configured, (store) => store.uploadBytes(tenant, bytes)).pipe(
+            Effect.provideContext(services),
+            Effect.catchTag("SqlError", toUnavailable),
+          ),
+        upload: (tenant, body, limit) =>
+          Effect.flatMap(configured, (store) =>
+            store.uploadStream(tenant, body, Math.min(limit, MAX_CONTENT_BYTES)),
+          ).pipe(Effect.provideContext(services), Effect.catchTag("SqlError", toUnavailable)),
+        grant: (ref, caller, blob, name) =>
+          Effect.gen(function* () {
+            const store = yield* configured
+            const found = yield* contentEntry(ref, caller, blob, name, "grant")
+
+            if (Option.isNone(found)) return Option.none()
+
+            return yield* store
+              .grant(ref.tenant, found.value.hash, found.value.size)
+              .pipe(Effect.provideContext(services), Effect.catchTag("SqlError", toUnavailable))
+          }),
+        download: (ref, caller, blob, name) =>
+          Effect.gen(function* () {
+            const store = yield* configured
+            const found = yield* contentEntry(ref, caller, blob, name, "get")
+
+            return Option.map(found, ({ hash, size, timeoutMs }) => ({
+              size,
+              bytes: store.stream(ref.tenant, hash, size, timeoutMs).pipe(
+                Stream.provideContext(services),
+                Stream.mapError((cause) =>
+                  ActorError.make({ reason: ActorUnavailable.make({ cause }) }),
+                ),
+              ),
+            }))
+          }),
+      })
+
       return Context.make(Actors, publicActors).pipe(
+        Context.add(ContentStore, contentStore),
         Context.add(InternalActors, internalActors),
         Context.add(RuntimeControl, control),
       )

@@ -25,9 +25,12 @@ import {
 import { ActorError, NotCreated, RunnerAtCapacity, Unauthorized } from "../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
+import { ContentStore } from "../handles/content.ts"
+import { MAX_CONTENT_BYTES } from "../runtime/content/store.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
 import {
   build,
+  CONTENT_ROUTE,
   document,
   memberPath,
   PROTOCOL_OPERATIONS,
@@ -75,6 +78,11 @@ export interface ServeOptions<R> {
     readonly requestBytes?: number
     /** Default 8 KiB. */
     readonly credentialBytes?: number
+    /**
+     * The body limit of `POST /content`, the one route exempt from
+     * `requestBytes`. Default and maximum 64 MiB, the content size limit.
+     */
+    readonly contentBytes?: number
   }
 }
 
@@ -83,7 +91,7 @@ const NAME = /^[A-Za-z][A-Za-z0-9_]*$/
 /** The path segment an actor's event feed is served at, so no member may take it. */
 const FEED_ROUTE = "events"
 
-const RESERVED_MEMBERS: ReadonlySet<string> = new Set([FEED_ROUTE])
+const RESERVED_MEMBERS: ReadonlySet<string> = new Set([FEED_ROUTE, CONTENT_ROUTE])
 
 const ALLOWED_HEADERS = [
   "authorization",
@@ -288,9 +296,23 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const origins = new Set(options.origins ?? [])
       const requestBytes = options.limits?.requestBytes ?? 1024 * 1024
       const credentialBytes = options.limits?.credentialBytes ?? 8 * 1024
+      const contentBytes = options.limits?.contentBytes ?? MAX_CONTENT_BYTES
+
+      if (
+        !Number.isSafeInteger(contentBytes) ||
+        contentBytes < 0 ||
+        contentBytes > MAX_CONTENT_BYTES
+      )
+        return yield* Effect.die(
+          new Error(
+            `Actor.serve: limits.contentBytes must be a whole number of bytes up to ${MAX_CONTENT_BYTES}`,
+          ),
+        )
+
+      const contentStore = yield* Effect.serviceOption(ContentStore)
       const withCookies = readsCookies(options.auth)
       const withAssertion = options.auth.credentials.some(Credential.$is("Assertion"))
-      const api = build({ definitions, basePath })
+      const api = build({ definitions, basePath, content: Option.isSome(contentStore) })
 
       const withProtocol = (
         request: HttpServerRequest.HttpServerRequest,
@@ -745,6 +767,72 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           })
         })
 
+      // The body streams into the store as it arrives, hashed on the way; past
+      // the limit the upload's transaction rolls back and nothing is stored.
+      const uploadHandler = (store: ContentStore["Service"]) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const authenticated = yield* authenticate(request)
+          const length = Headers.get(request.headers, "content-length")
+
+          if (Option.isSome(length) && Number(length.value) > contentBytes)
+            return yield* invalidInput("too_large")
+
+          // A request without framing headers may carry no body stream at all.
+          const empty =
+            (Option.isSome(length) && Number(length.value) === 0) ||
+            (Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding"))
+
+          const body = empty
+            ? Stream.empty
+            : request.stream.pipe(Stream.mapError(() => invalidInput("decode")))
+
+          const ref = yield* store
+            .upload(authenticated.tenant, body, contentBytes)
+            .pipe(Effect.catchTag("ContentTooLarge", () => invalidInput("too_large")))
+
+          return HttpServerResponse.jsonUnsafe(ref, { status: 200 })
+        })
+
+      const contentParams = Effect.fnUntraced(function* (definition: ServedDefinition) {
+        const { blob = "", name = "" } = yield* HttpRouter.params
+
+        if (!definition.contents.includes(blob) || name === "")
+          return yield* invalidInput("unknown_content")
+
+        return { blob, name }
+      })
+
+      const downloadHandler = (store: ContentStore["Service"], definition: ServedDefinition) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const { blob, name } = yield* contentParams(definition)
+          const authenticated = yield* authenticate(request)
+          const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
+          const found = yield* store.download(ref, authenticated.caller, blob, name)
+
+          if (Option.isNone(found)) return yield* invalidInput("unknown_content")
+
+          // A sweep between resolving the name and reading the bytes ends the
+          // body before any byte, short of its declared length.
+          return HttpServerResponse.stream(found.value.bytes, {
+            contentType: "application/octet-stream",
+            contentLength: found.value.size,
+          })
+        })
+
+      const grantHandler = (store: ContentStore["Service"], definition: ServedDefinition) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const { blob, name } = yield* contentParams(definition)
+          const authenticated = yield* authenticate(request)
+          const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
+          const granted = yield* store.grant(ref, authenticated.caller, blob, name)
+
+          if (Option.isNone(granted)) return yield* invalidInput("unknown_content")
+
+          return HttpServerResponse.jsonUnsafe(granted.value, { status: 200 })
+        })
+
       const requestId =
         (member: ServedMember) =>
         (request: HttpServerRequest.HttpServerRequest): Record<string, string> => {
@@ -786,6 +874,32 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             `${basePath}${memberPath({ definition, member: connection })}` as HttpRouter.PathInput,
             respond(connectionHandler(definition, connection)),
           )
+
+      if (Option.isSome(contentStore)) {
+        const store = contentStore.value
+
+        yield* router.add(
+          "POST",
+          `${basePath}/content` as HttpRouter.PathInput,
+          respond(uploadHandler(store)),
+        )
+
+        for (const definition of definitions)
+          if (definition.contents.length > 0) {
+            const entry = `${basePath}${memberPath({ definition, member: { tag: CONTENT_ROUTE } })}/:blob/:name`
+
+            yield* router.add(
+              "GET",
+              entry as HttpRouter.PathInput,
+              respond(downloadHandler(store, definition)),
+            )
+            yield* router.add(
+              "POST",
+              `${entry}/grant` as HttpRouter.PathInput,
+              respond(grantHandler(store, definition)),
+            )
+          }
+      }
 
       yield* router.add(
         "GET",

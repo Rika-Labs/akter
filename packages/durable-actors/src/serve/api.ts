@@ -15,6 +15,7 @@ import {
 import { type AuthProvider, Credential } from "./auth.ts"
 import { ASSERTION_HEADER } from "./assertion/binding.ts"
 import { SUBPROTOCOL } from "./frames.ts"
+import { ContentRef } from "../identity/content.ts"
 import { Defect, envelope, type WireTag } from "./wire.ts"
 
 const COMMAND_ERRORS = {
@@ -67,6 +68,18 @@ const FEED_ERRORS = {
   404: ["NotCreated", "InvalidInput"],
   503: ["ActorUnavailable", "RunnerAtCapacity"],
 } as const
+
+/** A refused content operation; a download a sweep cut short ends its body early instead. */
+const CONTENT_ERRORS = {
+  400: ["InvalidInput"],
+  401: ["Unauthorized"],
+  403: ["Unauthorized", "InvalidInput"],
+  404: ["InvalidInput"],
+  413: ["InvalidInput"],
+  503: ["ActorUnavailable"],
+} as const
+
+const contentErrors = errorSchemas(CONTENT_ERRORS, "Content")
 
 const commandErrors = errorSchemas(COMMAND_ERRORS, "Command")
 
@@ -265,6 +278,59 @@ const frameSchemas = (definition: ServedDefinition, connection: ServedConnection
     schema.annotate({ identifier: frameSchemaName(definition, connection, part) }),
   )
 
+const ContentRefSchema = ContentRef.annotate({ identifier: "ContentRef" })
+
+const OCTETS = { "application/octet-stream": { schema: { type: "string", format: "binary" } } }
+
+/** The path segment an actor's content routes are served under, so no member may take it. */
+export const CONTENT_ROUTE = "content"
+
+const contentPath = (basePath: string, definition: ServedDefinition) =>
+  `${basePath}${memberPath({ definition, member: { tag: CONTENT_ROUTE } })}/:blob/:name`
+
+const contentParams = (definition: ServedDefinition) => {
+  const entry = { blob: Schema.Literals(definition.contents), name: Schema.String }
+
+  return definition.key === "singleton" ? entry : { id: Schema.String, ...entry }
+}
+
+// Downloads stream the entry's bytes; grants answer a fresh `ContentRef`.
+const contentEndpoints = (basePath: string, definition: ServedDefinition) => [
+  HttpApiEndpoint.get(CONTENT_ROUTE, contentPath(basePath, definition) as `/${string}`, {
+    params: contentParams(definition),
+    error: [...contentErrors, defect],
+  }).annotate(OpenApi.Transform, (operation) => {
+    const { 204: _, ...refusals }: { readonly [status: string]: Schema.Json } =
+      operation.responses ?? {}
+
+    return {
+      ...operation,
+      responses: {
+        200: { description: "The referenced content's bytes", content: OCTETS },
+        ...refusals,
+      },
+    }
+  }),
+  HttpApiEndpoint.post(
+    `${CONTENT_ROUTE}.grant`,
+    `${contentPath(basePath, definition)}/grant` as `/${string}`,
+    {
+      params: contentParams(definition),
+      success: ContentRefSchema,
+      error: [...contentErrors, defect],
+    },
+  ),
+]
+
+const uploadEndpoint = (basePath: string) =>
+  HttpApiEndpoint.post("uploadContent", `${basePath}/content` as `/${string}`, {
+    success: ContentRefSchema,
+    error: [...contentErrors, defect],
+  }).annotate(OpenApi.Transform, (operation) => ({
+    ...operation,
+    requestBody: { required: true, content: OCTETS },
+  }))
+
 /** Protocol routes live in their own group. */
 const PROTOCOL_GROUP = "durable"
 
@@ -272,11 +338,17 @@ const PROTOCOL_GROUP = "durable"
 export const PROTOCOL_OPERATIONS: ReadonlySet<string> = new Set([
   `${PROTOCOL_GROUP}.protocol`,
   `${PROTOCOL_GROUP}.commandIds`,
+  `${PROTOCOL_GROUP}.uploadContent`,
   `${PROTOCOL_GROUP}.ready`,
 ])
 
 /** Paths of the protocol routes under the base path; `openapi.path` may not take one. */
-export const PROTOCOL_PATHS: ReadonlySet<string> = new Set(["/protocol", "/command-ids", "/ready"])
+export const PROTOCOL_PATHS: ReadonlySet<string> = new Set([
+  "/protocol",
+  "/command-ids",
+  "/ready",
+  "/content",
+])
 
 /** Protocol operations that take no credentials. */
 const UNAUTHENTICATED: ReadonlySet<string> = new Set([
@@ -287,9 +359,11 @@ const UNAUTHENTICATED: ReadonlySet<string> = new Set([
 export interface ServedRoutes {
   readonly definitions: ReadonlyArray<ServedDefinition>
   readonly basePath: string
+  /** Whether the runtime serves content, so `POST /content` and the content routes exist. */
+  readonly content: boolean
 }
 
-export const build = ({ definitions, basePath }: ServedRoutes) => {
+export const build = ({ definitions, basePath, content }: ServedRoutes) => {
   const groups: Array<HttpApiGroup.Constraint> = [
     HttpApiGroup.make(PROTOCOL_GROUP).add(
       HttpApiEndpoint.get("protocol", `${basePath}/protocol` as `/${string}`, {
@@ -306,6 +380,7 @@ export const build = ({ definitions, basePath }: ServedRoutes) => {
           defect,
         ],
       }),
+      ...(content ? [uploadEndpoint(basePath)] : []),
     ),
   ]
 
@@ -316,6 +391,7 @@ export const build = ({ definitions, basePath }: ServedRoutes) => {
         connectionEndpoint(basePath, definition, connection),
       ),
       ...(definition.feeds.length > 0 ? [feedEndpoint(basePath, definition)] : []),
+      ...(content && definition.contents.length > 0 ? contentEndpoints(basePath, definition) : []),
       ...definition.streams.map((member) => streamEndpoint(basePath, definition, member)),
     ]
 

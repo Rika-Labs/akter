@@ -1,7 +1,7 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actors } from "@durable-actors/core/runtime"
 import { ActorCluster, ActorTest, CleanupHooks, TurnHooks } from "@durable-actors/core/testing"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Redacted } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"
 import { type Limit, load, now, type Summary, summarize, throughput } from "./measure.ts"
@@ -73,6 +73,12 @@ const hooks = Layer.mergeAll(
 const probes = (subscriptions: boolean | undefined) =>
   subscriptions === true ? Layer.merge(ProbeLive, SubscriptionProbeLive) : ProbeLive
 
+// The `Shelf` probe declares content, so every runtime needs a grant key.
+const BENCH_CONTENT_KEY = {
+  id: "bench",
+  secret: Redacted.make("durable-actors benchmark content grant key only"),
+}
+
 const runtimeLayer = (
   maxResidentActors: number | undefined,
   subscriptions?: boolean,
@@ -83,6 +89,7 @@ const runtimeLayer = (
       Actors.layer({
         authorize: () => Effect.succeed(true),
         maxResidentActors,
+        content: { keys: [BENCH_CONTENT_KEY] },
         rowLevelSecurity,
       }).pipe(Layer.provide(hooks)),
     ),

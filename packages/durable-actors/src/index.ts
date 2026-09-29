@@ -11,7 +11,7 @@ import { Event } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
 import { Cancelled, DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
-import { blob } from "./members/blob.ts"
+import { blob, content } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
 import { WorkflowMember } from "./members/workflow.ts"
 import { Delivery, SubscriptionMember } from "./members/subscription.ts"
@@ -35,6 +35,8 @@ export const Actor = {
   state: ActorStates.make,
   table,
   blob,
+  /** Declares shared content: immutable bytes stored once per tenant that actors reference by name. */
+  content,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
   /** Declares a subscription to another actor type's committed events. */
@@ -66,6 +68,14 @@ export const Actor = {
 export { Actors } from "./handles/actors.ts"
 
 export { Intent } from "./handles/intents.ts"
+
+export { Content, ContentStore } from "./handles/content.ts"
+
+export { ContentRef } from "./identity/content.ts"
+
+export type { ContentEntry } from "./identity/content.ts"
+
+export { ContentTooLarge, InvalidContentRef } from "./errors/content.ts"
 
 export {
   ActorRef,
@@ -134,7 +144,7 @@ export type { Executors, Handle, Intents, WorkflowHandlers } from "./actor/defin
 
 export type { Commutative, Reducer } from "./members/reducer.ts"
 
-export type { AnyBlob, Blob } from "./members/blob.ts"
+export type { AnyBlob, AnyContent, Blob, ContentBlob } from "./members/blob.ts"
 
 export type {
   AnySubscription,
@@ -148,7 +158,7 @@ export type {
   Subscription,
 } from "./members/subscription.ts"
 
-export type { BlobRead, BlobWrite } from "./state/blob.ts"
+export type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "./state/blob.ts"
 
 export type {
   Filter,

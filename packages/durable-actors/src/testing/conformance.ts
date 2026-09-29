@@ -134,7 +134,15 @@ import {
   subscriptionsLayer,
   type SubscriptionsFixture,
 } from "./conformance/subscriptions.ts"
-import { TurnHooks } from "../runtime/turn/hooks.ts"
+import { ContentHooks, TurnHooks } from "../runtime/turn/hooks.ts"
+import type { ContentStore } from "../handles/content.ts"
+import type { Options } from "../runtime/layer.ts"
+import {
+  contentConformance,
+  contentFixture,
+  contentLayer,
+  type ContentFixture,
+} from "./conformance/content-blobs.ts"
 import {
   workflowsConformance,
   workflowsFixture,
@@ -188,6 +196,7 @@ export type ConformanceServices =
   | ActorTest
   | SqlClient.SqlClient
   | Crypto.Crypto
+  | ContentStore
 
 export type ConformanceRuntime = ManagedRuntime.ManagedRuntime<ConformanceServices, never>
 
@@ -198,6 +207,7 @@ export interface ConformanceEnvironment {
   readonly build: (options?: {
     readonly retryWindowMs?: number
     readonly database?: ConformanceDatabase
+    readonly content?: Options["content"]
   }) => ConformanceRuntime
   /** Stops the current runtime; the retained database survives. */
   readonly stop: Effect.Effect<void>
@@ -255,6 +265,7 @@ export interface ConformanceFixture {
   readonly workflows: WorkflowsFixture
   readonly subscriptions: SubscriptionsFixture
   readonly connections: ConnectionsFixture
+  readonly content: ContentFixture
   readonly drain: DrainFixture
   executions: number
   queries: number
@@ -388,6 +399,7 @@ const makeFixture = (): ConformanceFixture => ({
   workflows: workflowsFixture(),
   subscriptions: subscriptionsFixture(),
   connections: connectionsFixture(),
+  content: contentFixture(),
   drain: drainFixture(),
   executions: 0,
   queries: 0,
@@ -446,6 +458,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...subscriptionsConformance,
   ...subscriptionsRetentionConformance,
   ...subscriptionsClusterConformance,
+  ...contentConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1485,6 +1498,7 @@ export const describeConformance = (options: {
     transportsLayer,
     mintLayer,
     subscriptionsLayer(fixture.subscriptions),
+    contentLayer(fixture.content),
     drainLayer(fixture.drain),
   )
 
@@ -1521,13 +1535,20 @@ export const describeConformance = (options: {
                     }),
                 ),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
+              content: overrides?.content,
             }).pipe(
               // Subscription cases fault particular deliveries by command.
               Layer.provide(
-                Layer.succeed(TurnHooks, {
-                  at: (point, request) =>
-                    Effect.suspend(() => fixture.subscriptions.hook(point, request)),
-                }),
+                Layer.mergeAll(
+                  Layer.succeed(TurnHooks, {
+                    at: (point, request) =>
+                      Effect.suspend(() => fixture.subscriptions.hook(point, request)),
+                  }),
+                  // Content cases pause particular operations between their statements.
+                  Layer.succeed(ContentHooks, {
+                    at: (point) => Effect.suspend(() => fixture.content.hook(point)),
+                  }),
+                ),
               ),
             ),
           ),

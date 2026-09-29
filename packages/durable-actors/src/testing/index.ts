@@ -1,4 +1,4 @@
-export { ActorTest, cleanup } from "./actor-test.ts"
+export { ActorTest, cleanup, sweepContent } from "./actor-test.ts"
 
 export type { TestConnection, TestMessage } from "./actor-test.ts"
 

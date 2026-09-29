@@ -34,6 +34,7 @@ import {
   type Reason,
 } from "../../errors/actor.ts"
 import { InternalActors } from "../../handles/actors.ts"
+import type { ContentStore } from "../../handles/content.ts"
 import { RuntimeControl } from "../../runtime/drain.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { type AuthProvider, type AuthRequest, Credential } from "../../serve/auth.ts"
@@ -284,11 +285,15 @@ interface Server {
 /** Serves the HTTP actors from a real listening Bun server for the rest of the scope. */
 export const serveHttp = Effect.fnUntraced(function* (
   options?: Partial<ServeOptions<never>>,
-): Effect.fn.Return<Server, never, InternalActors | RuntimeControl | Crypto.Crypto | Scope.Scope> {
+): Effect.fn.Return<
+  Server,
+  never,
+  InternalActors | RuntimeControl | ContentStore | Crypto.Crypto | Scope.Scope
+> {
   const actors = yield* InternalActors
   const crypto = yield* Crypto.Crypto
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
-  const context = yield* Effect.context<InternalActors | RuntimeControl>()
+  const context = yield* Effect.context<InternalActors | RuntimeControl | ContentStore>()
 
   const app = Actor.serve({ actors: served, auth: tokens, ...options }).pipe(
     Layer.provide(Layer.succeedContext(context)),
@@ -1087,6 +1092,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               "durable.commandIds",
               "durable.protocol",
               "durable.ready",
+              "durable.uploadContent",
             ].sort(),
           )
 

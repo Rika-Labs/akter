@@ -425,6 +425,11 @@ export class InternalActors extends Context.Service<
     /** Runs one retention sweep now; used by `ActorTest.cleanup`. */
     readonly cleanup: Effect.Effect<Swept>
     /**
+     * Sweeps every tenant's unreferenced content now, whenever each was last
+     * swept, and returns how many contents it deleted; for tests.
+     */
+    readonly sweepContent: Effect.Effect<number>
+    /**
      * Moves the leases of this runner's running effect attempts forward and
      * runs `jump`, with no relay pass between them; used by `ActorTest.advance`.
      */
