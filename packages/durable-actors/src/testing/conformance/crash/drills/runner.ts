@@ -1,6 +1,6 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
+import { Cause, Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
 import { RunnerAddress, RunnerServer } from "effect/unstable/cluster"
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc"
 import { Actor, Actors as ActorClient } from "../../../../index.ts"
@@ -64,14 +64,15 @@ const runtime = Layer.unwrap(
 
     // A relay told to block stops at its first claim once the parent asks, holding what it claimed.
     const hooks = Layer.succeed(TurnHooks, {
-      at: (point) =>
+      at: (point, request) =>
+        Clock.currentTimeMillis.pipe(Effect.flatMap((t) => Console.error(`HOOK ${port} ${point} ${request.command} ${request.commandId} ${t}`))).pipe(Effect.andThen(
         blockRelay && point === "afterClaim" && !blocked
           ? Effect.suspend(() => {
               blocked = true
 
               return Console.log("CLAIMED").pipe(Effect.andThen(Effect.never))
             })
-          : Effect.void,
+          : Effect.void)),
     })
 
     const sharding = RunnerServer.layerWithClients.pipe(
@@ -117,26 +118,33 @@ const program = Effect.gen(function* () {
 
   for (let index = 0; index < operations; index++) {
     const started = yield* Clock.currentTimeMillis
+    yield* Console.error(`STEP ${process.env.DRILL_PORT} ${index} mint ${yield* Clock.currentTimeMillis}`)
     const incrementId = yield* actors.mintCommandId
     const sendId = yield* actors.mintCommandId
+    yield* Console.error(`STEP ${process.env.DRILL_PORT} ${index} get ${yield* Clock.currentTimeMillis}`)
     const counter = yield* Counter.get(`counter-${index % 48}`)
     const sender = yield* Sender.get(`sender-${index % 24}`)
 
+    yield* Console.error(`STEP ${process.env.DRILL_PORT} ${index} increment ${yield* Clock.currentTimeMillis}`)
     yield* counter
       .Increment(1)
       .pipe(
         Actor.commandId(incrementId),
+        Effect.tapCause((c) => Clock.currentTimeMillis.pipe(Effect.flatMap((t) => Console.error(`ATTEMPT-FAIL ${process.env.DRILL_PORT} Increment ${index} ${t} ${JSON.stringify(Cause.squash(c)).slice(0, 400)} ${incrementId}`)))),
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
         Effect.orDie,
       )
+    yield* Console.log(`ACKED ${incrementId}`)
 
     yield* sender
       .Send(`receiver-${index % 32}`)
       .pipe(
         Actor.commandId(sendId),
+        Effect.tapCause((c) => Clock.currentTimeMillis.pipe(Effect.flatMap((t) => Console.error(`ATTEMPT-FAIL ${process.env.DRILL_PORT} Send ${index} ${t} ${JSON.stringify(Cause.squash(c)).slice(0, 400)} ${sendId}`)))),
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
         Effect.orDie,
       )
+    yield* Console.log(`ACKED ${sendId}`)
 
     const latency = (yield* Clock.currentTimeMillis) - started
     yield* Console.log(`DONE ${index} ${started} ${latency} ${incrementId} ${sendId}`)
