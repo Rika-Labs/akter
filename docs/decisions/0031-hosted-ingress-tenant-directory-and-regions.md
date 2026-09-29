@@ -188,6 +188,13 @@ For L.1: the **Regional placement** check, the tenant-move crash cases (the proc
 
 ## Implementation notes
 
+M4.8's tenant directory (`packages/postgres/migrations/0002_tenant_directory.sql`, `packages/deployments/src/tenant-home/`) settles details §5 leaves open:
+
+- **Versions in commit order.** A sequence alone can hand version 10 to a transaction that commits after version 11's, and an edge polling for rows above 11 would never see 10. The directory's trigger takes a transaction-scoped advisory lock before it draws the next version, so directory writes stamp their versions one at a time, in commit order. Directory writes are rare operator commands, so the lock costs nothing that matters.
+- **`TenantHome` key.** `<deployment>/<tenant>`. Neither part can contain `/`, so the key splits one way.
+- **The primary-region check.** `TenantHome` reads the deployment's `primary_region` through the `Deployments` service, outside the turn's transaction, because a turn reads only its own rows. A deployment's primary region never changes, so the read can't race the write.
+- **The CLI.** `durable tenants create` runs `TenantHome` embedded against the control-plane database, like `durable workflows check`, and takes `--deployment`, `--database-url`, and `--operator` (the attributed caller) until the control-plane API and operator credentials (M4.6) exist.
+
 M4.8's runner half (`Actor.auth.assertion`, `serve/assertion/binding.ts`) settles details §2 to §4 leave open:
 
 - **`cexp`.** An assertion lives 10 seconds, so its `exp` can't cap a WebSocket session or an SSE feed. The edge adds `cexp`, the external credential's own expiry in epoch seconds, and the runner uses it as the session's `expiresAt`. An assertion without `cexp` gives the session no expiry, so the edge sets it on every streaming assertion.
