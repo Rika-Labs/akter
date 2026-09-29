@@ -1106,18 +1106,26 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient
 
-              const refusal = Effect.gen(function* () {
-                const refused = yield* enforceAdoption(adopting, {
-                  only: "conformance_invoices",
-                  writerRole: roles.writer,
-                  quietMs: QUIET_MS,
-                  nowMs: yield* Clock.currentTimeMillis,
-                }).pipe(Effect.flip)
+              const refusal = (condition: string) =>
+                Effect.gen(function* () {
+                  const exit = yield* Effect.exit(
+                    enforceAdoption(adopting, {
+                      only: "conformance_invoices",
+                      writerRole: roles.writer,
+                      quietMs: QUIET_MS,
+                      nowMs: yield* Clock.currentTimeMillis,
+                    }),
+                  )
 
-                expect(refused).toBeInstanceOf(AdoptionRefused)
+                  if (Exit.isSuccess(exit))
+                    return yield* Effect.die(new Error(`enforce passed despite ${condition}`))
 
-                return refused.message
-              })
+                  const refused = Cause.squash(exit.cause)
+
+                  expect(refused).toBeInstanceOf(AdoptionRefused)
+
+                  return refused instanceof AdoptionRefused ? refused.message : ""
+                })
 
               const reset = Effect.gen(function* () {
                 yield* backfillAdoption(adopting, { only: "conformance_invoices" })
@@ -1125,7 +1133,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
                 yield* sql`UPDATE actor_adoptions SET changed_at_ms = changed_at_ms - ${QUIET_MS + 86_400_000}`
               })
 
-              const first = yield* refusal
+              const first = yield* refusal("unbackfilled rows")
 
               expect(first).toContain("2 rows of public.conformance_invoices have no routing_key")
               expect(first).toContain("less than the")
@@ -1145,7 +1153,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
               )
               yield* backfillAdoption(adopting, { only: "conformance_invoices" })
 
-              const second = yield* refusal
+              const second = yield* refusal("a legacy write inside the quiet window")
 
               expect(second).toContain(`${roles.legacy} (legacy-app) wrote`)
               expect(second).toContain("1 INSERT statements inside the quiet window")
@@ -1168,14 +1176,14 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
               yield* backfillAdoption(adopting, { only: "conformance_invoices" })
               yield* sql`UPDATE actor_adoption_writes SET observed_at_ms = observed_at_ms - ${QUIET_MS + 86_400_000}`
 
-              expect(yield* refusal).toContain(
+              expect(yield* refusal("a login that wrote in and out of turns")).toContain(
                 `${roles.batch} wrote public.conformance_invoices both inside and outside runtime turns`,
               )
 
               yield* reset
               yield* sql.unsafe(`ALTER TABLE conformance_invoices OWNER TO ${roles.legacy}`)
 
-              expect(yield* refusal).toContain(
+              expect(yield* refusal("an owner a login can act as")).toContain(
                 `login ${roles.legacy} can act as public.conformance_invoices's owner ${roles.legacy}`,
               )
 
@@ -1185,8 +1193,8 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
               yield* sql`ALTER TABLE conformance_invoices ADD CONSTRAINT conformance_invoices_parent
                 FOREIGN KEY (id) REFERENCES conformance_parents (id) ON DELETE CASCADE`
 
-              expect(yield* refusal).toContain(
-                "foreign key conformance_invoices_parent on conformance_invoices reaches public.conformance_invoices with ON DELETE CASCADE",
+              expect(yield* refusal("an incoming cascade")).toContain(
+                "foreign key conformance_invoices_parent of public.conformance_invoices references conformance_parents with ON DELETE CASCADE",
               )
 
               yield* sql`ALTER TABLE conformance_invoices DROP CONSTRAINT conformance_invoices_parent`
@@ -1271,17 +1279,21 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
             Effect.gen(function* () {
               const legacy = yield* SqlClient.SqlClient
 
-              for (const statement of [
-                `INSERT INTO conformance_invoices (id, org_id, account_id, routing_key) VALUES ('raw', 't', 'a', 1)`,
-                `UPDATE conformance_invoices SET amount = 0`,
-                `DELETE FROM conformance_invoices`,
-                `TRUNCATE conformance_invoices`,
-                `INSERT INTO conformance_invoice_view (id, org_id, account_id, routing_key) VALUES ('view', 't', 'a', 1)`,
-                `SELECT conformance_invoice_write()`,
-              ])
-                expect(rejected(yield* outcome(legacy.unsafe(statement)))).toContain(
+              for (const [statement, message] of [
+                [
+                  `INSERT INTO conformance_invoices (id, org_id, account_id, routing_key) VALUES ('raw', 't', 'a', 1)`,
                   "permission denied",
-                )
+                ],
+                [`UPDATE conformance_invoices SET amount = 0`, "permission denied"],
+                [`DELETE FROM conformance_invoices`, "permission denied"],
+                [`TRUNCATE conformance_invoices`, "permission denied"],
+                [
+                  `INSERT INTO conformance_invoice_view (id, org_id, account_id, routing_key) VALUES ('view', 't', 'a', 1)`,
+                  "belongs to actor Account",
+                ],
+                [`SELECT conformance_invoice_write()`, "permission denied"],
+              ] as const)
+                expect(rejected(yield* outcome(legacy.unsafe(statement)))).toContain(message)
             }),
           )
 
@@ -1320,7 +1332,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(
             rejected(yield* outcome(sql`DELETE FROM conformance_parents WHERE id = 'inv-1'`)),
-          ).toContain("belongs to actor Account")
+          ).toContain("permission denied")
 
           expect(
             yield* sql<{

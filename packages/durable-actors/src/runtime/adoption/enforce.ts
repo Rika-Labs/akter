@@ -179,17 +179,17 @@ const enforcementRefusals = Effect.fnUntraced(function* (
       )
 
   const cascades = yield* sql.unsafe<{ name: string; parent: string; action: string }>(
-    `SELECT con.conname AS name, con.conrelid::regclass::text AS parent,
+    `SELECT con.conname AS name, con.confrelid::regclass::text AS parent,
        CASE con.confdeltype WHEN 'c' THEN 'ON DELETE CASCADE' ELSE 'ON DELETE SET NULL' END AS action
      FROM pg_constraint con
-     WHERE con.contype = 'f' AND con.confrelid = ${`${literal(quotedTable(target))}::regclass`}
+     WHERE con.contype = 'f' AND con.conrelid = ${`${literal(quotedTable(target))}::regclass`}
        AND con.confdeltype IN ('c', 'n')
      ORDER BY 1`,
   )
 
   for (const cascade of cascades)
     refusals.push(
-      `foreign key ${cascade.name} on ${cascade.parent} reaches ${name} with ${cascade.action}; a delete of its parent row would run as the owner and be rejected by the guard, so resolve it first`,
+      `foreign key ${cascade.name} of ${name} references ${cascade.parent} with ${cascade.action}; deleting a parent row would change this table as its owner and be rejected by the guard, so resolve it first`,
     )
 
   return refusals

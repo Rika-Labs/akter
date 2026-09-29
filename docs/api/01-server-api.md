@@ -245,9 +245,12 @@ class ChargeCard extends Actor.effect<ChargeCard>()("ChargeCard", {
 - `durable adopt plan [--table <name>] [--json]` reads the catalog and prints what adoption would meet and the SQL each step would run; it changes nothing and exits 1 while a table has a problem.
 - `durable adopt observe <table>` adds `routing_key bigint`, records the adoption in `actor_adoptions`, and installs the statement triggers that record each write in `actor_adoption_writes`. `durable adopt observe <table> --report [--since 7d] [--clear] [--json]` prints the recorded writers by login, `application_name`, and operation.
 - `durable adopt backfill <table> [--batch 1000]` fills `routing_key` in resumable batches; it refuses rows whose mapped columns are `NULL` or empty.
-- `durable adopt status --database-url <url> [--json]` lists each adopted table with its mode, unbackfilled rows, and last legacy write.
+- `durable adopt enforce <table> --writer-role <role> [--allow <role>]... [--quiet 7d]` refuses, listing every reason, unless the table is ready, then revokes write privileges from every role but the writer and the allowed ones and installs the guard trigger ([migrations guide](../operations/02-migrations.md#adopting-an-existing-schema)). `durable adopt release <table> --to observe` undoes it.
+- `durable adopt status --database-url <url> [--json]` lists each adopted table with its mode, unbackfilled rows, last legacy write, and writer and allowed roles.
 
-`planAdoption`, `observeAdoption`, `adoptionWriters`, `backfillAdoption`, and `adoptionStatus` in `@durable-actors/core/runtime` are the same operations. A refused command exits 1 with the reason (`AdoptionRefused`).
+`Actors.layer({ adoption: { role } })` is the writer role: a turn of an actor type that owns an enforced adopted table runs as `role` with its tenant set, and the runtime refuses to start an enforced table without it. With `rowLevelSecurity` on, both must name the same role.
+
+`planAdoption`, `observeAdoption`, `adoptionWriters`, `backfillAdoption`, `enforceAdoption`, `releaseAdoption`, and `adoptionStatus` in `@durable-actors/core/runtime` are the same operations. A refused command exits 1 with the reason (`AdoptionRefused`).
 
 ## Content
 
