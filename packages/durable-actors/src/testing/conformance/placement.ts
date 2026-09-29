@@ -719,6 +719,28 @@ export const placementConformance: ReadonlyArray<ConformanceCase> = [
             yield* send(`/actors/PlacementParcel/${encodeURIComponent(parcelId)}/Title`),
           ).toEqual({ status: 200, body: "parcel" })
           expect(parseChildId(parcelId)?.parent).toBe("o-served")
+
+          // A well-formed id under a real parent is still not a mint: over HTTP
+          // the creating command is refused before any turn, and nothing is created.
+          const forged = childId({
+            parent: "o-served",
+            local: parseChildId(parcelId)!.local.replace(/^./, (c) => (c === "0" ? "1" : "0")),
+          })
+          const refused = yield* send(
+            `/actors/PlacementParcel/${encodeURIComponent(forged)}/Open`,
+            "forged",
+          )
+
+          expect(yield* reasonOf(refused.body)).toEqual({
+            tag: "Unauthorized",
+            code: "access_denied",
+          })
+          expect(
+            yield* test.receiptsFor(
+              { tenant: test.tenant, actor: "PlacementParcel", id: forged },
+              "Open",
+            ),
+          ).toBe(0)
         }),
       ),
   },
