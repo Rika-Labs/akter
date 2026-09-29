@@ -72,7 +72,7 @@ import {
   emptyOutbox,
   InTurn,
   openOutbox,
-  stage,
+  stageIntent,
 } from "../handles/intents.ts"
 
 import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
@@ -81,14 +81,14 @@ import {
   CurrentConnectionCommands,
   connectionCommandId,
 } from "../identity/command.ts"
-import { checkKey, decodeExecutionId, encodeExecutionId } from "../identity/execution.ts"
+import { checkExecutionKey, decodeExecutionId, encodeExecutionId } from "../identity/execution.ts"
 import { type AnyWorkflow, exitCodec, isWorkflow } from "../members/workflow.ts"
 import {
   ExecutionIdOutput,
   INTERRUPT,
   START,
   StartPayload,
-  Target,
+  ExecutionTarget,
   workflowRun,
   type WorkflowRun,
 } from "../handles/workflow.ts"
@@ -621,7 +621,7 @@ interface Definition<
   readonly subscriptions?: Subs
 }
 
-const encodeTarget = Schema.encodeEffect(Target)
+const encodeTarget = Schema.encodeEffect(ExecutionTarget)
 
 const encodeStartPayload = Schema.encodeEffect(StartPayload)
 
@@ -1330,7 +1330,7 @@ const make = <
                   yield* outsideTurn
                   yield* callable
 
-                  if (member.key !== undefined) yield* checkKey(member.key(input))
+                  if (member.key !== undefined) yield* checkExecutionKey(member.key(input))
                   const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
                   const outcome = yield* send(
@@ -2334,7 +2334,7 @@ const make = <
               const input = yield* memberCodec.decodeInput(payload)
               const key = member.key(input.value)
 
-              yield* checkKey(key)
+              yield* checkExecutionKey(key)
 
               return key
             }).pipe(Effect.orDie),
@@ -2897,7 +2897,7 @@ const make = <
               Effect.gen(function* () {
                 const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-                yield* stage(marker, { target, command: member.tag, payload })
+                yield* stageIntent(marker, { target, command: member.tag, payload })
               }),
           ] as const,
         ]
@@ -2932,7 +2932,7 @@ const make = <
 
               const own = current.sender.actor === target.actor && current.sender.id === target.id
 
-              yield* stage(marker, {
+              yield* stageIntent(marker, {
                 target,
                 command: START,
                 payload: yield* encodeStartPayload({

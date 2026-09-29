@@ -59,6 +59,7 @@ export interface ConnectionContext<State, Event extends EventClass, Server, Sess
   }) => Effect.Effect<ReadonlyArray<ConnectionInfo<Session>>>
   /** Closes this connection with `SessionEnded` cause `ServerClosed` once the handler returns. */
   readonly close: Effect.Effect<void>
+  /** Committed events of one declared class after the exclusive `after` cursor, in stream order, as `read.events` returns them. */
   readonly events: <E extends Event>(
     event: E,
     options?: { readonly after?: string | undefined; readonly limit?: number },

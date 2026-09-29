@@ -21,6 +21,10 @@ import type { RecordedExit, StoredResult, WorkflowContext } from "../contexts/wo
 import type { AnyWorkflow } from "../members/workflow.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
 
+/**
+ * How a command or query ended, with its value or declared failure still
+ * JSON-encoded. A defect carries only its cause and is never a declared error.
+ */
 export const Outcome = Schema.TaggedUnion({
   Success: { value: Schema.String },
   Failure: { value: Schema.String },
@@ -34,6 +38,7 @@ export const Outcome = Schema.TaggedUnion({
   },
 })
 
+/** How a command or query ended: an encoded success or declared failure, or a defect. */
 export type Outcome = typeof Outcome.Type
 
 /**
@@ -45,6 +50,7 @@ export const Executed = Schema.Struct({
   version: Schema.optionalKey(Schema.String),
 })
 
+/** A command's outcome and the commit version its caller's later queries wait for. */
 export type Executed = typeof Executed.Type
 
 /**
@@ -63,8 +69,14 @@ export const SubscriptionEnvelope = Schema.Struct({
   position: Schema.String,
 })
 
+/** The relay's metadata for one subscription delivery. */
 export type SubscriptionEnvelope = typeof SubscriptionEnvelope.Type
 
+/**
+ * One command or query addressed to an actor, with its encoded payload.
+ * `commandId` is the operation's identity: a retry with the same id replays
+ * the receipt instead of running again.
+ */
 export const Request = Schema.Struct({
   ref: ActorRef,
   caller: Caller,
@@ -86,8 +98,10 @@ export const Request = Schema.Struct({
   queuedAtMs: Schema.optionalKey(Schema.Finite),
 })
 
+/** One command or query addressed to an actor. */
 export type Request = typeof Request.Type
 
+/** What a command handler leaves for the turn to commit: its outcome, the state to store, and the events, intents, and frames it staged. */
 export interface BusinessResult {
   readonly outcome: Outcome
   readonly state: ReadonlyArray<readonly [string, string]>
@@ -121,6 +135,7 @@ export interface OpenConnection {
 /** Lists one connection member's open connections. */
 export type ConnectionLister = (member: string) => Effect.Effect<ReadonlyArray<OpenConnection>>
 
+/** One event a turn emitted, encoded for the append. */
 export interface EmittedEvent {
   readonly tag: string
   readonly value: string
@@ -128,6 +143,7 @@ export interface EmittedEvent {
   readonly version: number
 }
 
+/** One committed event as the log returns it. */
 export interface StoredEvent {
   readonly cursor: string
   readonly commandId: string
@@ -144,6 +160,7 @@ export type EventReader = (
   limit: number,
 ) => Effect.Effect<ReadonlyArray<StoredEvent>, UnknownCursor | RetentionGap>
 
+/** A command bound to its handler when the actor's layer was built. */
 export interface RegisteredCommand {
   readonly internal: boolean
   /** Named as a subscription's handler: only subscription deliveries reach it. */
@@ -176,10 +193,11 @@ export const ConnectionPhase = Schema.TaggedUnion({
   Resync: { after: Schema.UndefinedOr(Schema.String) },
 })
 
+/** One connection handler phase. */
 export type ConnectionPhase = typeof ConnectionPhase.Type
 
 /** The committed view and capabilities one connection handler runs with. */
-export interface ConnectionInput {
+interface ConnectionInput {
   readonly ref: ActorRef
   readonly connectionId: string
   readonly member: string
@@ -204,6 +222,7 @@ export interface ConnectionResult {
   readonly close: boolean
 }
 
+/** A connection member bound to its handler. */
 export interface RegisteredConnection {
   readonly stampCursor: boolean
   /** Effect tags whose progress this member receives, and its audience. */
@@ -246,6 +265,7 @@ export interface StoredProgress {
   readonly frame: string
 }
 
+/** A stream member bound to its handler. */
 export interface RegisteredStream {
   /** Effect tags whose progress the handler may read. */
   readonly progress: ReadonlySet<string>
@@ -263,7 +283,7 @@ export interface EffectRoute {
 }
 
 /** How one executor attempt ended without a result. */
-export interface EffectFailure {
+interface EffectFailure {
   readonly cause: string
   /** True when the provider may have applied the call anyway. */
   readonly ambiguous: boolean
@@ -278,13 +298,14 @@ export interface EffectFailure {
 }
 
 /** What the relay gives one attempt; the executor sees it as `X.Executor`. */
-export type AttemptContext = Omit<ExecutorContext, "progress"> & {
-  /** Offers one encoded progress frame to the attempt's slot. */
+type AttemptContext = Omit<ExecutorContext, "progress"> & {
   /** False when progress reports go nowhere, so frames need not be encoded. */
   readonly reporting: () => boolean
+  /** Offers one encoded progress frame to the attempt's slot. */
   readonly report: (frame: Uint8Array) => Effect.Effect<void>
 }
 
+/** An effect class bound to its executor and retry policy. */
 export interface RegisteredEffect {
   /** Total attempts before the effect is dead-lettered. */
   readonly attempts: number
@@ -338,6 +359,7 @@ export interface RegisteredEffect {
   ) => Effect.Effect<EffectRoute | undefined>
 }
 
+/** What an actor type's effect layer registers with the runtime. */
 export interface EffectRegistration {
   readonly name: string
   /** Effect tags some connection or stream member of the actor receives progress of. */
@@ -359,6 +381,7 @@ export interface RegisteredQuery {
   ) => Effect.Effect<Outcome>
 }
 
+/** What an actor type's query layer registers with the runtime. */
 export interface QueryRegistration {
   readonly name: string
   readonly placement: Placement
@@ -371,6 +394,7 @@ export interface QueryRegistration {
   readonly payloads: ReadonlyArray<PayloadDeclaration>
 }
 
+/** What an actor type's command layer registers with the runtime. */
 export interface Registration {
   readonly name: string
   readonly singleton: boolean
@@ -569,6 +593,10 @@ export class InternalActors extends Context.Service<
   }
 >()("@durable-actors/core/handles/actors/InternalActors") {}
 
+/**
+ * The runtime's public service. Provide it with `Actors.layer` from
+ * `@durable-actors/core/runtime`; handles reach the runtime through it.
+ */
 export class Actors extends Context.Service<
   Actors,
   {
