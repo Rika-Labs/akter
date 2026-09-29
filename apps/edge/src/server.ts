@@ -22,6 +22,8 @@ const isUpgrade = (request: Request) =>
  * The hosted edge: maps each request's host to a deployment, authenticates it,
  * and forwards it with a signed assertion to a ready runner of the tenant's
  * home region. Listens until the scope closes.
+ *
+ * An unknown host is refused before anything is authenticated.
  */
 export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
   const random = yield* Crypto.Crypto
@@ -48,7 +50,6 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
       const url = new URL(request.url)
       const deployment = yield* edge.resolveHost(hostOf(request.headers.get("host") ?? url.host))
 
-      // An unknown host is refused before anything is authenticated.
       if (deployment === undefined)
         return yield* refusal(InvalidInput.make({ code: "unknown_route" }))
 

@@ -2,6 +2,7 @@ import { Effect, Schedule } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { EdgeOptions } from "../config.ts"
 
+/** A tenant's home region and whether it is active or moving. */
 export interface Home {
   readonly region: string
   readonly state: "active" | "moving"
@@ -18,6 +19,9 @@ interface Cached {
  * and a tenant with no row is cached as absent, meaning the primary region.
  * Every poll rereads only rows above the highest version held; versions are
  * stamped in commit order, so none is skipped. Nothing here writes a row.
+ *
+ * The version is read before any entry, so a change after it is reread by the
+ * next poll.
  */
 export const directory = Effect.fnUntraced(function* (options: EdgeOptions) {
   const sql = yield* SqlClient.SqlClient
@@ -28,7 +32,6 @@ export const directory = Effect.fnUntraced(function* (options: EdgeOptions) {
 
     if (existing !== undefined) return existing
 
-    // The version is read before any entry, so a change after it is reread by the next poll.
     const [row] = yield* sql<{ readonly highest: number }>`
       SELECT coalesce(max(version), 0)::float8 AS highest
       FROM tenant_directory WHERE deployment_id = ${deployment}

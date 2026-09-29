@@ -99,7 +99,6 @@ describe("durable dead-letters", () => {
           Exit.isFailure(yield* parseRepair({ action: "retry", args }).pipe(Effect.exit)),
         ).toBe(true)
 
-      // Only a retry takes --provider-checked.
       expect(
         Exit.isFailure(
           yield* parseRepair({

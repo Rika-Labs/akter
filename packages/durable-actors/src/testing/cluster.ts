@@ -58,6 +58,9 @@ export interface ClusterOptions<ROut, E, RIn> extends TestOptions {
   readonly holdersOnly?: ReadonlyArray<number>
 }
 
+/** Sessions per pool for each runner unless a cluster says otherwise; three runners hold 24 sessions at most. */
+const RUNNER_CONNECTIONS = 4
+
 export class ActorCluster extends Context.Service<
   ActorCluster,
   {
@@ -354,7 +357,10 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           options.runnerActors?.(runners.indexOf(runner)) ?? Layer.empty,
         ).pipe(
           Layer.provideMerge(
-            ActorTest.layer(options).pipe(
+            ActorTest.layer({
+              ...options,
+              maxConnections: options.maxConnections ?? RUNNER_CONNECTIONS,
+            }).pipe(
               Layer.provide([
                 Layer.succeed(ClusterMember, { tenant, connect: dial(runner) }),
                 Layer.succeed(RunnerWiring, {

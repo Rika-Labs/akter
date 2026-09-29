@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto"
 import { type APIRequestContext, expect, type Page, test } from "@playwright/test"
 import { proxy } from "./proxy.ts"
 
-// The chat example served by examples/chat/src/web/serve.ts, on a fresh in-memory database.
+/**
+ * The chat example served by examples/chat/src/web/serve.ts, on a fresh
+ * in-memory database.
+ */
 const CHAT = "http://127.0.0.1:3003"
 
 const bearer = (user: string) => ({ authorization: `Bearer ${user}` })
@@ -30,8 +33,11 @@ const say = async (page: Page, body: string) => {
   await page.getByRole("button", { name: "Post" }).click()
 }
 
-// Each test uses its own room, so tests share the server without sharing state.
-// Rooms are unique per run too: the server may keep rooms across runs when DATABASE_URL names Postgres.
+/**
+ * Each test uses its own room, so tests share the server without sharing
+ * state. Rooms are unique per run too: the server may keep rooms across runs
+ * when DATABASE_URL names Postgres.
+ */
 const roomOf = (name: string) => `${name}-${randomUUID()}`
 
 test("replays events after a dropped connection and never shows a gap as continuous", async ({
@@ -48,11 +54,9 @@ test("replays events after a dropped connection and never shows a gap as continu
     await expect(page.getByTestId("messages").locator("li")).toHaveText(["alice: one"])
     await expect(page.getByTestId("feed-status")).toHaveAttribute("data-opened", "1")
 
-    // The browser loses its connection: its open feed stream is cut, and nothing gets through.
     await context.setOffline(true)
     network.cut()
 
-    // Committed while the browser is away.
     await post(request, room, "bob", "two")
     await post(request, room, "bob", "three")
     await page.waitForTimeout(1_000)
@@ -67,7 +71,6 @@ test("replays events after a dropped connection and never shows a gap as continu
       "bob: three",
     ])
 
-    // The feed reopened after the cursor it had, so nothing was repeated or skipped.
     await expect(page.getByTestId("feed-status")).toHaveAttribute("data-opened", /^[2-9]\d*$/)
 
     const cursors = await page
@@ -89,7 +92,6 @@ test("rolls back an optimistic reaction the server rejects", async ({ page, requ
   await page.getByTestId("react").click()
   await expect(page.getByTestId("reactions")).toHaveText("1")
 
-  // The room closes behind the page's back; its committed state still says open.
   const minted = await request.post(`${CHAT}/api/command-ids`, { headers: bearer("bob") })
   const { commandId } = (await minted.json()) as { readonly commandId: string }
 
@@ -103,7 +105,6 @@ test("rolls back an optimistic reaction the server rejects", async ({ page, requ
   await expect(page.getByTestId("notice")).toHaveText("the room is closed")
   await expect(page.getByTestId("reactions")).toHaveText("1")
 
-  // The reaction showed at once, then rolled back when the server refused it.
   await expect(page.getByTestId("reactions")).toHaveAttribute("data-history", /,2,1$/)
 })
 
@@ -114,7 +115,6 @@ test("keeps the original command id across a retried POST after a lost response"
   const keys: Array<string | undefined> = []
   let dropped = false
 
-  // The first response to the post never reaches the page, after the server committed it.
   await page.route(`**/api/actors/Room/${room}/Post`, async (route) => {
     keys.push(route.request().headers()["idempotency-key"])
     const response = await route.fetch()

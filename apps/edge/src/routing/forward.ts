@@ -37,7 +37,10 @@ export interface Edge {
   readonly ready: (deployment: string, region: string) => Effect.Effect<ReadonlyArray<string>>
 }
 
-// Hop-by-hop headers, and credentials a runner must never see: it trusts only the assertion.
+/**
+ * Hop-by-hop headers, and credentials a runner must never see: it trusts only
+ * the assertion.
+ */
 const DROPPED = new Set([
   "connection",
   "keep-alive",
@@ -68,9 +71,15 @@ export const refusal = Effect.fnUntraced(function* (reason: Reason) {
   return new Response(body, { status: statusOf(reason), headers })
 })
 
+/** An `ActorUnavailable` failure with the given reason. */
 export const unavailable = (why: string) => ActorUnavailable.make({ cause: new Error(why) })
 
-/** Where a principal's requests go: the ready runners of its tenant's home region. */
+/**
+ * Where a principal's requests go: the ready runners of its tenant's home
+ * region.
+ *
+ * A moving tenant waits; clients retry with the same command ids.
+ */
 export const route = Effect.fnUntraced(function* (
   edge: Edge,
   deployment: Deployment,
@@ -79,7 +88,6 @@ export const route = Effect.fnUntraced(function* (
   const home =
     principal === undefined ? undefined : yield* edge.home(deployment.id, principal.tenant)
 
-  // A moving tenant waits; clients retry with the same command ids.
   if (home?.state === "moving") return Result.fail(unavailable("The tenant is moving"))
 
   const region = home?.region ?? deployment.primaryRegion
@@ -97,6 +105,8 @@ const bodyOf = (request: Request) =>
  * Authenticates an HTTP request, signs an assertion bound to it, and forwards
  * it to a ready runner of the tenant's home region. Without a credential it
  * forwards no assertion, and the runner decides whether the route needs one.
+ * The assertion is used only for this request's attempts, and only while it
+ * lives.
  */
 export const forward = Effect.fnUntraced(function* (
   edge: Edge,
@@ -174,7 +184,6 @@ export const forward = Effect.fnUntraced(function* (
 
   delete headers["content-type"]
 
-  // The assertion is used only for this request's attempts, and only while it lives.
   for (const runner of routed.urls) {
     if ((yield* Clock.currentTimeMillis) >= deadline) break
 

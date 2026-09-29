@@ -18,6 +18,7 @@ export interface Principal {
   readonly expiresAt: number
 }
 
+/** Proves a credential for a deployment. */
 export interface Authenticator {
   /**
    * The principal a `Bearer` credential proves for `deployment`: a hosted API
@@ -77,19 +78,26 @@ const claimAt = (claims: Readonly<Record<string, Schema.Json>>, path: string) =>
   return isString(value) ? value : ""
 }
 
-// The limits every served tenant and subject keep; the runner refuses the rest anyway.
+/**
+ * The limits every served tenant and subject keep; the runner refuses the rest
+ * anyway.
+ */
 const isTenant = Schema.is(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/)))
 
 /** The token of `Bearer <token>`, as a header or a WebSocket frame carries it. */
 export const bearer = (value: string) => /^Bearer[ ]+([^ ]+)[ ]*$/i.exec(value)?.[1]
 
+/**
+ * Builds the credential check. Providers are kept per deployment and settings
+ * so their JWKS cache outlives a request. A credential with three dot-separated
+ * parts is a JWT; anything else is a hosted API key.
+ */
 export const authenticator = Effect.fnUntraced(function* (options: EdgeOptions) {
   const sql = yield* SqlClient.SqlClient
   const context = yield* Effect.context<HttpClient.HttpClient>()
   const session = Duration.toMillis(options.apiKeySession)
   const pollMs = Duration.toMillis(options.pollEvery)
 
-  // One provider per deployment and settings, so its JWKS cache outlives a request.
   const providers = new Map<
     string,
     {
@@ -198,7 +206,6 @@ export const authenticator = Effect.fnUntraced(function* (options: EdgeOptions) 
 
       if (token === undefined) return Effect.fail(invalid)
 
-      // A JWT has three dot-separated parts; a hosted API key has none.
       return token.split(".").length === 3 ? jwt(deployment, token) : apiKey(deployment, token)
     },
   } satisfies Authenticator

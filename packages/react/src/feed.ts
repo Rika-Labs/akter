@@ -14,6 +14,7 @@ export interface FeedSource<E extends { readonly Type: unknown }> {
   readonly events: (event: E, options?: FeedOptions) => AsyncIterable<FeedEntry<E["Type"]>>
 }
 
+/** Options for `useEventFeed`. */
 export interface EventFeedOptions {
   /** Resume after this cursor when nothing is stored under `storageKey`. */
   readonly after?: string
@@ -24,6 +25,7 @@ export interface EventFeedOptions {
   readonly storageKey?: string
 }
 
+/** Entries delivered by `useEventFeed` and how it stands. */
 export interface EventFeed<Event> {
   /** Entries delivered since this component mounted, in cursor order. */
   readonly entries: ReadonlyArray<FeedEntry<Event>>
@@ -49,6 +51,7 @@ const stored = (key: string | undefined) =>
  * cursor survives a reload. A pruned gap is surfaced as `gap`, never skipped.
  * An actor no command has created yet is asked for again until one does.
  * Nothing runs on the server during rendering, so it is safe under SSR.
+ * `error` is the Promise client's: a declared error or an `ActorError`.
  */
 export const useEventFeed = <E extends { readonly Type: unknown }>(
   handle: FeedSource<E>,
@@ -85,12 +88,10 @@ export const useEventFeed = <E extends { readonly Type: unknown }>(
           }))
         }
       } catch (thrown) {
-        // The Promise client rejects only with declared errors and `ActorError`s.
         const error = thrown as Failure
 
         if (controller.signal.aborted) return
 
-        // A feed never creates its actor: until a command does, it asks again.
         if (Schema.is(ActorError)(error) && Schema.is(NotCreated)(error.reason)) {
           await Effect.runPromise(Effect.sleep(NOT_CREATED_RETRY))
 

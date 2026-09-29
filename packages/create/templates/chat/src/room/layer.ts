@@ -2,6 +2,10 @@ import { DateTime, Effect, Layer, Option } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { MessagePosted, messages, messagesDdl, Room, RoomClosed } from "./contract.ts"
 
+/**
+ * `Post` returns the `RoomClosed` declared failure once the room is closed,
+ * which rolls back the state, row and event that turn wrote.
+ */
 export const RoomCommands = Room.toLayer(
   Effect.succeed({
     Post: Effect.fnUntraced(function* ({ body }) {
@@ -29,7 +33,6 @@ export const RoomCommands = Room.toLayer(
       })
       yield* turn.emit(MessagePosted.make({ id, author, body }))
 
-      // A declared failure rolls back the state, row, and event written above.
       if (turn.state.closed) return yield* RoomClosed.make({})
 
       return id
@@ -46,6 +49,7 @@ export const RoomCommands = Room.toLayer(
   }),
 )
 
+/** Query handlers for `Room`. */
 export const RoomReads = Room.toQueryLayer(
   Effect.succeed({
     Recent: Effect.fnUntraced(function* ({ limit }) {
