@@ -1,6 +1,6 @@
 # ADR 0053: `Actor.serve` answers readiness at `GET /ready`
 
-**Status:** proposed (2026-09-29). It amends [ADR 0027](0027-served-protocol.md) section 1's route table and section 6's OpenAPI document.
+**Status:** accepted (2026-09-30, Dallen; proposed 2026-09-29). It amends [ADR 0027](0027-served-protocol.md) section 1's route table and section 6's OpenAPI document.
 
 **Responsibility:** decide how a served runner reports readiness over HTTP.
 

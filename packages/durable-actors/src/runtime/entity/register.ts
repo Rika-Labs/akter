@@ -1,10 +1,12 @@
 import {
   Cause,
+  Clock,
   Context,
   type Crypto,
   Duration,
   Effect,
   Exit,
+  Metric,
   Option,
   Schedule,
   Schema,
@@ -33,6 +35,9 @@ import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 import type { TurnGate } from "../drain.ts"
+import { DefectLog } from "../telemetry/defects.ts"
+import { count, Metrics, record } from "../telemetry/metrics.ts"
+import { requestAttributes, SpanNames, triggerOf } from "../telemetry/spans.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
@@ -60,6 +65,23 @@ const RESTART_CAP = Duration.seconds(5)
 
 const restartDelay = (restarts: number) =>
   Duration.min(Duration.times(RESTART_BASE, 2 ** restarts), RESTART_CAP)
+
+/** Carries a deterministic defect out of the turn span, so the span records it as failed. */
+class TurnDefect extends Schema.TaggedError<TurnDefect>()("DeterministicDefect", {
+  defect: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+/** The `outcome` attribute of `durable-actors.turns` and of the turn span. */
+const outcomeOf = (outcome: Outcome, replayed = false) =>
+  replayed
+    ? "replay"
+    : Outcome.match(outcome, {
+        Success: () => "success",
+        Failure: () => "failure",
+        Defect: () => "defect",
+        Acknowledged: () => "acknowledged",
+      })
 
 export const encodeEntityId = (tenantAndId: readonly [string, string]) =>
   encodeEntityIdOf(tenantAndId)
@@ -121,6 +143,10 @@ export const registerActor = Effect.fnUntraced(function* (
   writable: Effect.Effect<void, ActorError>,
 ) {
   const sharding = yield* Sharding.Sharding
+
+  const defects = yield* DefectLog
+  const typeAttributes = { actor_type: registration.name }
+  const activations = Metric.withAttributes(Metrics.activations, typeAttributes)
 
   const owner = activationOwner({
     registration,
@@ -229,14 +255,17 @@ export const registerActor = Effect.fnUntraced(function* (
         )
 
       yield* Effect.acquireRelease(
-        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
+        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
+          Effect.andThen(count(Metrics.activationsStarted, typeAttributes, 1)),
+          Effect.andThen(Metric.modify(activations, 1)),
+        ),
         () =>
           Effect.sync(() => {
-            const count = resident.get(entityId)! - 1
+            const left = resident.get(entityId)! - 1
 
-            if (count === 0) resident.delete(entityId)
-            else resident.set(entityId, count)
-          }),
+            if (left === 0) resident.delete(entityId)
+            else resident.set(entityId, left)
+          }).pipe(Effect.andThen(Metric.modify(activations, -1))),
       ).pipe(Scope.provide(scope))
 
       const owned = yield* ownedOf(entityId)
@@ -269,6 +298,16 @@ export const registerActor = Effect.fnUntraced(function* (
             if (command === undefined)
               return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
 
+            const started = yield* Clock.currentTimeMillis
+            let label: string | undefined
+
+            if (payload.queuedAtMs !== undefined)
+              yield* record(
+                Metrics.mailboxAge,
+                typeAttributes,
+                Math.max(0, started - payload.queuedAtMs),
+              )
+
             const outcome = yield* Effect.gen(function* () {
               yield* owner.prepare(owned)
 
@@ -285,6 +324,18 @@ export const registerActor = Effect.fnUntraced(function* (
                 owner.hasConnections ? owner.list(owned) : undefined,
                 registration.cron,
               )
+
+              label = outcomeOf(done.outcome, done.replayed)
+              yield* Effect.annotateCurrentSpan({
+                "actor.generation": done.generation,
+                "turn.replayed": done.replayed,
+                "turn.outcome": label,
+              })
+              yield* count(Metrics.receiptsReplayed, typeAttributes, done.replayed ? 1 : 0)
+              yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
+              yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
+              yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
+              yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
 
               // A route turn's command id is its effect id: its progress stops before the route's broadcasts.
               if (owner.hasProgress && !Outcome.guards.Defect(done.outcome)) {
@@ -316,11 +367,33 @@ export const registerActor = Effect.fnUntraced(function* (
                     return yield* Effect.die(cause)
 
                   // Deterministic defects run no user code, because a defect hook
-                  // can loop on corrupt state; the turn span and this log carry
-                  // the cause for operators.
+                  // can loop on corrupt state; the turn span, the defect log, and
+                  // this log carry the cause for operators.
                   yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
 
-                  return Outcome.cases.Defect.make({ cause })
+                  const span = yield* Effect.currentSpan.pipe(Effect.option)
+
+                  yield* defects.record({
+                    span: SpanNames.turn(payload.ref.actor, payload.command),
+                    traceId: Option.isSome(span) ? span.value.traceId : "",
+                    spanId: Option.isSome(span) ? span.value.spanId : "",
+                    atMs: yield* Clock.currentTimeMillis,
+                    tenant: payload.ref.tenant,
+                    actorType: payload.ref.actor,
+                    actorId: payload.ref.id,
+                    command: payload.command,
+                    commandId: payload.commandId,
+                    trigger: triggerOf(payload),
+                    cause: Cause.pretty(Cause.die(cause)),
+                  })
+                  label = "defect"
+                  yield* Effect.annotateCurrentSpan({ "turn.outcome": label })
+
+                  // Failing inside the span marks it as a defect for the exporter.
+                  return yield* TurnDefect.make({
+                    defect: cause,
+                    message: cause instanceof Error ? cause.message : String(cause),
+                  })
                 }),
               ),
               Effect.annotateLogs({
@@ -333,15 +406,36 @@ export const registerActor = Effect.fnUntraced(function* (
               // The span's call site is always this file, so a captured stack
               // trace would cost an Error per turn and name nothing useful.
               Effect.withSpan(
-                `durable-actors.${payload.ref.actor}/${payload.command}`,
-                {
-                  attributes: {
-                    "actor.tenant": payload.ref.tenant,
-                    "actor.id": payload.ref.id,
-                    "command.id": payload.commandId,
-                  },
-                },
+                SpanNames.turn(payload.ref.actor, payload.command),
+                { kind: "server", attributes: requestAttributes(payload) },
                 { captureStackTrace: false },
+              ),
+              Effect.catchIf(Schema.is(TurnDefect), (defect) =>
+                Effect.succeed(Outcome.cases.Defect.make({ cause: defect.defect })),
+              ),
+              Effect.onExit((exit) =>
+                Effect.gen(function* () {
+                  yield* count(
+                    Metrics.turns,
+                    {
+                      ...typeAttributes,
+                      // A declared ActorError rejects the command; a retryable death reruns it.
+                      outcome:
+                        label ??
+                        (Exit.isSuccess(exit)
+                          ? outcomeOf(exit.value)
+                          : Cause.hasFails(exit.cause)
+                            ? "rejected"
+                            : "retried"),
+                    },
+                    1,
+                  )
+                  yield* record(
+                    Metrics.turnDuration,
+                    typeAttributes,
+                    (yield* Clock.currentTimeMillis) - started,
+                  )
+                }),
               ),
             )
 
