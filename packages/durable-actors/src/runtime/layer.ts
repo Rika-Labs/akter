@@ -95,6 +95,7 @@ import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import { checkReceipt } from "./turn/receipt.ts"
+import { type Readiness, RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 
 export interface Options {
   readonly authorize: (request: {
@@ -230,6 +231,9 @@ const sampled = new WeakSet<Sharding.Sharding["Service"]>()
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
 
+/** How long readiness waits for the database before it reports storage unavailable. */
+const READINESS_STORAGE_TIMEOUT = "2 seconds"
+
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
@@ -294,6 +298,8 @@ export const layer = (options: Options) => {
       const defectLog = boundedDefectLog(defectCapacity)
 
       const database = yield* rowsDatabase
+      // Turns run through the gate so a drain can refuse new ones and interrupt the rest.
+      const gate = turnGate()
 
       // The holder and transport refer to each other: the transport delivers
       // to this runner's holder, which answers through the transport.
@@ -502,6 +508,12 @@ export const layer = (options: Options) => {
           if (registration === undefined)
             return yield* ActorError.make({
               reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+            })
+
+          // A draining runner admits no new external work; the caller retries on another runner.
+          if (external && !gate.open)
+            return yield* ActorError.make({
+              reason: ActorUnavailable.make({ cause: new Error("Runner is draining") }),
             })
 
           const address = yield* entityId(request.ref)
@@ -841,20 +853,22 @@ export const layer = (options: Options) => {
 
       // Horizons are days long, so a sweep a minute keeps up; each batch is
       // its own short transaction, so turns never wait on a whole sweep.
-      if (cleanupHooks.periodic)
-        yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
-          Effect.andThen(
-            cleanup.pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.interrupt
-                  : Effect.logWarning("Retention cleanup failed", cause),
+      const sweeping = cleanupHooks.periodic
+        ? yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
+            Effect.andThen(
+              cleanup.pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.interrupt
+                    : Effect.logWarning("Retention cleanup failed", cause),
+                ),
               ),
             ),
-          ),
-          Effect.forever,
-          Effect.forkIn(scope),
-        )
+            Effect.forever,
+            Effect.forkIn(scope),
+          )
+        : undefined
+
       const sampler = databaseSampler()
 
       const sample = Effect.suspend(() =>
@@ -888,6 +902,7 @@ export const layer = (options: Options) => {
 
       // Routed subscriptions registered here, by source type.
 
+      // Routed subscriptions registered here, by source type.
       const routed = (sourceType: string) =>
         localSubscriptions().flatMap(({ subscriberType, subscription }) =>
           subscription.routed !== undefined && subscription.sourceType === sourceType
@@ -988,6 +1003,7 @@ export const layer = (options: Options) => {
             registration,
             transport,
             options.authorize,
+            gate,
           ).pipe(
             Effect.provideService(DefectLog, defectLog),
             Effect.provideContext(services),
@@ -1349,8 +1365,38 @@ export const layer = (options: Options) => {
           ),
       })
 
+      const serving = Effect.gen(function* () {
+        if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
+
+        if (registrations.size + queryRegistrations.size + effectRegistrations.size === 0)
+          return { ready: false, reason: "unregistered" } as const
+
+        const sql = yield* SqlClient.SqlClient
+
+        const answered = yield* sql`SELECT 1`.pipe(
+          Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
+          Effect.map(Option.isSome),
+          Effect.orElseSucceed(() => false),
+        )
+
+        return answered
+          ? ({ ready: true } as const)
+          : ({ ready: false, reason: "storage" } as const)
+      }).pipe(Effect.provideContext(services)) satisfies Effect.Effect<Readiness>
+
+      const control = runtimeControl({
+        gate,
+        stopClaims: relay.stop,
+        attemptsIdle: relay.attemptsIdle,
+        interruptAttempts: relay.interruptAttempts,
+        stopBackground: sweeping === undefined ? Effect.void : Fiber.interrupt(sweeping),
+        serving,
+        scope,
+      })
+
       return Context.make(Actors, publicActors).pipe(
         Context.add(InternalActors, internalActors),
+        Context.add(RuntimeControl, control),
         Context.add(DefectLog, defectLog),
         Context.add(TelemetrySampler, TelemetrySampler.of({ sample })),
         Context.add(OperatorRuntime, operators),

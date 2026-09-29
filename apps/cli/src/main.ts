@@ -34,6 +34,12 @@ import {
   loadEntry,
   parseCheck,
 } from "./commands/workflows/check.ts"
+import {
+  USAGE as TENANTS_USAGE,
+  controlPlane,
+  create as createTenant,
+  parseCreate,
+} from "./commands/tenants/create.ts"
 
 const fail = (message: string) =>
   Console.error(message).pipe(
@@ -173,6 +179,20 @@ const operatorCommand = <O extends { readonly tokenEnv: string; readonly json: b
 const encodeJson = (answer: Schema.Json) =>
   Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(answer).pipe(Effect.orDie)
 
+const tenantsCreate = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const options = yield* parseCreate(args)
+    const services = yield* Layer.build(controlPlane(options.databaseUrl))
+
+    yield* Console.log(yield* createTenant(options).pipe(Effect.provideContext(services)))
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      UsageError: (error) => fail(`${error.message}\n${TENANTS_USAGE}`),
+      ActorError: (error) => fail(`durable tenants create failed: ${error.reason._tag}`),
+    }),
+  )
+
 // `durable login` and `durable deploy` join these under commands/.
 const program = Effect.gen(function* () {
   const [group, command, ...args] = process.argv.slice(2)
@@ -182,6 +202,8 @@ const program = Effect.gen(function* () {
   if (group === "workflows" && command === "check") return yield* workflowsCheck(args)
 
   if (group === "defects" && command === "list") return yield* defectsList(args)
+
+  if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
 
   if (group === "inspect")
     return yield* operatorCommand(
@@ -211,6 +233,7 @@ const program = Effect.gen(function* () {
       INSPECT_USAGE,
       RECEIPTS_USAGE,
       REPAIR_USAGE,
+      TENANTS_USAGE,
     ].join("\n"),
   )
 })
