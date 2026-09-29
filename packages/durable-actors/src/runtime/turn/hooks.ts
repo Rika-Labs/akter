@@ -29,6 +29,19 @@ export const TurnHooks = Context.Reference<{
 })
 
 /**
+ * Where a test can pause a content operation between its two single-shard
+ * statements: a read after resolving the reference, the sweep after its
+ * reference scan, and `Content.grant` before it raises the grant horizon.
+ */
+export type ContentPoint = "afterResolve" | "afterReferenceScan" | "beforeRaise"
+
+export const ContentHooks = Context.Reference<{
+  readonly at: (point: ContentPoint) => Effect.Effect<void>
+}>("durable-actors/ContentHooks", {
+  defaultValue: () => ({ at: () => Effect.void }),
+})
+
+/**
  * Test controls for retention cleanup: rows per batch statement, a point
  * after each committed batch where a test can pause or crash the sweep, and
  * whether the runtime sweeps on its own every minute.

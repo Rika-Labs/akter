@@ -32,6 +32,8 @@ export interface Swept {
   readonly receipts: number
   readonly events: number
   readonly workflows: number
+  /** Unreferenced content rows deleted after their grant horizon. */
+  readonly contents: number
 }
 
 /**
@@ -204,5 +206,5 @@ export const sweep = Effect.fnUntraced(function* (
               AND x.manifest_hash = m.manifest_hash AND x.status <> 'finished')`)
   }
 
-  return { receipts, events, workflows } satisfies Swept
+  return { receipts, events, workflows } satisfies Omit<Swept, "contents">
 })

@@ -1,5 +1,6 @@
 import { Crypto, Effect, Schema } from "effect"
 import { type ActorRef, type Caller, System } from "./caller.ts"
+import { parseChildId } from "./child.ts"
 
 export interface MintInput {
   /** The minting parent; a singleton parent's id is the empty string. */
@@ -60,8 +61,16 @@ export const deriveMintId = Effect.fnUntraced(function* (input: MintInput) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 })
 
-/** True when `caller` is the framework's creating intent for the minted actor `target`. */
-export const provesMint = Effect.fnUntraced(function* (caller: Caller, target: ActorRef) {
+/**
+ * True when `caller` is the framework's creating intent for the minted actor
+ * `target`. A parent-placed target, whose parent type is `parent`, is minted
+ * only by the parent its id names, and only its local part is derived.
+ */
+export const provesMint = Effect.fnUntraced(function* (
+  caller: Caller,
+  target: ActorRef,
+  parent?: string,
+) {
   if (
     !Schema.is(System)(caller) ||
     caller.source === "cron" ||
@@ -74,12 +83,23 @@ export const provesMint = Effect.fnUntraced(function* (caller: Caller, target: A
 
   if (ref === undefined || mint === undefined || ref.tenant !== target.tenant) return false
 
-  const derives = (parent: ActorRef) =>
-    deriveMintId({ parent, commandId: mint.commandId, ordinal: mint.ordinal, child: target.actor })
+  const parts = parent === undefined ? undefined : parseChildId(target.id)
 
-  if ((yield* derives(ref)) === target.id) return true
+  if (parent !== undefined && (parts?.parent !== ref.id || ref.actor !== parent)) return false
+
+  const id = parts?.local ?? target.id
+
+  const derives = (minter: ActorRef) =>
+    deriveMintId({
+      parent: minter,
+      commandId: mint.commandId,
+      ordinal: mint.ordinal,
+      child: target.actor,
+    })
+
+  if ((yield* derives(ref)) === id) return true
 
   // A singleton parent digests an empty id; its ref alone cannot tell it from
   // a keyed parent whose id is `singleton`, and one actor type is never both.
-  return ref.id === SINGLETON_ID && (yield* derives({ ...ref, id: "" })) === target.id
+  return ref.id === SINGLETON_ID && (yield* derives({ ...ref, id: "" })) === id
 })
