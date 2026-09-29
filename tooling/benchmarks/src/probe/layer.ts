@@ -1,6 +1,7 @@
-import { DateTime, Deferred, Effect, Layer } from "effect"
+import { Clock, DateTime, Deferred, Effect, Layer } from "effect"
 import { Intent } from "@durable-actors/core"
 import {
+  CronProbe,
   EventProbe,
   Probe,
   ResidentProbe,
@@ -139,6 +140,27 @@ const SenderCommands = Sender.toLayer(
   }),
 )
 
+/** Each `CronProbe` tick handler run: its actor, command id, and wall-clock epoch milliseconds. */
+export const cronFires: Array<{
+  readonly id: string
+  readonly commandId: string
+  readonly at: number
+}> = []
+
+const CronProbeCommands = CronProbe.toLayer(
+  Effect.succeed({
+    Open: Effect.fnUntraced(function* () {
+      const turn = yield* CronProbe.Turn
+      yield* turn.state.set({ count: turn.state.count + 1 })
+    }),
+    Tick: Effect.fnUntraced(function* () {
+      const turn = yield* CronProbe.Turn
+      const at = yield* Clock.currentTimeMillis
+      cronFires.push({ id: turn.id, commandId: turn.commandId, at })
+    }),
+  }),
+)
+
 /**
  * SleepyProbe registers first: Cluster's entity reaper fixes its first sweep
  * interval from the first registration (at most 30 seconds), and a short
@@ -161,4 +183,5 @@ export const ProbeLive = Layer.mergeAll(
   ReducerProbeLive,
   WorkflowProbeLive,
   MintLive,
+  CronProbeCommands,
 )

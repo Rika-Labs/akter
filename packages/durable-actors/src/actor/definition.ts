@@ -123,6 +123,7 @@ import {
 import type { NoDatabase } from "../runtime/effects/isolation.ts"
 import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
+import { resolveCron } from "../runtime/cron/schedule.ts"
 import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
 import { type ActorClient, type ClientOptions, clientOf } from "../client/make.ts"
 import {
@@ -653,6 +654,7 @@ const make = <
   const internalMembers = new Set<AnyMember>(Object.values(internal))
   const fields: StateFields = definition.state?.fields ?? {}
   const policy = resolvePolicy({ declared: definition.policy, commands: members })
+  const cron = resolveCron({ declared: definition.policy?.cron, commands: members })
   const isSingleton = Schema.is(SingletonKeySchema)(definition.key)
   const effects = new Map<string, AnyEffect>()
 
@@ -1908,6 +1910,7 @@ const make = <
               outbox.perform({
                 effect: instance._tag,
                 payload: yield* declared(instance).pipe(Effect.orDie),
+                capped: effectPolicies[instance._tag]?.concurrency !== undefined,
                 ...scheduled,
               })
             })
@@ -2200,6 +2203,7 @@ const make = <
           policy,
           tables,
           blobs,
+          cron,
           subscriptions: registeredSubscriptions,
           subscribers: policy.subscribers,
         }

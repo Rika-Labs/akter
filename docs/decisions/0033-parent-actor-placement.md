@@ -1,6 +1,6 @@
 # ADR 0033: Parent-actor placement
 
-**Status:** proposed (2026-09-28).
+**Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.11 builds it in `0022_parent_placement`.
 
 **Responsibility:** decide how an actor type is placed on its parent actor's shard, how a child's address yields its routing key, and what storage and API change for it.
 
@@ -59,7 +59,7 @@ c1.<byte length of the parent id>.<parent id>.<local id>
 
 ### 3. Routing key and storage
 
-- A child's routing key is its root's routing key under encoding 1. No new encoding value is needed, and existing rows don't change.
+- A child's routing key is its root's routing key under encoding 1. No new encoding value is needed.
 - `actor_placements` accepts `placement = 'parent'` and gains `parent_type text`, non-null exactly when the placement is `parent`. As today, a build that changes a type's placement, its encoding, or its parent type refuses to start.
 - Nothing else in storage changes. Every row still leads with `routing_key`; a family simply shares one, as a tenant's actors do under tenant placement.
 
@@ -91,6 +91,8 @@ c1.<byte length of the parent id>.<parent id>.<local id>
 
 ## Amendments on acceptance
 
+These landed with the acceptance, as labelled targets until the slice builds them.
+
 **Contracts.**
 
 - [06 storage](../contracts/06-storage-ownership.md): replace "Parent-actor placement is target API" with the `{ parent }` rule, the root routing key, the `parent_type` record, and the startup refusal.
@@ -109,15 +111,17 @@ c1.<byte length of the parent id>.<parent id>.<local id>
 
 ## Migration
 
-Needs one framework migration: relax `actor_placements`' check to allow `parent` and add `parent_type`. It is none of the reserved M4 migrations (`0018_rls`, `0019_commit_version`, `0020_content_blobs`). Recommended: reserve the next free number when this ADR is accepted (today `0021`, or `0022` if ADR 0032 is accepted first, moving `0021_adoption` from wave 9 up), as `00NN_parent_placement`. If a slice merges a migration first, the milestone rule applies and this one takes the next number above the highest merged migration.
+Needs one framework migration: relax `actor_placements`' check to allow `parent` and add `parent_type`. It is `0022_parent_placement`, reserved for M4.11 when this ADR was accepted, after ADR 0032's `0021_payload_versions`.
 
-## Open questions for Dallen, with recommended defaults
+## Decided questions
 
-1. **Where the parent lives in the address.** Recommended default: inside the id, as `c1.<len>.<parent>.<local>`. Alternative: a `parent` field on `ActorRef`, which touches every address type and wire format.
-2. **Spelling.** Recommended default: `placement: { parent: Order }`. Alternative: `placement: Order`, as ADR 0010 sketched.
-3. **Tenant-placed parents.** Recommended default: refused. Alternative: allow them and treat them as tenant placement.
-4. **Depth limit.** Recommended default: four levels below the root. Alternative: unlimited, with only the id length limit.
-5. **Migration number.** Recommended default: reserve the next free number at acceptance. Alternative: wait for merge time and apply the milestone renumbering rule.
+Dallen accepted every recommended default on 2026-09-28.
+
+1. **Where the parent lives in the address.** Decided: inside the id, as `c1.<len>.<parent>.<local>`. Rejected alternative: a `parent` field on `ActorRef`, which touches every address type and wire format.
+2. **Spelling.** Decided: `placement: { parent: Order }`. Rejected alternative: `placement: Order`, as ADR 0010 sketched.
+3. **Tenant-placed parents.** Decided: refused. Rejected alternative: allow them and treat them as tenant placement.
+4. **Depth limit.** Decided: four levels below the root. Rejected alternative: unlimited, with only the id length limit.
+5. **Migration number.** Decided: reserve the next free number at acceptance. It is `0022_parent_placement`. Rejected alternative: wait for merge time and apply the milestone renumbering rule.
 
 ## Evidence required
 

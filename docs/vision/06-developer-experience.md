@@ -54,7 +54,7 @@ There is one package, `@durable-actors/core`, with four entries:
 
 ## First five minutes
 
-`bun create @durable-actors` scaffolds a counter or chat app that runs, restarts with its state, and passes its own retry and crash tests on file-backed PGlite with no Docker; `DATABASE_URL` moves the same code to Postgres. The [quickstart](../quickstart.md) is the path, and a CI smoke keeps it runnable. PGlite there is for development only.
+`bun create @durable-actors` scaffolds a counter or chat app that runs, restarts with its state, and passes its own retry and crash tests on file-backed PGlite with no Docker; `DATABASE_URL` moves the same code to Postgres. The [quickstart](../quickstart.md) is the path, and a CI smoke keeps it runnable. PGlite there is for development, and for one-process production within the limits of [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md).
 
 ## Testing
 
