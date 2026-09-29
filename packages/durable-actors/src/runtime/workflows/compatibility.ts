@@ -117,6 +117,10 @@ export const changedSteps = ({
  * same kind, a step it recorded changed its result schema, a marker it
  * recorded is undeclared or outside `min..current`, or it predates a marker
  * whose `min` is above 0. Grouped by actor type, workflow and problem.
+ *
+ * An execution that started after the groups were read brings its manifest into
+ * the comparison. A start manifest already reports a missing step for every
+ * execution under it, so those executions are not reported again.
  */
 export const findIncompatibilities = Effect.fnUntraced(function* (
   declared: ReadonlyArray<DeclaredActor>,
@@ -251,7 +255,6 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
     const step = workflow.steps.get(row.step)
     const key = toJson([row.actor_type, row.workflow, row.manifest_hash])
 
-    // An execution that started after the groups were read brings its manifest here.
     if (!manifests.has(key))
       manifests.set(
         key,
@@ -262,7 +265,6 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
 
     const stored = manifests.get(key)
 
-    // A start manifest already reports a missing step for every execution under it.
     if (step === undefined || step.kind !== row.kind) {
       if (stored === undefined)
         add(
@@ -335,6 +337,10 @@ export const formatIncompatibility = (incompatibility: Incompatibility) =>
  * workflow is gone and no open execution started under another manifest; otherwise it compares, and a passing deployment
  * becomes the most recently accepted one, so a rollback is compared again.
  * `retained`: the actor type has workflows or workflow rows retention sweeps.
+ *
+ * A runner of an older deployment may have started executions since the last
+ * comparison, and a comparison that finds no open execution of a dropped workflow
+ * lets the deployment pass.
  */
 export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor) {
   const sql = yield* SqlClient.SqlClient
@@ -383,7 +389,6 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
           ),
         )
 
-      // A runner of an older deployment may have started executions since.
       const foreign =
         unchanged &&
         (yield* sql`SELECT 1 FROM actor_workflow_executions x
@@ -410,7 +415,6 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
           ON CONFLICT (actor_type, workflow, manifest_hash)
             DO UPDATE SET accepted_at_ms = EXCLUDED.accepted_at_ms`
 
-      // The comparison found no open execution of a workflow this deployment dropped.
       yield* sql`DELETE FROM actor_workflow_manifests WHERE actor_type = ${actor.name}
         AND workflow NOT IN (SELECT jsonb_array_elements_text(${toJson(rows.map((row) => row.workflow))}::jsonb))`
 

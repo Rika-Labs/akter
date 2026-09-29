@@ -67,6 +67,7 @@ export const writeAudit = Effect.fnUntraced(function* ({
   return auditId
 })
 
+/** An audit row as an operator reads it. */
 export const AuditRecord = Schema.Struct({
   auditId: Schema.String,
   atMs: Schema.Finite,
@@ -81,6 +82,7 @@ export const AuditRecord = Schema.Struct({
   outcome: Schema.String,
 })
 
+/** A decoded `AuditRecord`. */
 export type AuditRecord = typeof AuditRecord.Type
 
 /** A tenant's newest audit rows, or every tenant's for `"*"`, newest first. */
