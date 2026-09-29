@@ -264,6 +264,7 @@ describe("client event feeds", () => {
 })
 
 describe("client connection progress", () => {
+  /** The server's `end` closes the session with `ServerClosed`, after the messages before it. */
   it("yields a progress frame decoded by its effect's schema, typed by effect", () =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -300,7 +301,6 @@ describe("client connection progress", () => {
           Jobs.client({ baseUrl: url }).get("j1").Watch.connect(),
         )
 
-        // The server's `end` closes the session with `ServerClosed`, after the messages before it.
         const received = Array.from(
           yield* Stream.fromAsyncIterable(connection.messages, (thrown) => thrown).pipe(
             Stream.catch(() => Stream.empty),

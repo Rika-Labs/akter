@@ -5,7 +5,11 @@ import { load } from "../measure.ts"
 import { FeedProbe, Pinged } from "../probe/feeds.ts"
 import { type ActorServices, type CaseResult, measure, type Scenario } from "../scenario.ts"
 
-/** The probe's `Actor.serve` routes on a listening Bun server, disposed with the scope. */
+/**
+ * The probe's `Actor.serve` routes on a listening Bun server, disposed with
+ * the scope. The server's idle timeout is off, because a feed idles between
+ * commands and must not be closed.
+ */
 const serve = Effect.fnUntraced(function* () {
   const services = yield* Effect.context<ActorServices>()
 
@@ -16,7 +20,6 @@ const serve = Effect.fnUntraced(function* () {
   const web = HttpRouter.toWebHandler(app, { disableLogger: true })
   yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
 
-  // A feed idles between commands; the server must not close it.
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -29,7 +32,11 @@ const serve = Effect.fnUntraced(function* () {
   return FeedProbe.client({ baseUrl: `http://127.0.0.1:${server.port}` })
 })
 
-/** Opens `count` feeds on one actor and reads each up to its first event, so every one is live. */
+/**
+ * Opens `count` feeds on one actor and reads each up to its first event, so
+ * every one is live. Returning an iterator closes its feed's response, which
+ * is how the scope releases them.
+ */
 const follow = Effect.fnUntraced(function* (
   clients: Effect.Success<ReturnType<typeof serve>>,
   id: string,
@@ -38,7 +45,6 @@ const follow = Effect.fnUntraced(function* (
   const handle = clients.get(id)
   const feeds = Array.from({ length: count }, () => handle.events(Pinged)[Symbol.asyncIterator]())
 
-  // Returning an iterator closes its feed's response.
   yield* Effect.addFinalizer(() =>
     Effect.forEach(feeds, (feed) => Effect.promise(() => Promise.resolve(feed.return?.())), {
       discard: true,
@@ -74,7 +80,6 @@ export const sse: Scenario = {
                 const clients = yield* serve()
                 const { handle, feeds: open } = yield* follow(clients, `live-${feeds}`, feeds)
 
-                // Timed from the command's call until every feed holds its event.
                 const delivered = () =>
                   Effect.tryPromise(() => handle.Ping(1)).pipe(
                     Effect.andThen(
