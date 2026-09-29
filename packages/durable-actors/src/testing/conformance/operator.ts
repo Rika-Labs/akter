@@ -1,8 +1,9 @@
-import { Context, Crypto, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect"
+import { Context, Crypto, Effect, Layer, Option, Schema, type Scope } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, User } from "../../index.ts"
+import { Actor, Actors, Unauthorized, User } from "../../index.ts"
 import { OperatorAuth } from "../../runtime/operators/auth.ts"
+import { bearerToken } from "../../serve/auth.ts"
 import type { Capability } from "../../runtime/operators/grants.ts"
 import { Operators } from "../../runtime/operators/routes.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -100,6 +101,8 @@ interface Answer {
 
 interface Harness {
   readonly tenant: string
+  /** Gives `token` a grant of these capabilities from now on. */
+  readonly grant: (token: string, capabilities: ReadonlyArray<Capability>) => Effect.Effect<void>
   /** Sends one operator request with `token` as its bearer credential. */
   readonly send: (
     method: "GET" | "POST",
@@ -129,9 +132,7 @@ interface AuditRow {
  */
 const withOperators = <A, E>(
   environment: ConformanceEnvironment,
-  tokens:
-    | Record<string, ReadonlyArray<Capability>>
-    | Effect.Effect<Record<string, ReadonlyArray<Capability>>, never, Actors>,
+  tokens: Record<string, ReadonlyArray<Capability>>,
   body: (
     harness: Harness,
   ) => Effect.Effect<A, E, Actors | ActorTest | SqlClient.SqlClient | Scope.Scope>,
@@ -160,13 +161,22 @@ const withOperators = <A, E>(
         yield* Effect.scope,
       )
 
-      const granted = Effect.isEffect(tokens) ? yield* tokens : tokens
+      // Grants by token; a case may add one once it knows the ids it names.
+      const grants = new Map(
+        Object.entries(tokens).map(([token, capabilities]) => [
+          token,
+          { operator: `op-${token}`, capabilities },
+        ]),
+      )
 
-      const auth = OperatorAuth.tokens(
-        Object.entries(granted).map(([token, capabilities]) => ({
-          token: Redacted.make(token),
-          grant: { operator: `op-${token}`, capabilities },
-        })),
+      const auth = OperatorAuth.make((request) =>
+        Effect.flatMap(bearerToken(request), (token) => {
+          const grant = grants.get(token)
+
+          return grant === undefined
+            ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
+            : Effect.succeed(grant)
+        }),
       )
 
       const web = HttpRouter.toWebHandler(
@@ -181,6 +191,10 @@ const withOperators = <A, E>(
 
       const harness: Harness = {
         tenant,
+        grant: (token, capabilities) =>
+          Effect.sync(() => {
+            grants.set(token, { operator: `op-${token}`, capabilities })
+          }),
         send: (method, path, token, payload) =>
           Effect.gen(function* () {
             const encoded =
@@ -392,29 +406,27 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "reads a success and a declared-failure outcome under a receipt-scoped grant without running the handler",
-    run: ({ expect, environment }) => {
-      // The grant names each receipt, so the ids are minted before the runtime is built.
-      const ids = { paid: "", refused: "", other: "" }
-
-      const minted = Effect.gen(function* () {
-        const actors = yield* Actors
-        ids.paid = yield* actors.mintCommandId
-        ids.refused = yield* actors.mintCommandId
-        ids.other = yield* actors.mintCommandId
-
-        const one = (commandId: string) =>
-          capability("receipts.read", {
-            tenant: "*",
-            actorType: "OpTill",
-            actorId: "t1",
-            commandId,
-          })
-
-        return { "receipt-token": [one(ids.paid), one(ids.refused)] }
-      })
-
-      return withOperators(environment, minted, ({ tenant, send, audit }) =>
+    run: ({ expect, environment }) =>
+      withOperators(environment, {}, ({ tenant, send, audit, grant }) =>
         Effect.gen(function* () {
+          // The grant names each receipt, so it is given once the command ids exist.
+          const actors = yield* Actors
+
+          const ids = {
+            paid: yield* actors.mintCommandId,
+            refused: yield* actors.mintCommandId,
+            other: yield* actors.mintCommandId,
+          }
+
+          const one = (commandId: string) =>
+            capability("receipts.read", {
+              tenant: "*",
+              actorType: "OpTill",
+              actorId: "t1",
+              commandId,
+            })
+
+          yield* grant("receipt-token", [one(ids.paid), one(ids.refused)])
           fixture.up = true
           const till1 = yield* Till.get("t1")
 
@@ -454,8 +466,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
             ["receipts.read", ids.other, '"denied"'],
           ])
         }),
-      )
-    },
+      ),
   },
   {
     name: "retries a dead letter as a new effect and records operator, scope, reason, and the new effect id in the same transaction",
