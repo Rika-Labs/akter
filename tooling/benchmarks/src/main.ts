@@ -17,6 +17,7 @@ import { blobs } from "./scenarios/storage/blobs.ts"
 import { contentBlobs } from "./scenarios/content-blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { connections } from "./scenarios/connections.ts"
+import { watch } from "./scenarios/watch.ts"
 import { progress } from "./scenarios/progress.ts"
 import { effectConcurrency } from "./scenarios/effect-concurrency.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
@@ -86,6 +87,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   embeddedPglite,
   rls,
   placement,
+  watch,
 ]
 
 /**
