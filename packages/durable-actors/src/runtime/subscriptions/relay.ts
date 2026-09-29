@@ -70,6 +70,7 @@ interface SubscriptionRow {
   readonly epoch: string
   readonly delivered: string
   readonly attempts: number
+  readonly gap_through: string | null
   readonly claimed_until: string
 }
 
@@ -255,7 +256,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     'subscriber_type', s.subscriber_type, 'subscription', s.subscription,
     'subscriber_id', s.subscriber_id, 'events', to_jsonb(s.events),
     'epoch', s.epoch::text, 'delivered', s.delivered::text, 'attempts', s.attempts,
-    'claimed_until', s.due_at_ms::text)`
+    'gap_through', s.gap_through::text, 'claimed_until', s.due_at_ms::text)`
 
   /**
    * Claims due feed and control rows and due subscription rows, each up to
@@ -838,8 +839,21 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     // Pruning removes a prefix, so history after `delivered` is missing when
     // the oldest retained event is past its successor, or nothing is retained.
-    if (progress < head && (oldest === null || BigInt(oldest) > progress + 1n)) {
-      const resumeAfter = oldest === null ? head : BigInt(oldest) - 1n
+    // An operator's skip plants the position it skips through as the gap's end.
+    const planted = row.gap_through === null ? undefined : BigInt(row.gap_through)
+
+    if (
+      progress < head &&
+      ((planted !== undefined && planted > progress) ||
+        oldest === null ||
+        BigInt(oldest) > progress + 1n)
+    ) {
+      const resumeAfter =
+        planted !== undefined && planted > progress
+          ? planted
+          : oldest === null
+            ? head
+            : BigInt(oldest) - 1n
 
       // The detection time fixes the gap's id and its range is kept, so a
       // redelivery reports the same gap even after pruning advances.
@@ -899,7 +913,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       }
     }
 
-    for (const event of continuous ? events : []) {
+    for (const event of continuous ? events.filter((e) => BigInt(e.sequence!) > progress) : []) {
       // The subscriber reads the current shape; a value its chain can't read
       // backs the row off at this event rather than skipping it.
       const upcast = yield* subscription

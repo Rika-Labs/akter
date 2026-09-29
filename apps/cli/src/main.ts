@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { Database } from "@durable-actors/core/runtime"
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Clock, Config, Console, Effect, Layer, Option, Redacted } from "effect"
-import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
+import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { FetchHttpClient, type HttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
 
 import {
   INSPECTOR_PATH,
@@ -17,7 +17,24 @@ import {
   listDefects,
   parseList,
 } from "./commands/defects/list.ts"
-import { USAGE, actorsOf, check, loadEntry, parseCheck } from "./commands/workflows/check.ts"
+import { USAGE as REPAIR_USAGE, parseRepair, repair } from "./commands/dead-letters/repair.ts"
+import {
+  USAGE as INSPECT_USAGE,
+  formatInspection,
+  inspect,
+  parseInspect,
+} from "./commands/inspect/show.ts"
+import type { OperatorRefused, RunnerUnreachable } from "./commands/operator/request.ts"
+import { USAGE as SKIP_USAGE, parseSkip, skip } from "./commands/subscriptions/skip.ts"
+import { USAGE as RECEIPTS_USAGE, parseShow, showReceipt } from "./commands/receipts/show.ts"
+import {
+  type UsageError,
+  USAGE,
+  actorsOf,
+  check,
+  loadEntry,
+  parseCheck,
+} from "./commands/workflows/check.ts"
 import { USAGE as PAYLOADS_USAGE, parsePayloads, payloads } from "./commands/payloads/run.ts"
 import {
   USAGE as TENANTS_USAGE,
@@ -134,13 +151,9 @@ const dev = (args: ReadonlyArray<string>) =>
 const defectsList = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const options = yield* parseList({ args, nowMs: yield* Clock.currentTimeMillis })
-    const token = yield* Config.option(Config.Redacted(options.tokenEnv))
+    const token = yield* operatorToken(options.tokenEnv)
     const services = yield* Layer.build(FetchHttpClient.layer)
-
-    const defects = yield* listDefects(
-      options,
-      Option.match(token, { onNone: () => undefined, onSome: (value) => Redacted.value(value) }),
-    ).pipe(Effect.provideContext(services))
+    const defects = yield* listDefects(options, token).pipe(Effect.provideContext(services))
 
     yield* Console.log(formatDefects({ defects, json: options.json }))
   }).pipe(
@@ -151,6 +164,52 @@ const defectsList = (args: ReadonlyArray<string>) =>
       ConfigError: (error) => fail(`Cannot read the operator token: ${error.message}`),
     }),
   )
+
+// The operator token, read from the named environment variable when it is set.
+const operatorToken = (name: string) =>
+  Effect.map(Config.option(Config.Redacted(name)), (token) =>
+    Option.match(token, { onNone: () => undefined, onSome: (value) => Redacted.value(value) }),
+  )
+
+// Runs one operator request and prints its answer: formatted, or JSON with `--json`.
+type OperatorFailure = UsageError | RunnerUnreachable | OperatorRefused | Schema.SchemaError
+
+const operatorCommand = <O extends { readonly tokenEnv: string; readonly json: boolean }>(
+  usage: string,
+  parse: Effect.Effect<O, UsageError>,
+  run: (request: {
+    readonly options: O
+    readonly token: string | undefined
+  }) => Effect.Effect<Schema.Json, OperatorFailure, HttpClient.HttpClient>,
+  format: (answer: Schema.Json) => Effect.Effect<string, OperatorFailure>,
+) =>
+  Effect.gen(function* () {
+    const options = yield* parse
+    const token = yield* operatorToken(options.tokenEnv)
+    const services = yield* Layer.build(FetchHttpClient.layer)
+    const answer = yield* run({ options, token }).pipe(Effect.provideContext(services))
+
+    yield* Console.log(options.json ? yield* encodeJson(answer) : yield* format(answer))
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      UsageError: (error) => fail(`${error.message}\n${usage}`),
+      RunnerUnreachable: (error) => fail(`Cannot reach ${error.url}: ${error.message}`),
+      OperatorRefused: (error) =>
+        Console.error(`Refused (${error.status}): ${error.body}`).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              process.exitCode = 1
+            }),
+          ),
+        ),
+      ConfigError: (error) => fail(`Cannot read the operator token: ${error.message}`),
+      SchemaError: (error) => fail(`Unexpected answer: ${error.message}`),
+    }),
+  )
+
+const encodeJson = (answer: Schema.Json) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(answer).pipe(Effect.orDie)
 
 const tenantsCreate = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -180,8 +239,41 @@ const program = Effect.gen(function* () {
 
   if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
 
+  if (group === "inspect")
+    return yield* operatorCommand(
+      INSPECT_USAGE,
+      parseInspect(process.argv.slice(3)),
+      inspect,
+      formatInspection,
+    )
+
+  if (group === "receipts" && command === "show")
+    return yield* operatorCommand(RECEIPTS_USAGE, parseShow(args), showReceipt, encodeJson)
+
+  if (group === "dead-letters" && (command === "retry" || command === "discard"))
+    return yield* operatorCommand(
+      REPAIR_USAGE,
+      parseRepair({ action: command, args }),
+      repair,
+      encodeJson,
+    )
+
+  if (group === "subscriptions" && command === "skip")
+    return yield* operatorCommand(SKIP_USAGE, parseSkip(args), skip, encodeJson)
+
   return yield* fail(
-    `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${DEFECTS_USAGE}\n${PAYLOADS_USAGE}\n${TENANTS_USAGE}`,
+    [
+      `Unknown command: ${[group, command].join(" ")}`,
+      DEV_USAGE,
+      USAGE,
+      DEFECTS_USAGE,
+      PAYLOADS_USAGE,
+      INSPECT_USAGE,
+      RECEIPTS_USAGE,
+      REPAIR_USAGE,
+      SKIP_USAGE,
+      TENANTS_USAGE,
+    ].join("\n"),
   )
 })
 
