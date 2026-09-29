@@ -1,3 +1,7 @@
+/**
+ * One sanctioned deviation from a structure rule; the entry fails as stale
+ * once its path no longer violates `rule`.
+ */
 export interface Exemption {
   readonly path: string
   readonly rule:
@@ -9,6 +13,7 @@ export interface Exemption {
   readonly reason: string
 }
 
+/** Every deviation from the structure rules, each with the reason it exists. */
 export const exemptions: ReadonlyArray<Exemption> = [
   {
     path: "packages/ui",

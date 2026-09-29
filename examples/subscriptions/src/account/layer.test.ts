@@ -23,7 +23,10 @@ import { AccountLive } from "./layer.ts"
 
 const book = ledger()
 
-// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/**
+ * The same cases run on PGlite (`test`) and on a fresh Postgres database
+ * (`test:integration`).
+ */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("SUBSCRIPTIONS_BACKEND")) === "pglite") return undefined
 
@@ -170,7 +173,6 @@ it("retries a declined charge as soon as the customer adds a newer card", () =>
       const test = yield* ActorTest
       const account = yield* subscribe("a2", "tok_declined")
 
-      // The first charge declined and the collection waits for a card or three days.
       yield* parked("a2-1", "card-1")
       expect(yield* charges("a2-1")).toEqual({ calls: 1, approved: 0 })
 
@@ -189,7 +191,6 @@ it("marks the account past due after the last retry declines", () =>
       const test = yield* ActorTest
       const account = yield* subscribe("a3", "tok_declined")
 
-      // Each declined charge parks the collection for three days before the next one.
       for (const wait of ["card-1", "card-2"]) {
         yield* parked("a3-1", wait)
         yield* test.advance("3 days")
@@ -208,8 +209,6 @@ it("renews on the 1st of the month from cron, once when the tick is redelivered 
       const account = yield* subscribe("a4", "tok_visa")
       yield* settled("a4", 1)
 
-      // The tick's turn commits, then the runner dies before the relay settles it; the
-      // redelivery after the claim lease replays the receipt instead of issuing another invoice.
       yield* test.crashNext("afterCommit")
       yield* nextMonth
       yield* test.advance("1 minute")
@@ -242,7 +241,6 @@ it("refuses collections and settlements from anyone but the account itself", () 
       const account = yield* subscribe("a6", "tok_visa")
       yield* settled("a6", 1)
 
-      // A user holding the account's handle can neither charge it nor settle its invoice.
       for (const forged of [
         yield* account.Collect({ invoiceId: "a6-9", amountCents: 1 }).pipe(Effect.flip),
         yield* account.Settle({ invoiceId: "a6-1", paid: false, attempts: 1 }).pipe(Effect.flip),

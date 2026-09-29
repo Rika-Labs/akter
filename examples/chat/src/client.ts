@@ -1,20 +1,28 @@
-// Chat from a Promise-only caller, against `bun run start`:
-//   bun run client alice "hello"
+/**
+ * Chat from a Promise-only caller, against `bun run start`:
+ *   bun run client alice "hello"
+ */
 import { ActorError } from "@durable-actors/core/client"
 import { Room, RoomClosed, RoomId } from "./room/contract.ts"
 
 const [user = "alice", body = "hello"] = Bun.argv.slice(2)
 
+/**
+ * `headers` is called before every attempt, so a refreshed credential keeps the
+ * same command id.
+ */
 const rooms = Room.client({
   baseUrl: "http://localhost:3000",
-  // Called before every attempt, so a refreshed credential keeps the same command id.
   headers: () => ({ authorization: `Bearer ${user}` }),
   timeoutInMs: 10_000,
 })
 
 const lobby = rooms.get(RoomId.make("lobby"))
 
-// Minted once; every retry, and this explicit resend, carries the same id and gets the same receipt.
+/**
+ * Minted once; every retry, and this explicit resend, carries the same id and
+ * gets the same receipt.
+ */
 const commandId = await rooms.commandId()
 
 try {

@@ -51,6 +51,9 @@ const percentile = (samples: ReadonlyArray<number>, rank: number) => {
  * until its executor's one frame reaches a connection, and until its route's
  * broadcast does, for an actor type that receives the progress and one that
  * does not, whose pool sends no progress messages at all.
+ *
+ * The client reads all the time, as a socket would: progress it has not read
+ * when the route commits is discarded by design.
  */
 export const progress: Scenario = {
   name: "progress",
@@ -77,8 +80,6 @@ export const progress: Scenario = {
                 const connection = yield* test.connect(handle.ref, entry.member, undefined)
                 let index = 0
 
-                // The client reads all the time, as a socket would: progress it has not
-                // read when the route commits is discarded by design.
                 const arrived = yield* Queue.unbounded<{
                   readonly tag: string
                   readonly at: number
@@ -91,7 +92,6 @@ export const progress: Scenario = {
                   Effect.forkScoped,
                 )
 
-                // Milliseconds from each command's call until the awaited envelope reached the client.
                 const latencies: Array<number> = []
 
                 const next = (started: number) =>
@@ -103,8 +103,6 @@ export const progress: Scenario = {
                     }
                   })
 
-                // `ActorTest` runs due effects and routes when `advance` asks it to; the
-                // operation spans the whole round trip, and `extra` holds the arrival times.
                 const operation = () =>
                   Effect.suspend(() => {
                     const started = performance.now()

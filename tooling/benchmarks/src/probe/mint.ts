@@ -1,6 +1,7 @@
 import { Actor, Intent } from "@durable-actors/core"
 import { DateTime, Deferred, Effect, Layer, Schema } from "effect"
 
+/** Creating command of `MintedChild`; completes the pending creation for the label. */
 export const Open = Actor.command("Open", { input: Schema.String })
 
 /** A child that only its parent's minting turn, or `create()`, brings into being. */
@@ -9,6 +10,10 @@ export const MintedChild = Actor.make("MintedChild", {
   policy: { createdBy: Open },
 })
 
+/**
+ * Mints `count` children, optionally staging each one's creating intent at
+ * `atMs`, and replies with their ids.
+ */
 export const MintMany = Actor.command("MintMany", {
   input: Schema.Struct({
     label: Schema.String,
@@ -24,6 +29,7 @@ export const Minter = Actor.make("Minter", { key: Schema.NonEmptyString, api: { 
 /** Pending child creations by label, completed by the child's creating turn. */
 export const creations = new Map<string, Deferred.Deferred<void>>()
 
+/** Handlers for `Minter` and `MintedChild`. */
 export const MintLive = Layer.mergeAll(
   MintedChild.toLayer(
     Effect.succeed({

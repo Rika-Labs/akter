@@ -27,8 +27,10 @@ const Result = Schema.Struct({
   scenarios: Schema.Array(Schema.Struct({ name: Schema.String, cases: Schema.Array(Case) })),
 })
 
+/** A result file written by a benchmark run. */
 export type Result = typeof Result.Type
 
+/** One metric of one case that differs between two runs. */
 export interface Change {
   readonly key: string
   readonly metric: "throughput" | "p50" | "p95" | "p99" | "cpu" | "statements" | "errors"
@@ -167,6 +169,7 @@ const Baseline = Schema.Struct({
   roundTripsPerOperation: Schema.optional(Schema.Record(Schema.String, Schema.Finite)),
 })
 
+/** The committed statement-count baseline. */
 export type Baseline = typeof Baseline.Type
 
 /**
@@ -178,6 +181,10 @@ export type Baseline = typeof Baseline.Type
  */
 export const STATEMENT_TOLERANCE = 0.2
 
+/**
+ * Reduces a `ci` profile run on Postgres to a baseline; throws for any other
+ * run or a case without a statement count.
+ */
 export const toBaseline = (result: Result): Baseline => {
   if (result.profile !== "ci" || result.backend.name !== "postgres")
     throw new Error(

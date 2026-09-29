@@ -146,7 +146,6 @@ export const contentBlobs: Scenario = {
             for (let index = 0; index < candidates; index += 1)
               yield* upload(bytesOf(1024, 10_000 + index))
 
-            // Half the candidates stay referenced, so the sweep scans both kinds.
             const shelf = yield* Shelf.get("sweep")
 
             for (let index = 0; index < candidates; index += 2)

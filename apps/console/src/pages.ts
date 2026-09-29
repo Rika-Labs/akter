@@ -12,6 +12,7 @@ import {
 } from "@durable-actors/ui"
 import type { Dashboard, Organizations } from "./http.js"
 
+/** Paths the console renders. */
 export const Page = Schema.Literals([
   "/sign-in",
   "/sign-up",
@@ -24,8 +25,13 @@ export const Page = Schema.Literals([
   "/accept-invitation",
 ])
 
+/** A path the console renders. */
 export type Page = typeof Page.Type
 
+/**
+ * Everything one page render needs: the path, theme, CSRF token and the data
+ * or messages for that page.
+ */
 export type PageModel = {
   path: Page
   theme: "light" | "dark"
@@ -674,6 +680,7 @@ function workspace(h: Builder, model: PageModel) {
   )
 }
 
+/** Server-renders the page to an HTML document. */
 export function renderPage(model: PageModel): Promise<string> {
   return Effect.runPromise(
     Server.renderToString(

@@ -5,6 +5,7 @@ import { Context, Effect, Fiber, FileSystem, Layer, Redacted, Schedule, type Sco
 import { SqlClient } from "effect/unstable/sql"
 import { flightCounter } from "./flights.ts"
 
+/** Database engines a benchmark can run against; only `postgres` has server-side instruments. */
 export type BackendName = "postgres" | "pglite" | "pglite-file"
 
 /** Wait-event and connection-state samples of one database, as fractions of samples. */
@@ -16,6 +17,7 @@ export interface Activity {
   readonly peakConnections: number
 }
 
+/** Calls and mean time of one normalized SQL statement. */
 export interface StatementCount {
   readonly query: string
   readonly calls: number
@@ -42,6 +44,7 @@ export interface Instruments {
   readonly flights: Effect.Effect<number>
 }
 
+/** A database created for one measured case. */
 export interface CaseDatabase {
   readonly layer: Layer.Layer<SqlClient.SqlClient>
   /** The case database's URL on a real server, for runtimes that open their own pools. */
@@ -49,6 +52,7 @@ export interface CaseDatabase {
   readonly instruments: Instruments | undefined
 }
 
+/** A database engine and how to create case databases on it. */
 export interface Backend {
   readonly name: BackendName
   readonly version: string

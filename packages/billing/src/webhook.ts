@@ -1,5 +1,6 @@
 import { DateTime, Effect, Schema } from "effect"
 
+/** The webhook's headers, signature or body failed verification. */
 export class InvalidWebhook extends Schema.TaggedError<InvalidWebhook>()("InvalidWebhook", {
   message: Schema.String,
 }) {}
@@ -10,6 +11,7 @@ const Envelope = Schema.Struct({
   data: Schema.Unknown,
 })
 
+/** Polar subscription payload fields the app reads. */
 export const Subscription = Schema.Struct({
   id: Schema.String,
   customer_id: Schema.String,
@@ -25,6 +27,12 @@ const WebhookHeaders = Schema.Struct({
   signature: Schema.String.check(Schema.isMinLength(1)),
 })
 
+/**
+ * Verifies a Standard Webhooks delivery: headers present, timestamp within
+ * five minutes of now, and an HMAC-SHA256 `v1` signature over
+ * `id.timestamp.body` matching the secret. Returns the delivery id with the
+ * decoded envelope; fails with `InvalidWebhook`.
+ */
 export const verifyWebhook = Effect.fn("Billing.verifyWebhook")(function* (
   body: string,
   headers: Headers,
