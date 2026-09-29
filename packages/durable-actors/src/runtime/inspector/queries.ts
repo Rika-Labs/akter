@@ -21,7 +21,7 @@ export const decodeText = (text: string | null): Decoded | null => {
 }
 
 /** Decodes a zstd-compressed JSON `bytea` column such as state, an event, or a step exit. */
-export const decodeBytes = (bytes: Uint8Array | null): Decoded | null => {
+const decodeBytes = (bytes: Uint8Array | null): Decoded | null => {
   if (bytes === null) return null
 
   let text: string
@@ -44,6 +44,7 @@ export interface Page {
   readonly limit: number
 }
 
+/** The `(actor type, actor id)` pair that names an actor within a tenant. */
 export interface ActorIdentity {
   readonly actorType: string
   readonly actorId: string
@@ -69,6 +70,7 @@ export const readOnly =
       )
     })
 
+/** The view catalog and the tenant's row counts. */
 export interface Overview {
   readonly tenant: string
   readonly views: ReadonlyArray<{ readonly view: string; readonly version: number }>
@@ -110,6 +112,7 @@ export const overview = ({ tenant }: { readonly tenant: string }) =>
     return { tenant, views, counts: counts! } satisfies Overview
   })
 
+/** One actor in a listing, with its placement and current generation. */
 export interface ActorRow extends ActorIdentity {
   readonly placement: string | null
   readonly generation: number
@@ -121,6 +124,7 @@ interface StoredActor extends ActorRow {
   readonly routingKey: string
 }
 
+/** One keyset page of actors, optionally of a single type. */
 export interface ActorsPage extends Page {
   readonly actorType?: string | undefined
   /** Keyset cursor: the last actor of the previous page. */
@@ -311,6 +315,7 @@ const STEP_COLUMNS = `execution_id AS "executionId", step, attempt::int AS attem
   wait_event AS "waitEvent", version::int AS version, due_at_ms::float8 AS "dueAtMs",
   started_at_ms::float8 AS "startedAtMs", settled_at_ms::float8 AS "settledAtMs"`
 
+/** The actor whose detail to read, with the row limit for each list in it. */
 export interface ActorPage extends Page, ActorIdentity {}
 
 /**
@@ -318,7 +323,9 @@ export interface ActorPage extends Page, ActorIdentity {}
  * its generation, decoded state, newest receipts with the events each
  * committed, newest events, pending outbox rows and effects, dead letters, and
  * workflow executions with their recorded steps. `None` when the tenant has
- * no such actor.
+ * no such actor. Every runtime index leads with `routing_key`, so each read is
+ * a key lookup, and the steps read for the same page of executions give each
+ * listed execution all its steps.
  */
 export const actor = (page: ActorPage) =>
   Effect.gen(function* () {
@@ -329,7 +336,6 @@ export const actor = (page: ActorPage) =>
     const sql = yield* SqlClient.SqlClient
     const { routingKey, ...row } = found.value
 
-    // Every runtime index leads with routing_key, so each read below is a key lookup.
     const owned = sql`routing_key = ${routingKey}::int8 AND tenant_id = ${page.tenant}
       AND actor_type = ${page.actorType} AND actor_id = ${page.actorId}`
 
@@ -383,7 +389,6 @@ export const actor = (page: ActorPage) =>
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
-    // The same page of executions as above, so each listed execution gets all its steps.
     const steps = yield* sql.unsafe<StepRow>(
       `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps
         WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
@@ -470,6 +475,7 @@ export const deadLetters = ({ tenant, limit }: Page) =>
     return { deadLetters: rows.map(deadLetterOf) }
   })
 
+/** A tenant-wide page of workflow executions. */
 export interface WorkflowsPage extends Page {
   /** `open` is every execution not yet finished. */
   readonly status: "open" | "all"
@@ -487,7 +493,6 @@ export const workflows = ({ tenant, limit, status }: WorkflowsPage) =>
       [tenant, status, limit],
     )
 
-    // An execution id names its tenant and actor, so it keys its steps on its own.
     const steps = yield* sql.unsafe<StepRow>(
       `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps
         WHERE tenant_id = $1 AND execution_id IN (SELECT execution_id FROM durable.workflows

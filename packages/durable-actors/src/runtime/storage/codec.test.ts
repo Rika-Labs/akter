@@ -9,7 +9,6 @@ const ref = Arbitrary.schema(ActorRef)
 
 const json = Arbitrary.schema(Schema.Json)
 
-// Every stored `routing_key` was computed with these values; a change here needs a migration.
 const golden = [
   {
     ref: { tenant: "acme", actor: "Counter", id: "c-1" },
