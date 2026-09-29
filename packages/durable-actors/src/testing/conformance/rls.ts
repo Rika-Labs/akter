@@ -19,7 +19,6 @@ import { Actor, Actors, Intent, User } from "../../index.ts"
 import { InternalActors, Outcome, Request } from "../../handles/actors.ts"
 import { migrate } from "../../runtime/database/migrations.ts"
 import { Database } from "../../runtime/layer.ts"
-import { InternalActors } from "../../handles/actors.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type {

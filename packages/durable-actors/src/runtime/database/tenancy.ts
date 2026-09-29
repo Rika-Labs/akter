@@ -52,14 +52,13 @@ export const inTenant =
       )
     })
 
-/**
- * `inTenant` with this runtime's role, on `client`, the server answering it.
- */
+/** `inTenant` with this runtime's role. */
 export const withTenant =
-  ({ tenant, client: sql }: { readonly tenant: string; readonly client: SqlClient.SqlClient }) =>
+  (tenant: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {
       const { role } = yield* TenantScope
+      const sql = yield* SqlClient.SqlClient
 
       return yield* inTenant({ sql, role, tenant })(effect)
     })

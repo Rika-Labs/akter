@@ -1472,7 +1472,10 @@ export const layer = (options: Options) => {
                   return yield* outcome.cause
 
                 return outcome
-              }).pipe(withTenant({ tenant: request.ref.tenant, client }))
+              }).pipe(
+                withTenant(request.ref.tenant),
+                Effect.provideService(SqlClient.SqlClient, client),
+              )
 
             // Owned tables and blobs are read through the primary's pools, so a
             // type that declares them reads its state there too: one server per query.
