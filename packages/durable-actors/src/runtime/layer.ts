@@ -481,14 +481,23 @@ export const layer = (options: Options) => {
           )
       })
 
-      const publicActors = Actors.of({
-        mintCommandId: Effect.gen(function* () {
-          const now = yield* databaseTime
-          const uuid = yield* crypto.randomUUIDv4
+      // An unreachable database fails the read as ActorUnavailable, which a
+      // caller retries like any other delivery failure; it is not a defect.
+      const databaseNow = databaseTime.pipe(
+        Effect.provideContext(services),
+        Effect.catchIf(SqlError.isSqlError, (cause) =>
+          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+        ),
+      )
 
-          return `v1.${now}.${now + retryWindowMs}.${uuid}`
-        }).pipe(Effect.provideContext(services), Effect.orDie),
+      const mintCommandId = Effect.gen(function* () {
+        const now = yield* databaseNow
+        const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+
+        return `v1.${now}.${now + retryWindowMs}.${uuid}`
       })
+
+      const publicActors = Actors.of({ mintCommandId })
 
       // Intents are admitted by their sending turn, so internal delivery skips
       // the external access and expiry checks; revocation stops new commands,
@@ -857,25 +866,13 @@ export const layer = (options: Options) => {
 
       const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled, routed }
 
-      const databaseNow = databaseTime.pipe(
-        Effect.provideContext(services),
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      )
-
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintChildId: (input) =>
           deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),
         retryWindowMs,
         databaseNow,
-        mintCommandId: Effect.gen(function* () {
-          const now = yield* databaseNow
-          const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
-
-          return `v1.${now}.${now + retryWindowMs}.${uuid}`
-        }),
+        mintCommandId,
         tables: (scope, write) =>
           bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
         blobs: (scope, write) => bindBlobs(scope, write).pipe(Effect.provideContext(services)),
