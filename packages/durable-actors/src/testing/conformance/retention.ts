@@ -233,6 +233,7 @@ const eventSequence = Effect.fnUntraced(function* (id: string) {
   return row?.sequence
 }, Effect.orDie)
 
+/** Retention cases: pruning of receipts and events keeps expired ids rejected, outbox dedup intact, and sequences continuous. */
 export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "prunes receipts past keepReceipts and still rejects the expired id after pruning and restart",
@@ -246,7 +247,6 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* add).toBe(3)
           expect(yield* journal.Add(4)).toBe(7)
 
-          // Past its id's expiry but inside keepReceipts: kept, and the retry is already expired.
           yield* test.advance("1 day")
           yield* test.cleanup
           expect(yield* test.inspect(journal.ref)).toMatchObject({ receipts: 2 })
@@ -269,11 +269,9 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          // One runtime at a time on the retained database, which PGlite needs.
           yield* environment.stop
           const first = environment.build()
 
-          // The first runtime commits, then prunes the receipt past both horizons.
           const saved = yield* Effect.promise(() =>
             first
               .runPromise(
@@ -305,7 +303,6 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
                   Effect.gen(function* () {
                     const journal = yield* Journal.get("restart").pipe(Actor.tenant(saved.tenant))
 
-                    // The restarted clock has no advance; real time passes the id's expiry.
                     yield* Effect.sleep("1100 millis")
 
                     const failure = yield* journal
@@ -336,28 +333,22 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           const before = fixture.retention.receives
           yield* sender.Forward("receiver")
 
-          // Another actor's receipt under the same id is not held by the row.
           const sql = yield* SqlClient.SqlClient
           yield* bystander.Add(1)
           yield* sql`UPDATE actor_receipts SET command_id = o.intent_id FROM actor_outbox o
             WHERE o.tenant_id = ${test.tenant} AND o.actor_id = 'sender'
               AND actor_receipts.tenant_id = ${test.tenant} AND actor_receipts.actor_id = 'bystander'`
 
-          // The first delivery crashes before deleting the sender's row, days
-          // past the receipt's horizon, and leaves the row claimed.
           yield* test.crashNext("beforeOutboxDelete")
           yield* test.crashNext("beforeOutboxDelete")
           yield* test.advance("10 days")
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
 
-          // The row can still be redelivered, so its receipt stays.
           yield* test.cleanup
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
           expect(yield* test.receiptsFor(bystander.ref, "Add")).toBe(0)
 
-          // The redelivery after the claim lease dies too; the next one comes
-          // after another sweep and replays the receipt that sweep kept.
           yield* test.advance(CLAIM_LEASE)
           yield* test.cleanup
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
@@ -367,7 +358,6 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* receiver.Total()).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
 
-          // Once the row is gone, nothing can redeliver the id.
           yield* test.cleanup
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(0)
         }),
@@ -389,14 +379,12 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
             .Tally(9)
             .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
 
-          // The retried turn starts past expiry, inside the delivery-timeout grace.
           yield* pause.reached
           yield* Effect.sleep("550 millis")
           yield* pause.release
           expect((yield* Fiber.join(waiter)).reason).toBeInstanceOf(CommandExpired)
           expect(yield* test.inspect(brief.ref)).toMatchObject({ state: { total: 9 }, receipts: 1 })
 
-          // A sweep keeps the receipt through the grace.
           yield* test.cleanup
           expect(yield* test.inspect(brief.ref)).toMatchObject({ receipts: 1 })
         }),
@@ -446,7 +434,6 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const body of ["a", "b", "c", "d"]) yield* journal.Note(body)
 
-          // A clock step back gave event 3 the oldest timestamp.
           yield* sql`UPDATE actor_events SET emitted_at_ms = emitted_at_ms - 172800000
             WHERE tenant_id = ${test.tenant} AND actor_type = 'Journal' AND actor_id = 'skewed' AND sequence = 3`
 
@@ -543,11 +530,9 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
             "policy.maxBlobBytes",
           )
 
-          // Replacing an entry counts only its new bytes.
           yield* journal.Put({ name: "a", bytes: 624 })
           expect(yield* journal.Size("a")).toBe(624)
 
-          // A refused replacement caught in the handler still leaves both chunks of "b".
           expect(yield* journal.PutCaught({ name: "b", bytes: 500 })).toBe(false)
           expect(yield* journal.Size("b")).toBe(400)
           expect(yield* journal.PutCaught({ name: "b", bytes: 100 })).toBe(true)
@@ -573,18 +558,15 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(defect(yield* journal.Grow({ name: "d", bytes: 1 }).pipe(Effect.exit))).toContain(
             "policy.maxBlobEntries",
           )
-          // A refused new entry caught in the handler leaves no row behind.
           expect(yield* journal.PutCaught({ name: "d", bytes: 1 })).toBe(false)
           expect(yield* journal.Size("d")).toBe(-1)
 
-          // Existing entries stay writable at the maximum.
           yield* journal.Put({ name: "a", bytes: 10 })
           yield* journal.Grow({ name: "b", bytes: 5 })
           yield* journal.Grow({ name: "b", bytes: 5 })
           expect([yield* journal.Size("a"), yield* journal.Size("b")]).toEqual([10, 10])
           expect(yield* test.inspect(journal.ref)).toMatchObject({ blobs: { files: 3 } })
 
-          // Deleting an entry removes every chunk and frees its slot.
           yield* journal.Drop("b")
           yield* journal.Drop("missing")
           expect(yield* journal.Size("b")).toBe(-1)
@@ -608,12 +590,10 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           const now = yield* databaseTime
           const id = `v1.${now - 58_500}.${now + 1_500}.0c2f3a55-5b8e-4d53-9a51-1f7b3d9f0c11`
 
-          // The first attempt stops inside its transaction, before commit.
           const committing = yield* test.pauseNext("beforeCommit")
           const first = yield* journal.Add(1).pipe(Actor.commandId(id), Effect.forkChild)
           yield* committing.reached
 
-          // The retry finds no receipt yet, passes its expiry check, and waits to be delivered.
           const delivering = yield* test.pauseNext("beforeDelivery")
 
           const retry = yield* journal
@@ -625,7 +605,6 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           yield* committing.release
           expect(yield* Fiber.join(first)).toBe(1)
 
-          // The id expires and its receipt passes keepReceipts before the retry's turn.
           yield* test.advance("3 days")
           yield* test.cleanup
           expect(yield* test.inspect(journal.ref)).toMatchObject({ receipts: 0 })
@@ -650,7 +629,6 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           const connect = environment.connect!
           const locker = yield* connect
 
-          // An exclusive lock blocks the query's state read until the lock goes.
           yield* locker.query("BEGIN")
           yield* locker.query("LOCK TABLE actor_state IN ACCESS EXCLUSIVE MODE")
 
@@ -659,7 +637,6 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(failure.reason).toBeInstanceOf(Timeout)
           expect((yield* Clock.currentTimeMillis) - started < 10_000).toBe(true)
 
-          // The runtime cancelled its statement rather than leaving it queued on the lock.
           const waiting = yield* locker.query(
             `SELECT count(*)::int AS waiting FROM pg_stat_activity
              WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,

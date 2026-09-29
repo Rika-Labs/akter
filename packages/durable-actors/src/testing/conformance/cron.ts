@@ -17,7 +17,6 @@ interface Fired {
   readonly source: string | undefined
 }
 
-// Cases use distinct actor ids, and a cluster's runners share this process.
 const fired: Array<Fired> = []
 
 const firedFor = (id: string) => fired.filter((run) => run.id === id)
@@ -50,10 +49,8 @@ const Heartbeat = Actor.make("CronHeartbeat", {
     stopped: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   }),
   api: { Open, Refuse, Stop, Hijack },
-  // Cron targets are internal: a tick's System caller may reach them.
   internal: { Beat, Yearly },
   policy: {
-    // Extra whitespace is normalized out of the timer key.
     cron: { "*  * * * *": Beat, "0 0 1 1 *": Yearly },
     cronSkipIfOlderThan: SKIP,
   },
@@ -141,7 +138,6 @@ const HeartbeatLive = Heartbeat.toLayer(
 
       yield* (yield* Heartbeat.intents(turn.ref.id)).Open().pipe(Intent.key(EVERY_MINUTE))
     }),
-    // A claimed tick fires even after the actor stopped, so the handler checks.
     Beat: Effect.fnUntraced(function* () {
       const turn = yield* Heartbeat.Turn
       yield* record(turn.ref, turn.commandId, turn.caller)
@@ -288,9 +284,6 @@ const nthSunday = (year: number, month: number, nth: number) => {
   return Date.UTC(year, month, 1 + ((7 - weekday) % 7) + 7 * (nth - 1))
 }
 
-// America/New_York follows the US rules in force since 2007: clocks jump from
-// 02:00 EST to 03:00 EDT (07:00Z) on the second Sunday of March and fall back
-// from 02:00 EDT to 01:00 EST (06:00Z) on the first Sunday of November.
 const springForward = (year: number) => nthSunday(year, 2, 2) + 7 * HOUR
 
 const fallBack = (year: number) => nthSunday(year, 10, 1) + 6 * HOUR
@@ -335,6 +328,7 @@ const receipts = (ref: ActorRef, command: string) =>
 const stateOf = (ref: ActorRef) =>
   ActorTest.use((test) => test.inspect(ref)).pipe(Effect.map(({ state }) => state))
 
+/** Cron cases: tick rows, firing as System, catch-up and skip rules, time zones, and stale ticks from earlier deployments. */
 export const cronConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "writes one tick per cron entry on the first committed turn, including a declared failure",
@@ -360,7 +354,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
             undefined,
           ])
 
-          // Later turns and later generations leave the pending ticks as they are.
           yield* heartbeat.Open()
           yield* ActorTest.use((test) => test.invalidate(heartbeat.ref))
           yield* heartbeat.Open()
@@ -405,7 +398,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           expect(next!.intent_id).not.toBe(first!.intent_id)
           expect(next!.attempts).toBe(0)
           expect(nextMinuteAfter(next, yield* nowMs)).toBe(true)
-          // Both the first and the relay-written id expire one retry window after their tick.
           expect(expiresAt(first!)).toBe(Number(first!.scheduled) + RETRY_WINDOW_MS)
           expect(expiresAt(next!)).toBe(Number(next!.scheduled) + RETRY_WINDOW_MS)
 
@@ -430,7 +422,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           yield* handling.reached
           yield* Effect.sleep("1200 millis")
 
-          // Holds the relay so the first tick's row is read as written.
           const claimed = yield* test.pauseNext("afterClaim")
           yield* handling.release
           yield* Fiber.join(opening)
@@ -453,7 +444,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           yield* heartbeat.Open()
           const [, first] = yield* ticksOf(heartbeat.ref)
 
-          // As an earlier deployment that targeted a since-removed command wrote it.
           yield* sql`UPDATE actor_outbox SET command = 'Retired'
             WHERE intent_id = ${first!.intent_id}`
           yield* test.advance("1 minute")
@@ -482,7 +472,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance(Number(first!.scheduled) - (yield* nowMs))
           expect(yield* receipts(heartbeat.ref, "Beat")).toBe(1)
 
-          // The receipt names `Beat`; a deployment now maps the expression elsewhere.
           yield* sql`UPDATE actor_outbox SET command = 'Retired'
             WHERE intent_id = ${first!.intent_id}`
           yield* test.advance(CLAIM_LEASE)
@@ -506,12 +495,10 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           const heartbeat = yield* Heartbeat.get("downtime")
           yield* heartbeat.Open()
 
-          // Five missed minutes catch up with one tick, not five.
           yield* test.advance("5 minutes")
           expect(yield* stateOf(heartbeat.ref)).toMatchObject({ beats: 1 })
           expect(nextMinuteAfter((yield* ticksOf(heartbeat.ref))[1], yield* nowMs)).toBe(true)
 
-          // A tick later than cronSkipIfOlderThan is skipped and rescheduled.
           yield* test.advance("15 minutes")
           expect(yield* stateOf(heartbeat.ref)).toMatchObject({ beats: 1 })
           expect(yield* receipts(heartbeat.ref, "Beat")).toBe(1)
@@ -534,15 +521,12 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           yield* heartbeat.Open()
           const [, first] = yield* ticksOf(heartbeat.ref)
           yield* test.crashNext("beforeOutboxDelete")
-          // Exactly to the tick, so its claim cannot expire within this advance.
           yield* test.advance(Number(first!.scheduled) - (yield* nowMs))
 
-          // The receipt committed; the row still holds the fired tick's claim.
           expect(yield* receipts(heartbeat.ref, "Beat")).toBe(1)
           const [, claimed] = yield* ticksOf(heartbeat.ref)
           expect(claimed).toMatchObject({ intent_id: first!.intent_id, attempts: 1 })
 
-          // Redelivery replays the receipt, then rewrites the row once.
           yield* test.advance(CLAIM_LEASE)
           expect(yield* receipts(heartbeat.ref, "Beat")).toBe(1)
           expect(yield* stateOf(heartbeat.ref)).toMatchObject({ beats: 1 })
@@ -569,7 +553,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           yield* pause.release
           yield* Fiber.join(advancing)
 
-          // The handler saw `stopped` and counted no beat.
           expect(yield* stateOf(heartbeat.ref)).toEqual({ stopped: true, ignored: 1 })
           expect(firedFor("claimed-then-stopped").length).toBe(1)
         }),
@@ -612,7 +595,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
             Effect.orDie,
           )
 
-          // The same activation's turns write nothing; the next generation does.
           yield* heartbeat.Open()
           expect((yield* ticksOf(ref)).map((row) => row.timer_key)).toEqual([EVERY_MINUTE])
           yield* test.invalidate(ref)
@@ -634,7 +616,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           const { ref } = heartbeat
           const removed = "$cron:UTC 5 4 * * *"
 
-          // A tick an earlier deployment wrote for an entry this one dropped.
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, kind, bucket, due_at_ms,
               scheduled_at_ms, tenant_id, actor_type, actor_id, timer_key, target_type, target_id,
               command, payload, caller)
@@ -659,7 +640,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* test.advance("2 minutes")
           expect((yield* ticksOf(ref)).map((row) => row.timer_key)).toEqual([YEARLY, EVERY_MINUTE])
-          // Only the declared entry fired.
           expect(yield* receipts(ref, "Beat")).toBe(2)
         }),
       ),
@@ -727,8 +707,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           const { ref } = zoned
           const gapEnd = upcoming(springForward, yield* nowMs)
 
-          // Every pending tick is long past its skip window here, so each is
-          // rewritten to its next time; 02:30 on this day does not exist.
           yield* advanceTo(gapEnd - MINUTE)
           const pending = tickOf(yield* ticksOf(ref), GAP)
           expect(pending?.scheduled).toBe(gapEnd)
@@ -738,7 +716,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           expect(firedFor("spring-gap").filter((run) => run.commandId === pending!.id)).toEqual([
             { actor: "CronZoned", id: "spring-gap", commandId: pending!.id, source: "cron" },
           ])
-          // The next day's 02:30 EDT, not 03:30 EDT on the gap's day.
           expect(tickOf(yield* ticksOf(ref), GAP)?.scheduled).toBe(gapEnd - 30 * MINUTE + DAY)
 
           yield* advanceTo(gapEnd + HOUR + MINUTE)
@@ -763,9 +740,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           const pending = tickOf(yield* ticksOf(ref), FOLD)
           expect(pending?.scheduled).toBe(firstOccurrence)
 
-          // The runtime is down across 01:30 EDT and comes back at 01:10 EST,
-          // inside the repeated hour and the skip window: the tick fires once,
-          // late, and its rewrite skips 01:30 EST.
           yield* advanceTo(transition + 10 * MINUTE)
           expect(yield* receipts(ref, "Fold")).toBe(1)
           expect(firedFor("fall-fold").filter((run) => run.commandId === pending!.id).length).toBe(
@@ -788,7 +762,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           yield* zoned.Open()
           const { ref } = zoned
           const transition = upcoming(fallBack, yield* nowMs)
-          // 01:30 UTC on the day after the transition's UTC date.
           const nextUtc = transition - 6 * HOUR + DAY + 90 * MINUTE
 
           yield* advanceTo(transition - 31 * MINUTE)
@@ -834,8 +807,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           const second = tickOf(yield* ticksOf(ref), INTERVAL)!
           expect(second.scheduled).toBe(first.scheduled + interval)
 
-          // Down for four intervals and a half, inside the skip window: one tick,
-          // then the next multiple after now rather than the missed ones.
           yield* advanceTo(second.scheduled + 4 * interval + interval / 2)
           expect(yield* receipts(ref, "Interval")).toBe(2)
           expect(tickOf(yield* ticksOf(ref), INTERVAL)?.scheduled).toBe(
@@ -916,7 +887,6 @@ export const cronClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* cluster.ready
           const ref = yield* beaconRef
           const before = fired.length
-          // Every runner wrote its bootstrap ticks; the timer key kept one.
           expect((yield* on(1, ticksOf(ref))).length).toBe(1)
 
           for (const round of [1, 2, 3]) {
@@ -960,7 +930,6 @@ export const cronClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* pause.reached
           yield* kill(0)
 
-          // The dead runner's claim holds the row until its lease ends.
           yield* advanceOn(1, "1 minute")
           yield* advanceOn(2, "1 minute")
           const held = yield* on(1, ticksOf(ref))

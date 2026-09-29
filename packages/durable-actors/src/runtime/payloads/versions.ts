@@ -20,6 +20,7 @@ export interface PayloadProblem {
   readonly problem: string
 }
 
+/** A one-line operator-facing description of a payload problem. */
 export const formatPayloadProblem = (problem: PayloadProblem) =>
   `${problem.actorType}/${problem.tag} (${problem.kind})  ${problem.problem}`
 
@@ -282,7 +283,8 @@ export interface ClearResult {
  * it, and no event of it remains. The version row is locked first, the
  * writer rows are read again after the scan, and each statement of the
  * transaction reads a fresh snapshot, so a writer that registers during the
- * scan fails the clear instead of racing it.
+ * scan fails the clear instead of racing it. A writer counts as live until
+ * its window and then the longest command timeout have passed.
  */
 export const clearPayloads = (actors: ReadonlyArray<object>) =>
   Effect.gen(function* () {
@@ -303,8 +305,6 @@ export const clearPayloads = (actors: ReadonlyArray<object>) =>
           ORDER BY version`
 
         for (const { version } of due) {
-          // A writer is live until its window and then the longest turn it
-          // may have started have passed.
           const writing = Effect.gen(function* () {
             const at = yield* databaseTime
 

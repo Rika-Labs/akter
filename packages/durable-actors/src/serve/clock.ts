@@ -3,7 +3,7 @@ import { InternalActors } from "../handles/actors.ts"
 
 const SAMPLE_EVERY = "10 seconds"
 
-// A sample older than this is replaced even if its round trip was shorter.
+/** A sample older than this is replaced even if its round trip was shorter. */
 const STALE_MS = 60_000
 
 interface Sample {

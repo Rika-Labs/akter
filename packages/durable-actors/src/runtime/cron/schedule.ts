@@ -35,7 +35,12 @@ const EVERY_PREFIX = /^@every(?:\s+(.*))?$/
 
 const DAY_MS = 86_400_000
 
-/** A declaration's timer key and the first scheduled instant strictly after a time. */
+/**
+ * A declaration's timer key and the first scheduled instant strictly after a
+ * time. Offset zones such as `+05:00` are rejected as unknown: they have no
+ * daylight saving, so a UTC expression says the same thing. Cron fields are
+ * parsed in UTC and `nextInZone` maps the wall-clock times to instants.
+ */
 const scheduleOf = (declaration: string): Pick<CronEntry, "key" | "next"> => {
   const normalized = declaration.trim().replace(/\s+/g, " ")
   const zoned = ZONE_PREFIX.exec(normalized)
@@ -47,7 +52,6 @@ const scheduleOf = (declaration: string): Pick<CronEntry, "key" | "next"> => {
     if (zoned !== null)
       throw new Error(`policy.cron "${declaration}": an interval takes no time zone`)
 
-    // The declared text is only a string here; `fromInput` rejects one that is not a duration.
     const length = Duration.fromInput((every[1] ?? "") as Duration.Input)
     const millis = Option.isSome(length) ? Duration.toMillis(length.value) : Number.NaN
 
@@ -59,12 +63,9 @@ const scheduleOf = (declaration: string): Pick<CronEntry, "key" | "next"> => {
     return { key: `${CRON_PREFIX}@every ${millis}ms`, next: nextEvery(millis) }
   }
 
-  // Offsets such as +05:00 resolve as zones too, but they have no daylight
-  // saving to follow, so a UTC expression says the same thing.
   if (/^[+-]/.test(zone) || Option.isNone(DateTime.zoneMakeNamed(zone)))
     throw new Error(`policy.cron "${declaration}" names an unknown time zone "${zone}"`)
 
-  // Fields are read in UTC; `nextInZone` maps wall-clock times to instants.
   const parsed = Cron.parse(expression, "UTC")
 
   if (Result.isFailure(parsed))
@@ -152,19 +153,19 @@ const offsetAt = (zone: DateTime.TimeZone, ms: number) =>
  * The earliest instant whose wall clock in `zone` shows `wall` (a wall-clock
  * time written as UTC milliseconds), or, when a spring-forward gap skips
  * `wall`, the first instant after that gap. Offsets a day either side bound
- * the candidates, since no zone changes its offset twice within two days.
+ * the candidates, since no zone changes its offset twice within two days. A
+ * larger offset gives an earlier instant, so candidates are tried larger
+ * offset first and a repeated time resolves to its first occurrence; a gap is
+ * resolved by bisecting for the first instant whose wall clock reaches `wall`.
  */
 const instantOf = (zone: DateTime.TimeZone, wall: number) => {
   const before = offsetAt(zone, wall - DAY_MS)
   const after = offsetAt(zone, wall + DAY_MS)
 
-  // A larger offset gives an earlier instant, so a repeated time resolves to
-  // its first occurrence.
   for (const offset of before >= after ? [before, after] : [after, before]) {
     if (offsetAt(zone, wall - offset) === offset) return wall - offset
   }
 
-  // `wall` falls in a gap: find the first instant whose wall clock reaches it.
   let low = wall - Math.max(before, after)
   let high = wall - Math.min(before, after)
 
@@ -322,7 +323,9 @@ export interface ClaimedTick {
  * the first tick after now with a fresh id. A tick whose entry this runner
  * does not declare is deleted once it is past the skip window and otherwise
  * released with backoff, so a runner that still declares it can fire it. A
- * tick whose stored target differs from its entry's delivers the entry's.
+ * tick whose stored target differs from its entry's delivers the entry's
+ * command on this claim, unless a receipt shows the tick already fired under
+ * its old command, in which case the row is rewritten instead.
  */
 export const cronTicks = ({
   sql,
@@ -405,8 +408,6 @@ export const cronTicks = ({
 
       if (row.command === entry.command) return { command: row.command, payload: row.payload }
 
-      // An expression this deployment maps to another command delivers that
-      // command on this claim, unless the tick already fired under its old one.
       const fired = yield* sql`SELECT 1 FROM actor_receipts
         WHERE routing_key = ${BigInt(row.routing_key)} AND tenant_id = ${row.tenant_id}
           AND actor_type = ${row.actor_type} AND actor_id = ${row.actor_id}

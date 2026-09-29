@@ -21,7 +21,7 @@ import { ClientWireMessage, ServerWireMessage } from "../frames.ts"
 import { actorErrorBody, closeCodeOf, invalidInput, undecodable } from "../wire.ts"
 
 /** How long a socket may wait after its upgrade for `hello`. */
-export const HELLO_TIMEOUT_MS = 10_000
+const HELLO_TIMEOUT_MS = 10_000
 
 /** Sockets one runner holds between their upgrade and their `hello`. */
 export const MAX_AWAITING_HELLO = 1_000
@@ -42,7 +42,6 @@ const utf8 = new TextEncoder()
 
 const encodeServerMessage = Schema.encodeEffect(Schema.fromJsonString(ServerWireMessage))
 
-// An unknown `t` fails to decode, which ends the session.
 const decodeClientMessage = Schema.decodeUnknownEffect(Schema.fromJsonString(ClientWireMessage))
 
 /** A progress frame as the effect's progress schema encoded it, as the JSON value a client reads. */
@@ -63,7 +62,7 @@ const expiryOf = (authenticated: Authenticated) =>
     ? undefined
     : DateTime.toEpochMillis(authenticated.expiresAt)
 
-// A bound credential also names its session, which never changes either.
+/** Whether two credentials name the same tenant, caller, and, when bound, session. */
 const samePrincipal = (left: Authenticated, right: Authenticated) =>
   left.tenant === right.tenant &&
   callerKey(left.caller) === callerKey(right.caller) &&
@@ -76,10 +75,15 @@ const isHello = (
   message: ClientWireMessage,
 ): message is Extract<ClientWireMessage, { readonly t: "hello" }> => message.t === "hello"
 
+/** What `socketSession` needs to run one upgraded socket. */
 export interface SessionOptions {
+  /** The upgraded socket. */
   readonly socket: Socket.Socket
+  /** The served connection member the session belongs to. */
   readonly connection: ServedConnection
+  /** Opens and drives the connection on the actor's owner. */
   readonly holder: Holder
+  /** The actor the session's connection belongs to, in the authenticated tenant. */
   readonly ref: (tenant: string) => ActorRef
   /** The principal the upgrade request's own credential proved, if it carried one. */
   readonly upgrade: Authenticated | undefined
@@ -98,6 +102,25 @@ export interface SessionOptions {
  * open, then member frames both ways with the holder's control messages in
  * their own envelope, renewal of the credential before it expires, and an
  * `end` message and close code as the session's last words.
+ *
+ * Ordering and guarantees:
+ * - `hello` comes first; nothing is authenticated or woken before it decodes.
+ * - Only text messages are read. Each is bounded as a whole, so a frame inside
+ *   it is too, and an unknown `t` fails to decode; both end the session.
+ * - However the session stops, even by interruption when the server drops the
+ *   socket or shuts down, the holder closes the connection and the owner its
+ *   row.
+ * - A failed write means the peer is gone; it ends the session like a close.
+ * - Frames carry cursors only when the holder stamped them; `stampCursor:
+ *   false` has none. Executor progress has its own message, never `frame`, and
+ *   no cursor: it is not replayed.
+ * - Backpressure: the socket is not read while the holder has a full window of
+ *   frames in flight.
+ * - Identity never changes mid-session, and a bound credential also names its
+ *   session, which never changes either; a different caller reconnects. A
+ *   refused renewal ends the session at the holder, which reports it.
+ * - The client is asked for a fresh credential ahead of the current one's
+ *   expiry; a renewal that arrives before it was asked for moves the next ask.
  */
 export const socketSession = Effect.fnUntraced(function* (options: SessionOptions) {
   const { connection, holder } = options
@@ -112,7 +135,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
   const write = (message: ServerWireMessage) =>
     encodeServerMessage(message).pipe(Effect.orDie, Effect.flatMap(writer.write))
 
-  // A failed write means the peer is gone; it ends the session like a close would.
   const send = (message: ServerWireMessage) =>
     Effect.suspend(() => (finished ? Effect.void : write(message)))
 
@@ -130,7 +152,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
   const finishWith = (refusal: Refusal) =>
     actorErrorBody(refusal.error).pipe(Effect.flatMap((body) => finish(body, refusal.code)))
 
-  // The next message the client sent; batches are read one message at a time.
   const nextRaw: Effect.Effect<string | Uint8Array, Socket.SocketError> = Effect.suspend(() => {
     const head = buffered.shift()
 
@@ -149,7 +170,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
     Effect.gen(function* () {
       if (!Predicate.isString(raw)) return yield* refuse(invalidInput("decode"), UNSUPPORTED_DATA)
 
-      // The whole message is bounded, so a frame inside it is too.
       if (utf8.encode(raw).byteLength > MAX_INBOUND_BYTES)
         return yield* refuse(
           ActorError.make({ reason: SessionEnded.make({ cause: "Defect", resync: false }) }),
@@ -161,7 +181,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
       )
     })
 
-  // `hello` comes first; nothing is authenticated or woken before it decodes.
   const hello = yield* nextRaw.pipe(
     Effect.timeoutOption(HELLO_TIMEOUT_MS),
     Effect.flatMap(Option.match({ onNone: () => Effect.fail(decodeFailed()), onSome: parse })),
@@ -228,8 +247,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
 
   const { held, principal } = opened.success
 
-  // However the session stops, even by interruption when the server drops the
-  // socket or shuts down, the holder closes the connection and the owner its row.
   const shutdown = refuse(
     ActorError.make({ reason: SessionEnded.make({ cause: "HolderShutdown", resync: true }) }),
   )
@@ -239,7 +256,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
   let expiresAt = expiryOf(principal)
   const renewed = yield* Queue.sliding<void>(1)
 
-  // The peer is gone: nothing more is written, and the holder closes the session.
   const gone = Effect.sync(() => {
     finished = true
   }).pipe(Effect.andThen(held.close))
@@ -251,7 +267,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
     reauthenticateBy: expiresAt,
   })
 
-  // Frames carry cursors only when the holder stamped them; `stampCursor: false` has none.
   const wire = ClientMessage.match({
     Frame: (message) =>
       connection.serverFrame(message.frame).pipe(
@@ -271,7 +286,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
         deadline: message.deadlineMs,
       }),
     ResyncReplayed: () => Effect.succeed<ServerWireMessage>({ t: "resyncReplayed" }),
-    // Progress has its own message, never `frame`, and no cursor: it is not replayed.
     Progress: (message) =>
       progressFrame(message.frame).pipe(
         Effect.orDie,
@@ -286,7 +300,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
       ),
   })
 
-  // The holder's messages, then its ending as the last message and close code.
   const outbound = held.messages.pipe(
     Stream.runForEach((message) => wire(message).pipe(Effect.flatMap(send))),
     Effect.matchEffect({
@@ -300,12 +313,10 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
     Effect.gen(function* () {
       const fresh = yield* options.reauthenticate(credential).pipe(Effect.mapError(refuse))
 
-      // Identity never changes mid-session; a different caller reconnects instead.
       if (!samePrincipal(fresh, principal)) return yield* differentIdentity()
 
       const next = expiryOf(fresh)
 
-      // A refused renewal ends the session at the holder, which reports it on `outbound`.
       const accepted = yield* held.reauthenticate(next).pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
@@ -322,7 +333,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
       frame: (message) =>
         connection.clientFrame(message.frame).pipe(
           Effect.mapError((error) => error.pipe(undecodable, refuse)),
-          // Backpressure: the socket is not read while the holder has a full window in flight.
           Effect.tap(() => held.writable),
           Effect.flatMap((frame) => held.send(frame).pipe(Effect.ignore)),
         ),
@@ -337,11 +347,9 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
     Effect.flatMap(handle),
     Effect.forever,
     Effect.catchTag("Refusal", (refusal) => finishWith(refusal).pipe(Effect.andThen(held.close))),
-    // The client closed or dropped its socket.
     Effect.catch(() => held.close),
   )
 
-  // Asks for a fresh credential ahead of the current one's expiry; the holder enforces it.
   const reauthenticate = Effect.gen(function* () {
     while (true) {
       const deadline = expiresAt
@@ -351,7 +359,6 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
       const now = yield* holder.now
       const askAt = Math.min(deadline - REAUTHENTICATE_LEAD_MS, now + (deadline - now) / 2)
 
-      // A renewal that arrives before it was asked for moves the next ask.
       const early = yield* Queue.take(renewed).pipe(Effect.timeoutOption(Math.max(0, askAt - now)))
 
       if (Option.isSome(early)) continue

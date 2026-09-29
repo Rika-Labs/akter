@@ -8,7 +8,7 @@ import { FEED_MEMBER, FeedFrame } from "../../runtime/connections/protocol.ts"
 import { actorErrorBody } from "../wire.ts"
 
 /** Events a feed reads from `actor_events` per statement. */
-export const FEED_PAGE = 256
+const FEED_PAGE = 256
 
 /** At most this many `event` filters per feed. */
 export const MAX_FEED_FILTERS = 16
@@ -24,8 +24,12 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
 const encodeCursorError = Schema.encodeEffect(Schema.Union([UnknownCursor, RetentionGap]))
 
+/** The JSON body a cursor error is served as, before a stream starts or as a feed's last message. */
+export const cursorErrorBody = (error: UnknownCursor | RetentionGap) =>
+  encodeCursorError(error).pipe(Effect.orDie)
+
 /** One feed event as its SSE message's `data` carries it. */
-export const FeedData = Schema.Struct({
+const FeedData = Schema.Struct({
   event: Schema.Json,
   commandId: Schema.String,
   timestamp: Schema.Finite,
@@ -58,7 +62,7 @@ const endMessage = (error: ActorError | UnknownCursor | RetentionGap) =>
   Effect.gen(function* () {
     const body = Predicate.isTagged(error, "ActorError")
       ? yield* actorErrorBody(error)
-      : yield* encodeCursorError(error).pipe(Effect.orDie)
+      : yield* cursorErrorBody(error)
 
     return `event: end\ndata: ${yield* encodeJson(body).pipe(Effect.orDie)}\n\n`
   })
@@ -68,11 +72,15 @@ const recoverable = (error: ActorError) =>
   Predicate.isTagged(error.reason, "SessionEnded") &&
   ["SlowConsumer", "OwnerLost", "ActorUnavailable"].includes(error.reason.cause)
 
+/** What a feed reads and who reads it. */
 export interface FeedOptions {
   readonly actors: InternalActors["Service"]
+  /** The actor whose committed events the feed serves. */
   readonly ref: ActorRef
+  /** The event tags the feed serves; the holder authorizes each one. */
   readonly tags: ReadonlyArray<string>
   readonly caller: Caller
+  /** The credential's expiry in epoch milliseconds, which ends the feed. */
   readonly expiresAt: number | undefined
 }
 
@@ -101,7 +109,11 @@ export const openFeed = (options: FeedOptions) =>
  * cursor so the race between the two neither loses nor repeats one. After an
  * owner loss, a gap, or a full buffer, the feed rereads from the last cursor
  * it sent instead of ending, so a client sees one gap-free stream; any other
- * end is its last message.
+ * end is its last message. The `actor_events` table is the source of truth: the
+ * holder resyncs a feed itself, and once the new owner answers the feed rereads
+ * and goes on. A feed lists no effect, so the owner never sends it progress. A
+ * comment line every `FEED_KEEPALIVE_MS` keeps idle proxies from closing the
+ * stream.
  */
 export const feedStream = ({
   options,
@@ -128,7 +140,6 @@ export const feedStream = ({
           yield* Queue.offer(out, yield* message(event))
         })
 
-      // Reads every committed event after the last one sent; the table is the source of truth.
       const catchUp = Effect.gen(function* () {
         while (true) {
           const page = yield* options.actors.readFeed(
@@ -160,10 +171,8 @@ export const feedStream = ({
                             : Effect.void,
                         ),
                       ),
-                // The holder resyncs a feed itself: once the new owner answers, reread and go on.
                 Resync: () => Effect.void,
                 ResyncReplayed: () => catchUp.pipe(Effect.andThen(connection.resyncDone)),
-                // A feed lists no effect, so the owner never sends it progress.
                 Progress: () => Effect.void,
               }),
             ),
