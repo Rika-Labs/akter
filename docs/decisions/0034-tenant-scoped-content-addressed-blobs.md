@@ -154,8 +154,8 @@ Dallen accepted these on 2026-09-30.
 
 1. **Grant spelling.** `Content.grant(X, id, C, name)` takes the actor type, its id, the content blob `C`, and the entry name.
 2. **Listing.** `list` is an Effect property of the blob handle, not a method.
-3. **Sweep scheduling.** The hourly per-tenant sweep is scheduled through a claim row, so at most one runner sweeps a tenant per hour.
-4. **PGlite uploads.** PGlite buffers an upload in memory up to the limit and streams reads; Postgres streams both.
+3. **Sweep scheduling.** A per-tenant claim row (`tenant_content_sweeps`, `swept_at_ms`) marks when a tenant was last swept, and the sweep takes tenants whose row is at least one hour old (`SWEEP_INTERVAL_MS`).
+4. **PGlite uploads and downloads.** PGlite has one connection, so no transaction stays open across a client's upload or download; both buffer in memory. Postgres streams both.
 5. **Authorization.** `authorize` receives the kind `"content"` with the operations `<blob>.grant` and `<blob>.get`.
 
 ## Evidence required
