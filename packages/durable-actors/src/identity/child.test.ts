@@ -7,10 +7,7 @@ import { childId, parseChildId } from "./child.ts"
 // Ids are well-formed strings; a lone surrogate has no UTF-8 byte length.
 const wellFormed = Schema.makeFilter((value: string) => value.isWellFormed())
 
-// Parent ids are actor ids, which are never empty; a local id may be.
-const parentPart = Arbitrary.schema(Schema.NonEmptyString.check(wellFormed))
-
-const localPart = Arbitrary.schema(Schema.String.check(wellFormed))
+const part = Arbitrary.schema(Schema.String.check(wellFormed))
 
 describe("child actor ids", () => {
   it("prefixes the parent id with its UTF-8 byte length", () => {
@@ -24,9 +21,11 @@ describe("child actor ids", () => {
       local: "label-1",
     })
     expect(parseChildId("c1.9.général.x")).toEqual({ parent: "général", local: "x" })
-    // A key schema may accept an empty local id, so the form round-trips it.
+    // A key schema may accept an empty id, so the form round-trips empty parts.
     expect(childId({ parent: "o-17", local: "" })).toBe("c1.4.o-17.")
     expect(parseChildId("c1.4.o-17.")).toEqual({ parent: "o-17", local: "" })
+    expect(childId({ parent: "", local: "pkg-1" })).toBe("c1.0..pkg-1")
+    expect(parseChildId("c1.0..pkg-1")).toEqual({ parent: "", local: "pkg-1" })
   })
 
   it("rejects every malformed form", () => {
@@ -38,7 +37,6 @@ describe("child actor ids", () => {
       "c1.4.o-17x.pkg-1",
       "c1.5.o-17.pkg-1",
       "c1.04.o-17.pkg-1",
-      "c1.0..pkg-1",
       "c2.4.o-17.pkg-1",
       "c1.x.o-17.pkg-1",
       "c1.1.é.x",
@@ -52,7 +50,7 @@ describe("child actor ids", () => {
     Effect.runPromise(
       checkProperty({
         name: "child id round-trip",
-        arbitrary: Arbitrary.all([parentPart, localPart]),
+        arbitrary: Arbitrary.all([part, part]),
         property: ([parent, local]) => {
           const parsed = parseChildId(childId({ parent, local }))
 

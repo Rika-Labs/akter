@@ -4,8 +4,9 @@ const strict = new TextDecoder("utf-8", { fatal: true })
 
 const PREFIX = "c1."
 
-// A decimal byte count with no leading zero; a parent id is never empty.
-const LENGTH = /^[1-9][0-9]{0,9}\./
+// A decimal byte count with no leading zero. Every `childId` output parses,
+// including an empty part: the parent's and child's keys decide validity.
+const LENGTH = /^(?:0|[1-9][0-9]{0,9})\./
 
 /**
  * The id of a parent-placed actor: `c1.<byte length of parent>.<parent>.<local>`.
@@ -28,8 +29,7 @@ export const parseChildId = (
   const bytes = utf8.encode(id.slice(PREFIX.length + length.length))
   const size = Number(length.slice(0, -1))
 
-  // The parent must end on a character boundary and be followed by `.`. The
-  // local id may be empty: the child's key decides whether it is valid.
+  // The parent must end on a character boundary and be followed by `.`.
   if (bytes.byteLength < size + 1 || bytes[size] !== 0x2e) return undefined
 
   try {
