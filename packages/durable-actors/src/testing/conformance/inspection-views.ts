@@ -87,6 +87,7 @@ const VIEWS = [
   "workflows",
   "workflow_steps",
   "views",
+  "operator_audit",
   "contents",
   "content_refs",
 ] as const
@@ -108,13 +109,15 @@ const rowsOf = Effect.fnUntraced(function* (
   )
 })
 
-// `Specimen` runs no workflow and holds no content; the workflow and content cases
-// cover those views, and `contents` belongs to a tenant, not an actor.
+// `Specimen` runs no workflow, holds no content, and turns write no operator audit; the
+// workflow, content, and operator cases cover those views, and `contents` belongs to a tenant,
+// not an actor.
 const COUNTED = VIEWS.filter(
   (name) =>
     name !== "views" &&
     name !== "workflows" &&
     name !== "workflow_steps" &&
+    name !== "operator_audit" &&
     name !== "contents" &&
     name !== "content_refs",
 )

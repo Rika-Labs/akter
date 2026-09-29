@@ -75,6 +75,7 @@ import { checkPlacement, recordedPlacement } from "./storage/placements.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
 import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
+import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
 import { count, Metrics } from "./telemetry/metrics.ts"
 import { databaseSampler, TelemetrySampler } from "./telemetry/sampler.ts"
 import { OutboxRuntime, textArray } from "./turn/outbox.ts"
@@ -1133,6 +1134,14 @@ export const layer = (options: Options) => {
 
       const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled, routed }
 
+      const operators = operatorRuntime({
+        services,
+        clock: frameworkClock,
+        outbox,
+        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        wake: relay.wake,
+      })
+
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintChildId: (input) =>
@@ -1763,6 +1772,7 @@ export const layer = (options: Options) => {
         Context.add(RuntimeControl, control),
         Context.add(DefectLog, defectLog),
         Context.add(TelemetrySampler, TelemetrySampler.of({ sample })),
+        Context.add(OperatorRuntime, operators),
       )
     }),
   )

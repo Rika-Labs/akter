@@ -56,6 +56,8 @@ import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
+import { OperatorRuntime } from "../runtime/operators/repair.ts"
+import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
@@ -207,6 +209,7 @@ export type ConformanceServices =
   | SqlClient.SqlClient
   | Crypto.Crypto
   | ContentStore
+  | OperatorRuntime
 
 export type ConformanceRuntime = ManagedRuntime.ManagedRuntime<ConformanceServices, never>
 
@@ -1468,6 +1471,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...propertiesConformance,
   ...mintConformance,
   ...observabilityConformance,
+  ...operatorConformance,
   ...placementConformance,
 ]
 

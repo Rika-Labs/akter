@@ -30,6 +30,16 @@ export { Metrics } from "./telemetry/metrics.ts"
 
 export { SpanNames } from "./telemetry/spans.ts"
 
+export { Operators } from "./operators/routes.ts"
+
+export type { OperatorsOptions } from "./operators/routes.ts"
+
+export { OperatorAuth } from "./operators/auth.ts"
+
+export { Capability, OperatorAction, OperatorGrant } from "./operators/grants.ts"
+
+export { AuditRecord } from "./operators/audit.ts"
+
 export { checkPayloads, clearPayloads, formatPayloadProblem } from "./payloads/versions.ts"
 
 export type { ClearResult, PayloadProblem } from "./payloads/versions.ts"
