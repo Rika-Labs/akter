@@ -18,7 +18,8 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
-import { compress, decompress } from "../storage/codec.ts"
+import { compress, decompress, routingKey as routingKeyOf } from "../storage/codec.ts"
+import { recordedPlacement } from "../storage/placements.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
@@ -145,10 +146,10 @@ const acknowledgement = (
 /**
  * True when `request` is a minted actor's creating intent: its caller carries
  * the parent's mint proof for the actor's id, and the parent's committed
- * outbox still holds that exact intent with the same payload. A parent-placed
- * actor shares its parent's routing key, so the read names it and stays on
- * the actor's own shard; any other parent may live on another shard, which
- * the read cannot name without the parent's placement.
+ * outbox still holds that exact intent with the same payload. The read names
+ * the parent's routing key, which a parent-placed actor shares and any other
+ * actor gets from the parent type's recorded placement, so it is one keyed
+ * statement rather than a scan of every shard.
  */
 const committedMintIntent = Effect.fnUntraced(function* (
   request: Request,
@@ -162,12 +163,21 @@ const committedMintIntent = Effect.fnUntraced(function* (
 
   const sql = yield* SqlClient.SqlClient
 
+  const parentPlacement =
+    parent === undefined ? yield* recordedPlacement(caller.ref.actor) : undefined
+
+  if (parent === undefined && parentPlacement === undefined) return false
+
+  const parentKey =
+    parentPlacement === undefined
+      ? routingKey
+      : routingKeyOf({ ref: caller.ref, placement: parentPlacement })
+
   const rows = yield* sql<{ caller: string }>`SELECT caller FROM actor_outbox
     WHERE intent_id = ${request.commandId} AND kind = 'intent' AND tenant_id = ${ref.tenant}
       AND actor_type = ${caller.ref.actor} AND actor_id = ${caller.ref.id}
       AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}
-      AND payload::jsonb = ${request.payload}::jsonb
-      ${parent === undefined ? sql.literal("") : sql`AND routing_key = ${routingKey}`}`
+      AND payload::jsonb = ${request.payload}::jsonb AND routing_key = ${parentKey}`
 
   if (rows.length === 0) return false
 

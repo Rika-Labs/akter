@@ -12,16 +12,6 @@ import { placementWorkload } from "./placement.ts"
 import { type RecordedStatement, scopeOf, statementLog, type StatementScope } from "./statements.ts"
 
 /**
- * The statements that touch a per-actor table without naming a routing key.
- * The check fails on any other, and on one that no longer appears, so the list
- * only shrinks.
- */
-const UNKEYED_STATEMENTS = [
-  // The creating-intent proof of a minted actor that is not parent-placed (#302).
-  "SELECT caller FROM actor_outbox WHERE intent_id = $1 AND kind = 'intent' AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4 AND target_type = $5 AND target_id = $6 AND command = $7 AND payload::jsonb = $8::jsonb",
-]
-
-/**
  * Drives a turn, a wake, a due-work scan, and the parent families of the
  * placement fixtures, and returns every statement the runtime compiled while it
  * did. The suite's runtime stops meanwhile: the first runtime creates the
@@ -127,7 +117,7 @@ export const singleShardConformance: ReadonlyArray<ConformanceCase> = [
             scopes.scan.every(({ sql }) => /generate_series\(\$\d+::int, \$\d+::int\)/.test(sql)),
           ).toBe(true)
 
-          expect(scopes.unkeyed.map(({ sql }) => sql)).toEqual(UNKEYED_STATEMENTS)
+          expect(scopes.unkeyed.map(({ sql }) => sql)).toEqual([])
         }),
       ),
   },
