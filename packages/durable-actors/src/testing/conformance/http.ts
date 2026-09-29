@@ -224,7 +224,7 @@ const bearer = (request: AuthRequest) =>
     onSome: (header) => principal(header.replace(/^Bearer /, "")),
   })
 
-const tokens = Actor.auth.make(bearer)
+export const tokens = Actor.auth.make(bearer)
 
 // The same principal from the `session` cookie.
 const session = (request: AuthRequest) => {
@@ -373,7 +373,7 @@ const WireReason = Schema.Struct({
   reason: Schema.Struct({ _tag: Schema.String, code: Schema.optionalKey(Schema.String) }),
 })
 
-const reasonOf = (body: Schema.Json | undefined) =>
+export const reasonOf = (body: Schema.Json | undefined) =>
   Schema.decodeUnknownEffect(WireReason)(body).pipe(
     Effect.orDie,
     Effect.map(({ reason }) =>
@@ -416,9 +416,9 @@ const securityOf = (server: Server) =>
     }),
   )
 
-const isDefectBody = Schema.is(Schema.TaggedStruct("Defect", { traceId: Schema.String }))
+export const isDefectBody = Schema.is(Schema.TaggedStruct("Defect", { traceId: Schema.String }))
 
-const envelope = (reason: Reason) => actorErrorBody(ActorError.make({ reason }))
+export const envelope = (reason: Reason) => actorErrorBody(ActorError.make({ reason }))
 
 export const receipts = Effect.fnUntraced(function* (tenant: string, actor: string, id: string) {
   return (yield* (yield* ActorTest).inspect(ActorRef.make({ tenant, actor, id }))).receipts
