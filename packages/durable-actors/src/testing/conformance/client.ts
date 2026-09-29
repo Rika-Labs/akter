@@ -95,6 +95,7 @@ const failed = (settled: Settled<unknown>) => (settled.ok ? undefined : settled.
 const json = (status: number, body: Schema.Json) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
+/** Client cases: optimistic reducers apply at once, converge on committed replies, and roll back when the server rejects them. */
 export const clientConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "client applies a reducer at once and converges on each committed reply, reapplying later pending inputs",

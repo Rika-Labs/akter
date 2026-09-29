@@ -874,6 +874,7 @@ const delayingProxy = Effect.fnUntraced(function* (target: string) {
   }
 })
 
+/** Edge cases: the edge strips client-supplied assertions, signs the caller it authenticated, honors key rotation and revocation bounds, and routes across runners and regions. */
 export const edgeConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "strips a client-supplied durable-assertion and takes the caller only from the assertion",

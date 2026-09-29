@@ -244,6 +244,7 @@ const SECOND_KEY = {
   secret: Redacted.make("a second durable-actors content grant key for rotation"),
 }
 
+/** Content-blob cases: grants, per-tenant deduplication, chunked storage up to 64 MiB, and refusal of unauthorized attaches. */
 export const contentConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "refuses to attach by bare hash, by another tenant's grant, or by an expired grant, and reads nothing without a reference",

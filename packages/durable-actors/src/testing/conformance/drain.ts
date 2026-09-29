@@ -313,6 +313,7 @@ const drainDuringTurn = (
     return { commandId, caller }
   })
 
+/** Drain cases: readiness, clean drain, deadline rollback with a same-id retry, and survivor takeover. */
 export const drainConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "drain: reports ready, then drains cleanly, turns unready, and refuses new commands",

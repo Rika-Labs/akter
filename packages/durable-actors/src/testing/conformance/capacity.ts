@@ -126,6 +126,7 @@ const reasonOf = (exit: Exit.Exit<unknown, unknown>) => {
     : "other"
 }
 
+/** Capacity cases: a caller over capacity gets `RunnerAtCapacity` after `deliveryTimeout`, while a resident bounded actor with a full mailbox reports `MailboxFull`. */
 export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "over-capacity load on an unbounded mailbox fails RunnerAtCapacity after deliveryTimeout, never MailboxFull",

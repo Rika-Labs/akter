@@ -328,6 +328,7 @@ const receipts = (ref: ActorRef, command: string) =>
 const stateOf = (ref: ActorRef) =>
   ActorTest.use((test) => test.inspect(ref)).pipe(Effect.map(({ state }) => state))
 
+/** Cron cases: tick rows, firing as System, catch-up and skip rules, time zones, and stale ticks from earlier deployments. */
 export const cronConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "writes one tick per cron entry on the first committed turn, including a declared failure",

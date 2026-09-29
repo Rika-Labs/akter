@@ -253,6 +253,7 @@ const CabinetReads = Cabinet.toQueryLayer(
   }),
 )
 
+/** Handlers for the blob actors; `fixture` records handler runs so cases can tell a rerun from a replay. */
 export const blobsLayer = (fixture: BlobsFixture) =>
   Layer.mergeAll(DrawerLive(fixture), DrawerReads(fixture), CabinetLive, CabinetReads)
 
@@ -261,6 +262,7 @@ const defect = (exit: Exit.Exit<unknown, unknown>) =>
 
 const blobsOf = (count: number) => ({ blobs: { files: count } })
 
+/** Actor blob cases: tenant and actor scoping, append/compact/set round trips, and rollback with a declared failure. */
 export const blobsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "scopes blob entries by tenant, actor type, and actor for equal names",

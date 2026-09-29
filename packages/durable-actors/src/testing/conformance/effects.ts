@@ -21,6 +21,7 @@ export interface EffectsFixture {
   escaped: Effect.Effect<void>
 }
 
+/** Creates the state effect cases observe; each case starts from a fresh one. */
 export const effectsFixture = (): EffectsFixture => ({
   calls: new Map(),
   attempts: [],
@@ -106,6 +107,7 @@ const AuthorState = Schema.Struct({
   dead: Schema.optional(Schema.Array(Dead)),
 })
 
+/** Handlers for the effect actors; `fixture` supplies the fake provider and the counters cases assert on. */
 export const effectsLayer = (fixture: EffectsFixture) =>
   Layer.mergeAll(
     Author.toLayer(
@@ -226,6 +228,7 @@ const deadLetters = Effect.fnUntraced(function* (actorId: string) {
 const attemptsOf = (fixture: EffectsFixture, id: string) =>
   fixture.attempts.filter((attempt) => attempt.ref.id === id)
 
+/** Effect cases: executors run only after the turn commits, results route to `onSuccess` once under the effect id, and declared failures, defects, and rolled-back commits discard performed effects. */
 export const effectsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "routes an executor's result to onSuccess once with the effect id as its command id",

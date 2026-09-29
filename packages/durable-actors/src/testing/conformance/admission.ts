@@ -65,6 +65,7 @@ const writeReceipt = Effect.fnUntraced(function* (ref: ActorRef, commandId: stri
       ${callerKey(User.make({ subject: "alice" }))}, '{"_tag":"Success","value":"{\\"value\\":40}"}', ${commandTimes(commandId).expiresAt})`
 })
 
+/** Receipt admission cases: replay by canonical payload hash, admission fenced inside the turn, and terminal rejection of malformed or expired identities. */
 export const admissionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "replays a receipt another runner stored by its canonical payload hash and conflicts on a changed payload",

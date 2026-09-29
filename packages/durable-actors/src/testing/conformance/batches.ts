@@ -160,6 +160,7 @@ const mint = Effect.fnUntraced(function* (count: number) {
   return yield* Effect.forEach(Array.from({ length: count }), () => actors.mintCommandId)
 })
 
+/** Turn-batch cases: waiting commands share one transaction in delivery order with one receipt each, respect the batch cap, and isolate declared failures and defects. */
 export const batchesConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "turn batch: waiting commands share one transaction in delivery order, each with its own receipt, and none replies before the commit",

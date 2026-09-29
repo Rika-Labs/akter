@@ -525,6 +525,7 @@ const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: string) =>
     Effect.asVoid,
   )
 
+/** Connection cases: open, ordered frames, session storage, broadcasts, and cleanup on close. */
 export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "a connection opened after every earlier one to a resident actor closed still receives broadcasts",

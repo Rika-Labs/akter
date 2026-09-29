@@ -164,6 +164,7 @@ export const prune = Effect.fnUntraced(function* (id: string, through: number) {
     WHERE tenant_id = ${test.tenant} AND actor_type = 'Feed' AND actor_id = ${id} AND sequence <= ${through}`
 }, Effect.orDie)
 
+/** Event cases: events append only on commit, replay in order after an exclusive cursor, and are discarded on declared failures and defects. */
 export const eventsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "appends events only on commit and replays one class in order after an exclusive cursor",
