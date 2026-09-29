@@ -19,12 +19,22 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer: {
-    command:
-      "bun run --cwd packages/ui build && bun run --cwd apps/console build && APP_ORIGIN=http://localhost:3002 bun apps/console/src/preview.ts",
-    cwd: "../..",
-    url: "http://127.0.0.1:3002/health",
-    reuseExistingServer: !inCI,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command:
+        "bun run --cwd packages/ui build && bun run --cwd apps/console build && APP_ORIGIN=http://localhost:3002 bun apps/console/src/preview.ts",
+      cwd: "../..",
+      url: "http://127.0.0.1:3002/health",
+      reuseExistingServer: !inCI,
+      timeout: 120_000,
+    },
+    {
+      // The chat example on in-memory PGlite, served to the browser tests in chat.e2e.ts.
+      command: "PORT=3003 bun examples/chat/src/web/serve.ts",
+      cwd: "../..",
+      url: "http://127.0.0.1:3003/health",
+      reuseExistingServer: !inCI,
+      timeout: 120_000,
+    },
+  ],
 })

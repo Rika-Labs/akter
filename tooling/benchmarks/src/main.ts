@@ -14,18 +14,21 @@ import { type Backend, type BackendName, pglite, postgres } from "./backend.ts"
 import { machine, runtimeVersions, source } from "./environment.ts"
 import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { blobs } from "./scenarios/storage/blobs.ts"
+import { contentBlobs } from "./scenarios/content-blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { connections } from "./scenarios/connections.ts"
 import { progress } from "./scenarios/progress.ts"
 import { effectConcurrency } from "./scenarios/effect-concurrency.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
+import { eventsReplay } from "./scenarios/events-replay.ts"
 import { retention } from "./scenarios/retention.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { turnBatches } from "./scenarios/turn-batches.ts"
 import { http } from "./scenarios/http.ts"
 import { inspectionViews } from "./scenarios/inspection-views.ts"
 import { ownedRows } from "./scenarios/storage/owned-rows.ts"
+import { placement } from "./scenarios/storage/placement.ts"
 import { multiRunner } from "./scenarios/multi-runner.ts"
 import { outbox } from "./scenarios/outbox.ts"
 import { queryLatency } from "./scenarios/query-latency.ts"
@@ -54,6 +57,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   receiptReplay,
   stateSize,
   events,
+  eventsReplay,
   manyActors,
   retainedHeap,
   storedOverhead,
@@ -64,6 +68,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   multiRunner,
   singletonFailover,
   blobs,
+  contentBlobs,
   reducers,
   capacity,
   inspectionViews,
@@ -78,6 +83,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   cron,
   orders,
   rls,
+  placement,
 ]
 
 /**

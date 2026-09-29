@@ -13,6 +13,7 @@ import {
 import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
+import { parseChildId } from "../../identity/child.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
@@ -143,10 +144,13 @@ const acknowledgement = (
  * the parent's mint proof for the actor's id, and the parent's committed
  * outbox still holds that exact intent with the same payload.
  */
-const committedMintIntent = Effect.fnUntraced(function* (request: Request) {
+const committedMintIntent = Effect.fnUntraced(function* (
+  request: Request,
+  parent: string | undefined,
+) {
   const { caller, ref } = request
 
-  if (!isSystem(caller) || caller.ref === undefined || !(yield* provesMint(caller, ref)))
+  if (!isSystem(caller) || caller.ref === undefined || !(yield* provesMint(caller, ref, parent)))
     return false
 
   const sql = yield* SqlClient.SqlClient
@@ -322,6 +326,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   routingKey: bigint,
   policy: TurnPolicy,
   mintable: boolean,
+  /** A parent-placed actor's parent type, whose turns alone mint it. */
+  parent: string | undefined,
   statements: boolean,
   waited: ReadonlySet<string> = new Set(),
   connections?: ConnectionLister,
@@ -627,8 +633,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           mintable &&
           policy.createdBy === request.command &&
           !created &&
-          isMintedId(id) &&
-          (request.external === true || !(yield* committedMintIntent(request)))
+          isMintedId(parent === undefined ? id : (parseChildId(id)?.local ?? "")) &&
+          (request.external === true || !(yield* committedMintIntent(request, parent)))
         ) {
           settled.push(
             Result.fail(ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })),

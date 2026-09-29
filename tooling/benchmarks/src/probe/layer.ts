@@ -3,6 +3,7 @@ import { Intent } from "@durable-actors/core"
 import {
   CronProbe,
   EventProbe,
+  EvolvedLive,
   Probe,
   ResidentProbe,
   RetentionProbe,
@@ -14,7 +15,7 @@ import {
 import { EffectProbeLive } from "./effects.ts"
 import { ArchiveLive } from "./archive.ts"
 import { BatchProbeLive } from "./turns/batches.ts"
-import { LedgerLive } from "./ledger.ts"
+import { FamilyLive, LedgerLive } from "./ledger.ts"
 import { MintLive } from "./mint.ts"
 import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
 import { ReducerProbeLive } from "./reducers.ts"
@@ -179,6 +180,7 @@ export const ProbeLive = Layer.mergeAll(
   SinkCommands,
   SenderCommands,
   LedgerLive,
+  FamilyLive,
   EffectProbeLive,
   ArchiveLive,
   ReducerProbeLive,
@@ -186,4 +188,5 @@ export const ProbeLive = Layer.mergeAll(
   WorkflowProbeLive,
   MintLive,
   CronProbeCommands,
+  EvolvedLive,
 )

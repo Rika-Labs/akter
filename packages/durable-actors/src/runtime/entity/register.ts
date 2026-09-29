@@ -33,7 +33,7 @@ import {
 } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
-import { routingKey } from "../storage/codec.ts"
+import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { takeBatch } from "./mailbox.ts"
 import { type Done, executeBatches, type Stopped } from "../turn/execute.ts"
@@ -108,6 +108,8 @@ interface Waiting {
    * in before batching: its span is the turn span's parent.
    */
   context: Context.Context<never>
+  /** Set once the request's `queued` hook has finished. */
+  queued: boolean
 }
 
 // Defects that say nothing about the command: the activation restarts and
@@ -151,6 +153,8 @@ export const registerActor = Effect.fnUntraced(function* (
   transport: Transport,
   authorize: Authorize,
   gate: TurnGate,
+  /** Fails while this runtime may not start turns, e.g. its payload writer rows are stale. */
+  writable: Effect.Effect<void, ActorError>,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -347,12 +351,12 @@ export const registerActor = Effect.fnUntraced(function* (
       // The next batch already waiting, taken while the previous one commits
       // so its admission rides in the same flight. Nothing waits for one, and
       // a draining runner starts none.
-      const following = Effect.sync(() => {
-        if (lost || !gate.open) return undefined
+      const following = Effect.gen(function* () {
+        if (lost || !gate.open || Exit.isFailure(yield* Effect.exit(writable))) return undefined
 
         const batch = takeBatch({ waiting, alone })
 
-        if (waiting.length === 0) ready.closeUnsafe()
+        if (waiting[0]?.queued !== true) ready.closeUnsafe()
 
         taken.push(...batch)
 
@@ -456,6 +460,7 @@ export const registerActor = Effect.fnUntraced(function* (
           owned.key,
           policy,
           registration.mintable,
+          parentPlacement(registration.placement)?.parent,
           statements,
           waited,
           owner.hasConnections ? owner.list(owned) : undefined,
@@ -524,7 +529,7 @@ export const registerActor = Effect.fnUntraced(function* (
           yield* ready.await
           const batch = takeBatch({ waiting, alone })
 
-          if (waiting.length === 0) ready.closeUnsafe()
+          if (waiting[0]?.queued !== true) ready.closeUnsafe()
 
           if (batch.length === 0) continue
 
@@ -537,6 +542,8 @@ export const registerActor = Effect.fnUntraced(function* (
             .run(
               Effect.gen(function* () {
                 if (lost) return yield* restart(batch, Cause.die(leaseLostDefect))
+
+                yield* writable
 
                 const stopped = yield* run(batch, true)
 
@@ -584,6 +591,7 @@ export const registerActor = Effect.fnUntraced(function* (
             command,
             reply: Deferred.makeUnsafe<Outcome, ActorError>(),
             context: Context.empty(),
+            queued: false,
           }
 
           waiting.push(entry)
@@ -593,10 +601,16 @@ export const registerActor = Effect.fnUntraced(function* (
               entry.context = yield* Effect.context<never>()
 
               // An idle worker waits for this signal, so the hook runs while
-              // the command is waiting but not yet taken.
-              yield* (yield* TurnHooks)
-                .at("queued", payload)
-                .pipe(Effect.ensuring(Effect.sync(() => ready.openUnsafe())))
+              // the command is waiting but not yet taken. The worker takes an
+              // entry only once its own hook has finished.
+              yield* (yield* TurnHooks).at("queued", payload).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    entry.queued = true
+                    ready.openUnsafe()
+                  }),
+                ),
+              )
 
               return yield* Deferred.await(entry.reply)
             }).pipe(Effect.provideContext(services)),
