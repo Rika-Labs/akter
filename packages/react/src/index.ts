@@ -1,5 +1,7 @@
-// React hooks over `@durable-actors/core/client`. Every hook talks to the
-// server only from effects and event handlers, so rendering on a server is safe.
+/**
+ * React hooks over `@durable-actors/core/client`. Every hook talks to the
+ * server only from effects and event handlers, so rendering on a server is safe.
+ */
 export { type CommandIds, type CommandState, type UseCommand, useCommand } from "./command.ts"
 
 export {
