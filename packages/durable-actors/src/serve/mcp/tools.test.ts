@@ -10,7 +10,7 @@ const Room = Actor.make("Room", { key: Schema.String, api: { Post } })
 
 const definition = servedDefinitions.get(Room)!
 
-const json = (schema: object) => ({ content: { "application/json": { schema } } })
+const json = (schema: Schema.JsonObject) => ({ content: { "application/json": { schema } } })
 
 const document = {
   paths: {

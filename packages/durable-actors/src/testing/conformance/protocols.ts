@@ -7,9 +7,7 @@ import { InternalActors } from "../../handles/actors.ts"
 import { MCP_VERSION } from "../../serve/mcp/endpoint.ts"
 import type { ConformanceCase } from "../conformance.ts"
 import {
-  Closed,
   envelope,
-  Full,
   HttpLobby,
   HttpRoom,
   isDefectBody,
@@ -71,7 +69,7 @@ const ToolList = Schema.Struct({
           additionalProperties: Schema.Boolean,
           $defs: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
         }),
-        outputSchema: Schema.optionalKey(Schema.Json),
+        outputSchema: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
         annotations: Schema.Struct({
           readOnlyHint: Schema.Boolean,
           idempotentHint: Schema.Boolean,
@@ -108,7 +106,12 @@ interface RpcCall {
 const rpc = (server: Server, call: RpcCall) =>
   server.send("/mcp", {
     token: call.token,
-    body: { jsonrpc: "2.0", id: 1, method: call.method, params: { ...call.params, _meta: META } },
+    body: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: call.method,
+      params: Object.assign({}, call.params, { _meta: META }),
+    },
     headers: { "mcp-protocol-version": MCP_VERSION, "mcp-method": call.method, ...call.headers },
   })
 
@@ -133,6 +136,7 @@ const callTool = Effect.fnUntraced(function* (
     status: reply.status,
     isError: result.isError === true,
     empty: result.content.length === 0,
+    text,
     body: text === undefined ? undefined : yield* decodeJson(text).pipe(Effect.orDie),
     structured: result.structuredContent,
   }
@@ -202,6 +206,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
             const tool = listed.result.tools.find(
               (candidate) => candidate.name === operation.operationId,
             )!
+
             const parameters = operation.parameters ?? []
             const body = operation.requestBody?.content["application/json"]?.schema
             const success = operation.responses["200"]?.content?.["application/json"]?.schema
@@ -232,7 +237,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
             if (
               success !== undefined &&
               tool.outputSchema !== undefined &&
-              !JSON.stringify(success).includes("$ref")
+              tool.outputSchema["$defs"] === undefined
             )
               expect(tool.outputSchema).toEqual(success)
 
@@ -346,9 +351,9 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
           const tenant = yield* tenantOf
           const token = `${tenant}:alice`
 
-          for (const [text, error] of [
-            ["full", Full.make({ capacity: 1 })],
-            ["closed", Closed.make({ reason: "night" })],
+          for (const [text, status] of [
+            ["full", 422],
+            ["closed", 423],
           ] as const) {
             const overHttp = yield* server.send(`/actors/HttpRoom/${text}-http/Post`, {
               token,
@@ -362,7 +367,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
               input: { text },
             })
 
-            expect(overHttp.status).toBe(error._tag === "Full" ? 422 : 423)
+            expect(overHttp.status).toBe(status)
             expect(overMcp.isError).toBe(true)
             expect(overMcp.body).toEqual(overHttp.body)
           }
@@ -433,7 +438,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
           expect(crash.isError).toBe(true)
           expect(isDefectBody(crash.body)).toBe(true)
           expect(Object.keys(crash.body as object).sort()).toEqual(["_tag", "traceId"])
-          expect(JSON.stringify(crash.body).includes("secret")).toBe(false)
+          expect(crash.text?.includes("secret")).toBe(false)
           expect(yield* receipts(tenant, "HttpRoom", "defect")).toBe(0)
 
           for (const subject of ["alice", "bob"]) {
@@ -543,7 +548,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
             jsonrpc: "2.0",
             id: 1,
             method: "tools/call",
-            params: { name, arguments: { id: "headers" }, _meta: META, ...extra },
+            params: Object.assign({ name, arguments: { id: "headers" }, _meta: META }, extra),
           })
 
           const headers = {
@@ -652,6 +657,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
             ...mcpConformanceOptions,
             limits: { requestBytes: 4096 },
           })
+
           const token = `${yield* tenantOf}:alice`
 
           const notification = yield* server.send("/mcp", {
@@ -699,8 +705,9 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
 
           const large = yield* server.send("/mcp", {
             token,
-            raw: JSON.stringify({ pad: "x".repeat(5000) }),
+            raw: `{"pad":"${"x".repeat(5000)}"}`,
           })
+
           expect(large.status).toBe(413)
 
           const foreign = yield* server.send("/mcp", {

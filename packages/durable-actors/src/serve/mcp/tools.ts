@@ -132,6 +132,7 @@ export const mcpTools = Effect.fnUntraced(function* (options: {
       )
 
     const parameters = operation.parameters ?? []
+
     const takesId = parameters.some(
       (parameter) => parameter.in === "path" && parameter.name === "id",
     )
@@ -172,6 +173,7 @@ export const mcpTools = Effect.fnUntraced(function* (options: {
 
     const name =
       route === undefined ? MINT_OPERATION : `${route.definition.name}.${route.member.tag}`
+
     const isQuery = route?.member.kind === "query"
 
     const base = {
