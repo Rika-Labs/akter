@@ -25,8 +25,19 @@ import {
 import { ActorError, NotCreated, RunnerAtCapacity, Unauthorized } from "../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
+import { ContentStore } from "../handles/content.ts"
+import { MAX_CONTENT_BYTES } from "../runtime/content/store.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
-import { build, document, memberPath, PROTOCOL_OPERATIONS, schemeName } from "./api.ts"
+import {
+  build,
+  CONTENT_ROUTE,
+  document,
+  memberPath,
+  PROTOCOL_OPERATIONS,
+  PROTOCOL_PATHS,
+  schemeName,
+} from "./api.ts"
+import { RuntimeControl } from "../runtime/drain.ts"
 import {
   type AuthProvider,
   type Authenticated,
@@ -34,11 +45,17 @@ import {
   readsCookies,
   withinLimits,
 } from "./auth.ts"
-import { ASSERTION_HEADER, reauthenticationDigest, requestDigest } from "./assertion/binding.ts"
+import {
+  ASSERTION_HEADER,
+  KEY_REFRESH_PATH,
+  reauthenticationDigest,
+  requestDigest,
+} from "./assertion/binding.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
-import { feedStream, MAX_FEED_FILTERS, openFeed } from "./feed.ts"
-import { MAX_AWAITING_HELLO, socketSession } from "./socket.ts"
+import { feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
+import { MAX_AWAITING_HELLO, socketSession } from "./sessions/socket.ts"
+import { streamResponse } from "./sessions/stream.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
 
 export interface ServeOptions<R> {
@@ -61,6 +78,11 @@ export interface ServeOptions<R> {
     readonly requestBytes?: number
     /** Default 8 KiB. */
     readonly credentialBytes?: number
+    /**
+     * The body limit of `POST /content`, the one route exempt from
+     * `requestBytes`. Default and maximum 64 MiB, the content size limit.
+     */
+    readonly contentBytes?: number
   }
 }
 
@@ -69,7 +91,7 @@ const NAME = /^[A-Za-z][A-Za-z0-9_]*$/
 /** The path segment an actor's event feed is served at, so no member may take it. */
 const FEED_ROUTE = "events"
 
-const RESERVED_MEMBERS: ReadonlySet<string> = new Set([FEED_ROUTE])
+const RESERVED_MEMBERS: ReadonlySet<string> = new Set([FEED_ROUTE, CONTENT_ROUTE])
 
 const ALLOWED_HEADERS = [
   "authorization",
@@ -181,7 +203,7 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
   if (!NAME.test(definition.name))
     throw new Error(`Actor.serve: actor name ${definition.name} is not [A-Za-z][A-Za-z0-9_]*`)
 
-  for (const member of [...definition.members, ...definition.connections]) {
+  for (const member of [...definition.members, ...definition.connections, ...definition.streams]) {
     if (!NAME.test(member.tag) || RESERVED_MEMBERS.has(member.tag))
       throw new Error(`Actor.serve: ${definition.name}.${member.tag} can't be served`)
   }
@@ -191,8 +213,8 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
 
 /**
  * Serves `actors`' public commands, reducers, and queries over HTTP by adding
- * routes to the `HttpRouter`, plus `/protocol`, `/command-ids`, and, when
- * configured, the OpenAPI document.
+ * routes to the `HttpRouter`, plus `/protocol`, `/command-ids`, `/ready`, and,
+ * when configured, the OpenAPI document.
  */
 export const serve = <R = never>(options: ServeOptions<R>) =>
   HttpRouter.use(
@@ -206,9 +228,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return yield* Effect.die(new Error(`Actor.serve: ${definition.name} is listed twice`))
         names.add(definition.name)
 
-        const collision = [...definition.members, ...definition.connections].find((member) =>
-          PROTOCOL_OPERATIONS.has(`${definition.name}.${member.tag}`),
-        )
+        const collision = [
+          ...definition.members,
+          ...definition.connections,
+          ...definition.streams,
+        ].find((member) => PROTOCOL_OPERATIONS.has(`${definition.name}.${member.tag}`))
 
         if (collision !== undefined)
           return yield* Effect.die(
@@ -222,8 +246,8 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
       if (
         openapiPath !== undefined &&
-        (openapiPath === "/protocol" ||
-          openapiPath === "/command-ids" ||
+        (PROTOCOL_PATHS.has(openapiPath) ||
+          openapiPath === KEY_REFRESH_PATH ||
           openapiPath === "/actors" ||
           openapiPath.startsWith("/actors/"))
       )
@@ -242,6 +266,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         )
 
       const actors = yield* InternalActors
+      const control = yield* RuntimeControl
 
       if (actors.retryWindowMs < MIN_RETRY_WINDOW_MS)
         return yield* Effect.die(
@@ -257,7 +282,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           definition.members.some((member) =>
             member.kind === "query" ? !registered.queries : !registered.commands,
           ) ||
-          (definition.connections.length > 0 && !registered.commands)
+          (definition.connections.length + definition.streams.length > 0 && !registered.commands)
 
         if (missing)
           return yield* Effect.die(
@@ -271,9 +296,23 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const origins = new Set(options.origins ?? [])
       const requestBytes = options.limits?.requestBytes ?? 1024 * 1024
       const credentialBytes = options.limits?.credentialBytes ?? 8 * 1024
+      const contentBytes = options.limits?.contentBytes ?? MAX_CONTENT_BYTES
+
+      if (
+        !Number.isSafeInteger(contentBytes) ||
+        contentBytes < 0 ||
+        contentBytes > MAX_CONTENT_BYTES
+      )
+        return yield* Effect.die(
+          new Error(
+            `Actor.serve: limits.contentBytes must be a whole number of bytes up to ${MAX_CONTENT_BYTES}`,
+          ),
+        )
+
+      const contentStore = yield* Effect.serviceOption(ContentStore)
       const withCookies = readsCookies(options.auth)
       const withAssertion = options.auth.credentials.some(Credential.$is("Assertion"))
-      const api = build({ definitions, basePath })
+      const api = build({ definitions, basePath, content: Option.isSome(contentStore) })
 
       const withProtocol = (
         request: HttpServerRequest.HttpServerRequest,
@@ -569,6 +608,41 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return yield* outcomeResponse(member, exit.value)
         })
 
+      // A stream subscribes on the actor's owner and answers its elements over SSE until it ends.
+      const streamHandler = (definition: ServedDefinition, member: ServedMember) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const authenticated = yield* authenticate(request)
+          const type = Headers.get(request.headers, "content-type")
+
+          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
+            return yield* invalidInput("unsupported_media_type")
+
+          const bytes = yield* readBytes(request)
+
+          yield* checkBinding(authenticated, request, bytes)
+          const body = yield* decodeJsonBody(request, bytes)
+
+          const payload = yield* member
+            .payload(body)
+            .pipe(Effect.mapError((error) => undecodable(error)))
+
+          const elements = actors.subscribe(
+            Request.make({
+              ref: ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id }),
+              caller: authenticated.caller,
+              command: member.tag,
+              commandId: "",
+              payload,
+            }),
+          )
+
+          return HttpServerResponse.stream(streamResponse(elements), {
+            contentType: "text/event-stream",
+            headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
+          })
+        })
+
       const awaiting = awaitingHello.get(actors) ?? { count: 0 }
       awaitingHello.set(actors, awaiting)
 
@@ -693,6 +767,72 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           })
         })
 
+      // The body streams into the store as it arrives, hashed on the way; past
+      // the limit the upload's transaction rolls back and nothing is stored.
+      const uploadHandler = (store: ContentStore["Service"]) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const authenticated = yield* authenticate(request)
+          const length = Headers.get(request.headers, "content-length")
+
+          if (Option.isSome(length) && Number(length.value) > contentBytes)
+            return yield* invalidInput("too_large")
+
+          // A request without framing headers may carry no body stream at all.
+          const empty =
+            (Option.isSome(length) && Number(length.value) === 0) ||
+            (Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding"))
+
+          const body = empty
+            ? Stream.empty
+            : request.stream.pipe(Stream.mapError(() => invalidInput("decode")))
+
+          const ref = yield* store
+            .upload(authenticated.tenant, body, contentBytes)
+            .pipe(Effect.catchTag("ContentTooLarge", () => invalidInput("too_large")))
+
+          return HttpServerResponse.jsonUnsafe(ref, { status: 200 })
+        })
+
+      const contentParams = Effect.fnUntraced(function* (definition: ServedDefinition) {
+        const { blob = "", name = "" } = yield* HttpRouter.params
+
+        if (!definition.contents.includes(blob) || name === "")
+          return yield* invalidInput("unknown_content")
+
+        return { blob, name }
+      })
+
+      const downloadHandler = (store: ContentStore["Service"], definition: ServedDefinition) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const { blob, name } = yield* contentParams(definition)
+          const authenticated = yield* authenticate(request)
+          const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
+          const found = yield* store.download(ref, authenticated.caller, blob, name)
+
+          if (Option.isNone(found)) return yield* invalidInput("unknown_content")
+
+          // A sweep between resolving the name and reading the bytes ends the
+          // body before any byte, short of its declared length.
+          return HttpServerResponse.stream(found.value.bytes, {
+            contentType: "application/octet-stream",
+            contentLength: found.value.size,
+          })
+        })
+
+      const grantHandler = (store: ContentStore["Service"], definition: ServedDefinition) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const { blob, name } = yield* contentParams(definition)
+          const authenticated = yield* authenticate(request)
+          const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
+          const granted = yield* store.grant(ref, authenticated.caller, blob, name)
+
+          if (Option.isNone(granted)) return yield* invalidInput("unknown_content")
+
+          return HttpServerResponse.jsonUnsafe(granted.value, { status: 200 })
+        })
+
       const requestId =
         (member: ServedMember) =>
         (request: HttpServerRequest.HttpServerRequest): Record<string, string> => {
@@ -712,6 +852,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           )
 
       for (const definition of definitions)
+        for (const member of definition.streams)
+          yield* router.add(
+            "POST",
+            `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
+            respond(streamHandler(definition, member)),
+          )
+
+      for (const definition of definitions)
         if (definition.feeds.length > 0)
           yield* router.add(
             "GET",
@@ -727,6 +875,32 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             respond(connectionHandler(definition, connection)),
           )
 
+      if (Option.isSome(contentStore)) {
+        const store = contentStore.value
+
+        yield* router.add(
+          "POST",
+          `${basePath}/content` as HttpRouter.PathInput,
+          respond(uploadHandler(store)),
+        )
+
+        for (const definition of definitions)
+          if (definition.contents.length > 0) {
+            const entry = `${basePath}${memberPath({ definition, member: { tag: CONTENT_ROUTE } })}/:blob/:name`
+
+            yield* router.add(
+              "GET",
+              entry as HttpRouter.PathInput,
+              respond(downloadHandler(store, definition)),
+            )
+            yield* router.add(
+              "POST",
+              `${entry}/grant` as HttpRouter.PathInput,
+              respond(grantHandler(store, definition)),
+            )
+          }
+      }
+
       yield* router.add(
         "GET",
         `${basePath}/protocol` as HttpRouter.PathInput,
@@ -736,6 +910,20 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               protocol: PROTOCOL,
               retryWindowMs: actors.retryWindowMs,
               now: clock.now(),
+            }),
+          ),
+        ),
+      )
+
+      // Probes carry no credentials, and a stale answer would route traffic to a draining runner.
+      yield* router.add(
+        "GET",
+        `${basePath}/ready` as HttpRouter.PathInput,
+        respond(() =>
+          Effect.map(control.readiness, (readiness) =>
+            HttpServerResponse.jsonUnsafe(readiness, {
+              status: readiness.ready ? 200 : 503,
+              headers: { "cache-control": "no-store" },
             }),
           ),
         ),
@@ -755,6 +943,22 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           }),
         ),
       )
+
+      // The edge's push after it revokes a signing key: reread the key set now.
+      const refreshKeys = options.auth.refreshKeys
+
+      if (refreshKeys !== undefined)
+        yield* router.add(
+          "POST",
+          `${basePath}${KEY_REFRESH_PATH}` as HttpRouter.PathInput,
+          respond((request) =>
+            refreshKeys({ headers: request.headers, cookies: {} }).pipe(
+              Effect.provideContext(context),
+              Effect.mapError((reason) => ActorError.make({ reason })),
+              Effect.as(HttpServerResponse.empty({ status: 204 })),
+            ),
+          ),
+        )
 
       const preflight = HttpServerResponse.empty({
         status: 204,

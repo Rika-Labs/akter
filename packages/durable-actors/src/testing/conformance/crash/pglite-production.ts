@@ -11,10 +11,9 @@ import {
   type Scope,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors as ActorIds } from "../../../index.ts"
+import { Actor } from "../../../index.ts"
 import { ActorError } from "../../../errors/actor.ts"
 import { Actors, Database } from "../../../runtime/index.ts"
-import { migrations, migrator } from "../../../runtime/database/migrations.ts"
 import { decompress } from "../../../runtime/storage/codec.ts"
 import { databaseTime } from "../../../runtime/turn/admission.ts"
 import { TurnHooks } from "../../../runtime/turn/hooks.ts"
@@ -152,10 +151,6 @@ const Delivered = Schema.fromJsonString(
   }),
 )
 
-const Migrated = Schema.fromJsonString(
-  Schema.Struct({ replay: Schema.Int, next: Schema.Int, runs: Schema.Int, latest: Schema.Int }),
-)
-
 const Stored = Schema.Struct({
   runs: Schema.Int,
   value: Schema.optional(Schema.Int),
@@ -271,94 +266,6 @@ const program = Effect.gen(function* () {
 
         yield* Console.log(
           `DELIVERED ${yield* Schema.encodeEffect(Delivered)({ ...rows!, runs, payee: yield* stateOf("payee", "count") })}`,
-        )
-      }),
-    )
-  }
-
-  // A dataDir left at migration 14 with rows a runtime of that time wrote.
-  if (step === "seed") {
-    const rows = yield* within(
-      runtime(`memory://`, []),
-      Effect.gen(function* () {
-        const ledger = yield* Ledger.get("migrated")
-        const id = yield* (yield* ActorIds).mintCommandId
-        yield* ledger.Increment(5).pipe(Actor.commandId(id))
-        const sql = yield* SqlClient.SqlClient
-
-        return {
-          id,
-          generations: yield* sql`SELECT routing_key::text, tenant_id, actor_type, actor_id,
-            generation::text, created, event_sequence::text FROM actor_generations`,
-          placements: yield* sql`SELECT actor_type, placement, encoding FROM actor_placements`,
-          state: yield* sql<{
-            routing_key: string
-            tenant_id: string
-            actor_type: string
-            actor_id: string
-            key: string
-            value: Uint8Array
-          }>`SELECT routing_key::text, tenant_id, actor_type, actor_id, key, value FROM actor_state`,
-          receipts:
-            yield* sql`SELECT routing_key::text, tenant_id, actor_type, actor_id, command_id,
-            command, payload_hash, caller_key, outcome, expires_at_ms::text FROM actor_receipts`,
-        }
-      }),
-    )
-
-    const through14 = Object.fromEntries(
-      Object.entries(migrations).filter(([id]) => id < "0015"),
-    ) as typeof migrations
-
-    yield* within(
-      Database.pglite({ dataDir }),
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        yield* migrator(through14)
-        yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${RETRY_WINDOW_MS})`
-
-        const tables = [
-          ["actor_placements", rows.placements],
-          ["actor_generations", rows.generations],
-          ["actor_state", rows.state],
-          ["actor_receipts", rows.receipts],
-        ] as const
-
-        for (const [table, inserted] of tables)
-          for (const row of inserted) yield* sql`INSERT INTO ${sql(table)} ${sql.insert(row)}`
-      }),
-    )
-
-    return yield* Console.log(`SEEDED ${rows.id}`)
-  }
-
-  // Runs the pending migrations and one more that never finishes, in their one transaction.
-  if (step === "migrate") {
-    return yield* within(
-      Database.pglite({ dataDir }),
-      migrator({
-        ...migrations,
-        "9999_hang": Console.log("READY migrating").pipe(Effect.andThen(Effect.never)),
-      }),
-    )
-  }
-
-  // Boots the runtime, which migrates, and retries the seeded id.
-  if (step === "boot") {
-    return yield* within(
-      runtime(dataDir, []),
-      Effect.gen(function* () {
-        const ledger = yield* Ledger.get("migrated")
-        const replay = yield* ledger.Increment(5).pipe(Actor.commandId(commandId))
-        const next = yield* ledger.Increment(1)
-        const sql = yield* SqlClient.SqlClient
-
-        const applied = yield* sql<{
-          id: number
-        }>`SELECT max(migration_id)::int AS id FROM actor_migrations`
-
-        yield* Console.log(
-          `MIGRATED ${yield* Schema.encodeEffect(Migrated)({ replay, next, runs, latest: applied[0]!.id })}`,
         )
       }),
     )

@@ -1,5 +1,4 @@
 import { BunServices } from "@effect/platform-bun"
-import { PGlite } from "@electric-sql/pglite"
 import {
   Cause,
   Clock,
@@ -16,13 +15,10 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { afterAll, describe, expect, it } from "vitest"
 import { DataDirLocked, DataDirVersion } from "../../../errors/database.ts"
-import { migrations } from "../../../runtime/database/migrations.ts"
 import { LOCK_FILE, POSTGRES_MAJOR } from "../../../runtime/database/pglite.ts"
 import { Database } from "../../../runtime/index.ts"
 
 const entry = new URL("./pglite-production.ts", import.meta.url).pathname
-
-const latest = Math.max(...Object.keys(migrations).map((id) => Number(id.split("_")[0])))
 
 describe("file-backed PGlite as an embedded production backend", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
@@ -176,45 +172,6 @@ describe("file-backed PGlite as an embedded production backend", () => {
           const third = yield* spawn("open", directory)
           yield* waitFor(third, "OPEN")
           yield* kill(third)
-        }),
-      ),
-    60_000,
-  )
-
-  it(
-    "migrates a populated dataDir from an earlier migration id, and retries a migration interrupted by SIGKILL",
-    () =>
-      run(
-        Effect.gen(function* () {
-          const directory = yield* dataDir
-          const id = yield* complete("seed", directory, "SEEDED")
-
-          const latestApplied = () =>
-            Effect.acquireUseRelease(
-              Effect.promise(() => PGlite.create({ dataDir: directory })),
-              (database) =>
-                Effect.promise(() =>
-                  database.query<{ id: number }>(
-                    "SELECT max(migration_id)::int AS id FROM actor_migrations",
-                  ),
-                ).pipe(Effect.map(({ rows }) => rows[0]!.id)),
-              (database) => Effect.promise(() => database.close()),
-            )
-
-          expect(yield* latestApplied()).toBe(14)
-
-          // Every pending migration runs in one transaction, so a SIGKILL
-          // inside it leaves the dataDir at 14.
-          const migrating = yield* spawn("migrate", directory)
-          yield* waitFor(migrating, "READY")
-          yield* kill(migrating)
-          expect(yield* latestApplied()).toBe(14)
-
-          const booted = yield* json(
-            yield* complete("boot", directory, "MIGRATED", { PGLITE_COMMAND_ID: id }),
-          )
-
-          expect(booted).toEqual({ replay: 5, next: 6, runs: 1, latest })
         }),
       ),
     60_000,

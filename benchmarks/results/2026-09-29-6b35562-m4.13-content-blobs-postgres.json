@@ -1,0 +1,637 @@
+{
+  "schema": 2,
+  "label": null,
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-29T01:37:13.627Z",
+  "finishedAt": "2026-09-29T01:37:45.133Z",
+  "git": {
+    "sha": "6b35562c09b4329ab3da1f14e8c982186faad7f8",
+    "shortSha": "6b35562",
+    "branch": "feat/222-content-blobs",
+    "mainBase": "7fef2da981459b00d55527df26802def077ed117",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "9dabaf56a94d82e4945c944f9d5cb08852cb19bd",
+        "parents": [
+          "ef15c410533d065d1ceb18b5810fb3953abb40b5",
+          "7fef2da981459b00d55527df26802def077ed117"
+        ]
+      },
+      {
+        "commit": "1a098da7b2d8fef58cf12ef88de8879056442c70",
+        "parents": [
+          "47b61c29653dffda8e241a148dd084e05a7b9696",
+          "be0a6522a7c40cf825876df0996756eb2bdcfa97"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "300",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": true
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+    "logicalCpus": 16,
+    "memoryGiB": 31.4,
+    "os": "Linux 6.1.158+",
+    "hostname": "e2b.local",
+    "topology": "benchmark client and actor runtime on this machine; Postgres at BENCH_DATABASE_URL"
+  },
+  "scenarios": [
+    {
+      "name": "content-blobs",
+      "description": "Shared content: deduplication of a skewed upload set, upload, attach, and read latency by size, and sweep cost per thousand candidates.",
+      "cases": [
+        {
+          "name": "dedup-skewed",
+          "parameters": {
+            "size": 65536,
+            "distinct": 200,
+            "uploads": 2000,
+            "workers": 8
+          },
+          "operations": 2000,
+          "elapsedMs": 1132,
+          "throughput": 1766,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 4.505,
+            "min": 1.317,
+            "p50": 4.077,
+            "p90": 6.352,
+            "p95": 8.175,
+            "p99": 13.703,
+            "max": 20.435
+          },
+          "statementsPerOperation": 1.11,
+          "roundTripsPerOperation": 0,
+          "statements": null,
+          "activity": {
+            "samples": 42,
+            "connections": {
+              "idle:Client/ClientRead": 4.88,
+              "idle in transaction:Client/ClientRead": 3.21,
+              "active:IO/WalSync": 0.6,
+              "active:LWLock/WALWrite": 0.45,
+              "active": 0.36,
+              "active:Client/ClientRead": 0.26,
+              "active:Lock/transactionid": 0.17,
+              "idle in transaction": 0.02,
+              "idle": 0.02,
+              "active:IO/DataFileExtend": 0.02
+            },
+            "peakConnections": 10
+          },
+          "cpu": {
+            "client": 160.7,
+            "server": null,
+            "clientMsPerOperation": 0.911,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "storedContents": 200,
+            "storedBytes": 13107200,
+            "uploadedBytes": 131072000,
+            "dedupRatio": 10
+          }
+        },
+        {
+          "name": "upload-4k",
+          "parameters": {
+            "size": 4096,
+            "workers": 1
+          },
+          "operations": 300,
+          "elapsedMs": 357,
+          "throughput": 840,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 300,
+            "mean": 1.187,
+            "min": 0.756,
+            "p50": 1.084,
+            "p90": 1.497,
+            "p95": 1.722,
+            "p99": 2.348,
+            "max": 9.019
+          },
+          "statementsPerOperation": 2,
+          "roundTripsPerOperation": 0,
+          "statements": [
+            {
+              "query": "INSERT INTO tenant_content_chunks (routing_key, tenant_id, hash, chunk, bytes) VALUES ($1, $2, $3, $4, $5::bytea)",
+              "calls": 300,
+              "meanMs": 0.054
+            },
+            {
+              "query": "WITH swept AS ( INSERT INTO tenant_content_sweeps (routing_key, tenant_id, swept_at_ms) VALUES ($1, $2, $9) ON CONFLICT DO NOTHING) INSERT INTO tenant_contents ",
+              "calls": 300,
+              "meanMs": 0.042
+            }
+          ],
+          "activity": {
+            "samples": 14,
+            "connections": {
+              "idle:Client/ClientRead": 9.36,
+              "active:IO/WalSync": 0.36,
+              "idle": 0.14,
+              "idle in transaction:IO/DataFileExtend": 0.07,
+              "idle in transaction:IO/WalSync": 0.07
+            },
+            "peakConnections": 10
+          },
+          "cpu": {
+            "client": 84.6,
+            "server": null,
+            "clientMsPerOperation": 1.008,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "upload-1024k",
+          "parameters": {
+            "size": 1048576,
+            "workers": 1
+          },
+          "operations": 300,
+          "elapsedMs": 3673,
+          "throughput": 81.7,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 300,
+            "mean": 12.24,
+            "min": 9.515,
+            "p50": 11.792,
+            "p90": 14.07,
+            "p95": 15.46,
+            "p99": 23.45,
+            "max": 30.362
+          },
+          "statementsPerOperation": 2.03,
+          "roundTripsPerOperation": 0,
+          "statements": [
+            {
+              "query": "INSERT INTO tenant_content_chunks (routing_key, tenant_id, hash, chunk, bytes) VALUES ($1, $2, $3, $4, $5::bytea)",
+              "calls": 300,
+              "meanMs": 3.054
+            },
+            {
+              "query": "WITH swept AS ( INSERT INTO tenant_content_sweeps (routing_key, tenant_id, swept_at_ms) VALUES ($1, $2, $9) ON CONFLICT DO NOTHING) INSERT INTO tenant_contents ",
+              "calls": 300,
+              "meanMs": 0.065
+            },
+            {
+              "query": "WITH intent_candidates AS ( SELECT o.routing_key, o.intent_id, o.actor_type, o.command FROM generate_series($1::int, $2::int) AS b(bucket) CROSS JOIN LATERAL ( ",
+              "calls": 4,
+              "meanMs": 0.497
+            },
+            {
+              "query": "COMMIT",
+              "calls": 2,
+              "meanMs": 0.001
+            },
+            {
+              "query": "BEGIN",
+              "calls": 2,
+              "meanMs": 0.001
+            }
+          ],
+          "activity": {
+            "samples": 136,
+            "connections": {
+              "idle:Client/ClientRead": 9.07,
+              "active": 0.32,
+              "idle in transaction": 0.15,
+              "active:IO/WalSync": 0.13,
+              "idle in transaction:Client/ClientRead": 0.1,
+              "active:IO/WalWrite": 0.1,
+              "active:IO/DataFileExtend": 0.1,
+              "active:IO/DataFileWrite": 0.01,
+              "active:Client/ClientRead": 0.01
+            },
+            "peakConnections": 10
+          },
+          "cpu": {
+            "client": 68.3,
+            "server": null,
+            "clientMsPerOperation": 8.365,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "upload-8192k",
+          "parameters": {
+            "size": 8388608,
+            "workers": 1
+          },
+          "operations": 50,
+          "elapsedMs": 4016,
+          "throughput": 12.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 50,
+            "mean": 80.303,
+            "min": 68.542,
+            "p50": 78.217,
+            "p90": 90.377,
+            "p95": 94.612,
+            "p99": 97.376,
+            "max": 97.376
+          },
+          "statementsPerOperation": 9.06,
+          "roundTripsPerOperation": 0,
+          "statements": [
+            {
+              "query": "INSERT INTO tenant_content_chunks (routing_key, tenant_id, hash, chunk, bytes) VALUES ($1, $2, $3, $4, $5::bytea)",
+              "calls": 400,
+              "meanMs": 3.266
+            },
+            {
+              "query": "WITH swept AS ( INSERT INTO tenant_content_sweeps (routing_key, tenant_id, swept_at_ms) VALUES ($1, $2, $9) ON CONFLICT DO NOTHING) INSERT INTO tenant_contents ",
+              "calls": 50,
+              "meanMs": 0.076
+            },
+            {
+              "query": "WITH intent_candidates AS ( SELECT o.routing_key, o.intent_id, o.actor_type, o.command FROM generate_series($1::int, $2::int) AS b(bucket) CROSS JOIN LATERAL ( ",
+              "calls": 3,
+              "meanMs": 0.504
+            }
+          ],
+          "activity": {
+            "samples": 111,
+            "connections": {
+              "idle:Client/ClientRead": 8.98,
+              "active": 0.33,
+              "idle in transaction:Client/ClientRead": 0.19,
+              "idle in transaction": 0.17,
+              "active:IO/DataFileExtend": 0.13,
+              "active:IO/WalWrite": 0.09,
+              "active:IO/WalSync": 0.06,
+              "active:IO/DataFileWrite": 0.03,
+              "active:LWLock/WALWrite": 0.02
+            },
+            "peakConnections": 10
+          },
+          "cpu": {
+            "client": 71.6,
+            "server": null,
+            "clientMsPerOperation": 57.491,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "attach",
+          "parameters": {
+            "workers": 1
+          },
+          "operations": 3000,
+          "elapsedMs": 10874,
+          "throughput": 275.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 3000,
+            "mean": 3.622,
+            "min": 2.541,
+            "p50": 3.453,
+            "p90": 4.09,
+            "p95": 4.421,
+            "p99": 8.646,
+            "max": 47.858
+          },
+          "statementsPerOperation": 7.01,
+          "roundTripsPerOperation": 3,
+          "statements": [
+            {
+              "query": "SELECT floor(extract($1 FROM clock_timestamp()) * $2)::text AS now",
+              "calls": 6000,
+              "meanMs": 0.005
+            },
+            {
+              "query": "SELECT floor(extract($7 FROM clock_timestamp()) * $8)::text AS now, g.generation::text AS generation, g.created, $1::jsonb::text AS canonical, r.caller_key, r.c",
+              "calls": 3000,
+              "meanMs": 0.035
+            },
+            {
+              "query": "INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms) VALUES ($1, $2,",
+              "calls": 3000,
+              "meanMs": 0.046
+            },
+            {
+              "query": "SELECT floor(extract($7 FROM clock_timestamp()) * $8)::text AS now, $1::jsonb::text AS canonical, r.caller_key, r.command, r.payload_hash, r.outcome FROM (VALUE",
+              "calls": 3000,
+              "meanMs": 0.023
+            },
+            {
+              "query": "SELECT set_config($3, $1, $4), set_config($5, $2, $6)",
+              "calls": 2999,
+              "meanMs": 0.008
+            },
+            {
+              "query": "WITH used AS ( SELECT $1 > floor(extract($27 FROM clock_timestamp()) * $28)::bigint + $2 AS live, EXISTS (SELECT $29 FROM actor_content_refs WHERE routing_key =",
+              "calls": 2626,
+              "meanMs": 0.353
+            },
+            {
+              "query": "WITH used AS ( SELECT $1 > floor(extract($27 FROM clock_timestamp()) * $28)::bigint + $2 AS live, EXISTS (SELECT $29 FROM actor_content_refs WHERE routing_key =",
+              "calls": 374,
+              "meanMs": 0.146
+            },
+            {
+              "query": "WITH intent_candidates AS ( SELECT o.routing_key, o.intent_id, o.actor_type, o.command FROM generate_series($1::int, $2::int) AS b(bucket) CROSS JOIN LATERAL ( ",
+              "calls": 11,
+              "meanMs": 0.559
+            },
+            {
+              "query": "COMMIT",
+              "calls": 1,
+              "meanMs": 0.001
+            },
+            {
+              "query": "SELECT key, value FROM actor_state WHERE routing_key = $1 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4",
+              "calls": 1,
+              "meanMs": 0.002
+            },
+            {
+              "query": "RELEASE SAVEPOINT $1",
+              "calls": 1,
+              "meanMs": 0.001
+            },
+            {
+              "query": "BEGIN",
+              "calls": 1,
+              "meanMs": 0.005
+            },
+            {
+              "query": "SAVEPOINT $1",
+              "calls": 1,
+              "meanMs": 0.001
+            },
+            {
+              "query": "UPDATE actor_generations SET generation = generation + $5 WHERE routing_key = $1 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4 RETURNING generation::",
+              "calls": 1,
+              "meanMs": 0.082
+            },
+            {
+              "query": "INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id) SELECT $1, $2, $3, $4 FROM (SELECT set_config($7, $5, $8), set_config($9, $6, $10))",
+              "calls": 1,
+              "meanMs": 0.269
+            }
+          ],
+          "activity": {
+            "samples": 423,
+            "connections": {
+              "idle:Client/ClientRead": 9.64,
+              "idle in transaction:Client/ClientRead": 0.3,
+              "active": 0.15,
+              "idle in transaction": 0.08,
+              "active:IO/WalSync": 0.06,
+              "idle": 0.04,
+              "active:Client/ClientRead": 0.03,
+              "idle in transaction:IO/WalSync": 0.01,
+              "active:IO/WalWrite": 0
+            },
+            "peakConnections": 11
+          },
+          "cpu": {
+            "client": 101.6,
+            "server": null,
+            "clientMsPerOperation": 3.684,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "read-4k",
+          "parameters": {
+            "size": 4096,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 576,
+          "throughput": 1736.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 0.573,
+            "min": 0.338,
+            "p50": 0.527,
+            "p90": 0.695,
+            "p95": 0.778,
+            "p99": 1.064,
+            "max": 13.291
+          },
+          "statementsPerOperation": 3,
+          "roundTripsPerOperation": 0,
+          "statements": [
+            {
+              "query": "SELECT chunk, bytes FROM tenant_content_chunks WHERE routing_key = $1 AND tenant_id = $2 AND hash = $3 ORDER BY chunk",
+              "calls": 1000,
+              "meanMs": 0.007
+            },
+            {
+              "query": "SELECT hash, size::float8 AS size FROM actor_content_refs WHERE routing_key = $1 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4 AND blob = $5 AND name",
+              "calls": 1000,
+              "meanMs": 0.005
+            },
+            {
+              "query": "SELECT event_sequence::text AS head, $9 AS key, $10::bytea AS value FROM actor_generations WHERE routing_key = $1 AND tenant_id = $2 AND actor_type = $3 AND act",
+              "calls": 1000,
+              "meanMs": 0.006
+            }
+          ],
+          "activity": {
+            "samples": 23,
+            "connections": {
+              "idle:Client/ClientRead": 10.7,
+              "idle": 0.22,
+              "active:Client/ClientRead": 0.09
+            },
+            "peakConnections": 11
+          },
+          "cpu": {
+            "client": 124.1,
+            "server": null,
+            "clientMsPerOperation": 0.715,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "read-1024k",
+          "parameters": {
+            "size": 1048576,
+            "workers": 1
+          },
+          "operations": 1000,
+          "elapsedMs": 3574,
+          "throughput": 279.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 3.57,
+            "min": 1.746,
+            "p50": 2.78,
+            "p90": 5.471,
+            "p95": 7.169,
+            "p99": 16.597,
+            "max": 30.058
+          },
+          "statementsPerOperation": 3,
+          "roundTripsPerOperation": 0,
+          "statements": [
+            {
+              "query": "SELECT chunk, bytes FROM tenant_content_chunks WHERE routing_key = $1 AND tenant_id = $2 AND hash = $3 ORDER BY chunk",
+              "calls": 1000,
+              "meanMs": 0.475
+            },
+            {
+              "query": "SELECT event_sequence::text AS head, $9 AS key, $10::bytea AS value FROM actor_generations WHERE routing_key = $1 AND tenant_id = $2 AND actor_type = $3 AND act",
+              "calls": 1000,
+              "meanMs": 0.018
+            },
+            {
+              "query": "SELECT hash, size::float8 AS size FROM actor_content_refs WHERE routing_key = $1 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4 AND blob = $5 AND name",
+              "calls": 1000,
+              "meanMs": 0.011
+            },
+            {
+              "query": "WITH intent_candidates AS ( SELECT o.routing_key, o.intent_id, o.actor_type, o.command FROM generate_series($1::int, $2::int) AS b(bucket) CROSS JOIN LATERAL ( ",
+              "calls": 3,
+              "meanMs": 0.671
+            }
+          ],
+          "activity": {
+            "samples": 129,
+            "connections": {
+              "idle:Client/ClientRead": 10.69,
+              "active": 0.2,
+              "idle": 0.1,
+              "active:Client/ClientRead": 0.01
+            },
+            "peakConnections": 11
+          },
+          "cpu": {
+            "client": 141.7,
+            "server": null,
+            "clientMsPerOperation": 5.065,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "sweep-1000",
+          "parameters": {
+            "candidates": 1000,
+            "referenced": 500,
+            "workers": 1
+          },
+          "operations": 1,
+          "elapsedMs": 18,
+          "throughput": 56,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1,
+            "mean": 17.786,
+            "min": 17.786,
+            "p50": 17.786,
+            "p90": 17.786,
+            "p95": 17.786,
+            "p99": 17.786,
+            "max": 17.786
+          },
+          "statementsPerOperation": 11,
+          "roundTripsPerOperation": 0,
+          "statements": [
+            {
+              "query": "SELECT (floor(extract($2 FROM clock_timestamp()) * $3)::bigint + $1)::text AS now",
+              "calls": 2,
+              "meanMs": 0.007
+            },
+            {
+              "query": "SELECT DISTINCT hash FROM actor_content_refs WHERE tenant_id = $1 AND hash = ANY(ARRAY[$2 /*, ... */]::text[])",
+              "calls": 2,
+              "meanMs": 0.3
+            },
+            {
+              "query": "SELECT hash, granted_until_ms::text AS granted_until_ms FROM tenant_contents WHERE routing_key = $1 AND tenant_id = $2 AND granted_until_ms < $3 AND (granted_un",
+              "calls": 2,
+              "meanMs": 0.255
+            },
+            {
+              "query": "WITH gone AS ( DELETE FROM tenant_contents WHERE routing_key = $1 AND tenant_id = $2 AND hash = ANY(ARRAY[$3 /*, ... */]::text[]) AND granted_until_ms < $4 RETU",
+              "calls": 1,
+              "meanMs": 1.377
+            },
+            {
+              "query": "SELECT COALESCE(max(turn_ms), $1)::float8 AS turn_ms FROM actor_content_types",
+              "calls": 1,
+              "meanMs": 0.013
+            },
+            {
+              "query": "WITH gone AS ( DELETE FROM tenant_contents WHERE routing_key = $1 AND tenant_id = $2 AND hash = ANY(ARRAY[$3 /*, ... */]::text[]) AND granted_until_ms < $4 RETU",
+              "calls": 1,
+              "meanMs": 1.375
+            },
+            {
+              "query": "SELECT hash, granted_until_ms::text AS granted_until_ms FROM tenant_contents WHERE routing_key = $1 AND tenant_id = $2 AND granted_until_ms < $3 AND (granted_un",
+              "calls": 1,
+              "meanMs": 1.166
+            },
+            {
+              "query": "SELECT routing_key::text AS routing_key, tenant_id FROM tenant_content_sweeps",
+              "calls": 1,
+              "meanMs": 0.009
+            }
+          ],
+          "activity": {
+            "samples": 1,
+            "connections": {
+              "idle:Client/ClientRead": 10,
+              "active": 1
+            },
+            "peakConnections": 11
+          },
+          "cpu": {
+            "client": 64.9,
+            "server": null,
+            "clientMsPerOperation": 11.726,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}

@@ -64,6 +64,7 @@ const inputStatus = (code: InvalidInput["code"]) => {
   switch (code) {
     case "unknown_route":
     case "unknown_event":
+    case "unknown_content":
       return 404
     case "too_large":
       return 413

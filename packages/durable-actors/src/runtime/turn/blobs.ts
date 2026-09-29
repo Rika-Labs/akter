@@ -1,7 +1,17 @@
-import { Effect, Option, Predicate } from "effect"
+import { Cause, Effect, Option, Predicate, Result, Schema, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import type { AnyBlob } from "../../members/blob.ts"
-import type { BlobAccess, BlobRead, BlobScope, BlobWrite } from "../../state/blob.ts"
+import { InvalidContentRef } from "../../errors/content.ts"
+import { ContentRef } from "../../identity/content.ts"
+import { type AnyBlob, isContent } from "../../members/blob.ts"
+import type {
+  BlobAccess,
+  BlobRead,
+  BlobScope,
+  BlobWrite,
+  ContentRead,
+  ContentWrite,
+} from "../../state/blob.ts"
+import type { ContentStoreImpl } from "../content/store.ts"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
 
 /** UTF-8 bytes of an entry name; the name shares a btree key with the ownership columns. */
@@ -13,13 +23,26 @@ export const MAX_NAME_BYTES = 512
  */
 export const MAX_ENTRY_BYTES = 8 * 1024 * 1024
 
+/** What content references need from the runtime: its store, the skew margin, and the clock offset. */
+export interface ContentBinding {
+  readonly store: ContentStoreImpl
+  readonly skewMs: number
+  readonly offset: () => number
+}
+
+const isContentRef = Schema.is(ContentRef)
+
 /**
  * Binds blob capabilities to the calling fiber's turn or query. Every row is
  * addressed by the trusted scope, so equal blob and entry names of two actors
  * or tenants never meet; writes run on the turn's connection, inside its
  * savepoint, and roll back with it.
  */
-export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: boolean) {
+export const bindBlobs = Effect.fnUntraced(function* (
+  scope: BlobScope,
+  write: boolean,
+  content: ContentBinding | undefined,
+) {
   const sql = yield* SqlClient.SqlClient
   const connection = yield* Effect.serviceOption(sql.transactionService)
 
@@ -36,36 +59,172 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
     new Error(`One actor's blobs hold at most ${scope.maxBytes} bytes (policy.maxBlobBytes)`),
   )
 
+  // Content references count against the entry cap with the actor's own entries.
+  const references = sql`(SELECT count(*) FROM actor_content_refs WHERE ${owner})`
+
   const tooManyEntries = Effect.die(
     new Error(`One actor's blobs hold at most ${scope.maxEntries} entries (policy.maxBlobEntries)`),
   )
 
-  const access: BlobAccess = (blob: AnyBlob) => {
-    // Checked per call, like owned rows, so a misuse is a defect of the turn.
-    const entry = Effect.fnUntraced(function* (name: string) {
-      yield* scope.guard
+  // Checked per call, like owned rows, so a misuse is a defect of the turn.
+  const declared = Effect.fnUntraced(function* (blob: AnyBlob) {
+    yield* scope.guard
 
-      if (!scope.blobs.includes(blob))
-        return yield* Effect.die(
-          new Error(`${String(blob?.name)} is not a declared blob of ${ref.actor}`),
-        )
-
-      // A lone surrogate would reach Postgres as U+FFFD and alias another name; NUL is rejected by Postgres.
-      if (
-        !Predicate.isString(name) ||
-        name.length === 0 ||
-        new TextEncoder().encode(name).byteLength > MAX_NAME_BYTES ||
-        !name.isWellFormed() ||
-        name.includes("\u0000")
+    if (!scope.blobs.includes(blob))
+      return yield* Effect.die(
+        new Error(`${String(blob?.name)} is not a declared blob of ${ref.actor}`),
       )
-        return yield* Effect.die(
-          new Error(
-            `Blob entry names are well-formed strings of 1-${MAX_NAME_BYTES} UTF-8 bytes without NUL`,
-          ),
-        )
+  })
 
-      return sql`${owner} AND blob = ${blob.name} AND name = ${name}`
-    })
+  const entry = Effect.fnUntraced(function* (blob: AnyBlob, name: string) {
+    yield* declared(blob)
+
+    // A lone surrogate would reach Postgres as U+FFFD and alias another name; NUL is rejected by Postgres.
+    if (
+      !Predicate.isString(name) ||
+      name.length === 0 ||
+      new TextEncoder().encode(name).byteLength > MAX_NAME_BYTES ||
+      !name.isWellFormed() ||
+      name.includes("\u0000")
+    )
+      return yield* Effect.die(
+        new Error(
+          `Blob entry names are well-formed strings of 1-${MAX_NAME_BYTES} UTF-8 bytes without NUL`,
+        ),
+      )
+
+    return sql`${owner} AND blob = ${blob.name} AND name = ${name}`
+  })
+
+  const run = <A, E>(effect: Effect.Effect<A, E>) =>
+    effect.pipe(
+      (bound) =>
+        Option.isSome(connection)
+          ? Effect.provideService(bound, sql.transactionService, connection.value)
+          : bound,
+      // The SqlError itself decides whether the turn retries or is a defect.
+      Effect.orDie,
+    )
+
+  const contentAccess = (blob: AnyBlob): ContentRead | ContentWrite => {
+    // Checked when used, so an actor type without content needs no content keys.
+    const bound = Effect.suspend(() =>
+      content === undefined
+        ? Effect.die(new Error("Content blobs need the runtime's content.keys"))
+        : Effect.succeed(content),
+    )
+
+    const list = run(
+      Effect.gen(function* () {
+        yield* declared(blob)
+
+        const rows = yield* sql<{ name: string; hash: string; size: number }>`
+            SELECT name, hash, size::float8 AS size FROM actor_content_refs
+            WHERE ${owner} AND blob = ${blob.name} ORDER BY name COLLATE "C"`
+
+        return rows.map(({ name, hash, size }) => ({ name, hash, size }))
+      }),
+    )
+
+    // The reference on this actor's shard; the bytes are read separately on the tenant's.
+    const resolve = (name: string) =>
+      run(
+        Effect.gen(function* () {
+          const where = yield* entry(blob, name)
+
+          const [found] = yield* sql<{ hash: string; size: number }>`
+            SELECT hash, size::float8 AS size FROM actor_content_refs WHERE ${where}`
+
+          return Option.fromUndefinedOr(found)
+        }),
+      )
+
+    // Off-turn contexts get no mutation methods, and turns get no bytes.
+    if (!write)
+      return {
+        get: (name) =>
+          Effect.gen(function* () {
+            const { store } = yield* bound
+            const found = yield* resolve(name)
+
+            if (Option.isNone(found)) return Option.none<Uint8Array>()
+
+            return yield* store
+              .read(ref.tenant, found.value.hash, found.value.size)
+              .pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
+          }),
+        stream: (name) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const { store } = yield* bound
+              const found = yield* resolve(name)
+
+              if (Option.isNone(found))
+                return Stream.fail(new Cause.NoSuchElementError(`No content entry ${name}`))
+
+              return store
+                .stream(ref.tenant, found.value.hash, found.value.size, scope.timeoutMs)
+                .pipe(Stream.provideService(SqlClient.SqlClient, sql))
+            }),
+          ),
+        list,
+      } satisfies ContentRead
+
+    return {
+      attach: (name, contentRef) =>
+        Effect.gen(function* () {
+          const { store, skewMs, offset } = yield* bound
+          const where = yield* run(entry(blob, name))
+
+          if (!isContentRef(contentRef))
+            return yield* InvalidContentRef.make({ reason: "malformed" })
+
+          // The MAC needs no read, so the turn stays on the actor's shard.
+          const verified = yield* store.verify(contentRef.grant, {
+            tenant: ref.tenant,
+            hash: contentRef.hash,
+            size: contentRef.size,
+          })
+
+          if (Result.isFailure(verified))
+            return yield* InvalidContentRef.make({ reason: verified.failure })
+
+          // The grant must outlive this shard's clock by the skew margin, so
+          // the tenant shard's sweep sees a horizon past this turn's commit.
+          const [checked] = yield* run(
+            sql<{ live: boolean; fits: boolean }>`WITH used AS (
+                SELECT ${verified.success} > floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
+                    + ${offset() + skewMs} AS live,
+                  EXISTS (SELECT 1 FROM actor_content_refs WHERE ${where}) AS present,
+                  (SELECT count(*) FROM actor_blobs WHERE ${owner} AND chunk = 0) + ${references} AS entries),
+              attached AS (
+                INSERT INTO actor_content_refs (routing_key, tenant_id, actor_type, actor_id, blob, name, hash, size)
+                SELECT ${routingKey}, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${blob.name}, ${name},
+                  ${contentRef.hash}, ${contentRef.size}
+                FROM used WHERE live AND (present OR entries < ${scope.maxEntries})
+                ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, blob, name)
+                DO UPDATE SET hash = EXCLUDED.hash, size = EXCLUDED.size)
+              SELECT live, present OR entries < ${scope.maxEntries} AS fits FROM used`,
+          )
+
+          if (!checked!.live) return yield* InvalidContentRef.make({ reason: "expired" })
+
+          if (!checked!.fits) return yield* tooManyEntries
+        }),
+      detach: (name) =>
+        run(
+          Effect.gen(function* () {
+            const where = yield* entry(blob, name)
+
+            yield* sql`DELETE FROM actor_content_refs WHERE ${where}`
+          }),
+        ),
+      list,
+    } satisfies ContentWrite
+  }
+
+  const access: BlobAccess = (blob: AnyBlob) => {
+    if (isContent(blob)) return contentAccess(blob)
 
     // A copy taken once, so later changes to the caller's buffer never reach the row.
     const copy = (bytes: Uint8Array) => {
@@ -77,21 +236,11 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
 
     const oversized = Effect.die(new Error(`A blob entry holds at most ${MAX_ENTRY_BYTES} bytes`))
 
-    const run = <A, E>(effect: Effect.Effect<A, E>) =>
-      effect.pipe(
-        (bound) =>
-          Option.isSome(connection)
-            ? Effect.provideService(bound, sql.transactionService, connection.value)
-            : bound,
-        // The SqlError itself decides whether the turn retries or is a defect.
-        Effect.orDie,
-      )
-
     const read: BlobRead = {
       get: (name) =>
         run(
           Effect.gen(function* () {
-            const where = yield* entry(name)
+            const where = yield* entry(blob, name)
 
             const [found] = yield* sql<{ bytes: Uint8Array | null }>`
               SELECT string_agg(bytes, ''::bytea ORDER BY chunk) AS bytes
@@ -114,7 +263,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
     // Read only after a write changed nothing, to name the quota it would pass.
     const usage = (where: Effect.Success<ReturnType<typeof entry>>) =>
       sql<{ entries: number; present: boolean; entry_bytes: number }>`
-        SELECT count(*) FILTER (WHERE chunk = 0)::float8 AS entries,
+        SELECT (count(*) FILTER (WHERE chunk = 0) + ${references})::float8 AS entries,
           COALESCE(bool_or(${where}), false) AS present,
           COALESCE(sum(octet_length(bytes)) FILTER (WHERE ${where}), 0)::float8 AS entry_bytes
         FROM actor_blobs WHERE ${owner}`.pipe(Effect.map(([row]) => row!))
@@ -129,7 +278,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
       set: (name, bytes) =>
         run(
           Effect.gen(function* () {
-            const where = yield* entry(name)
+            const where = yield* entry(blob, name)
             const copied = yield* copy(bytes)
 
             // Chunk 0 always heads an entry, so a set overwrites it and drops the
@@ -137,7 +286,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
             // it the statement changes nothing, so a caught defect leaves the entry whole.
             const written = yield* sql`WITH used AS (
                 SELECT COALESCE(sum(octet_length(bytes)) FILTER (WHERE NOT (${where})), 0) AS other,
-                  count(*) FILTER (WHERE chunk = 0) AS entries,
+                  count(*) FILTER (WHERE chunk = 0) + ${references} AS entries,
                   COALESCE(bool_or(${where}), false) AS present
                 FROM actor_blobs WHERE ${owner}),
               fits AS (
@@ -157,7 +306,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
       append: (name, bytes) =>
         run(
           Effect.gen(function* () {
-            const where = yield* entry(name)
+            const where = yield* entry(blob, name)
             const copied = yield* copy(bytes)
 
             // Turns of one actor are serialized by its generation lock, so the next
@@ -168,7 +317,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
               FROM (SELECT chunk, bytes, (${where}) AS entry FROM actor_blobs WHERE ${owner}) AS owned
               HAVING COALESCE(sum(octet_length(bytes)) FILTER (WHERE entry), 0) + ${copied.byteLength} <= ${MAX_ENTRY_BYTES}
                 AND COALESCE(sum(octet_length(bytes)), 0) + ${copied.byteLength} <= ${scope.maxBytes}
-                AND (bool_or(entry) OR count(*) FILTER (WHERE chunk = 0) < ${scope.maxEntries})
+                AND (bool_or(entry) OR count(*) FILTER (WHERE chunk = 0) + ${references} < ${scope.maxEntries})
               RETURNING chunk`
 
             if (inserted.length === 0) {
@@ -183,7 +332,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
       compact: (name) =>
         run(
           Effect.gen(function* () {
-            const where = yield* entry(name)
+            const where = yield* entry(blob, name)
 
             yield* sql`WITH merged AS (
                 DELETE FROM actor_blobs WHERE ${where} AND chunk > 0 RETURNING chunk, bytes)
@@ -195,7 +344,7 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
       delete: (name) =>
         run(
           Effect.gen(function* () {
-            const where = yield* entry(name)
+            const where = yield* entry(blob, name)
 
             yield* sql`DELETE FROM actor_blobs WHERE ${where}`
           }),

@@ -52,6 +52,7 @@ export const tablesDdl = [
 	CONSTRAINT "conformance_notes_routing_key_tenant_id_actor_id_body_unique" UNIQUE("routing_key","tenant_id","actor_id","body")
 );
 `,
+  `ALTER TABLE "conformance_notes" ENABLE ROW LEVEL SECURITY;`,
   `CREATE TABLE "conformance_labels" (
 	"routing_key" bigint,
 	"tenant_id" text,
@@ -62,7 +63,10 @@ export const tablesDdl = [
 	CONSTRAINT "conformance_labels_pkey" PRIMARY KEY("routing_key","tenant_id","actor_id","id")
 );
 `,
+  `ALTER TABLE "conformance_labels" ENABLE ROW LEVEL SECURITY;`,
   `CREATE INDEX "conformance_notes_rank" ON "conformance_notes" ("routing_key","tenant_id","actor_id","rank");`,
+  `CREATE POLICY "durable_tenant" ON "conformance_notes" AS PERMISSIVE FOR ALL TO public USING (tenant_id = current_setting('durable.tenant', true)) WITH CHECK (tenant_id = current_setting('durable.tenant', true));`,
+  `CREATE POLICY "durable_tenant" ON "conformance_labels" AS PERMISSIVE FOR ALL TO public USING (tenant_id = current_setting('durable.tenant', true)) WITH CHECK (tenant_id = current_setting('durable.tenant', true));`,
 ]
 
 export interface TablesFixture {

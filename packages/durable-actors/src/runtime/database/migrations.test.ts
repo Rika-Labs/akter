@@ -114,4 +114,51 @@ describe("migrations with Postgres", () => {
         }),
       ),
     ))
+
+  it("records a parent type exactly for parent placement", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
+          const name = `migrations_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+
+          const admin = yield* Effect.acquireRelease(
+            Effect.sync(() => new Pool({ connectionString: database.href })),
+            (pool) => Effect.promise(() => pool.end()),
+          )
+
+          yield* Effect.acquireRelease(
+            Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
+            () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
+          )
+          database.pathname = `/${name}`
+
+          const client = yield* Layer.build(
+            Database.postgres({ url: Redacted.make(database.href) }),
+          )
+
+          const migrate = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+            Effect.provide(effect, client)
+
+          yield* migrate(migrator(migrations))
+
+          const insert = (placement: string, parent: string | null) =>
+            migrate(
+              Effect.flatMap(
+                SqlClient.SqlClient,
+                (
+                  sql,
+                ) => sql`INSERT INTO actor_placements (actor_type, placement, encoding, parent_type)
+                  VALUES (${`T${placement}${parent ?? ""}`}, ${placement}, 1, ${parent})`,
+              ),
+            ).pipe(Effect.exit)
+
+          expect(Exit.isSuccess(yield* insert("actor", null))).toBe(true)
+          expect(Exit.isSuccess(yield* insert("parent", "Tactor"))).toBe(true)
+          expect(Exit.isFailure(yield* insert("parent", null))).toBe(true)
+          expect(Exit.isFailure(yield* insert("actor", "Order"))).toBe(true)
+          expect(Exit.isFailure(yield* insert("region", null))).toBe(true)
+        }),
+      ),
+    ))
 })

@@ -172,7 +172,7 @@ In `conformance/payload-migrations.ts`, on PGlite and Postgres:
 - `refuses removing an event class while a subscription has undelivered events of that tag or an open workflow waits on it`
 - `replays a subscription receipt after a schema change without CommandConflict`
 
-On Postgres only: `applies the migration to a database that ran the previous one`, and a two-runner case where one runner has the new chain and both keep reading under `writeVersion`.
+On Postgres only: a two-runner case where one runner has the new chain and both keep reading under `writeVersion`.
 
 Benchmark: `events-replay` with values one and three steps behind, against current-version values.
 

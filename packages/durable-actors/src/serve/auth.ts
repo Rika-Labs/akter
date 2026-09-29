@@ -60,6 +60,14 @@ export interface AuthProvider<R = never> {
   readonly authenticate: (
     request: AuthRequest,
   ) => Effect.Effect<Authenticated, Unauthorized | ActorUnavailable, R>
+  /**
+   * Rereads the provider's verification keys at once, for a request that
+   * proves it comes from the key issuer. A provider that has one is served
+   * a refresh route beside the protocol routes.
+   */
+  readonly refreshKeys?: (
+    request: AuthRequest,
+  ) => Effect.Effect<void, Unauthorized | ActorUnavailable, R>
 }
 
 export const unauthorized = (code: Unauthorized["code"]) => Unauthorized.make({ code })
