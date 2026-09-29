@@ -6,6 +6,11 @@ import type { EdgeOptions } from "../config.ts"
  * The ready runners of a deployment in a region, in the order to try them:
  * rotated on every call, so requests spread across the pool. The edge holds
  * no shard map; any runner routes to the owner through the cluster.
+ *
+ * Forwarding keeps the client's path as it is: a deployment's host serves the
+ * same routes as its runners, base path included, and the assertion binds that
+ * path. `base_path` is only where the edge pushes key-set refreshes, which no
+ * client request names.
  */
 export const runners = Effect.fnUntraced(function* (options: EdgeOptions) {
   const sql = yield* SqlClient.SqlClient
