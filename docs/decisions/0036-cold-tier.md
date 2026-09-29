@@ -1,6 +1,6 @@
 # ADR 0036: The cold tier
 
-**Status:** proposed (2026-09-28). Design only: nothing is built until hosted usage asks for it (slice L.2).
+**Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). Design only: nothing is built until hosted usage asks for it (slice L.2).
 
 **Responsibility:** decide how the state and blobs of long-idle actors move to object storage and come back, crash-safely, without adding cost to warm turns.
 
@@ -93,7 +93,7 @@ A cold object keeps the state `$version` it was written with. Its actor type's s
 
 ## Amendments when L.2 is scheduled
 
-This ADR is docs only. These amendments are listed for when it is accepted and built.
+This ADR is docs only. At acceptance only the support-matrix row, the ledger's deferred row, and contract 06's pointer to this design landed; the rest land when L.2 is scheduled and built.
 
 **Contracts.**
 
@@ -121,14 +121,16 @@ This ADR is docs only. These amendments are listed for when it is accepted and b
 
 None now. L.2 needs one framework migration: `cold_ref`, `cold_digest`, and the cold state version on `actor_generations`; `'cold'` added to the `actor_outbox.kind` check (today `intent` or `effect`, from `0008_effects`), with the check that ties `kind = 'cold'` to `command = '$cold'` and `timer_key = '$cold'` (§3); and the object garbage table. No column becomes nullable. It is numbered when L.2 is scheduled, above whatever has merged by then.
 
-## Open questions for Dallen, with recommended defaults
+## Decided questions
 
-1. **Where the pointer lives.** Recommended default: `cold_ref` on `actor_generations`, with state and blob rows deleted. Alternative: ADR 0011's null `value` with `cold_ref` on each state row.
-2. **How idle actors are found.** Recommended default: a `$cold` timer staged at hibernation and deleted on wake. Alternative: a periodic, rate-limited scan by bucket, which is simpler but costs what is stored.
-3. **Queries on cold actors.** Recommended default: read-through without rehydrating. Alternatives: rehydrate on query, which makes queries write; or fail with `ActorUnavailable`.
-4. **What moves.** Recommended default: state and actor blobs together. Alternative: state only, leaving blobs hot.
-5. **Encryption.** Recommended default: the object store's server-side encryption with one key per deployment. Alternative: one key per tenant, which makes deleting a tenant's data cheap (crypto-shredding) and costs key management.
-6. **Defaults.** Recommended default: off unless `coldStorage` is configured; when configured, `coldAfter` is 30 days, as ADR 0011 set. Alternative: a shorter hosted default after the L.2 cost model.
+Dallen accepted every recommended default on 2026-09-28.
+
+1. **Where the pointer lives.** Decided: `cold_ref` on `actor_generations`, with state and blob rows deleted. Rejected alternative: ADR 0011's null `value` with `cold_ref` on each state row.
+2. **How idle actors are found.** Decided: a `$cold` timer staged at hibernation and deleted on wake. Rejected alternative: a periodic, rate-limited scan by bucket, which is simpler but costs what is stored.
+3. **Queries on cold actors.** Decided: read-through without rehydrating. Rejected alternatives: rehydrate on query, which makes queries write; or fail with `ActorUnavailable`.
+4. **What moves.** Decided: state and actor blobs together. Rejected alternative: state only, leaving blobs hot.
+5. **Encryption.** Decided: the object store's server-side encryption with one key per deployment. Rejected alternative: one key per tenant, which makes deleting a tenant's data cheap (crypto-shredding) and costs key management.
+6. **Defaults.** Decided: off unless `coldStorage` is configured; when configured, `coldAfter` is 30 days, as ADR 0011 set. Rejected alternative: a shorter hosted default after the L.2 cost model.
 
 ## Evidence required when L.2 is built
 

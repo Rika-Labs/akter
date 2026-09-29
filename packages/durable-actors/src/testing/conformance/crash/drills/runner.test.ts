@@ -43,6 +43,7 @@ interface Done {
   readonly started: number
   readonly latency: number
   readonly ids: ReadonlyArray<string>
+  readonly shards: ReadonlyArray<string>
 }
 
 interface Process {
@@ -87,7 +88,10 @@ describe("runner and relay process death with Postgres", () => {
 
           const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
-          const spawn = Effect.fnUntraced(function* (operations: number, blockRelay: boolean) {
+          const spawn = Effect.fnUntraced(function* (
+            operations: number,
+            options: { readonly blockRelay?: boolean; readonly holdAt?: number } = {},
+          ) {
             const process: Process = {
               done: [],
               ready: false,
@@ -95,15 +99,20 @@ describe("runner and relay process death with Postgres", () => {
               finished: false,
             }
 
+            const port = yield* freePort
+
             const child = yield* spawner.spawn(
               ChildProcess.make("bun", [new URL("./runner.ts", import.meta.url).pathname], {
                 env: {
                   DRILL_DATABASE_URL: database.href,
-                  DRILL_PORT: String(yield* freePort),
+                  DRILL_PORT: String(port),
                   DRILL_OPERATIONS: String(operations),
-                  DRILL_BLOCK_RELAY: String(blockRelay),
+                  DRILL_BLOCK_RELAY: String(options.blockRelay ?? false),
+                  DRILL_HOLD_AT: String(options.holdAt ?? operations),
                 },
                 extendEnv: true,
+                // Kept open so the parent can send more than one signal.
+                stdin: { stream: "pipe", endOnDone: false },
                 stderr: "inherit",
               }),
             )
@@ -113,7 +122,16 @@ describe("runner and relay process death with Postgres", () => {
               Stream.splitLines,
               Stream.runForEach((line) =>
                 Effect.sync(() => {
-                  const [tag, index, started, latency, incrementId, sendId] = line.split(" ")
+                  const [
+                    tag,
+                    index,
+                    started,
+                    latency,
+                    incrementId,
+                    sendId,
+                    counterShard,
+                    senderShard,
+                  ] = line.split(" ")
 
                   if (tag === "READY") process.ready = true
 
@@ -127,13 +145,17 @@ describe("runner and relay process death with Postgres", () => {
                       started: Number(started),
                       latency: Number(latency),
                       ids: [incrementId!, sendId!],
+                      shards: [counterShard!, senderShard!],
                     })
                 }),
               ),
               Effect.forkScoped,
             )
 
-            return { child, process }
+            const send = (line: string) =>
+              Stream.run(Stream.make(new TextEncoder().encode(`${line}\n`)), child.stdin)
+
+            return { child, process, port, start: send("GO"), resume: send("RESUME") }
           })
 
           const until = (condition: () => boolean, what: string, within: Duration.Input) =>
@@ -154,24 +176,40 @@ describe("runner and relay process death with Postgres", () => {
           })
 
           // Concurrent first migrations race on a fresh database, so one runner migrates first.
-          const first = yield* spawn(OPERATIONS, false)
+          // The first runner holds halfway until the kill, so it is always
+          // still under load when a peer dies, however fast it runs.
+          const first = yield* spawn(OPERATIONS, { holdAt: OPERATIONS / 2 })
           yield* until(() => first.process.ready, "the migrating runner", "30 seconds")
-          const second = yield* spawn(OPERATIONS, false)
-          const third = yield* spawn(OPERATIONS, true)
+          const second = yield* spawn(OPERATIONS)
+          const third = yield* spawn(OPERATIONS, { blockRelay: true })
           yield* until(
             () => [first, second, third].every(({ process }) => process.ready),
             "three runners",
             "30 seconds",
           )
+          yield* Effect.forEach([first, second, third], ({ start }) => start, { discard: true })
 
           yield* until(() => second.process.done.length >= 30, "r1 under load", "60 seconds")
+
+          // Read while its locks are still live: the shards the kill takes out of reach.
+          const dead = new Set(
+            (yield* query<{ shard_id: string }>(
+              `SELECT shard_id FROM cluster_locks WHERE address = '127.0.0.1:${second.port}'`,
+            )).map(({ shard_id }) => shard_id),
+          )
+
+          expect(dead.size > 0).toBe(true)
           const killedAt = yield* Clock.currentTimeMillis
+          // The kill lands under load only while the first runner still has work.
+          expect(first.process.finished).toBe(false)
           yield* killed(second.child)
+          yield* first.resume
           yield* until(() => third.process.claimed, "r2's relay claim", "60 seconds")
           yield* killed(third.child)
 
-          const fourth = yield* spawn(REPLACEMENT_OPERATIONS, false)
-          const fifth = yield* spawn(REPLACEMENT_OPERATIONS, false)
+          const fourth = yield* spawn(REPLACEMENT_OPERATIONS)
+          const fifth = yield* spawn(REPLACEMENT_OPERATIONS)
+          yield* Effect.forEach([fourth, fifth], ({ start }) => start, { discard: true })
           const survivors = [first, fourth, fifth]
           yield* until(
             () => survivors.every(({ process }) => process.finished),
@@ -230,11 +268,23 @@ describe("runner and relay process death with Postgres", () => {
           expect(of("Add")).toBe(of("Send"))
           expect(yield* total("DrillReceiver")).toBe(of("Send"))
 
-          // The slowest command a survivor started after the kill waited for
-          // the killed runner's shards; its commit marks their takeover.
-          const stalled = first.process.done
-            .filter(({ started }) => started >= killedAt)
-            .reduce((slowest, done) => (done.latency > slowest.latency ? done : slowest))
+          // Measured on the first runner, warm and serving throughout, over its
+          // commands started after the kill that went to one of the killed
+          // runner's shards: the slowest waited for the takeover, and its
+          // commit marks those shards serving again. The hold leaves it half
+          // its operations after the kill.
+          const afterKill = first.process.done.filter(({ started }) => started >= killedAt)
+          expect(afterKill.length >= OPERATIONS / 2).toBe(true)
+
+          const routedToDead = afterKill.filter(({ shards }) =>
+            shards.some((shard) => dead.has(shard)),
+          )
+
+          expect(routedToDead.length > 0).toBe(true)
+
+          const stalled = routedToDead.reduce((slowest, done) =>
+            done.latency > slowest.latency ? done : slowest,
+          )
 
           const recovery = stalled.started + stalled.latency - killedAt
 
