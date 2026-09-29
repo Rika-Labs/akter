@@ -125,8 +125,8 @@ describe("durable defects list", () => {
 
       const browse = (origin: string) =>
         web.handler(
-          new Request("http://runner/defects", {
-            headers: { authorization: "Bearer plant", origin },
+          new Request("http://runner/operator/defects?tenant=plant", {
+            headers: { authorization: "Bearer plant-token", origin },
           }),
         )
 
@@ -136,7 +136,9 @@ describe("durable defects list", () => {
 
       const plain = yield* Effect.promise(() =>
         web.handler(
-          new Request("http://runner/defects", { headers: { authorization: "Bearer plant" } }),
+          new Request("http://runner/operator/defects?tenant=plant", {
+            headers: { authorization: "Bearer plant-token" },
+          }),
         ),
       )
 

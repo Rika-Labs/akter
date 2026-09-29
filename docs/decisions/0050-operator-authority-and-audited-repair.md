@@ -31,6 +31,7 @@ ADR 0003 requires "separate action- and resource-scoped capabilities and audited
   | `defects.read`         | the runner's defect spans ([ADR 0049](0049-observability-names-metrics-and-defect-spans.md) section 3)       |
   | `dead-letters.retry`   | performing a dead-lettered effect again, as a new effect                                                     |
   | `dead-letters.discard` | deleting a dead letter                                                                                       |
+  | `subscriptions.skip`   | skipping a stuck subscription row's events through a cursor, scoped to the source actor                      |
   | `audit.read`           | reading the operator audit log                                                                               |
 
 - **Providers.** `OperatorAuth.make(authenticate)` wraps a function from the request to a grant or `Unauthorized`, for an identity provider or signed operator assertions. `OperatorAuth.tokens([{ token, grant }])` checks a bearer token against configured `Redacted` tokens by SHA-256 digest, comparing every configured digest in full, for a small deployment and the CLI.
@@ -51,15 +52,24 @@ ADR 0003 requires "separate action- and resource-scoped capabilities and audited
 - **Discard deletes the dead letter** and records its effect, attempts, `ambiguous`, and cause in the audit row, never its payload.
 - **A dead letter is repaired at most once.** Both actions delete the row they lock, so a second request finds nothing and fails `NotFound`.
 
+### 3a. A stuck subscription row is skipped by an operator, never automatically
+
+[ADR 0026](0026-cross-actor-event-subscriptions.md) question 6 leaves a poison delivery blocking its row, retried with capped backoff, until a person decides to skip it. `POST /operator/subscriptions/skip` with `{ tenant, sourceType, sourceId, subscriberType, subscription, subscriberId, through, reason }` needs `subscriptions.skip` covering the tenant and the _source_ actor.
+
+- **Only a failing row is skipped.** The row must be active, hold a `last_error`, and have `delivered` below `through`, which must be at most the source's head cursor. Otherwise the request fails `NotFound` and changes nothing.
+- **The skip and its audit row commit in one transaction,** on the source's shard, and the audit outcome records the cursor delivered before, `through`, and the `last_error` it cleared.
+- **The row moves on with a marker.** It resets `attempts` and `last_error`, becomes due at once, and records the skipped range as a gap; the relay's existing gap delivery sends the subscriber a `RetentionGap` for `(delivered, through]` before the events after `through`. An id-routed subscription has no recipient for a marker and counts the gap on the row, as it does for pruning. A delivery that held the claim loses its fence and settles nothing.
+- **CLI.** `durable subscriptions skip --source Order/o1 --subscriber Follower/f1 --subscription FollowedOrders --through 42 --url <runner> --tenant <t> --reason "…"`. `durable subscriptions list --lagging` is not built.
+
 ### 4. Receipts are read without re-execution
 
 `GET /operator/receipts/:type/:id/:commandId?tenant=` reads the stored receipt in a read-only transaction and returns its command, outcome tag, decoded value or declared error, and expiry. It never admits a command, never runs a handler, and never writes a receipt. It needs `receipts.read` covering the tenant, actor, and command id.
 
 ### 5. `durable inspect` and the operator routes
 
-- **`Operators.serve({ auth, basePath? })`** adds routes to the application's `HttpRouter` (default prefix `/operator`): `GET /actors/:type/:id?tenant&limit`, `GET /receipts/:type/:id/:commandId?tenant`, `GET /defects?tenant&actor&sinceMs&limit`, `POST /dead-letters/:effectId/retry` and `/discard` with `{ tenant, actorType, actorId, reason, providerChecked? }`, and `GET /audit?tenant&limit`. `tenant` may be `*` for `defects` and `audit`, which then needs a capability for every tenant. A browser request from another origin is refused before authentication, as the inspector's are. Failures answer 401 (not authenticated), 403 (`Unauthorized` `access_denied`), 404, 409 (`ProviderOutcomeUnknown`), or 503 (`EffectNotServed`). Serve them on an operator listener.
+- **`Operators.serve({ auth, basePath? })`** adds routes to the application's `HttpRouter` (default prefix `/operator`): `GET /actors/:type/:id?tenant&limit`, `GET /receipts/:type/:id/:commandId?tenant`, `GET /defects?tenant&actor&sinceMs&limit`, `POST /dead-letters/:effectId/retry` and `/discard` with `{ tenant, actorType, actorId, reason, providerChecked? }`, `POST /subscriptions/skip`, and `GET /audit?tenant&limit`. `tenant` may be `*` for `defects` and `audit`, which then needs a capability for every tenant. A browser request from another origin is refused before authentication, as the inspector's are. Failures answer 401 (not authenticated), 403 (`Unauthorized` `access_denied`), 404, 409 (`ProviderOutcomeUnknown`), or 503 (`EffectNotServed`). Serve them on an operator listener.
 - **`Telemetry.serve({ basePath? })` keeps only `GET /metrics`;** `GET /defects` moves to `Operators.serve` under `defects.read`, amending ADR 0049 section 3.
-- **CLI.** `durable inspect Room/r1 --url <runner> --tenant <t> [--receipts 5] [--json]`; `durable receipts show Room/r1 <commandId> …`; `durable dead-letters retry <effectId> --actor Room/r1 --reason "…" [--provider-checked] …`; `durable dead-letters discard <effectId> --actor Room/r1 --reason "…" …`; and `durable defects list` now uses the operator token. Each reads the bearer token from `DURABLE_OPERATOR_TOKEN` (`--token-env` overrides).
+- **CLI.** `durable inspect Room/r1 --url <runner> --tenant <t> [--receipts 5] [--json]`; `durable receipts show Room/r1 <commandId> …`; `durable dead-letters retry <effectId> --actor Room/r1 --reason "…" [--provider-checked] …`; `durable dead-letters discard <effectId> --actor Room/r1 --reason "…" …`; `durable subscriptions skip …`; and `durable defects list` now uses the operator token. Each reads the bearer token from `DURABLE_OPERATOR_TOKEN` (`--token-env` overrides).
 
 ## Alternatives rejected
 
@@ -73,7 +83,7 @@ ADR 0003 requires "separate action- and resource-scoped capabilities and audited
 - `@durable-actors/core/runtime` exports `Operators.serve`, `OperatorAuth.make` and `.tokens`, and the `OperatorGrant`, `Capability`, `OperatorAction`, and `AuditRecord` schemas.
 - `durable-actors.effect.dead_letters` is unchanged; retried and discarded dead letters are visible in `durable.operator_audit`.
 - The inspector's "Retrying a dead letter waits for audited repair" note points to `durable dead-letters retry`.
-- Subscription skip (ADR 0026 question 6) belongs to M4.6 and is not in this slice's commit; it lands as one more action on the same audit, with the same reason and capability rules.
+- Subscription skip (ADR 0026 question 6) is the `subscriptions.skip` action, audited like a repair.
 
 ## Verification
 
@@ -95,5 +105,5 @@ ADR 0003 requires "separate action- and resource-scoped capabilities and audited
 ## Revisit when
 
 - Operators need time-bound or approval-gated grants (two-person repair).
-- Subscription skip or tenant moves join the operator actions.
+- Tenant moves join the operator actions.
 - Operators ask for a runtime-enforced audit retention policy; until then the runtime never prunes audit rows.

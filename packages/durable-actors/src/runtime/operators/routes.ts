@@ -58,6 +58,17 @@ const DiscardBody = Schema.Struct({
   reason: Reason,
 })
 
+const SkipBody = Schema.Struct({
+  tenant: Tenant,
+  sourceType: Schema.NonEmptyString,
+  sourceId: Schema.NonEmptyString,
+  subscriberType: Schema.NonEmptyString,
+  subscription: Schema.NonEmptyString,
+  subscriberId: Schema.NonEmptyString,
+  through: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,17}$/)),
+  reason: Reason,
+})
+
 const RetryBody = Schema.Struct({
   ...DiscardBody.fields,
   providerChecked: Schema.optional(Schema.Boolean),
@@ -102,6 +113,7 @@ const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>)
  * - `GET /defects?tenant&actor&sinceMs&limit`: `defects.read`; `tenant` may be `*`.
  * - `POST /dead-letters/:effectId/retry` `{ tenant, actorType, actorId, reason, providerChecked? }`: `dead-letters.retry`.
  * - `POST /dead-letters/:effectId/discard` `{ tenant, actorType, actorId, reason }`: `dead-letters.discard`.
+ * - `POST /subscriptions/skip` `{ tenant, sourceType, sourceId, subscriberType, subscription, subscriberId, through, reason }`: `subscriptions.skip`, scoped to the source actor.
  * - `GET /audit?tenant&limit`: `audit.read`; `tenant` may be `*`.
  */
 const serve = <R = never>(options: OperatorsOptions<R>) =>
@@ -294,6 +306,39 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
         runtime
           .discard({ target: target(body), effectId, audit })
           .pipe(Effect.as({ discarded: effectId })),
+      )
+
+      yield* route("POST", "/subscriptions/skip", (_request, grant) =>
+        Effect.gen(function* () {
+          const body = yield* HttpServerRequest.schemaBodyJson(SkipBody).pipe(
+            Effect.catchTag("HttpServerError", () => Effect.fail(invalidInput("decode"))),
+          )
+
+          const entry = yield* authorize(
+            grant,
+            "subscriptions.skip",
+            { tenant: body.tenant, actorType: body.sourceType, actorId: body.sourceId },
+            `${body.subscriberType}.${body.subscription}/${body.subscriberId}`,
+          )
+
+          return yield* runtime
+            .skip({
+              target: {
+                tenant: body.tenant,
+                actorType: body.sourceType,
+                actorId: body.sourceId,
+              },
+              subscriberType: body.subscriberType,
+              subscription: body.subscription,
+              subscriberId: body.subscriberId,
+              through: body.through,
+              audit: { ...entry, reason: body.reason },
+            })
+            .pipe(
+              Effect.map((result) => HttpServerResponse.jsonUnsafe(result)),
+              Effect.catch((error) => Effect.succeed(repairResponse(error))),
+            )
+        }),
       )
 
       yield* route("GET", "/audit", (_request, grant) =>

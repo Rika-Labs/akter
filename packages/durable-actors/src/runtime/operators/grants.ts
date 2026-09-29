@@ -7,6 +7,7 @@ export const OperatorAction = Schema.Literals([
   "defects.read",
   "dead-letters.retry",
   "dead-letters.discard",
+  "subscriptions.skip",
   "audit.read",
 ])
 

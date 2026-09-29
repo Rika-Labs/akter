@@ -83,6 +83,18 @@ export class OperatorRuntime extends Context.Service<
       readonly effectId: string
       readonly audit: AuditEntry
     }) => Effect.Effect<void, RepairError>
+    /**
+     * Skips a stuck subscription row's events through `through`: the row
+     * moves past them, and its subscriber is sent a marker for the range.
+     */
+    readonly skip: (request: {
+      readonly target: ActorTarget
+      readonly subscriberType: string
+      readonly subscription: string
+      readonly subscriberId: string
+      readonly through: string
+      readonly audit: AuditEntry
+    }) => Effect.Effect<{ readonly through: string }, RepairError>
     /** A tenant's newest audit rows, or every tenant's for `"*"`. */
     readonly audit: (page: {
       readonly tenant: string
@@ -224,7 +236,6 @@ export const operatorRuntime = (deps: {
       ),
     retry: ({ target, effectId, providerChecked, audit }) =>
       Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
         const key = yield* keyOf(target)
 
         const ref = ActorRef.make({
@@ -293,7 +304,6 @@ export const operatorRuntime = (deps: {
       }).pipe(provided),
     discard: ({ target, effectId, audit }) =>
       Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
         const key = yield* keyOf(target)
 
         yield* transacted(target.tenant)(
@@ -314,6 +324,54 @@ export const operatorRuntime = (deps: {
             })
           }),
         )
+      }).pipe(provided),
+    skip: ({ target, subscriberType, subscription, subscriberId, through, audit }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
+        const key = yield* keyOf(target)
+
+        yield* transacted(target.tenant)(
+          Effect.gen(function* () {
+            const now = yield* databaseTime
+
+            const [skipped] = yield* sql<{ delivered: string; lastError: string }>`
+              UPDATE actor_subscriptions s
+              SET gap_at_ms = ${now}, gap_through = ${BigInt(through)}, attempts = 0,
+                last_error = NULL, due_at_ms = ${now}
+              FROM (SELECT delivered, last_error FROM actor_subscriptions
+                WHERE routing_key = ${key} AND tenant_id = ${target.tenant}
+                  AND source_type = ${target.actorType} AND source_id = ${target.actorId}
+                  AND subscriber_type = ${subscriberType} AND subscription = ${subscription}
+                  AND subscriber_id = ${subscriberId}
+                  AND active AND last_error IS NOT NULL AND delivered < ${BigInt(through)}
+                FOR UPDATE) old
+              WHERE s.routing_key = ${key} AND s.tenant_id = ${target.tenant}
+                AND s.source_type = ${target.actorType} AND s.source_id = ${target.actorId}
+                AND s.subscriber_type = ${subscriberType} AND s.subscription = ${subscription}
+                AND s.subscriber_id = ${subscriberId}
+                AND ${BigInt(through)} <= (SELECT g.event_sequence FROM actor_generations g
+                  WHERE g.routing_key = ${key} AND g.tenant_id = ${target.tenant}
+                    AND g.actor_type = ${target.actorType} AND g.actor_id = ${target.actorId})
+              RETURNING old.delivered::text AS delivered, old.last_error AS "lastError"`
+
+            if (skipped === undefined) return yield* OperatorNotFound.make({})
+
+            yield* writeAudit({
+              entry: audit,
+              key,
+              outcome: {
+                subscriber: `${subscriberType}.${subscription}/${subscriberId}`,
+                after: skipped.delivered,
+                through,
+                lastError: skipped.lastError,
+              },
+            })
+          }),
+        )
+
+        yield* deps.wake
+
+        return { through }
       }).pipe(provided),
     audit: (page) => readOnly(page.tenant)(listAudit(page)).pipe(provided, Effect.orDie),
     record: (entry, outcome) =>
