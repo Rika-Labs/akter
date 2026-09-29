@@ -58,6 +58,6 @@
     "owned-rows/read-one": 0,
     "owned-rows/read-page-20": 0,
     "effect-round-trip/sequential": 4,
-    "effect-round-trip/concurrent-64": 4
+    "effect-round-trip/concurrent-64": 3.8
   }
 }
