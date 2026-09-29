@@ -610,7 +610,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
 
           // The transaction every inspector read runs in refuses writes.
           const write = rejection(
-            yield* Queries.readOnly(sql`DELETE FROM actor_receipts`).pipe(Effect.exit),
+            yield* Queries.readOnly(test.tenant)(sql`DELETE FROM actor_receipts`).pipe(Effect.exit),
           )
 
           expect(/read-only transaction/.test(write)).toBe(true)

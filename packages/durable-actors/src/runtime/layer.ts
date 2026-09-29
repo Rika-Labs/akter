@@ -51,6 +51,7 @@ import {
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
+import { checkRowLevelSecurity, TenantScope, withTenant } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
@@ -90,6 +91,7 @@ import { bindBlobs } from "./turn/blobs.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import { checkReceipt } from "./turn/receipt.ts"
+import { type Readiness, RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 
 export interface Options {
   readonly authorize: (request: {
@@ -154,6 +156,19 @@ export interface Options {
      */
     readonly cancelCheck?: Duration.Input
   }
+  /**
+   * Opt-in row-level security. Command turns and queries run as `role` with
+   * the `durable.tenant` setting of the actor they serve, so the
+   * `durable_tenant` policies admit no other tenant's rows. The role must not
+   * be a superuser or bypass row-level security, this login must be able to
+   * `SET ROLE` to it, it must read and write every framework and owned table,
+   * and it must own every `durable` inspection view; the runtime refuses to
+   * start otherwise. Framework work that spans tenants, such as the relay,
+   * executors, and retention, keeps the connecting role, which the policies exempt.
+   */
+  readonly rowLevelSecurity?: {
+    readonly role: string
+  }
 }
 
 const Count = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000 }))
@@ -210,6 +225,9 @@ const PROGRESS_SEND_TIMEOUT = "5 seconds"
 
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
+
+/** How long readiness waits for the database before it reports storage unavailable. */
+const READINESS_STORAGE_TIMEOUT = "2 seconds"
 
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
@@ -269,6 +287,8 @@ export const layer = (options: Options) => {
       >()
 
       const database = yield* rowsDatabase
+      // Turns run through the gate so a drain can refuse new ones and interrupt the rest.
+      const gate = turnGate()
 
       // The holder and transport refer to each other: the transport delivers
       // to this runner's holder, which answers through the transport.
@@ -486,6 +506,12 @@ export const layer = (options: Options) => {
           if (registration === undefined)
             return yield* ActorError.make({
               reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+            })
+
+          // A draining runner admits no new external work; the caller retries on another runner.
+          if (external && !gate.open)
+            return yield* ActorError.make({
+              reason: ActorUnavailable.make({ cause: new Error("Runner is draining") }),
             })
 
           const address = yield* entityId(request.ref)
@@ -811,22 +837,23 @@ export const layer = (options: Options) => {
 
       // Horizons are days long, so a sweep a minute keeps up; each batch is
       // its own short transaction, so turns never wait on a whole sweep.
-      if (cleanupHooks.periodic)
-        yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
-          Effect.andThen(
-            cleanup.pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.interrupt
-                  : Effect.logWarning("Retention cleanup failed", cause),
+      const sweeping = cleanupHooks.periodic
+        ? yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
+            Effect.andThen(
+              cleanup.pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.interrupt
+                    : Effect.logWarning("Retention cleanup failed", cause),
+                ),
               ),
             ),
-          ),
-          Effect.forever,
-          Effect.forkIn(scope),
-        )
-      // Routed subscriptions registered here, by source type.
+            Effect.forever,
+            Effect.forkIn(scope),
+          )
+        : undefined
 
+      // Routed subscriptions registered here, by source type.
       const routed = (sourceType: string) =>
         localSubscriptions().flatMap(({ subscriberType, subscription }) =>
           subscription.routed !== undefined && subscription.sourceType === sourceType
@@ -858,10 +885,11 @@ export const layer = (options: Options) => {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-          yield* checkTables(registration.name, registration.tables).pipe(
-            Effect.provideContext(services),
-            Effect.orDie,
-          )
+          yield* checkTables(
+            registration.name,
+            registration.tables,
+            options.rowLevelSecurity?.role,
+          ).pipe(Effect.provideContext(services), Effect.orDie)
 
           for (const table of registration.tables) checked.add(table)
 
@@ -905,6 +933,7 @@ export const layer = (options: Options) => {
             registration,
             transport,
             options.authorize,
+            gate,
           ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
 
           yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
@@ -944,10 +973,11 @@ export const layer = (options: Options) => {
           if (queryRegistrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-          yield* checkTables(registration.name, registration.tables).pipe(
-            Effect.provideContext(services),
-            Effect.orDie,
-          )
+          yield* checkTables(
+            registration.name,
+            registration.tables,
+            options.rowLevelSecurity?.role,
+          ).pipe(Effect.provideContext(services), Effect.orDie)
 
           for (const table of registration.tables) checked.add(table)
           queryRegistrations.set(registration.name, registration)
@@ -1039,9 +1069,10 @@ export const layer = (options: Options) => {
             yield* allow(request, "query")
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-            // Query reads run on the pool outside a transaction, so no
-            // statement_timeout bounds them; interrupting a read past
-            // commandTimeout cancels its statement on the server instead.
+            // No statement_timeout bounds query reads, whether they run on
+            // the pool or, with row-level security, in a transaction bound to
+            // the tenant; interrupting a read past commandTimeout cancels its
+            // statement on the server instead.
             const outcome = yield* Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient
 
@@ -1081,6 +1112,7 @@ export const layer = (options: Options) => {
                 ),
               )
             }).pipe(
+              withTenant(request.ref.tenant),
               Effect.timeoutOrElse({
                 duration: registration.timeoutMs,
                 orElse: () =>
@@ -1262,7 +1294,39 @@ export const layer = (options: Options) => {
           ),
       })
 
-      return Context.make(Actors, publicActors).pipe(Context.add(InternalActors, internalActors))
+      const serving = Effect.gen(function* () {
+        if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
+
+        if (registrations.size + queryRegistrations.size + effectRegistrations.size === 0)
+          return { ready: false, reason: "unregistered" } as const
+
+        const sql = yield* SqlClient.SqlClient
+
+        const answered = yield* sql`SELECT 1`.pipe(
+          Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
+          Effect.map(Option.isSome),
+          Effect.orElseSucceed(() => false),
+        )
+
+        return answered
+          ? ({ ready: true } as const)
+          : ({ ready: false, reason: "storage" } as const)
+      }).pipe(Effect.provideContext(services)) satisfies Effect.Effect<Readiness>
+
+      const control = runtimeControl({
+        gate,
+        stopClaims: relay.stop,
+        attemptsIdle: relay.attemptsIdle,
+        interruptAttempts: relay.interruptAttempts,
+        stopBackground: sweeping === undefined ? Effect.void : Fiber.interrupt(sweeping),
+        serving,
+        scope,
+      })
+
+      return Context.make(Actors, publicActors).pipe(
+        Context.add(InternalActors, internalActors),
+        Context.add(RuntimeControl, control),
+      )
     }),
   )
 
@@ -1271,6 +1335,10 @@ export const layer = (options: Options) => {
       const sql = yield* SqlClient.SqlClient
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
+
+      if (options.rowLevelSecurity !== undefined)
+        yield* checkRowLevelSecurity(options.rowLevelSecurity.role)
+
       yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${retryWindowMs}) ON CONFLICT DO NOTHING`
 
       const rows = yield* sql<{
@@ -1350,7 +1418,11 @@ export const layer = (options: Options) => {
             )
           : Layer.empty
 
-      return runtime.pipe(Layer.provide(sharding), Layer.provide(lease))
+      return runtime.pipe(
+        Layer.provide(sharding),
+        Layer.provide(lease),
+        Layer.provide(Layer.succeed(TenantScope, { role: options.rowLevelSecurity?.role })),
+      )
     }),
   )
 }

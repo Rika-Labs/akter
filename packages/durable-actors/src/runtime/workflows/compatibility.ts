@@ -33,13 +33,12 @@ export const declaredOf = (actor: {
 })
 
 const StoredManifest = Schema.Struct({
-  input: Schema.optional(Schema.String),
+  input: Schema.String,
   steps: Schema.Array(
     Schema.Struct({
       name: Schema.String,
       kind: Schema.String,
-      fingerprint: Schema.String,
-      result: Schema.optional(Schema.String),
+      result: Schema.String,
     }),
   ),
 })
@@ -55,10 +54,7 @@ interface Current {
   readonly member: AnyWorkflow
   readonly hash: string
   readonly input: string
-  readonly steps: ReadonlyMap<
-    string,
-    { readonly kind: string; readonly fingerprint: string; readonly result: string }
-  >
+  readonly steps: ReadonlyMap<string, { readonly kind: string; readonly result: string }>
 }
 
 const currentOf = Effect.fnUntraced(function* (declared: ReadonlyArray<DeclaredActor>) {
@@ -99,30 +95,18 @@ export const missingSteps = ({
     return kind === step.kind ? [] : [`step "${step.name}" changed from ${step.kind} to ${kind}`]
   })
 
-/**
- * The steps of `stored` whose recorded results `steps` would decode under a
- * different schema. Manifests without `result` fingerprint the whole
- * activity, input included.
- */
+/** The steps of `stored` whose recorded results `steps` would decode under a different schema. */
 export const changedSteps = ({
   stored,
   steps,
 }: {
-  readonly stored: StoredManifest
-  readonly steps: ReadonlyMap<string, { readonly fingerprint: string; readonly result: string }>
+  readonly stored: Pick<StoredManifest, "steps">
+  readonly steps: ReadonlyMap<string, { readonly result: string }>
 }) =>
   stored.steps.flatMap((entry) => {
     const step = steps.get(entry.name)
 
-    if (step === undefined) return []
-
-    return (
-      entry.result === undefined
-        ? entry.fingerprint !== step.fingerprint
-        : entry.result !== step.result
-    )
-      ? [entry.name]
-      : []
+    return step !== undefined && entry.result !== step.result ? [entry.name] : []
   })
 
 /**
@@ -216,7 +200,7 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
     for (const problem of missingSteps({ stored, steps: workflow.steps }))
       add(group.actor_type, group.workflow, problem, group.open, oldest)
 
-    if (stored.input !== undefined && stored.input !== workflow.input)
+    if (stored.input !== workflow.input)
       add(group.actor_type, group.workflow, "input schema changed", group.open, oldest)
   }
 
