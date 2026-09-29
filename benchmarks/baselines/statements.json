@@ -1,12 +1,13 @@
 {
   "profile": "ci",
   "backend": "postgres",
-  "sha": "3e0733a",
+  "sha": "6c7ac10",
   "statementsPerOperation": {
     "hot-actor/sequential": 8,
-    "hot-actor/concurrent-8": 4.76,
-    "hot-actor/concurrent-64": 3.35,
+    "hot-actor/concurrent-8": 4.56,
+    "hot-actor/concurrent-64": 3.27,
     "turn-batches/waiting-32": 109,
+    "turn-batches/merged-1024": 3.01,
     "cold-activation/new-actor": 10,
     "cold-activation/after-hibernation": 10,
     "query-latency/sequential": 1,
@@ -19,23 +20,24 @@
     "events/replay-tail-10-of-1000": 2,
     "events/replay-all-1000": 2,
     "events/replay-tail-10-concurrent-64": 2,
-    "outbox/delivery-sequential": 16.29,
-    "outbox/delivery-concurrent-16": 14.53,
-    "outbox/drain-2000": 6.32,
-    "outbox/delivery-beside-10000-timers": 16.29,
-    "outbox/delivery-beside-100000-timers": 16.27,
+    "outbox/delivery-sequential": 16.3,
+    "outbox/delivery-concurrent-16": 14.38,
+    "outbox/drain-2000": 6.28,
+    "outbox/delivery-beside-10000-timers": 16.28,
+    "outbox/delivery-beside-100000-timers": 16.26,
     "owned-rows/insert": 8,
     "owned-rows/read-update": 9,
     "owned-rows/read-one": 2,
     "owned-rows/read-page-20": 2,
-    "effect-round-trip/sequential": 19,
-    "effect-round-trip/concurrent-64": 17.32
+    "effect-round-trip/sequential": 18.99,
+    "effect-round-trip/concurrent-64": 17.23
   },
   "roundTripsPerOperation": {
     "hot-actor/sequential": 2,
-    "hot-actor/concurrent-8": 0.38,
-    "hot-actor/concurrent-64": 0.07,
+    "hot-actor/concurrent-8": 0.36,
+    "hot-actor/concurrent-64": 0.05,
     "turn-batches/waiting-32": 3,
+    "turn-batches/merged-1024": 0.0029,
     "cold-activation/new-actor": 2,
     "cold-activation/after-hibernation": 2,
     "query-latency/sequential": 0,
@@ -58,6 +60,6 @@
     "owned-rows/read-one": 0,
     "owned-rows/read-page-20": 0,
     "effect-round-trip/sequential": 4,
-    "effect-round-trip/concurrent-64": 3.85
+    "effect-round-trip/concurrent-64": 3.94
   }
 }
