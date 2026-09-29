@@ -13,7 +13,6 @@ import {
 } from "./contract.ts"
 import { EffectProbeLive } from "./effects.ts"
 import { ArchiveLive } from "./archive.ts"
-import { ShelfLive } from "./shelf.ts"
 import { LedgerLive } from "./ledger.ts"
 import { MintLive } from "./mint.ts"
 import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
@@ -181,7 +180,6 @@ export const ProbeLive = Layer.mergeAll(
   LedgerLive,
   EffectProbeLive,
   ArchiveLive,
-  ShelfLive,
   ReducerProbeLive,
   WorkflowProbeLive,
   MintLive,
