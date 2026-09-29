@@ -223,6 +223,9 @@ const activationEnded = () =>
 /** How long a progress send may take before it is given up as a lost frame. */
 const PROGRESS_SEND_TIMEOUT = "5 seconds"
 
+/** Shardings whose telemetry sampler is registered; Cluster allows one per name. */
+const sampled = new WeakSet<Sharding.Sharding["Service"]>()
+
 /** Pause between retention sweeps. */
 const CLEANUP_INTERVAL = "1 minute"
 
@@ -871,11 +874,16 @@ export const layer = (options: Options) => {
         ),
       )
 
-      // One runner of the deployment samples, so the database sees one set of reads per interval.
-      yield* sharding.registerSingleton(
-        "durable-actors/telemetry",
-        sample.pipe(Effect.andThen(Effect.sleep(sampleEveryMs)), Effect.forever),
-      )
+      // One runner of the deployment samples, so the database sees one set of
+      // reads per interval. Runtimes built on one Sharding in one process, as
+      // tests do, share its one sampler: Cluster refuses a second registration.
+      if (!sampled.has(sharding)) {
+        sampled.add(sharding)
+        yield* sharding.registerSingleton(
+          "durable-actors/telemetry",
+          Effect.sleep(sampleEveryMs).pipe(Effect.andThen(sample), Effect.forever),
+        )
+      }
 
       // Routed subscriptions registered here, by source type.
 

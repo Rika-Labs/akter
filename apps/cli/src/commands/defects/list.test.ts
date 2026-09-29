@@ -121,6 +121,8 @@ describe("durable defects list", () => {
       expect(text[0]).toContain("Boiler/b1  Break ")
       expect(text[0]).toContain("tenant=plant")
       expect(formatDefects({ defects: [], json: false })).toBe("No defects.")
-      expect(formatDefects({ defects, json: true })).toContain(`"span": "durable-actors.Boiler/Break"`)
+      expect(formatDefects({ defects, json: true })).toContain(
+        `"span": "durable-actors.Boiler/Break"`,
+      )
     }).pipe(Effect.scoped, Effect.runPromise))
 })

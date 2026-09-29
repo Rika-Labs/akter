@@ -1,4 +1,17 @@
-import { Crypto, Effect, Exit, Layer, Metric, Option, Schema, type Scope, Tracer } from "effect"
+import {
+  Cause,
+  Crypto,
+  Effect,
+  Exit,
+  Layer,
+  Match,
+  Metric,
+  Option,
+  Predicate,
+  Schema,
+  type Scope,
+  Tracer,
+} from "effect"
 import { PrometheusMetrics } from "effect/unstable/observability"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, User } from "../../index.ts"
@@ -182,10 +195,16 @@ const withTelemetry = <A, E>(
     }),
   )
 
-const ended = (span: Tracer.Span) => span.status._tag === "Ended"
+const ended = (span: Tracer.Span) => Predicate.isTagged(span.status, "Ended")
 
-const exitOf = (span: Tracer.Span) =>
-  span.status._tag === "Ended" ? span.status.exit : Exit.succeed(undefined)
+/** The pretty cause a span ended with, when it ended in failure. */
+const failureOf = (span: Tracer.Span): Option.Option<string> =>
+  Match.value(span.status).pipe(
+    Match.tag("Ended", ({ exit }) =>
+      Exit.isFailure(exit) ? Option.some(Cause.pretty(exit.cause)) : Option.none(),
+    ),
+    Match.orElse(() => Option.none()),
+  )
 
 const parentId = (span: Tracer.Span) =>
   Option.match(span.parent, { onNone: () => undefined, onSome: (parent) => parent.spanId })
@@ -197,7 +216,7 @@ const withAttribute = (
   spans: ReadonlyArray<Tracer.Span>,
   name: string,
   key: string,
-  value: unknown,
+  value: string | number | boolean,
 ) => named(spans, name).filter((span) => span.attributes.get(key) === value)
 
 /** Whether `ancestor` is on `span`'s parent chain among the recorded spans. */
@@ -274,7 +293,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
             "turn.replayed": false,
             "actor.generation": "1",
           })
-          expect(Exit.isSuccess(exitOf(turn!))).toBe(true)
+          expect(Option.isNone(failureOf(turn!))).toBe(true)
 
           const [admission] = withAttribute(spans, SpanNames.admission, "command.id", commandId)
 
@@ -343,9 +362,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(turn!.attributes.get("turn.outcome")).toBe("defect")
-          const exit = exitOf(turn!)
-          expect(Exit.isFailure(exit)).toBe(true)
-          expect(String(Exit.isFailure(exit) ? exit.cause : "")).toContain("gauge snapped")
+          expect(Option.getOrElse(failureOf(turn!), () => "")).toContain("gauge snapped")
 
           const defects = yield* (yield* DefectLog).list({ actorType: "ObsAuthor" })
 
