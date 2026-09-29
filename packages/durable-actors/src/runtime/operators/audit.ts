@@ -1,6 +1,6 @@
 import { Crypto, Effect, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { routingKey } from "../storage/codec.ts"
+import { type Placement, routingKey } from "../storage/codec.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { Capability, type OperatorAction } from "./grants.ts"
 
@@ -31,7 +31,7 @@ export const auditRoutingKey = ({
   placement,
 }: {
   readonly entry: Pick<AuditEntry, "tenant" | "actorType" | "actorId">
-  readonly placement: "tenant" | "actor" | undefined
+  readonly placement: Placement | undefined
 }) =>
   entry.actorType === undefined || entry.actorId === undefined || placement === undefined
     ? routingKey({ ref: { tenant: entry.tenant, actor: "", id: "" }, placement: "tenant" })

@@ -5,7 +5,9 @@ import { emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { decodeText, readOnly } from "../inspector/queries.ts"
 import * as Queries from "../inspector/queries.ts"
+import { withTenant } from "../database/tenancy.ts"
 import { type Placement, routingKey } from "../storage/codec.ts"
+import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { OutboxRuntime, outboxStatements } from "../turn/outbox.ts"
 import {
@@ -100,6 +102,7 @@ interface DeadLetterRow {
   readonly attempts: number
   readonly cause: string
   readonly ambiguous: boolean
+  readonly payloadVersion: number
 }
 
 /**
@@ -115,12 +118,7 @@ export const operatorRuntime = (deps: {
 }) => {
   const placement = (actorType: string) =>
     Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-
-      const [row] = yield* sql<{ placement: Placement }>`
-        SELECT placement FROM actor_placements WHERE actor_type = ${actorType}`
-
-      return Option.fromUndefinedOr(row?.placement)
+      return Option.fromUndefinedOr(yield* recordedPlacement(actorType))
     }).pipe(Effect.orDie, Effect.provideContext(deps.services))
 
   const keyOf = (target: ActorTarget) =>
@@ -147,6 +145,11 @@ export const operatorRuntime = (deps: {
       Effect.provideContext(deps.services),
     )
 
+  const transacted =
+    (tenant: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.flatMap(SqlClient.SqlClient, (sql) => withTenant(tenant)(sql.withTransaction(effect)))
+
   // Locks the dead letter the repair acts on, so two repairs of it serialize
   // and the second finds nothing.
   const lockLetter = (key: bigint, target: ActorTarget, effectId: string) =>
@@ -154,7 +157,8 @@ export const operatorRuntime = (deps: {
       const sql = yield* SqlClient.SqlClient
 
       const [letter] = yield* sql<DeadLetterRow>`
-        SELECT effect, payload, attempts::int AS attempts, cause, ambiguous FROM actor_dead_letters
+        SELECT effect, payload, payload_version AS "payloadVersion", attempts::int AS attempts, cause, ambiguous
+        FROM actor_dead_letters
         WHERE routing_key = ${key} AND effect_id = ${effectId} AND tenant_id = ${target.tenant}
           AND actor_type = ${target.actorType} AND actor_id = ${target.actorId}
         FOR UPDATE`
@@ -169,7 +173,7 @@ export const operatorRuntime = (deps: {
   return OperatorRuntime.of({
     placement,
     inspect: ({ limit, outcomes, ...target }) =>
-      Queries.readOnly(
+      Queries.readOnly(target.tenant)(
         Queries.actor({
           tenant: target.tenant,
           actorType: target.actorType,
@@ -196,7 +200,7 @@ export const operatorRuntime = (deps: {
         const key = yield* keyOf(target)
         const sql = yield* SqlClient.SqlClient
 
-        const [row] = yield* readOnly(sql<{
+        const [row] = yield* readOnly(target.tenant)(sql<{
           command: string
           outcome_tag: string
           outcome: string
@@ -229,7 +233,7 @@ export const operatorRuntime = (deps: {
           id: target.actorId,
         })
 
-        const retried = yield* sql.withTransaction(
+        const retried = yield* transacted(target.tenant)(
           Effect.gen(function* () {
             const letter = yield* lockLetter(key, target, effectId)
 
@@ -251,6 +255,7 @@ export const operatorRuntime = (deps: {
                   {
                     effect: letter.effect,
                     payload: letter.payload,
+                    version: letter.payloadVersion,
                     caller: System.make({ source: "actor", ref }),
                     due: undefined,
                     key: undefined,
@@ -291,7 +296,7 @@ export const operatorRuntime = (deps: {
         const sql = yield* SqlClient.SqlClient
         const key = yield* keyOf(target)
 
-        yield* sql.withTransaction(
+        yield* transacted(target.tenant)(
           Effect.gen(function* () {
             const letter = yield* lockLetter(key, target, effectId)
 
@@ -310,7 +315,7 @@ export const operatorRuntime = (deps: {
           }),
         )
       }).pipe(provided),
-    audit: (page) => readOnly(listAudit(page)).pipe(provided, Effect.orDie),
+    audit: (page) => readOnly(page.tenant)(listAudit(page)).pipe(provided, Effect.orDie),
     record: (entry, outcome) =>
       Effect.gen(function* () {
         const found =

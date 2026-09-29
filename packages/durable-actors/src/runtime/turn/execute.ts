@@ -13,6 +13,7 @@ import {
 import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
+import { parseChildId } from "../../identity/child.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
@@ -21,6 +22,7 @@ import { hashedPayload } from "../subscriptions/identity.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
+import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
@@ -109,10 +111,13 @@ const acknowledgement = (
  * the parent's mint proof for the actor's id, and the parent's committed
  * outbox still holds that exact intent with the same payload.
  */
-const committedMintIntent = Effect.fnUntraced(function* (request: Request) {
+const committedMintIntent = Effect.fnUntraced(function* (
+  request: Request,
+  parent: string | undefined,
+) {
   const { caller, ref } = request
 
-  if (!isSystem(caller) || caller.ref === undefined || !(yield* provesMint(caller, ref)))
+  if (!isSystem(caller) || caller.ref === undefined || !(yield* provesMint(caller, ref, parent)))
     return false
 
   const sql = yield* SqlClient.SqlClient
@@ -210,6 +215,8 @@ export const executeTurn = Effect.fnUntraced(function* (
   routingKey: bigint,
   policy: TurnPolicy,
   mintable: boolean,
+  /** A parent-placed actor's parent type, whose turns alone mint it. */
+  parent: string | undefined,
   statements: boolean,
   waited: ReadonlySet<string> = new Set(),
   connections?: ConnectionLister,
@@ -218,6 +225,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
+  const { role } = yield* TenantScope
   const { tenant, actor, id } = request.ref
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
@@ -261,8 +269,12 @@ export const executeTurn = Effect.fnUntraced(function* (
   const turn = Effect.fnUntraced(function* (session: Session, begin: ReadonlyArray<Statement>) {
     const cold = cache.generation === undefined
 
+    // With row-level security the same statement takes the tenant role, so
+    // every later statement of the turn, the handler's included, is bound
+    // to this actor's tenant at no extra round trip.
     const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
-      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)`
+      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)
+      ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
     const readsState = cold || cache.state === undefined
     let admission: Admission | undefined
@@ -464,8 +476,8 @@ export const executeTurn = Effect.fnUntraced(function* (
       mintable &&
       policy.createdBy === request.command &&
       !admitted.created &&
-      isMintedId(id) &&
-      (request.external === true || !(yield* committedMintIntent(request)))
+      isMintedId(parent === undefined ? id : (parseChildId(id)?.local ?? "")) &&
+      (request.external === true || !(yield* committedMintIntent(request, parent)))
     )
       return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
 

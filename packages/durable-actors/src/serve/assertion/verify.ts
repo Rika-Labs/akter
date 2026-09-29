@@ -20,7 +20,7 @@ import {
   Credential,
   unauthorized,
 } from "../auth.ts"
-import { ASSERTION_HEADER, ASSERTION_TYPE } from "./binding.ts"
+import { ASSERTION_HEADER, ASSERTION_TYPE, KEY_REFRESH_TYPE } from "./binding.ts"
 
 /** An edge verification key: an Ed25519 public JWK, valid from `nbf` until `exp` (epoch seconds). */
 export const AssertionKey = Schema.Struct({
@@ -64,12 +64,34 @@ export const ASSERTION_SKEW_MS = 5_000
 // An unknown `kid` rereads the key set at most this often.
 const UNKNOWN_KID_REFRESH_MS = 60_000
 
-const Header = Schema.Struct({
-  alg: Schema.Literal("EdDSA"),
-  typ: Schema.Literal(ASSERTION_TYPE),
-  kid: Schema.NonEmptyString,
-  crit: Schema.optionalKey(Schema.Never),
+// EdDSA with Ed25519 only: `none` and every other algorithm are refused.
+const headerOf = (typ: string) =>
+  Schema.decodeUnknownOption(
+    Schema.fromJsonString(
+      Schema.Struct({
+        alg: Schema.Literal("EdDSA"),
+        typ: Schema.Literal(typ),
+        kid: Schema.NonEmptyString,
+        crit: Schema.optionalKey(Schema.Never),
+      }),
+    ),
+  )
+
+const decodeAssertionHeader = headerOf(ASSERTION_TYPE)
+
+const decodeRefreshHeader = headerOf(KEY_REFRESH_TYPE)
+
+/** The claims of an edge's key-set refresh push. */
+export const KeyRefreshClaims = Schema.Struct({
+  iss: Schema.String,
+  aud: Schema.String,
+  iat: Schema.Finite,
+  exp: Schema.Finite,
 })
+
+export type KeyRefreshClaims = typeof KeyRefreshClaims.Type
+
+const decodeRefreshClaims = Schema.decodeUnknownOption(Schema.fromJsonString(KeyRefreshClaims))
 
 const Digest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))
 
@@ -95,8 +117,6 @@ export const AssertionClaims = Schema.Struct({
 
 export type AssertionClaims = typeof AssertionClaims.Type
 
-const decodeHeader = Schema.decodeUnknownOption(Schema.fromJsonString(Header))
-
 const decodeClaims = Schema.decodeUnknownOption(Schema.fromJsonString(AssertionClaims))
 
 const decodeKeySet = Schema.decodeUnknownEffect(AssertionKeySet)
@@ -104,6 +124,12 @@ const decodeKeySet = Schema.decodeUnknownEffect(AssertionKeySet)
 const invalid = unauthorized("invalid_credentials")
 
 const utf8 = new TextEncoder()
+
+const headerToken = (request: AuthRequest) =>
+  Option.match(Headers.get(request.headers, ASSERTION_HEADER), {
+    onNone: () => Effect.fail(unauthorized("missing_credentials")),
+    onSome: (value) => Effect.succeed(value.trim()),
+  })
 
 /** The compact JWS from a WebSocket frame's `Bearer` credential, or from `durable-assertion`. */
 const tokenOf = (request: AuthRequest) => {
@@ -113,10 +139,7 @@ const tokenOf = (request: AuthRequest) => {
     return match === null ? Effect.fail(invalid) : Effect.succeed(match[1]!)
   }
 
-  return Option.match(Headers.get(request.headers, ASSERTION_HEADER), {
-    onNone: () => Effect.fail(unauthorized("missing_credentials")),
-    onSome: (value) => Effect.succeed(value.trim()),
-  })
+  return headerToken(request)
 }
 
 const verifySignature = Effect.fnUntraced(function* (
@@ -197,8 +220,11 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
       }),
     )
 
-  const authenticate = Effect.fnUntraced(function* (request: AuthRequest) {
-    const token = yield* tokenOf(request)
+  /** The claims text of a JWS of type `decodeHeader` signed by a published, valid key. */
+  const signedClaims = Effect.fnUntraced(function* (
+    token: string,
+    decodeHeader: typeof decodeAssertionHeader,
+  ) {
     const parts = token.split(".")
 
     if (parts.length !== 3) return yield* invalid
@@ -209,14 +235,11 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
 
     if (Result.isFailure(headerText) || Result.isFailure(claimsText) || Result.isFailure(signature))
       return yield* invalid
-
-    // EdDSA with Ed25519 only: `none` and every other algorithm are refused here.
     const header = decodeHeader(headerText.success)
 
     if (Option.isNone(header)) return yield* invalid
     const kid = header.value.kid
-    const now = yield* Clock.currentTimeMillis
-    const seconds = now / 1000
+    const seconds = (yield* Clock.currentTimeMillis) / 1000
     const skew = ASSERTION_SKEW_MS / 1000
 
     const usable = (keys: ReadonlyArray<AssertionKey>) =>
@@ -234,7 +257,30 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
     if (!(yield* verifySignature(key, signature.success, `${encodedHeader}.${encodedClaims}`)))
       return yield* invalid
 
-    const claims = decodeClaims(claimsText.success)
+    return claimsText.success
+  })
+
+  /** Whether `iat` and `exp` give a lifetime within the cap, issued and unexpired within skew. */
+  const lifetime = Effect.fnUntraced(function* (claims: {
+    readonly iat: number
+    readonly exp: number
+  }) {
+    const seconds = (yield* Clock.currentTimeMillis) / 1000
+    const skew = ASSERTION_SKEW_MS / 1000
+
+    if (
+      claims.exp <= claims.iat ||
+      claims.exp - claims.iat > MAX_ASSERTION_SECONDS ||
+      claims.iat > seconds + skew
+    )
+      return yield* invalid
+
+    if (claims.exp <= seconds - skew) return yield* unauthorized("expired")
+  })
+
+  const authenticate = Effect.fnUntraced(function* (request: AuthRequest) {
+    const claimsText = yield* signedClaims(yield* tokenOf(request), decodeAssertionHeader)
+    const claims = decodeClaims(claimsText)
 
     if (Option.isNone(claims)) return yield* invalid
     const { iss, aud, region, iat, exp, tenant, caller, req, sid, cexp } = claims.value
@@ -242,10 +288,7 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
     if (iss !== options.issuer || aud !== options.audience || region !== options.region)
       return yield* invalid
 
-    if (exp <= iat || exp - iat > MAX_ASSERTION_SECONDS || iat > seconds + skew)
-      return yield* invalid
-
-    if (exp <= seconds - skew) return yield* unauthorized("expired")
+    yield* lifetime({ iat, exp })
 
     const binding: Binding = sid === undefined ? { request: req } : { request: req, session: sid }
     const authenticated: Authenticated = { caller, tenant, binding }
@@ -255,10 +298,33 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
     return { ...authenticated, expiresAt: DateTime.makeUnsafe(cexp * 1000) }
   })
 
+  // A push from the edge rereads the key set at once, however recently it was read, so a
+  // revoked key stops verifying without waiting for `refreshEvery`. Repeating it is harmless.
+  const refreshKeys = Effect.fnUntraced(function* (request: AuthRequest) {
+    const claims = decodeRefreshClaims(
+      yield* signedClaims(yield* headerToken(request), decodeRefreshHeader),
+    )
+
+    if (Option.isNone(claims)) return yield* invalid
+
+    if (claims.value.iss !== options.issuer || claims.value.aud !== options.audience)
+      return yield* invalid
+
+    yield* lifetime(claims.value)
+
+    if (source instanceof URL)
+      yield* lock.withPermit(
+        Effect.gen(function* () {
+          cached = { keys: yield* fetchKeys(source), at: yield* Clock.currentTimeMillis }
+        }),
+      )
+  })
+
+  type Provided = AuthProvider<Keys extends URL ? HttpClient.HttpClient : never>
+
   return {
     credentials: [Credential.Assertion()],
-    authenticate: authenticate as AuthProvider<
-      Keys extends URL ? HttpClient.HttpClient : never
-    >["authenticate"],
+    authenticate: authenticate as Provided["authenticate"],
+    refreshKeys: refreshKeys as NonNullable<Provided["refreshKeys"]>,
   }
 }

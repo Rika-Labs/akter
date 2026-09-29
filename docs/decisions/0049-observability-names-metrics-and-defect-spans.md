@@ -1,6 +1,6 @@
 # ADR 0049: Observability: stable span and metric names, Prometheus, and defect spans
 
-**Status:** proposed (2026-09-29). Built with M4.3 ([#225](https://github.com/Rika-Labs/durable-actors/issues/225)). It amends [observability](../operations/03-observability.md) and adds the metrics [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md), [ADR 0022](0022-workflow-engine-storage-and-version-markers.md), and [ADR 0026](0026-cross-actor-event-subscriptions.md) left to M4.3.
+**Status:** accepted (2026-09-30, Dallen). Built with M4.3 ([#225](https://github.com/Rika-Labs/durable-actors/issues/225)). It amends [observability](../operations/03-observability.md) and adds the metrics [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md), [ADR 0022](0022-workflow-engine-storage-and-version-markers.md), and [ADR 0026](0026-cross-actor-event-subscriptions.md) left to M4.3.
 
 **Responsibility:** name the spans and metrics the runtime reports, say where each value comes from, and say where `durable defects list` reads defect spans.
 
