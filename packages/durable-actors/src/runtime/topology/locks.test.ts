@@ -16,9 +16,11 @@ import { keepAcquiredShards } from "./locks.ts"
 
 const Echo = Entity.make("Echo", [Rpc.make("Ping", { success: Schema.String })])
 
-// Slow lock storage, as SQL round trips are on a loaded runner: the first
-// refresh reads the held shards before the first acquire commits and answers
-// after it, and releasing a lock outlasts the acquisition loop's next wake.
+/**
+ * Lock storage as slow as SQL round trips on a loaded runner: the first refresh reads the held
+ * shards before the first acquire commits and answers after it, and releasing a lock outlasts
+ * the acquisition loop's next wake.
+ */
 const slowRefresh = Layer.effect(
   RunnerStorage.RunnerStorage,
   Effect.map(RunnerStorage.makeMemory, (storage) =>
@@ -50,19 +52,16 @@ describe("shard locks", () => {
     () =>
       Effect.gen(function* () {
         const client = yield* Echo.client.pipe(Effect.provideContext(yield* Layer.build(EchoLive)))
-        // Past the first refresh's answer, when the shard would have been dropped.
         yield* Effect.sleep("1 second")
         const started = yield* Clock.currentTimeMillis
 
         expect(yield* client("first").Ping()).toBe("pong")
-        // Unwrapped, Cluster drops the shard when the refresh answers and
-        // reacquires it only on the next 10-second entity poll.
         expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000)
       }).pipe(Effect.scoped, Effect.runPromise),
     15_000,
   )
 
-  // Lock storage that has lost every lock: an acquire succeeds, then no refresh finds it.
+  /** Lock storage that has lost every lock: an acquire succeeds, then no refresh finds it. */
   const lostLocks = Effect.map(RunnerStorage.makeMemory, (storage) =>
     keepAcquiredShards({ ...storage, refresh: () => Effect.succeed([]) }),
   )

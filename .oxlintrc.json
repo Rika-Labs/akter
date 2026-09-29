@@ -72,7 +72,13 @@
       }
     },
     {
-      "files": ["examples/chat/src/web/app.ts"],
+      "files": [
+        "examples/chat/src/web/app.ts",
+        "examples/chat/src/web/cursors.ts",
+        "examples/chat/src/web/cursors-react.tsx",
+        "examples/counter/src/web/app.ts",
+        "examples/counter/src/web/react.tsx"
+      ],
       "rules": {
         "effecttsgo/async-function": "off",
         "effecttsgo/global-fetch": "off",

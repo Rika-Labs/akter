@@ -79,7 +79,6 @@ describe("takeBatch with commutative calls", () => {
 
     const batch = takeBatch({ waiting: queue, alone: new Set() })
 
-    // One merged turn of 1,024, one of the 1 left over, then 30 more turns.
     expect(batch).toHaveLength(MERGE_CAP + 1 + BATCH_CAP - 2)
     expect(idsOf(queue)).toEqual(["a30", "a31"])
   })

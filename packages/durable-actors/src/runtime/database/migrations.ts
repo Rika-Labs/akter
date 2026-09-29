@@ -44,8 +44,13 @@ export const migrations = {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_generations ADD COLUMN created boolean NOT NULL DEFAULT false`
   }),
-  // Every framework row carries its routing key, leading the primary key so
-  // a shard index can place it; state is opaque bytea.
+  /**
+   * Every framework row carries its routing key, leading the primary key so a shard index can
+   * place it; state is opaque bytea.
+   *
+   * Placement and its encoding decide every row's routing key, so a change would fork each
+   * existing actor into a second identity.
+   */
   "0003_routing_state": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
@@ -94,17 +99,17 @@ export const migrations = {
         PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, command_id),
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
-    // Placement and its encoding decide every row's routing key, so a
-    // change would fork each existing actor into a second identity.
     yield* sql`CREATE TABLE actor_placements (
         actor_type text PRIMARY KEY,
         placement text NOT NULL CHECK (placement IN ('tenant', 'actor')),
         encoding integer NOT NULL
       )`
   }),
-  // Every intent and timer lives on its sender's shard. `bucket` is the top
-  // eight bits of `routing_key`, so the relay probes `(bucket, due_at_ms)` and
-  // never reads actors with nothing due.
+  /**
+   * Every intent and timer lives on its sender's shard. `bucket` is the top eight bits of
+   * `routing_key`, so the relay probes `(bucket, due_at_ms)` and never reads actors with
+   * nothing due.
+   */
   "0004_outbox": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE TABLE actor_outbox (
@@ -130,8 +135,10 @@ export const migrations = {
         ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, timer_key)
         WHERE timer_key IS NOT NULL`
   }),
-  // Application tables come from drizzle-kit; the framework only records
-  // which actor type owns each one, so a second owner cannot read its rows.
+  /**
+   * Application tables come from drizzle-kit; the framework only records which actor type owns
+   * each one, so a second owner cannot read its rows.
+   */
   "0005_tables": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE TABLE actor_tables (
@@ -141,9 +148,10 @@ export const migrations = {
         PRIMARY KEY (table_schema, table_name)
       )`
   }),
-  // Events share the actor's routing key and commit with its turn. The
-  // sequence counter lives on the fenced generation row, so a pruned stream
-  // never reissues a cursor.
+  /**
+   * Events share the actor's routing key and commit with its turn. The sequence counter lives
+   * on the fenced generation row, so a pruned stream never reissues a cursor.
+   */
   "0006_events": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_generations ADD COLUMN event_sequence bigint NOT NULL DEFAULT 0`
@@ -161,17 +169,19 @@ export const migrations = {
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
   }),
-  // An effect is an outbox row whose executor runs when it is due. On
-  // success or exhaustion it becomes an intent to its route, so the route
-  // is delivered like any intent, with the effect id as its command id.
-  // `ambiguous` records whether the last attempt's outcome is unknown.
+  /**
+   * An effect is an outbox row whose executor runs when it is due. On success or exhaustion it
+   * becomes an intent to its route, so the route is delivered like any intent, with the effect
+   * id as its command id. `ambiguous` records whether the last attempt's outcome is unknown.
+   *
+   * Exhausted effects stay visible to operators after their row settles.
+   */
   "0008_effects": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_outbox
         ADD COLUMN kind text NOT NULL DEFAULT 'intent' CHECK (kind IN ('intent', 'effect')),
         ADD COLUMN last_error text,
         ADD COLUMN ambiguous boolean NOT NULL DEFAULT false`
-    // Exhausted effects stay visible to operators after their row settles.
     yield* sql`CREATE TABLE actor_dead_letters (
         routing_key bigint NOT NULL,
         effect_id text NOT NULL,
@@ -188,8 +198,10 @@ export const migrations = {
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
   }),
-  // Blob entries are chunked bytea beside the actor's other rows: `append`
-  // adds a chunk without rewriting earlier ones, and `compact` folds them into chunk 0.
+  /**
+   * Blob entries are chunked bytea beside the actor's other rows: `append` adds a chunk
+   * without rewriting earlier ones, and `compact` folds them into chunk 0.
+   */
   "0009_blobs": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE TABLE actor_blobs (
@@ -205,27 +217,33 @@ export const migrations = {
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
   }),
-  // Cleanup reads each actor type's oldest receipts and events by age, and
-  // keeps a receipt while an outbox row with its id can still be redelivered;
-  // these indexes keep every cleanup batch a range read.
+  /**
+   * Cleanup reads each actor type's oldest receipts and events by age, and keeps a receipt
+   * while an outbox row with its id can still be redelivered; these indexes keep every cleanup
+   * batch a range read.
+   */
   "0010_retention": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE INDEX actor_receipts_expiry ON actor_receipts (actor_type, expires_at_ms)`
     yield* sql`CREATE INDEX actor_events_emitted ON actor_events (actor_type, emitted_at_ms)`
     yield* sql`CREATE INDEX actor_outbox_intent ON actor_outbox (intent_id)`
   }),
-  // Claims and backoff move `due_at_ms`, so `scheduled_at_ms` keeps the time a
-  // row first became due. `kind` follows `bucket` in the due index so intent
-  // scans never read effect rows waiting for an executor, and the reverse.
+  /**
+   * Claims and backoff move `due_at_ms`, so `scheduled_at_ms` keeps the time a row first
+   * became due. `kind` follows `bucket` in the due index so intent scans never read effect
+   * rows waiting for an executor, and the reverse.
+   */
   "0011_relay": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_outbox ADD COLUMN scheduled_at_ms bigint NOT NULL`
     yield* sql`CREATE INDEX actor_outbox_due_kind ON actor_outbox (bucket, kind, due_at_ms)`
     yield* sql`DROP INDEX actor_outbox_due`
   }),
-  // Workflow executions, their recorded steps, and the manifests deployments
-  // accepted. Every execution and step row lives on its owner's shard; a step
-  // row is written pending before its work starts and settled once.
+  /**
+   * Workflow executions, their recorded steps, and the manifests deployments accepted. Every
+   * execution and step row lives on its owner's shard; a step row is written pending before
+   * its work starts and settled once.
+   */
   "0012_workflows": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE TABLE actor_workflow_executions (
@@ -295,8 +313,12 @@ export const migrations = {
         PRIMARY KEY (actor_type, workflow, manifest_hash)
       )`
   }),
-  // The placement join keeps every view from being automatically updatable,
-  // so writes fail without triggers or rules to maintain.
+  /**
+   * The placement join keeps every view from being automatically updatable, so writes fail
+   * without triggers or rules to maintain.
+   *
+   * The catalog is how a tool checks which view versions a database has.
+   */
   "0013_inspection_views": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE SCHEMA durable`
@@ -368,7 +390,6 @@ export const migrations = {
         s.settled_at_ms, to_timestamp(s.settled_at_ms::float8 / 1000) AS settled_at
       FROM actor_workflow_step s
       LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
-    // The catalog is how a tool checks which view versions a database has.
     yield* sql`CREATE VIEW durable.views AS
       SELECT view_name, version FROM (VALUES
         ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
@@ -376,8 +397,10 @@ export const migrations = {
         ('workflow_steps', 1), ('views', 1)
       ) AS v(view_name, version)`
   }),
-  // A connection's session lives beside the actor's rows; its socket and
-  // buffers live at the holder runner named by `holder` and `holder_epoch`.
+  /**
+   * A connection's session lives beside the actor's rows; its socket and buffers live at the
+   * holder runner named by `holder` and `holder_epoch`.
+   */
   "0014_connections": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE TABLE actor_connections (
@@ -416,20 +439,26 @@ export const migrations = {
       ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, command, ready_at_ms, intent_id)
       WHERE kind = 'effect' AND NOT running`
   }),
-  // An attempt can end an effect before its retries run out, as when its
-  // route rejects the result. `final_failure` records that, with the outcome,
-  // so a dead letter that fails to commit is retried without another
-  // provider call.
+  /**
+   * An attempt can end an effect before its retries run out, as when its route rejects the
+   * result. `final_failure` records that, with the outcome, so a dead letter that fails to
+   * commit is retried without another provider call.
+   */
   "0016_final_effect_failures": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_outbox ADD COLUMN final_failure boolean NOT NULL DEFAULT false`
   }),
-  // Subscriptions fan out on the source's shard after commit: one row per
-  // (source, subscription, subscriber), routed rows with subscriber_id = ''.
-  // The tag summary makes the publisher's probe a key lookup per emitted tag,
-  // and the subscriber's cursor, on its own shard, deduplicates every
-  // delivery after its receipt is pruned. The due index leads with
-  // `subscriber_type` so a runner never scans types it doesn't register.
+  /**
+   * Subscriptions fan out on the source's shard after commit: one row per (source,
+   * subscription, subscriber), routed rows with subscriber_id = ''. The tag summary makes the
+   * publisher's probe a key lookup per emitted tag, and the subscriber's cursor, on its own
+   * shard, deduplicates every delivery after its receipt is pruned. The due index leads with
+   * `subscriber_type` so a runner never scans types it doesn't register.
+   *
+   * The routed declarations of the deployment, by source type: a runner that serves a source
+   * must register every subscriber type routing from it, because the publishing turn creates
+   * the routed rows.
+   */
   "0017_subscriptions": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE TABLE actor_subscriptions (
@@ -481,9 +510,6 @@ export const migrations = {
         PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id),
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
-    // The routed declarations of the deployment, by source type: a runner
-    // that serves a source must register every subscriber type routing from
-    // it, because the publishing turn creates the routed rows.
     yield* sql`CREATE TABLE actor_routed_subscriptions (
         source_type text NOT NULL,
         subscriber_type text NOT NULL,
@@ -493,9 +519,11 @@ export const migrations = {
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),
-  // Every tenant row admits only the tenant its transaction names. The table
-  // owner and superusers are exempt, so nothing changes until a deployment
-  // runs its turns and views as a role that is neither.
+  /**
+   * Every tenant row admits only the tenant its transaction names. The table owner and
+   * superusers are exempt, so nothing changes until a deployment runs its turns and views as a
+   * role that is neither.
+   */
   "0018_rls": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
@@ -520,14 +548,28 @@ export const migrations = {
           WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
     }
   }),
-  // Content is stored once per tenant on the tenant's routing key; actors
-  // hold references on their own shard. Nothing counts references and no key
-  // points from a reference or a chunk to a content row: the sweep finds
-  // unreferenced content by scanning references, and grants gate it.
+  /**
+   * Content is stored once per tenant on the tenant's routing key; actors hold references on
+   * their own shard. Nothing counts references and no key points from a reference or a chunk
+   * to a content row: the sweep finds unreferenced content by scanning references, and grants
+   * gate it.
+   *
+   * Grants name the database they were issued by, so a key shared with another deployment
+   * never makes its grants valid here.
+   *
+   * Every tenant that ever uploaded, and when its content was last swept.
+   *
+   * A query reads references and chunks as the tenant role when row-level security is on;
+   * uploads, grants, and the sweep keep the exempt connecting role.
+   *
+   * The longest turn of each actor type that declares content, which the sweep waits out; it
+   * only grows, so a runner still on an earlier deploy with longer turns stays covered.
+   *
+   * The sweep join shows how far each tenant's collection lags, and keeps the view from being
+   * automatically updatable.
+   */
   "0020_content_blobs": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    // Grants name the database they were issued by, so a key shared with
-    // another deployment never makes its grants valid here.
     yield* sql`ALTER TABLE actor_deployment
         ADD COLUMN deployment_id text NOT NULL DEFAULT gen_random_uuid()::text`
     yield* sql`CREATE TABLE tenant_contents (
@@ -561,7 +603,6 @@ export const migrations = {
         FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
       )`
     yield* sql`CREATE INDEX actor_content_refs_hash ON actor_content_refs (tenant_id, hash)`
-    // Every tenant that ever uploaded, and when its content was last swept.
     yield* sql`CREATE TABLE tenant_content_sweeps (
         routing_key bigint NOT NULL,
         tenant_id text NOT NULL,
@@ -569,8 +610,6 @@ export const migrations = {
         PRIMARY KEY (routing_key, tenant_id)
       )`
 
-    // A query reads references and chunks as the tenant role when row-level
-    // security is on; uploads, grants, and the sweep keep the exempt connecting role.
     for (const table of [
       "actor_content_refs",
       "tenant_contents",
@@ -583,15 +622,10 @@ export const migrations = {
           WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
     }
 
-    // The longest turn of each actor type that declares content, which the
-    // sweep waits out; it only grows, so a runner still on an earlier
-    // deploy with longer turns stays covered.
     yield* sql`CREATE TABLE actor_content_types (
         actor_type text PRIMARY KEY,
         turn_ms bigint NOT NULL CHECK (turn_ms > 0)
       )`
-    // The sweep join shows how far each tenant's collection lags, and keeps
-    // the view from being automatically updatable.
     yield* sql`CREATE VIEW durable.contents AS
       SELECT c.tenant_id, c.routing_key, c.hash, c.size,
         c.granted_until_ms, to_timestamp(c.granted_until_ms::float8 / 1000) AS granted_until,
@@ -610,15 +644,17 @@ export const migrations = {
         ('workflow_steps', 1), ('views', 1), ('contents', 1), ('content_refs', 1)
       ) AS v(view_name, version)`
   }),
-  // Stored events and effect payloads carry the version of their class's
-  // migration chain they were written at; readers upcast from it. A settled
-  // effect row becomes its route intent and goes back to 0. The two tables
-  // let startup refuse a deploy that would strand a stored version:
-  // `actor_payload_versions` records each version some runtime has written,
-  // and `actor_payload_writers` is each runtime's heartbeat per version it
-  // writes, which a clear waits out before it scans.
-  // Nothing written before it has a recorded version, so a database that
-  // already holds events or effect rows is refused rather than guessed at.
+  /**
+   * Stored events and effect payloads carry the version of their class's migration chain they
+   * were written at; readers upcast from it. A settled effect row becomes its route intent and
+   * goes back to 0. The two tables let startup refuse a deploy that would strand a stored
+   * version: `actor_payload_versions` records each version some runtime has written, and
+   * `actor_payload_writers` is each runtime's heartbeat per version it writes, which a clear
+   * waits out before it scans. Nothing written before it has a recorded version, so a database
+   * that already holds events or effect rows is refused rather than guessed at.
+   *
+   * Columns are added at the end, which a view version allows.
+   */
   "0021_payload_versions": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
@@ -660,7 +696,6 @@ export const migrations = {
       )`
     yield* sql`CREATE INDEX actor_payload_writers_version
       ON actor_payload_writers (actor_type, kind, tag, version, refreshed_at_ms)`
-    // Columns are added at the end, which a view version allows.
     yield* sql`CREATE OR REPLACE VIEW durable.events AS
       SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key, p.placement,
         e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
@@ -685,8 +720,10 @@ export const migrations = {
       FROM actor_dead_letters d
       LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
   }),
-  // A parent-placed type routes through its parent type's placement, so the
-  // parent is part of the record a later build must match.
+  /**
+   * A parent-placed type routes through its parent type's placement, so the parent is part of
+   * the record a later build must match.
+   */
   "0022_parent_placement": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_placements ADD COLUMN parent_type text,
@@ -696,10 +733,14 @@ export const migrations = {
         ADD CONSTRAINT actor_placements_parent_type_check
           CHECK ((placement = 'parent') = (parent_type IS NOT NULL))`
   }),
-  // Every authorized operator action, and every authenticated one refused by
-  // scope. A repair writes its row in its own transaction, on the target
-  // actor's routing key, so the two commit together on one shard; a
-  // tenant-wide action uses the tenant's routing key. Rows are never pruned.
+  /**
+   * Every authorized operator action, and every authenticated one refused by scope. A repair
+   * writes its row in its own transaction, on the target actor's routing key, so the two
+   * commit together on one shard; a tenant-wide action uses the tenant's routing key. Rows are
+   * never pruned.
+   *
+   * The join keeps the view read-only, as every other `durable` view is.
+   */
   "0023_operator_audit": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE TABLE actor_operator_audit (
@@ -722,7 +763,6 @@ export const migrations = {
     yield* sql`CREATE POLICY durable_tenant ON actor_operator_audit
         USING (tenant_id = current_setting('durable.tenant', true))
         WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
-    // The join keeps the view read-only, as every other `durable` view is.
     yield* sql`CREATE VIEW durable.operator_audit AS
       SELECT a.tenant_id, a.actor_type, a.actor_id, a.routing_key, p.placement, a.audit_id,
         a.operator, a.action, a.target, a.capability, a.reason, a.outcome,
@@ -843,7 +883,9 @@ export const migrations = {
 /**
  * Runs `record` like `Migrator`, but first refuses a database where a
  * registered id below the latest applied one was never applied: `Migrator`
- * would skip it forever, leaving its tables missing.
+ * would skip it forever, leaving its tables missing. The check runs again
+ * after the migrations because a concurrent runner with fewer migrations can
+ * commit a higher id between the first check and the migration lock.
  */
 export const migrator = (
   record: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>>,
@@ -879,12 +921,11 @@ export const migrator = (
     }
   })
 
-  // A concurrent runner with fewer migrations can commit a higher id between
-  // the first check and the migration lock, so the result is checked again.
   return refuseSkipped.pipe(
     Effect.andThen(run),
     Effect.tap(() => refuseSkipped),
   )
 }
 
+/** Applies every framework migration not yet recorded in `actor_migrations`, refusing a database that skipped one. */
 export const migrate = migrator(migrations)

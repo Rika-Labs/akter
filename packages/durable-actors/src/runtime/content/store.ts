@@ -17,7 +17,7 @@ export const MAX_CONTENT_BYTES = 64 * 1024 * 1024
 export const CHUNK_BYTES = 1024 * 1024
 
 /** A tenant's content is swept at most this often. */
-export const SWEEP_INTERVAL_MS = 3_600_000
+const SWEEP_INTERVAL_MS = 3_600_000
 
 /** Candidates one sweep statement considers. */
 const SWEEP_BATCH = 500
@@ -25,6 +25,7 @@ const SWEEP_BATCH = 500
 /** Tenants one sweep pass claims. */
 const SWEEP_TENANTS = 100
 
+/** The runtime's content configuration: grant keys, sweep timing, and connection limits. */
 export interface ContentSettings {
   readonly grants: Grants
   /** How long unreferenced content outlives its last grant, before the turn and skew margins. */
@@ -68,17 +69,23 @@ const complete = (
     total += row.bytes.byteLength
   }
 
-  // Every content has chunk 0, even an empty one, so no rows means swept.
   return rows.length > 0 && total === size
     ? Option.some(rows.map((row) => Uint8Array.from(row.bytes)))
     : Option.none()
 }
 
+/**
+ * Tenant-scoped content storage: uploads, grant-checked reads, and the sweep
+ * of unreferenced content. Times come from the database clock plus the
+ * framework offset, read inside the statement that uses them so the time and
+ * the write come from one shard. Every content has chunk 0, even an empty
+ * one, so a content with no rows has been swept. The sweep's reference scan is
+ * a scatter across every actor shard on a sharded backend, and it deletes a
+ * content row and its chunks in one statement so they go together.
+ */
 export const tenantContent = (settings: ContentSettings) => {
   const { grants, hooks } = settings
 
-  // The database clock plus the framework offset, read inside the statement
-  // that uses it, so the time and the write come from one shard.
   const clock = (sql: SqlClient.SqlClient) =>
     sql`(floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint + ${settings.offset()})`
 
@@ -409,7 +416,6 @@ export const tenantContent = (settings: ContentSettings) => {
         const last = candidates.at(-1)!
         after = { granted: Number(last.granted_until_ms), hash: last.hash }
 
-        // On a sharded backend this is the scatter across every actor shard.
         const referenced = new Set(
           (yield* sql<{ hash: string }>`
             SELECT DISTINCT hash FROM actor_content_refs
@@ -427,7 +433,6 @@ export const tenantContent = (settings: ContentSettings) => {
 
         if (unreferenced.length === 0) continue
 
-        // One statement, so a content row and its chunks go together.
         const [gone] = yield* sql<{ deleted: number }>`
           WITH gone AS (
             DELETE FROM tenant_contents
@@ -450,4 +455,5 @@ export const tenantContent = (settings: ContentSettings) => {
   return { uploadBytes, uploadStream, grant, read, stream, sweep, verify: grants.verify }
 }
 
+/** The content store as the runtime consumes it. */
 export type ContentStoreImpl = ReturnType<typeof tenantContent>

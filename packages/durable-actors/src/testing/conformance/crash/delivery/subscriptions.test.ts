@@ -64,8 +64,6 @@ describe("subscription relay process death with Postgres", () => {
             yield* child.kill({ killSignal: "SIGKILL" })
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
 
-            // The source's event committed; the subscriber only past its own commit,
-            // and the killed relay's claim is still held.
             expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
               { posted: 1, applied, claimed: 1 },
             ])

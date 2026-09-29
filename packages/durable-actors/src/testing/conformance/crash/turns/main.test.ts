@@ -111,7 +111,6 @@ describe("process death with Postgres", () => {
 
             const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
-            // One identity, minted from the database clock and reused by the recovery process.
             const now = Number(
               (yield* Effect.promise(() =>
                 pool.query(

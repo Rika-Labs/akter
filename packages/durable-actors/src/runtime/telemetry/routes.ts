@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { PrometheusMetrics } from "effect/unstable/observability"
 
+/** Configuration for `Telemetry.serve`. */
 export interface TelemetryOptions {
   /** Prefix for the route. Default none: `/metrics`. */
   readonly basePath?: `/${string}`
@@ -31,4 +32,5 @@ const serve = (options: TelemetryOptions = {}) =>
     }),
   )
 
+/** Runner telemetry: `serve` mounts the Prometheus route. */
 export const Telemetry = { serve }

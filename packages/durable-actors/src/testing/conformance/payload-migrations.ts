@@ -67,7 +67,6 @@ const toV1 = Actor.migration(
   V0,
   V1,
   (v0) => {
-    // A negative amount stands for a value an upcast cannot convert.
     if (v0.amount < 0) throw new Error(`cannot convert ${v0.amount}`)
 
     return { orderId: v0.orderId, total: { amount: v0.amount, currency: "USD" } }
@@ -94,7 +93,6 @@ const migrationsOf = (variant: Variant): PayloadMigrations | undefined =>
  * `History` reads `Placed` back, and `Audit` follows `Placed` by order id.
  */
 const deployment = (variant: Variant) => {
-  // Typed as the new shape; `valueOf` builds the shape the variant really declares.
   const current = (variant.chain === "v0" ? V0 : V1) as typeof V1
 
   const options = {
@@ -140,11 +138,9 @@ const deployment = (variant: Variant) => {
     api: { Place, Note, History, Watch },
     internal: { Lost },
     policy: {
-      // Short, so a caller refused by a stale runtime gives up within a case.
       deliveryTimeout: "3 seconds",
       effects: {
         Charge: {
-          // Long enough for a case to change the row between the two attempts.
           retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
           onDeadLetter: Lost,
         },
@@ -213,7 +209,6 @@ const deployment = (variant: Variant) => {
     }),
   )
 
-  // Only a deployment that declares `Placed` can subscribe to it.
   const auditLayer = () => {
     const Delivery = Actor.Delivery({ source: Ledger, events: [Placed] })
 
@@ -459,6 +454,7 @@ const withCase = <E>(
     }).pipe(Effect.orDie),
   )
 
+/** Payload-version cases: the migration's guard on populated databases, stored payload versions, and upcasting of older events and effects through the chain. */
 export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "payload migrations: refuses 0021_payload_versions on a database that already holds events, outbox rows, or dead letters",
@@ -489,7 +485,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               "Migration 0021_payload_versions needs a database without events, outbox rows, or dead letters",
             )
 
-            // Nothing was applied, so an emptied database migrates.
             yield* sql`DELETE FROM actor_outbox`
             expect(yield* migrate).toEqual([
               [21, "payload_versions"],
@@ -535,7 +530,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
-          // Deliveries back off until the next deployment accepts them.
           seen.accepting = false
           yield* deploy(database, Audited.layer, Audited.place("o1", 500, HOUR))
 
@@ -622,8 +616,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
           database,
           Next.layer,
           Effect.gen(function* () {
-            // Every update of the effect row is copied, so the route intent's
-            // version is visible even after the intent is delivered.
             yield* query(
               (sql) =>
                 sql`CREATE TABLE payload_route_rows (kind text, command text, payload_version int)`,
@@ -709,13 +701,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             yield* Next.place("o1", 400)
             yield* eventually(Effect.sync(() => seen.executed.length > 0))
 
-            // The first attempt died, so the provider may have applied it.
-            // Its payload then stops decoding before the second attempt.
             yield* query(
               (sql) => sql`UPDATE actor_outbox SET payload_version = 9
                 WHERE actor_type = 'Ledger' AND kind = 'effect'`,
             )
-            // The route needs the decoded effect, so only the dead letter records it.
             yield* eventually(
               query(
                 (sql) => sql<{ n: number }>`SELECT count(*)::int AS n FROM actor_dead_letters
@@ -744,7 +733,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
       withCase(environment, (database) =>
         Effect.gen(function* () {
           yield* deploy(database, Base.layer, Base.place("o1", 100, HOUR))
-          // Each layer of the deployment checks what it reads; the first refusal stops it.
           expect(yield* refusal(database, Shortened.layer)).toContain("deploy refused")
 
           const shortened = yield* deploy(
@@ -802,7 +790,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
                 { kind: "event", version: 0, superseded: true, cleared: false },
                 { kind: "event", version: 1, superseded: false, cleared: false },
               ])
-              // Inside the horizon, the version is not considered at all.
               expect(yield* clearPayloads([Next.Ledger])).toEqual([])
             }),
           )
@@ -858,8 +845,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
           yield* reset
           const database = yield* environment.freshDatabase
 
-          // Runner 1 serves the next chain and starts once runner 0 writes
-          // version 0, as a deploy reaches a database an older runner serves.
           const afterRunner0 = Layer.effectDiscard(
             eventually(
               query(
@@ -896,12 +881,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             ])
             yield* on1(pastHorizon)
 
-            // Runner 0 still writes the superseded version, so no scan starts.
             expect(yield* on1(clearPayloads([Next.Ledger]))).toEqual([
               { actorType: "Ledger", tag: "Placed", version: 0, outcome: "writer" },
             ])
 
-            // Another session holds every writer row, so both runners' refreshes stall.
             yield* on1(
               Effect.gen(function* () {
                 const sql = yield* SqlClient.SqlClient
@@ -921,8 +904,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
                 yield* Deferred.await(locked)
                 yield* Effect.sleep("2500 millis")
 
-                // The caller retries an unavailable actor until its delivery
-                // timeout; every attempt is refused while the rows are stale.
                 const refused = yield* Next.place("o2", 100).pipe(Effect.flip)
                 expect(refused.reason._tag).toBe("Timeout")
                 expect(
@@ -993,7 +974,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             }),
           )
 
-          // A runner without the step stays refused: version 1 was written before the first phase.
           const oldReader = yield* refusal(database, Base.layer)
           expect(oldReader).toContain("version 1 recorded above this chain's current version 0")
         }),
@@ -1034,7 +1014,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             }),
           )
 
-          // Delivered, the removal passes the payload check.
           expect(
             yield* deploy(
               database,
@@ -1043,7 +1022,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             ),
           ).toEqual([])
 
-          // A workflow waiting on the class holds it the same way, through its manifest.
           const waiting = yield* caseDatabase(environment)
 
           const executionId = yield* deploy(
@@ -1092,7 +1070,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             database,
             NextAudited.layer,
             Effect.gen(function* () {
-              // The source redelivers the event its subscriber already applied.
               yield* query(
                 (sql) => sql`UPDATE actor_subscriptions SET delivered = 0, due_at_ms = 0
                   WHERE source_type = 'Ledger'`,

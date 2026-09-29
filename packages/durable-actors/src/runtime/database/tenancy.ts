@@ -73,7 +73,9 @@ const refuse = (message: string) =>
  * framework table with a `tenant_id` must carry the policy, including tables
  * later migrations add. Every inspection view must belong to a view-owner
  * role the policies bind, so the views filter by the reader's tenant, and
- * which `role` can't act as, so a turn can't alter or drop a view.
+ * which `role` can't act as, so a turn can't alter or drop a view. Setting
+ * the role in a transaction is the one proof that works for every membership
+ * rule.
  */
 export const checkRowLevelSecurity = Effect.fnUntraced(function* (role: string) {
   const sql = yield* SqlClient.SqlClient
@@ -86,7 +88,6 @@ export const checkRowLevelSecurity = Effect.fnUntraced(function* (role: string) 
   if (found.exempt)
     return yield* refuse(`role ${role} is a superuser or bypasses row-level security`)
 
-  // Taking the role is the one proof that works for every membership rule.
   yield* sql`SELECT set_config('role', ${role}, true)`.pipe(
     sql.withTransaction,
     Effect.catch(() => refuse(`this login cannot SET ROLE ${role}`)),

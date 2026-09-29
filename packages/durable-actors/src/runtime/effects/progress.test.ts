@@ -17,7 +17,6 @@ const attempt = (effectId: string, everyMs: number | undefined) => ({
   leaseUntil: () => 60_000,
 })
 
-// Runs `body` on TestClock against a sink that records every send, or with no sink at all.
 const record = (
   body: (sent: ReadonlyArray<ProgressMessage>) => Effect.Effect<void, never, Scope.Scope>,
   sink: "wants" | "rejects" | "none" = "wants",
@@ -112,12 +111,10 @@ it("caps a runner's progress messages per second across attempts and still sends
           expect(sent.length).toBe(2)
           yield* TestClock.adjust(1000)
           expect(sent.length).toBe(4)
-          // The bucket is empty again, yet closing still sends each last frame.
           yield* Effect.forEach(slots, (slot) => slot.offer(frame(2)))
           yield* Effect.forEach(slots, (slot) => slot.close)
           yield* TestClock.adjust(0)
           expect(sent.length).toBe(8)
-          // Those four frames were borrowed, so the next send waits them out.
           const late = yield* pool.open(attempt("e", 250))
           yield* late.offer(frame(3))
           yield* TestClock.adjust(2000)
@@ -180,7 +177,6 @@ it("closes a slot without waiting on or failing with its sink", () =>
 
       yield* run(() => Effect.die(new Error("sink down")))
       expect(closed).toEqual(["a"])
-      // A send that never completes delays the close message only by the bound.
       yield* run(() => Effect.never)
       expect(closed).toEqual(["a", "a"])
     }),
@@ -244,7 +240,6 @@ it("spends no token on a wakeup whose frame was already sent", () =>
           yield* TestClock.adjust(0)
           yield* a.offer(frame(2))
           yield* TestClock.adjust(0)
-          // Replaces frame 2 while its sender waits, leaving a second wakeup behind.
           yield* a.offer(frame(3))
           yield* TestClock.adjust(250)
           expect(sent.map((message) => message.seq)).toEqual([1, 3])
@@ -298,7 +293,6 @@ it("closes a slot and its effect within the bound while a send ignores interrupt
                   yield* slot.offer(frame(1))
                   yield* Deferred.await(started)
                   const start = yield* Clock.currentTimeMillis
-                  // Closing runs as the attempt's finalizer, where interruption is masked.
                   yield* Effect.void.pipe(
                     Effect.ensuring(
                       slot.close.pipe(
@@ -309,7 +303,6 @@ it("closes a slot and its effect within the bound while a send ignores interrupt
                   const took = (yield* Clock.currentTimeMillis) - start
                   yield* Effect.sleep(300)
                   expect(closed).toEqual(["a"])
-                  // Lets the stuck send finish so the pool's scope can close.
                   yield* Deferred.succeed(gate, undefined)
 
                   return took

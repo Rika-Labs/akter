@@ -18,10 +18,13 @@ export const DefectRecord = Schema.Struct({
   cause: Schema.String,
 })
 
+/** The decoded shape of a `DefectRecord`. */
 export type DefectRecord = typeof DefectRecord.Type
 
+/** An array of defect records, as the operator read returns them. */
 export const DefectRecords = Schema.Array(DefectRecord)
 
+/** Narrows a defect listing; `limit` keeps the newest matches. */
 export interface DefectFilter {
   readonly actorType?: string | undefined
   readonly sinceMs?: number | undefined
@@ -41,6 +44,7 @@ export class DefectLog extends Context.Service<
   }
 >()("@durable-actors/core/runtime/telemetry/defects/DefectLog") {}
 
+/** An in-memory `DefectLog` that keeps the newest `capacity` records. */
 export const boundedDefectLog = (capacity: number) => {
   const records: Array<DefectRecord> = []
 

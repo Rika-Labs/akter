@@ -63,6 +63,7 @@ export class DatabaseClock {
     return recent.reduce((best, sample) => (sample.rtt < best.rtt ? sample : best))
   }
 
+  /** Whether any response has been observed yet. */
   get isSampled(): boolean {
     return this.samples.length > 0
   }
@@ -79,10 +80,14 @@ export class DatabaseClock {
     return this.local() + (this.best()?.offset ?? 0)
   }
 
-  /** A v1 command id issued behind the estimated database clock, with the deployment's window. */
+  /**
+   * A v1 command id issued behind the estimated database clock, with the
+   * deployment's window. The lead is at least a second and the sample's round
+   * trip, but a short window caps it at a quarter of the window, never below the
+   * sample's error.
+   */
   mint(retryWindowMs: number, uuid: string): string {
     const rtt = this.best()?.rtt ?? 0
-    // A short window caps the lead at a quarter of it, but never below the sample's error.
     const lead = Math.max(rtt / 2, Math.min(Math.max(MIN_LEAD_MS, rtt), retryWindowMs / 4))
     const issuedAt = Math.floor(this.now() - lead)
 
@@ -101,6 +106,7 @@ export const lifetime = (commandId: string) => {
   return { issuedAt: Number(match[1]), expiresAt: Number(match[2]) }
 }
 
+/** How long before its expiry retries of an id stop. */
 const EXPIRY_MARGIN_MS = 1_000
 
 /**
@@ -124,10 +130,12 @@ const TOKEN = /^(0|[1-9]\d*)$/
 export class ConsistencyToken {
   private highest: string | undefined
 
+  /** The highest version seen, to send as `durable-min-version`; undefined until one is seen. */
   get value(): string | undefined {
     return this.highest
   }
 
+  /** Records a response's `durable-version` header; a missing or malformed one is ignored. */
   observe(value: string | null): void {
     if (value === null || !TOKEN.test(value)) return
 

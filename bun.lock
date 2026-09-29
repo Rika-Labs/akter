@@ -93,6 +93,7 @@
       "devDependencies": {
         "@durable-actors/chat": "workspace:*",
         "@durable-actors/console": "workspace:*",
+        "@durable-actors/counter": "workspace:*",
         "@playwright/test": "1.63.0",
       },
     },
@@ -149,11 +150,16 @@
       "name": "@durable-actors/counter",
       "dependencies": {
         "@durable-actors/core": "workspace:*",
+        "@durable-actors/react": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
+        "react": "catalog:",
+        "react-dom": "catalog:",
       },
       "devDependencies": {
         "@types/pg": "8.23.1",
+        "@types/react": "catalog:",
+        "@types/react-dom": "catalog:",
         "pg": "8.23.0",
         "vitest": "catalog:",
       },

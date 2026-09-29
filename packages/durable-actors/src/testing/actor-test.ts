@@ -48,8 +48,13 @@ import {
 } from "../runtime/effects/progress.ts"
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
-import { type ClusterOptions, clusterLayer } from "./cluster.ts"
+import { ActorCluster, type ClusterOptions, clusterLayer } from "./cluster.ts"
 import { type Simulation, type SimulationOptions, simulate } from "./simulate.ts"
+import {
+  type ClusterSimulation,
+  type ClusterSimulationOptions,
+  simulateCluster,
+} from "./simulate-cluster.ts"
 
 /**
  * Present while `ActorTest.cluster` builds one of its runners: the runner
@@ -97,6 +102,11 @@ export interface TestOptions {
 export const TEST_CONTENT_KEY = {
   id: "test",
   secret: Redacted.make("durable-actors test content grant key, never for production"),
+}
+
+export interface FaultOptions {
+  /** Only a turn running this command id takes the fault. */
+  readonly commandId?: string
 }
 
 export interface Inspection {
@@ -216,8 +226,16 @@ export class ActorTest extends Context.Service<
       Actors
     >
     readonly inspect: (ref: ActorRef) => Effect.Effect<Inspection>
-    readonly crashNext: (point: TurnPoint) => Effect.Effect<void>
-    readonly pauseNext: (point: TurnPoint) => Effect.Effect<{
+    /**
+     * Crashes the next turn to reach `point`, or with `commandId` the next
+     * turn of that command, which other commands' turns pass through.
+     */
+    readonly crashNext: (point: TurnPoint, options?: FaultOptions) => Effect.Effect<void>
+    /** Pauses the next turn to reach `point`, or with `commandId` the next turn of that command. */
+    readonly pauseNext: (
+      point: TurnPoint,
+      options?: FaultOptions,
+    ) => Effect.Effect<{
       readonly reached: Effect.Effect<void>
       readonly release: Effect.Effect<void>
     }>
@@ -294,14 +312,32 @@ export class ActorTest extends Context.Service<
       return yield* simulate(yield* ActorTest)(options, program)
     })
 
+  /**
+   * Runs `program` on the current `ActorTest.cluster` under a fault schedule
+   * drawn from `seed`, with runner kills, lost heartbeats, and primary
+   * failovers as well as crashes, then checks exactly-once receipts and
+   * outbox delivery; a failure dies with the seed that reproduces it.
+   */
+  static readonly simulateCluster = <E, R>(
+    options: ClusterSimulationOptions,
+    program: (simulation: ClusterSimulation) => Effect.Effect<void, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      return yield* simulateCluster(yield* ActorCluster)(options, program)
+    })
+
   static readonly layer = (options: TestOptions) =>
     Layer.unwrap(
       Effect.gen(function* () {
         const crypto = yield* Crypto.Crypto
         const member = Option.getOrUndefined(yield* Effect.serviceOption(ClusterMember))
         const tenant = member?.tenant ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie))
-        const faults = new Map<TurnPoint, Array<Effect.Effect<void>>>()
-        // Hooks the caller installed still see every point no fault is queued for.
+
+        const faults = new Map<
+          TurnPoint,
+          Array<{ readonly commandId: string | undefined; readonly fault: Effect.Effect<void> }>
+        >()
+
         const outer = yield* TurnHooks
 
         let clockOffset = 0
@@ -311,7 +347,15 @@ export class ActorTest extends Context.Service<
         const hooks = Layer.mergeAll(
           Layer.succeed(TurnHooks, {
             at: (point, request) =>
-              Effect.suspend(() => faults.get(point)?.shift() ?? outer.at(point, request)),
+              Effect.suspend(() => {
+                const queue = faults.get(point) ?? []
+
+                const index = queue.findIndex(
+                  ({ commandId }) => commandId === undefined || commandId === request.commandId,
+                )
+
+                return index < 0 ? outer.at(point, request) : queue.splice(index, 1)[0]!.fault
+              }),
           }),
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
           Layer.succeed(ProgressTap, {
@@ -330,8 +374,6 @@ export class ActorTest extends Context.Service<
                 return !dropped
               }),
           }),
-          // Tests sweep with `cleanup` when they choose, never on a timer
-          // that could fire between a case's `advance` and its assertions.
           Layer.succeed(CleanupHooks, {
             batchSize: 1000,
             afterBatch: Effect.void,
@@ -339,10 +381,14 @@ export class ActorTest extends Context.Service<
           }),
         )
 
-        const addFault = (point: TurnPoint, fault: Effect.Effect<void>) =>
+        const addFault = (
+          point: TurnPoint,
+          fault: Effect.Effect<void>,
+          options: FaultOptions | undefined,
+        ) =>
           Effect.sync(() => {
             const queue = faults.get(point) ?? []
-            queue.push(fault)
+            queue.push({ commandId: options?.commandId, fault })
             faults.set(point, queue)
           })
 
@@ -351,8 +397,6 @@ export class ActorTest extends Context.Service<
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
 
-            // Helpers address rows by the routing key production uses, so a row
-            // written under the wrong key is invisible here too.
             const storedRoutingKey = Effect.fnUntraced(function* (ref: ActorRef) {
               const placement = yield* recordedPlacement(ref.actor).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
@@ -396,15 +440,22 @@ export class ActorTest extends Context.Service<
 
                 return { system, inspect: service.inspect(system.ref) }
               }) as ActorTest["Service"]["actor"],
-              crashNext: (point) =>
-                addFault(point, Effect.die(RetryTurn.make({ message: `Injected ${point} crash` }))),
+              crashNext: (point, faultOptions) =>
+                addFault(
+                  point,
+                  Effect.die(RetryTurn.make({ message: `Injected ${point} crash` })),
+                  faultOptions,
+                ),
               clearFaults: Effect.sync(() => {
                 const left = Array.from(faults, ([point, queue]) => queue.map(() => point)).flat()
                 faults.clear()
 
                 return left
               }),
-              pauseNext: Effect.fnUntraced(function* (point: TurnPoint) {
+              pauseNext: Effect.fnUntraced(function* (
+                point: TurnPoint,
+                faultOptions?: FaultOptions,
+              ) {
                 const reached = yield* Deferred.make<void>()
                 const release = yield* Deferred.make<void>()
                 yield* addFault(
@@ -412,6 +463,7 @@ export class ActorTest extends Context.Service<
                   Deferred.succeed(reached, undefined).pipe(
                     Effect.andThen(Deferred.await(release)),
                   ),
+                  faultOptions,
                 )
 
                 return {
@@ -437,8 +489,6 @@ export class ActorTest extends Context.Service<
                   value: decompress(value),
                 }))
 
-                // One statement, so a turn committing meanwhile can't be counted
-                // in one table and not the other.
                 const [counted] = yield* sql<{ receipts: number; events: number }>`SELECT
                   (SELECT count(*)::integer FROM actor_receipts
                     WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}) AS receipts,
@@ -529,7 +579,6 @@ export class ActorTest extends Context.Service<
                     new Error("advance needs a finite, non-negative duration"),
                   )
 
-                // Running attempts keep renewing through the jump, so their leases move with it.
                 yield* internalActors.extendOutboxLeases(
                   millis,
                   Effect.sync(() => {
@@ -576,7 +625,6 @@ export class ActorTest extends Context.Service<
                   .open({
                     ref,
                     member: member.tag,
-                    // The caller the test runs as, so `Actor.as` opens as someone else.
                     caller: yield* CurrentCaller,
                     params: encoded,
                   })
@@ -667,8 +715,6 @@ export class ActorTest extends Context.Service<
           test.pipe(Layer.provide(runtime)),
           Layer.succeed(CurrentCaller, options.as ?? Anonymous.make({})),
           Layer.succeed(Tenant, tenant),
-          // Test code reads the same advanced clock as the runtime, so an id it
-          // builds from database time is live in the runtime's eyes too.
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
         ).pipe(
           Layer.provide(hooks),

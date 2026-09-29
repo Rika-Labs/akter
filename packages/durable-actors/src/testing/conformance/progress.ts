@@ -57,7 +57,6 @@ class Import extends Actor.effect<Import>()("Import", {
   progress: Schema.Struct({ done: Schema.Int }),
 }) {}
 
-// Declares no progress schema, so its executor has nothing to report.
 class Thumbnail extends Actor.effect<Thumbnail>()("Thumbnail", {
   input: { assetId: Schema.String },
 }) {}
@@ -68,7 +67,6 @@ const Thumb = Actor.command("Thumb", { input: Schema.String })
 
 const Transcoded = Actor.command("Transcoded", { input: Schema.String })
 
-// Receives Transcode and Import progress, so the pool sends it for this actor type.
 const Watch = Actor.connection("Watch", {
   server: Schema.String,
   progress: { effects: [Transcode, Import] },
@@ -188,8 +186,6 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
           const frames = framesOf(records)
           const effectId = fixture.progress.captured?.effectId
 
-          // Within one progressEvery window at most the first frame goes out
-          // immediately; the latest replaces the rest and is flushed at the end.
           expect([1, 2]).toContain(frames.length)
           expect(frames.at(-1)).toEqual({ attempt: 1, seq: 3, frame: upload })
           expect(frames.map((frame) => frame.seq)).toEqual(
@@ -488,7 +484,6 @@ export const studioExecutors = Studio.toEffectLayer(
       if (found === undefined) return job
       yield* Deferred.await(found.go)
 
-      // Each frame is its own send: they are spaced past `progressEvery`.
       for (const percent of found.frames) {
         yield* exec.progress(Render, { percent })
         yield* Effect.sleep("150 millis")
@@ -549,7 +544,6 @@ const withStudioCluster = <A, E>(
           runners: 3,
           shardLockExpiration: "3 seconds",
           actors: studioCommands,
-          // Only runner 2 runs executors, so progress always crosses runners.
           runnerActors: (runner) => (runner === 2 ? studioExecutors : Layer.empty),
           as: User.make({ subject: "alice" }),
         }),
@@ -579,6 +573,7 @@ const sentFor = (id: string, count: number) =>
     yield* Effect.sleep("300 millis")
   })
 
+/** Progress-delivery cases: frames stay in order, drop after cancellation, and coalesce per effect for a paused client. */
 export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps an effect's progress in order when its first frames on an activation arrive together",
@@ -601,7 +596,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           if (sent === undefined || !ProgressRecord.$is("Progress")(sent))
             return yield* Effect.die(new Error("No progress was sent"))
 
-          // A new activation gets a newer and an older frame at once; both run its effect check.
           yield* test.hibernate(studio.ref)
           yield* Effect.all(
             [test.resendProgress({ ...sent, seq: 5 }), test.resendProgress({ ...sent, seq: 3 })],
@@ -630,7 +624,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           const studio = yield* Studio.get("cancelled")
           const mine = yield* test.connect(studio.ref, Mine, undefined)
           const job = yield* plan("cancelled", [10])
-          // Without the pool's close, only the cancelling turn closes the effect on this activation.
           yield* test.dropProgress(
             (message) => message.ref.id === "cancelled" && !("seq" in message),
           )
@@ -651,7 +644,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           if (sent === undefined || !ProgressRecord.$is("Progress")(sent))
             return yield* Effect.die(new Error("No progress was sent"))
 
-          // A frame delayed past the cancel, then one on a new activation, which reads the row.
           yield* test.resendProgress({ ...sent, seq: sent.seq + 1 })
           expect(yield* quietFor(mine, "1 second")).toEqual([])
           yield* test.hibernate(studio.ref)
@@ -674,7 +666,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           yield* studio.Render("coalesce")
           yield* test.advance(0).pipe(Effect.forkChild)
           yield* Deferred.succeed(job.go, undefined)
-          // The client reads nothing while four frames reach its holder.
           yield* sentFor("coalesce", 4)
 
           expect(progressOf(yield* nextOf(busy))).toMatchObject({ seq: 4, frame: { percent: 40 } })
@@ -708,7 +699,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           )
           yield* Effect.sleep("300 millis")
 
-          // The frame waited behind nothing the client read; the route's end took it back.
           expect((yield* quietFor(busy, "1 second")).map(frameOf)).toEqual([
             Rendered.make({ output: "ended.png" }),
           ])
@@ -738,15 +728,12 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           )
           yield* test.advance(0).pipe(Effect.forkChild)
 
-          // Three effects' progress waits at the holder: three of its 1,024 outbound frames.
           for (const job of jobs.slice(0, 3)) yield* Deferred.succeed(job.go, undefined)
           yield* sentFor("evict", 3)
 
-          // 1,022 member frames need one more slot than is free: the oldest progress goes.
           yield* busy.send(1022)
           yield* Effect.sleep("1500 millis")
 
-          // The buffer is full, so a fourth effect's frame is dropped and the session stays open.
           yield* Deferred.succeed(jobs[3]!.go, undefined)
           yield* sentFor("evict", 4)
 
@@ -783,7 +770,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           yield* Deferred.succeed(job.go, undefined)
           yield* sentFor("moved", 1)
 
-          // A new activation takes a newer generation; its first broadcast retires the old progress.
           yield* test.hibernate(studio.ref)
           yield* studio.Announce("moved-on")
 
@@ -823,9 +809,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           yield* Deferred.succeed(job.finish, undefined)
           const seen = yield* quietFor(theirs, "1500 millis")
 
-          // Bob did not perform the effect: his `Mine` connection gets its frame and no progress.
           expect(seen.map(frameOf)).toEqual([Rendered.make({ output: "audience.png" })])
-          // A member that lists no effect receives only its frames.
           expect(frameOf(yield* nextOf(quiet))).toEqual(Rendered.make({ output: "audience.png" }))
         }),
       ),
@@ -854,7 +838,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(frameOf(arrived)).toEqual(Rendered.make({ output: "dropped.png" }))
 
-          // The route's frame leaves at its commit; the relay deletes the delivered row after it.
           const settled = yield* test.inspect(studio.ref).pipe(
             Effect.repeat({
               schedule: Schedule.spaced("20 millis"),
@@ -880,7 +863,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           const studio = yield* Studio.get("late")
           const mine = yield* test.connect(studio.ref, Mine, undefined)
           const job = yield* plan("late", [10])
-          // Without the pool's close, only the route turn closes the effect on this activation.
           yield* test.dropProgress((message) => message.ref.id === "late" && !("seq" in message))
           yield* studio.Render("late")
           yield* test.advance(0).pipe(Effect.forkChild)
@@ -896,7 +878,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           if (sent === undefined || !ProgressRecord.$is("Progress")(sent))
             return yield* Effect.die(new Error("No progress was sent"))
 
-          // A frame the network delayed past the route, then one on a new activation.
           yield* test.resendProgress({ ...sent, seq: sent.seq + 1 })
           expect(yield* quietFor(mine, "1 second")).toEqual([])
           yield* test.hibernate(studio.ref)
@@ -920,7 +901,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
             .Percent("streamed-one")
             .pipe(Stream.take(2), Stream.runCollect, Effect.forkChild)
 
-          // The subscription is open before any frame is reported.
           yield* Effect.sleep("300 millis")
           yield* studio.Render("streamed-one")
           yield* studio.Render("streamed-other")
@@ -965,7 +945,6 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
             Studio.get(target.id).pipe(Effect.flatMap((s) => s.Render(target.id))),
           )
 
-          // The owner parks before the executor on runner 2 reports.
           yield* cluster.on(1)(ActorTest.use((test) => test.hibernate(target)))
 
           const before = (yield* cluster.on(0)(ActorTest.use((test) => test.inspect(target))))

@@ -15,8 +15,6 @@ import { hashCanonical } from "../../runtime/turn/receipt.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
-// Fields declared out of key order, so the payload `{"value":{"b":2,"a":1}}`
-// differs from its JSONB normalization `{"value": {"a": 1, "b": 2}}`.
 const Pair = Schema.Struct({ b: Schema.Int, a: Schema.Int })
 
 const Sum = Actor.command("Sum", { input: Pair, output: Schema.Int })
@@ -29,7 +27,6 @@ const Adder = Actor.make("Adder", {
   api: { Sum, Echo },
 })
 
-// Counts handler runs so replay cases can prove a stored outcome is not recomputed.
 const executions = { count: 0 }
 
 export const admissionLayer = Adder.toLayer(
@@ -57,7 +54,6 @@ export const payloadHash = Effect.fnUntraced(function* (payload: string) {
   return yield* hashCanonical(rows[0]!.canonical)
 })
 
-// Writes the receipt row of `Sum({ b: 2, a: 1 })` as another runner's turn commits it.
 const writeReceipt = Effect.fnUntraced(function* (ref: ActorRef, commandId: string) {
   const sql = yield* SqlClient.SqlClient
   const hash = yield* payloadHash('{"value":{"b":2,"a":1}}')
@@ -69,6 +65,7 @@ const writeReceipt = Effect.fnUntraced(function* (ref: ActorRef, commandId: stri
       ${callerKey(User.make({ subject: "alice" }))}, '{"_tag":"Success","value":"{\\"value\\":40}"}', ${commandTimes(commandId).expiresAt})`
 })
 
+/** Receipt admission cases: replay by canonical payload hash, admission fenced inside the turn, and terminal rejection of malformed or expired identities. */
 export const admissionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "replays a receipt another runner stored by its canonical payload hash and conflicts on a changed payload",
@@ -101,8 +98,6 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* adder.Sum({ b: 0, a: 0 })).toBe(0)
           const before = executions.count
 
-          // The receipt lands after the pre-delivery read missed, so only the
-          // fenced admission statement inside the turn can resolve it.
           const deliver = Effect.fnUntraced(function* (input: typeof Pair.Type) {
             const id = yield* (yield* Actors).mintCommandId
             const pause = yield* test.pauseNext("beforeDelivery")

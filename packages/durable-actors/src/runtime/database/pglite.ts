@@ -20,8 +20,7 @@ const LOCK_NB = 4
 
 const O_RDWR = 2
 
-// A child process must not inherit the descriptor, or the lock would outlive
-// this process.
+/** Keeps a child process from inheriting the lock descriptor, which would outlive this process. */
 const O_CLOEXEC = process.platform === "darwin" ? 0x1000000 : 0o2000000
 
 const openLibc = () =>
@@ -33,9 +32,11 @@ const openLibc = () =>
 
 let libc: ReturnType<typeof openLibc> | undefined
 
-// PGlite takes no lock of its own, and two instances on one directory both
-// open it and write. An exclusive flock is released by the kernel when the
-// holder dies, even by SIGKILL, so a crash leaves nothing to clean up.
+/**
+ * PGlite takes no lock of its own, and two instances on one directory both
+ * open it and write. An exclusive flock is released by the kernel when the
+ * holder dies, even by SIGKILL, so a crash leaves nothing to clean up.
+ */
 const loadLibc = () => (libc ??= openLibc())
 
 const cString = (value: string) => new TextEncoder().encode(`${value}\0`)
@@ -47,6 +48,7 @@ const directoryOf = (dataDir: string | undefined) => {
   return dataDir.startsWith("file://") ? dataDir.slice("file://".length) : dataDir
 }
 
+/** Holds an exclusive lock on the directory's lock file for the scope; `Bun.write` also creates the directory, and the lock is on the open file, not its bytes. */
 const lockDataDir = (directory: string) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
@@ -58,7 +60,6 @@ const lockDataDir = (directory: string) =>
       const path = `${directory}/${LOCK_FILE}`
       const lock = Bun.file(path)
 
-      // Bun.write creates the directory too; the lock is on the open file, not its bytes.
       if (!(yield* Effect.promise(() => lock.exists())))
         yield* Effect.promise(() => Bun.write(path, ""))
 
@@ -92,9 +93,14 @@ const checkVersion = (directory: string) =>
   })
 
 /**
- * Own fresh instances; borrowed clients retain their original methods and
- * lifetime. A file-backed instance holds its data directory's lock from
- * before it opens until after it closes.
+ * A PGlite client layer that owns fresh instances; a borrowed `liveClient`
+ * keeps its original methods and lifetime. A file-backed instance holds its
+ * data directory's lock from before it opens until after it closes, refuses a
+ * directory another Postgres major wrote, and refuses `relaxedDurability`
+ * because it acknowledges a commit before its WAL is written, so a crash
+ * could lose a turn whose receipt the caller already has. Closing waits for
+ * in-flight queries: interrupted SQL fibers can leave protocol exchanges
+ * running, and closing PGlite during one deadlocks its single connection.
  */
 export const pglite = (config: PgliteClient.PgliteClientConfig = {}) => {
   if ("liveClient" in config) return PgliteClient.layer(config)
@@ -104,8 +110,6 @@ export const pglite = (config: PgliteClient.PgliteClientConfig = {}) => {
   return PgliteClient.layerFrom(
     Effect.gen(function* () {
       if (directory !== undefined) {
-        // Relaxed durability acknowledges a commit before its WAL is written,
-        // so a crash could lose a turn whose receipt the caller already has.
         if (config.relaxedDurability === true)
           return yield* Effect.die(
             new Error("A file-backed PGlite database refuses relaxedDurability"),
@@ -121,8 +125,6 @@ export const pglite = (config: PgliteClient.PgliteClientConfig = {}) => {
         Effect.sync(() => {
           const database = new PGlite(config)
           const query = database.query.bind(database)
-          // Interrupted SQL fibers can leave protocol exchanges running. Closing
-          // PGlite during one deadlocks its single connection; drain after users stop.
           database.query = (...args) => {
             const promise = (query as (...a: typeof args) => Promise<never>)(...args)
             pending.add(promise)

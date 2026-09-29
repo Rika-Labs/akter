@@ -1,8 +1,11 @@
-import { BunServices } from "@effect/platform-bun"
-import { Clock, Console, Effect, ManagedRuntime, Option, Stream } from "effect"
+import { BunCrypto, BunServices } from "@effect/platform-bun"
+import { Clock, Console, Effect, Layer, ManagedRuntime, Option, Redacted, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { afterAll, describe, expect, it } from "vitest"
 import { decompress } from "../../../../runtime/storage/codec.ts"
+import { ActorTest } from "../../../actor-test.ts"
+import { failoverSimulationSeeds } from "../../../simulate-cluster.ts"
+import { clusterScript, simulationActors, sums } from "../../simulation.ts"
 import { endpoint, freePort, open, query, synchronousPair, until } from "./failover.ts"
 
 const OPERATIONS = 120
@@ -91,7 +94,6 @@ describe("Postgres primary failover under load with separate runner processes", 
             return { process, start }
           })
 
-          // Concurrent first migrations race on a fresh database, so one runner migrates first.
           const first = yield* spawn()
           yield* until(
             Effect.sync(() => first.process.ready),
@@ -116,15 +118,11 @@ describe("Postgres primary failover under load with separate runner processes", 
 
           const drill = yield* open(pair.primaryPort, "drill")
 
-          // Read on the primary directly, past the held endpoint.
           const committed = query<{ command_id: string }>(
             drill,
             "SELECT command_id FROM actor_receipts WHERE command IN ('Increment', 'Send')",
           ).pipe(Effect.map((rows) => rows.map(({ command_id }) => command_id)))
 
-          // Held replies leave commits the primary made that no caller has
-          // heard of. Hold until at least one exists, then kill the primary
-          // with those replies still in flight: each is commit-unknown.
           const unknown = yield* Effect.gen(function* () {
             yield* database.hold
 
@@ -147,7 +145,6 @@ describe("Postgres primary failover under load with separate runner processes", 
             return yield* Effect.fail("no commit in flight")
           }).pipe(Effect.retry({ times: 50 }), Effect.orDie)
 
-          // Every commit the primary made visible, taken while replies are held.
           const visible = yield* committed
 
           expect(runners.some(({ process }) => process.finished)).toBe(false)
@@ -155,8 +152,6 @@ describe("Postgres primary failover under load with separate runner processes", 
           yield* pair.kill
           yield* database.sever
 
-          // Promotion follows at once: failure detection, which a real
-          // failover manager adds, is not part of this measure.
           expect(yield* pair.promote).toBe(true)
 
           const promotedAt = yield* Clock.currentTimeMillis
@@ -203,17 +198,12 @@ describe("Postgres primary failover under load with separate runner processes", 
           const of = (command: string) =>
             receipts.filter((receipt) => receipt.command === command).length
 
-          // Nothing a caller heard of, and nothing the old primary showed, is missing.
           const heard = acked()
           const lost = [...new Set([...heard, ...visible])].filter((id) => !ids.has(id))
           expect(lost).toEqual([])
 
-          // Each commit-unknown caller retried under the same id and was
-          // answered from its receipt.
           expect(unknown.filter((id) => !heard.has(id))).toEqual([])
 
-          // Every operation committed once: a duplicated transition would
-          // leave state ahead of its receipts.
           expect(runners.map(({ process }) => process.done.length)).toEqual([
             OPERATIONS,
             OPERATIONS,
@@ -225,8 +215,6 @@ describe("Postgres primary failover under load with separate runner processes", 
           expect(yield* total("DrillCounter")).toBe(of("Increment"))
           expect(yield* total("DrillReceiver")).toBe(of("Add"))
 
-          // Each runner's operation in flight at the kill waited out the
-          // failover; the last of them to commit marks every runner serving.
           const resumed = runners.map(({ process }) =>
             Math.min(
               ...process.done
@@ -241,12 +229,64 @@ describe("Postgres primary failover under load with separate runner processes", 
             ...runners.flatMap(({ process }) => process.done.map(({ latency }) => latency)),
           )
 
-          // Tagged so a drill run's recovery can be read from the test output.
           yield* Console.error(
             `FAILOVER increments=${of("Increment")} sends=${of("Send")} adds=${of("Add")} commitUnknown=${unknown.length} lost=${lost.length} promoteMs=${promotedAt - killedAt} recoveryMs=${recovery} worstCommandMs=${worst}`,
           )
         }).pipe(Effect.scoped, Effect.timeout("5 minutes")),
       ),
     330_000,
+  )
+
+  it(
+    "keeps receipts and outbox delivery exactly once when seeded commands meet a real primary failover on three runners",
+    () =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          for (const seed of yield* failoverSimulationSeeds) {
+            yield* Effect.gen(function* () {
+              const pair = yield* synchronousPair("simulation")
+              const endpointPort = yield* freePort
+              const database = yield* endpoint(endpointPort, pair.primaryPort)
+
+              const cluster = yield* Layer.build(
+                ActorTest.cluster({
+                  database: Redacted.make(
+                    `postgres://project@127.0.0.1:${endpointPort}/simulation`,
+                  ),
+                  runners: 3,
+                  shardLockExpiration: "3 seconds",
+                  actors: simulationActors,
+                  relay: { poll: "100 millis" },
+                }).pipe(Layer.provide(BunCrypto.layer)),
+              )
+
+              const { report, expected, held } = yield* clusterScript({
+                expect,
+                options: {
+                  seed: `f${seed}`,
+                  faults: ["primaryFailover", "crashAfterCommit", "dropReply"],
+                  primary: Effect.gen(function* () {
+                    yield* pair.kill
+                    yield* database.sever
+                    expect(yield* pair.promote).toBe(true)
+                    yield* database.route(pair.standbyPort)
+                  }).pipe(Effect.orDie),
+                },
+                commands: 8,
+              }).pipe(Effect.provideContext(cluster))
+
+              yield* Console.error(
+                `FAILOVER_SIMULATION seed=${seed} ${report.steps
+                  .map(({ fault, landed }) => `${fault}${landed ? "+landed" : ""}`)
+                  .join(" ")}`,
+              )
+
+              expect(report.steps.filter(({ fault }) => fault === "primaryFailover").length).toBe(1)
+              expect(held).toEqual(sums(expected))
+            }).pipe(Effect.scoped)
+          }
+        }).pipe(Effect.timeout("10 minutes")),
+      ),
+    660_000,
   )
 })
