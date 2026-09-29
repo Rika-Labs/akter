@@ -1298,17 +1298,15 @@ export const layer = (options: Options) => {
           : ({ ready: false, reason: "storage" } as const)
       }).pipe(Effect.provideContext(services)) satisfies Effect.Effect<Readiness>
 
-      const control = runtimeControl(
-        {
-          gate,
-          stopClaims: relay.stop,
-          attemptsIdle: relay.attemptsIdle,
-          interruptAttempts: relay.interruptAttempts,
-          stopBackground: sweeping === undefined ? Effect.void : Fiber.interrupt(sweeping),
-          serving,
-        },
+      const control = runtimeControl({
+        gate,
+        stopClaims: relay.stop,
+        attemptsIdle: relay.attemptsIdle,
+        interruptAttempts: relay.interruptAttempts,
+        stopBackground: sweeping === undefined ? Effect.void : Fiber.interrupt(sweeping),
+        serving,
         scope,
-      )
+      })
 
       return Context.make(Actors, publicActors).pipe(
         Context.add(InternalActors, internalActors),

@@ -285,10 +285,12 @@ const drainDuringTurn = (
     expect(yield* deposit(caller, id, 1)).toBe(1)
 
     const commandId = yield* mint(caller)
+
     const pause = yield* on(
       owner,
       ActorTest.use((test) => test.pauseNext(point)),
     )
+
     const call = yield* deposit(caller, id, 2, commandId).pipe(Effect.forkChild)
     yield* pause.reached
 
@@ -367,6 +369,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
                 const call = yield* held
                   .Deposit(2)
                   .pipe(Actor.commandId(commandId), Effect.ignore, Effect.forkChild)
+
                 yield* Deferred.await(started)
 
                 expect(yield* control.drain({ deadline: "100 millis" })).toEqual({
@@ -427,6 +430,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             owner,
             ActorTest.use((test) => test.pauseNext("beforeCommit")),
           )
+
           const call = yield* deposit(caller, id, 2).pipe(Effect.forkChild)
           yield* pause.reached
 
@@ -576,11 +580,10 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             ),
             "the interrupted effect to be taken over",
           )
-          expect(yield* stateOf(owner, id)).toMatchObject({
-            state: { letters: [{ attempts: 1, ambiguous: true }] },
-          })
           // No attempt succeeded, so no success route ever ran.
-          expect(JSON.stringify((yield* stateOf(owner, id)).state)).not.toContain("charged")
+          expect((yield* stateOf(owner, id)).state).toEqual({
+            letters: [{ attempts: 1, ambiguous: true }],
+          })
           expect(fixture.drain.attempts.length).toBe(1)
         }),
       ),
@@ -606,6 +609,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             drained,
             ActorTest.use((test) => test.pauseNext("afterClaim")),
           )
+
           yield* on(
             survivor,
             Sender.get(sender.id).pipe(
@@ -630,6 +634,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
                 SELECT due_at_ms <= ${sql.literal(NOW_MS)} AS due FROM actor_outbox WHERE kind = 'intent'`
             }).pipe(Effect.orDie),
           )
+
           expect(row).toEqual({ due: true })
 
           yield* on(

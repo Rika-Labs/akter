@@ -157,7 +157,10 @@ export interface Drainable {
  * The drain runs in the runtime's scope, so a caller that stops waiting
  * neither cancels it nor leaves a later caller without its report.
  */
-export const runtimeControl = (runtime: Drainable, scope: Scope.Scope) => {
+export const runtimeControl = ({
+  scope,
+  ...runtime
+}: Drainable & { readonly scope: Scope.Scope }) => {
   let state: "serving" | "draining" | "drained" = "serving"
   const report = Deferred.makeUnsafe<DrainReport>()
 
