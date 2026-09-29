@@ -1,6 +1,6 @@
 export { ActorTest, cleanup, sweepContent } from "./actor-test.ts"
 
-export type { TestConnection, TestMessage } from "./actor-test.ts"
+export type { TestActorOptions, TestConnection, TestMessage } from "./actor-test.ts"
 
 export { ActorCluster } from "./cluster.ts"
 

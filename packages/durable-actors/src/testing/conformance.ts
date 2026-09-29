@@ -59,6 +59,7 @@ import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
 import { OperatorRuntime } from "../runtime/operators/repair.ts"
+import { exportConformance } from "./conformance/export.ts"
 import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
@@ -1488,6 +1489,7 @@ export const conformanceGroups = {
   readYourWrites: readYourWritesConformance,
   observability: observabilityConformance,
   operator: operatorConformance,
+  export: exportConformance,
   placement: placementConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
 

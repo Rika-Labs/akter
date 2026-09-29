@@ -10,6 +10,8 @@ import { type Placement, routingKey } from "../storage/codec.ts"
 import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { OutboxRuntime, outboxStatements } from "../turn/outbox.ts"
+import { exportActor, type ExportRefused } from "./export.ts"
+import type { Seed } from "./seed.ts"
 import {
   type AuditEntry,
   type AuditRecord,
@@ -73,6 +75,11 @@ export class OperatorRuntime extends Context.Service<
     readonly receipt: (
       target: ActorTarget & { readonly commandId: string },
     ) => Effect.Effect<Option.Option<ReceiptView>>
+    /**
+     * One actor's seed, read in a single read-only snapshot; `None` when the
+     * tenant has no such actor.
+     */
+    readonly exportSeed: (target: ActorTarget) => Effect.Effect<Option.Option<Seed>, ExportRefused>
     readonly retry: (request: {
       readonly target: ActorTarget
       readonly effectId: string
@@ -236,6 +243,11 @@ export const operatorRuntime = (deps: {
         }))
       }).pipe(
         Effect.catchTag("OperatorNotFound", () => Effect.succeedNone),
+        provided,
+      ),
+    exportSeed: (target) =>
+      Queries.readOnly(target.tenant)(exportActor(target)).pipe(
+        Effect.catchIf(SqlError.isSqlError, Effect.die),
         provided,
       ),
     retry: ({ target, effectId, providerChecked, audit }) =>
