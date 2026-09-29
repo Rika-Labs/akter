@@ -32,10 +32,11 @@ const seedSleepers = Effect.fnUntraced(function* (count: number, dueAt: number) 
   yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
     SELECT ((i % 256) - 128)::bigint << 56 | i, 'sleepers', 'Sleeper', i::text
     FROM generate_series(1, ${count}::int) AS i`
-  yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-      actor_type, actor_id, target_type, target_id, command, payload, caller)
+  yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+      scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command, payload,
+      caller)
     SELECT ((i % 256) - 128)::bigint << 56 | i, 'sleep-' || i, (i % 256) - 128, ${dueAt}::bigint,
-      'sleepers', 'Sleeper', i::text, 'Sleeper', i::text, 'Wake', '{}', '{}'
+      ${dueAt}::bigint, 'sleepers', 'Sleeper', i::text, 'Sleeper', i::text, 'Wake', '{}', '{}'
     FROM generate_series(1, ${count}::int) AS i`
   yield* sql`ANALYZE actor_outbox`
 }, Effect.orDie)
