@@ -9,9 +9,9 @@ The intended deployment has one shared relational database and one `Actors.layer
 
 - **Embedded:** provide `Actors.layer` from `@durable-actors/core/runtime` inside the application.
 - **Served:** add `Actor.serve` for HTTP, WebSocket, SSE, and OpenAPI access.
-- **Hosted:** deploy served containers on our runners behind `apps/edge`, with Neki and parked sockets.
+- **Hosted:** deploy served containers on our runners behind `apps/edge`, with Neki; runners hold parked sockets.
 
-The hosted control plane uses `packages/deployments`: `Deployment`, the `Runners` singleton, and `UsageMeter` run embedded in `apps/api`. `apps/edge` resolves deployment hosts to runners, converts API keys to `Principal`, enforces limits, and owns parked client sockets. Infrastructure is Alchemy plus Railway.
+The hosted control plane uses `packages/deployments`: `Deployment`, the `Runners` singleton, and `UsageMeter` run embedded in `apps/api`. `apps/edge` resolves deployment hosts to runners, converts API keys to `Principal`, routes each tenant to its home region from the tenant directory, signs a per-request assertion, enforces limits, and proxies client sockets to the runners that hold them ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)). Infrastructure is Alchemy plus Railway.
 
 The planned `durable` CLI lives in `apps/cli`: `login`, `dev`, `deploy`, `migrate`, and `dead-letters`. These commands are not implemented; the package has no bin until the first command exists. Customer-served deployments do not require the hosted control plane.
 
@@ -42,3 +42,22 @@ Drain makes the runner unready, stops new local admission and acquisition of add
 Stopping an executor cannot undo a completed external call; ambiguous provider outcomes require reconciliation or proven idempotency. Parked sockets survive activation sleep, not transport-process shutdown. Draining one runner is not deployment-wide quiescence: [restore](04-backup-restore.md) also pauses ingress and all relevant execution.
 
 `RuntimeControl` remains unimplemented. Its concrete signatures and default deadline still need specification; no example timeout is an accepted default or availability guarantee. Verification must exercise both clean and deadline-expired drain, new-work rejection, interrupted transactions, pending delivery, safe takeover, and provider ambiguity.
+
+## The hosted tenant directory
+
+Implemented (M4.8, [ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md) §5): the control-plane database holds each hosted `deployment` with its `primary_region`, and the `tenant_directory` table maps `(deployment, tenant)` to `{ region, state, version }` (`packages/postgres/migrations/0002_tenant_directory.sql`). A tenant with no row lives in its deployment's primary region, and no request writes a row.
+
+Only the `TenantHome` actor in `packages/deployments`, keyed by `<deployment>/<tenant>`, writes the directory, so every change is a receipted command attributed to its operator. Its `Create` command records the tenant's home and returns it again when repeated with the same region. It refuses an unknown deployment (`UnknownDeployment`), any region but the primary (`NotPrimaryRegion`), and a second region for a tenant that already has one (`TenantAlreadyHomed`), because moves wait for L.1. A trigger gives every insert and update the next `version` from one sequence, under a transaction-scoped advisory lock, so versions are assigned in commit order. A reader that holds every row up to version `v` can poll for rows above `v` and never skip a change that commits later with a lower number.
+
+The operator command runs the control-plane actors embedded against the control-plane database:
+
+```sh
+durable tenants create acme --deployment dep-1 --region us-east \
+  --database-url "$CONTROL_PLANE_DATABASE_URL" --operator ops@example.com
+```
+
+It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `durable tenants move` arrives with L.1.
+
+## Embedded PGlite in production
+
+Target, built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). One process embeds `Actors.layer`, and optionally `Actor.serve`, with `Database.pglite({ dataDir })` on a local Linux or macOS filesystem. The layer locks the `dataDir`, so a second process fails with `DataDirLocked`. It recovers from a process crash to the last commit, but power-loss durability is not claimed. It runs one turn or query at a time on one connection, with no replicas, failover, or multi-runner support. Back it up by stopping the process and copying the `dataDir`. Move to Postgres with `DATABASE_URL` when those limits bind.

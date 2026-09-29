@@ -1,4 +1,4 @@
-import { Cause, Duration, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
+import { Cause, DateTime, Duration, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Intent, NotCreated, System, User } from "../../index.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
@@ -36,9 +36,9 @@ const Beat = Actor.command("Beat")
 
 const Yearly = Actor.command("Yearly")
 
-const EVERY_MINUTE = "$cron:* * * * *"
+const EVERY_MINUTE = "$cron:UTC * * * * *"
 
-const YEARLY = "$cron:0 0 1 1 *"
+const YEARLY = "$cron:UTC 0 0 1 1 *"
 
 const SKIP = "10 minutes"
 
@@ -83,6 +83,38 @@ const Beacon = Actor.make("CronBeacon", {
   api: {},
   internal: { Pulse },
   policy: { cron: { "* * * * *": Pulse } },
+})
+
+const Gap = Actor.command("Gap")
+
+const Fold = Actor.command("Fold")
+
+const FoldUtc = Actor.command("FoldUtc")
+
+const Interval = Actor.command("Interval")
+
+const GAP = "$cron:America/New_York 30 2 * * *"
+
+const FOLD = "$cron:America/New_York 30 1 * * *"
+
+const FOLD_UTC = "$cron:UTC 30 1 * * *"
+
+const INTERVAL = "$cron:@every 300000ms"
+
+/** Ticks in America/New_York across its real daylight-saving transitions, beside UTC and an interval. */
+const Zoned = Actor.make("CronZoned", {
+  key: Schema.String,
+  api: { Open },
+  internal: { Gap, Fold, FoldUtc, Interval },
+  policy: {
+    cron: {
+      "CRON_TZ=America/New_York 30 2 * * *": Gap,
+      "CRON_TZ=America/New_York 30 1 * * *": Fold,
+      "30 1 * * *": FoldUtc,
+      "@every 5 minutes": Interval,
+    },
+    cronSkipIfOlderThan: "1 hour",
+  },
 })
 
 const record = (ref: ActorRef, commandId: string, caller: Caller) =>
@@ -152,7 +184,22 @@ const BeaconLive = Beacon.toLayer(
   }),
 )
 
-const CronLive = Layer.mergeAll(HeartbeatLive, GatedLive, SecondlyLive)
+const recordZoned = Effect.gen(function* () {
+  const turn = yield* Zoned.Turn
+  yield* record(turn.ref, turn.commandId, turn.caller)
+})
+
+const ZonedLive = Zoned.toLayer(
+  Effect.succeed({
+    Open: () => Effect.void,
+    Gap: () => recordZoned,
+    Fold: () => recordZoned,
+    FoldUtc: () => recordZoned,
+    Interval: () => recordZoned,
+  }),
+)
+
+const CronLive = Layer.mergeAll(HeartbeatLive, GatedLive, SecondlyLive, ZonedLive)
 
 /**
  * One runtime of the cron actors for one case. The singleton's minutely tick
@@ -230,6 +277,45 @@ const nextMinuteAfter = (row: TickRow | undefined, now: number) =>
   Number(row.scheduled) === Number(row.due) &&
   Number(row.scheduled) === (Math.floor(now / MINUTE) + 1) * MINUTE
 
+const HOUR = 60 * MINUTE
+
+const DAY = 24 * HOUR
+
+/** Midnight UTC of the `nth` Sunday of `month` (0-based) in `year`. */
+const nthSunday = (year: number, month: number, nth: number) => {
+  const weekday = DateTime.getPartUtc(DateTime.makeUnsafe(Date.UTC(year, month, 1)), "weekDay")
+
+  return Date.UTC(year, month, 1 + ((7 - weekday) % 7) + 7 * (nth - 1))
+}
+
+// America/New_York follows the US rules in force since 2007: clocks jump from
+// 02:00 EST to 03:00 EDT (07:00Z) on the second Sunday of March and fall back
+// from 02:00 EDT to 01:00 EST (06:00Z) on the first Sunday of November.
+const springForward = (year: number) => nthSunday(year, 2, 2) + 7 * HOUR
+
+const fallBack = (year: number) => nthSunday(year, 10, 1) + 6 * HOUR
+
+/** The first transition at least two days after `now`, so a case can open its actor before it. */
+const upcoming = (transition: (year: number) => number, now: number) => {
+  let year = DateTime.getPartUtc(DateTime.makeUnsafe(now), "year")
+
+  while (transition(year) < now + 2 * DAY) year++
+
+  return transition(year)
+}
+
+const tickOf = (rows: ReadonlyArray<TickRow>, key: string) => {
+  const row = rows.find((candidate) => candidate.timer_key === key)
+
+  return row === undefined ? undefined : { id: row.intent_id, scheduled: Number(row.scheduled) }
+}
+
+const advanceTo = (at: number) =>
+  Effect.gen(function* () {
+    const test = yield* ActorTest
+    yield* test.advance(Math.max(0, at - (yield* nowMs)))
+  })
+
 const expiresAt = (row: TickRow) => Number(row.intent_id.split(".")[2])
 
 const receipts = (ref: ActorRef, command: string) =>
@@ -283,9 +369,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(yield* ticksOf(gated.ref)).toEqual([])
           yield* gated.Open()
-          expect((yield* ticksOf(gated.ref)).map((row) => row.timer_key)).toEqual([
-            "$cron:* * * * *",
-          ])
+          expect((yield* ticksOf(gated.ref)).map((row) => row.timer_key)).toEqual([EVERY_MINUTE])
         }),
       ),
   },
@@ -500,103 +584,6 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "delivers a pending keyed intent staged under a `$cron:` key before the key was reserved",
-    run: ({ expect, environment }) =>
-      withRuntime(
-        environment,
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const sql = yield* SqlClient.SqlClient
-          const heartbeat = yield* Heartbeat.get("legacy-key")
-          yield* heartbeat.Open()
-          const { ref } = heartbeat
-          const now = yield* nowMs
-          const id = `v1.${now}.${now}.00000000-0000-4000-8000-000000000001`
-
-          const caller = yield* Schema.encodeEffect(CallerJson)(
-            System.make({ source: "timer", ref }),
-          ).pipe(Effect.orDie)
-
-          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
-              scheduled_at_ms, tenant_id, actor_type, actor_id, timer_key, target_type,
-              target_id, command, payload, caller)
-            SELECT routing_key, ${id}, bucket, ${now}, ${now}, tenant_id,
-              actor_type, actor_id, '$cron:reminder', target_type, target_id, command, payload,
-              ${caller}
-            FROM actor_outbox WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor}
-              AND actor_id = ${ref.id} AND timer_key = ${EVERY_MINUTE}`.pipe(Effect.orDie)
-
-          yield* test.advance(1)
-
-          expect(firedFor("legacy-key").filter((run) => run.commandId === id)).toEqual([
-            { actor: ref.actor, id: ref.id, commandId: id, source: "timer" },
-          ])
-          expect((yield* ticksOf(ref)).map((row) => row.timer_key)).toEqual([YEARLY, EVERY_MINUTE])
-        }),
-      ),
-  },
-  {
-    name: "schedules an entry whose exact key a pending pre-reservation keyed intent holds",
-    run: ({ expect, environment }) =>
-      withRuntime(
-        environment,
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const sql = yield* SqlClient.SqlClient
-          const heartbeat = yield* Heartbeat.get("legacy-canonical")
-          yield* heartbeat.Open()
-          const { ref } = heartbeat
-          const now = yield* nowMs
-          const legacyDue = now + 5 * MINUTE
-          const id = `v1.${now}.${legacyDue + RETRY_WINDOW_MS}.00000000-0000-4000-8000-000000000002`
-
-          const caller = yield* Schema.encodeEffect(CallerJson)(
-            System.make({ source: "timer", ref }),
-          ).pipe(Effect.orDie)
-
-          // An older deployment's `Intent.key("$cron:* * * * *")` holds the
-          // entry's canonical key, and the actor has no cron tick for it.
-          yield* sql`DELETE FROM actor_outbox WHERE tenant_id = ${ref.tenant}
-            AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
-            AND timer_key = ${EVERY_MINUTE}`.pipe(Effect.orDie)
-          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
-              scheduled_at_ms, tenant_id, actor_type, actor_id, timer_key, target_type,
-              target_id, command, payload, caller)
-            SELECT routing_key, ${id}, bucket, ${legacyDue}, ${legacyDue}, tenant_id,
-              actor_type, actor_id, ${EVERY_MINUTE}, target_type, target_id, 'Beat', payload,
-              ${caller}
-            FROM actor_outbox WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor}
-              AND actor_id = ${ref.id} AND timer_key = ${YEARLY}`.pipe(Effect.orDie)
-
-          const legacy = sql<{ timer_key: string | null; due: string }>`
-            SELECT timer_key, due_at_ms::text AS due FROM actor_outbox
-            WHERE tenant_id = ${ref.tenant} AND actor_type = ${ref.actor}
-              AND actor_id = ${ref.id} AND intent_id = ${id}`.pipe(Effect.orDie)
-
-          // The next generation's first turn schedules the entry and leaves the
-          // legacy intent due as a plain intent.
-          yield* test.invalidate(ref)
-          yield* heartbeat.Open()
-          const [, tick] = yield* ticksOf(ref)
-          expect(tick).toMatchObject({ timer_key: EVERY_MINUTE, command: "Beat" })
-          expect(tick!.intent_id).not.toBe(id)
-          expect(nextMinuteAfter(tick, yield* nowMs)).toBe(true)
-          const tickCaller = yield* Schema.decodeEffect(CallerJson)(tick!.caller)
-          expect(Schema.is(System)(tickCaller) && tickCaller.source).toBe("cron")
-          expect(yield* legacy).toEqual([{ timer_key: null, due: String(legacyDue) }])
-
-          // The legacy intent fires once as its own caller, and the entry keeps ticking.
-          yield* test.advance("6 minutes")
-          expect(firedFor("legacy-canonical").filter((run) => run.commandId === id)).toEqual([
-            { actor: ref.actor, id: ref.id, commandId: id, source: "timer" },
-          ])
-          expect(yield* legacy).toEqual([])
-          expect(firedFor("legacy-canonical").some((run) => run.source === "cron")).toBe(true)
-          expect((yield* ticksOf(ref)).map((row) => row.timer_key)).toEqual([YEARLY, EVERY_MINUTE])
-        }),
-      ),
-  },
-  {
     name: "restores a missing entry's tick on the actor's next activation",
     run: ({ expect, environment }) =>
       withRuntime(
@@ -632,7 +619,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           const heartbeat = yield* Heartbeat.get("removed")
           yield* heartbeat.Open()
           const { ref } = heartbeat
-          const removed = "$cron:5 4 * * *"
+          const removed = "$cron:UTC 5 4 * * *"
 
           // A tick an earlier deployment wrote for an entry this one dropped.
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, kind, bucket, due_at_ms,
@@ -674,7 +661,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           const ref = (yield* Beacon.get()).ref
           expect(ref.tenant).toBe(test.tenant)
           const [row] = yield* ticksOf(ref)
-          expect(row).toMatchObject({ timer_key: "$cron:* * * * *", command: "Pulse" })
+          expect(row).toMatchObject({ timer_key: EVERY_MINUTE, command: "Pulse" })
           expect(yield* test.inspect(ref)).toMatchObject({ receipts: 0 })
 
           yield* test.advance("1 minute")
@@ -713,6 +700,134 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* claim(["CronGated"])).toEqual([])
           const claimed = yield* claim(["CronHeartbeat"])
           expect(claimed.map((row) => row.command).toSorted()).toEqual(["Beat", "Yearly"])
+        }),
+      ),
+  },
+  {
+    name: "fires a wall-clock time skipped by a spring-forward gap once, at the first instant after the gap",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const zoned = yield* Zoned.get("spring-gap")
+          yield* zoned.Open()
+          const { ref } = zoned
+          const gapEnd = upcoming(springForward, yield* nowMs)
+
+          // Every pending tick is long past its skip window here, so each is
+          // rewritten to its next time; 02:30 on this day does not exist.
+          yield* advanceTo(gapEnd - MINUTE)
+          const pending = tickOf(yield* ticksOf(ref), GAP)
+          expect(pending?.scheduled).toBe(gapEnd)
+          expect(yield* receipts(ref, "Gap")).toBe(0)
+
+          yield* advanceTo(gapEnd)
+          expect(firedFor("spring-gap").filter((run) => run.commandId === pending!.id)).toEqual([
+            { actor: "CronZoned", id: "spring-gap", commandId: pending!.id, source: "cron" },
+          ])
+          // The next day's 02:30 EDT, not 03:30 EDT on the gap's day.
+          expect(tickOf(yield* ticksOf(ref), GAP)?.scheduled).toBe(gapEnd - 30 * MINUTE + DAY)
+
+          yield* advanceTo(gapEnd + HOUR + MINUTE)
+          expect(yield* receipts(ref, "Gap")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "fires a wall-clock time repeated by a fall-back transition once, at its first occurrence",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const zoned = yield* Zoned.get("fall-fold")
+          yield* zoned.Open()
+          const { ref } = zoned
+          const transition = upcoming(fallBack, yield* nowMs)
+          const firstOccurrence = transition - 30 * MINUTE
+          const secondOccurrence = transition + 30 * MINUTE
+
+          yield* advanceTo(firstOccurrence - MINUTE)
+          const pending = tickOf(yield* ticksOf(ref), FOLD)
+          expect(pending?.scheduled).toBe(firstOccurrence)
+
+          // The runtime is down across 01:30 EDT and comes back at 01:10 EST,
+          // inside the repeated hour and the skip window: the tick fires once,
+          // late, and its rewrite skips 01:30 EST.
+          yield* advanceTo(transition + 10 * MINUTE)
+          expect(yield* receipts(ref, "Fold")).toBe(1)
+          expect(firedFor("fall-fold").filter((run) => run.commandId === pending!.id).length).toBe(
+            1,
+          )
+          expect(tickOf(yield* ticksOf(ref), FOLD)?.scheduled).toBe(secondOccurrence + DAY)
+
+          yield* advanceTo(secondOccurrence + MINUTE)
+          expect(yield* receipts(ref, "Fold")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "keeps one expression in two zones as two entries that fire at their own times",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const zoned = yield* Zoned.get("two-zones")
+          yield* zoned.Open()
+          const { ref } = zoned
+          const transition = upcoming(fallBack, yield* nowMs)
+          // 01:30 UTC on the day after the transition's UTC date.
+          const nextUtc = transition - 6 * HOUR + DAY + 90 * MINUTE
+
+          yield* advanceTo(transition - 31 * MINUTE)
+          const rows = yield* ticksOf(ref)
+          const newYork = tickOf(rows, FOLD)
+          const utc = tickOf(rows, FOLD_UTC)
+          expect(newYork?.scheduled).toBe(transition - 30 * MINUTE)
+          expect(utc?.scheduled).toBe(nextUtc)
+          expect(newYork?.id).not.toBe(utc?.id)
+
+          yield* advanceTo(transition - 30 * MINUTE)
+          expect([yield* receipts(ref, "Fold"), yield* receipts(ref, "FoldUtc")]).toEqual([1, 0])
+          yield* advanceTo(nextUtc)
+          expect([yield* receipts(ref, "Fold"), yield* receipts(ref, "FoldUtc")]).toEqual([1, 1])
+          expect(
+            firedFor("two-zones")
+              .map((run) => run.commandId)
+              .filter((id) => id === newYork!.id || id === utc!.id)
+              .toSorted(),
+          ).toEqual([newYork!.id, utc!.id].toSorted())
+        }),
+      ),
+  },
+  {
+    name: "fires a fixed interval at multiples of its length and once after downtime",
+    run: ({ expect, environment }) =>
+      withRuntime(
+        environment,
+        Effect.gen(function* () {
+          const zoned = yield* Zoned.get("interval")
+          const opened = yield* nowMs
+          yield* zoned.Open()
+          const { ref } = zoned
+          const interval = 5 * MINUTE
+          const first = tickOf(yield* ticksOf(ref), INTERVAL)!
+          expect(first.scheduled % interval).toBe(0)
+          expect(first.scheduled > opened && first.scheduled <= opened + interval + 30_000).toBe(
+            true,
+          )
+
+          yield* advanceTo(first.scheduled)
+          expect(yield* receipts(ref, "Interval")).toBe(1)
+          const second = tickOf(yield* ticksOf(ref), INTERVAL)!
+          expect(second.scheduled).toBe(first.scheduled + interval)
+
+          // Down for four intervals and a half, inside the skip window: one tick,
+          // then the next multiple after now rather than the missed ones.
+          yield* advanceTo(second.scheduled + 4 * interval + interval / 2)
+          expect(yield* receipts(ref, "Interval")).toBe(2)
+          expect(tickOf(yield* ticksOf(ref), INTERVAL)?.scheduled).toBe(
+            second.scheduled + 5 * interval,
+          )
         }),
       ),
   },

@@ -10,12 +10,12 @@
 - **Activation:** disposable in-memory process representation of an actor.
 - **Actor definition:** the one data object passed to `Actor.make`, with sections `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, `api`, `internal`, and `policy`.
 - **Named actor:** actor whose `key` is an id schema, resolved with `X.get(id)`.
-- **Minted actor:** actor with no `key`; `X.create()` mints its id outside a turn, or `turn.mint` derives it inside the parent's turn (ADR 0025), and no row is written until its first turn.
+- **Minted actor:** actor with no `key`; `X.create()` mints its id outside a turn, or `turn.mint` derives it inside the parent's turn (ADR 0025), and no row is written until its first turn. A parent-placed minted child's id wraps that UUIDv8 as `c1.<len>.<parent>.<uuid>`, and it has no `X.create()` (ADR 0033).
 - **Singleton:** actor with `key: Actor.singleton`, resolved with `X.get()`, and active at most once cluster-wide.
 - **Generation:** fenced authority epoch for an activation.
 - **Turn:** one bounded command execution and its transaction, which a turn batch shares.
 - **Turn batch:** consecutive turns for one actor, already waiting in its mailbox, committed in one transaction; each command keeps its own receipt and failure isolation.
-- **Placement key:** the value whose rows share a shard: the tenant by default, or the actor (parent-actor placement is target).
+- **Placement key:** the value whose rows share a shard: the tenant by default, the actor, or under `placement: { parent: P }`, the actor-placed root of the parent chain, whose id each child id carries as `c1.<len>.<parent id>.<local id>` (ADR 0033).
 - **Routing key:** framework-computed 64-bit hash of a placement key, stored on every actor-owned row and used for shard placement.
 - **Home region:** the deployment region whose database holds a tenant's actors and rows; assigned only by an operator.
 - **Query tier:** local (one actor), group (one placement key, one shard), or fleet (declared `Fleet.view`, eventually consistent, outside turns).

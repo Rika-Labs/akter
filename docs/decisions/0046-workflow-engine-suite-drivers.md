@@ -1,6 +1,6 @@
 # ADR 0046: The shared workflow-engine suite runs through engine drivers
 
-**Status:** proposed (2026-09-28).
+**Status:** accepted (2026-09-28, Dallen; proposed 2026-09-28).
 
 **Responsibility:** decide how the shared workflow-engine suite of [ADR 0022](0022-workflow-engine-storage-and-version-markers.md) decision 10 drives the framework engine and `ClusterWorkflowEngine`, and record the divergences it found.
 

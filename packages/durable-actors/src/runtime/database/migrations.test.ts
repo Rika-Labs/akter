@@ -115,7 +115,7 @@ describe("migrations with Postgres", () => {
       ),
     ))
 
-  it("applies 0022_parent_placement to a database that ran the previous migrations", () =>
+  it("records a parent type exactly for parent placement", () =>
     runtime.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -140,32 +140,7 @@ describe("migrations with Postgres", () => {
           const migrate = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
             Effect.provide(effect, client)
 
-          yield* migrate(
-            migrator(Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0022"))),
-          )
-
-          yield* migrate(
-            Effect.flatMap(
-              SqlClient.SqlClient,
-              (sql) => sql`INSERT INTO actor_placements (actor_type, placement, encoding)
-                VALUES ('Order', 'actor', 1), ('Room', 'tenant', 1)`,
-            ),
-          )
-
-          expect(yield* migrate(migrator(migrations))).toEqual([[22, "parent_placement"]])
-
-          const rows = yield* migrate(
-            Effect.flatMap(
-              SqlClient.SqlClient,
-              (sql) => sql`SELECT actor_type, placement, parent_type FROM actor_placements
-                ORDER BY actor_type`,
-            ),
-          )
-
-          expect(rows).toEqual([
-            { actor_type: "Order", placement: "actor", parent_type: null },
-            { actor_type: "Room", placement: "tenant", parent_type: null },
-          ])
+          yield* migrate(migrator(migrations))
 
           const insert = (placement: string, parent: string | null) =>
             migrate(
@@ -178,7 +153,8 @@ describe("migrations with Postgres", () => {
               ),
             ).pipe(Effect.exit)
 
-          expect(Exit.isSuccess(yield* insert("parent", "Order"))).toBe(true)
+          expect(Exit.isSuccess(yield* insert("actor", null))).toBe(true)
+          expect(Exit.isSuccess(yield* insert("parent", "Tactor"))).toBe(true)
           expect(Exit.isFailure(yield* insert("parent", null))).toBe(true)
           expect(Exit.isFailure(yield* insert("actor", "Order"))).toBe(true)
           expect(Exit.isFailure(yield* insert("region", null))).toBe(true)

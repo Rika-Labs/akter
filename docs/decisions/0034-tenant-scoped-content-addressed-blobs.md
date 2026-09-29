@@ -1,6 +1,6 @@
 # ADR 0034: Tenant-scoped content-addressed blobs
 
-**Status:** proposed (2026-09-28).
+**Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.13 builds it in `0020_content_blobs`.
 
 **Responsibility:** decide how identical bytes are stored once per tenant and shared across that tenant's actors: how access is granted, how unreferenced content is collected, where rows live, and how long unreferenced content is kept.
 
@@ -110,6 +110,8 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 
 ## Amendments on acceptance
 
+These landed with the acceptance, as labelled targets until the slice builds them.
+
 **Contracts.**
 
 - [06 storage](../contracts/06-storage-ownership.md): add content blobs beside actor blobs: tenant-placed content, actor-shard references written in turns, off-turn bytes, mark-and-sweep with grants, and per-tenant deduplication. Qualify "never share bytes", which stays true across tenants.
@@ -135,14 +137,16 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 
 Uses the reserved `0020_content_blobs`. It creates `tenant_contents`, `tenant_content_chunks`, and `actor_content_refs`, the latter with a composite foreign key to `actor_generations` and a `(tenant_id, hash)` index. There is no foreign key from references or chunks to `tenant_contents`, per ADR 0006.
 
-## Open questions for Dallen, with recommended defaults
+## Decided questions
 
-1. **What a grant is bound to.** Recommended default: the tenant, hash, size, and expiry, so a user can upload and then pass the reference to any command in the tenant. Alternative: also bind the caller, so a leaked grant is useless to anyone else, at the cost of blocking hand-offs between callers.
-2. **Bytes inside turns.** Recommended default: never; turns see only names, hashes, and sizes. Alternative: allow reads in turns of tenant-placed actors, whose content shares their shard. That is a second rule to remember.
-3. **Grant lifetime and grace.** Recommended defaults: 1 hour and 24 hours. Alternative: shorter values to reclaim storage sooner, with less margin for slow clients and clock skew.
-4. **Size limit and quotas.** Recommended default: 64 MiB per content, with no framework quota. Alternative: a per-tenant byte quota enforced at upload.
-5. **Spelling.** Recommended default: `Actor.content(name)`. Alternative: `Actor.blob(name, { shared: true })`, which puts two behaviours behind one constructor.
-6. **Content in effect executors.** Recommended default: none in M4.13; executors that need bytes wait for a later ADR. Alternative: a read-only `X.Executor.content(ref)` that reads by grant from the tenant's shard, which amends contract 08's rule that executors hold no database capability.
+Dallen accepted every recommended default on 2026-09-28.
+
+1. **What a grant is bound to.** Decided: the tenant, hash, size, and expiry, so a user can upload and then pass the reference to any command in the tenant. Rejected alternative: also bind the caller, so a leaked grant is useless to anyone else, at the cost of blocking hand-offs between callers.
+2. **Bytes inside turns.** Decided: never; turns see only names, hashes, and sizes. Rejected alternative: allow reads in turns of tenant-placed actors, whose content shares their shard. That is a second rule to remember.
+3. **Grant lifetime and grace.** Decided: 1 hour and 24 hours. Rejected alternative: shorter values to reclaim storage sooner, with less margin for slow clients and clock skew.
+4. **Size limit and quotas.** Decided: 64 MiB per content, with no framework quota. Rejected alternative: a per-tenant byte quota enforced at upload.
+5. **Spelling.** Decided: `Actor.content(name)`. Rejected alternative: `Actor.blob(name, { shared: true })`, which puts two behaviours behind one constructor.
+6. **Content in effect executors.** Decided: none in M4.13; executors that need bytes wait for a later ADR. Rejected alternative: a read-only `X.Executor.content(ref)` that reads by grant from the tenant's shard, which amends contract 08's rule that executors hold no database capability.
 
 ## Evidence required
 
@@ -161,7 +165,6 @@ In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
 - `fails a read as a missing name, never with partial bytes, when a detach and a sweep run between resolving the reference and reading the chunks` (Postgres, independent connections, for both get and stream)
 - `never returns a grant for content a concurrent detach and sweep deleted` (Postgres, independent connections: the sweep deletes between the reference read and the raise)
 - `verifies grants under the previous key for one grant lifetime after rotation`
-- `applies 0020_content_blobs to a database that ran the previous migration`
 
 Benchmark `content-blobs`: deduplication ratio and bytes stored for a skewed upload set, upload and attach latency, read latency, and sweep cost per thousand candidates.
 

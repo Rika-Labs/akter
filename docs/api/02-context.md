@@ -43,11 +43,11 @@ Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor
 
 ## Owned rows
 
-`turn.rows(table)` and `read.rows(table)` accept only the actor type's declared `tables` and scope every operation to the current tenant and actor; `group` reads across the placement group. Neither takes ownership fields or predicates. The operations, filters, and rejected uses are in [Drizzle integration](04-drizzle.md).
+`turn.rows(table)` and `read.rows(table)` accept only the actor type's declared `tables` and scope every operation to the current tenant and actor; `group` reads across the placement group, which for a parent-placed type is the whole family under its root, and never beyond it ([ADR 0033](../decisions/0033-parent-actor-placement.md)). Neither takes ownership fields or predicates. The operations, filters, and rejected uses are in [Drizzle integration](04-drizzle.md).
 
 ## Blobs
 
-`turn.blob(B)` and `read.blob(B)` accept only the actor type's declared `blobs` and address entries of the current tenant, actor type, and actor by name alone. `turn.blob` returns `BlobWrite` (`get`, `set`, `append`, `compact`, `delete`), bound to the turn transaction, so a turn reads its own writes and a declared failure discards them. `read.blob` returns `BlobRead`, which has only `get`; the object carries no write methods, whatever a cast claims. `get` returns `Option.none()` for an entry that was never written and `Option.some` of an empty array for one set to no bytes.
+`turn.blob(B)` and `read.blob(B)` accept only the actor type's declared `blobs` and address entries of the current tenant, actor type, and actor by name alone. `turn.blob` returns `BlobWrite` (`get`, `set`, `append`, `compact`, `delete`), bound to the turn transaction, so a turn reads its own writes and a declared failure discards them. `read.blob` returns `BlobRead`, which has only `get`; the object carries no write methods, whatever a cast claims. `get` returns `Option.none()` for an entry that was never written and `Option.some` of an empty array for one set to no bytes. Target, built by M4.13 ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)): for an `Actor.content` blob, `turn.blob(C)` offers `attach(name, ref)`, `detach(name)`, and `list()`, and `read.blob(C)` offers `get(name)`, `stream(name)`, and `list()`; turns never see content bytes.
 
 ```ts
 const Attachments = Actor.blob("attachments")

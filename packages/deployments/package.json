@@ -7,10 +7,20 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --deny-warnings --threads 1 ."
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/deployments/src"
   },
   "dependencies": {
     "@durable-actors/core": "workspace:*",
+    "drizzle-orm": "catalog:",
     "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@durable-actors/postgres": "workspace:*",
+    "@effect/platform-bun": "catalog:",
+    "@effect/sql-pg": "catalog:",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.0",
+    "vitest": "catalog:"
   }
 }

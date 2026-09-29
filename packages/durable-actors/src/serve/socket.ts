@@ -60,8 +60,11 @@ const expiryOf = (authenticated: Authenticated) =>
     ? undefined
     : DateTime.toEpochMillis(authenticated.expiresAt)
 
+// A bound credential also names its session, which never changes either.
 const samePrincipal = (left: Authenticated, right: Authenticated) =>
-  left.tenant === right.tenant && callerKey(left.caller) === callerKey(right.caller)
+  left.tenant === right.tenant &&
+  callerKey(left.caller) === callerKey(right.caller) &&
+  left.binding?.session === right.binding?.session
 
 const differentIdentity = () =>
   refuse(ActorError.make({ reason: Unauthorized.make({ code: "invalid_credentials" }) }))
@@ -81,6 +84,8 @@ export interface SessionOptions {
   readonly authenticate: (
     credential: string | undefined,
   ) => Effect.Effect<Authenticated, ActorError>
+  /** Authenticates a `reauthenticate` frame's credential. */
+  readonly reauthenticate: (credential: string) => Effect.Effect<Authenticated, ActorError>
   /** Frees the socket's place among those awaiting `hello`; runs once. */
   readonly greeted: Effect.Effect<void>
 }
@@ -280,7 +285,7 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
 
   const renew = (credential: string) =>
     Effect.gen(function* () {
-      const fresh = yield* options.authenticate(credential).pipe(Effect.mapError(refuse))
+      const fresh = yield* options.reauthenticate(credential).pipe(Effect.mapError(refuse))
 
       // Identity never changes mid-session; a different caller reconnects instead.
       if (!samePrincipal(fresh, principal)) return yield* differentIdentity()

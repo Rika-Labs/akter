@@ -1,7 +1,7 @@
 import { BunCrypto, BunHttpServer, BunFileSystem } from "@effect/platform-bun"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Cause, Clock, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
+import { Cause, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Migrator, SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -114,257 +114,6 @@ describe("PGlite migrations", () => {
         ])
       }).pipe(Effect.scoped),
     ))
-  it("applies 0009_blobs to a database that already ran 0008_effects", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    // A deployment migrated before blobs existed: every id through 0008.
-    const throughEffects = Migrator.make({})({
-      table: "actor_migrations",
-      loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0009")),
-      ),
-    })
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* throughEffects
-          expect(yield* sql`SELECT max(migration_id)::int AS latest FROM actor_migrations`).toEqual(
-            [{ latest: 8 }],
-          )
-          expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
-            { blobs: null },
-          ])
-          expect(yield* migrate).toEqual([
-            [9, "blobs"],
-            [10, "retention"],
-            [11, "relay"],
-            [12, "workflows"],
-            [13, "inspection_views"],
-            [14, "connections"],
-            [15, "effect_control"],
-            [16, "final_effect_failures"],
-            [17, "subscriptions"],
-            [22, "parent_placement"],
-          ])
-          expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
-            { blobs: "actor_blobs" },
-          ])
-          expect(yield* migrate).toEqual([])
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
-  it("applies 0010_retention to a database that already ran 0009_blobs", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    const throughBlobs = Migrator.make({})({
-      table: "actor_migrations",
-      loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0010")),
-      ),
-    })
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* throughBlobs
-          expect(yield* migrate).toEqual([
-            [10, "retention"],
-            [11, "relay"],
-            [12, "workflows"],
-            [13, "inspection_views"],
-            [14, "connections"],
-            [15, "effect_control"],
-            [16, "final_effect_failures"],
-            [17, "subscriptions"],
-            [22, "parent_placement"],
-          ])
-          expect(
-            yield* sql`SELECT indexname FROM pg_indexes
-              WHERE indexname IN ('actor_receipts_expiry', 'actor_events_emitted', 'actor_outbox_intent')
-              ORDER BY indexname`,
-          ).toEqual([
-            { indexname: "actor_events_emitted" },
-            { indexname: "actor_outbox_intent" },
-            { indexname: "actor_receipts_expiry" },
-          ])
-          expect(yield* migrate).toEqual([])
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
-  it("applies 0011_relay after 0010_retention to a database with pending rows, keeping them and swapping the due index", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    const throughRetention = Migrator.make({})({
-      table: "actor_migrations",
-      loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0011")),
-      ),
-    })
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* throughRetention
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            VALUES (1, 't', 'Sender', 's')`
-          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-              actor_type, actor_id, target_type, target_id, command, payload, caller)
-            VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
-          expect(yield* migrate).toEqual([
-            [11, "relay"],
-            [12, "workflows"],
-            [13, "inspection_views"],
-            [14, "connections"],
-            [15, "effect_control"],
-            [16, "final_effect_failures"],
-            [17, "subscriptions"],
-            [22, "parent_placement"],
-          ])
-          expect(
-            yield* sql`SELECT intent_id, due_at_ms::int AS due, scheduled_at_ms FROM actor_outbox`,
-          ).toEqual([{ intent_id: "pending", due: 42, scheduled_at_ms: null }])
-          expect(
-            yield* sql`SELECT indexname FROM pg_indexes WHERE tablename = 'actor_outbox'
-              AND indexname LIKE 'actor_outbox_due%'`,
-          ).toEqual([{ indexname: "actor_outbox_due_kind" }])
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
-  it("applies 0015_effect_control to a database that already ran 0014_connections, backfilling pending, backing-off, and running effect rows", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    const throughRelay = Migrator.make({})({
-      table: "actor_migrations",
-      loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0015")),
-      ),
-    })
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* throughRelay
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            VALUES (1, 't', 'Sender', 's')`
-          const far = (yield* Clock.currentTimeMillis) + 3_600_000
-          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
-              scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
-              payload, caller, kind, attempts, ambiguous, last_error)
-            VALUES
-              (1, 'pending', 0, 42, 40, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
-                'effect', 0, false, NULL),
-              (1, 'backing-off', 0, ${far}, 41, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
-                'effect', 1, false, 'typed'),
-              (1, 'running', 0, ${far}, 42, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
-                'effect', 2, true, 'Attempt 2 ended without reporting an outcome'),
-              (1, 'expired', 0, 43, 43, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
-                'effect', 1, true, 'Attempt 1 ended without reporting an outcome'),
-              (1, 'intent', 0, 44, 44, 't', 'Sender', 's', 'Sink', 'k', 'Deliver', '{}', '{}',
-                'intent', 0, false, NULL)`
-          expect(yield* migrate).toEqual([
-            [15, "effect_control"],
-            [16, "final_effect_failures"],
-            [17, "subscriptions"],
-            [22, "parent_placement"],
-          ])
-          expect(
-            yield* sql`SELECT intent_id, running, maybe_applied, ready_at_ms::int AS ready,
-                cancelled_at_ms, waiting
-              FROM actor_outbox ORDER BY intent_id`,
-          ).toEqual([
-            {
-              intent_id: "backing-off",
-              running: false,
-              maybe_applied: false,
-              ready: 41,
-              cancelled_at_ms: null,
-              waiting: false,
-            },
-            {
-              intent_id: "expired",
-              running: false,
-              maybe_applied: true,
-              ready: 43,
-              cancelled_at_ms: null,
-              waiting: false,
-            },
-            {
-              intent_id: "intent",
-              running: false,
-              maybe_applied: false,
-              ready: null,
-              cancelled_at_ms: null,
-              waiting: false,
-            },
-            {
-              intent_id: "pending",
-              running: false,
-              maybe_applied: false,
-              ready: 40,
-              cancelled_at_ms: null,
-              waiting: false,
-            },
-            {
-              intent_id: "running",
-              running: true,
-              maybe_applied: true,
-              ready: 42,
-              cancelled_at_ms: null,
-              waiting: false,
-            },
-          ])
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
-  it("applies 0012_workflows then 0013_inspection_views to a database that stopped at 0011_relay", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    const throughRelay = Migrator.make({})({
-      table: "actor_migrations",
-      loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0012")),
-      ),
-    })
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* throughRelay
-          expect(yield* sql`SELECT to_regnamespace('durable')::text AS schema`).toEqual([
-            { schema: null },
-          ])
-          expect(yield* migrate).toEqual([
-            [12, "workflows"],
-            [13, "inspection_views"],
-            [14, "connections"],
-            [15, "effect_control"],
-            [16, "final_effect_failures"],
-            [17, "subscriptions"],
-            [22, "parent_placement"],
-          ])
-          expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(
-            11,
-          )
-          expect(yield* migrate).toEqual([])
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
   it("refuses to start when a registered migration below the latest applied one was skipped", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
@@ -393,128 +142,6 @@ describe("PGlite migrations", () => {
           expect(
             yield* sql`SELECT migration_id FROM actor_migrations ORDER BY migration_id`,
           ).toEqual(before)
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
-  it("applies 0014_connections to a database that already ran 0013_inspection_views", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    const throughInspectionViews = Migrator.make({})({
-      table: "actor_migrations",
-      loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0014")),
-      ),
-    })
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* throughInspectionViews
-          expect(yield* sql`SELECT to_regclass('actor_connections')::text AS connections`).toEqual([
-            { connections: null },
-          ])
-          expect(yield* migrate).toEqual([
-            [14, "connections"],
-            [15, "effect_control"],
-            [16, "final_effect_failures"],
-            [17, "subscriptions"],
-            [22, "parent_placement"],
-          ])
-          expect(
-            yield* sql`SELECT indexname FROM pg_indexes
-              WHERE indexname = 'actor_connections_holder'`,
-          ).toEqual([{ indexname: "actor_connections_holder" }])
-          expect(yield* migrate).toEqual([])
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
-  it("applies 0016_final_effect_failures to a database with a pending effect", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    const throughConnections = Migrator.make({})({
-      table: "actor_migrations",
-      loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0016")),
-      ),
-    })
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* throughConnections
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            VALUES (1, 't', 'Sender', 's')`
-          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-              actor_type, actor_id, target_type, target_id, command, payload, caller, kind,
-              attempts, last_error)
-            VALUES (1, 'failed', 0, 42, 't', 'Sender', 's', 'Sender', 's', 'E', '{}', '{}',
-              'effect', 1, 'typed')`
-          expect(yield* migrate).toEqual([
-            [16, "final_effect_failures"],
-            [17, "subscriptions"],
-            [22, "parent_placement"],
-          ])
-          // A row written before the column retries by its attempt count, as it did.
-          expect(yield* sql`SELECT intent_id, attempts, final_attempt FROM actor_outbox`).toEqual([
-            { intent_id: "failed", attempts: 1, final_attempt: null },
-          ])
-          expect(yield* migrate).toEqual([])
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
-  it("applies 0017_subscriptions to a database that already ran 0016_final_effect_failures", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    const throughConnections = Migrator.make({})({
-      table: "actor_migrations",
-      loader: Migrator.fromRecord(
-        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0017")),
-      ),
-    })
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* throughConnections
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            VALUES (1, 't', 'Sender', 's')`
-          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-              actor_type, actor_id, target_type, target_id, command, payload, caller)
-            VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
-          expect(yield* migrate).toEqual([
-            [17, "subscriptions"],
-            [22, "parent_placement"],
-          ])
-          // Pending intents survive; the outbox now takes feed and control rows too.
-          expect(yield* sql`SELECT intent_id, kind FROM actor_outbox`).toEqual([
-            { intent_id: "pending", kind: "intent" },
-          ])
-          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, kind, bucket, due_at_ms,
-              tenant_id, actor_type, actor_id, timer_key, target_type, target_id, command, payload, caller)
-            VALUES (1, 'feed', 'feed', 0, 42, 't', 'Sender', 's', '$feed', 'Sender', 's', '$feed', '', '{}')`
-          expect(
-            yield* sql`SELECT to_regclass('actor_subscriptions')::text AS rows,
-              to_regclass('actor_subscription_tags')::text AS tags,
-              to_regclass('actor_subscription_cursors')::text AS cursors,
-              to_regclass('actor_subscriptions_due')::text AS due`,
-          ).toEqual([
-            {
-              rows: "actor_subscriptions",
-              tags: "actor_subscription_tags",
-              cursors: "actor_subscription_cursors",
-              due: "actor_subscriptions_due",
-            },
-          ])
-          expect(yield* migrate).toEqual([])
         }),
       )
       .finally(() => runtime.dispose())
@@ -565,15 +192,15 @@ describe("PGlite migrations", () => {
   })
 })
 
-// Effect rows written by older migrations and runners, as capped performs see them.
+// Effect rows as capped performs see them.
 const sender = ActorRef.make({ tenant: "t", actor: "Sender", id: "s" })
 
 interface Row {
   readonly id: string
   readonly command?: string
   readonly due: number
-  readonly scheduled: number | null
-  readonly ready: number | null
+  readonly scheduled: number
+  readonly ready: number
   readonly running?: boolean
 }
 
@@ -613,8 +240,8 @@ const ready = (ids: ReadonlyArray<string>) =>
     return Object.fromEntries(rows.map(({ id, ready }) => [id, ready]))
   })
 
-describe("capped effect order after upgrades", () => {
-  it("places a turn's capped effects after its type's earlier rows due no later, in perform order, legacy rows included", () => {
+describe("capped effect order", () => {
+  it("places a turn's capped effects after its type's earlier rows due no later, in perform order", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
     return runtime
@@ -625,9 +252,9 @@ describe("capped effect order after upgrades", () => {
           yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
           VALUES (1, 't', 'Sender', 's')`
 
-          // Written before `0011_relay`: no scheduled time; `0015` backfilled `ready_at_ms`.
+          // Performed by an earlier turn at 1000.
           yield* insert([
-            { id: "relay-era", due: 1000, scheduled: null, ready: 1000 },
+            { id: "earlier", due: 1000, scheduled: 1000, ready: 1000 },
             { id: "running", due: 61_000, scheduled: 1000, ready: 999, running: true },
             { id: "reminder", due: 9000, scheduled: 9000, ready: 9000 },
             { id: "other-type", command: "Other", due: 1000, scheduled: 1000, ready: 1500 },
@@ -652,7 +279,7 @@ describe("capped effect order after upgrades", () => {
             ],
           })
 
-          // Behind the relay-era row, in perform order; neither the later reminder nor another
+          // Behind the earlier turn's row, in perform order; neither the later reminder nor another
           // type's row pushes them back.
           expect(yield* ready(["a", "b", "c", "later"])).toEqual({
             a: 1001,
@@ -670,19 +297,6 @@ describe("capped effect order after upgrades", () => {
             capped: [{ id: "d", effect: "Capped", dueAt: 1000 }],
           })
           expect(yield* ready(["d"])).toEqual({ d: 1004 })
-
-          // Written by a runner older than `0015`: no `ready_at_ms`, so it counts at `due_at_ms`.
-          yield* insert([
-            { id: "pre-control", command: "Serial", due: 2000, scheduled: 2000, ready: null },
-            { id: "e", command: "Serial", due: 2000, scheduled: 2000, ready: 2000 },
-          ])
-          yield* orderCapped({
-            sql,
-            routingKey: 1n,
-            sender,
-            capped: [{ id: "e", effect: "Serial", dueAt: 2000 }],
-          })
-          expect(yield* ready(["e"])).toEqual({ e: 2001 })
         }),
       )
       .finally(() => runtime.dispose())

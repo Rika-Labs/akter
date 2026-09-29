@@ -742,12 +742,55 @@ describe("actor declarations", () => {
         commands: [Tick, Tock, Hourly, Secondly, Weekdays],
       }).map((entry) => entry.key),
     ).toEqual([
-      "$cron:0 8 * * 1,2,3,4,5",
-      "$cron:0,15,30,45 * * * *",
-      "$cron:* * * * *",
-      "$cron:0 * * * 0",
-      "$cron:30 * * * * *",
+      "$cron:UTC 0 8 * * 1,2,3,4,5",
+      "$cron:UTC 0,15,30,45 * * * *",
+      "$cron:UTC * * * * *",
+      "$cron:UTC 0 * * * 0",
+      "$cron:UTC 30 * * * * *",
     ])
+    // A zone is part of the key as declared; an interval's key is its length.
+    expect(
+      resolveCron({
+        declared: {
+          "CRON_TZ=America/New_York  0 8 * * 1-5": Weekdays,
+          "CRON_TZ=Europe/London 0 8 * * 1-5": Tick,
+          "CRON_TZ=US/Eastern 0 8 * * 1-5": Tock,
+          " @every  90 minutes ": Hourly,
+          "@every 1 second": Secondly,
+        },
+        commands: [Tick, Tock, Hourly, Secondly, Weekdays],
+      }).map((entry) => entry.key),
+    ).toEqual([
+      "$cron:America/New_York 0 8 * * 1,2,3,4,5",
+      "$cron:Europe/London 0 8 * * 1,2,3,4,5",
+      "$cron:US/Eastern 0 8 * * 1,2,3,4,5",
+      "$cron:@every 5400000ms",
+      "$cron:@every 1000ms",
+    ])
+
+    for (const [declaration, message] of [
+      ["CRON_TZ=Mars/Olympus_Mons 0 8 * * *", "unknown time zone"],
+      ["CRON_TZ=+05:00 0 8 * * *", "unknown time zone"],
+      ["CRON_TZ=America/New_York 61 * * * *", "does not parse"],
+      ["CRON_TZ=America/New_York @every 1 hour", "an interval takes no time zone"],
+      ["@every 999 millis", "at least 1 second"],
+      ["@every 1.5 seconds and more", "at least 1 second"],
+      ["@every 1000.5 millis", "at least 1 second"],
+      ["@every", "at least 1 second"],
+    ] as const)
+      expect(() => resolveCron({ declared: { [declaration]: Tick }, commands: [Tick] })).toThrow(
+        message,
+      )
+
+    const repeats: ReadonlyArray<Readonly<Record<string, typeof Tick | typeof Tock>>> = [
+      { "0 8 * * *": Tick, "CRON_TZ=UTC 0 8 * * *": Tock },
+      { "@every 90 minutes": Tick, "@every 1.5 hours": Tock },
+    ]
+
+    for (const declared of repeats)
+      expect(() => resolveCron({ declared, commands: [Tick, Tock] })).toThrow(
+        "repeats the schedule",
+      )
     expect(() =>
       Actor.make("Unparsable", { api: { Tick }, policy: { cron: { "61 * * * *": Tick } } }),
     ).toThrow("does not parse")

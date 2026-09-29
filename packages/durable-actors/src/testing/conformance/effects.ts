@@ -501,14 +501,12 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           yield* author.Gauge(1.5)
           yield* test.advance(0)
           expect(yield* deadLetters("unroutable-retry")).toEqual([])
-          // Raised past every runner's retry limit, so a runner that predates
-          // `final_attempt` also treats the row as exhausted; the letter reports
-          // the one attempt made.
+          // `final_failure` marks the row exhausted after the one attempt made.
           expect(
-            yield* (yield* SqlClient.SqlClient)<{ attempts: number; final_attempt: number }>`
-              SELECT attempts, final_attempt FROM actor_outbox
+            yield* (yield* SqlClient.SqlClient)<{ attempts: number; final_failure: boolean }>`
+              SELECT attempts, final_failure FROM actor_outbox
               WHERE tenant_id = ${test.tenant} AND actor_id = 'unroutable-retry' AND kind = 'effect'`,
-          ).toEqual([{ attempts: 101, final_attempt: 1 }])
+          ).toEqual([{ attempts: 1, final_failure: true }])
           yield* test.advance("1 hour")
           const attempts = attemptsOf(fixture.effects, "unroutable-retry")
 

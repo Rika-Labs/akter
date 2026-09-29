@@ -231,13 +231,6 @@ export interface EffectRoute {
   readonly payload: string
 }
 
-/**
- * The most attempts any effect may declare: `retry.times` is at most 100 in
- * every runner version. A final failure records this count, so every runner,
- * whatever its retry policy, treats the row as exhausted.
- */
-export const MAX_EFFECT_ATTEMPTS = 101
-
 /** How one executor attempt ended without a result. */
 export interface EffectFailure {
   readonly cause: string
