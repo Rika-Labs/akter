@@ -454,6 +454,7 @@ const withCase = <E>(
     }).pipe(Effect.orDie),
   )
 
+/** Payload-version cases: the migration's guard on populated databases, stored payload versions, and upcasting of older events and effects through the chain. */
 export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "payload migrations: refuses 0021_payload_versions on a database that already holds events, outbox rows, or dead letters",

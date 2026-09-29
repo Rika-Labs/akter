@@ -104,6 +104,7 @@ const storedVersion = Effect.fnUntraced(function* (ref: ActorRef) {
   return row === undefined ? undefined : decompress(row.value)
 }, Effect.orDie)
 
+/** Reducer cases: the merge law over generated inputs, one receipt per committed change, replay without reducing, and rejection of changed input under a reused command id. */
 export const reducerConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "merge law: every commutative reducer in the fixtures satisfies it over generated inputs, and a reducer that breaks it is caught",

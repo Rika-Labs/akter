@@ -227,6 +227,7 @@ const killDuringTurn = (expect: ConformanceExpect, point: "beforeCommit" | "afte
     )
   })
 
+/** Multi-runner cases on three runners: placement on exactly one runner, merging of commutative calls into one turn, and retry on the next owner after a kill. */
 export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "merges commutative calls from three runners on the owner into one turn with one receipt per command id",

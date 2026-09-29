@@ -330,6 +330,7 @@ const served = Effect.fnUntraced(function* (tenant: string) {
     }).pipe(Effect.orDie)
 })
 
+/** Placement cases: rows of a family share their root's routing key, family reads use one snapshot, and a build that changes placement is refused. */
 export const placementConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "stores every framework and owned row of a child under its root's routing key",

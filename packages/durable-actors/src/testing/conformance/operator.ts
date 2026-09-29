@@ -272,6 +272,7 @@ const reasonOf = (answer: Answer) =>
     Schema.Struct({ reason: Schema.Struct({ _tag: Schema.String, code: Schema.String }) }),
   )(answer.body)
 
+/** Operator cases: application credentials are refused, grants are scoped by action and resource with audited denials, and inspection and repair follow their scopes. */
 export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "refuses an application credential on every operator route and repairs nothing",

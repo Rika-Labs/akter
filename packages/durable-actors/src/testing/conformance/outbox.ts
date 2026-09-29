@@ -273,6 +273,7 @@ class Measured extends Data.TaggedError("Measured")<{
 /** The default claim lease for these actors: 30 s `commandTimeout` + 2 s `lockWait` + 5 s. */
 export const CLAIM_LEASE = "37 seconds"
 
+/** Outbox cases: committed intents deliver as System commands under the intent id, and staged intents from failed or rolled-back turns never deliver. */
 export const outboxConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "delivers a committed intent as a System command whose command id is the intent id",

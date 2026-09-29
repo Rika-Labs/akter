@@ -72,6 +72,7 @@ const perActor = (before: Retained, after: Retained) => ({
   bytes: (after.bytes - before.bytes) / ACTORS,
 })
 
+/** Heap cases: bounded retained heap once activations hibernate and once Cluster forgets processed request ids. */
 export const heapConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "retains bounded heap for touched actors once every activation hibernates",

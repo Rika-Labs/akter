@@ -248,6 +248,7 @@ class Probed extends Data.TaggedError("Probed")<{
   readonly denied: string
 }> {}
 
+/** Inspector cases: decoded committed rows and events, workflow step history, and tenant scoping by the authenticated principal. */
 export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "inspector: shows an actor's committed rows decoded, with the events each receipt committed",

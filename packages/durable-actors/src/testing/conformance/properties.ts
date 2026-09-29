@@ -221,6 +221,7 @@ const storable = (value: typeof Json.Type): boolean => {
   return true
 }
 
+/** Property cases: payload hashing and receipts checked against a model over generated inputs. */
 export const propertiesConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "property: hashes a payload by its JSONB canonical text regardless of key order or spacing",

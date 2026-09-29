@@ -47,6 +47,7 @@ const record = Effect.fnUntraced(function* (body: string) {
   yield* turn.perform(Deliver.make({ body }))
 })
 
+/** Handlers for the actors whose rows the inspection views expose. */
 export const inspectionViewsLayer = Layer.mergeAll(
   Specimen.toLayer(
     Effect.succeed({
@@ -144,6 +145,7 @@ class Probed extends Data.TaggedError("Probed")<{
   readonly write: string
 }> {}
 
+/** Inspection-view cases: views show exactly the committed rows per tenant and reject every write. */
 export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "inspection views show exactly the rows committed turns wrote",

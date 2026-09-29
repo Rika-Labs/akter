@@ -259,6 +259,7 @@ export const planLaterTask = (parent: string) =>
 /** The title of a created minted task. */
 export const mintedTitle = (id: string) => task(id).pipe(Effect.flatMap((child) => child.Title()))
 
+/** Minted-id cases: ids derive from the command id and ordinal, stay stable across a rerun after a crash, and create each child once. */
 export const mintConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "mints ids from the command id and ordinal and creates each child once from its intent",

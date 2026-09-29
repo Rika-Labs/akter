@@ -81,6 +81,7 @@ const count = (server: Server, token: string, key: string, minVersion?: string) 
     headers: minVersion === undefined ? {} : { "durable-min-version": minVersion },
   })
 
+/** Read-your-writes cases: durable-version headers on replies and replays, rejection of malformed minimums, and replica reads only once it has replayed the caller's version. */
 export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "answers every committed command with durable-version, and a replay with one at least as high",

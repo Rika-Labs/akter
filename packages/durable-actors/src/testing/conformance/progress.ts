@@ -573,6 +573,7 @@ const sentFor = (id: string, count: number) =>
     yield* Effect.sleep("300 millis")
   })
 
+/** Progress-delivery cases: frames stay in order, drop after cancellation, and coalesce per effect for a paused client. */
 export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps an effect's progress in order when its first frames on an activation arrive together",

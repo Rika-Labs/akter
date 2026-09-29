@@ -336,6 +336,7 @@ const rival = (database: Redacted.Redacted<string>) =>
     }),
   )
 
+/** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "pipeline: a warm turn and a wake each take two round trips, and a replay writes nothing",

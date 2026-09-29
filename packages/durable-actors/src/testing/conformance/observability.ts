@@ -257,6 +257,7 @@ const sample = Effect.gen(function* () {
 const execute = (sql: SqlClient.SqlClient, statement: string) =>
   sql.unsafe(statement).pipe(Effect.asVoid, Effect.orDie)
 
+/** Observability cases: turn and admission spans, defect logs, and metrics correlate with the command id. */
 export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "names the turn span durable-actors.<Actor>/<Command> and correlates it with the command id (O1)",
