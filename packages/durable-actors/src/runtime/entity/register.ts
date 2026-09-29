@@ -360,6 +360,11 @@ export const registerActor = Effect.fnUntraced(function* (
           ? (current.activated.value.get(name) ?? workflowRoutes.get(name))
           : undefined
 
+      // Set once a batch has committed and its replies are being settled; a
+      // death there ends the handler, since its commands already committed
+      // and Cluster's redelivery replays their receipts.
+      let settling = false
+
       // Connection broadcasts of a batch go out once it commits.
       const execute = (batch: ReadonlyArray<Waiting>) => {
         let labels: ReadonlyArray<string> | undefined
@@ -368,6 +373,7 @@ export const registerActor = Effect.fnUntraced(function* (
         return Effect.gen(function* () {
           const { owned } = current
 
+          settling = false
           started = yield* Clock.currentTimeMillis
 
           for (const { request } of batch)
@@ -547,6 +553,8 @@ export const registerActor = Effect.fnUntraced(function* (
         exit: Exit.Exit<Executed, ActorError>,
       ) {
         const { request } = entry
+
+        settling = true
 
         // The turn settled, so the next retryable death waits the base delay again.
         if (Exit.isSuccess(exit)) restarts.set(activation, 0)
@@ -731,7 +739,7 @@ export const registerActor = Effect.fnUntraced(function* (
               Effect.catchCauseIf(
                 (cause) => !Cause.hasInterruptsOnly(cause),
                 (cause) =>
-                  retryable(cause) && !lost
+                  retryable(cause) && !lost && !settling
                     ? restartActivation(batch, cause)
                     : restartHandler(batch, cause),
               ),
