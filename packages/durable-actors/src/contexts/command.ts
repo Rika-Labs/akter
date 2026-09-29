@@ -4,7 +4,7 @@ import type { ActorRef, Caller, Principal } from "../identity/caller.ts"
 import type { AnyBlob } from "../members/blob.ts"
 import type { AnyEffect, ProgressEffect, ProgressOf } from "../members/effect.ts"
 import type { EventClass } from "../members/event.ts"
-import type { BlobRead, BlobWrite } from "../state/blob.ts"
+import type { BlobReadOf, BlobWriteOf } from "../state/blob.ts"
 import type { Group, AnyOwnedTable, ScopedRead, ScopedRows } from "../tables/owned.ts"
 
 export const InsideTurn = Context.Reference<symbol | undefined>("durable-actors/InsideTurn", {
@@ -51,8 +51,11 @@ export interface CommandContext<
   readonly rows: <T extends Tables>(table: T) => ScopedRows<T>
   /** Read-only joins across the actor's placement group, inside the turn transaction. */
   readonly group: Group
-  /** This actor's entries of a declared blob, bound to the turn transaction. */
-  readonly blob: (blob: Blobs) => BlobWrite
+  /**
+   * This actor's entries of a declared blob, or its references to declared
+   * content, bound to the turn transaction. Content bytes are never readable in a turn.
+   */
+  readonly blob: <B extends Blobs>(blob: B) => BlobWriteOf<B>
   /**
    * Derives the id of a new `child` from this command id and the number of
    * earlier mints in the turn; retries of the command mint the same ids. The
@@ -116,8 +119,8 @@ export interface QueryContext<
   readonly rows: <T extends Tables>(table: T) => ScopedRead<T>
   /** Read-only joins across the actor's placement group. */
   readonly group: Group
-  /** This actor's committed entries of a declared blob. */
-  readonly blob: (blob: Blobs) => BlobRead
+  /** This actor's committed entries of a declared blob, or the content it references. */
+  readonly blob: <B extends Blobs>(blob: B) => BlobReadOf<B>
   /**
    * Committed events of one declared class after the exclusive `after`
    * cursor, then each one as its turn commits, with no gap or repeat between

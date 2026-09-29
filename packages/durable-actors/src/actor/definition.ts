@@ -554,7 +554,7 @@ interface Definition<
   readonly feeds?: ReadonlyArray<Events[number]>
   /** `Actor.table` tables whose rows this actor type owns. */
   readonly tables?: Tables
-  /** `Actor.blob` binary storage this actor type's turns write and its queries read. */
+  /** `Actor.blob` binary storage and `Actor.content` references: turns write them, queries read them. */
   readonly blobs?: Blobs
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
@@ -794,7 +794,7 @@ const make = <
   const blobNames = new Set<string>()
 
   for (const blob of blobs) {
-    if (!isBlob(blob)) throw new Error("blobs takes Actor.blob values")
+    if (!isBlob(blob)) throw new Error("blobs takes Actor.blob and Actor.content values")
 
     if (blobNames.has(blob.name)) throw new Error(`Blob ${blob.name} is listed twice`)
     blobNames.add(blob.name)
@@ -1616,6 +1616,7 @@ const make = <
                 guard: guard("Blob"),
                 maxBytes: policy.blobMaxBytes,
                 maxEntries: policy.blobMaxEntries,
+                timeoutMs: policy.executionMs,
               },
               false,
             )
@@ -1630,7 +1631,7 @@ const make = <
               events: replayWith(input.events),
               rows: access.rows as QueryContext<State, Event, Owned>["rows"],
               group: access.group,
-              blob,
+              blob: blob as QueryContext<State, Event, Owned, Blobs>["blob"],
               follow: <E extends Event>(
                 event: E,
                 options?: { readonly after?: string | undefined },
@@ -1845,6 +1846,7 @@ const make = <
                 guard: escaped("Blob"),
                 maxBytes: policy.blobMaxBytes,
                 maxEntries: policy.blobMaxEntries,
+                timeoutMs: policy.executionMs,
               },
               true,
             )
@@ -2342,6 +2344,7 @@ const make = <
                 guard: escaped("Blob"),
                 maxBytes: policy.blobMaxBytes,
                 maxEntries: policy.blobMaxEntries,
+                timeoutMs: policy.executionMs,
               },
               false,
             )
@@ -2356,7 +2359,7 @@ const make = <
               events: replay,
               rows: access.rows as QueryContext<State, Event, Owned>["rows"],
               group: access.group,
-              blob,
+              blob: blob as QueryContext<State, Event, Owned, Blobs>["blob"],
               follow: () =>
                 Stream.die(new Error("read.follow is only available in stream handlers")),
               progress: () =>

@@ -500,6 +500,77 @@ export const migrations = {
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),
+  // Content is stored once per tenant on the tenant's routing key; actors
+  // hold references on their own shard. Nothing counts references and no key
+  // points from a reference or a chunk to a content row: the sweep finds
+  // unreferenced content by scanning references, and grants gate it.
+  "0020_content_blobs": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    // Grants name the database they were issued by, so a key shared with
+    // another deployment never makes its grants valid here.
+    yield* sql`ALTER TABLE actor_deployment
+        ADD COLUMN deployment_id text NOT NULL DEFAULT gen_random_uuid()::text`
+    yield* sql`CREATE TABLE tenant_contents (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        hash text NOT NULL,
+        size bigint NOT NULL CHECK (size >= 0),
+        granted_until_ms bigint NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, hash)
+      )`
+    yield* sql`CREATE INDEX tenant_contents_granted
+        ON tenant_contents (routing_key, tenant_id, granted_until_ms, hash)`
+    yield* sql`CREATE TABLE tenant_content_chunks (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        hash text NOT NULL,
+        chunk integer NOT NULL CHECK (chunk >= 0),
+        bytes bytea NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, hash, chunk)
+      )`
+    yield* sql`CREATE TABLE actor_content_refs (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        blob text NOT NULL,
+        name text NOT NULL,
+        hash text NOT NULL,
+        size bigint NOT NULL CHECK (size >= 0),
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, blob, name),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    yield* sql`CREATE INDEX actor_content_refs_hash ON actor_content_refs (tenant_id, hash)`
+    // Every tenant that ever uploaded, and when its content was last swept.
+    yield* sql`CREATE TABLE tenant_content_sweeps (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        swept_at_ms bigint NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id)
+      )`
+    // The longest turn of each actor type that declares content, which the
+    // sweep waits out; it only grows, so a runner of an older deploy still
+    // holding longer turns is covered.
+    yield* sql`CREATE TABLE actor_content_types (
+        actor_type text PRIMARY KEY,
+        turn_ms bigint NOT NULL CHECK (turn_ms > 0)
+      )`
+    yield* sql`CREATE VIEW durable.contents AS
+      SELECT c.tenant_id, c.routing_key, c.hash, c.size,
+        c.granted_until_ms, to_timestamp(c.granted_until_ms::float8 / 1000) AS granted_until
+      FROM tenant_contents c`
+    yield* sql`CREATE VIEW durable.content_refs AS
+      SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
+        r.blob, r.name, r.hash, r.size
+      FROM actor_content_refs r
+      LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`
+    yield* sql`CREATE OR REPLACE VIEW durable.views AS
+      SELECT view_name, version FROM (VALUES
+        ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
+        ('timers', 1), ('effects', 1), ('dead_letters', 1), ('workflows', 1),
+        ('workflow_steps', 1), ('views', 1), ('contents', 1), ('content_refs', 1)
+      ) AS v(view_name, version)`
+  }),
 }
 
 /**
