@@ -72,6 +72,7 @@ import {
   retentionLayer,
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
+import { protocolsConformance } from "./conformance/protocols.ts"
 import {
   restoreConformance,
   restoreFixture,
@@ -1446,6 +1447,7 @@ export const conformanceGroups = {
   foundation: foundationConformance,
   admission: admissionConformance,
   http: httpConformance,
+  protocols: protocolsConformance,
   assertions: assertionsConformance,
   edge: edgeConformance,
   client: clientConformance,
