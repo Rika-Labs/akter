@@ -69,13 +69,15 @@ const add = (runner: number, actor: number) =>
 const spread = (runners: number) => (index: number) =>
   add(index % runners, Math.floor(index / runners) % ACTORS)
 
+/**
+ * The harness refuses PGlite: several runners need independent connections.
+ */
 export const multiRunner: Scenario = {
   name: "multi-runner",
   description:
     "In-process runners on one Postgres (ActorTest.cluster): turns per second and connections open with 1, 2, 4, and 8 runners (8 in the full profile only), and a runner kill under load with lock expiry, takeover, and resumed service timed separately. The runners share one process and its CPU, so this measures routing and ownership cost, not scale-out.",
   run: (context) =>
     Effect.gen(function* () {
-      // The harness refuses PGlite: several runners need independent connections.
       if (context.backend.name !== "postgres") return []
 
       const quick = context.profile === "quick"
@@ -115,7 +117,6 @@ export const multiRunner: Scenario = {
               if (++victim === ACTORS) return yield* Effect.die(new Error("Runner 0 owns no actor"))
             const ref = (yield* cluster.on(1)(Probe.get(`a-${victim}`))).ref
 
-            // Callers use the survivors only: calls through the killed runner would just fail.
             const survivors = (index: number) =>
               add(1 + (index % 2), Math.floor(index / 2) % ACTORS)
 

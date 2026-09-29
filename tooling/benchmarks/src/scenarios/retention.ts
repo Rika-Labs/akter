@@ -132,7 +132,6 @@ export const retention: Scenario = {
               operation: () => probe.Add(1),
             })
 
-            // The comparison holds only if the sweep outlasted the window.
             const stillSweeping = sweeping.pollUnsafe() === undefined
             yield* Fiber.join(sweeping)
 

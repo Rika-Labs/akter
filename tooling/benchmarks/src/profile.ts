@@ -259,7 +259,6 @@ const program = Effect.gen(function* () {
 
   yield* fs.writeFileString(path.join(directory, `${file}.md`), markdown)
 
-  // The raw profile keeps every field DevTools reads, not only the ones summarized.
   const raw = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(profile).pipe(
     Effect.orDie,
   )

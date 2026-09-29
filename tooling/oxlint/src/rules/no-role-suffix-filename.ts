@@ -2,6 +2,7 @@ import { defineRule } from "@oxlint/plugins"
 
 import { repoSourceSegments } from "../repo-paths.ts"
 
+/** Forbids `<name>-service.ts` filenames. */
 export const noRoleSuffixFilenameRule = defineRule({
   meta: {
     type: "suggestion",

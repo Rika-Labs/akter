@@ -53,6 +53,14 @@ const rate = (result: CaseResult, events: number): CaseResult => ({
  * Cross-actor subscriptions. The baseline stages one intent per
  * subscriber in the publisher's turn; a declared subscription keeps the
  * publisher's turn flat in subscriber count and fans out after commit.
+ *
+ * The retention pass beside a source's lagging subscriptions: each batch reads
+ * the lowest settled position among them, and the hold has ended, so every
+ * event is pruned either way.
+ *
+ * One source's backlog to 63 healthy followers, beside a 64th whose handler
+ * always dies, against the same backlog without it: the poison row backs off
+ * on its own and must not hold the others back.
  */
 export const subscriptions: Scenario = {
   name: "subscriptions",
@@ -71,7 +79,6 @@ export const subscriptions: Scenario = {
               const publisher = yield* Sender.get(`fanout-${subscribers}`)
               let next = 0
 
-              // The handler generates the ids, so the command payload is the same size at every n.
               const publish = () => {
                 const offset = next
                 next += subscribers
@@ -156,8 +163,6 @@ export const subscriptions: Scenario = {
           .pipe(Effect.orDie),
       )
 
-      // Each delivery wakes a subscriber that hibernated after its last turn,
-      // so the trip includes the activation the wake starts.
       results.push(
         yield* context
           .withRuntime({ subscriptions: true }, (instruments) =>
@@ -173,7 +178,6 @@ export const subscriptions: Scenario = {
                   ),
                 { concurrency: 16, discard: true },
               )
-              // Past the sleepers' 100 ms `hibernateAfter`, so none is active.
               yield* Effect.sleep("1 second")
 
               const trip = (index: number) =>
@@ -217,7 +221,6 @@ export const subscriptions: Scenario = {
               const follower = yield* BeatFollower.get("pair-follower")
               const source = yield* BeatSource.get("pair-source")
               yield* follower.Follow("pair-source")
-              // The subscription is registered once its first event is applied.
               let n = 0
 
               while (true) {
@@ -331,7 +334,6 @@ export const subscriptions: Scenario = {
                     `drain-source-${backlog}`,
                   )
 
-                // Every registration reaches the source before the backlog is emitted.
                 const sql = yield* SqlClient.SqlClient
 
                 while (
@@ -370,9 +372,6 @@ export const subscriptions: Scenario = {
             .pipe(Effect.orDie),
         )
 
-      // The retention pass beside a source's lagging subscriptions: each
-      // batch reads the lowest settled position among them, and the hold has
-      // ended, so every event is pruned either way.
       for (const rows of [0, 10_000])
         results.push(
           yield* context
@@ -405,9 +404,6 @@ export const subscriptions: Scenario = {
             .pipe(Effect.orDie),
         )
 
-      // One source's backlog to 63 healthy followers, beside a 64th whose
-      // handler always dies, against the same backlog without it: the poison
-      // row backs off on its own and must not hold the others back.
       for (const poison of [false, true])
         results.push(
           yield* context

@@ -22,6 +22,9 @@ const APPEND_WARMUP = 20
  * appending a chunk, reading a one-chunk and a 16-chunk entry from a query,
  * and compacting 16 chunks into one. Bytes are generated in the handler, so
  * no case pays for a large command payload.
+ *
+ * An entry holds at most 8 MiB, so the growing entry moves to a fresh actor
+ * when it is full; each of those is warmed before the case.
  */
 export const blobs: Scenario = {
   name: "blobs",
@@ -64,8 +67,6 @@ export const blobs: Scenario = {
 
               if (setOnly) return cases
 
-              // An entry holds at most 8 MiB, so the growing entry moves to a fresh
-              // actor when it is full; each of those is warmed before the case.
               const perEntry = MAX_ENTRY_BYTES / size
 
               const appenders = yield* Effect.forEach(
@@ -126,7 +127,6 @@ export const blobs: Scenario = {
                 )
               }
 
-              // Each operation compacts its own entry of 16 chunks, so none is already compact.
               const compactor = yield* Archive.get("compact")
 
               for (let entry = 0; entry < compactions + 5; entry += 1)

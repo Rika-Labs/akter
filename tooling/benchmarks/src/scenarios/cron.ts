@@ -36,6 +36,9 @@ const firstFires = (from: number, scheduled: number) => {
  * Waits until every actor's tick has fired since `from`, or dies after the
  * timeout. A drain longer than a minute also runs early actors' next ticks,
  * so it counts actors, not handler runs.
+ *
+ * One runner drains about 300 ticks a second on a 16-vCPU VM, so 10^5 take
+ * over 5 minutes.
  */
 const drained = (from: number, scheduled: number, count: number) =>
   Effect.sync(() => firstFires(from, scheduled).size >= count).pipe(
@@ -44,7 +47,6 @@ const drained = (from: number, scheduled: number, count: number) =>
       until: (done) => done,
     }),
     Effect.timeoutOrElse({
-      // One runner drains about 300 ticks a second on a 16-vCPU VM, so 10^5 take over 5 minutes.
       duration: "15 minutes",
       orElse: () =>
         Effect.die(
@@ -95,6 +97,9 @@ const scanMeanMs = (result: CaseResult) =>
  * ticks fall due at one minute boundary. Reports tick lateness (handler wall
  * time after the scheduled minute), the drain time of the whole boundary, and
  * the relay claim statement's mean time while it drains.
+ *
+ * The claim filter and multi-runner uniqueness are Postgres properties; PGlite
+ * would only time one connection draining 100k turns.
  */
 export const cron: Scenario = {
   name: "cron",
@@ -103,8 +108,6 @@ export const cron: Scenario = {
   multiRunner: true,
   run: (context) =>
     Effect.gen(function* () {
-      // The claim filter and multi-runner uniqueness are Postgres properties;
-      // PGlite would only time one connection draining 100k turns.
       if (context.backend.name !== "postgres") return []
 
       const quick = context.profile === "quick"
@@ -137,7 +140,6 @@ export const cron: Scenario = {
                   operations: 1,
                   operation: () =>
                     Effect.gen(function* () {
-                      // Sampling spans the wait so early claims count; the drain time excludes it.
                       waitedMs = Math.max(0, scheduled - (yield* databaseNow))
                       yield* Effect.sleep(waitedMs)
                       yield* drained(from, scheduled, actors)
@@ -145,7 +147,6 @@ export const cron: Scenario = {
                   listStatements: { including: RELAY_CLAIM },
                 })
 
-                // A short settle catches a tick whose handler ran twice.
                 yield* Effect.sleep("1 second")
                 const fires = [...firstFires(from, scheduled).values()]
                 lateness.push(...fires)
@@ -180,14 +181,12 @@ export const cron: Scenario = {
           },
           operations: lateness.length,
           elapsedMs: drainMs,
-          // Each round measures one drain; count its statements per tick instead.
           statementsPerOperation:
             Math.round(
               (rounds.reduce((total, result) => total + (result.statementsPerOperation ?? 0), 0) /
                 Math.max(1, lateness.length)) *
                 100,
             ) / 100,
-          // Ticks per second of drain, as other scenarios divide operations by elapsed time.
           throughput: Math.round((lateness.length * 1000) / Math.max(1, drainMs)),
           latencyMs: summary,
           extra: {
