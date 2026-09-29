@@ -26,7 +26,6 @@ const TallyState = Actor.state(TallyFields, {
   ],
 })
 
-// Counts every `reduce` call so replay cases can prove a stored outcome is not recomputed.
 const reductions = { count: 0 }
 
 const Add = Actor.reducer("Add", {
@@ -59,7 +58,6 @@ const Corrupt = Actor.reducer("Corrupt", {
   state: TallyState,
   input: Schema.Boolean,
   reduce: (state, raise) => {
-    // Models reducer bugs: a throw, or a state the schema rejects.
     if (raise) throw new Error("Reducer bug")
 
     return Result.succeed({ ...state, count: 0.5 })
@@ -76,7 +74,6 @@ const Put = Actor.reducer("Put", {
   state: BasketState,
   input: Schema.String,
   reduce: (state, item) => {
-    // Models a reducer that mutates its state argument instead of copying it.
     state.items.push(item)
 
     return Result.succeed(state)
@@ -97,7 +94,6 @@ export const reducerLayer = Layer.mergeAll(
   Basket.toLayer(Effect.succeed({})),
 )
 
-// `inspect` hides the version row, so the migration case reads it directly.
 const storedVersion = Effect.fnUntraced(function* (ref: ActorRef) {
   const sql = yield* SqlClient.SqlClient
 
@@ -108,6 +104,7 @@ const storedVersion = Effect.fnUntraced(function* (ref: ActorRef) {
   return row === undefined ? undefined : decompress(row.value)
 }, Effect.orDie)
 
+/** Reducer cases: the merge law over generated inputs, one receipt per committed change, replay without reducing, and rejection of changed input under a reused command id. */
 export const reducerConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "merge law: every commutative reducer in the fixtures satisfies it over generated inputs, and a reducer that breaks it is caught",
@@ -135,8 +132,6 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
             expect(runs > 0).toBe(true)
           }
 
-          // Fragile throws on an input above 10, so merging small calls into
-          // a large one changes the outcome.
           const broken = yield* checkMergeLaw({
             reducer: Fragile,
             state: Arbitrary.map(bounded, (count) => ({ count, log: [] })),
@@ -158,7 +153,6 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
           const tally = yield* Tally.get("reducer-commit")
           const label = tally.Label("first")
           expect(yield* label).toEqual({ count: 0, label: "first" })
-          // Only the changed key is written; `count` still decodes from its default.
           expect(yield* test.inspect(tally.ref)).toEqual({
             generation: "1",
             state: { label: "first" },
@@ -218,7 +212,6 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
           const overflow = tally.Add(5)
           const before = reductions.count
           expect(yield* overflow.pipe(Effect.flip)).toEqual(Overflow.make({ max: 1_000 }))
-          // The declared failure discards the upcast along with the business change.
           expect(yield* test.inspect(tally.ref)).toEqual({
             generation: "1",
             state: { total: 998 },
@@ -229,7 +222,6 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(yield* storedVersion(tally.ref)).toBe(undefined)
           expect(yield* tally.Add(-998)).toEqual({ count: 0, label: "migrated" })
-          // Retrying the same call now would succeed, but its failure is retained.
           expect(yield* overflow.pipe(Effect.flip)).toEqual(Overflow.make({ max: 1_000 }))
           expect(reductions.count - before).toBe(2)
           expect(yield* test.inspect(tally.ref)).toEqual({
@@ -333,7 +325,6 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
             state: { count: 1 },
             receipts: 1,
           })
-          // The actor keeps serving turns after the defects.
           expect(yield* tally.Add(1)).toEqual({ count: 2, label: "" })
         }),
       ),

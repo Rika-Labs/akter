@@ -40,7 +40,6 @@ const primitives: EnginePrimitives<WorkflowEngine | WorkflowInstance> = {
     DurableDeferred.raceAll({ name, success: Schema.String, error: Schema.Never, effects }),
 }
 
-// Polls often enough that a real-clock case sees each wake within a tick.
 const config = ShardingConfig.layer({
   entityMailboxCapacity: 32,
   entityTerminationTimeout: 0,

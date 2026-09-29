@@ -133,8 +133,6 @@ const session = <A, E>(
 
 const vaultOf = (tenant: string, id: string) => Vault.get(id).pipe(Actor.tenant(tenant))
 
-// The rolling-deploy case: one actor type whose handlers change between two
-// deployed versions, both behind one database.
 const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
 
 const Forward = Actor.command("Forward", {
@@ -175,6 +173,7 @@ const accountVersion = (fixture: RestoreFixture, version: "v1" | "v2") =>
 
 const RETRY_WINDOW_MS = 60_000
 
+/** Restore cases: a backup neither reopens expired command ids nor drops pending intents and effects. */
 export const restoreConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "restores a backup without reopening expired command ids or dropping pending intents",
@@ -203,8 +202,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
 
           const snapshot = yield* environment.snapshot
 
-          // History the backup never sees: another command, and the pending
-          // intent's delivery.
           const lost = yield* session(
             environment,
             undefined,
@@ -239,7 +236,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
                 outbox: 1,
               })
 
-              // Both ids expire and the backed-up intent comes due.
               yield* test.advance("2 minutes")
               expect(fixture.restore.receives - receives).toBe(1)
               expect(yield* test.inspect(to.ref)).toMatchObject({
@@ -248,8 +244,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               })
               expect(yield* test.inspect(vault.ref)).toMatchObject({ outbox: 0 })
 
-              // The backup holds the first id's receipt and not the second's;
-              // neither expired id runs.
               expect(
                 (yield* vault.Deposit(5).pipe(Actor.commandId(backedUp.id), Effect.flip)).reason,
               ).toBeInstanceOf(CommandExpired)
@@ -261,7 +255,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               yield* test.advance("2 minutes")
               expect(fixture.restore.receives - receives).toBe(1)
 
-              // The restored actor takes a generation above the backup's.
               expect(yield* vault.Deposit(1)).toBe(6)
               expect(
                 Number((yield* test.inspect(vault.ref)).generation) > Number(backedUp.generation),
@@ -315,8 +308,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               expect(yield* vault.Deposit(3).pipe(Actor.commandId(backedUp.id))).toBe(3)
               expect(fixture.restore.deposits).toBe(deposits)
 
-              // The restored history never saw the lost command, so its
-              // retry runs there once, and later retries replay it.
               expect(yield* vault.Deposit(4).pipe(Actor.commandId(lost))).toBe(7)
               expect(yield* vault.Deposit(4).pipe(Actor.commandId(lost))).toBe(7)
               expect(fixture.restore.deposits - deposits).toBe(1)
@@ -349,7 +340,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               const vault = yield* Vault.get("restore-effect")
               yield* vault.Bill(9)
 
-              // The provider call starts and never returns before the backup.
               yield* Effect.sync(() => charges.length - before).pipe(
                 Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (n) => n > 0 }),
                 Effect.timeoutOrElse({
@@ -365,7 +355,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
           const [first] = since(before)
           const snapshot = yield* environment.snapshot
 
-          // After the backup the call is retried, succeeds, and its route commits.
           before = charges.length
           yield* session(
             environment,
@@ -382,9 +371,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
           )
           const [afterBackup] = since(before)
 
-          // The restored effect row still counts the in-flight attempt, so the
-          // restored retry is the same attempt number with the same key, which
-          // an idempotent provider answers without charging twice.
           before = charges.length
           yield* session(
             environment,
@@ -446,7 +432,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
             yield* cluster.ready
             let id = ""
 
-            // An actor the first runner owns, so the old version runs its first command.
             for (let candidate = 0; id === ""; candidate++) {
               const ref = (yield* on(0, Account.get(`rolling-${candidate}`))).ref
 
@@ -465,7 +450,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
                 ),
               )
 
-            // Minted under the deployment's full window, so no restart below can outlast it.
             const commandId = yield* on(
               0,
               Actors.use((actors) => actors.mintCommandId),
@@ -480,7 +464,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               ),
             )
 
-            // The first runner upgrades while the second still runs the old version.
             versions[0] = "v2"
             yield* cluster.restart(0)
             yield* cluster.ready
@@ -496,7 +479,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
             expect(runs() - v1 - v2).toBe(3)
             expect(fixture.restore.versions.v2 - v2 > 0).toBe(true)
 
-            // The old version's intent is delivered once by whichever runner claims it.
             yield* Effect.sync(() => fixture.restore.versions.receives - receives).pipe(
               Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (n) => n > 0 }),
               Effect.timeoutOrElse({
@@ -505,8 +487,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               }),
             )
 
-            // Past its expiry, by each runner's clock, the id is refused by every
-            // runner, before and after a sweep prunes its receipt.
             for (const runner of [0, 1])
               yield* on(
                 runner,

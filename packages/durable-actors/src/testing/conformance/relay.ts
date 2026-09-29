@@ -477,7 +477,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "the outbox to empty",
           )
 
-          // Every row was claimed once: no other runner took it within its lease.
           expect(fixture.claims.size).toBe(300)
           expect([...fixture.claims.values()].every((count) => count === 1)).toBe(true)
           expect(yield* receipts(2, "Take")).toBe(300)
@@ -501,7 +500,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* pause.reached
           yield* kill(0)
 
-          // The survivors reach the due time, but the dead runner's claim still holds the row.
           yield* advance(1, "1 minute")
           yield* advance(2, "1 minute")
           expect(fixture.taken.get("killed-before-delivery")).toBe(undefined)
@@ -511,7 +509,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           expect(fixture.taken.get("killed-before-delivery")).toBe(1)
           expect(yield* receipts(1, "Take")).toBe(1)
           expect(yield* outboxRows(1)).toEqual([])
-          // One intent id, claimed once per lease.
           expect([...fixture.claims.values()]).toEqual([2])
         }),
       ),
@@ -538,7 +535,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* outboxRows(2)).toMatchObject([{ kind: "intent", attempts: 1 }])
           yield* advance(2, CLAIM_LEASE)
 
-          // The redelivery replayed the receipt: one handler run, one receipt, and the row is gone.
           expect(fixture.taken.get("killed-before-delete")).toBe(1)
           expect(yield* receipts(2, "Take")).toBe(1)
           expect(yield* outboxRows(2)).toEqual([])
@@ -562,7 +558,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* pause.reached
           yield* kill(0)
 
-          // The dead runner's claim holds the creating intent until its lease ends.
           yield* advance(1, "1 hour")
           yield* advance(2, "1 hour")
           expect(yield* receipts(1, "Open")).toBe(0)
@@ -597,7 +592,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "every dead row's first delivery",
           )
 
-          // Each dead row waits out its claim instead of sorting ahead of newer work.
           const rows = yield* outboxRows(1)
           expect(rows.length).toBe(300)
           expect(rows.every((row) => row.attempts === 1)).toBe(true)
@@ -610,10 +604,8 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "5 seconds",
             "the fresh intent",
           )
-          // Within one poll, jitter included.
           expect((yield* Clock.currentTimeMillis) - sent <= 1100).toBe(true)
 
-          // A row that keeps dying backs off past the lease, capped at maxBackoff.
           yield* query(
             1,
             (sql) =>
@@ -626,7 +618,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             Effect.map((rows) => rows.find((row) => row.payload.includes('"dead-0"'))!),
           )
 
-          // The redelivery replays the receipt and its settle dies again.
           yield* eventually(
             deadZero.pipe(Effect.map((row) => row.attempts === 10)),
             "5 seconds",
@@ -655,7 +646,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const stale = yield* advance(0, "1 minute").pipe(Effect.forkChild)
           yield* pause.reached
 
-          // Runner 1 claims after the lease; its delivery defects, so it reschedules the row.
           let defects = 1
           fixture.onTake = () =>
             defects-- > 0 ? Effect.die(new Error("Receiver defect")) : Effect.void
@@ -664,7 +654,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const [rescheduled] = yield* outboxRows(1)
           expect(rescheduled).toMatchObject({ kind: "intent", attempts: 2 })
 
-          // Runner 0 wakes, delivers, and settles a claim it no longer holds.
           yield* pause.release
           yield* Fiber.join(stale)
           expect(yield* receipts(1, "Take")).toBe(1)
@@ -674,7 +663,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             due: rescheduled!.due,
           })
 
-          // Runner 1's next claim replays the receipt and deletes the row.
           yield* advance(1, "2 seconds")
           expect(yield* outboxRows(1)).toEqual([])
           expect(yield* receipts(1, "Take")).toBe(1)
@@ -710,7 +698,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const baseline = yield* Effect.replicateEffect(deliver, 30)
           const running = () => fixture.attempts.filter((a) => a.endedAt === undefined).length
 
-          // Each blocks for 10 s unless released; twice the slots keeps every executor busy.
           const gate = yield* Deferred.make<void>()
           fixture.provider = (attempt) =>
             Deferred.await(gate).pipe(
@@ -748,7 +735,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
         2,
         { executors: SHORT_LEASE },
         Effect.gen(function* () {
-          // Three leases long, with both runners polling for due effects the whole time.
           fixture.provider = (attempt) => Effect.sleep("9 seconds").pipe(Effect.as(attempt.key))
           yield* perform(0, "long")
           yield* eventually(
@@ -779,7 +765,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           fixture.provider = (attempt) =>
             attempt.attempt === 1 ? Effect.never : Effect.succeed(attempt.key)
 
-          // The owner's commit wakes its own relay, which claims attempt 1; its renewal blocks.
           const renewal = yield* faults(owner, (test) => test.pauseNext("beforeRenew"))
           yield* perform(owner, "lost")
           yield* renewal.reached
@@ -800,7 +785,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "attempt 1's interruption",
           )
 
-          // Interrupted by the lost renewal, well before its own one-lease deadline.
           const [lost] = fixture.attempts
           expect(lost!.endedAt! - lost!.startedAt < 2900).toBe(true)
           expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([
@@ -853,7 +837,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const cluster = yield* ActorCluster
           let index = 0
 
-          // An actor runner 0 owns, so its commit wakes the runner without the executor.
           let effectClaims = 0
           fixture.hook = (point, request) =>
             Effect.sync(() => {
@@ -870,7 +853,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([[1, 1]])
-          // One claim of the effect in all: runner 0 never claimed and released it.
           expect(effectClaims).toBe(1)
           expect(yield* receipts(0, "Called")).toBe(1)
         }),
@@ -889,7 +871,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           fixture.provider = (attempt) => Effect.sleep("1 second").pipe(Effect.as(attempt.key))
 
-          // Records each failure's wait at the moment its write lands; claims are skipped.
           yield* query(0, (sql) =>
             Effect.gen(function* () {
               yield* sql`CREATE TABLE relay_waits (attempts int, wait bigint)`
@@ -915,7 +896,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "the dead letter",
           )
 
-          // After failed attempt n the row waited min(10 ms × 2^(n − 1), 40 ms).
           const waits = yield* query(
             0,
             (sql) =>
@@ -930,7 +910,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             expect(wait <= backoff && wait > backoff - 50).toBe(true)
           }
 
-          // Every attempt was interrupted at the 100 ms timeout.
           expect(fixture.attempts.length).toBe(4)
 
           for (const attempt of fixture.attempts) {
@@ -952,8 +931,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
         environment,
         fixture,
         1,
-        // A lease shorter than the backlog's delivery time: an over-claimed row's lease
-        // would end before its delivery started, and a second claim would count it twice.
         { relay: { deliveryConcurrency: 8, claimLease: "3 seconds" } },
         Effect.gen(function* () {
           const ids = Array.from({ length: 64 }, (_, index) => `slow-${index}`)
@@ -988,7 +965,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           )
           yield* Fiber.interrupt(sampler)
 
-          // Claimed rows never outnumber the slots, and each starts its delivery at once.
           expect(samples.length > 20).toBe(true)
           expect(Math.max(...samples) <= 8).toBe(true)
           expect([...fixture.claims.values()].every((count) => count === 1)).toBe(true)
@@ -1024,7 +1000,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const takeover = yield* advance(other, "4 seconds").pipe(Effect.forkChild)
           yield* eventually(Effect.sync(() => fixture.attempts.length === 2))
 
-          // Attempt 1 succeeds after losing its lease, before attempt 2 reports.
           yield* Deferred.succeed(first, undefined)
           yield* eventually(
             receipts(other, "Called").pipe(Effect.map((count) => count === 1)),
@@ -1064,7 +1039,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* perform(owner, "late")
           yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
 
-          // Attempt 2 is the last; its typed failure dead-letters the effect.
           yield* advance(other, "4 seconds")
           expect(yield* deadLetters(other)).toEqual([{ attempts: 2, ambiguous: false }])
           expect((yield* callerState(other, "late")).letters).toMatchObject([
@@ -1079,7 +1053,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           )
           yield* renewal.release
 
-          // The routed dead letter stands, and nothing reached onSuccess.
           expect(yield* receipts(other, "Called")).toBe(0)
           expect(yield* receipts(other, "CallFailed")).toBe(1)
           expect((yield* callerState(other, "late")).letters).toMatchObject([
@@ -1114,12 +1087,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const [first] = fixture.attempts
           const ran = first!.endedAt! - first!.startedAt
 
-          // Interrupted at one lease, while the database lease still held the row.
           const [held] = yield* outboxRows(other)
           expect(ran >= 2900 && ran < 4000).toBe(true)
           expect(fixture.attempts.length).toBe(1)
           expect(held).toMatchObject({ kind: "effect", attempts: 1, ambiguous: true })
-          // The runner and the database share this host's clock; 100 ms covers the reads.
           expect(first!.endedAt! <= Number(held!.due) + 100).toBe(true)
 
           fixture.hook = () => Effect.void
@@ -1143,7 +1114,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const { owner, other } = yield* ownerAndOther(yield* refOf("stalled"))
           fixture.provider = (attempt) => Effect.succeed(attempt.key)
 
-          // The owner's commit wakes its own relay, which claims attempt 1 and stalls before calling.
           const stalled = yield* faults(owner, (test) => test.pauseNext("beforeExecute"))
           yield* perform(owner, "stalled")
           yield* stalled.reached
@@ -1191,7 +1161,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* renewal.release
           yield* Effect.sleep("200 millis")
 
-          // The paused renewal was stopped before the failure's write, so the 1 s backoff stands.
           const [row] = yield* outboxRows(0)
           expect(row).toMatchObject({ kind: "effect", attempts: 1, ambiguous: false })
           expect(Number(row!.due) - Number(row!.now) <= 1000).toBe(true)
@@ -1217,7 +1186,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* advance(other, "4 seconds")
 
-          // The provider ran twice under one effect id; one result was routed.
           expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([
             [1, owner],
             [2, other],
@@ -1253,7 +1221,6 @@ const releasesOnShutdown = (
           ),
         )
 
-        // A graceful stop interrupts the paused delivery before any receiver committed it.
         yield* environment.restart
 
         yield* Effect.promise(() =>
@@ -1266,12 +1233,10 @@ const releasesOnShutdown = (
           SELECT attempts, due_at_ms::text AS due FROM actor_outbox
           WHERE payload LIKE '%"shutdown"%'`
 
-              // Released at shutdown, with its claim counted, instead of held for the lease.
               const [released] = yield* row
               expect(released!.attempts).toBe(1)
               expect(Number(released!.due) - claimedAt < 5000).toBe(true)
 
-              // The restarted runtime's outbox clock starts at database time again.
               const wait = Number(released!.due) - DateTime.toEpochMillis(yield* test.now)
               yield* test.advance(Math.max(0, wait))
               expect(fixture.taken.get("shutdown")).toBe(1)
@@ -1415,7 +1380,6 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
           const locked = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
 
-          // Three rows locked where one free slot probes two candidates.
           const holder = yield* query(0, (sql) =>
             sql.withTransaction(
               Effect.gen(function* () {
@@ -1462,7 +1426,6 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
           fixture.provider = () => Effect.fail(ProviderDown.make({}))
           const caller = yield* RelayCaller.get("exhausted")
 
-          // The dead-letter transaction fails once, after the typed failure is recorded.
           yield* sql`CREATE OR REPLACE FUNCTION relay_refuse_dead_letter() RETURNS trigger
             LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'dead letter refused'; END $$`
           yield* sql`CREATE TRIGGER relay_refuse_dead_letter BEFORE INSERT ON actor_dead_letters
@@ -1482,7 +1445,6 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* pending).toEqual([{ attempts: 1, ambiguous: false }])
 
-          // The next claim fences without counting and dead-letters the recorded failure.
           yield* test.advance("1 second")
           expect(fixture.attempts.length).toBe(1)
           expect(yield* pending).toEqual([])
@@ -1528,7 +1490,6 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
             plan: Schema.Unknown,
           }) {}
 
-          // Rolled back, so the analyzed claim takes nothing for real.
           const explained = yield* sql
             .withTransaction(
               sql
@@ -1563,7 +1524,6 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(nodes.some((node) => node["Node Type"] === "Seq Scan")).toBe(false)
           expect(due.length > 0).toBe(true)
-          // The kind-leading range never reaches the 10,000 due effect rows.
           expect(due.every((node) => node["Actual Rows"] === 0)).toBe(true)
           expect(due.every((node) => (node["Rows Removed by Filter"] ?? 0) === 0)).toBe(true)
         }),
@@ -1585,7 +1545,6 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
             SELECT (routing_key >> 56)::int AS bucket FROM actor_generations
             WHERE tenant_id = ${test.tenant} AND actor_type = 'RelayCaller' AND actor_id = 'starved'`
 
-          // More orphaned rows in the caller's bucket than any claim's per-bucket probe takes.
           yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
             SELECT (${placed!.bucket}::bigint << 56) | i, 'orphan', 'Orphan', i::text
             FROM generate_series(1, 200) AS i`

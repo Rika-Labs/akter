@@ -671,6 +671,13 @@ Not covered:
 
 With 10 samples, p99 is not meaningful.
 
+### M2 close: statements per operation against the baseline
+
+The M2 exit criterion "statements per operation match T2's baseline" was checked on 2026-09-30 against the `Statements` workflow's artifacts from 20 runs on 2026-09-29 (pull requests and pushes to `main`, each a `ci` profile run on Postgres 18.6 on a 4-vCPU CI runner), and against the latest run on `main`, which passed. The baseline is `benchmarks/baselines/statements.json` at `29d7397`; the gate fails a case that moves by more than its tolerance in either direction.
+
+- **Concurrent cases are noisy, and now have a tolerance.** Across 23 `Statements` runs of one code version, `hot-actor/concurrent-8` fell into two groups, 4.27 to 4.29 and 4.69 to 4.88, up to 11% under its baseline of 4.79, depending on how many concurrent commands share a batch. The others stayed close together: `outbox/delivery-concurrent-16` 14.48 to 14.67 (baseline 14.58), `effect-round-trip/concurrent-64` 17.29 to 17.50 (17.35), `hot-actor/concurrent-64` 3.24 to 3.47 (3.37). Comment-only pull requests still failed at 14.82 and 17.56, beyond that range, so the spread over a day is wider than any one sample. The gate now compares cases with `concurrent` in their name within 5% of the baseline, and `hot-actor/concurrent-8` within 12%, never tighter than 0.2 (`toleranceOf` in `tooling/benchmarks/src/compare.ts`). Deterministic cases stay at 0.2. The cost: a concurrent case's regression under its tolerance passes, for example one statement per operation in `outbox/delivery-concurrent-16` (7%) fails but 0.5 does not. The sequential cases and `turn-batches` still catch changes to the turn's own statements.
+- **Every other case** matched its baseline within 0.2 in the latest run on `main`.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:

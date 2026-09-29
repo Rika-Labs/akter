@@ -11,7 +11,6 @@ class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {}) {}
 
 class Undeliverable extends Schema.TaggedError<Undeliverable>()("Undeliverable", {}) {}
 
-// Every attempt fails, so its one allowed attempt ends in a dead letter.
 class Deliver extends Actor.effect<Deliver>()("Deliver", {
   input: { body: Schema.String },
 }) {}
@@ -39,7 +38,6 @@ const Specimen = Actor.make("Specimen", {
   policy: { effects: { Deliver: { retry: { times: 0 } } } },
 })
 
-// One turn that writes every kind of row the inspection views expose.
 const record = Effect.fnUntraced(function* (body: string) {
   const turn = yield* Specimen.Turn
   yield* turn.state.set({ notes: [...turn.state.notes, body] })
@@ -49,6 +47,7 @@ const record = Effect.fnUntraced(function* (body: string) {
   yield* turn.perform(Deliver.make({ body }))
 })
 
+/** Handlers for the actors whose rows the inspection views expose. */
 export const inspectionViewsLayer = Layer.mergeAll(
   Specimen.toLayer(
     Effect.succeed({
@@ -109,9 +108,6 @@ const rowsOf = Effect.fnUntraced(function* (
   )
 })
 
-// `Specimen` runs no workflow, holds no content, and turns write no operator audit; the
-// workflow, content, and operator cases cover those views, and `contents` belongs to a tenant,
-// not an actor.
 const COUNTED = VIEWS.filter(
   (name) =>
     name !== "views" &&
@@ -122,7 +118,6 @@ const COUNTED = VIEWS.filter(
     name !== "content_refs",
 )
 
-// One statement, so every count reads the same snapshot.
 const counts = Effect.fnUntraced(function* (tenant: string, id: string) {
   const sql = yield* SqlClient.SqlClient
 
@@ -134,8 +129,6 @@ const counts = Effect.fnUntraced(function* (tenant: string, id: string) {
     [tenant, id],
   )
 
-  // The relay may run an effect as soon as its turn commits, moving it from
-  // `effects` to `dead_letters` at any point.
   const { effects = 0, dead_letters = 0, ...rest } = row ?? {}
 
   return { ...rest, effects: effects + dead_letters }
@@ -152,6 +145,7 @@ class Probed extends Data.TaggedError("Probed")<{
   readonly write: string
 }> {}
 
+/** Inspection-view cases: views show exactly the committed rows per tenant and reject every write. */
 export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "inspection views show exactly the rows committed turns wrote",
@@ -217,11 +211,9 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             },
           ])
 
-          // A declared failure keeps its receipt and discards every other write.
           expect(Exit.isFailure(yield* specimen.RecordThenReject("second").pipe(Effect.exit))).toBe(
             true,
           )
-          // A defect commits nothing at all.
           expect(Exit.isFailure(yield* specimen.RecordThenDie("third").pipe(Effect.exit))).toBe(
             true,
           )
@@ -338,7 +330,6 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
           const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
           const role = `inspector_${uuid.replaceAll("-", "")}`
 
-          // The whole probe rolls back, so the cluster-wide role never outlives it.
           const probe = yield* sql
             .withTransaction(
               Effect.gen(function* () {
