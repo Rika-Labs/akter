@@ -32,7 +32,11 @@
       "@distilled.cloud/github": "1.0.0-rc.12",
       "@distilled.cloud/infisical": "1.0.0-rc.12",
       "@distilled.cloud/resend": "1.0.0-rc.12",
-      "@distilled.cloud/polar": "1.0.0-rc.12"
+      "@distilled.cloud/polar": "1.0.0-rc.12",
+      "react": "19.3.0",
+      "react-dom": "19.3.0",
+      "@types/react": "19.3.0",
+      "@types/react-dom": "19.3.0"
     }
   },
   "type": "module",
