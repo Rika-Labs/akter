@@ -332,6 +332,16 @@ const positions = (flight: Buffer, fragments: ReadonlyArray<string>) =>
 const increasing = (values: ReadonlyArray<number>) =>
   values.every((value, index) => value >= 0 && (index === 0 || value > values[index - 1]!))
 
+/**
+ * Queues a rival behind the held turn's lock on the generation table, ahead of
+ * the next batch's admission. Postgres grants a queued table lock to its
+ * waiter when the holder commits, so a `FOR UPDATE` sent in the same flight as
+ * that COMMIT waits behind the rival. A row lock gives no such order: the
+ * statement can lock the row it finds committed before the waiting rival wakes,
+ * and the batch then runs ahead of the takeover the case needs to fence it.
+ */
+const takeoverLock = "LOCK TABLE actor_generations IN EXCLUSIVE MODE"
+
 /** Another runner's connection to the same database. */
 const rival = (database: Redacted.Redacted<string>) =>
   Layer.build(
@@ -755,8 +765,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
                 Effect.gen(function* () {
                   const [row] = yield* rivalSql<{ pid: number }>`SELECT pg_backend_pid() AS pid`
                   yield* Deferred.succeed(rivalPid, row!.pid)
-                  yield* rivalSql`SELECT 1 FROM actor_generations
-                    WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id} FOR UPDATE`
+                  yield* rivalSql.unsafe(takeoverLock)
                   yield* Deferred.await(gate)
                   yield* rivalSql`UPDATE actor_generations SET generation = generation + 1
                     WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id}`
