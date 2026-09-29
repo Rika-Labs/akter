@@ -32,6 +32,7 @@ import { FrameworkClock } from "../turn/admission.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
+import type { TurnGate } from "../drain.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
@@ -115,6 +116,7 @@ export const registerActor = Effect.fnUntraced(function* (
   registration: Registration,
   transport: Transport,
   authorize: Authorize,
+  gate: TurnGate,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -251,120 +253,126 @@ export const registerActor = Effect.fnUntraced(function* (
 
       return entity.of({
         Wake: () => Effect.suspend(() => (lost ? leaseLost : Effect.void)),
-        Execute: Effect.fnUntraced(function* ({ payload }) {
-          if (lost) return yield* leaseLost
+        Execute: Effect.fnUntraced(
+          function* ({ payload }) {
+            if (lost) return yield* leaseLost
 
-          if (Exit.isFailure(activated))
-            return { outcome: Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) }) }
+            if (Exit.isFailure(activated))
+              return {
+                outcome: Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) }),
+              }
 
-          const command =
-            activated.value.get(payload.command) ?? workflowRoutes.get(payload.command)
+            const command =
+              activated.value.get(payload.command) ?? workflowRoutes.get(payload.command)
 
-          if (command === undefined)
-            return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
+            if (command === undefined)
+              return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
 
-          const executed: Executed = yield* Effect.gen(function* () {
-            yield* owner.prepare(owned)
+            const executed: Executed = yield* Effect.gen(function* () {
+              yield* owner.prepare(owned)
 
-            const done = yield* executeTurn(
-              payload,
-              command,
-              owned.cache,
-              owned.key,
-              registration.policy,
-              registration.mintable,
-              registration.tables.length > 0 || registration.blobs.length > 0,
-              waited,
-              owner.hasConnections ? owner.list(owned) : undefined,
-              registration.cron,
+              const done = yield* executeTurn(
+                payload,
+                command,
+                owned.cache,
+                owned.key,
+                registration.policy,
+                registration.mintable,
+                registration.tables.length > 0 || registration.blobs.length > 0,
+                waited,
+                owner.hasConnections ? owner.list(owned) : undefined,
+                registration.cron,
+              )
+
+              // A route turn's command id is its effect id: its progress stops before the route's broadcasts.
+              if (owner.hasProgress && !Outcome.guards.Defect(done.outcome)) {
+                yield* owner.closeProgress(owned, payload.commandId)
+
+                // A turn that cancelled a running effect stops its progress before its own broadcasts.
+                for (const effectId of done.cancelledEffects)
+                  yield* owner.closeProgress(owned, effectId)
+              }
+
+              // Stream followers wake when a commit advances the activation's head.
+              if (owner.hasConnections || owner.hasStreams) {
+                yield* (yield* TurnHooks).at("beforeFlush", payload)
+                yield* owner.flush(
+                  owned,
+                  [...done.broadcasts, ...(yield* owner.feedBroadcasts(done.committed))],
+                  done.head,
+                )
+              }
+
+              return { outcome: done.outcome, version: done.version }
+            }).pipe(
+              Effect.catchDefect(
+                Effect.fnUntraced(function* (cause) {
+                  if (
+                    Schema.is(RetryTurn)(cause) ||
+                    (SqlError.isSqlError(cause) && cause.isRetryable)
+                  )
+                    return yield* Effect.die(cause)
+
+                  // Deterministic defects run no user code, because a defect hook
+                  // can loop on corrupt state; the turn span and this log carry
+                  // the cause for operators.
+                  yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
+
+                  return { outcome: Outcome.cases.Defect.make({ cause }) }
+                }),
+              ),
+              Effect.annotateLogs({
+                actor: payload.ref.actor,
+                id: payload.ref.id,
+                tenant: payload.ref.tenant,
+                command: payload.command,
+                commandId: payload.commandId,
+              }),
+              // The span's call site is always this file, so a captured stack
+              // trace would cost an Error per turn and name nothing useful.
+              Effect.withSpan(
+                `durable-actors.${payload.ref.actor}/${payload.command}`,
+                {
+                  attributes: {
+                    "actor.tenant": payload.ref.tenant,
+                    "actor.id": payload.ref.id,
+                    "command.id": payload.commandId,
+                  },
+                },
+                { captureStackTrace: false },
+              ),
             )
 
-            // A route turn's command id is its effect id: its progress stops before the route's broadcasts.
-            if (owner.hasProgress && !Outcome.guards.Defect(done.outcome)) {
-              yield* owner.closeProgress(owned, payload.commandId)
+            const outcome = executed.outcome
 
-              // A turn that cancelled a running effect stops its progress before its own broadcasts.
-              for (const effectId of done.cancelledEffects)
-                yield* owner.closeProgress(owned, effectId)
+            // The turn settled, so the next retryable death waits the base delay again.
+            restarts.set(activation, 0)
+
+            const hooks = yield* TurnHooks
+
+            if (!Outcome.guards.Defect(outcome)) yield* hooks.at("afterCommit", payload)
+
+            if (workflowRoutes.has(payload.command)) {
+              const kicked = yield* kickedExecution({ request: payload, outcome })
+
+              if (kicked !== undefined) {
+                engine ??= yield* activationEngine({
+                  registration,
+                  ref: payload.ref,
+                  routingKey: routingKeyOf(payload.ref),
+                  cache: owned.cache,
+                  scope,
+                  deliveryMs: registration.policy.deliveryMs,
+                })
+                yield* engine.kick(kicked.executionId, kicked.interrupt)
+              }
             }
 
-            // Stream followers wake when a commit advances the activation's head.
-            if (owner.hasConnections || owner.hasStreams) {
-              yield* (yield* TurnHooks).at("beforeFlush", payload)
-              yield* owner.flush(
-                owned,
-                [...done.broadcasts, ...(yield* owner.feedBroadcasts(done.committed))],
-                done.head,
-              )
-            }
-
-            return { outcome: done.outcome, version: done.version }
-          }).pipe(
-            Effect.catchDefect(
-              Effect.fnUntraced(function* (cause) {
-                if (
-                  Schema.is(RetryTurn)(cause) ||
-                  (SqlError.isSqlError(cause) && cause.isRetryable)
-                )
-                  return yield* Effect.die(cause)
-
-                // Deterministic defects run no user code, because a defect hook
-                // can loop on corrupt state; the turn span and this log carry
-                // the cause for operators.
-                yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
-
-                return { outcome: Outcome.cases.Defect.make({ cause }) }
-              }),
-            ),
-            Effect.annotateLogs({
-              actor: payload.ref.actor,
-              id: payload.ref.id,
-              tenant: payload.ref.tenant,
-              command: payload.command,
-              commandId: payload.commandId,
-            }),
-            // The span's call site is always this file, so a captured stack
-            // trace would cost an Error per turn and name nothing useful.
-            Effect.withSpan(
-              `durable-actors.${payload.ref.actor}/${payload.command}`,
-              {
-                attributes: {
-                  "actor.tenant": payload.ref.tenant,
-                  "actor.id": payload.ref.id,
-                  "command.id": payload.commandId,
-                },
-              },
-              { captureStackTrace: false },
-            ),
-          )
-
-          const outcome = executed.outcome
-
-          // The turn settled, so the next retryable death waits the base delay again.
-          restarts.set(activation, 0)
-
-          const hooks = yield* TurnHooks
-
-          if (!Outcome.guards.Defect(outcome)) yield* hooks.at("afterCommit", payload)
-
-          if (workflowRoutes.has(payload.command)) {
-            const kicked = yield* kickedExecution({ request: payload, outcome })
-
-            if (kicked !== undefined) {
-              engine ??= yield* activationEngine({
-                registration,
-                ref: payload.ref,
-                routingKey: routingKeyOf(payload.ref),
-                cache: owned.cache,
-                scope,
-                deliveryMs: registration.policy.deliveryMs,
-              })
-              yield* engine.kick(kicked.executionId, kicked.interrupt)
-            }
-          }
-
-          return executed
-        }, Effect.provideContext(services)),
+            return executed
+          },
+          Effect.provideContext(services),
+          gate.run,
+        ),
       })
     }),
     {

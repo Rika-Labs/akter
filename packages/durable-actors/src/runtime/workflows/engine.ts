@@ -508,7 +508,7 @@ export const activationEngine = (options: {
             known = {
               covered:
                 missingSteps({ stored, steps: workflow.steps }).length === 0 &&
-                (stored.input === undefined || stored.input === own.manifest.input) &&
+                stored.input === own.manifest.input &&
                 (!row.newer || changed.length === 0),
               changed,
             }
