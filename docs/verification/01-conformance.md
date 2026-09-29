@@ -404,7 +404,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 - `fails Actor.serve at startup when a provider declares two credentials of one OpenAPI scheme` — two cookies, or `Bearer` with `Jwt`, would leave one out of the document.
 - `refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin` — 403 before authentication; CORS headers and preflight for a listed origin.
 - `rejects non-JSON and oversized bodies and credentials before any turn` — 415, 413 for body and credentials, 400 with value-free schema issues, 400 `decode` for invalid UTF-8, and 400 `unsupported_protocol`.
-- `answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version`.
+- `answers a query without Idempotency-Key, x-request-id, or durable-version, reading the primary for any durable-min-version without a replica`.
 - `fails Actor.serve at startup when retryWindowMs is below 60 seconds, and admits ids minted at exactly 60 seconds`.
 - `serves routes at the root for basePath /, and answers an undefined query output with 200 null`.
 - `ignores a trailing slash on basePath`.
@@ -431,7 +431,7 @@ The cases live in [`conformance/client.ts`](../../packages/durable-actors/src/te
 - `client marks a self-minted id the server refused before any turn as never admitted` — and the `window` refusal drops the cached retry window, so the next command reads `/protocol` again and is admitted. A committed id, or an id another call is still waiting on, is reported with `neverAdmitted: false`.
 - `client maps declared errors to their classes and framework failures to typed ActorErrors` — invariant R3 through the client: a declared failure and its replay are instances of the declared class with the same fields; `CommandConflict`, `InvalidInput`, an opaque defect (`TransportError` `defect`, no server detail), and a non-envelope 400 (`TransportError` `status`) map to their reasons; input the schema rejects never reaches the network.
 - `client surfaces auth failures and refreshes expired credentials once with the same id` — missing and invalid credentials fail `Unauthorized` without retry; after `expired` the header function is called again and the single retry keeps the id.
-- `client routes queries, singleton and minted actors, and special-character keys, sending the greatest consistency token a server issued` — no `Idempotency-Key` on queries; `durable-min-version` carries the greatest `durable-version` seen (injected by the test's `fetch`, since `Actor.serve` does not issue it yet); a void command resolves `undefined` from its `204`, and an `UndefinedOr` query resolves `undefined` from `null`.
+- `client routes queries, singleton and minted actors, and special-character keys, sending the greatest consistency token a server issued` — no `Idempotency-Key` on queries; `durable-min-version` carries the greatest `durable-version` seen (injected by the test's `fetch`, so the ordering is fixed); a void command resolves `undefined` from its `204`, and an `UndefinedOr` query resolves `undefined` from `null`.
 - `client stops waiting at its timeout or abort, even between retries, and the same id later returns the committed receipt` — row **Caller gives up before a reply**: `Timeout` with the command id, even when the wait stops between retries after a 502; the held turn commits once and a retry with that id returns it. A query whose every attempt meets a 502 stops at its timeout with `Timeout` and no command id.
 - `client mints through /command-ids when a slow /protocol leaves no clock sample` — a `/protocol` answered after 5.1 s; the command's id comes from `/command-ids`, never from a stale offset.
 - `client ids minted from a skewed local clock are admitted, and /command-ids ids are preserved` — local clocks 10 minutes fast and slow; `commandIds: "server"` sends the server's id unchanged.
@@ -846,6 +846,7 @@ Evidence MUST record the revision, test name and command, backend/runtime versio
 - **Outbox delivery:** deliver same-shard, cross-shard, and cross-region intents and keyed timers; crash before delivery, after receiver commit, and before row deletion; replace and cancel keyed timers. Each intent id produces one receiver transition.
 - **Reducers:** property-test `reduce(reduce(s, a), b) = reduce(s, combine(a, b))` for every commutative reducer; merged turns commit one receipt per original command id. A browser handle's optimistic state converges to committed state after success and failure receipts. M1.8 covers server reducer turns and the merge-law property for a sample reducer (see [reducer cases](#reducer-cases-m18)); merged turns need the M2 multi-runner harness, so the check stays unverified. The client half (C3) runs through the Promise client over HTTP on PGlite and Postgres ([Promise client](#promise-client-m34)), not yet in a browser.
 - **Read-your-writes:** a query carrying a handle's last-seen commit version never returns older state from a replica or edge cache.
+  - **Status (M4.9, #229):** see [read-your-writes](#read-your-writes-m49). Edge caches are not built.
 - **API shape:** [`definition.test.ts`](../../packages/durable-actors/src/actor/definition.test.ts) rejects `turn.emit` outside `X.Turn`, `emit` on `X.Read`, and undeclared event classes in `emit` and `read.events`. The `research/v5` type spike rejects a mismatched `api` key, an unknown or non-zero-input cron target, `turn.emit` outside `X.Turn`, `X.intents` outside a turn, and `X.get` inside a turn.
 - **Simulation:** `ActorTest.simulate` with crash-before-commit, crash-after-commit, dropped replies, primary failover, relay crash, and clock skew keeps receipts and outbox delivery exactly once, and a failing seed reproduces.
 - **Workflow engine:** run one workflow suite against the framework engine and `ClusterWorkflowEngine`; they must match on activity replay, clock resume after restart, `waitFor` races, interruption, and result polling. No workflow state is written outside the owner's shard. [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) names the cases M2.7 adds in `conformance/workflows.ts`:
@@ -881,3 +882,16 @@ Evidence MUST record the revision, test name and command, backend/runtime versio
 - **Generated protocols:** OpenAPI, MCP, and language clients agree on schemas, public member names, errors, and command identity; internal members are absent.
 - **Scale-to-zero:** a cold runner recovers committed work, does not lose due work, reports wake/state-load latency, and does not claim parked-connection continuity without a gateway.
 - **Generated applications:** builds are reproducible, tenant-scoped, rollbackable, and adversarially tested; generated code is not called isolated until a reviewed sandbox proves that property.
+
+## Read-your-writes (M4.9)
+
+[`conformance/read-your-writes.ts`](../../packages/durable-actors/src/testing/conformance/read-your-writes.ts) covers invariant Q1 and [ADR 0052](../decisions/0052-read-your-writes-commit-versions.md). The replica cases run on real Postgres against a physical streaming replica named by `TEST_REPLICA_DATABASE_URL` (CI builds one with `pg_basebackup`) and pause its replay with `pg_wal_replay_pause()`:
+
+- `answers every committed command with durable-version, and a replay with one at least as high` (PGlite and Postgres);
+- `refuses a malformed durable-min-version with InvalidInput` (PGlite and Postgres);
+- `reads the replica once it has replayed the caller's version, falls through to the primary while it lags, and serves tokenless reads there`: with replay paused after the caller's write and a second, unseen write committed, the caller's version reads the replica's older state (which has the caller's write), the unseen write's version reads the primary, and a tokenless query reads the stale replica;
+- `falls through to the primary when the replica cannot be reached`;
+- `the Promise client reads its own writes while the replica lags, sending the greatest version it was issued`;
+- `an in-process handle's query reads the commands its runtime sent while the replica lags`.
+
+Making the replica check always pass fails the three lag cases. Not covered: a hot-standby recovery conflict mid-read (it takes the same fall-through path as an unreachable replica), and failover.

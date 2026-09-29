@@ -103,7 +103,7 @@ Within a wave, migrations merge in number order. If a higher number is ready fir
 | `0016_final_effect_failures` | #127 final effect failures with retries left      | 4    |
 | `0017_subscriptions`         | M3.7 cross-actor event subscriptions              | 4    |
 | `0018_rls`                   | M4.5 row-level security                           | 7    |
-| `0019_commit_version`        | M4.9 read-your-writes                             | 7    |
+| `0019_commit_version`        | M4.9 read-your-writes: unused, a gap (ADR 0052)   | 7    |
 | `0020_content_blobs`         | M4.13 tenant-scoped content-addressed blobs       | 7    |
 | `0021_adoption`              | M6.1 existing-schema adoption                     | 9    |
 

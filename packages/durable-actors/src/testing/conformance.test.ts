@@ -25,6 +25,10 @@ const createDatabase = Effect.fnUntraced(function* (
 // A physical streaming replica of TEST_DATABASE_URL's server, when one is configured.
 const replicaUrl = process.env["TEST_REPLICA_DATABASE_URL"]
 
+// CI always provides one, so its read-your-writes evidence can't be skipped unnoticed.
+if (process.env["CI"] !== undefined && replicaUrl === undefined)
+  throw new Error("TEST_REPLICA_DATABASE_URL must name a streaming replica in CI")
+
 const backend: ConformanceBackend = {
   independentConnections: true,
   hasReplica: replicaUrl !== undefined,
