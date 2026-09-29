@@ -295,7 +295,7 @@ const claimEffects = (
   candidates: Statement.Fragment,
 ) => {
   const attempting = sql`o.cancelled_at_ms IS NULL AND o.attempts < c.max_attempts
-    AND o.final_attempt IS NULL`
+    AND NOT o.final_failure`
 
   return sql`UPDATE actor_outbox o SET
       due_at_ms = ${now} + ${leaseMs}::bigint,
@@ -312,7 +312,7 @@ const claimEffects = (
     WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
     RETURNING ${claimedColumns(sql)}, ${candidates} AS candidates,
       o.cancelled_at_ms IS NULL
-        AND (c.previous >= c.max_attempts OR o.final_attempt IS NOT NULL) AS exhausted`
+        AND (c.previous >= c.max_attempts OR o.final_failure) AS exhausted`
 }
 
 /** One effect type of one actor whose attempts run under a per-actor cap. */
@@ -1131,19 +1131,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 
-      // A failure that is final before the retries run out is recorded in
-      // `final_attempt`, which the next claim reads as exhaustion.
-      const early = final === true && attempt < registered.attempts
-
       // The outcome is recorded first, so a failed dead-letter transaction is
       // retried with this attempt's cause rather than the claim's, and a final
-      // failure is never followed by another attempt.
+      // failure, which the next claim reads as exhaustion even with retries
+      // left, is never followed by another attempt.
       const recorded = yield* sql<{
         cancelled: boolean
         maybe_applied: boolean
       }>`UPDATE actor_outbox
         SET last_error = ${cause}, ambiguous = ${ambiguous}, running = false,
-          final_attempt = ${early ? attempt : null},
+          final_failure = ${final === true},
           due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
         WHERE ${attemptRow(attempt)}
         RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied`
@@ -1492,9 +1489,36 @@ export const outboxRelay = Effect.fnUntraced(function* (
       )
       .pipe(Effect.orDie)
 
+  // A draining runner claims nothing more. A delivery only waits on a turn,
+  // which the receiver's owner finishes or rolls back on its own, so it is
+  // interrupted at once and its row falls due for any runner; the receiver's
+  // receipt answers a redelivery of work that did commit.
+  const stop = lock
+    .withPermit(
+      Effect.sync(() => {
+        stopping = true
+      }),
+    )
+    .pipe(
+      Effect.andThen(FiberSet.clear(deliveries)),
+      Effect.andThen(FiberSet.clear(subscriptionWork.feed)),
+      Effect.andThen(FiberSet.clear(subscriptionWork.control)),
+      Effect.andThen(FiberSet.clear(subscriptionWork.subscription)),
+    )
+
+  // An interrupted attempt keeps its claim and its `ambiguous` mark, because
+  // the provider may have applied the call; another runner takes the effect
+  // over once the lease ends.
+  const interruptAttempts = Effect.flatMap(FiberSet.size(attempts), (running) =>
+    FiberSet.clear(attempts).pipe(Effect.as(running)),
+  )
+
   return {
     run,
     drain,
+    stop,
+    attemptsIdle: FiberSet.awaitEmpty(attempts),
+    interruptAttempts,
     extendLeases,
     wake: Queue.offer(signals, undefined).pipe(Effect.asVoid),
     cancelled,

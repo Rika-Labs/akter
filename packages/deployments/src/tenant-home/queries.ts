@@ -1,0 +1,21 @@
+import { Effect, Option } from "effect"
+import { TenantHome, tenantDirectory } from "./contract.ts"
+
+export const TenantHomeReads = TenantHome.toQueryLayer(
+  Effect.succeed({
+    Lookup: Effect.fnUntraced(function* () {
+      const read = yield* TenantHome.Read
+      const row = yield* read.rows(tenantDirectory).one()
+
+      return Option.match(row, {
+        onNone: () => undefined,
+        onSome: ({ deploymentId, tenant, region, state }) => ({
+          deployment: deploymentId,
+          tenant,
+          region,
+          state,
+        }),
+      })
+    }),
+  }),
+)

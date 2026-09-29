@@ -42,6 +42,7 @@ import { FrameworkClock } from "../turn/admission.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
+import type { TurnGate } from "../drain.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
@@ -149,6 +150,7 @@ export const registerActor = Effect.fnUntraced(function* (
   registration: Registration,
   transport: Transport,
   authorize: Authorize,
+  gate: TurnGate,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -339,14 +341,20 @@ export const registerActor = Effect.fnUntraced(function* (
           { discard: true },
         ).pipe(Effect.andThen(Effect.interrupt))
 
+      // Every command the current run has taken, so a drain can answer them.
+      let taken: Array<Waiting> = []
+
       // The next batch already waiting, taken while the previous one commits
-      // so its admission rides in the same flight. Nothing waits for one.
+      // so its admission rides in the same flight. Nothing waits for one, and
+      // a draining runner starts none.
       const following = Effect.sync(() => {
-        if (lost) return undefined
+        if (lost || !gate.open) return undefined
 
         const batch = takeBatch({ waiting, alone })
 
         if (waiting.length === 0) ready.closeUnsafe()
+
+        taken.push(...batch)
 
         return batch.length > 0 ? batch : undefined
       })
@@ -520,19 +528,33 @@ export const registerActor = Effect.fnUntraced(function* (
 
           if (batch.length === 0) continue
 
-          yield* Effect.gen(function* () {
-            if (lost) return yield* restart(batch, Cause.die(leaseLostDefect))
+          taken = [...batch]
 
-            const stopped = yield* run(batch, true)
+          // A draining runner refuses the batch, or interrupts its run at the
+          // deadline, and every caller the run took but has not answered
+          // retries elsewhere.
+          yield* gate
+            .run(
+              Effect.gen(function* () {
+                if (lost) return yield* restart(batch, Cause.die(leaseLostDefect))
 
-            if (stopped !== undefined) yield* recover(stopped)
-          }).pipe(
-            Effect.provideContext(Context.merge(batch[0]!.context, services)),
-            Effect.catchCauseIf(
-              (cause) => !Cause.hasInterruptsOnly(cause),
-              (cause) => restart(batch, cause),
-            ),
-          )
+                const stopped = yield* run(batch, true)
+
+                if (stopped !== undefined) yield* recover(stopped)
+              }),
+            )
+            .pipe(
+              Effect.catchIf(Schema.is(ActorError), (error) =>
+                Effect.forEach(taken, (entry) => Deferred.fail(entry.reply, error), {
+                  discard: true,
+                }),
+              ),
+              Effect.provideContext(Context.merge(batch[0]!.context, services)),
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) => restart(batch, cause),
+              ),
+            )
         }
       }).pipe(Effect.provideContext(services), Effect.forkIn(scope))
 
