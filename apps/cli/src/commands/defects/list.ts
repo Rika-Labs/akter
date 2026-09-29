@@ -4,9 +4,11 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { RunnerUnreachable, TOKEN_ENV } from "../operator/request.ts"
 import { UsageError } from "../workflows/check.ts"
 
+/** Usage text for `durable defects`. */
 export const USAGE =
   "Usage: durable defects list --url <runner> [--url <runner> ...] [--tenant <tenant>] [--actor <type>] [--since <duration>] [--limit <n>] [--token-env <name>] [--json]"
 
+/** Parsed arguments of `defects list`. */
 export interface ListOptions {
   readonly urls: ReadonlyArray<string>
   /** A tenant, or `*` for every tenant the operator's grant covers. */

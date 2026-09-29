@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect"
 
 import { pageBase } from "./pages.ts"
 
+/** The GitHub repository the site links to for files it does not publish. */
 export const repositoryUrl = "https://github.com/Rika-Labs/durable-actors"
 
 /** GitHub resolves `blob/` to `tree/` for directories, so one prefix serves both. */
@@ -19,8 +20,10 @@ export class LinkOutsideRepository extends Schema.TaggedError<LinkOutsideReposit
   { source: Schema.String, href: Schema.String },
 ) {}
 
-// A synthetic origin lets the URL parser resolve `..` segments; a result
-// outside `/repo/` means the link climbed above the repository root.
+/**
+ * A synthetic origin lets the URL parser resolve `..` segments; a result
+ * outside `/repo/` means the link climbed above the repository root.
+ */
 const repositoryRoot = "https://repository.invalid/repo/"
 
 const hasScheme = /^[a-z][a-z0-9+.-]*:/i

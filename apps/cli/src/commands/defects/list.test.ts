@@ -31,7 +31,9 @@ const grant = (tenant: string) => ({
   capabilities: [{ action: "defects.read" as const, tenant }],
 })
 
-// Each token reads its own tenant's defects; "reader" reads every tenant's.
+/**
+ * Each token reads its own tenant's defects; "reader" reads every tenant's.
+ */
 const operators = OperatorAuth.tokens([
   { token: Redacted.make("plant-token"), grant: grant("plant") },
   { token: Redacted.make("other-token"), grant: grant("other") },
@@ -117,7 +119,6 @@ describe("durable defects list", () => {
         "b1",
         "b2",
       ])
-      // A grant for one tenant reads neither another tenant nor every tenant.
       expect(Exit.isFailure(yield* read("plant-token", "other").pipe(Effect.exit))).toBe(true)
       expect(Exit.isFailure(yield* read("plant-token", "*").pipe(Effect.exit))).toBe(true)
       expect(yield* read("plant-token", "plant", "Kettle")).toEqual([])

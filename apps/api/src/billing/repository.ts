@@ -4,6 +4,12 @@ import * as PgDrizzle from "drizzle-orm/effect-postgres"
 import { organization } from "@durable-actors/postgres/schema"
 import { billingWebhook, organizationBilling } from "./schema.ts"
 
+/**
+ * Records a subscription event once per event id and applies it only when
+ * newer than the stored one, so replays and out-of-order deliveries change
+ * nothing. Events for unknown organizations are recorded but create no billing
+ * row.
+ */
 export const applySubscription = Effect.fn("Billing.applySubscription")(function* (event: {
   id: string
   organizationId: string

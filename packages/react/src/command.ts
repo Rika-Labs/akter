@@ -21,6 +21,7 @@ export type CommandState<Output> =
       readonly expired: boolean
     }
 
+/** State of the last intent and the functions that send it. */
 export interface UseCommand<Input, Output> {
   readonly state: CommandState<Output>
   /** Sends `input` as a new intent, under a command id minted for it. */
@@ -44,7 +45,8 @@ const isExpired = (error: Failure) =>
  * `retry` resends the same intent under that id, after a lost response, a
  * timeout, or a refused attempt, so a double click or a retry after a dropped
  * connection replays the receipt instead of running the command twice. An id
- * whose retry window passed is surfaced as `expired`, never replaced.
+ * whose retry window passed is surfaced as `expired`, never replaced. Failures
+ * are the Promise client's: declared errors and `ActorError`s.
  */
 export const useCommand = <Input, Output>(
   client: CommandIds,
@@ -74,7 +76,6 @@ export const useCommand = <Input, Output>(
 
       return data
     } catch (thrown) {
-      // The Promise client rejects only with declared errors and `ActorError`s.
       const error = thrown as Failure
 
       if (intent.current === current)
