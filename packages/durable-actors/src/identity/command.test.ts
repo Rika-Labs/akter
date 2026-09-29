@@ -83,7 +83,6 @@ const mutate = (id: string, mutation: typeof Mutation.Type): string => {
   }
 }
 
-// Subjects chosen so that naive concatenation of tag and subject would collide.
 const Subject = Schema.Literals(["alice", "User", "Anonymous", '["User","alice"]', "a,b"])
 
 const SmallRef = Schema.Struct({

@@ -6,6 +6,10 @@ export interface SandboxOwner {
   readonly agentId: string
 }
 
+/**
+ * A sandbox as the provider lists it: its owner, start time in epoch
+ * milliseconds and whether it is paused.
+ */
 export interface SandboxInfo {
   readonly sandboxId: string
   readonly owner: SandboxOwner
@@ -52,6 +56,7 @@ export interface FakeSandboxes {
   now: () => number
 }
 
+/** An empty in-memory provider state whose clock is `now`. */
 export const fakeSandboxes = (now: () => number = Date.now): FakeSandboxes => ({
   sandboxes: new Map(),
   prompts: new Map(),
@@ -60,6 +65,10 @@ export const fakeSandboxes = (now: () => number = Date.now): FakeSandboxes => ({
   now,
 })
 
+/**
+ * `Sandboxes` backed by the in-memory provider `fake`; it honors idempotency
+ * keys like a real one.
+ */
 export const fakeLayer = (fake: FakeSandboxes) =>
   Layer.succeed(Sandboxes, {
     create: ({ repo, owner, idempotencyKey }) =>

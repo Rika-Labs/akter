@@ -1,8 +1,10 @@
 import { Actor } from "@durable-actors/core"
 import { Schema } from "effect"
 
+/** A document's key: a non-empty string. */
 export const DocId = Schema.NonEmptyString.pipe(Schema.brand("DocId"))
 
+/** A cursor position. */
 export const Point = Schema.Struct({ x: Schema.Finite, y: Schema.Finite })
 
 /** One open connection as the others see it; `at` is absent until its first move. */
@@ -16,10 +18,13 @@ export const Peer = Schema.Struct({
 /** Everyone already here, sent once to a connection that opens or resyncs. */
 export const Here = Schema.TaggedStruct("Here", { peers: Schema.Array(Peer) })
 
+/** A connection opened; sent to the others. */
 export const Joined = Schema.TaggedStruct("Joined", { peer: Peer })
 
+/** A connection's cursor moved; sent to the others. */
 export const Moved = Schema.TaggedStruct("Moved", { connectionId: Schema.String, at: Point })
 
+/** A connection closed; sent to the others. */
 export const Left = Schema.TaggedStruct("Left", { connectionId: Schema.String })
 
 /**
@@ -35,6 +40,7 @@ export const Live = Actor.connection("Live", {
   stampCursor: false,
 })
 
+/** A document whose viewers' cursors are shared over `Live`. */
 export const Cursor = Actor.make("Cursor", {
   key: DocId,
   api: { Live },

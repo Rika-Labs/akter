@@ -18,22 +18,22 @@ const Differences = Schema.Struct({
   payload: Schema.Boolean,
 })
 
+/** Strings that survive a UTF-8 round trip: Postgres never emits lone surrogates in JSONB text, and UTF-8 cannot encode them. */
+const jsonbText = Arbitrary.filter(
+  Arbitrary.schema(Schema.String),
+  (value) => new TextDecoder().decode(new TextEncoder().encode(value)) === value,
+)
+
 const runtime = ManagedRuntime.make(BunCrypto.layer)
 
 const run = <A>(effect: Effect.Effect<A, never, Crypto.Crypto>) => runtime.runPromise(effect)
 
 describe("receipts", () => {
-  it("hashes a canonical payload stably and distinctly", () => {
-    // Postgres never emits lone surrogates in JSONB text, and UTF-8 cannot encode them.
-    const text = Arbitrary.filter(
-      Arbitrary.schema(Schema.String),
-      (value) => new TextDecoder().decode(new TextEncoder().encode(value)) === value,
-    )
-
-    return run(
+  it("hashes a canonical payload stably and distinctly", () =>
+    run(
       checkProperty({
         name: "canonical payload hash stability",
-        arbitrary: Arbitrary.all([text, text]),
+        arbitrary: Arbitrary.all([jsonbText, jsonbText]),
         property: Effect.fnUntraced(function* ([a, b]) {
           const hash = yield* hashCanonical(a)
 
@@ -44,8 +44,7 @@ describe("receipts", () => {
           )
         }),
       }).pipe(Effect.map((runs) => expect(runs).toBe(1_000))),
-    )
-  })
+    ))
 
   it("replays a stored outcome exactly and refuses a changed caller, command, or payload", () =>
     run(

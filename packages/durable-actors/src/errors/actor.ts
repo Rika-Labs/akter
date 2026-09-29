@@ -1,9 +1,15 @@
 import { Effect, Option, Random, Schema } from "effect"
 
+/** A retry reused a command id with a different command or payload, so nothing ran. */
 export class CommandConflict extends Schema.TaggedError<CommandConflict>()("CommandConflict", {
   commandId: Schema.String,
 }) {}
 
+/**
+ * The command id passed its expiry and no receipt remains to replay, so the
+ * command is not run. It says nothing about whether an earlier attempt
+ * committed; retry only with a new operation, never a new id for the same one.
+ */
 export class CommandExpired extends Schema.TaggedError<CommandExpired>()("CommandExpired", {
   commandId: Schema.String,
 }) {}
@@ -39,7 +45,7 @@ export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthoriz
 }) {}
 
 /** A schema issue at a path, without the offending value. */
-export const InputIssue = Schema.Struct({ path: Schema.String, message: Schema.String })
+const InputIssue = Schema.Struct({ path: Schema.String, message: Schema.String })
 
 /**
  * A served request the boundary refused before any turn. Never in a typed
@@ -73,16 +79,20 @@ export class TransportError extends Schema.TaggedError<TransportError>()("Transp
   retryable: Schema.Boolean,
 }) {}
 
+/** The runtime could not run the command now, for example an unreachable owner or database; `cause` says why. Retry with the same command id. */
 export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("ActorUnavailable", {
   cause: Schema.Defect(),
 }) {}
 
+/** The caller stopped waiting for a reply (`deliveryTimeout`, or `commandTimeout` for a query). The turn is not cancelled and may still commit, so retry with the same command id. */
 export class Timeout extends Schema.TaggedError<Timeout>()("Timeout", {
   commandId: Schema.optionalKey(Schema.String),
 }) {}
 
+/** A command other than `policy.createdBy` reached an actor that does not exist yet; its handler did not run and no receipt was written. */
 export class NotCreated extends Schema.TaggedError<NotCreated>()("NotCreated", {}) {}
 
+/** The activation's mailbox holds `policy.mailboxCapacity` commands, so the command was not admitted. */
 export class MailboxFull extends Schema.TaggedError<MailboxFull>()("MailboxFull", {}) {}
 
 /**
@@ -129,6 +139,7 @@ export class SessionEnded extends Schema.TaggedError<SessionEnded>()("SessionEnd
   }
 }
 
+/** Every reason an `ActorError` carries. */
 export const Reason = Schema.Union([
   CommandConflict,
   CommandExpired,
@@ -144,8 +155,14 @@ export const Reason = Schema.Union([
   TransportError,
 ])
 
+/** One `Reason` value. */
 export type Reason = typeof Reason.Type
 
+/**
+ * The runtime's own failure for a call: `reason` says which. Declared command
+ * errors are never wrapped in it. `isRetryable` and `retryAfter` say whether
+ * and when a retry with the same command id is safe.
+ */
 export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", { reason: Reason }) {
   get isRetryable(): boolean {
     if (Schema.is(SessionEnded)(this.reason)) return this.reason.isRetryable
@@ -210,6 +227,7 @@ export const withRetryAfter =
   }
 
 export namespace ActorError {
+  /** An `ActorError` whose reason is one of `Reasons`, for handle signatures that name what can occur. */
   export type Of<Reasons extends Reason["_tag"]> = [Reasons] extends [never]
     ? never
     : ActorError & { readonly reason: Extract<Reason, { readonly _tag: Reasons }> }

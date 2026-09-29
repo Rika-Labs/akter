@@ -2,6 +2,7 @@ import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Effect, Result, Schema } from "effect"
 
+/** A room's key: a non-empty string. */
 export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
 
 /** An owned table: the framework adds and scopes routing_key, tenant_id, and actor_id. */
@@ -25,12 +26,14 @@ export const messagesDdl = `CREATE TABLE IF NOT EXISTS chat_messages (
 /** Attachment bytes, stored beside the room's rows and rolled back with its turn. */
 export const Attachments = Actor.blob("attachments")
 
+/** A message posted to the room, as its feed and history deliver it. */
 export class MessagePosted extends Actor.Event<MessagePosted>()("MessagePosted", {
   id: Schema.String,
   author: Schema.String,
   body: Schema.String,
 }) {}
 
+/** The room was archived after sitting idle, and refuses further posts. */
 export class RoomArchived extends Actor.Event<RoomArchived>()("RoomArchived", {}) {}
 
 /** Runs after the posting turn commits; the executor has no database access. */
@@ -53,18 +56,26 @@ export const Appeal = Actor.workflow("Appeal", {
   versions: { "notify-moderators": { current: 1, min: 0 } },
 })
 
+/** Workflow step that notifies moderators of an appeal, once. */
 export const Notify = Appeal.step("notify", { input: Schema.String })
 
+/**
+ * Waits, up to the workflow's timeout, for the `AppealDecided` event of the
+ * appealed message.
+ */
 export const AwaitDecision = Appeal.wait("decision", AppealDecided)
 
+/** A moderator's ruling on an appeal; emits `AppealDecided`. */
 export const DecideAppeal = Actor.command("DecideAppeal", {
   input: Schema.Struct({ messageId: Schema.String, restore: Schema.Boolean }),
 })
 
+/** Creating command of `Thread`; records its room and message. */
 export const Open = Actor.command("Open", {
   input: Schema.Struct({ room: Schema.String, messageId: Schema.String }),
 })
 
+/** Adds a reply to the thread and returns the reply count. */
 export const Reply = Actor.command("Reply", { input: Schema.String, output: Schema.Int })
 
 /** A reply thread: a minted child with no key, created only by its room's `Open` intent. */
@@ -78,13 +89,19 @@ export const Thread = Actor.make("Thread", {
   policy: { createdBy: Open },
 })
 
+/** Mints a reply thread for a message and returns its id. */
 export const StartThread = Actor.command("StartThread", {
   input: Schema.Struct({ messageId: Schema.String }),
   output: Schema.String,
 })
 
+/** Declared failure of `Post` and `React` once the room is archived. */
 export class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {}) {}
 
+/**
+ * Room state: whether it is closed, the reaction count, and the token of the
+ * pending idle check.
+ */
 export const RoomState = Actor.state({
   closed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   reactions: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -113,17 +130,23 @@ export const Presence = Actor.connection("Presence", {
   session: Schema.Struct({ user: Schema.String }),
 })
 
+/**
+ * Posts a message, optionally with an attachment, and returns its id; fails
+ * with `RoomClosed`.
+ */
 export const Post = Actor.command("Post", {
   input: Schema.Struct({ body: Schema.String, file: Schema.optional(Schema.Uint8Array) }),
   output: Schema.String,
   errors: [RoomClosed],
 })
 
+/** Closes the room and cancels its idle timer. */
 export const Archive = Actor.command("Archive")
 
 /** Deletes the author's message and withdraws its moderation call if it has not settled. */
 export const Retract = Actor.command("Retract", { input: Schema.String })
 
+/** The latest messages, newest first, up to `limit` (1 to 100). */
 export const Recent = Actor.query("Recent", {
   input: Schema.Struct({ limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) }),
   output: Schema.Array(
@@ -141,28 +164,39 @@ export const History = Actor.query("History", {
   errors: [UnknownCursor, RetentionGap],
 })
 
+/** The attachment stored under the message id, if any. */
 export const Attachment = Actor.query("Attachment", {
   input: Schema.String,
   output: Schema.Option(Schema.Uint8Array),
 })
 
-// Internal commands: only System callers (the relay and effect routes) reach them.
+/**
+ * Internal commands: only System callers (the relay and effect routes) reach
+ * them.
+ */
 export const IdleCheck = Actor.command("IdleCheck", {
   input: Schema.Struct({ token: Schema.String }),
 })
 
+/** The moderation result for a message; a flagged message is deleted. */
 export const Moderated = Actor.command("Moderated", {
   input: Schema.Struct({ id: Schema.String, flagged: Schema.Boolean }),
 })
 
+/** A moderation call that exhausted its retries. */
 export const ModerationFailed = Actor.command("ModerationFailed", {
   input: Actor.DeadLetter(ModerateMessage),
 })
 
+/** A moderation call that was cancelled. */
 export const ModerationCancelled = Actor.command("ModerationCancelled", {
   input: Actor.Cancelled(ModerateMessage),
 })
 
+/**
+ * A chat room. `ModerateMessage` runs at most two calls per room in flight,
+ * across every runner.
+ */
 export const Room = Actor.make("Room", {
   key: RoomId,
   state: RoomState,
@@ -191,7 +225,6 @@ export const Room = Actor.make("Room", {
     effects: {
       ModerateMessage: {
         retry: { times: 5 },
-        // At most two calls per room in flight, across every runner.
         concurrency: { perActor: 2 },
         onSuccess: Moderated,
         onDeadLetter: ModerationFailed,

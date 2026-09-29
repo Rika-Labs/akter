@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 
 /** Hex SHA-256 of a content's bytes, computed by the server, never supplied by a client. */
-export const ContentHash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))
+const ContentHash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))
 
 /**
  * A reference to uploaded content. `grant` is the capability: it is bound to
@@ -13,6 +13,7 @@ export const ContentRef = Schema.Struct({
   grant: Schema.String,
 })
 
+/** An uploaded content's hash, size, and grant. */
 export type ContentRef = typeof ContentRef.Type
 
 /** One reference an actor holds under a content blob. */

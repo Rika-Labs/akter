@@ -4,6 +4,7 @@ import { repoSourceSegments } from "../repo-paths.ts"
 
 const INDEX_FILE = /^index\.[cm]?[jt]sx?$/
 
+/** Forbids `index.ts` except as a package or subpath entry. */
 export const noBarrelIndexRule = defineRule({
   meta: {
     type: "suggestion",

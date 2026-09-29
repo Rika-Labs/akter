@@ -24,7 +24,7 @@ tester.run("anti-slop/no-reduce-accumulator-copy", noReduceAccumulatorCopyRule, 
     "function run(Object) { return items.reduce((acc, item) => Object.assign({}, acc), {}); }",
     "const Array = custom; items.reduce((acc, item) => Array.from(acc), []);",
     "items.reduce((acc, item) => { let alias = acc; alias = item; return Object.assign({}, alias); }, {});",
-    "items.reduce((acc, item) => [...acc, item], []);", // Owned by the native rule.
+    "items.reduce((acc, item) => [...acc, item], []);",
     "items.reduce((acc, item) => ({ ...acc, [item.id]: item }), {});",
   ],
   invalid: [

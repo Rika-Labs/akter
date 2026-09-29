@@ -1,8 +1,10 @@
-// One orders runner for the crash drill: the whole app on HTTP, with its
-// executor calling the drill's payment provider over HTTP. `DRILL_FAULT`
-// names one fault point and the command or effect it waits for; the first
-// time the runner reaches it, it prints `FAULT` and stops there until the
-// drill kills the process.
+/**
+ * One orders runner for the crash drill: the whole app on HTTP, with its
+ * executor calling the drill's payment provider over HTTP. `DRILL_FAULT`
+ * names one fault point and the command or effect it waits for; the first
+ * time the runner reaches it, it prints `FAULT` and stops there until the
+ * drill kills the process.
+ */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
@@ -13,6 +15,10 @@ import { OrdersLive } from "../layer.ts"
 import { Payments } from "../payments/client.ts"
 import { routes, TENANT } from "../server.ts"
 
+/**
+ * The runner's runtime, with short leases and backoff so a dead runner's claims
+ * pass to the next one within seconds.
+ */
 const runtime = Layer.unwrap(
   Effect.gen(function* () {
     const database = yield* Config.String("DRILL_DATABASE_URL")
@@ -37,7 +43,6 @@ const runtime = Layer.unwrap(
         Actors.layer({
           authorize: ({ caller, ref }) =>
             Effect.succeed(Schema.is(User)(caller) && ref.tenant === TENANT),
-          // Short leases and backoff, so a dead runner's claims pass to the next one within seconds.
           relay: { poll: "100 millis", claimLease: "3 seconds", maxBackoff: "1 second" },
           executors: { lease: "3 seconds" },
         }).pipe(Layer.provide(hooks)),
@@ -57,7 +62,10 @@ const server = Layer.unwrap(
   }),
 )
 
-// Tagged so the drill ignores runtime logs that share stdout.
+/**
+ * `LISTENING` and `FAULT` are tagged so the drill can tell them from runtime
+ * logs that share stdout.
+ */
 server.pipe(
   Layer.provide(runtime),
   Layer.build,

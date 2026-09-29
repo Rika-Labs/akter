@@ -4,8 +4,11 @@ const strict = new TextDecoder("utf-8", { fatal: true })
 
 const PREFIX = "c1."
 
-// A decimal byte count with no leading zero. Every `childId` output parses,
-// including an empty part: the parent's and child's keys decide validity.
+/**
+ * A decimal byte count with no leading zero, then `.`. Every `childId` output
+ * parses, including one with an empty part: the parent's and child's key
+ * schemas decide whether a part is valid.
+ */
 const LENGTH = /^(?:0|[1-9][0-9]{0,9})\./
 
 /**
@@ -16,7 +19,11 @@ const LENGTH = /^(?:0|[1-9][0-9]{0,9})\./
 export const childId = ({ parent, local }: { readonly parent: string; readonly local: string }) =>
   `${PREFIX}${utf8.encode(parent).byteLength}.${parent}.${local}`
 
-/** Splits a child id into its parent and local parts, or `undefined` when it is not one. */
+/**
+ * Splits a child id into its parent and local parts, or `undefined` when it is
+ * not one. The parent must end on a character boundary and be followed by
+ * `.`, and only the canonical `childId` form of its parts is accepted.
+ */
 export const parseChildId = (
   id: string,
 ): { readonly parent: string; readonly local: string } | undefined => {
@@ -29,7 +36,6 @@ export const parseChildId = (
   const bytes = utf8.encode(id.slice(PREFIX.length + length.length))
   const size = Number(length.slice(0, -1))
 
-  // The parent must end on a character boundary and be followed by `.`.
   if (bytes.byteLength < size + 1 || bytes[size] !== 0x2e) return undefined
 
   try {

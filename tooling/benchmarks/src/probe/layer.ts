@@ -108,6 +108,10 @@ export const deliveries = new Map<string, Deferred.Deferred<void>>()
 /** Sinks are spread over this many actors, so deliveries don't queue behind one activation. */
 export const SINKS = 64
 
+/**
+ * Name of the sink actor that receives the delivery with this id: the id's
+ * numeric suffix modulo `SINKS`.
+ */
 export const sinkOf = (id: string) => `sink-${Number(id.split("-").at(-1)) % SINKS}`
 
 const SinkCommands = Sink.toLayer(

@@ -13,6 +13,12 @@ const others = Effect.gen(function* () {
   )
 })
 
+/**
+ * Handlers for the `Live` connection. Each move rewrites the connection's
+ * session, so a late joiner's `Here` shows where everyone is. Frames sent while
+ * the owner was down are gone; `resync` replaces them with the room as it is
+ * now.
+ */
 export const CursorLive = Cursor.toLayer(
   Effect.succeed({
     Live: {
@@ -34,7 +40,6 @@ export const CursorLive = Cursor.toLayer(
         )
       }),
 
-      // Each move rewrites the session, so a late joiner's `Here` shows where everyone is.
       frame: Effect.fnUntraced(function* (at: { readonly x: number; readonly y: number }) {
         const conn = yield* Cursor.Connection
         yield* conn.session.set({ at })
@@ -50,7 +55,6 @@ export const CursorLive = Cursor.toLayer(
         })
       }),
 
-      // Frames sent while the owner was down are gone; the room as it is now replaces them.
       resync: Effect.fnUntraced(function* () {
         const conn = yield* Cursor.Connection
         yield* conn.send(Here.make({ peers: yield* others }))

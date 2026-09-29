@@ -28,7 +28,7 @@ import type { Placement } from "../runtime/storage/codec.ts"
 /** Ownership column keys, which are also their SQL names. */
 export const OWNERSHIP = ["routing_key", "tenant_id", "actor_id"] as const
 
-export type OwnershipKey = (typeof OWNERSHIP)[number]
+type OwnershipKey = (typeof OWNERSHIP)[number]
 
 const ownershipColumns = () => ({
   routing_key: bigint("routing_key", { mode: "bigint" }).notNull(),
@@ -42,8 +42,6 @@ type OwnershipColumns<Name extends string> = BuildColumns<
   "pg"
 >
 
-// Drizzle keeps table internals under these registered symbols; drizzle-kit
-// reads the same ones, so the ownership columns appear in generated SQL.
 const NameKey: unique symbol = Symbol.for("drizzle:Name")
 
 const SchemaKey: unique symbol = Symbol.for("drizzle:Schema")
@@ -71,6 +69,11 @@ type ExtraConfig = (
   self: ExtraColumns,
 ) => ReadonlyArray<PgTableExtraConfigValue | ReadonlyArray<PgTableExtraConfigValue>>
 
+/**
+ * The Drizzle table internals `table` rewrites. Drizzle keeps them under
+ * registered symbols and drizzle-kit reads the same ones, so the ownership
+ * columns appear in generated SQL.
+ */
 interface TableInternals {
   readonly [NameKey]: string
   readonly [SchemaKey]: string | undefined
@@ -98,8 +101,7 @@ interface ColumnBuilderInternals {
 
 declare const OwnedTypeId: unique symbol
 
-// Ownership lives beside the table, keyed by the table object itself, so no
-// other object can claim it by copying a property or symbol.
+/** Ownership lives beside the table, keyed by the table object itself, so no other object can claim it by copying a property or symbol. */
 const owned = new WeakMap<object, Ownership>()
 
 /** What the framework knows about an owned table; aliases forward it. */
@@ -143,13 +145,16 @@ export type Insert<T extends AnyOwnedTable> = Omit<InferInsertModel<T>, Ownershi
 /** Drizzle's object filter over business columns; `RAW` SQL is not supported. */
 export type Filter<T extends AnyOwnedTable> = Omit<TableFilter<T, BusinessColumns<T>>, "RAW">
 
+/** Drizzle's ordering over business columns. */
 export type Order<T extends AnyOwnedTable> = RelationsOrder<BusinessColumns<T>>
 
+/** Options for reading one row: a filter and an ordering, both over business columns. */
 export interface ReadOptions<T extends AnyOwnedTable> {
   readonly where?: Filter<T>
   readonly orderBy?: Order<T>
 }
 
+/** Options for reading many rows: a filter, an ordering, and a page. */
 export interface ListOptions<T extends AnyOwnedTable> extends ReadOptions<T> {
   readonly limit?: number
   readonly offset?: number
@@ -157,8 +162,11 @@ export interface ListOptions<T extends AnyOwnedTable> extends ReadOptions<T> {
 
 /** Read-only access to the current actor's rows of one owned table. */
 export interface ScopedRead<T extends AnyOwnedTable> {
+  /** The first row matching `options`, or none. */
   readonly one: (options?: ReadOptions<T>) => Effect.Effect<Option.Option<Row<T>>>
+  /** Every matching row, at most `limit` after skipping `offset`. */
   readonly all: (options?: ListOptions<T>) => Effect.Effect<ReadonlyArray<Row<T>>>
+  /** The number of matching rows. */
   readonly count: (options?: { readonly where?: Filter<T> }) => Effect.Effect<number>
 }
 
@@ -169,10 +177,13 @@ export interface Filtered<T extends AnyOwnedTable> {
 
 /** Turn-bound access to the current actor's rows; writes commit or roll back with the turn. */
 export interface ScopedRows<T extends AnyOwnedTable> extends ScopedRead<T> {
+  /** Inserts one row or a list of rows. */
   readonly insert: (values: Insert<T> | ReadonlyArray<Insert<T>>) => Effect.Effect<void>
   /** Inserts, or on a primary key conflict updates the supplied non-key columns. */
   readonly upsert: (values: Insert<T> | ReadonlyArray<Insert<T>>) => Effect.Effect<void>
+  /** Sets `values` on the rows the returned filter matches. */
   readonly update: (values: Partial<Insert<T>>) => Filtered<T>
+  /** Deletes the rows the returned filter matches. */
   readonly delete: () => Filtered<T>
 }
 
@@ -218,7 +229,19 @@ const flatten = (config: ExtraConfig | undefined, self: ExtraColumns) =>
  * Declares an actor-owned Drizzle table. The table gains `routing_key`,
  * `tenant_id`, and `actor_id` columns; its primary key, unique constraints, and
  * indexes are prefixed with them, so drizzle-kit generates keys that are
- * unique per actor and scans that stay on one shard.
+ * unique per actor and scans that stay on one shard. Each table also carries
+ * the `durable_tenant` row-level-security policy: the table owner is exempt,
+ * and a runtime with row-level security sees only each transaction's tenant.
+ *
+ * Throws for anything but a `pgTable`, an alias, an already owned table, a
+ * table with a reserved ownership column, a table without a primary key, or a
+ * foreign key, which would cross actors and need ownership columns on both
+ * sides. Column-level `primaryKey` and `unique` would be global, so they move
+ * into the prefixed extra config. Only btree indexes are accepted: other
+ * methods cannot lead with the bigint and text ownership prefix.
+ *
+ * @example
+ * const Notes = Actor.table(pgTable("notes", { id: text("id").primaryKey(), body: text("body") }))
  */
 export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
   if (!is(source, PgTable)) throw new Error("Actor.table takes a pgTable")
@@ -236,7 +259,6 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
     if (reserved.includes(key) || reserved.includes(column.name))
       throw new Error(`Column ${key} of ${name} is reserved for ownership`)
 
-  // A foreign key would cross actors, and would need ownership columns on both sides.
   if (internals[ForeignKeysKey].length > 0)
     throw new Error(`Owned table ${name} cannot declare foreign keys`)
 
@@ -262,7 +284,6 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
 
   const uniques = Object.entries(columns).filter(([, column]) => column.isUnique)
 
-  // Column-level keys would be global; they move into the prefixed extra config.
   for (const [, column] of columnKey) column.primary = false
 
   for (const [, column] of uniques) column.isUnique = false
@@ -297,7 +318,6 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
           builder as IndexBuilder & { readonly config: Prefixable & { readonly method?: string } }
         ).config
 
-        // Only btree takes the bigint and text prefix; other methods cannot lead with it.
         if (config.method !== undefined && config.method !== "btree")
           throw new Error(
             `Owned table ${name} supports btree indexes only; a ${config.method} index cannot lead with routing_key`,
@@ -322,8 +342,6 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
     const [first, ...rest] = [...owner, ...key.map((column) => self[column]!)]
     result.push(primaryKey({ name: primaryName, columns: [first!, ...rest] }))
 
-    // The tenant policy the framework tables carry: the table owner is exempt,
-    // and a runtime with row-level security sees only each transaction's tenant.
     const scoped = sql`tenant_id = current_setting('durable.tenant', true)`
     result.push(pgPolicy("durable_tenant", { for: "all", using: scoped, withCheck: scoped }))
 
