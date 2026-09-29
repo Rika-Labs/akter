@@ -31,3 +31,7 @@ Every runtime sweeps once a minute, per registered actor type and across every t
 An interrupted sweep leaves whole batches and resumes on the next one. A replay whose cursor precedes pruned events fails `RetentionGap`, and the reader resynchronizes from state and `read.cursor`. Lowering a horizon takes effect at the next sweep and removes history that readers may still hold cursors into; raising it cannot bring pruned rows back. Every process uses its own policy values, so during a rolling deploy that lowers `keepReceipts`, a new process can prune a receipt that an old process's in-flight turn still counts on; lower it in two steps, or while no retries of old ids are in flight. Version-skew support is an M4 item. Blob quotas and emit budgets bound what a single actor stores, not how long it keeps it.
 
 Supported restore across pruned history, per-tenant horizons, and automatic dead-letter retention are not implemented.
+
+## Content sweep
+
+Target, built by M4.13 ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)). A per-tenant sweep, at most hourly under an advisory lock, deletes content no actor references once its last grant is older than the grace (24 hours) plus the longest `commandTimeout` of an actor type that declares content, plus the clock-skew bound. An upload that is never attached lives about 25 hours with the defaults. The sweep is operator-tier maintenance and never runs on a turn path.
