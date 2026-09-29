@@ -1,4 +1,6 @@
 import { Effect, Redacted, Schedule, type Scope } from "effect"
+import { ActorError, InvalidInput } from "../../errors/actor.ts"
+import { actorErrorBody } from "../../serve/wire.ts"
 import { HttpRoom, serveHttp, tenantOf, type Server } from "./http.ts"
 import type {
   ConformanceCase,
@@ -9,26 +11,30 @@ import type {
 
 const VERSION = /^(0|[1-9]\d*)$/
 
+const baseFetch = globalThis.fetch.bind(globalThis)
+
 /**
  * Runs `body` on a runtime whose queries read `replica`, in place of the
  * suite's runtime, which is restarted afterwards. Two runtimes never serve one
  * database at once, since both would claim its shards.
  */
-const withReplica = async <A>(
+const withReplica = <A>(
   environment: ConformanceEnvironment,
   replica: Redacted.Redacted<string>,
   body: Effect.Effect<A, never, ConformanceServices | Scope.Scope>,
-) => {
-  await Effect.runPromise(environment.stop)
-  const runtime = environment.build({ replica })
+) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* environment.stop
+      const runtime = environment.build({ replica })
 
-  try {
-    return await runtime.runPromise(Effect.scoped(body))
-  } finally {
-    await runtime.dispose()
-    await Effect.runPromise(environment.restart)
-  }
-}
+      return yield* Effect.promise(() => runtime.runPromise(Effect.scoped(body))).pipe(
+        Effect.ensuring(
+          Effect.promise(() => runtime.dispose()).pipe(Effect.andThen(environment.restart)),
+        ),
+      )
+    }),
+  )
 
 /** Replay on the replica stays paused for the rest of the scope. */
 const pauseReplay = (control: ConformanceConnection) =>
@@ -46,13 +52,13 @@ const replayedThrough = (control: ConformanceConnection, version: string) =>
       version,
     ])
     .pipe(
-      Effect.flatMap((rows) =>
-        (rows[0] as { ready: boolean }).ready
-          ? Effect.void
-          : Effect.fail(new Error(`replica has not replayed ${version}`)),
-      ),
-      Effect.retry({ times: 200, schedule: Schedule.spaced("50 millis") }),
-      Effect.orDie,
+      Effect.map((rows) => (rows[0] as { ready: boolean }).ready),
+      Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (ready) => ready }),
+      Effect.timeoutOrElse({
+        duration: "10 seconds",
+        orElse: () => Effect.die(`The replica did not replay through ${version}`),
+      }),
+      Effect.asVoid,
     )
 
 const post = (server: Server, token: string, key: string) =>
@@ -87,6 +93,7 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
             key,
             body: { text: "a" },
           })
+
           const second = yield* post(server, token, "versioned")
 
           const replayed = yield* server.send("/actors/HttpRoom/versioned/Post", {
@@ -118,13 +125,21 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
           for (const malformed of ["", "01", "-1", "1.5", "0x10"]) {
             const reply = yield* count(server, token, "malformed", malformed)
             expect(reply.status).toBe(400)
-            expect(reply.body).toMatchObject({
-              reason: {
-                _tag: "InvalidInput",
-                code: "decode",
-                issues: [{ path: "durable-min-version" }],
-              },
-            })
+            expect(reply.body).toEqual(
+              actorErrorBody(
+                ActorError.make({
+                  reason: InvalidInput.make({
+                    code: "decode",
+                    issues: [
+                      {
+                        path: "durable-min-version",
+                        message: "Expected a non-negative decimal integer without leading zeros",
+                      },
+                    ],
+                  }),
+                }),
+              ),
+            )
           }
         }),
       ),
@@ -133,10 +148,10 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
     name: "reads the replica once it has replayed the caller's version, falls through to the primary while it lags, and serves tokenless reads there",
     requiresReplica: true,
     timeoutMs: 60_000,
-    run: async ({ expect, environment }) => {
+    run: ({ expect, environment }) => {
       const replica = environment.replica!
 
-      await withReplica(
+      return withReplica(
         environment,
         replica.database,
         Effect.gen(function* () {
@@ -169,12 +184,12 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "falls through to the primary when the replica cannot be reached",
     requiresReplica: true,
-    run: async ({ expect, environment }) => {
+    run: ({ expect, environment }) => {
       const url = new URL(Redacted.value(environment.replica!.database))
       // Nothing listens on port 1, so every replica connection is refused.
       url.port = "1"
 
-      await withReplica(
+      return withReplica(
         environment,
         Redacted.make(url.href),
         Effect.gen(function* () {
@@ -196,10 +211,10 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
     name: "the Promise client reads its own writes while the replica lags, sending the greatest version it was issued",
     requiresReplica: true,
     timeoutMs: 60_000,
-    run: async ({ expect, environment }) => {
+    run: ({ expect, environment }) => {
       const replica = environment.replica!
 
-      await withReplica(
+      return withReplica(
         environment,
         replica.database,
         Effect.gen(function* () {
@@ -212,7 +227,7 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
           const fetch = (input: RequestInfo | URL, init?: RequestInit) => {
             sent.push(new Headers(init?.headers))
 
-            return globalThis.fetch(input, init).then((response) => {
+            return baseFetch(input, init).then((response) => {
               issued.push(response.headers.get("durable-version"))
 
               return response
@@ -224,6 +239,7 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
             headers: { authorization: `Bearer ${tenant}:alice` },
             fetch,
           })
+
           const room = rooms.get("client")
 
           yield* Effect.promise(() => room.Post({ text: "a" }))
@@ -245,10 +261,10 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
     name: "an in-process handle's query reads the commands its runtime sent while the replica lags",
     requiresReplica: true,
     timeoutMs: 60_000,
-    run: async ({ expect, environment }) => {
+    run: ({ expect, environment }) => {
       const replica = environment.replica!
 
-      await withReplica(
+      return withReplica(
         environment,
         replica.database,
         Effect.gen(function* () {

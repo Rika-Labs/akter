@@ -53,7 +53,6 @@ import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { caughtUp, ReadReplica, replicaLayer } from "./database/replica.ts"
-import { maxVersion } from "../identity/version.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
@@ -281,7 +280,13 @@ export const layer = (options: Options) => {
 
       const observe = (executed: Executed) =>
         Effect.sync(() => {
-          observed = maxVersion(observed, executed.version)
+          const version = executed.version
+
+          if (
+            version !== undefined &&
+            (observed === undefined || BigInt(version) > BigInt(observed))
+          )
+            observed = version
         })
 
       // The holder and transport refer to each other: the transport delivers
@@ -1425,7 +1430,7 @@ export const Database = {
   postgres: (
     options: Omit<PgClient.PgPoolConfig, "types"> & {
       readonly offTurnConnections?: number
-      readonly replica?: Omit<PgClient.PgPoolConfig, "types">
+      readonly replica?: Omit<PgClient.PgPoolConfig, "types"> | undefined
     },
   ) => {
     const types = PgTypes.makeRegistry()

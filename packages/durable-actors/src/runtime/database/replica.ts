@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/unstable/reactivity"
-import type { SqlClient, SqlError } from "effect/unstable/sql"
+import type { SqlClient } from "effect/unstable/sql"
 
 /**
  * The primary's WAL insert position as a decimal string. Read on a turn's
@@ -31,12 +31,12 @@ export const replicaLayer = (options: PgClient.PgPoolConfig) =>
  * snapshot is taken before its functions run, so a check in the same statement
  * could pass after a snapshot that predates the replayed commit.
  */
-export const caughtUp = (
+export const caughtUp = Effect.fnUntraced(function* (
   replica: SqlClient.SqlClient,
   version: string,
-): Effect.Effect<boolean, SqlError.SqlError> =>
-  Effect.map(
-    replica<{ ready: boolean }>`
-      SELECT coalesce(pg_last_wal_replay_lsn() - '0/0' >= ${version}::numeric, false) AS ready`,
-    (rows) => rows[0]?.ready === true,
-  )
+) {
+  const rows = yield* replica<{ ready: boolean }>`
+    SELECT coalesce(pg_last_wal_replay_lsn() - '0/0' >= ${version}::numeric, false) AS ready`
+
+  return rows[0]?.ready === true
+})

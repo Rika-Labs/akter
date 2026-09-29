@@ -460,11 +460,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       // A malformed token is refused rather than ignored, which would silently
       // drop the caller's read-your-writes guarantee.
       const minVersion = (request: HttpServerRequest.HttpServerRequest) => {
-        const token = Headers.get(request.headers, "durable-min-version")
+        const token = Option.getOrUndefined(Headers.get(request.headers, "durable-min-version"))
 
-        if (Option.isNone(token)) return Effect.succeed(undefined)
-
-        if (isVersion(token.value)) return Effect.succeed(token.value)
+        if (token === undefined || isVersion(token)) return Effect.succeed(token)
 
         return Effect.fail(
           ActorError.make({

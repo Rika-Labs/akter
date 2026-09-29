@@ -1,5 +1,5 @@
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
+import { Config, Crypto, Effect, Layer, ManagedRuntime, Option, Redacted } from "effect"
 import { Pool } from "pg"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { describeConformance, type ConformanceBackend } from "./conformance.ts"
@@ -23,10 +23,19 @@ const createDatabase = Effect.fnUntraced(function* (
 })
 
 // A physical streaming replica of TEST_DATABASE_URL's server, when one is configured.
-const replicaUrl = process.env["TEST_REPLICA_DATABASE_URL"]
+const { replicaUrl, ci } = Effect.runSync(
+  Effect.gen(function* () {
+    return {
+      replicaUrl: Option.getOrUndefined(
+        yield* Config.option(Config.String("TEST_REPLICA_DATABASE_URL")),
+      ),
+      ci: Option.isSome(yield* Config.option(Config.String("CI"))),
+    }
+  }),
+)
 
 // CI always provides one, so its read-your-writes evidence can't be skipped unnoticed.
-if (process.env["CI"] !== undefined && replicaUrl === undefined)
+if (ci && replicaUrl === undefined)
   throw new Error("TEST_REPLICA_DATABASE_URL must name a streaming replica in CI")
 
 const backend: ConformanceBackend = {
@@ -104,7 +113,7 @@ const backend: ConformanceBackend = {
           database: main,
           freshDatabase: provision("isolated"),
           connect,
-          ...(replica === undefined ? {} : { replica }),
+          replica,
           close: Effect.gen(function* () {
             for (const name of created)
               yield* Effect.promise(() =>

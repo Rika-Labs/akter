@@ -72,7 +72,7 @@ export interface TestOptions {
    */
   readonly database?: Redacted.Redacted<string> | PgliteClient.PgliteClientConfig
   /** A streaming replica of the Postgres `database`, which queries read once caught up. */
-  readonly replica?: Redacted.Redacted<string>
+  readonly replica?: Redacted.Redacted<string> | undefined
   readonly as?: Caller
   readonly authorize?: Options["authorize"]
   readonly retryWindowMs?: number
@@ -647,9 +647,10 @@ export class ActorTest extends Context.Service<
                   url: options.database,
                   maxConnections: 10,
                   stream: member?.connect,
-                  ...(options.replica === undefined
-                    ? {}
-                    : { replica: { url: options.replica, maxConnections: 4 } }),
+                  replica:
+                    options.replica === undefined
+                      ? undefined
+                      : { url: options.replica, maxConnections: 4 },
                 })
               : Database.pglite(options.database),
           ),

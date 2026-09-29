@@ -187,7 +187,7 @@ export interface ConformanceEnvironment {
     readonly retryWindowMs?: number
     readonly database?: ConformanceDatabase
     /** Queries read this streaming replica of `database` once it has caught up. */
-    readonly replica?: Redacted.Redacted<string>
+    readonly replica?: Redacted.Redacted<string> | undefined
   }) => ConformanceRuntime
   /** Stops the current runtime; the retained database survives. */
   readonly stop: Effect.Effect<void>
@@ -201,7 +201,7 @@ export interface ConformanceEnvironment {
    */
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
   /** The retained database on a streaming replica; only present when the backend has one. */
-  readonly replica?: ConformanceReplica
+  readonly replica?: ConformanceReplica | undefined
   /** A fresh listening HTTP server that supports WebSocket upgrades; each build listens anew. */
   readonly httpServer: Layer.Layer<HttpServer.HttpServer>
 }
@@ -231,7 +231,7 @@ export interface ConformanceBackend {
     readonly database: ConformanceDatabase
     readonly freshDatabase: Effect.Effect<ConformanceDatabase>
     readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
-    readonly replica?: ConformanceReplica
+    readonly replica?: ConformanceReplica | undefined
     readonly close: Effect.Effect<void>
   }>
 }
@@ -1429,7 +1429,7 @@ interface ConformanceStore {
   readonly database: ConformanceDatabase
   readonly freshDatabase: Effect.Effect<ConformanceDatabase>
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
-  readonly replica?: ConformanceReplica
+  readonly replica?: ConformanceReplica | undefined
   readonly close: Effect.Effect<void>
 }
 
@@ -1498,7 +1498,7 @@ export const describeConformance = (options: {
           Layer.provideMerge(
             ActorTest.layer({
               database,
-              ...(overrides?.replica === undefined ? {} : { replica: overrides.replica }),
+              replica: overrides?.replica,
               as: User.make({ subject: "alice" }),
               authorize: (request) =>
                 Effect.sync(
@@ -1584,7 +1584,7 @@ export const describeConformance = (options: {
       if (
         (conformanceCase.requiresIndependentConnections === true &&
           backend.independentConnections === false) ||
-        (conformanceCase.requiresReplica === true && !backend.hasReplica)
+        (conformanceCase.requiresReplica === true && backend.hasReplica !== true)
       ) {
         registrar.skip(conformanceCase.name)
         continue
