@@ -221,10 +221,25 @@ export const registerActor = Effect.fnUntraced(function* (
 
       let lost = false
 
-      const start = Effect.gen(function* () {
-        const scope = yield* Scope.fork(activation)
+      // The handler's own scope holds its residency and every activation it
+      // starts, so the actor stays resident while an activation restarts.
+      const handler = yield* Scope.fork(activation)
 
-        handlerScopes.set(activation, scope)
+      handlerScopes.set(activation, handler)
+
+      yield* Effect.acquireRelease(
+        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
+        () =>
+          Effect.sync(() => {
+            const count = resident.get(entityId)! - 1
+
+            if (count === 0) resident.delete(entityId)
+            else resident.set(entityId, count)
+          }),
+      ).pipe(Scope.provide(handler))
+
+      const start = Effect.gen(function* () {
+        const scope = yield* Scope.fork(handler)
 
         if (lease !== undefined)
           yield* lease.holds(shard!).pipe(
@@ -237,17 +252,6 @@ export const registerActor = Effect.fnUntraced(function* (
             Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
             Effect.forkIn(scope),
           )
-
-        yield* Effect.acquireRelease(
-          Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
-          () =>
-            Effect.sync(() => {
-              const count = resident.get(entityId)! - 1
-
-              if (count === 0) resident.delete(entityId)
-              else resident.set(entityId, count)
-            }),
-        ).pipe(Scope.provide(scope))
 
         // Entered in the activation's own scope, so ending the activation
         // seals its broadcasts and, unless its connection entity still holds
@@ -273,10 +277,12 @@ export const registerActor = Effect.fnUntraced(function* (
       const built = yield* Effect.context<never>()
       let current = yield* start
 
-      yield* Effect.addFinalizer(() => Scope.close(current.scope, Exit.void))
+      yield* Effect.addFinalizer(() => Scope.close(handler, Exit.void))
 
       // Ends the activation after a retryable turn failure and starts the
       // next one after the activation's backoff, without Cluster's restart.
+      // Uninterruptible, so a caller giving up cannot leave the handler
+      // holding an activation whose scope is closed.
       const restart = Effect.gen(function* () {
         const failures = restarts.get(activation) ?? 0
 
@@ -291,7 +297,7 @@ export const registerActor = Effect.fnUntraced(function* (
         }
 
         current = yield* start.pipe(Effect.provideContext(built))
-      })
+      }).pipe(Effect.uninterruptible)
 
       return entity.of({
         Wake: () => Effect.suspend(() => (lost ? leaseLost : Effect.void)),
