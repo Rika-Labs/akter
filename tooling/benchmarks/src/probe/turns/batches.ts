@@ -56,21 +56,26 @@ export const queued = ({
 }: {
   readonly ref: { readonly actor: string; readonly id: string }
 }) =>
-  Effect.sync(() => {
-    if (ref.actor !== BatchProbe.name) return
+  Effect.suspend(() => {
+    if (ref.actor !== BatchProbe.name) return Effect.void
 
     const waiting = arrivals.get(ref.id)
 
-    if (waiting === undefined) return
+    if (waiting === undefined) return Effect.void
 
     waiting.count += 1
 
-    if (waiting.count === waiting.target) {
-      arrivals.delete(ref.id)
-      // The command joins a batch only once this hook has returned, so the round
-      // goes on in a later task.
-      setTimeout(() => Deferred.doneUnsafe(waiting.done, Effect.void), 0)
-    }
+    if (waiting.count !== waiting.target) return Effect.void
+
+    arrivals.delete(ref.id)
+
+    // The command joins a batch only once this hook has returned, so the round
+    // goes on in a later task.
+    return Effect.sleep(0).pipe(
+      Effect.andThen(Deferred.succeed(waiting.done, undefined)),
+      Effect.forkDetach,
+      Effect.asVoid,
+    )
   })
 
 export const BatchProbeLive = BatchProbe.toLayer(
