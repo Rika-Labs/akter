@@ -155,6 +155,7 @@ describe("migrations with Postgres", () => {
             }),
           )
           // The `durable` inspection views sort before the `public` tables.
+
           expect(columns.map(({ table_name }) => table_name)).toEqual([
             "dead_letters",
             "effects",
