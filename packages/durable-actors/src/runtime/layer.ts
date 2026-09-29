@@ -51,6 +51,7 @@ import {
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
+import { checkRowLevelSecurity, TenantScope, withTenant } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
@@ -153,6 +154,19 @@ export interface Options {
      * own runner reaches it at once.
      */
     readonly cancelCheck?: Duration.Input
+  }
+  /**
+   * Opt-in row-level security. Command turns and queries run as `role` with
+   * the `durable.tenant` setting of the actor they serve, so the
+   * `durable_tenant` policies admit no other tenant's rows. The role must not
+   * be a superuser or bypass row-level security, this login must be able to
+   * `SET ROLE` to it, it must read and write every framework and owned table,
+   * and it must own every `durable` inspection view; the runtime refuses to
+   * start otherwise. Framework work that spans tenants, such as the relay,
+   * executors, and retention, keeps the connecting role, which the policies exempt.
+   */
+  readonly rowLevelSecurity?: {
+    readonly role: string
   }
 }
 
@@ -861,10 +875,11 @@ export const layer = (options: Options) => {
           if (registrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-          yield* checkTables(registration.name, registration.tables).pipe(
-            Effect.provideContext(services),
-            Effect.orDie,
-          )
+          yield* checkTables(
+            registration.name,
+            registration.tables,
+            options.rowLevelSecurity?.role,
+          ).pipe(Effect.provideContext(services), Effect.orDie)
 
           for (const table of registration.tables) checked.add(table)
 
@@ -947,10 +962,11 @@ export const layer = (options: Options) => {
           if (queryRegistrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
           yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-          yield* checkTables(registration.name, registration.tables).pipe(
-            Effect.provideContext(services),
-            Effect.orDie,
-          )
+          yield* checkTables(
+            registration.name,
+            registration.tables,
+            options.rowLevelSecurity?.role,
+          ).pipe(Effect.provideContext(services), Effect.orDie)
 
           for (const table of registration.tables) checked.add(table)
           queryRegistrations.set(registration.name, registration)
@@ -1042,9 +1058,10 @@ export const layer = (options: Options) => {
             yield* allow(request, "query")
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-            // Query reads run on the pool outside a transaction, so no
-            // statement_timeout bounds them; interrupting a read past
-            // commandTimeout cancels its statement on the server instead.
+            // No statement_timeout bounds query reads, whether they run on
+            // the pool or, with row-level security, in a transaction bound to
+            // the tenant; interrupting a read past commandTimeout cancels its
+            // statement on the server instead.
             const outcome = yield* Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient
 
@@ -1084,6 +1101,7 @@ export const layer = (options: Options) => {
                 ),
               )
             }).pipe(
+              withTenant(request.ref.tenant),
               Effect.timeoutOrElse({
                 duration: registration.timeoutMs,
                 orElse: () =>
@@ -1274,6 +1292,10 @@ export const layer = (options: Options) => {
       const sql = yield* SqlClient.SqlClient
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
+
+      if (options.rowLevelSecurity !== undefined)
+        yield* checkRowLevelSecurity(options.rowLevelSecurity.role)
+
       yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${retryWindowMs}) ON CONFLICT DO NOTHING`
 
       const rows = yield* sql<{
@@ -1353,7 +1375,11 @@ export const layer = (options: Options) => {
             )
           : Layer.empty
 
-      return runtime.pipe(Layer.provide(sharding), Layer.provide(lease))
+      return runtime.pipe(
+        Layer.provide(sharding),
+        Layer.provide(lease),
+        Layer.provide(Layer.succeed(TenantScope, { role: options.rowLevelSecurity?.role })),
+      )
     }),
   )
 }

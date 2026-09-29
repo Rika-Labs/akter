@@ -133,3 +133,4 @@ ADRs 0018 and 0019 belong to the benchmark harness (#38) and runner capacity (#4
 | 0037 | Existing-schema adoption                             | M6.1  |
 | 0038 | Query observation                                    | M6.2  |
 | 0039 | Fleet views                                          | M6.3  |
+| 0051 | Optional row-level security                          | M4.5  |

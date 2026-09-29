@@ -130,7 +130,7 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
                 Effect.mapError(undecodable),
               )
 
-              const body = yield* Queries.readOnly(read(tenant, decoded)).pipe(
+              const body = yield* Queries.readOnly(tenant)(read(tenant, decoded)).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.orDie,
               )
