@@ -13,14 +13,16 @@ export const Due = Schema.TaggedUnion({
   At: { epochMillis: Schema.Int },
 })
 
+/** When a staged intent becomes due. */
 export type Due = typeof Due.Type
 
-export interface IntentOptions {
+interface IntentOptions {
   readonly due?: Due
   readonly key?: string
 }
 
-export interface StagedIntent {
+/** An intent a turn staged: the command to send `target`, its encoded input, and who it appears to come from. `key` names it for replacement or cancellation. */
+interface StagedIntent {
   readonly target: ActorRef
   readonly command: string
   readonly payload: string
@@ -30,7 +32,7 @@ export interface StagedIntent {
 }
 
 /** An effect a turn performed: its tag, encoded instance, and the caller its routes see. */
-export interface StagedEffect {
+interface StagedEffect {
   readonly effect: string
   readonly payload: string
   /** The payload version `payload` is encoded at. */
@@ -70,6 +72,7 @@ export interface StagedOutbox {
   readonly cancelledEffects: ReadonlyArray<string>
 }
 
+/** The outbox of a turn that staged nothing. */
 export const emptyOutbox: StagedOutbox = {
   intents: [],
   replaced: [],
@@ -79,7 +82,7 @@ export const emptyOutbox: StagedOutbox = {
 }
 
 /** Effect keys live in the actor's key namespace under this prefix, which intent keys may not use. */
-export const EFFECT_KEY_PREFIX = "$effect:"
+const EFFECT_KEY_PREFIX = "$effect:"
 
 const checkKey = (what: string, key: string) => {
   if (key.length === 0 || key.length > 200) throw new Error(`${what} must be 1-200 characters`)
@@ -90,7 +93,7 @@ const checkKey = (what: string, key: string) => {
  * first element is `$`-prefixed. An application key of that shape could
  * replace or cancel a framework row of the same actor.
  */
-export const isFrameworkKey = (key: string) => key.startsWith("$") || key.startsWith('["$')
+const isFrameworkKey = (key: string) => key.startsWith("$") || key.startsWith('["$')
 
 /**
  * Marks a command turn. Only the runtime provides it, and `X.toLayer` removes
@@ -122,7 +125,7 @@ interface Staging {
   readonly cancelledEffects: Set<string>
 }
 
-// Keyed by the provided marker, so a hand-built `InTurn` value stages nothing.
+/** Keyed by the provided marker, so a hand-built `InTurn` value stages nothing. */
 const stagings = new WeakMap<InTurn["Service"], Staging>()
 
 const mintKey = (ref: ActorRef) => JSON.stringify([ref.actor, ref.id])
@@ -134,7 +137,11 @@ const creates = (intent: StagedIntent, child: ActorRef, createdBy: string) =>
   intent.target.actor === child.actor &&
   intent.target.id === child.id
 
-/** Opens the outbox of one command turn; `close` returns what it staged and seals it. */
+/**
+ * Opens the outbox of one command turn; `close` returns what it staged and
+ * seals it. A staged effect's routes deliver to the performing actor as the
+ * effect, on the turn's principal.
+ */
 export const openOutbox = ({
   sender,
   commandId,
@@ -171,7 +178,6 @@ export const openOutbox = ({
       effect: Pick<StagedEffect, "effect" | "payload" | "version" | "due" | "key" | "capped">,
     ) => {
       if (effect.key !== undefined) cancelEffectKey(staging, effect.key)
-      // Routes deliver to the performing actor as the effect, on the turn's principal.
       staging.effects.push({
         ...effect,
         caller: System.make({ source: "effect", ref: sender, onBehalfOf }),
@@ -255,7 +261,7 @@ const IntentSettings = Context.Reference<IntentOptions>("durable-actors/IntentSe
   defaultValue: () => ({}),
 })
 
-/** Checks an effect key; staged and stored effect keys are prefixed. */
+/** Validates an effect key (1-200 characters) and returns it prefixed as it is staged and stored. */
 export const effectKey = (key: string) => {
   checkKey("An effect key", key)
 
@@ -272,7 +278,7 @@ const replaceKey = (staging: Staging, key: string) => {
   staging.replaced.add(key)
 }
 
-/** The staging area of the turn `marker` belongs to, if that turn is still running. */
+/** The staging area of the running turn, checked against `marker` when given; dies once the turn ended, so a capability that escaped its turn stages nothing. */
 export const currentStaging = Effect.fnUntraced(function* (marker?: InTurn["Service"]) {
   const current = yield* InTurn
   const staging = stagings.get(current)
@@ -283,7 +289,13 @@ export const currentStaging = Effect.fnUntraced(function* (marker?: InTurn["Serv
   return { marker: current, staging }
 })
 
-export const stage = Effect.fnUntraced(function* (
+/**
+ * Stages `intent` in the running turn's outbox with the ambient `Intent`
+ * settings. The receiver sees the sending actor, attributed to the sending
+ * turn's principal; only a minted child's creating intent carries the proof
+ * that lets it create the child.
+ */
+export const stageIntent = Effect.fnUntraced(function* (
   marker: InTurn["Service"],
   intent: Pick<StagedIntent, "target" | "command" | "payload">,
 ) {
@@ -292,14 +304,12 @@ export const stage = Effect.fnUntraced(function* (
 
   const minted = staging.minted.get(mintKey(intent.target))
 
-  // The receiver sees the sending actor, attributed to the sending turn's principal.
   const attribution = {
     source: due === undefined ? ("actor" as const) : ("timer" as const),
     ref: staging.sender,
     onBehalfOf: staging.onBehalfOf,
   }
 
-  // Only a minted child's creating intent carries the proof that lets it create the child.
   const caller =
     minted?.createdBy === intent.command
       ? System.make({ ...attribution, mint: minted.proof })

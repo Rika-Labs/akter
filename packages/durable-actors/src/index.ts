@@ -20,24 +20,49 @@ import { jwt } from "./serve/jwt.ts"
 import { assertion } from "./serve/assertion/verify.ts"
 import { serve } from "./serve/layer.ts"
 
+/**
+ * The declaration namespace of `@durable-actors/core`: one constructor per
+ * kind of member, the actor definition, and the ambient-context combinators.
+ * An invalid definition throws when it is built, not when the actor first runs.
+ *
+ * @example
+ * const Increment = Actor.command("Increment", { output: Schema.Int })
+ * const Counter = Actor.make("Counter", { key: Schema.String, api: { Increment } })
+ */
 export const Actor = {
+  /** Defines an actor type: its key, state, events, tables, blobs, effects, `api` and `internal` members, subscriptions, and policy. */
   make: Definition.make,
+  /** Declares a command member; see `Command.make`. */
   command: Command.make,
+  /** Declares a query member; see `Query.make`. */
   query: Query.make,
+  /** Declares a connection member: a long-lived session between one client and the actor. */
   connection: Connection.make,
+  /** Declares a stream member: a live, read-only feed for one subscriber. */
   stream: StreamMember.make,
+  /** Declares a workflow member and its typed step constructors. */
   workflow: WorkflowMember.make,
+  /** Declares a durable event class: `class Posted extends Actor.Event<Posted>()("Posted", fields) {}`. */
   Event: Event.make,
+  /** Declares a pure state transition the server runs as an ordinary command turn; a commutative one is merged when queued. */
   reducer: Reducer.make,
+  /** Declares an effect class: a request for external I/O that a turn records and an executor runs after commit. */
   effect,
+  /** The input schema of an effect's `onDeadLetter` command: `Actor.DeadLetter(E)`. */
   DeadLetter,
+  /** The input schema of an effect's `onCancelled` command: `Actor.Cancelled(E)`. */
   Cancelled,
+  /** Declares an actor's keyed state fields and their migrations. */
   state: ActorStates.make,
+  /** Declares an actor-owned Drizzle table whose rows carry the writing actor's identity. */
   table,
+  /** Declares named binary storage an actor lists in `blobs`. */
   blob,
   /** Declares shared content: immutable bytes stored once per tenant that actors reference by name. */
   content,
+  /** Builds one step of a state, event, or effect migration chain. */
   migration: ActorStates.migration,
+  /** The key of an actor with one instance per tenant; its handle is `X.get()`. */
   singleton: Definition.singleton,
   /** Declares a subscription to another actor type's committed events. */
   subscription: SubscriptionMember.make,
@@ -51,14 +76,17 @@ export const Actor = {
   InTurn,
   /** Provided by the runtime only inside stream handlers; `read.follow` requires it. */
   InStream,
+  /** Runs the piped Effect with `caller` as the ambient caller that handles capture. */
   as:
     (caller: Caller) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.provideService(effect, CurrentCaller, caller),
+  /** Runs the piped Effect in `tenant`; the default tenant is `"default"`. */
   tenant:
     (tenant: string) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.provideService(effect, Tenant, tenant),
+  /** Gives the command call of the piped Effect the explicit command id `id`, so a retry across processes keeps one identity. */
   commandId:
     (id: string) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -71,11 +99,16 @@ export { Intent } from "./handles/intents.ts"
 
 export { Content, ContentStore } from "./handles/content.ts"
 
-export { ContentRef } from "./identity/content.ts"
+export type { WorkflowRun } from "./handles/workflow.ts"
 
-export type { ContentEntry } from "./identity/content.ts"
-
-export { ContentTooLarge, InvalidContentRef } from "./errors/content.ts"
+export type {
+  ConnectionHandlers,
+  Executors,
+  Handle,
+  Intents,
+  StreamHandler,
+  WorkflowHandlers,
+} from "./actor/definition.ts"
 
 export {
   ActorRef,
@@ -87,6 +120,10 @@ export {
   System,
   Principal,
 } from "./identity/caller.ts"
+
+export { ContentRef } from "./identity/content.ts"
+
+export type { ContentEntry } from "./identity/content.ts"
 
 export type { Policy } from "./policies/command.ts"
 
@@ -107,42 +144,23 @@ export {
 
 export { RetentionGap, UnknownCursor } from "./errors/events.ts"
 
+export { ContentTooLarge, InvalidContentRef } from "./errors/content.ts"
+
 export {
   ActivityOutcomeUnknown,
   InvalidExecutionId,
   InvalidExecutionKey,
 } from "./errors/workflow.ts"
 
-export type { WorkflowContext } from "./contexts/workflow.ts"
-
-export type { WorkflowRun } from "./handles/workflow.ts"
-
 export type { Race, Sleep, Step, Wait, Workflow } from "./members/workflow.ts"
-
-export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/command.ts"
-
-export type { ExecutorContext, PerformContext, PerformOptions } from "./contexts/effect.ts"
-
-export type {
-  BroadcastContext,
-  BroadcastOptions,
-  ConnectionContext,
-  ConnectionInfo,
-  FrameOf,
-  SessionAccess,
-} from "./contexts/connection.ts"
 
 export type { AnyConnection, Connection } from "./members/connection.ts"
 
 export type { AnyStream, Stream as StreamMember } from "./members/stream.ts"
 
-export type { ConnectionHandlers, StreamHandler } from "./actor/definition.ts"
-
 export type { EffectClass, EffectPolicy, ProgressEffect, ProgressOf } from "./members/effect.ts"
 
 export type { PayloadMigrations, PayloadOptions } from "./members/payload.ts"
-
-export type { Executors, Handle, Intents, WorkflowHandlers } from "./actor/definition.ts"
 
 export type { Commutative, Reducer } from "./members/reducer.ts"
 
@@ -159,6 +177,21 @@ export type {
   SubscribeFrom,
   Subscription,
 } from "./members/subscription.ts"
+
+export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/command.ts"
+
+export type { WorkflowContext } from "./contexts/workflow.ts"
+
+export type { ExecutorContext, PerformContext, PerformOptions } from "./contexts/effect.ts"
+
+export type {
+  BroadcastContext,
+  BroadcastOptions,
+  ConnectionContext,
+  ConnectionInfo,
+  FrameOf,
+  SessionAccess,
+} from "./contexts/connection.ts"
 
 export type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "./state/blob.ts"
 
