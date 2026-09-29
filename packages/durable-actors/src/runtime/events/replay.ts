@@ -19,6 +19,7 @@ interface ReplayRow {
   readonly event: string | null
   readonly command_id: string | null
   readonly value: Uint8Array | null
+  readonly payload_version: number | null
   readonly emitted_at_ms: string | null
 }
 
@@ -52,7 +53,8 @@ export const replayEvents = Effect.fnUntraced(function* (
 
   const rows = yield* sql<ReplayRow>`
     SELECT (SELECT min(o.sequence)::text FROM actor_events o WHERE ${owner("o")}) AS oldest,
-      e.sequence::text AS sequence, e.event, e.command_id, e.value, e.emitted_at_ms::text AS emitted_at_ms
+      e.sequence::text AS sequence, e.event, e.command_id, e.value, e.payload_version,
+      e.emitted_at_ms::text AS emitted_at_ms
     FROM (VALUES (1)) AS one (x)
     LEFT JOIN actor_events e ON ${owner("e")} AND e.sequence > ${position}
       AND e.sequence <= ${head} AND e.event IN ${sql.in(tags)}
@@ -75,6 +77,7 @@ export const replayEvents = Effect.fnUntraced(function* (
         tag: row.event!,
         commandId: row.command_id!,
         value: decompress(row.value!),
+        version: row.payload_version!,
         timestampMs: Number(row.emitted_at_ms),
       })
 

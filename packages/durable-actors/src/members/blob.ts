@@ -1,4 +1,8 @@
+import { Predicate } from "effect"
+
 declare const BlobTypeId: unique symbol
+
+declare const ContentTypeId: unique symbol
 
 /**
  * A declared blob: named binary entries each actor of a listing type stores in
@@ -6,10 +10,24 @@ declare const BlobTypeId: unique symbol
  */
 export interface Blob<Name extends string = string> {
   readonly [BlobTypeId]: Name
+  readonly kind: "blob"
   readonly name: Name
 }
 
-export type AnyBlob = Blob<string>
+/**
+ * Declared content: named references to immutable bytes stored once per
+ * tenant. A turn attaches and detaches references; only off-turn reads see bytes.
+ */
+export interface ContentBlob<Name extends string = string> {
+  readonly [ContentTypeId]: Name
+  readonly kind: "content"
+  readonly name: Name
+}
+
+export type AnyContent = ContentBlob<string>
+
+/** Anything an actor lists in `blobs`: its own mutable bytes or references to shared content. */
+export type AnyBlob = Blob<string> | AnyContent
 
 // Only values made here are blobs, so a look-alike object cannot name another namespace.
 const declared = new WeakSet<object>()
@@ -17,15 +35,31 @@ const declared = new WeakSet<object>()
 export const isBlob = (value: unknown): value is AnyBlob =>
   value instanceof Object && declared.has(value)
 
-/** Declares binary storage an actor lists in `blobs`; the name keys its rows. */
-export const blob = <const Name extends string>(name: Name): Blob<Name> => {
-  if (!/^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(name))
+// Tolerates a value that is not a blob at all, which the declared-blob check then refuses.
+export const isContent = (value: AnyBlob): value is AnyContent =>
+  Predicate.hasProperty(value, "kind") && value.kind === "content"
+
+const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/
+
+const declare = <Kind extends "blob" | "content", const Name extends string>(
+  kind: Kind,
+  name: Name,
+) => {
+  if (!NAME.test(name))
     throw new Error(
       `Blob name ${name} must be 1-80 letters, digits, - or _, starting with a letter`,
     )
 
-  const value = Object.freeze({ name }) as Blob<Name>
+  const value = Object.freeze({ kind, name })
   declared.add(value)
 
   return value
 }
+
+/** Declares binary storage an actor lists in `blobs`; the name keys its rows. */
+export const blob = <const Name extends string>(name: Name): Blob<Name> =>
+  declare("blob", name) as Blob<Name>
+
+/** Declares shared content an actor lists in `blobs`; the name keys its references. */
+export const content = <const Name extends string>(name: Name): ContentBlob<Name> =>
+  declare("content", name) as ContentBlob<Name>

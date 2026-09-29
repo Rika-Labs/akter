@@ -1,5 +1,16 @@
 import type { Mutable } from "effect/Types"
-import { Cause, Clock, Deferred, Duration, Effect, Exit, Layer, Schedule, Schema } from "effect"
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Schedule,
+  Schema,
+} from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, Intent, User } from "../../index.ts"
 import type { Cancelled } from "../../members/effect.ts"
@@ -8,6 +19,7 @@ import type { Request } from "../../handles/actors.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import type { layer as runtimeLayer } from "../../runtime/layer.ts"
 import { TurnHooks } from "../../runtime/turn/hooks.ts"
+import { wakeWaiting } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -861,6 +873,108 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
 
 /** Multi-runner cases: real Postgres only, each on a fresh database and cluster. */
 export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "never shortens the lease of a waiting row a claim takes while a settle wakes it",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+
+          const group = {
+            routing_key: "7",
+            tenant_id: "wake-race",
+            actor_type: "Controlled",
+            actor_id: "raced",
+            command: "Serial",
+          }
+
+          const now = yield* Clock.currentTimeMillis
+          const leaseEnd = now + 60_000
+
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (7, 'wake-race', 'Controlled', 'raced')`
+
+          // Two rows wait at the cap; the older one is the one a claim takes.
+          yield* sql`INSERT INTO actor_outbox ${sql.insert(
+            ["oldest", "next"].map((intentId, index) => ({
+              routing_key: 7,
+              intent_id: intentId,
+              kind: "effect",
+              bucket: 0,
+              due_at_ms: leaseEnd,
+              scheduled_at_ms: now + index,
+              ready_at_ms: now + index,
+              waiting: true,
+              tenant_id: "wake-race",
+              actor_type: "Controlled",
+              actor_id: "raced",
+              target_type: "Controlled",
+              target_id: "raced",
+              command: "Serial",
+              payload: "{}",
+              caller: "{}",
+            })),
+          )}`
+
+          // A claim of the oldest row, as the capped claim writes it, held open before it commits.
+          const locked = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+
+          const claim = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT 1 FROM actor_outbox
+                  WHERE routing_key = 7 AND intent_id = 'oldest' FOR UPDATE`
+                yield* sql`UPDATE actor_outbox SET running = true, waiting = false,
+                    attempts = 1, due_at_ms = ${leaseEnd}
+                  WHERE routing_key = 7 AND intent_id = 'oldest'`
+                yield* Deferred.succeed(locked, undefined)
+                yield* Deferred.await(release)
+              }),
+            )
+            .pipe(Effect.forkChild)
+
+          yield* Deferred.await(locked)
+
+          const wake = yield* wakeWaiting({ sql, group, at: now }).pipe(Effect.forkChild)
+
+          // The claim commits only once the wake has either passed its row by or read it as
+          // waiting and blocked on the claim's row lock: the interleaving that shortened the lease.
+          yield* eventually(
+            Effect.gen(function* () {
+              if (wake.pollUnsafe() !== undefined) return true
+
+              const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
+                FROM pg_stat_activity
+                WHERE wait_event_type = 'Lock' AND query LIKE 'UPDATE actor_outbox SET due_at_ms%'`
+
+              return blocked!.n > 0
+            }).pipe(Effect.orDie),
+            "10 seconds",
+            "the wake to finish or wait on the claim's row lock",
+          )
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(claim)
+          yield* Fiber.join(wake)
+
+          const rows = yield* sql<{
+            id: string
+            running: boolean
+            waiting: boolean
+            due: string
+          }>`SELECT intent_id AS id, running, waiting, due_at_ms::text AS due FROM actor_outbox
+            WHERE routing_key = 7 ORDER BY intent_id`
+
+          // The claimed attempt keeps its whole lease, so it still counts against the cap;
+          // the wake goes to the row still waiting.
+          expect(rows).toEqual([
+            { id: "next", running: false, waiting: false, due: String(now) },
+            { id: "oldest", running: true, waiting: false, due: String(leaseEnd) },
+          ])
+        }),
+      ),
+  },
   {
     name: "caps one actor's running attempts across three runners while other actors proceed",
     requiresIndependentConnections: true,
