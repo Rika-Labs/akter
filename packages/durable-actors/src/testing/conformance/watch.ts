@@ -3,6 +3,7 @@ import {
   Cause,
   Context,
   Crypto,
+  DateTime,
   Deferred,
   Effect,
   Exit,
@@ -14,6 +15,12 @@ import {
   Scope,
   Stream,
 } from "effect"
+import {
+  FetchHttpClient,
+  Headers as HttpHeaders,
+  HttpClient,
+  HttpClientRequest,
+} from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Tenant, User } from "../../index.ts"
 import { InternalActors } from "../../handles/actors.ts"
@@ -28,7 +35,11 @@ import {
 import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
+import { parse } from "../../client/sessions/feed.ts"
+import type { Authenticated } from "../../serve/auth.ts"
+import { HttpWatched, serveHttp, tenantOf } from "./http.ts"
 import { pauseReplay, replayedThrough, withReplica } from "./read-your-writes.ts"
+import type { Server } from "./http.ts"
 import { preparedForRowLevelSecurity } from "./rls.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
@@ -420,7 +431,335 @@ const unsafeLayer = Layer.mergeAll(
   ).pipe(Layer.provide(Layer.succeed(Outside, { value: 1 }))),
 )
 
+interface SseMessage {
+  readonly id: string | undefined
+  readonly event: string | undefined
+  readonly data: string
+}
+
+const decodeWireReason = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      reason: Schema.Struct({ _tag: Schema.String, code: Schema.optionalKey(Schema.String) }),
+    }),
+  ),
+)
+
+/** The reason tag and code a served error body or `end` message carries. */
+const wireReason = (text: string) =>
+  decodeWireReason(text).pipe(
+    Effect.orDie,
+    Effect.map(({ reason }) => ({ tag: reason._tag, code: reason.code })),
+  )
+
+/**
+ * A served watch read over HTTP, as the Promise client reads one: SSE messages
+ * parsed from the body, comments skipped, closed with the scope.
+ */
+const watchOver = (
+  url: string,
+  init: { readonly token: string; readonly headers?: Readonly<Record<string, string>> },
+) =>
+  Effect.gen(function* () {
+    const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
+
+    const response = yield* client
+      .execute(
+        HttpClientRequest.post(url, {
+          headers: { authorization: `Bearer ${init.token}`, ...init.headers },
+        }),
+      )
+      .pipe(Effect.orDie)
+
+    const messages: Array<SseMessage> = []
+
+    if (response.status !== 200)
+      return { status: response.status, messages, until: () => Effect.void }
+
+    let buffer = ""
+
+    yield* response.stream.pipe(
+      Stream.decodeText,
+      Stream.runForEach((chunk) =>
+        Effect.sync(() => {
+          buffer += chunk
+          const parsed = parse(buffer)
+          buffer = parsed.rest
+          messages.push(...parsed.messages)
+        }),
+      ),
+      Effect.ignore,
+      Effect.forkScoped,
+    )
+
+    const until = (count: number) =>
+      Effect.sleep("25 millis").pipe(
+        Effect.repeat({ until: () => messages.length >= count }),
+        Effect.timeoutOrElse({
+          duration: WAIT,
+          orElse: () =>
+            Effect.die(new Error(`Expected ${count} messages, saw ${JSON.stringify(messages)}`)),
+        }),
+        Effect.asVoid,
+      )
+
+    return { status: 200, messages, until }
+  })
+
+const baseFetch = globalThis.fetch.bind(globalThis)
+
+const VERSION = /^(0|[1-9]\d*)$/
+
+const post = (
+  server: { readonly send: Server["send"]; readonly mint: Server["mint"] },
+  path: string,
+  token: string,
+) => Effect.flatMap(server.mint(), (key) => server.send(path, { token, key, body: { text: "a" } }))
+
+/** `tenant:subject:expiresAtMs`, so a credential can expire while a watch is open. */
+const expiring = Actor.auth.make((request) =>
+  Effect.gen(function* () {
+    const header = Option.getOrUndefined(HttpHeaders.get(request.headers, "authorization")) ?? ""
+    const match = /^Bearer ([^:]+):([^:]+):(\d+)$/.exec(header)
+
+    if (match === null) return yield* Unauthorized.make({ code: "invalid_credentials" })
+
+    const authenticated: Authenticated = {
+      tenant: match[1]!,
+      caller: User.make({ subject: match[2]! }),
+      expiresAt: DateTime.makeUnsafe(Number(match[3])),
+    }
+
+    return authenticated
+  }),
+)
+
+const servedCases: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "serves a watch as server-sent events: the current result first, then one per change, each after the first carrying the version its rerun waited for",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const token = `${yield* tenantOf}:alice`
+          const base = `/actors/HttpWatched/served-events`
+
+          const first = yield* post(server, `${base}/Post`, token)
+          const watch = yield* watchOver(`${server.url}${base}/Level/watch`, { token })
+
+          yield* watch.until(1)
+          expect(watch.messages[0]).toEqual({ id: undefined, event: "result", data: "1" })
+
+          const second = yield* post(server, `${base}/Post`, token)
+          yield* watch.until(2)
+          expect(watch.messages[1]).toEqual({
+            id: second.headers.get("durable-version"),
+            event: "result",
+            data: "2",
+          })
+          expect(VERSION.test(watch.messages[1]!.id!)).toBe(true)
+          expect(
+            BigInt(watch.messages[1]!.id!) > BigInt(first.headers.get("durable-version")!),
+          ).toBe(true)
+
+          const resumed = yield* watchOver(`${server.url}${base}/Level/watch`, {
+            token,
+            headers: { "durable-min-version": second.headers.get("durable-version")! },
+          })
+
+          yield* resumed.until(1)
+          expect(resumed.messages[0]).toEqual({
+            id: second.headers.get("durable-version"),
+            event: "result",
+            data: "2",
+          })
+        }),
+      ),
+  },
+  {
+    name: "refuses a watch of a query without watch with 400 not_watchable, of an actor no command created with 404 NotCreated, and a malformed durable-min-version",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const token = `${yield* tenantOf}:alice`
+          yield* post(server, `/actors/HttpWatched/served-refused/Post`, token)
+
+          const plain = yield* server.send("/actors/HttpWatched/served-refused/Count/watch", {
+            token,
+          })
+
+          expect(plain.status).toBe(400)
+
+          expect(yield* wireReason(plain.text)).toEqual({
+            tag: "InvalidInput",
+            code: "not_watchable",
+          })
+
+          const missing = yield* server.send("/actors/HttpWatched/served-missing/Level/watch", {
+            token,
+          })
+
+          expect(missing.status).toBe(404)
+          expect((yield* wireReason(missing.text)).tag).toBe("NotCreated")
+
+          const malformed = yield* server.send("/actors/HttpWatched/served-refused/Level/watch", {
+            token,
+            headers: { "durable-min-version": "01" },
+          })
+
+          expect(malformed.status).toBe(400)
+
+          const anonymous = yield* server.send("/actors/HttpWatched/served-refused/Level/watch", {})
+          expect(anonymous.status).toBe(401)
+        }),
+      ),
+  },
+  {
+    name: "denies a watch at open with 403, and ends a running one with access_denied within reauthorizeEvery after revocation",
+    timeoutMs: 60_000,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const server = yield* serveHttp()
+          const token = `${yield* tenantOf}:alice`
+          const base = `/actors/HttpWatched/served-revoked`
+          yield* post(server, `${base}/Post`, token)
+
+          fixture.denied.add("Level")
+
+          const denied = yield* server
+            .send(`${base}/Level/watch`, { token })
+            .pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Level"))))
+
+          expect(denied.status).toBe(403)
+          expect(yield* wireReason(denied.text)).toEqual({
+            tag: "Unauthorized",
+            code: "access_denied",
+          })
+
+          const watch = yield* watchOver(`${server.url}${base}/Level/watch`, { token })
+          yield* watch.until(1)
+          fixture.denied.add("Level")
+          yield* test.advance("55 seconds")
+
+          yield* watch
+            .until(2)
+            .pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Level"))))
+          expect(watch.messages[1]?.event).toBe("end")
+          expect(yield* wireReason(watch.messages[1]!.data)).toEqual({
+            tag: "Unauthorized",
+            code: "access_denied",
+          })
+        }),
+      ),
+  },
+  {
+    name: "ends a watch at its credential's expiry with Unauthorized expired, and sends no result after it",
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp({ auth: expiring })
+          const tenant = yield* tenantOf
+          const base = `/actors/HttpWatched/served-expiry`
+          const test = yield* ActorTest
+          const now = DateTime.toEpochMillis(yield* test.now)
+          const ttl = now + 60_000
+          yield* post(server, `${base}/Post`, `${tenant}:alice:${ttl}`)
+
+          const soon = `${tenant}:alice:${DateTime.toEpochMillis(yield* test.now) + 30_000}`
+          const watch = yield* watchOver(`${server.url}${base}/Level/watch`, { token: soon })
+          yield* watch.until(1)
+          expect(watch.messages[0]?.event).toBe("result")
+
+          yield* test.advance("31 seconds")
+          yield* watch.until(2)
+          expect(watch.messages[1]?.event).toBe("end")
+          expect(yield* wireReason(watch.messages[1]!.data)).toEqual({
+            tag: "Unauthorized",
+            code: "expired",
+          })
+
+          yield* post(server, `${base}/Post`, `${tenant}:alice:${ttl}`)
+          yield* Effect.sleep(QUIET)
+          expect(watch.messages.length).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "the Promise client watches a query, reopens a dropped connection with the greatest version it was sent, and ends with a typed error",
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          const token = `${tenant}:alice`
+          const base = `/actors/HttpWatched/served-client`
+          yield* post(server, `${base}/Post`, token)
+
+          const opened: Array<Headers> = []
+
+          const cutting = (input: RequestInfo | URL, init?: RequestInit) =>
+            baseFetch(input, init).then((response) => {
+              opened.push(new Headers(init?.headers))
+
+              if (opened.length > 1 || response.body === null) return response
+
+              const source = response.body.getReader()
+              let results = 0
+
+              return new Response(
+                new ReadableStream<Uint8Array>({
+                  pull: (controller) =>
+                    source.read().then((chunk) => {
+                      if (chunk.done) return controller.close()
+
+                      controller.enqueue(chunk.value)
+
+                      results +=
+                        new TextDecoder().decode(chunk.value).split("event: result").length - 1
+
+                      if (results < 2) return undefined
+
+                      controller.close()
+
+                      return source.cancel()
+                    }),
+                }),
+                { status: response.status, headers: response.headers },
+              )
+            })
+
+          const room = HttpWatched.client({
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${token}` },
+            fetch: cutting,
+          }).get("served-client")
+
+          const iterator = room.Level.watch()[Symbol.asyncIterator]()
+          const next = () => Effect.promise(() => iterator.next())
+
+          expect((yield* next()).value).toBe(1)
+          const second = yield* post(server, `${base}/Post`, token)
+          expect((yield* next()).value).toBe(2)
+
+          yield* post(server, `${base}/Post`, token)
+          expect((yield* next()).value).toBe(3)
+          expect(opened.length).toBe(2)
+          expect(opened[0]!.get("durable-min-version")).toBe(null)
+          expect(opened[1]!.get("durable-min-version")).toBe(second.headers.get("durable-version"))
+
+          yield* Effect.promise(() => Promise.resolve(iterator.return?.()))
+        }),
+      ),
+  },
+]
+
 export const watchConformance: ReadonlyArray<ConformanceCase> = [
+  ...servedCases,
   {
     name: "sends the current result first, then a rerun after a turn that writes the state the query read",
     run: ({ expect, environment, fixture }) =>

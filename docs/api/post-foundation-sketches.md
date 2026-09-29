@@ -19,15 +19,6 @@ const Account = Actor.make("Account", {
 
 Existing columns must be mapped and validated without relying on TypeScript for authority. A proposed CLI first reports legacy direct writers, then enforces actor-scoped writes with database privileges or a guard that cannot be forged by application connections. `routing_key` backfills and tenant isolation require a real Postgres/Neki migration plan.
 
-## Observe an actor-local query
-
-```ts
-const room = Chat.client({ baseUrl }).get("room-42")
-for await (const page of room.Recent.watch({ limit: 50 })) render(page)
-```
-
-`watch` is only defined for supported scoped queries. The runtime must capture dependencies and notify subscribers after commit, then rerun at a consistent version. A rerun may coalesce intermediate states; it is not an event history. Group queries need explicit cost controls and fleet queries are not live by default.
-
 ## Work offline
 
 ```ts
