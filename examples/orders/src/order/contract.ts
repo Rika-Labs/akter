@@ -1,6 +1,7 @@
 import { Actor } from "@durable-actors/core"
 import { integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Effect, Schema } from "effect"
+import { shopper } from "../access.ts"
 
 /** An order's key: 1 to 64 letters, digits, `_` or `-`. */
 export const OrderId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,64}$/)).pipe(
@@ -150,6 +151,7 @@ export const Order = Actor.make("Order", {
   tables: [orderLines],
   events: [OrderPlaced, PaymentCaptured, PaymentFailed],
   effects: [Charge],
+  access: shopper,
   api: { Place, Summary },
   internal: { Charged, ChargeFailed },
   policy: {

@@ -1,4 +1,4 @@
-import { Actor, type PayloadMigrations, User } from "@durable-actors/core"
+import { Actor, type PayloadMigrations } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
 import { Effect, Exit, Layer, Schema } from "effect"
@@ -43,7 +43,7 @@ const renamed = (migrations: PayloadMigrations) => {
 }
 
 const live = Old.layer.pipe(
-  Layer.provideMerge(ActorTest.layer({ as: User.make({ subject: "alice" }) })),
+  Layer.provideMerge(ActorTest.layer()),
   Layer.provideMerge(BunCrypto.layer),
 )
 

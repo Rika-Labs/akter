@@ -14,7 +14,7 @@ import {
 
 type Services = Layer.Success<ReturnType<typeof testLayer>>
 
-const testLayer = (database: Parameters<typeof ActorTest.layer>[0]["database"]) =>
+const testLayer = (database: NonNullable<Parameters<typeof ActorTest.layer>[0]>["database"]) =>
   Layer.fresh(
     LiveProbeLive.pipe(
       Layer.provideMerge(ActorTest.layer({ database })),

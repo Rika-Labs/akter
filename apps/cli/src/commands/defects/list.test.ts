@@ -1,4 +1,4 @@
-import { Actor, User } from "@durable-actors/core"
+import { Actor } from "@durable-actors/core"
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
@@ -22,7 +22,7 @@ const BoilerLive = Boiler.toLayer(
 )
 
 const live = BoilerLive.pipe(
-  Layer.provideMerge(ActorTest.layer({ as: User.make({ subject: "alice" }) })),
+  Layer.provideMerge(ActorTest.layer()),
   Layer.provideMerge(BunCrypto.layer),
 )
 

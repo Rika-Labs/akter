@@ -196,7 +196,9 @@ export interface ConformanceRegistrar {
   readonly skip: (name: string) => void
 }
 
-export type ConformanceDatabase = NonNullable<Parameters<typeof ActorTest.layer>[0]["database"]>
+export type ConformanceDatabase = NonNullable<
+  NonNullable<Parameters<typeof ActorTest.layer>[0]>["database"]
+>
 
 export interface ConformanceConnection {
   readonly query: (

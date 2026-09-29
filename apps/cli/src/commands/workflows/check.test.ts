@@ -1,4 +1,4 @@
-import { Actor, User } from "@durable-actors/core"
+import { Actor } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
 import { Cause, Effect, Exit, Layer, Schedule, Schema } from "effect"
@@ -39,7 +39,7 @@ const Current = deployment("label")
 const Removed = deployment(null)
 
 const live = Current.layer.pipe(
-  Layer.provideMerge(ActorTest.layer({ as: User.make({ subject: "alice" }) })),
+  Layer.provideMerge(ActorTest.layer()),
   Layer.provideMerge(BunCrypto.layer),
 )
 

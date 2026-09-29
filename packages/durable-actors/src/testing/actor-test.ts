@@ -340,7 +340,7 @@ export class ActorTest extends Context.Service<
       return yield* simulateCluster(yield* ActorCluster)(options, program)
     })
 
-  static readonly layer = (options: TestOptions) =>
+  static readonly layer = (options: TestOptions = {}) =>
     Layer.unwrap(
       Effect.gen(function* () {
         const crypto = yield* Crypto.Crypto

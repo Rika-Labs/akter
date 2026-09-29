@@ -1,6 +1,7 @@
 import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Effect, Result, Schema } from "effect"
+import { signedIn } from "../access.ts"
 
 /** A room's key: a non-empty string. */
 export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
@@ -205,6 +206,7 @@ export const Room = Actor.make("Room", {
   events: [MessagePosted, RoomArchived, AppealDecided],
   feeds: [MessagePosted],
   effects: [ModerateMessage],
+  access: signedIn,
   api: {
     Post,
     Archive,
