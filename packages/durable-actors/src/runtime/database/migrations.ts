@@ -493,6 +493,33 @@ export const migrations = {
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),
+  // Every tenant row admits only the tenant its transaction names. The table
+  // owner and superusers are exempt, so nothing changes until a deployment
+  // runs its turns and views as a role that is neither.
+  "0018_rls": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    for (const table of [
+      "actor_generations",
+      "actor_state",
+      "actor_receipts",
+      "actor_outbox",
+      "actor_events",
+      "actor_dead_letters",
+      "actor_blobs",
+      "actor_workflow_executions",
+      "actor_workflow_step",
+      "actor_connections",
+      "actor_subscriptions",
+      "actor_subscription_tags",
+      "actor_subscription_cursors",
+    ]) {
+      yield* sql`ALTER TABLE ${sql(table)} ENABLE ROW LEVEL SECURITY`
+      yield* sql`CREATE POLICY durable_tenant ON ${sql(table)}
+          USING (tenant_id = current_setting('durable.tenant', true))
+          WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
+    }
+  }),
   // A parent-placed type routes through its parent type's placement, so the
   // parent is part of the record a later build must match.
   "0022_parent_placement": Effect.gen(function* () {

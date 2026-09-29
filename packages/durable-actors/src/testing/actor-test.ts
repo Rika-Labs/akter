@@ -78,6 +78,7 @@ export interface TestOptions {
   readonly maxResidentActors?: number
   readonly relay?: Options["relay"]
   readonly executors?: Options["executors"]
+  readonly rowLevelSecurity?: Options["rowLevelSecurity"]
 }
 
 export interface Inspection {
@@ -629,6 +630,7 @@ export class ActorTest extends Context.Service<
           maxResidentActors: options.maxResidentActors,
           relay: options.relay,
           executors: options.executors,
+          rowLevelSecurity: options.rowLevelSecurity,
         })
 
         return Layer.mergeAll(

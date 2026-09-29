@@ -30,6 +30,7 @@ import {
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core"
 import { Cause, Effect, Option, Predicate } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
+import { checkOwnedTable } from "../database/tenancy.ts"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
 import {
   OWNERSHIP,
@@ -611,6 +612,7 @@ export const bindTables = Effect.fnUntraced(function* (
 export const checkTables = Effect.fnUntraced(function* (
   actor: string,
   tables: ReadonlyArray<AnyOwnedTable>,
+  role: string | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient
 
@@ -637,6 +639,8 @@ export const checkTables = Effect.fnUntraced(function* (
           `Owned table ${info.name} needs primary key (${expected.join(", ")}); apply its drizzle-kit migration`,
         ),
       )
+
+    if (role !== undefined) yield* checkOwnedTable(schema, info.table, role)
 
     yield* sql`INSERT INTO actor_tables (table_schema, table_name, actor_type)
       VALUES (${schema}, ${info.table}, ${actor}) ON CONFLICT DO NOTHING`

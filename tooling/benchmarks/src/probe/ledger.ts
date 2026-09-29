@@ -24,6 +24,13 @@ const ENTRIES_DDL = [
   PRIMARY KEY (routing_key, tenant_id, actor_id, id))`,
   `CREATE INDEX IF NOT EXISTS bench_entries_amount
   ON bench_entries (routing_key, tenant_id, actor_id, amount)`,
+  `ALTER TABLE bench_entries ENABLE ROW LEVEL SECURITY`,
+  `DO $$ BEGIN
+    CREATE POLICY durable_tenant ON bench_entries AS PERMISSIVE FOR ALL TO public
+      USING (tenant_id = current_setting('durable.tenant', true))
+      WITH CHECK (tenant_id = current_setting('durable.tenant', true));
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END $$`,
 ]
 
 const Entry = Schema.Struct({ id: Schema.String, amount: Schema.Int, memo: Schema.String })

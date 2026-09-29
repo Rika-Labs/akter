@@ -71,7 +71,16 @@ That role reads every view and gets `permission denied` on every `actor_*` table
 
 A role also holds every privilege granted to `PUBLIC`, and these grants are not limited to `durable`: `EXECUTE` on functions by default, `USAGE` on schema `public`, and any table grant made to `PUBLIC`. To keep the role view-only, audit and revoke those grants, for example `REVOKE ALL ON SCHEMA public FROM PUBLIC` and `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`, or point the tool at a database where `PUBLIC` holds nothing else.
 
-Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows, but nothing enforces the filter yet: until the framework's RLS policies ship (M4.5), treat view access as operator access to every tenant in the database. When those policies ship, the views are recreated with `security_invoker = true`, so the base-table policies apply to the reading role; the columns and version 1 stay the same.
+Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows. Without row-level security nothing enforces the filter, so treat view access as operator access to every tenant in the database. With [row-level security](01-deployment.md#row-level-security) on, the views belong to the runtime's tenant role. They keep their owner's rights, so the base-table policies apply through them, and a reader sees only the tenant its transaction names:
+
+```sql
+BEGIN;
+SELECT set_config('durable.tenant', 'acme', true);
+SELECT actor_type, actor_id FROM durable.actors;  -- acme's actors only; none without the setting
+COMMIT;
+```
+
+The reader still holds no grant on any `actor_*` table, and the columns and version 1 stay the same ([ADR 0051](../decisions/0051-row-level-security.md) §4).
 
 ## The local inspector
 
@@ -99,7 +108,7 @@ Compressed values (state, event values, workflow payloads, results, and step exi
 The inspector adds no access of its own:
 
 - **Tenant.** The tenant comes only from the authenticated principal, never from the request, and every statement filters on it. A tenant named in the query string is ignored. Inside that tenant the inspector reads every actor, so `auth` must authenticate operators, not the end users `Actor.serve` authenticates.
-- **Read-only.** It reads only the `durable` views, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and Postgres refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)).
+- **Read-only.** It reads only the `durable` views, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and Postgres refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)). Each transaction also sets `durable.tenant` to the principal's tenant, so with row-level security on the database enforces the tenant too.
 - **Step history.** Steps are shown while an execution is open; the engine deletes a finished execution's steps, so a finished execution shows its result and no steps.
 
 Connections are not shown: no inspection view covers `actor_connections` yet. Retrying a dead letter waits for M4.6's audited repair.
