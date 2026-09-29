@@ -1489,9 +1489,36 @@ export const outboxRelay = Effect.fnUntraced(function* (
       )
       .pipe(Effect.orDie)
 
+  // A draining runner claims nothing more. A delivery only waits on a turn,
+  // which the receiver's owner finishes or rolls back on its own, so it is
+  // interrupted at once and its row falls due for any runner; the receiver's
+  // receipt answers a redelivery of work that did commit.
+  const stop = lock
+    .withPermit(
+      Effect.sync(() => {
+        stopping = true
+      }),
+    )
+    .pipe(
+      Effect.andThen(FiberSet.clear(deliveries)),
+      Effect.andThen(FiberSet.clear(subscriptionWork.feed)),
+      Effect.andThen(FiberSet.clear(subscriptionWork.control)),
+      Effect.andThen(FiberSet.clear(subscriptionWork.subscription)),
+    )
+
+  // An interrupted attempt keeps its claim and its `ambiguous` mark, because
+  // the provider may have applied the call; another runner takes the effect
+  // over once the lease ends.
+  const interruptAttempts = Effect.flatMap(FiberSet.size(attempts), (running) =>
+    FiberSet.clear(attempts).pipe(Effect.as(running)),
+  )
+
   return {
     run,
     drain,
+    stop,
+    attemptsIdle: FiberSet.awaitEmpty(attempts),
+    interruptAttempts,
     extendLeases,
     wake: Queue.offer(signals, undefined).pipe(Effect.asVoid),
     cancelled,
