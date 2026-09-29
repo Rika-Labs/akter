@@ -853,8 +853,19 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(frameOf(arrived)).toEqual(Rendered.make({ output: "dropped.png" }))
+
+          // The route's frame leaves at its commit; the relay deletes the delivered row after it.
+          const settled = yield* test.inspect(studio.ref).pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced("20 millis"),
+              until: (inspection) => inspection.outbox === 0 && inspection.effects === 0,
+            }),
+            Effect.timeout(WAIT),
+            Effect.orDie,
+          )
+
+          expect(settled).toMatchObject({ outbox: 0, effects: 0 })
           expect(yield* test.receiptsFor(studio.ref, "Finished")).toBe(1)
-          expect(yield* test.inspect(studio.ref)).toMatchObject({ outbox: 0, effects: 0 })
           const sent = (yield* test.progress).filter((record) => record.ref.id === "dropped")
           expect(sent.some(ProgressRecord.$is("Progress"))).toBe(true)
         }),
