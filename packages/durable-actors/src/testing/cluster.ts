@@ -62,6 +62,13 @@ export class ActorCluster extends Context.Service<
   ActorCluster,
   {
     readonly runners: number
+    /** The tenant every runner of this cluster runs its actors under. */
+    readonly tenant: string
+    /**
+     * A connection pool of the cluster's own to the shared database, for
+     * inspection: `kill` never cuts it.
+     */
+    readonly sql: SqlClient.SqlClient
     /**
      * Runs `effect` on `runner`: its handles dispatch through that runner, and
      * its `ActorTest` fault points and inspection belong to that runner. An
@@ -84,6 +91,21 @@ export class ActorCluster extends Context.Service<
      * to take at once. Drain it first to finish or interrupt its work.
      */
     readonly shutdown: (runner: number) => Effect.Effect<void>
+    /**
+     * Delays every database reply to every runner, without dropping it, as a
+     * partition between the database and its clients would: statements a turn
+     * sends still run, but it hears nothing back until `failover`. A
+     * COMMIT sent meanwhile is made by the database and unknown to its runner.
+     */
+    readonly holdReplies: Effect.Effect<void>
+    /**
+     * Cuts every runner's open database connections at once, discarding held
+     * replies, and lets the runners reconnect to the same database, as they
+     * do when a primary fails over to a promoted standby at the same address:
+     * open turns lose their connection, and shard locks, which are table
+     * rows, survive.
+     */
+    readonly failover: Effect.Effect<void>
     /** Starts a stopped runner again as a new process, under a new address. */
     readonly restart: (runner: number) => Effect.Effect<void>
     /**
@@ -263,11 +285,22 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
       const stopping: Array<Fiber.Fiber<void>> = []
       const url = new URL(Redacted.value(database))
 
+      let holding = false
+
+      const failover = Effect.sync(() => {
+        holding = false
+
+        for (const runner of runners) for (const socket of runner.sockets ?? []) socket.destroy()
+      })
+
       const hostsActors = (runner: Runner) =>
         !(options.holdersOnly ?? []).includes(runners.indexOf(runner))
 
-      const dial = (runner: Runner) => () => {
-        const sockets = runner.sockets
+      // Bound to one incarnation's socket set, so a killed process that is
+      // still winding down cannot reach the database again once its runner
+      // has started as a new process.
+      const dial = (runner: Runner, incarnationSockets: Set<NetSocket>) => () => {
+        const sockets = runner.sockets === incarnationSockets ? incarnationSockets : undefined
 
         if (sockets === undefined) {
           const refused = new NetSocket()
@@ -285,65 +318,68 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         sockets.add(socket)
         socket.once("close", () => sockets.delete(socket))
 
+        if (holding) socket.pause()
+
         return socket
       }
 
+      // A killed process that is still winding down stays killed when its
+      // runner starts again under a new address.
       const storage =
-        (runner: Runner) =>
-        (
-          inner: RunnerStorage.RunnerStorage["Service"],
-        ): RunnerStorage.RunnerStorage["Service"] => ({
-          ...inner,
-          getRunners: Effect.suspend(() =>
-            runner.heartbeat === "running" || runner.runners === undefined
-              ? inner.getRunners.pipe(
-                  Effect.tap((seen) =>
-                    Effect.sync(() => {
-                      runner.runners = seen
-                    }),
-                  ),
-                )
-              : Effect.succeed([...runner.runners]),
-          ),
-          refresh: (address, shardIds) =>
-            Effect.suspend(() => {
-              if (runner.heartbeat === "running") return inner.refresh(address, shardIds)
+        (runner: Runner, mine: RunnerAddress.RunnerAddress) =>
+        (inner: RunnerStorage.RunnerStorage["Service"]): RunnerStorage.RunnerStorage["Service"] => {
+          const state = () => (runner.address === mine ? runner.heartbeat : "killed")
 
-              // A paused runner believes every lock it asks about is still its own.
-              return Effect.succeed(runner.heartbeat === "paused" ? Array.from(shardIds) : [])
-            }),
-          acquire: (address, shardIds) =>
-            Effect.suspend(() =>
-              runner.heartbeat === "running"
-                ? inner.acquire(address, shardIds)
-                : Effect.succeed([]),
+          return {
+            ...inner,
+            getRunners: Effect.suspend(() =>
+              state() === "running" || runner.runners === undefined
+                ? inner.getRunners.pipe(
+                    Effect.tap((seen) =>
+                      Effect.sync(() => {
+                        runner.runners = seen
+                      }),
+                    ),
+                  )
+                : Effect.succeed([...runner.runners]),
             ),
-          release: (address, shardId) =>
-            Effect.suspend(() =>
-              runner.heartbeat === "running" ? inner.release(address, shardId) : Effect.void,
-            ),
-          releaseAll: (address) =>
-            Effect.suspend(() =>
-              runner.heartbeat === "running" ? inner.releaseAll(address) : Effect.void,
-            ),
-          unregister: (address) =>
-            Effect.suspend(() =>
-              runner.heartbeat === "running" ? inner.unregister(address) : Effect.void,
-            ),
-          setRunnerHealth: (address, healthy) =>
-            Effect.suspend(() =>
-              runner.heartbeat === "running"
-                ? inner.setRunnerHealth(address, healthy)
-                : Effect.void,
-            ),
-        })
+            refresh: (address, shardIds) =>
+              Effect.suspend(() => {
+                if (state() === "running") return inner.refresh(address, shardIds)
+
+                // A paused runner believes every lock it asks about is still its own.
+                return Effect.succeed(state() === "paused" ? Array.from(shardIds) : [])
+              }),
+            acquire: (address, shardIds) =>
+              Effect.suspend(() =>
+                state() === "running" ? inner.acquire(address, shardIds) : Effect.succeed([]),
+              ),
+            release: (address, shardId) =>
+              Effect.suspend(() =>
+                state() === "running" ? inner.release(address, shardId) : Effect.void,
+              ),
+            releaseAll: (address) =>
+              Effect.suspend(() =>
+                state() === "running" ? inner.releaseAll(address) : Effect.void,
+              ),
+            unregister: (address) =>
+              Effect.suspend(() =>
+                state() === "running" ? inner.unregister(address) : Effect.void,
+              ),
+            setRunnerHealth: (address, healthy) =>
+              Effect.suspend(() =>
+                state() === "running" ? inner.setRunnerHealth(address, healthy) : Effect.void,
+              ),
+          }
+        }
 
       const start = Effect.fnUntraced(function* (runner: Runner) {
         incarnation += 1
         runner.address = RunnerAddress.RunnerAddress.make({ host, port: incarnation })
         runner.heartbeat = "running"
         runner.runners = undefined
-        runner.sockets = new Set()
+        const sockets = new Set<NetSocket>()
+        runner.sockets = sockets
         addresses.set(key(runner.address), runners.indexOf(runner))
 
         const scope = yield* Scope.make()
@@ -356,7 +392,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           Layer.provideMerge(
             ActorTest.layer(options).pipe(
               Layer.provide([
-                Layer.succeed(ClusterMember, { tenant, connect: dial(runner) }),
+                Layer.succeed(ClusterMember, { tenant, connect: dial(runner, sockets) }),
                 Layer.succeed(RunnerWiring, {
                   config: {
                     ...TIMINGS,
@@ -367,7 +403,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
                     shardLockDisableAdvisory: true,
                   },
                   sharding: network.runner(runner.address),
-                  storage: storage(runner),
+                  storage: storage(runner, runner.address),
                 }),
               ]),
             ),
@@ -486,8 +522,16 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
 
       return ActorCluster.of({
         runners: options.runners,
+        tenant,
+        sql,
         on: (index) => (effect) =>
           live(index).pipe(Effect.flatMap((context) => Effect.provideContext(effect, context))),
+        holdReplies: Effect.sync(() => {
+          holding = true
+
+          for (const runner of runners) for (const socket of runner.sockets ?? []) socket.pause()
+        }),
+        failover,
         kill: (index) => at(index).pipe(Effect.flatMap(stop)),
         shutdown: (index) => at(index).pipe(Effect.flatMap(shutdown)),
         restart: (index) =>

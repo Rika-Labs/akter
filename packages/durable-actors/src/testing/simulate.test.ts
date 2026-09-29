@@ -1,7 +1,7 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Effect, Layer, ManagedRuntime, Schema } from "effect"
 import { afterAll, describe, expect, it } from "vitest"
-import { Actor, Intent } from "../index.ts"
+import { Actor, Actors, Intent } from "../index.ts"
 import { ActorTest } from "./actor-test.ts"
 import { type SimulationFault, simulationSeeds } from "./simulate.ts"
 
@@ -251,6 +251,29 @@ describe("ActorTest.simulate", () => {
         ).pipe(Effect.exit)
 
         expect(String(failure)).toContain("were already queued")
+        expect(yield* test.clearFaults).toEqual([])
+      }),
+    ))
+
+  it("keeps a crash scoped to a command id queued until that command's turn", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const test = yield* ActorTest
+        const actors = yield* Actors
+        const tally = yield* Tally.get("scoped")
+        const mine = yield* actors.mintCommandId
+        yield* test.crashNext("beforeCommit", { commandId: mine })
+
+        const before = runs.adds
+        expect(yield* tally.Add(1)).toBe(1)
+        expect(runs.adds - before).toBe(1)
+        expect(yield* test.clearFaults).toEqual(["beforeCommit"])
+
+        yield* test.crashNext("beforeCommit", { commandId: mine })
+        const crashed = runs.adds
+        expect(yield* tally.Add(2).pipe(Actor.commandId(mine))).toBe(3)
+        // The crashed turn ran the handler and rolled back; its retry ran it again.
+        expect(runs.adds - crashed).toBe(2)
         expect(yield* test.clearFaults).toEqual([])
       }),
     ))
