@@ -21,6 +21,8 @@ import { progressPool } from "../effects/progress.ts"
 import { CRON_PREFIX } from "../cron/key.ts"
 import { type CronSchedule, cronTicks } from "../cron/schedule.ts"
 import { TurnHooks } from "./hooks.ts"
+import { count as tally, Metrics } from "../telemetry/metrics.ts"
+import { SpanNames } from "../telemetry/spans.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
 import type {
@@ -691,6 +693,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         )
         yield* sql`UPDATE actor_outbox SET due_at_ms = ${(yield* databaseTime) + backoffMs(row.attempts)}
           WHERE ${claim}`
+        yield* tally(Metrics.relayRetried, { kind: "intent" }, 1)
       })
 
     return yield* Effect.gen(function* () {
@@ -720,7 +723,25 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       if (tick) yield* ticks.settleFired(row, claim)
       else yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
+
+      yield* tally(Metrics.relayDelivered, { kind: "intent" }, 1)
     }).pipe(
+      Effect.withSpan(
+        SpanNames.relayIntent,
+        {
+          kind: "producer",
+          attributes: {
+            "actor.type": row.target_type,
+            "actor.tenant": row.tenant_id,
+            "actor.id": row.target_id,
+            "command.name": row.command,
+            "command.id": row.intent_id,
+            "relay.attempt": row.attempts,
+            "relay.timer": row.timer_key !== null,
+          },
+        },
+        { captureStackTrace: false },
+      ),
       // An interrupted delivery (shutdown) makes its row due at once; a receiver
       // that already committed it replays the receipt on redelivery.
       Effect.onInterrupt(() =>
@@ -823,6 +844,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           yield* Effect.logWarning("Effect dead-lettered after its last attempt", cause).pipe(
             annotate,
           )
+          yield* tally(Metrics.deadLetters, { actor_type: row.actor_type, effect: row.command }, 1)
           yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id, tenant_id, actor_type,
               actor_id, effect, payload, payload_version, attempts, cause, ambiguous, dead_at_ms)
             VALUES (${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
@@ -1011,6 +1033,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
           report: slot.offer,
         })
         .pipe(
+          Effect.withSpan(
+            SpanNames.effect(row.actor_type, row.command),
+            {
+              kind: "client",
+              attributes: {
+                "actor.type": row.actor_type,
+                "actor.tenant": row.tenant_id,
+                "actor.id": row.actor_id,
+                "effect.name": row.command,
+                "effect.id": row.intent_id,
+                "effect.attempt": attempt,
+              },
+            },
+            { captureStackTrace: false },
+          ),
           Effect.result,
           Effect.raceFirst(renewals),
           Effect.raceFirst(deadline),
@@ -1131,7 +1168,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
         // The first success of any attempt wins; the row stops being an effect.
         if (yield* settleSuccess(routes.success, sql`${effectRow} AND cancelled_at_ms IS NULL`))
-          return
+          return yield* tally(Metrics.relayDelivered, { kind: "effect" }, 1)
 
         // Cancelled meanwhile: the result is reported as the cancellation's outcome.
         if (
@@ -1202,6 +1239,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         Effect.annotateLogs({ attempt, ambiguous }),
         annotate,
       )
+      yield* tally(Metrics.relayRetried, { kind: "effect" }, 1)
     }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })
 
