@@ -33,7 +33,7 @@ import {
 } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
-import { routingKey } from "../storage/codec.ts"
+import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { takeBatch } from "./mailbox.ts"
 import { executeBatch } from "../turn/execute.ts"
@@ -153,6 +153,8 @@ export const registerActor = Effect.fnUntraced(function* (
   transport: Transport,
   authorize: Authorize,
   gate: TurnGate,
+  /** Fails while this runtime may not start turns, e.g. its payload writer rows are stale. */
+  writable: Effect.Effect<void, ActorError>,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -310,6 +312,7 @@ export const registerActor = Effect.fnUntraced(function* (
             owned.key,
             policy,
             registration.mintable,
+            parentPlacement(registration.placement)?.parent,
             statements,
             waited,
             owner.hasConnections ? owner.list(owned) : undefined,
@@ -503,7 +506,7 @@ export const registerActor = Effect.fnUntraced(function* (
           // A draining runner refuses the batch, or interrupts it at the
           // deadline, and every caller it has not answered retries elsewhere.
           if (batch.length > 0)
-            yield* gate.run(runBatch(batch)).pipe(
+            yield* gate.run(Effect.andThen(writable, runBatch(batch))).pipe(
               Effect.catchIf(Schema.is(ActorError), (error) =>
                 Effect.forEach(batch, (entry) => Deferred.fail(entry.reply, error), {
                   discard: true,

@@ -1,0 +1,180 @@
+{
+  "schema": 2,
+  "label": "m4.11-placement",
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-29T01:16:08.740Z",
+  "finishedAt": "2026-09-29T01:17:42.080Z",
+  "git": {
+    "sha": "d757d16d6ca0efd14e2852a692f7d9b3af6276ff",
+    "shortSha": "d757d16",
+    "branch": "feat/228-parent-placement",
+    "mainBase": "6f27f1acfd6609d293576a2512a3c320813ca08e",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "pglite",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "in-memory"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+    "logicalCpus": 16,
+    "memoryGiB": 31.4,
+    "os": "Linux 6.1.158+",
+    "hostname": "e2b.local",
+    "topology": "benchmark client and actor runtime on this machine; Postgres at BENCH_DATABASE_URL"
+  },
+  "scenarios": [
+    {
+      "name": "placement",
+      "description": "Parent placement against actor placement: parent-to-child intent latency, and reading a 10-item family in one group select against one query per item.",
+      "cases": [
+        {
+          "name": "intent-parent",
+          "parameters": {
+            "placement": "parent",
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 28446,
+          "throughput": 70.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 14.22,
+            "min": 12.844,
+            "p50": 13.642,
+            "p90": 15.073,
+            "p95": 16.486,
+            "p99": 24.717,
+            "max": 54.809
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 120.6,
+            "server": null,
+            "clientMsPerOperation": 17.15,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "family-read-parent-10",
+          "parameters": {
+            "placement": "parent",
+            "items": 10,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 2449,
+          "throughput": 816.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 1.221,
+            "min": 1.076,
+            "p50": 1.207,
+            "p90": 1.311,
+            "p95": 1.359,
+            "p99": 1.626,
+            "max": 1.866
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 113.4,
+            "server": null,
+            "clientMsPerOperation": 1.388,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "intent-actor",
+          "parameters": {
+            "placement": "actor",
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 28662,
+          "throughput": 69.8,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 14.328,
+            "min": 12.891,
+            "p50": 13.702,
+            "p90": 15.068,
+            "p95": 16.915,
+            "p99": 25.709,
+            "max": 50.191
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 115.9,
+            "server": null,
+            "clientMsPerOperation": 16.604,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "family-read-actor-10",
+          "parameters": {
+            "placement": "actor",
+            "items": 10,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 25357,
+          "throughput": 78.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 12.675,
+            "min": 11.752,
+            "p50": 12.393,
+            "p90": 13.289,
+            "p95": 13.71,
+            "p99": 16.396,
+            "max": 79.516
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 107.5,
+            "server": null,
+            "clientMsPerOperation": 13.629,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}

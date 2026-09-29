@@ -218,6 +218,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
       target_id: intent.target.id,
       command: intent.command,
       payload: intent.payload,
+      payload_version: 0,
       caller: yield* Schema.encodeEffect(CallerJson)(intent.caller).pipe(Effect.orDie),
     })
   }
@@ -250,6 +251,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
       target_id: id,
       command: effect.effect,
       payload: effect.payload,
+      payload_version: effect.version,
       caller: yield* Schema.encodeEffect(CallerJson)(effect.caller).pipe(Effect.orDie),
     })
   }
@@ -301,16 +303,16 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     )
   }
 
-  if (delayed.length > 0) {
-    const shift = sql`${statementNow} - ${now}`
-
+  // clock_timestamp() changes while a statement runs, so the shift is read
+  // once: every column of every delayed row moves by the same amount.
+  if (delayed.length > 0)
     statements.push(
       Effect.asVoid(sql`UPDATE actor_outbox
-        SET due_at_ms = due_at_ms + ${shift}, scheduled_at_ms = scheduled_at_ms + ${shift},
-          ready_at_ms = ready_at_ms + ${shift}
+        SET due_at_ms = due_at_ms + moved.shift, scheduled_at_ms = scheduled_at_ms + moved.shift,
+          ready_at_ms = ready_at_ms + moved.shift
+        FROM (SELECT ${statementNow} - ${now} AS shift) AS moved
         WHERE routing_key = ${routingKey} AND intent_id IN ${sql.in(delayed)}`),
     )
-  }
 
   if (capped.length > 0) statements.push(orderCapped({ sql, routingKey, sender, capped }))
 

@@ -13,10 +13,11 @@ apps/                       deployables and the CLI bin; never imported by anoth
   console/                  @durable-actors/console    FoldKit SSR
   docs/                     @durable-actors/docs       static docs site built from docs/ with llms.txt and Markdown copies (ADR 0043)
   e2e/                      @durable-actors/e2e        Playwright browser tests against read-only console fixtures
-  edge/                     @durable-actors/edge       hosted ingress: deployment hosts → runners, API key → Principal, parked sockets, limits
+  edge/                     @durable-actors/edge       hosted ingress: deployment hosts → runners, credentials → signed assertions, proxied sockets, limits
   cli/                      @durable-actors/cli        `durable login | dev | deploy | migrate | dead-letters`
 packages/
   durable-actors/           @durable-actors/core       the framework; published (other published packages follow ADR 0029)
+  react/                    @durable-actors/react      React hooks over @durable-actors/core/client
   deployments/              @durable-actors/deployments  Deployment, Runners (singleton), UsageMeter actors — written on the framework
   accounts/                 @durable-actors/accounts   better-auth, organizations, API keys
   billing/                  @durable-actors/billing    Polar

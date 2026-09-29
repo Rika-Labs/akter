@@ -174,6 +174,33 @@ describe("real PostgreSQL API", () => {
       }),
     ))
 
+  it("publishes the edge's unrevoked, unexpired keys for runners", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        yield* Effect.promise(() =>
+          pool.query(
+            `INSERT INTO edge_key (kid, x, expires_at, revoked_at) VALUES
+              ('edge-current', 'x-current', NULL, NULL),
+              ('edge-retiring', 'x-retiring', now() + interval '1 hour', NULL),
+              ('edge-expired', 'x-expired', now() - interval '1 second', NULL),
+              ('edge-revoked', 'x-revoked', NULL, now())`,
+          ),
+        )
+
+        const response = yield* request("/edge/keys")
+        const { keys } = yield* Effect.promise(() => response.json())
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get("cache-control")).toBe("no-store")
+        expect(keys.map(({ kid }: { readonly kid: string }) => kid)).toEqual([
+          "edge-current",
+          "edge-retiring",
+        ])
+        expect(keys[0]).toEqual({ kid: "edge-current", kty: "OKP", crv: "Ed25519", x: "x-current" })
+        expect(keys[1].exp).toBeGreaterThan(Math.floor((yield* Clock.currentTimeMillis) / 1000))
+      }),
+    ))
+
   it("creates and activates an organization, persists projects, validates input and rejects CSRF", () =>
     runtime.runPromise(
       Effect.gen(function* () {
