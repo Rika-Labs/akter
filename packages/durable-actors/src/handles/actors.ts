@@ -462,6 +462,11 @@ export class InternalActors extends Context.Service<
     /** Runs one retention sweep now; used by `ActorTest.cleanup`. */
     readonly cleanup: Effect.Effect<Swept>
     /**
+     * Sweeps every tenant's unreferenced content now, whenever each was last
+     * swept, and returns how many contents it deleted; for tests.
+     */
+    readonly sweepContent: Effect.Effect<number>
+    /**
      * Moves the leases of this runner's running effect attempts forward and
      * runs `jump`, with no relay pass between them; used by `ActorTest.advance`.
      */
@@ -534,7 +539,11 @@ export class InternalActors extends Context.Service<
 export class Actors extends Context.Service<
   Actors,
   {
-    /** Mints a command id for `Actor.commandId`, so a caller can retry one operation across processes. */
-    readonly mintCommandId: Effect.Effect<string>
+    /**
+     * Mints a command id for `Actor.commandId`, so a caller can retry one
+     * operation across processes. It reads the database clock, so it fails
+     * `ActorUnavailable` while the database is unreachable.
+     */
+    readonly mintCommandId: Effect.Effect<string, ActorError>
   }
 >()("@durable-actors/core/handles/actors") {}

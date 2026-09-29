@@ -93,7 +93,7 @@ import {
   type WorkflowRun,
 } from "../handles/workflow.ts"
 import { isMintedId } from "../identity/mint.ts"
-import { type AnyBlob, isBlob } from "../members/blob.ts"
+import { type AnyBlob, isBlob, isContent } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
 import {
   definitionPayloads,
@@ -559,7 +559,7 @@ interface Definition<
   readonly feeds?: ReadonlyArray<Events[number]>
   /** `Actor.table` tables whose rows this actor type owns. */
   readonly tables?: Tables
-  /** `Actor.blob` binary storage this actor type's turns write and its queries read. */
+  /** `Actor.blob` binary storage and `Actor.content` references: turns write them, queries read them. */
   readonly blobs?: Blobs
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
   readonly internal?: Internal & TagsMatch<Internal>
@@ -591,12 +591,14 @@ const make = <
   const Effects extends ReadonlyArray<AnyEffect> = readonly [],
   const P extends Policy<CommandsOf<Api> | Values<Internal>, Effects[number]> = {},
   const B extends ReadonlyArray<AnyBlob> = [],
+  const F extends ReadonlyArray<Events[number]> = readonly [],
   const Subs extends ReadonlyArray<AnySubscription> = readonly [],
 >(
   name: Name,
   definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B, Subs> & {
     readonly key?: K
     readonly policy?: P
+    readonly feeds?: F
   },
 ) => {
   Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/)).make(name)
@@ -815,7 +817,7 @@ const make = <
   const blobNames = new Set<string>()
 
   for (const blob of blobs) {
-    if (!isBlob(blob)) throw new Error("blobs takes Actor.blob values")
+    if (!isBlob(blob)) throw new Error("blobs takes Actor.blob and Actor.content values")
 
     if (blobNames.has(blob.name)) throw new Error(`Blob ${blob.name} is listed twice`)
     blobNames.add(blob.name)
@@ -1030,7 +1032,7 @@ const make = <
     executionId: string,
     execute: (request: Request) => Effect.Effect<Outcome, ActorError>,
     poll: (request: Request) => Effect.Effect<WorkflowStatus | undefined, ActorError>,
-    mint: Effect.Effect<string>,
+    mint: Effect.Effect<string, ActorError>,
   ) =>
     workflowRun({
       executionId,
@@ -1655,6 +1657,7 @@ const make = <
                 guard: guard("Blob"),
                 maxBytes: policy.blobMaxBytes,
                 maxEntries: policy.blobMaxEntries,
+                timeoutMs: policy.executionMs,
               },
               false,
             )
@@ -1669,7 +1672,7 @@ const make = <
               events: replayWith(input.events),
               rows: access.rows as QueryContext<State, Event, Owned>["rows"],
               group: access.group,
-              blob,
+              blob: blob as QueryContext<State, Event, Owned, Blobs>["blob"],
               follow: <E extends Event>(
                 event: E,
                 options?: { readonly after?: string | undefined },
@@ -1887,6 +1890,7 @@ const make = <
                 guard: escaped("Blob"),
                 maxBytes: policy.blobMaxBytes,
                 maxEntries: policy.blobMaxEntries,
+                timeoutMs: policy.executionMs,
               },
               true,
             )
@@ -2400,6 +2404,7 @@ const make = <
                 guard: escaped("Blob"),
                 maxBytes: policy.blobMaxBytes,
                 maxEntries: policy.blobMaxEntries,
+                timeoutMs: policy.executionMs,
               },
               false,
             )
@@ -2414,7 +2419,7 @@ const make = <
               events: replay,
               rows: access.rows as QueryContext<State, Event, Owned>["rows"],
               group: access.group,
-              blob,
+              blob: blob as QueryContext<State, Event, Owned, Blobs>["blob"],
               follow: () =>
                 Stream.die(new Error("read.follow is only available in stream handlers")),
               progress: () =>
@@ -2850,6 +2855,10 @@ const make = <
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     connections: connectionMembers.map(servedConnection),
     feeds: [...feeds],
+    contents: blobs.flatMap((declared) => (isContent(declared) ? [declared.name] : [])),
+    streams: Object.values(api)
+      .filter((member) => member.kind === "stream")
+      .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     deliveryMs: policy.deliveryMs,
   }
 
@@ -2892,10 +2901,11 @@ const make = <
     client: (options: ClientOptions) =>
       clientOf<
         ActorClient<
-          Omit<Api, WorkflowKeys<Api> | ConnectionKeys<Api> | StreamKeys<Api>>,
+          Omit<Api, WorkflowKeys<Api>>,
           K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
           Id,
-          StateOf<Fields>
+          StateOf<Fields>,
+          F[number]
         >
       >(served)(options),
   }

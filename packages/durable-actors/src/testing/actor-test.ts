@@ -79,6 +79,14 @@ export interface TestOptions {
   readonly executors?: Options["executors"]
   readonly rowLevelSecurity?: Options["rowLevelSecurity"]
   readonly payloadWriterWindow?: Options["payloadWriterWindow"]
+  /** Shared content settings; omitted, a fixed test grant key with the default grace and skew. */
+  readonly content?: Options["content"] | undefined
+}
+
+/** The grant key tests sign content grants with unless they configure their own. */
+export const TEST_CONTENT_KEY = {
+  id: "test",
+  secret: Redacted.make("durable-actors test content grant key, never for production"),
 }
 
 export interface Inspection {
@@ -164,6 +172,14 @@ export const executeForTest = (request: Request): Effect.Effect<Outcome, ActorEr
  */
 export const cleanup: Effect.Effect<Swept, never, InternalActors> = Effect.gen(function* () {
   return yield* (yield* InternalActors).cleanup
+})
+
+/**
+ * Sweeps every tenant's unreferenced content now, however recently each was
+ * swept, and returns how many contents it deleted; for benchmarks and tests.
+ */
+export const sweepContent: Effect.Effect<number, never, InternalActors> = Effect.gen(function* () {
+  return yield* (yield* InternalActors).sweepContent
 })
 
 /** A progress message an executor pool sent, and whether `dropProgress` dropped it. */
@@ -631,6 +647,7 @@ export class ActorTest extends Context.Service<
           executors: options.executors,
           rowLevelSecurity: options.rowLevelSecurity,
           payloadWriterWindow: options.payloadWriterWindow,
+          content: options.content ?? { keys: [TEST_CONTENT_KEY] },
         })
 
         return Layer.mergeAll(

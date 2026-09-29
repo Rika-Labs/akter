@@ -453,14 +453,33 @@ export const claimCapped = ({
     }),
   )
 
-/** Makes the oldest waiting row of `group` due now, after one of its attempts settled. */
-const wakeWaiting = (sql: SqlClient.SqlClient, group: CappedGroup, at: number) =>
+/**
+ * Makes the oldest waiting row of `group` due now, after one of its attempts
+ * settled. It runs outside the group's lock, so a claim may be taking that
+ * row at the same moment: it skips a row a claim holds, and the outer guard
+ * refuses a row that is running by the time the update reaches it. Without
+ * both, a wake that waited on a claim's row lock would move the claimed
+ * attempt's lease end to now, and the cap would stop counting it while it
+ * still runs.
+ */
+export const wakeWaiting = ({
+  sql,
+  group,
+  at,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly group: CappedGroup
+  readonly at: number
+}) =>
   sql`UPDATE actor_outbox SET due_at_ms = least(due_at_ms, ${at}), waiting = false
-    WHERE (routing_key, intent_id) IN (
-      SELECT o.routing_key, o.intent_id FROM actor_outbox o
-      WHERE ${groupRow(sql, group)} AND o.waiting AND o.cancelled_at_ms IS NULL
-      ORDER BY o.ready_at_ms, o.intent_id LIMIT 1
-    ) RETURNING 1`
+    WHERE waiting AND NOT running AND cancelled_at_ms IS NULL
+      AND (routing_key, intent_id) IN (
+        SELECT o.routing_key, o.intent_id FROM actor_outbox o
+        WHERE ${groupRow(sql, group)} AND o.waiting AND NOT o.running
+          AND o.cancelled_at_ms IS NULL
+        ORDER BY o.ready_at_ms, o.intent_id LIMIT 1
+        FOR UPDATE OF o SKIP LOCKED
+      ) RETURNING 1`
 
 /** One row reporting `kind`'s candidates when its claim took none of them. */
 const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
@@ -1219,7 +1238,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       : attempt.pipe(
           Effect.ensuring(
             Effect.gen(function* () {
-              const woke = yield* wakeWaiting(sql, groupOf(row), yield* databaseTime)
+              const woke = yield* wakeWaiting({ sql, group: groupOf(row), at: yield* databaseTime })
 
               if (woke.length > 0) yield* Queue.offer(signals, undefined)
             }).pipe(Effect.ignore),

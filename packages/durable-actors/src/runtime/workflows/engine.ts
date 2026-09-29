@@ -621,6 +621,13 @@ export const activationEngine = (options: {
               AND manifest_hash = ${execution.manifest_hash}`)
         }
 
+        // A replay of a parked execution is running again until it parks or
+        // finishes, so inspection never reports a working run as suspended.
+        if (execution.status === "suspended")
+          yield* fenced(sql`UPDATE actor_workflow_executions SET status = 'running'
+            WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
+              AND status = 'suspended'`)
+
         const eventCursor = { value: BigInt(execution.event_cursor) }
         const entry = live.get(executionId)!
 
