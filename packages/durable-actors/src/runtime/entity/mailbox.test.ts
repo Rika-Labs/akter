@@ -3,7 +3,7 @@ import type { Request } from "../../handles/actors.ts"
 import { BATCH_CAP, takeBatch } from "./mailbox.ts"
 
 const waiting = (ids: ReadonlyArray<string>) =>
-  ids.map((commandId) => ({ request: { commandId } as Request }))
+  ids.map((commandId) => ({ request: { commandId } as Request, queued: true }))
 
 const idsOf = (batch: ReadonlyArray<{ readonly request: Request }>) =>
   batch.map(({ request }) => request.commandId)
@@ -33,6 +33,26 @@ describe("takeBatch", () => {
     expect(idsOf(takeBatch({ waiting: queue, alone }))).toEqual(["c"])
     expect(idsOf(takeBatch({ waiting: queue, alone }))).toEqual(["d"])
     expect(alone.size).toBe(0)
+  })
+
+  it("stops at the first command whose queued hook has not finished", () => {
+    const queue = waiting(["a", "b", "c", "d"])
+    queue[2]!.queued = false
+
+    expect(idsOf(takeBatch({ waiting: queue, alone: new Set() }))).toEqual(["a", "b"])
+    expect(idsOf(queue)).toEqual(["c", "d"])
+  })
+
+  it("takes nothing while the first command is still in its queued hook", () => {
+    const queue = waiting(["a", "b"])
+    queue[0]!.queued = false
+
+    expect(takeBatch({ waiting: queue, alone: new Set() })).toEqual([])
+    expect(idsOf(queue)).toEqual(["a", "b"])
+
+    queue[0]!.queued = true
+
+    expect(idsOf(takeBatch({ waiting: queue, alone: new Set() }))).toEqual(["a", "b"])
   })
 
   it("takes nothing from an empty mailbox", () => {

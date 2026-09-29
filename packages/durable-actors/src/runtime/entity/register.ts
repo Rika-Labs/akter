@@ -108,6 +108,8 @@ interface Waiting {
    * in before batching: its span is the turn span's parent.
    */
   context: Context.Context<never>
+  /** Set once the request's `queued` hook has finished. */
+  queued: boolean
 }
 
 // Defects that say nothing about the command: the activation restarts and
@@ -496,7 +498,7 @@ export const registerActor = Effect.fnUntraced(function* (
           yield* ready.await
           const batch = takeBatch({ waiting, alone })
 
-          if (waiting.length === 0) ready.closeUnsafe()
+          if (!waiting[0]?.queued) ready.closeUnsafe()
 
           // A draining runner refuses the batch, or interrupts it at the
           // deadline, and every caller it has not answered retries elsewhere.
@@ -542,6 +544,7 @@ export const registerActor = Effect.fnUntraced(function* (
             command,
             reply: Deferred.makeUnsafe<Outcome, ActorError>(),
             context: Context.empty(),
+            queued: false,
           }
 
           waiting.push(entry)
@@ -551,10 +554,16 @@ export const registerActor = Effect.fnUntraced(function* (
               entry.context = yield* Effect.context<never>()
 
               // An idle worker waits for this signal, so the hook runs while
-              // the command is waiting but not yet taken.
-              yield* (yield* TurnHooks)
-                .at("queued", payload)
-                .pipe(Effect.ensuring(Effect.sync(() => ready.openUnsafe())))
+              // the command is waiting but not yet taken. The worker takes an
+              // entry only once its own hook has finished.
+              yield* (yield* TurnHooks).at("queued", payload).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    entry.queued = true
+                    ready.openUnsafe()
+                  }),
+                ),
+              )
 
               return yield* Deferred.await(entry.reply)
             }).pipe(Effect.provideContext(services)),
