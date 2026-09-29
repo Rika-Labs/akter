@@ -58,7 +58,7 @@ const Acknowledged = Actor.query("Acknowledged", { output: Schema.Array(Schema.S
 
 const OrderFamily = Actor.command("OrderFamily", { output: Family })
 
-export const Order = Actor.make("PlacementOrder", {
+const Order = Actor.make("PlacementOrder", {
   key: OrderKey,
   placement: "actor",
   state: Actor.state({
@@ -76,7 +76,7 @@ const Carrier = Actor.query("Carrier", { output: Schema.String })
 
 const ShipmentFamily = Actor.query("ShipmentFamily", { output: Family })
 
-export const Shipment = Actor.make("PlacementShipment", {
+const Shipment = Actor.make("PlacementShipment", {
   key: ShipmentKey,
   placement: { parent: Order },
   state: Actor.state({
@@ -91,7 +91,7 @@ export const Shipment = Actor.make("PlacementShipment", {
 const Print = Actor.command("Print")
 
 /** Two levels below its root order: a shipment's label. */
-export const Label = Actor.make("PlacementLabel", {
+const Label = Actor.make("PlacementLabel", {
   key: Schema.NonEmptyString,
   placement: { parent: Shipment },
   state: Actor.state({
@@ -104,7 +104,7 @@ const Title = Actor.query("Title", { output: Schema.String })
 
 const MintStray = Actor.command("MintStray")
 
-export const Parcel = Actor.make("PlacementParcel", {
+const Parcel = Actor.make("PlacementParcel", {
   placement: { parent: Order },
   state: Actor.state({ title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))) }),
   api: { Open, Title, MintStray },
