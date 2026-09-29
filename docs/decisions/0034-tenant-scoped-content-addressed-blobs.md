@@ -54,7 +54,7 @@ Attach: Effect.fn(function* ({ name, ref }) {
 const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pdf")
 ```
 
-- `Actor.content(name)` declares a content blob and sits in the same `blobs` section as `Actor.blob`. Its entries are immutable references, not mutable bytes: `turn.blob(C)` offers `attach(name, ref)`, `detach(name)`, and `list()`; `read.blob(C)` offers `get(name)`, `stream(name)`, and `list()`, and stays read-only like every `BlobRead`.
+- `Actor.content(name)` declares a content blob and sits in the same `blobs` section as `Actor.blob`. Its entries are immutable references, not mutable bytes: `turn.blob(C)` offers `attach(name, ref)`, `detach(name)`, and the Effect property `list`; `read.blob(C)` offers `get(name)`, `stream(name)`, and the Effect property `list`, and stays read-only like every `BlobRead`.
 - Mutable per-actor bytes stay `Actor.blob`. Shared immutable bytes are `Actor.content`. Each task still has one way.
 
 ### 2. Access: a reference is a grant, and a hash is not
@@ -63,21 +63,21 @@ const bytes = yield * (yield * Document.Read).blob(Attachments).get("contract.pd
 - **The grant** is `g1.<key id>.<expires ms>.<mac>`. `mac` is HMAC-SHA-256, under a deployment secret, over `durable-content/v1`, the deployment, the tenant, the hash, the size, and the expiry. Grants last 1 hour.
 - **Attach** checks the grant's MAC, and requires the grant to stay valid for at least the skew margin `S` past the turn's database time (`expiry > now + S`), and checks that the tenant and hash match. It reads nothing, so the turn stays on the actor's shard. A bare hash, a grant for another tenant, or an expired grant makes `attach` fail with the typed error `InvalidContentRef`, which the command declares or handles like any other application failure; a reference from a client is input, not authority.
 - **Clock skew.** `attach` reads the actor shard's clock, while `granted_until_ms` and the sweep use the tenant shard's clock. The design assumes every shard's database clock is within `S` of every other (default 60 seconds, with synchronized clocks as an operating requirement), and builds `S` into both sides: `attach` demands `S` of remaining validity, and the sweep's re-check subtracts `S` (§4). A deployment that can't bound skew by `S` must raise it.
-- **Copying between actors.** `Content.grant(Document, id, name)` hands out a fresh grant for an entry an actor already references. Like `Content.upload`, it is a framework content operation outside turns and queries, with the ambient tenant and caller; served deployments get `POST /actors/<Actor>/<id>/content/<blob>/<name>/grant`. It runs the actor type's `authorize` with the operation `<blob>.grant`, reads the reference on the actor's shard, and then raises `granted_until_ms` on the tenant's shard (§4). It writes no actor row and goes through no query, so queries and `BlobRead` stay read-only. Reaching content therefore always goes through an actor the caller is authorized to reach, as M4.md requires.
+- **Copying between actors.** `Content.grant(Document, id, Attachments, name)` hands out a fresh grant for an entry an actor already references. Like `Content.upload`, it is a framework content operation outside turns and queries, with the ambient tenant and caller; served deployments get `POST /actors/<Actor>/<id>/content/<blob>/<name>/grant`. It runs the actor type's `authorize` with the operation `<blob>.grant`, reads the reference on the actor's shard, and then raises `granted_until_ms` on the tenant's shard (§4). It writes no actor row and goes through no query, so queries and `BlobRead` stay read-only. Reaching content therefore always goes through an actor the caller is authorized to reach, as M4.md requires.
 - **Reads** resolve the name to a hash through this actor's reference row, then read the bytes. A caller who knows a hash but holds no reference can't read anything.
 
 ### 3. Placement: references on the actor's shard, content on the tenant's
 
 - **Content** is stored under the tenant's routing key (tenant placement's hash, whatever the referencing actor's placement), in `tenant_contents` (metadata) and `tenant_content_chunks` (1 MiB chunks). An upload writes it in its own transaction, which touches only the tenant's shard and is not a turn. If the hash already exists, the upload writes no bytes.
 - **References** are rows in `actor_content_refs` on the actor's own shard. `attach` and `detach` write them in the turn, so they commit or roll back with the turn (T1) and never touch the tenant's shard.
-- **Bytes are read only outside turns.** `read.blob(C).get` issues two single-shard statements: the reference on the actor's shard, then the chunks on the tenant's shard. A turn sees names, hashes, and sizes (`list()`), never bytes. On Neki that is what `tx_mode = 'single'` allows.
+- **Bytes are read only outside turns.** `read.blob(C).get` issues two single-shard statements: the reference on the actor's shard, then the chunks on the tenant's shard. A turn sees names, hashes, and sizes (the Effect property `list`), never bytes. On Neki that is what `tx_mode = 'single'` allows.
 - **A read never returns partial bytes.** After it resolves the reference, the read takes every chunk from one `REPEATABLE READ` read-only snapshot on the tenant's shard: a single statement for `get`, and one read-only transaction held for the whole of a `stream`. The sweep deletes a content row and its chunks in one transaction, so that snapshot sees either all the chunks or none of them. The read also checks that the total size matches the size on the reference. If it finds none, the last reference was detached and the content swept after the read began. The read then fails exactly as it would for a name that doesn't exist, which is the result a read starting just after the detach would get. A read never returns truncated or mixed bytes. A `stream` holds its snapshot for at most `commandTimeout`, like any query.
 - **No reference counts.** Nothing increments or decrements a shared counter, so there's no hot row and no cross-shard message to keep in order.
 
 ### 4. Garbage collection: mark and sweep, gated by grants
 
 - Every grant raises the content row's `granted_until_ms` to at least its own expiry before the grant is returned. That covers uploads, re-uploads of the same bytes, and `Content.grant`. It's a single-row write of framework metadata on the tenant's shard, made only by those two content operations. It never touches business data or actor rows, and no query or `BlobRead` makes it. The raise is one `UPDATE … RETURNING` on the tenant's row, and a grant is returned only if that statement found the row. `Content.grant` first resolves the name through the actor's reference, then runs the raise. If a detach and a sweep deleted the content in between, the raise finds no row, and `Content.grant` fails as it would for a name that doesn't exist, never with a grant for deleted content. If the raise runs first, it moves `granted_until_ms` past `sweep_start`, and the sweep's re-check keeps the content. The row lock orders the raise and the delete.
-- A per-tenant sweep, under an advisory lock, runs at most once an hour:
+- A per-tenant sweep claims each tenant through a claim row and runs at most once an hour:
   1. It takes `now` from the database as `sweep_start`, and computes the horizon `H = grace + T`. The grace defaults to 24 hours. `T` is the longest a turn transaction may stay open for any actor type that declares a content blob: its `commandTimeout`, which the runtime already enforces as the transaction's hard timeout, turn batches included. It picks candidates whose `granted_until_ms` is older than `sweep_start − H − S`.
   2. For a batch of candidates, it looks for any reference with that tenant and hash through the `(tenant_id, hash)` index on `actor_content_refs`. On Neki this is an explicit fleet-tier scatter on a dedicated connection. It is maintenance, never a turn path.
   3. It deletes candidates with no reference found, in a statement that re-checks `granted_until_ms < sweep_start − T − S`, and their chunks.
@@ -147,6 +147,16 @@ Dallen accepted every recommended default on 2026-09-28.
 4. **Size limit and quotas.** Decided: 64 MiB per content, with no framework quota. Rejected alternative: a per-tenant byte quota enforced at upload.
 5. **Spelling.** Decided: `Actor.content(name)`. Rejected alternative: `Actor.blob(name, { shared: true })`, which puts two behaviours behind one constructor.
 6. **Content in effect executors.** Decided: none in M4.13; executors that need bytes wait for a later ADR. Rejected alternative: a read-only `X.Executor.content(ref)` that reads by grant from the tenant's shard, which amends contract 08's rule that executors hold no database capability.
+
+## Implementation choices
+
+Dallen accepted these on 2026-09-30.
+
+1. **Grant spelling.** `Content.grant(X, id, C, name)` takes the actor type, its id, the content blob `C`, and the entry name.
+2. **Listing.** `list` is an Effect property of the blob handle, not a method.
+3. **Sweep scheduling.** A per-tenant claim row (`tenant_content_sweeps`, `swept_at_ms`) marks when a tenant was last swept, and the sweep takes tenants whose row is at least one hour old (`SWEEP_INTERVAL_MS`).
+4. **PGlite uploads and downloads.** PGlite has one connection, so no transaction stays open across a client's upload or download; both buffer in memory. Postgres streams both.
+5. **Authorization.** `authorize` receives the kind `"content"` with the operations `<blob>.grant` and `<blob>.get`.
 
 ## Evidence required
 
