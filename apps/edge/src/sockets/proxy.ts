@@ -124,6 +124,7 @@ export const proxySocket = Effect.fnUntraced(function* (
 
   if (Result.isFailure(chosen)) return yield* end(chosen.failure)
   const routed = chosen.success
+
   // Like HTTP forwarding, try each ready runner of the region in turn until one accepts.
   const connect = (url: string) =>
     Effect.gen(function* () {
