@@ -316,6 +316,17 @@ const advanceTo = (at: number) =>
     yield* test.advance(Math.max(0, at - (yield* nowMs)))
   })
 
+/**
+ * Moves the framework clock to one second past the next minute boundary, so a
+ * minutely tick written now is due about 59 seconds ahead. A case that later
+ * advances exactly to that tick then advances by a positive amount however
+ * slowly the database clock moves between its reads.
+ */
+const startOfMinute = Effect.gen(function* () {
+  const now = yield* nowMs
+  yield* ActorTest.use((test) => test.advance((Math.floor(now / MINUTE) + 1) * MINUTE + 1000 - now))
+})
+
 const expiresAt = (row: TickRow) => Number(row.intent_id.split(".")[2])
 
 const receipts = (ref: ActorRef, command: string) =>
@@ -464,6 +475,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const heartbeat = yield* Heartbeat.get("retarget-fired")
+          yield* startOfMinute
           yield* heartbeat.Open()
           const [, first] = yield* ticksOf(heartbeat.ref)
           yield* test.crashNext("beforeOutboxDelete")
@@ -518,6 +530,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const heartbeat = yield* Heartbeat.get("crash-rewrite")
+          yield* startOfMinute
           yield* heartbeat.Open()
           const [, first] = yield* ticksOf(heartbeat.ref)
           yield* test.crashNext("beforeOutboxDelete")
