@@ -805,6 +805,9 @@ const make = <
   const parent = parented === undefined ? undefined : placedDefinitions.get(parented.parent)
 
   if (parented !== undefined) {
+    if (!Predicate.hasProperty(parented, "parent"))
+      throw new Error(`placement is "tenant", "actor", or { parent }`)
+
     if (parent === undefined) throw new Error("placement.parent takes an Actor.make definition")
 
     if (parent.placement === "tenant")
