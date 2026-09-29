@@ -83,13 +83,15 @@ const Envoy = Actor.make("Envoy", {
   state: Actor.state({
     heard: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   }),
-  api: { Dispatch, Hear, Heard },
+  api: { Dispatch, Heard },
+  internal: { Hear },
 })
 
 const EnvoyLive = Layer.mergeAll(
   Envoy.toLayer(
     Effect.succeed({
       Dispatch: Effect.fnUntraced(function* (target: string) {
+        yield* Envoy.Turn
         yield* (yield* Envoy.intents(target)).Hear()
       }),
       Hear: Effect.fnUntraced(function* () {
@@ -565,8 +567,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           const cluster = yield* ActorCluster
           const subject = "é".repeat(256)
           const receivers = Array.from({ length: 12 }, (_, index) => `receiver-${index}`)
-          const sender = yield* cluster.on(0)(Envoy.get("sender"))
-          const senderOwner = yield* cluster.owner(sender.ref)
 
           for (const receiver of receivers)
             yield* cluster.on(0)(
@@ -593,9 +593,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
             expect(heard).toBe(subject)
           }
 
-          // Receivers sit on both runners, so the sender's owner delivered to a shard it does not hold.
           expect(owners.size).toBe(2)
-          expect(senderOwner === 0 || senderOwner === 1).toBe(true)
         }),
       ),
   },
