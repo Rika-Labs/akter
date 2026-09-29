@@ -123,9 +123,13 @@ export const keyRing = Effect.fnUntraced(function* (options: EdgeOptions) {
 
   return {
     sign: (claims) =>
-      Effect.flatMap(current, (key) =>
-        key === undefined ? Effect.succeed(undefined) : jws(key, ASSERTION_TYPE, { ...claims }),
-      ),
+      Effect.gen(function* () {
+        const key = yield* current
+
+        if (key === undefined) return undefined
+
+        return yield* jws(key, ASSERTION_TYPE, { ...claims })
+      }),
     signRefresh: (audience) =>
       Effect.gen(function* () {
         const key = (yield* current) ?? keys[0]
