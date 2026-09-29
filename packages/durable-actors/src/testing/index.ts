@@ -33,9 +33,9 @@ export type {
   ConformanceServices,
 } from "./conformance.ts"
 
-export { edgeConformance } from "./conformance/assertions.ts"
+export { edgeConformance, edgeKey } from "./conformance/assertions.ts"
 
-export type { ConformanceEdge, EdgeRunner, HostedEdge } from "./conformance/assertions.ts"
+export type { ConformanceEdge, EdgeKey, EdgeRunner, HostedEdge } from "./conformance/assertions.ts"
 
 export {
   describeWorkflowEngine,

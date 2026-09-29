@@ -13,6 +13,8 @@ CREATE TABLE deployment_runner (
   deployment_id text NOT NULL REFERENCES deployment(id) ON DELETE CASCADE,
   region text NOT NULL,
   url text NOT NULL,
+  -- The runner's `Actor.serve` base path, where the edge pushes key-set refreshes.
+  base_path text NOT NULL DEFAULT '' CHECK (base_path = '' OR base_path ~ '^/.*[^/]$'),
   ready boolean NOT NULL DEFAULT true,
   PRIMARY KEY (deployment_id, region, url)
 );

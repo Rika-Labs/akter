@@ -20,6 +20,8 @@ import type { AuthProvider } from "../../serve/auth.ts"
 import {
   ASSERTION_HEADER,
   ASSERTION_TYPE,
+  KEY_REFRESH_PATH,
+  KEY_REFRESH_TYPE,
   reauthenticationDigest,
   requestDigest,
 } from "../../serve/assertion/binding.ts"
@@ -91,6 +93,14 @@ export const signAssertion = Effect.fnUntraced(function* (
   )
 
   return `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`
+})
+
+/** A key-set refresh push for `audience`, issued now for 10 seconds, signed with `key`. */
+export const signRefresh = Effect.fnUntraced(function* (key: EdgeKey, audience = DEPLOYMENT) {
+  const now = Math.floor((yield* Clock.currentTimeMillis) / 1000)
+  const claims = { iss: ISSUER, aud: audience, iat: now, exp: now + 10 }
+
+  return yield* signAssertion(key, claims, { typ: KEY_REFRESH_TYPE })
 })
 
 /** Claims for `tenant`'s `subject`, issued now for 10 seconds, bound to `req`. */
@@ -576,6 +586,78 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "rereads its key set at once on the edge's authenticated refresh push, and refuses any other push",
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const old = yield* edgeKey("edge-2026-08")
+          const rotated = yield* edgeKey("edge-2026-09")
+          const stranger = yield* edgeKey("edge-9")
+          const keySet = yield* keySetServer([old, rotated])
+
+          // The default 5-minute poll: only a push can make the runner reread in this case.
+          const server = yield* serveAsserted(
+            Actor.auth.assertion({
+              issuer: ISSUER,
+              audience: DEPLOYMENT,
+              region: REGION,
+              keys: keySet.url,
+            }),
+          )
+
+          const tenant = yield* tenantOf
+
+          const status = Effect.fnUntraced(function* (key: EdgeKey) {
+            const request = yield* command(server, "pushed", "Whoami")
+            const assertion = yield* assertionFor({ edge: key, server, request, tenant })
+
+            return (yield* asserted(server, request, assertion)).status
+          })
+
+          const push = (token: string | undefined) =>
+            server.send({
+              method: "POST",
+              path: KEY_REFRESH_PATH,
+              key: undefined,
+              body: "",
+              headers: token === undefined ? {} : { [ASSERTION_HEADER]: token },
+            })
+
+          expect(yield* status(old)).toBe(200)
+
+          yield* keySet.publish([rotated])
+
+          // Still cached: without a push the runner keeps the key until its next poll.
+          expect(yield* status(old)).toBe(200)
+
+          const refused = [
+            yield* push(undefined),
+            yield* push(yield* signRefresh(stranger)),
+            yield* push(yield* signRefresh(rotated, "dep-other")),
+            // An assertion is not a refresh push.
+            yield* push(
+              yield* assertionFor({
+                edge: rotated,
+                server,
+                request: yield* command(server, "pushed", "Whoami"),
+                tenant,
+              }),
+            ),
+          ]
+
+          expect(refused.map((reply) => reply.status)).toEqual([401, 401, 401, 401])
+          expect(yield* status(old)).toBe(200)
+
+          // A valid push rereads at once, and repeating it changes nothing.
+          expect((yield* push(yield* signRefresh(rotated))).status).toBe(204)
+          expect(yield* status(old)).toBe(401)
+          expect((yield* push(yield* signRefresh(rotated))).status).toBe(204)
+          expect(yield* status(rotated)).toBe(200)
+        }),
+      ),
+  },
+  {
     name: "refuses a reauthentication assertion whose sid belongs to another session",
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
@@ -659,6 +741,8 @@ export interface EdgeRunner {
   readonly region: string
   /** The runner's base URL, such as `http://127.0.0.1:4000`. */
   readonly url: string
+  /** The runner's `Actor.serve` base path, where the edge pushes key-set refreshes. */
+  readonly basePath?: string
 }
 
 /** One running edge in front of one deployment, with the control plane it reads. */
@@ -676,6 +760,8 @@ export interface HostedEdge {
     readonly subject: string
   }) => Effect.Effect<string>
   readonly revokeApiKey: (key: string) => Effect.Effect<void>
+  /** Revokes an edge signing key in the control plane, as an operator would. */
+  readonly revokeSigningKey: (kid: string) => Effect.Effect<void>
   /** Writes a directory row as a tenant move would, which only L.1's operators can do. */
   readonly home: (options: {
     readonly tenant: string
@@ -693,6 +779,8 @@ export interface ConformanceEdge {
     readonly assertionSeconds?: number
     /** How long a session opened with an API key lasts before it must reauthenticate. */
     readonly apiKeySessionSeconds?: number
+    /** The edge's signing keys; one new key when omitted. */
+    readonly signingKeys?: ReadonlyArray<EdgeKey>
   }) => Effect.Effect<HostedEdge, never, Scope.Scope>
 }
 
@@ -895,7 +983,7 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             }),
           })
 
-          yield* edge.addRunner({ region: REGION, url: `http://${host}` })
+          yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api" })
 
           const tenant = yield* tenantOf
           const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
@@ -936,6 +1024,85 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect((yield* ws.closed).code).toBe(1008)
           expect((yield* Clock.currentTimeMillis) - started < 10_000).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "pushes a signing-key revocation to runners, which refuse the key well before their polling bound",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const old = yield* edgeKey("edge-2026-08")
+          const rotated = yield* edgeKey("edge-2026-09")
+
+          const edge = yield* (yield* edgeOf(environment.edge)).start({
+            primaryRegion: REGION,
+            signingKeys: [old, rotated],
+          })
+
+          // The default 5-minute poll, so only the push can explain a prompt refusal.
+          const runner = yield* serveAsserted(
+            Actor.auth.assertion({
+              issuer: edge.issuer,
+              audience: edge.deployment,
+              region: REGION,
+              keys: edge.keys,
+            }),
+          )
+
+          yield* edge.addRunner({ region: REGION, url: runner.url })
+
+          const send = yield* clientFor(edge.url)
+          const tenant = yield* tenantOf
+          const apiKey = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          const direct = Effect.fnUntraced(function* (key: EdgeKey) {
+            const request = yield* command(runner, "revoked-key", "Whoami")
+
+            const claims = yield* claimsFor({
+              tenant,
+              subject: "alice",
+              req: yield* runner.digest(request),
+            })
+
+            const assertion = yield* signAssertion(key, {
+              ...claims,
+              iss: edge.issuer,
+              aud: edge.deployment,
+            })
+
+            return (yield* asserted(runner, request, assertion)).status
+          })
+
+          expect(yield* direct(old)).toBe(200)
+
+          const started = yield* Clock.currentTimeMillis
+
+          yield* edge.revokeSigningKey(old.kid)
+
+          const refused = yield* direct(old).pipe(
+            Effect.repeat({
+              until: (status) => status === 401,
+              schedule: Schedule.spaced("100 millis"),
+              times: 100,
+            }),
+          )
+
+          const elapsed = (yield* Clock.currentTimeMillis) - started
+
+          expect(refused).toBe(401)
+          expect(elapsed < 10_000).toBe(true)
+          expect(yield* direct(rotated)).toBe(200)
+
+          // The edge signs with the key that remains.
+          const through = yield* send({
+            ...(yield* command(runner, "revoked-key", "Whoami")),
+            headers: bearerHeaders(apiKey),
+          })
+
+          expect(through).toMatchObject({ status: 200, body: `${tenant}/alice` })
         }),
       ),
   },

@@ -30,6 +30,8 @@ durable-assertion/v1
 
 Both sides also decode percent-escapes of RFC 3986 unreserved characters in the path, so `%41` is `A`. A WebSocket upgrade, its `hello`, and an SSE feed bind a `GET` with an empty body. A reauthentication assertion's string is `durable-assertion/v1`, `REAUTHENTICATE`, the session's upgrade path, and the `sid`, and it must carry the `sid` the session opened with. The runner rebuilds the string from what it received; any difference is `Unauthorized` `invalid_credentials` before any turn. A missing assertion is `missing_credentials`, one past `exp` plus skew is `expired`, and every other failure (signature, key, algorithm, issuer, deployment, region, or lifetime) is `invalid_credentials`; none falls back to another credential.
 
+A runner with a key-set URL also answers `POST <basePath>/assertion-keys/refresh`, the edge's push after a signing key is revoked. The push carries, in `durable-assertion`, a JWS of `typ` `durable-key-refresh+jwt` with `iss`, `aud` (the deployment), `iat`, and `exp` (at most 60 seconds apart), signed by a key the runner holds. The runner rereads its key set at once and answers `204`. Any other push is `401`, and repeating one only rereads again.
+
 ## Served mapping ([ADR 0027](../decisions/0027-served-protocol.md))
 
 M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, and OpenAPI; M3.3 serves connection members as WebSocket sessions and declared `feeds` as SSE event feeds; streams are a later slice. Evidence: [`conformance/http.ts`](../verification/01-conformance.md#served-http-m32) and [`conformance/transports.ts`](../verification/01-conformance.md#served-websocket-connections-m33).

@@ -9,6 +9,7 @@ import { type Edge, forward, refusal } from "./routing/forward.ts"
 import { hostOf, hosts } from "./routing/hosts.ts"
 import { runners } from "./routing/runners.ts"
 import { keyRing } from "./signing/keys.ts"
+import { revocationPush } from "./signing/revocation.ts"
 import { Inbound, proxySocket, type SocketData } from "./sockets/proxy.ts"
 
 const offeredFirst = (request: Request) =>
@@ -25,10 +26,15 @@ const isUpgrade = (request: Request) =>
 export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
   const random = yield* Crypto.Crypto
 
+  const client = yield* HttpClient.HttpClient
+  const keys = yield* keyRing(options)
+
+  yield* revocationPush(options, keys, client)
+
   const edge: Edge = {
     options,
-    client: yield* HttpClient.HttpClient,
-    keys: yield* keyRing(options),
+    client,
+    keys,
     authenticator: yield* authenticator(options),
     resolveHost: (yield* hosts(options)).resolve,
     home: (yield* directory(options)).home,

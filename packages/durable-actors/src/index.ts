@@ -172,6 +172,7 @@ export {
   AssertionClaims,
   AssertionKey,
   AssertionKeySet,
+  KeyRefreshClaims,
   MAX_ASSERTION_SECONDS,
 } from "./serve/assertion/verify.ts"
 
@@ -181,6 +182,8 @@ export {
   ASSERTION_HEADER,
   ASSERTION_TYPE,
   canonicalRequest,
+  KEY_REFRESH_PATH,
+  KEY_REFRESH_TYPE,
   reauthenticationDigest,
   requestDigest,
 } from "./serve/assertion/binding.ts"

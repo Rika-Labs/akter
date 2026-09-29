@@ -1,4 +1,4 @@
-import { ASSERTION_TYPE, type AssertionClaims } from "@durable-actors/core"
+import { ASSERTION_TYPE, type AssertionClaims, KEY_REFRESH_TYPE } from "@durable-actors/core"
 import { Clock, Duration, Effect, Encoding, Ref, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { EdgeOptions, SigningKey } from "../config.ts"
@@ -17,6 +17,12 @@ interface LoadedKey {
 export interface KeyRing {
   /** Signs `claims` with the newest usable key, if there is one. */
   readonly sign: (claims: AssertionClaims) => Effect.Effect<string | undefined>
+  /**
+   * Signs a key-set refresh push for `audience`. A runner verifies it with the
+   * keys it already holds, so when no key is usable a revoked one still
+   * serves: all the push can do is make the runner reread the set.
+   */
+  readonly signRefresh: (audience: string) => Effect.Effect<string | undefined>
 }
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
@@ -100,21 +106,41 @@ export const keyRing = Effect.fnUntraced(function* (options: EdgeOptions) {
     return usable[0]?.key
   })
 
+  const jws = Effect.fnUntraced(function* (
+    key: LoadedKey,
+    typ: string,
+    claims: { readonly [claim: string]: Schema.Json },
+  ) {
+    const header = yield* segment({ alg: "EdDSA", typ, kid: key.kid })
+    const signed = `${header}.${yield* segment(claims)}`
+
+    const signature = yield* Effect.promise(() =>
+      crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, utf8.encode(signed)),
+    )
+
+    return `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`
+  })
+
   return {
     sign: (claims) =>
+      Effect.flatMap(current, (key) =>
+        key === undefined ? Effect.succeed(undefined) : jws(key, ASSERTION_TYPE, { ...claims }),
+      ),
+    signRefresh: (audience) =>
       Effect.gen(function* () {
-        const key = yield* current
+        const key = (yield* current) ?? keys[0]
 
         if (key === undefined) return undefined
 
-        const header = yield* segment({ alg: "EdDSA", typ: ASSERTION_TYPE, kid: key.kid })
-        const signed = `${header}.${yield* segment({ ...claims })}`
+        const now = Math.floor((yield* Clock.currentTimeMillis) / 1000)
+        const exp = now + Math.floor(Duration.toSeconds(options.assertionLifetime))
 
-        const signature = yield* Effect.promise(() =>
-          crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, utf8.encode(signed)),
-        )
-
-        return `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`
+        return yield* jws(key, KEY_REFRESH_TYPE, {
+          iss: options.issuer,
+          aud: audience,
+          iat: now,
+          exp,
+        })
       }),
   } satisfies KeyRing
 })

@@ -5,6 +5,8 @@ import {
   type ConformanceEdge,
   describeConformance,
   edgeConformance,
+  type EdgeKey,
+  edgeKey,
   type HostedEdge,
 } from "@durable-actors/core/testing"
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
@@ -67,6 +69,7 @@ const startEdge = Effect.fnUntraced(function* (options: {
   readonly primaryRegion: string
   readonly assertionSeconds?: number
   readonly apiKeySessionSeconds?: number
+  readonly signingKeys?: ReadonlyArray<EdgeKey>
 }): Effect.fn.Return<HostedEdge, never, Scope.Scope | Crypto.Crypto> {
   const url = yield* createDatabase("edge").pipe(Effect.orDie)
 
@@ -91,16 +94,18 @@ const startEdge = Effect.fnUntraced(function* (options: {
     Effect.orDie,
   )
 
-  const pair = yield* Effect.promise(() =>
-    crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]),
-  )
+  const keys = options.signingKeys ?? [yield* edgeKey("edge-test-1")]
 
-  const jwk = yield* Effect.promise(() => crypto.subtle.exportKey("jwk", pair.privateKey))
+  const signingKeys = yield* Effect.forEach(keys, (key) =>
+    Effect.promise(() => crypto.subtle.exportKey("jwk", key.privateKey)).pipe(
+      Effect.map((jwk) => ({ kid: key.kid, x: jwk.x ?? "", d: jwk.d ?? "" })),
+    ),
+  )
 
   const edgeOptions: EdgeOptions = {
     issuer: "https://edge.durable.test",
     controlPlaneUrl: Redacted.make(url),
-    signingKeys: [{ kid: "edge-test-1", x: jwk.x ?? "", d: jwk.d ?? "" }],
+    signingKeys,
     hostname: "127.0.0.1",
     port: 0,
     assertionLifetime: Duration.seconds(options.assertionSeconds ?? 10),
@@ -141,7 +146,7 @@ const startEdge = Effect.fnUntraced(function* (options: {
     keys: new URL(`http://127.0.0.1:${keySet.port}/keys`),
     addRunner: (runner) =>
       run(
-        sql`INSERT INTO deployment_runner (deployment_id, region, url) VALUES (${deployment}, ${runner.region}, ${runner.url})`,
+        sql`INSERT INTO deployment_runner (deployment_id, region, url, base_path) VALUES (${deployment}, ${runner.region}, ${runner.url}, ${runner.basePath ?? ""})`,
       ),
     issueApiKey: ({ tenant, subject }) =>
       Effect.gen(function* () {
@@ -157,6 +162,7 @@ const startEdge = Effect.fnUntraced(function* (options: {
       Effect.flatMap(sha256(key), (hash) =>
         run(sql`UPDATE hosted_api_key SET revoked_at = now() WHERE key_hash = ${hash}`),
       ),
+    revokeSigningKey: (kid) => run(sql`UPDATE edge_key SET revoked_at = now() WHERE kid = ${kid}`),
     home: ({ tenant, region }) =>
       run(sql`
         INSERT INTO tenant_directory (routing_key, tenant_id, actor_id, deployment_id, tenant, region, state)
