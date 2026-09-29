@@ -207,55 +207,97 @@ export const registerActor = Effect.fnUntraced(function* (
       // its background work stops as soon as the lease lapses.
       if (lease !== undefined && !(yield* lease.holds(shard!))) return yield* leaseLost
 
-      const scope = yield* Scope.fork(activation)
-
-      handlerScopes.set(activation, scope)
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      // What one activation holds: its resources' scope, its connection
+      // state, its handlers, and its workflow engine. A retryable turn
+      // failure ends it and starts the next in place, as a restart would.
+      interface Current {
+        readonly scope: Scope.Closeable
+        readonly owned: Effect.Success<ReturnType<typeof ownedOf>>
+        readonly activated: Exit.Exit<Effect.Success<ReturnType<Registration["activate"]>>, unknown>
+        engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
+      }
 
       let lost = false
 
-      if (lease !== undefined)
-        yield* lease.holds(shard!).pipe(
-          Effect.repeat({ schedule: Schedule.spaced(lease.interval), until: (held) => !held }),
-          Effect.andThen(
+      const start = Effect.gen(function* () {
+        const scope = yield* Scope.fork(activation)
+
+        handlerScopes.set(activation, scope)
+
+        if (lease !== undefined)
+          yield* lease.holds(shard!).pipe(
+            Effect.repeat({ schedule: Schedule.spaced(lease.interval), until: (held) => !held }),
+            Effect.andThen(
+              Effect.sync(() => {
+                lost = true
+              }),
+            ),
+            Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
+            Effect.forkIn(scope),
+          )
+
+        yield* Effect.acquireRelease(
+          Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
+          () =>
             Effect.sync(() => {
-              lost = true
+              const count = resident.get(entityId)! - 1
+
+              if (count === 0) resident.delete(entityId)
+              else resident.set(entityId, count)
             }),
-          ),
-          Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
-          Effect.forkIn(scope),
-        )
+        ).pipe(Scope.provide(scope))
 
-      yield* Effect.acquireRelease(
-        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
-        () =>
-          Effect.sync(() => {
-            const count = resident.get(entityId)! - 1
+        // Entered in the activation's own scope, so ending the activation
+        // seals its broadcasts and, unless its connection entity still holds
+        // it, drops its cached state and generation.
+        const owned = yield* ownedOf(entityId).pipe(Scope.provide(scope))
 
-            if (count === 0) resident.delete(entityId)
-            else resident.set(entityId, count)
-          }),
-      ).pipe(Scope.provide(scope))
+        // A singleton builds here, on its owner; a failing build answers every
+        // command with its defect instead of retrying the activation forever.
+        const activated = yield* registration
+          .activate(ActorRef.make({ tenant, actor: registration.name, id }))
+          .pipe(Scope.provide(scope), Effect.exit)
 
-      const owned = yield* ownedOf(entityId)
-      let engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
+        if (Exit.isFailure(activated))
+          yield* Effect.logError("Actor activation failed", activated.cause).pipe(
+            Effect.annotateLogs({ actor: registration.name, id, tenant }),
+          )
 
-      // A singleton builds here, on its owner; a failing build answers every
-      // command with its defect instead of retrying the activation forever.
-      const activated = yield* registration
-        .activate(ActorRef.make({ tenant, actor: registration.name, id }))
-        .pipe(Scope.provide(scope), Effect.exit)
+        const started: Current = { scope, owned, activated, engine: undefined }
 
-      if (Exit.isFailure(activated))
-        yield* Effect.logError("Actor activation failed", activated.cause).pipe(
-          Effect.annotateLogs({ actor: registration.name, id, tenant }),
-        )
+        return started
+      })
+
+      const built = yield* Effect.context<never>()
+      let current = yield* start
+
+      yield* Effect.addFinalizer(() => Scope.close(current.scope, Exit.void))
+
+      // Ends the activation after a retryable turn failure and starts the
+      // next one after the activation's backoff, without Cluster's restart.
+      const restart = Effect.gen(function* () {
+        const failures = restarts.get(activation) ?? 0
+
+        restarts.set(activation, failures + 1)
+        yield* Scope.close(current.scope, Exit.void)
+        yield* Effect.sleep(restartDelay(failures))
+
+        if (lease !== undefined && !(yield* lease.holds(shard!))) {
+          lost = true
+
+          return
+        }
+
+        current = yield* start.pipe(Effect.provideContext(built))
+      })
 
       return entity.of({
         Wake: () => Effect.suspend(() => (lost ? leaseLost : Effect.void)),
         Execute: Effect.fnUntraced(
           function* ({ payload }) {
             if (lost) return yield* leaseLost
+
+            const { owned, activated } = current
 
             if (Exit.isFailure(activated))
               return Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) })
@@ -305,20 +347,18 @@ export const registerActor = Effect.fnUntraced(function* (
             }).pipe(
               Effect.catchDefect(
                 Effect.fnUntraced(function* (cause) {
-                  // A retryable failure committed nothing and the turn already
-                  // dropped what it cached, so the caller retries the same
-                  // command id. Answering it here, instead of dying so Cluster
-                  // restarts the entity and re-sends the command, keeps the
-                  // caller from waiting out its delivery timeout when Cluster
-                  // drops a re-sent command whose turn fails again mid-restart.
+                  // A retryable failure committed nothing, so the activation
+                  // restarts and the caller retries the same command id.
+                  // Answering the caller here, instead of dying so Cluster
+                  // restarts the entity and re-sends the command, keeps it
+                  // from waiting out its delivery timeout: Cluster drops a
+                  // re-sent command whose turn fails again mid-restart, as a
+                  // refused connection does during a database failover.
                   if (
                     Schema.is(RetryTurn)(cause) ||
                     (SqlError.isSqlError(cause) && cause.isRetryable)
                   ) {
-                    const failures = restarts.get(activation) ?? 0
-
-                    restarts.set(activation, failures + 1)
-                    yield* Effect.sleep(restartDelay(failures))
+                    yield* restart
 
                     return yield* ActorError.make({ reason: ActorUnavailable.make({ cause }) })
                   }
@@ -364,15 +404,15 @@ export const registerActor = Effect.fnUntraced(function* (
               const kicked = yield* kickedExecution({ request: payload, outcome })
 
               if (kicked !== undefined) {
-                engine ??= yield* activationEngine({
+                current.engine ??= yield* activationEngine({
                   registration,
                   ref: payload.ref,
                   routingKey: routingKeyOf(payload.ref),
                   cache: owned.cache,
-                  scope,
+                  scope: current.scope,
                   deliveryMs: registration.policy.deliveryMs,
                 })
-                yield* engine.kick(kicked.executionId, kicked.interrupt)
+                yield* current.engine.kick(kicked.executionId, kicked.interrupt)
               }
             }
 
