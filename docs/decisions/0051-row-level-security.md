@@ -1,6 +1,6 @@
 # ADR 0051: Optional row-level security
 
-**Status:** proposed (2026-09-29). It gates M4.5. Migration `0018_rls` and `conformance/rls.ts` implement it. It amends [ADR 0028](0028-sql-inspection-views.md) §4, §5, and decided question 6: the inspection views keep their owner's rights instead of switching to `security_invoker`.
+**Status:** accepted (2026-09-30). It gates M4.5. Migration `0018_rls` and `conformance/rls.ts` implement it. It amends [ADR 0028](0028-sql-inspection-views.md) §4, §5, and decided question 6: the inspection views keep their owner's rights instead of switching to `security_invoker`.
 
 **Responsibility:** define how a deployment turns on Postgres row-level security (RLS), which statements it binds to one tenant, which it exempts, and how the `durable` inspection views apply it.
 
@@ -133,23 +133,26 @@ These are the recommended answers. Dallen decides them when accepting this recor
 
 ## Consequences
 
-- A deployment that opts in gets a database-enforced tenant boundary under turns, queries, handler SQL, the inspector, and every SQL tool reading the views. A missing predicate in those paths returns or changes nothing outside the tenant.
+- A deployment that opts in gets a database-enforced tenant boundary under turns, queries, handler SQL, caller-facing reads, the inspector, and every SQL tool reading the views. A missing predicate in those paths returns or changes nothing outside the tenant.
 - Deployments that don't opt in see no change in statements, round trips, or view results.
-- Queries cost two extra statements with RLS on. Turns cost nothing extra.
-- Every future tenant-bearing framework table needs its policy in its migration. Every future view needs the ownership step rerun before a runtime with RLS starts.
+- Turns cost nothing extra. Queries, feed pages, workflow polls, and reads outside a turn cost `BEGIN`, one `set_config` statement, and `COMMIT` each, only with the option on. A read inside a bound transaction joins it and costs nothing more.
+- The operator runs two roles, not one: the tenant role the runtime takes, and a view-owner role that owns the views. The tenant role can't act as the view owner, so user turns can't alter or drop a view.
+- Every future tenant-bearing framework table needs its policy in its migration. Every future view needs the ownership step rerun before a runtime with RLS starts, and the startup check refuses until then.
+- Framework maintenance statements stay outside RLS and depend on their explicit predicates, as contract 10 states.
 - RLS is not a sandbox and not a backup boundary. Contract 10's trust model is unchanged.
 
 ## Evidence
 
-- Conformance ([`conformance/rls.ts`](../../packages/durable-actors/src/testing/conformance/rls.ts)), run on PGlite and Postgres. It covers six cases:
+- Conformance ([`conformance/rls.ts`](../../packages/durable-actors/src/testing/conformance/rls.ts)) runs seven cases: six on PGlite and Postgres, and one on Postgres alone because it needs independent connections:
+  - three runners on one database serve two tenants' turns, timers, effect routes, owned rows, and reads, each seeing only its own, with actors owned by more than one runner;
   - every table with a `tenant_id` carries the policy;
   - two tenants run turns, timers, effects with routes, queries, and owned rows, and each sees only its own;
   - a transaction as the role naming one tenant reads, updates, and inserts no other tenant's rows in any protected table, and naming none sees nothing;
-  - revoking the role's grants fails turns and queries, which proves they run as it;
+  - revoking one privilege at a time from the role fails a turn, a query, the existence check, a feed page, a workflow poll, and a stream handler's blob read, which proves each runs as the role;
   - a role granted only `durable` reads its transaction's tenant through every view and is denied every protected table;
-  - startup refuses a missing role, a view the role doesn't own, and an owned table the role owns.
+  - startup refuses a missing role, a view owned by an exempt role, a view the tenant role can act as, and an owned table the role owns.
 - Drizzle-kit output for owned tables in `tables/owned.test.ts`.
-- Benchmark `rls` (see [performance](../verification/03-performance.md)).
+- Benchmark `rls`, run against the view-owner script (see [performance](../verification/03-performance.md)).
 
 ## Revisit when
 
