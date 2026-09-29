@@ -151,3 +151,40 @@ test("keeps queued posts across a reload and delivers them under the same ids wh
 
   for (const id of ids) expect(posts.answered.filter((key) => key === id).length).toBe(1)
 })
+
+test("useCommand keeps one command id while its post waits offline, and the server applies it once", async ({
+  page,
+  context,
+  request,
+}) => {
+  const room = roomOf("offline-react")
+  const posts = watchPosts(page, room)
+
+  await page.goto(`${CHAT}/react/rooms/${room}?user=alice&offline=1`)
+  await expect(page.getByTestId("user")).toHaveText("alice")
+  await say(page, "zero")
+  await expect(page.getByTestId("post-status")).toHaveText("success")
+  await expect.poll(() => history(request, room)).toEqual(["zero"])
+
+  await context.setOffline(true)
+  await say(page, "one")
+
+  await expect(page.getByTestId("queued")).toHaveText("1")
+  await expect(page.getByTestId("post-status")).toContainText("not confirmed", { timeout: 10_000 })
+
+  const commandId = await page.getByTestId("post-status").getAttribute("data-command-id")
+
+  expect(commandId).toMatch(/^v1\./)
+  expect(await history(request, room)).toEqual(["zero"])
+
+  await context.setOffline(false)
+  await expect(page.getByTestId("queued")).toHaveText("0", { timeout: 15_000 })
+  await expect(page.getByTestId("messages").locator("li")).toHaveText(["alice: zero", "alice: one"])
+
+  await page.getByRole("button", { name: "Retry" }).click()
+  await expect(page.getByTestId("post-status")).toHaveText("success")
+
+  expect(await history(request, room)).toEqual(["zero", "one"])
+  expect(posts.answered.filter((key) => key === commandId).length).toBeGreaterThanOrEqual(1)
+  expect(await page.getByTestId("post-status").getAttribute("data-command-id")).toBe(commandId)
+})
