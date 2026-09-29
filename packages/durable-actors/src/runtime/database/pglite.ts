@@ -1,5 +1,3 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs"
-import { join } from "node:path"
 import { dlopen, FFIType } from "bun:ffi"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
@@ -20,18 +18,27 @@ const LOCK_EX = 2
 
 const LOCK_NB = 4
 
-let libc: { readonly flock: (fd: number, operation: number) => number } | undefined
+const O_RDWR = 2
+
+// A child process must not inherit the descriptor, or the lock would outlive
+// this process.
+const O_CLOEXEC = process.platform === "darwin" ? 0x1000000 : 0o2000000
+
+const openLibc = () =>
+  dlopen(process.platform === "darwin" ? "libc.dylib" : "libc.so.6", {
+    open: { args: [FFIType.cstring, FFIType.i32], returns: FFIType.i32 },
+    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    close: { args: [FFIType.i32], returns: FFIType.i32 },
+  }).symbols
+
+let libc: ReturnType<typeof openLibc> | undefined
 
 // PGlite takes no lock of its own, and two instances on one directory both
 // open it and write. An exclusive flock is released by the kernel when the
 // holder dies, even by SIGKILL, so a crash leaves nothing to clean up.
-const flock = (fd: number, operation: number) => {
-  libc ??= dlopen(process.platform === "darwin" ? "libc.dylib" : "libc.so.6", {
-    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-  }).symbols
+const loadLibc = () => (libc ??= openLibc())
 
-  return libc.flock(fd, operation)
-}
+const cString = (value: string) => new TextEncoder().encode(`${value}\0`)
 
 /** A filesystem data directory, or undefined for an in-memory database. */
 const directoryOf = (dataDir: string | undefined) => {
@@ -48,34 +55,40 @@ const lockDataDir = (directory: string) =>
           new Error(`A file-backed PGlite database needs flock, which ${process.platform} lacks`),
         )
 
-      const fd = yield* Effect.sync(() => {
-        mkdirSync(directory, { recursive: true })
+      const path = `${directory}/${LOCK_FILE}`
+      const lock = Bun.file(path)
 
-        return openSync(join(directory, LOCK_FILE), "a")
-      })
+      // Bun.write creates the directory too; the lock is on the open file, not its bytes.
+      if (!(yield* Effect.promise(() => lock.exists())))
+        yield* Effect.promise(() => Bun.write(path, ""))
+
+      const { open, flock, close } = loadLibc()
+      const fd = open(cString(path), O_RDWR | O_CLOEXEC)
+
+      if (fd < 0) return yield* Effect.die(new Error(`Cannot open the lock file ${path}`))
 
       if (flock(fd, LOCK_EX | LOCK_NB) !== 0) {
-        closeSync(fd)
+        close(fd)
 
-        return yield* new DataDirLocked({ dataDir: directory })
+        return yield* DataDirLocked.make({ dataDir: directory })
       }
 
-      return fd
+      return { fd, close }
     }),
-    (fd) => Effect.sync(() => closeSync(fd)),
+    ({ fd, close }) => Effect.sync(() => close(fd)),
   )
 
 /** Refuses a directory another Postgres major wrote before PGlite fails on it opaquely. */
 const checkVersion = (directory: string) =>
   Effect.gen(function* () {
-    const file = join(directory, "PG_VERSION")
+    const file = Bun.file(`${directory}/PG_VERSION`)
 
-    if (!existsSync(file)) return
+    if (!(yield* Effect.promise(() => file.exists()))) return
 
-    const found = readFileSync(file, "utf8").trim()
+    const found = (yield* Effect.promise(() => file.text())).trim()
 
     if (found !== POSTGRES_MAJOR)
-      return yield* new DataDirVersion({ dataDir: directory, found, expected: POSTGRES_MAJOR })
+      return yield* DataDirVersion.make({ dataDir: directory, found, expected: POSTGRES_MAJOR })
   })
 
 /**

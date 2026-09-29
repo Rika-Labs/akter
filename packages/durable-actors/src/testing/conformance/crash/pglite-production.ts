@@ -1,6 +1,15 @@
-import { appendFileSync } from "node:fs"
-import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Config, Console, Crypto, Effect, Layer, Schedule, Schema } from "effect"
+import { BunCrypto, BunFileSystem, BunRuntime } from "@effect/platform-bun"
+import {
+  Config,
+  Console,
+  Crypto,
+  Effect,
+  FileSystem,
+  Layer,
+  Schedule,
+  Schema,
+  type Scope,
+} from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors as ActorIds } from "../../../index.ts"
 import { ActorError } from "../../../errors/actor.ts"
@@ -81,17 +90,21 @@ const LedgerLive = Layer.mergeAll(
     }),
   ),
   Ledger.toEffectLayer(
-    Effect.succeed({
-      // The provider's own record of calls, which outlives this process.
-      Charge: Effect.fnUntraced(function* ({ amount }) {
-        const exec = yield* Ledger.Executor
-        const calls = yield* Config.String("PGLITE_CALLS").pipe(Effect.orDie)
-        appendFileSync(calls, `${exec.effectId}\n`)
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const calls = yield* Config.String("PGLITE_CALLS").pipe(Config.withDefault(""), Effect.orDie)
 
-        return amount
-      }),
+      return {
+        // The provider's own record of calls, which outlives this process.
+        Charge: Effect.fnUntraced(function* ({ amount }) {
+          const exec = yield* Ledger.Executor
+          yield* fs.writeFileString(calls, `${exec.effectId}\n`, { flag: "a" }).pipe(Effect.orDie)
+
+          return amount
+        }),
+      }
     }),
-  ),
+  ).pipe(Layer.provide(BunFileSystem.layer)),
 )
 
 const RETRY_WINDOW_MS = 60_000
@@ -119,6 +132,29 @@ const runtime = (dataDir: string, hang: ReadonlyArray<string>) =>
     Layer.provideMerge(Database.pglite({ dataDir })),
     Layer.provideMerge(BunCrypto.layer),
   )
+
+/** Runs `effect` with `layer` built for it alone, then releases the layer. */
+const within = <A, E, ROut, E2>(
+  layer: Layer.Layer<ROut, E2>,
+  effect: Effect.Effect<A, E, ROut | Scope.Scope>,
+) =>
+  Effect.scoped(
+    Effect.flatMap(Layer.build(layer), (context) => Effect.provideContext(effect, context)),
+  )
+
+const Delivered = Schema.fromJsonString(
+  Schema.Struct({
+    outbox: Schema.Int,
+    receives: Schema.Int,
+    charged: Schema.Int,
+    runs: Schema.Int,
+    payee: Schema.optional(Schema.String),
+  }),
+)
+
+const Migrated = Schema.fromJsonString(
+  Schema.Struct({ replay: Schema.Int, next: Schema.Int, runs: Schema.Int, latest: Schema.Int }),
+)
 
 const Stored = Schema.Struct({
   runs: Schema.Int,
@@ -181,15 +217,18 @@ const program = Effect.gen(function* () {
 
   // A turn killed at a crash point, then its retry in a fresh process.
   if (step === "turn") {
-    return yield* Effect.gen(function* () {
-      const ledger = yield* Ledger.get("crashed")
-      const value = yield* ledger.Increment(47).pipe(Actor.commandId(commandId))
+    return yield* within(
+      runtime(dataDir, detail === "recover" ? [] : [detail]),
+      Effect.gen(function* () {
+        const ledger = yield* Ledger.get("crashed")
+        const value = yield* ledger.Increment(47).pipe(Actor.commandId(commandId))
 
-      if (detail !== "recover")
-        return yield* Effect.die(new Error("The crash point was not reached"))
+        if (detail !== "recover")
+          return yield* Effect.die(new Error("The crash point was not reached"))
 
-      yield* report({ runs, value, count: yield* stateOf("crashed", "count") })
-    }).pipe(Effect.provide(runtime(dataDir, detail === "recover" ? [] : [detail])))
+        yield* report({ runs, value, count: yield* stateOf("crashed", "count") })
+      }),
+    )
   }
 
   // Holds the dataDir open until killed, or reports why it could not open it.
@@ -207,130 +246,154 @@ const program = Effect.gen(function* () {
   // An intent and an effect committed together; the relay dies after the
   // receiver commits and after the provider call, before either settles.
   if (step === "deliver") {
-    return yield* Effect.gen(function* () {
-      const payer = yield* Ledger.get("payer")
+    return yield* within(
+      runtime(dataDir, detail === "crash" ? ["beforeOutboxDelete", "afterExecute"] : []),
+      Effect.gen(function* () {
+        const payer = yield* Ledger.get("payer")
 
-      if (detail === "crash") {
-        yield* payer.Send({ to: "payee", amount: 3 })
-        yield* payer.Bill(9)
+        if (detail === "crash") {
+          yield* payer.Send({ to: "payee", amount: 3 })
+          yield* payer.Bill(9)
 
-        return yield* Effect.never
-      }
+          return yield* Effect.never
+        }
 
-      yield* until(stateOf("payer", "charged"), (value) => value === "9")
-      yield* until(stateOf("payee", "count"), (value) => value !== undefined)
-      // Let any duplicate delivery or settle land before counting.
-      yield* Effect.sleep("1500 millis")
-      const sql = yield* SqlClient.SqlClient
+        yield* until(stateOf("payer", "charged"), (value) => value === "9")
+        yield* until(stateOf("payee", "count"), (value) => value !== undefined)
+        // Let any duplicate delivery or settle land before counting.
+        yield* Effect.sleep("1500 millis")
+        const sql = yield* SqlClient.SqlClient
 
-      const [rows] = yield* sql<{ outbox: number; receives: number; charged: number }>`SELECT
+        const [rows] = yield* sql<{ outbox: number; receives: number; charged: number }>`SELECT
           (SELECT count(*)::int FROM actor_outbox) AS outbox,
           (SELECT count(*)::int FROM actor_receipts WHERE command = 'Receive') AS receives,
           (SELECT count(*)::int FROM actor_receipts WHERE command = 'Charged') AS charged`
 
-      yield* Console.log(
-        `DELIVERED ${JSON.stringify({ ...rows, runs, payee: yield* stateOf("payee", "count") })}`,
-      )
-    }).pipe(
-      Effect.provide(
-        runtime(dataDir, detail === "crash" ? ["beforeOutboxDelete", "afterExecute"] : []),
-      ),
+        yield* Console.log(
+          `DELIVERED ${yield* Schema.encodeEffect(Delivered)({ ...rows!, runs, payee: yield* stateOf("payee", "count") })}`,
+        )
+      }),
     )
   }
 
   // A dataDir left at migration 14 with rows a runtime of that time wrote.
   if (step === "seed") {
-    const rows = yield* Effect.gen(function* () {
-      const ledger = yield* Ledger.get("migrated")
-      const id = yield* (yield* ActorIds).mintCommandId
-      yield* ledger.Increment(5).pipe(Actor.commandId(id))
-      const sql = yield* SqlClient.SqlClient
+    const rows = yield* within(
+      runtime(`memory://`, []),
+      Effect.gen(function* () {
+        const ledger = yield* Ledger.get("migrated")
+        const id = yield* (yield* ActorIds).mintCommandId
+        yield* ledger.Increment(5).pipe(Actor.commandId(id))
+        const sql = yield* SqlClient.SqlClient
 
-      return {
-        id,
-        generations: yield* sql`SELECT routing_key::text, tenant_id, actor_type, actor_id,
+        return {
+          id,
+          generations: yield* sql`SELECT routing_key::text, tenant_id, actor_type, actor_id,
             generation::text, created, event_sequence::text FROM actor_generations`,
-        placements: yield* sql`SELECT actor_type, placement, encoding FROM actor_placements`,
-        state: yield* sql<{
-          routing_key: string
-          tenant_id: string
-          actor_type: string
-          actor_id: string
-          key: string
-          value: Uint8Array
-        }>`SELECT routing_key::text, tenant_id, actor_type, actor_id, key, value FROM actor_state`,
-        receipts: yield* sql`SELECT routing_key::text, tenant_id, actor_type, actor_id, command_id,
+          placements: yield* sql`SELECT actor_type, placement, encoding FROM actor_placements`,
+          state: yield* sql<{
+            routing_key: string
+            tenant_id: string
+            actor_type: string
+            actor_id: string
+            key: string
+            value: Uint8Array
+          }>`SELECT routing_key::text, tenant_id, actor_type, actor_id, key, value FROM actor_state`,
+          receipts:
+            yield* sql`SELECT routing_key::text, tenant_id, actor_type, actor_id, command_id,
             command, payload_hash, caller_key, outcome, expires_at_ms::text FROM actor_receipts`,
-      }
-    }).pipe(Effect.provide(runtime(`memory://`, [])))
+        }
+      }),
+    )
 
     const through14 = Object.fromEntries(
       Object.entries(migrations).filter(([id]) => id < "0015"),
     ) as typeof migrations
 
-    yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-      yield* migrator(through14)
-      yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${RETRY_WINDOW_MS})`
+    yield* within(
+      Database.pglite({ dataDir }),
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
+        yield* migrator(through14)
+        yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${RETRY_WINDOW_MS})`
 
-      for (const row of rows.placements) yield* sql`INSERT INTO actor_placements ${sql.insert(row)}`
-      for (const row of rows.generations)
-        yield* sql`INSERT INTO actor_generations ${sql.insert(row)}`
-      for (const row of rows.state) yield* sql`INSERT INTO actor_state ${sql.insert(row)}`
-      for (const row of rows.receipts) yield* sql`INSERT INTO actor_receipts ${sql.insert(row)}`
-    }).pipe(Effect.provide(Database.pglite({ dataDir })))
+        const tables = [
+          ["actor_placements", rows.placements],
+          ["actor_generations", rows.generations],
+          ["actor_state", rows.state],
+          ["actor_receipts", rows.receipts],
+        ] as const
+
+        for (const [table, inserted] of tables)
+          for (const row of inserted) yield* sql`INSERT INTO ${sql(table)} ${sql.insert(row)}`
+      }),
+    )
 
     return yield* Console.log(`SEEDED ${rows.id}`)
   }
 
   // Runs the pending migrations and one more that never finishes, in their one transaction.
   if (step === "migrate") {
-    return yield* migrator({
-      ...migrations,
-      "9999_hang": Console.log("READY migrating").pipe(Effect.andThen(Effect.never)),
-    }).pipe(Effect.provide(Database.pglite({ dataDir })))
+    return yield* within(
+      Database.pglite({ dataDir }),
+      migrator({
+        ...migrations,
+        "9999_hang": Console.log("READY migrating").pipe(Effect.andThen(Effect.never)),
+      }),
+    )
   }
 
   // Boots the runtime, which migrates, and retries the seeded id.
   if (step === "boot") {
-    return yield* Effect.gen(function* () {
-      const ledger = yield* Ledger.get("migrated")
-      const replay = yield* ledger.Increment(5).pipe(Actor.commandId(commandId))
-      const next = yield* ledger.Increment(1)
-      const sql = yield* SqlClient.SqlClient
+    return yield* within(
+      runtime(dataDir, []),
+      Effect.gen(function* () {
+        const ledger = yield* Ledger.get("migrated")
+        const replay = yield* ledger.Increment(5).pipe(Actor.commandId(commandId))
+        const next = yield* ledger.Increment(1)
+        const sql = yield* SqlClient.SqlClient
 
-      const applied = yield* sql<{
-        id: number
-      }>`SELECT max(migration_id)::int AS id FROM actor_migrations`
+        const applied = yield* sql<{
+          id: number
+        }>`SELECT max(migration_id)::int AS id FROM actor_migrations`
 
-      yield* Console.log(
-        `MIGRATED ${JSON.stringify({ replay, next, runs, latest: applied[0]!.id })}`,
-      )
-    }).pipe(Effect.provide(runtime(dataDir, [])))
+        yield* Console.log(
+          `MIGRATED ${yield* Schema.encodeEffect(Migrated)({ replay, next, runs, latest: applied[0]!.id })}`,
+        )
+      }),
+    )
   }
 
   // Commits one command whose id expires soon and stops cleanly.
   if (step === "deposit") {
-    return yield* Effect.gen(function* () {
-      const ledger = yield* Ledger.get("restored")
-      const id = yield* expiringId(Number(detail))
-      yield* ledger.Increment(1).pipe(Actor.commandId(id))
-      yield* Console.log(`ID ${id}`)
-    }).pipe(Effect.provide(runtime(dataDir, [])))
+    return yield* within(
+      runtime(dataDir, []),
+      Effect.gen(function* () {
+        const ledger = yield* Ledger.get("restored")
+        const id = yield* expiringId(Number(detail))
+        yield* ledger.Increment(1).pipe(Actor.commandId(id))
+        yield* Console.log(`ID ${id}`)
+      }),
+    )
   }
 
   // On a restored copy: waits for both ids to expire and retries them.
   if (step === "restored") {
-    return yield* Effect.gen(function* () {
-      const ledger = yield* Ledger.get("restored")
-      const ids = commandId.split(",")
-      const expiry = Math.max(...ids.map((id) => Number(id.split(".")[2])))
-      yield* Effect.sleep(`${Math.max(0, expiry - (yield* databaseTime)) + 100} millis`)
-      const outcomes = yield* Effect.forEach(ids, (id) =>
-        outcome(ledger.Increment(1).pipe(Actor.commandId(id))),
-      )
-      yield* report({ runs, outcomes, count: yield* stateOf("restored", "count") })
-    }).pipe(Effect.provide(runtime(dataDir, [])))
+    return yield* within(
+      runtime(dataDir, []),
+      Effect.gen(function* () {
+        const ledger = yield* Ledger.get("restored")
+        const ids = commandId.split(",")
+        const expiry = Math.max(...ids.map((id) => Number(id.split(".")[2])))
+        yield* Effect.sleep(`${Math.max(0, expiry - (yield* databaseTime)) + 100} millis`)
+
+        const outcomes = yield* Effect.forEach(ids, (id) =>
+          outcome(ledger.Increment(1).pipe(Actor.commandId(id))),
+        )
+
+        yield* report({ runs, outcomes, count: yield* stateOf("restored", "count") })
+      }),
+    )
   }
 
   return yield* Effect.die(new Error(`Unknown PGLITE_MODE ${mode}`))

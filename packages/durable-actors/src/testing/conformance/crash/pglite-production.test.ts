@@ -1,15 +1,15 @@
-import { readdirSync, readFileSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { PGlite } from "@electric-sql/pglite"
 import {
   Cause,
+  Clock,
   Crypto,
   Effect,
   Exit,
   FileSystem,
   Layer,
   ManagedRuntime,
+  Schema,
   type Scope,
   Stream,
 } from "effect"
@@ -39,7 +39,7 @@ describe("file-backed PGlite as an embedded production backend", () => {
   const dataDir = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
 
-    return join(yield* fs.makeTempDirectoryScoped({ prefix: "durable-actors-embedded-" }), "data")
+    return `${yield* fs.makeTempDirectoryScoped({ prefix: "durable-actors-embedded-" })}/data`
   })
 
   const spawn = (mode: string, directory: string, env: Record<string, string> = {}) =>
@@ -89,8 +89,10 @@ describe("file-backed PGlite as an embedded production backend", () => {
     return line!.slice(prefix.length + 1)
   })
 
+  const json = (text: string) => Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(text)
+
   const commandId = Effect.gen(function* () {
-    const now = Date.now()
+    const now = yield* Clock.currentTimeMillis
 
     return `v1.${now}.${now + 60_000}.${yield* (yield* Crypto.Crypto).randomUUIDv4}`
   })
@@ -107,7 +109,7 @@ describe("file-backed PGlite as an embedded production backend", () => {
             yield* waitFor(child, "READY")
             yield* kill(child)
 
-            const result = JSON.parse(
+            const result = yield* json(
               yield* complete("turn:recover", directory, "RESULT", { PGLITE_COMMAND_ID: id }),
             )
 
@@ -131,9 +133,10 @@ describe("file-backed PGlite as an embedded production backend", () => {
     () =>
       run(
         Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
           const directory = yield* dataDir
           const calls = `${directory}.calls`
-          writeFileSync(calls, "")
+          yield* fs.writeFileString(calls, "")
           const child = yield* spawn("deliver:crash", directory, { PGLITE_CALLS: calls })
 
           // The payee committed the intent, and the provider was called; neither settled.
@@ -143,14 +146,14 @@ describe("file-backed PGlite as an embedded production backend", () => {
           ])
           yield* kill(child)
 
-          const delivered = JSON.parse(
+          const delivered = yield* json(
             yield* complete("deliver:recover", directory, "DELIVERED", { PGLITE_CALLS: calls }),
           )
 
           expect(delivered).toEqual({ outbox: 0, receives: 1, charged: 1, runs: 0, payee: "3" })
 
           // The effect ran again after the crash under the same idempotency key.
-          const keys = readFileSync(calls, "utf8").trim().split("\n")
+          const keys = (yield* fs.readFileString(calls)).trim().split("\n")
           expect(keys.length).toBe(2)
           expect(new Set(keys).size).toBe(1)
         }),
@@ -187,19 +190,16 @@ describe("file-backed PGlite as an embedded production backend", () => {
           const id = yield* complete("seed", directory, "SEEDED")
 
           const latestApplied = () =>
-            Effect.promise(async () => {
-              const database = new PGlite({ dataDir: directory })
-
-              try {
-                const { rows } = await database.query<{ id: number }>(
-                  "SELECT max(migration_id)::int AS id FROM actor_migrations",
-                )
-
-                return rows[0]!.id
-              } finally {
-                await database.close()
-              }
-            })
+            Effect.acquireUseRelease(
+              Effect.promise(() => PGlite.create({ dataDir: directory })),
+              (database) =>
+                Effect.promise(() =>
+                  database.query<{ id: number }>(
+                    "SELECT max(migration_id)::int AS id FROM actor_migrations",
+                  ),
+                ).pipe(Effect.map(({ rows }) => rows[0]!.id)),
+              (database) => Effect.promise(() => database.close()),
+            )
 
           expect(yield* latestApplied()).toBe(14)
 
@@ -210,7 +210,7 @@ describe("file-backed PGlite as an embedded production backend", () => {
           yield* kill(migrating)
           expect(yield* latestApplied()).toBe(14)
 
-          const booted = JSON.parse(
+          const booted = yield* json(
             yield* complete("boot", directory, "MIGRATED", { PGLITE_COMMAND_ID: id }),
           )
 
@@ -237,7 +237,7 @@ describe("file-backed PGlite as an embedded production backend", () => {
           yield* fs.remove(directory, { recursive: true })
           yield* fs.copy(backup, directory)
 
-          const restored = JSON.parse(
+          const restored = yield* json(
             yield* complete("restored", directory, "RESULT", {
               PGLITE_COMMAND_ID: `${kept},${lost}`,
             }),
@@ -263,15 +263,15 @@ describe("file-backed PGlite as an embedded production backend", () => {
           const fs = yield* FileSystem.FileSystem
           const directory = yield* dataDir
           yield* fs.makeDirectory(directory, { recursive: true })
-          writeFileSync(join(directory, "PG_VERSION"), "17\n")
+          yield* fs.writeFileString(`${directory}/PG_VERSION`, "17\n")
 
           const exit = yield* Layer.build(Database.pglite({ dataDir: directory })).pipe(Effect.exit)
 
           expect(Exit.isFailure(exit) && Cause.squash(exit.cause)).toEqual(
-            new DataDirVersion({ dataDir: directory, found: "17", expected: POSTGRES_MAJOR }),
+            DataDirVersion.make({ dataDir: directory, found: "17", expected: POSTGRES_MAJOR }),
           )
           // PGlite never opened it.
-          expect(readdirSync(directory).toSorted()).toEqual([LOCK_FILE, "PG_VERSION"])
+          expect((yield* fs.readDirectory(directory)).toSorted()).toEqual([LOCK_FILE, "PG_VERSION"])
         }),
       ),
     60_000,
@@ -310,9 +310,10 @@ describe("file-backed PGlite as an embedded production backend", () => {
           const exit = yield* Layer.build(Database.pglite({ dataDir: directory })).pipe(Effect.exit)
 
           expect(Exit.isFailure(exit) && Cause.squash(exit.cause)).toEqual(
-            new DataDirLocked({ dataDir: directory }),
+            DataDirLocked.make({ dataDir: directory }),
           )
-          expect(readFileSync(join(directory, "PG_VERSION"), "utf8").trim()).toBe(POSTGRES_MAJOR)
+          const fs = yield* FileSystem.FileSystem
+          expect((yield* fs.readFileString(`${directory}/PG_VERSION`)).trim()).toBe(POSTGRES_MAJOR)
         }),
       ),
     60_000,
