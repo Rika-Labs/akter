@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { Compute, Counter, Pause, Snapshot } from "./contract.ts"
+import { Compute, Counter, Incremented, Pause, Snapshot } from "./contract.ts"
 
 export const CounterLive = Layer.mergeAll(
   Counter.toLayer(
@@ -7,6 +7,7 @@ export const CounterLive = Layer.mergeAll(
       Increment: Effect.fnUntraced(function* (amount: number) {
         const turn = yield* Counter.Turn
         yield* turn.state.set({ count: turn.state.count + amount })
+        yield* turn.emit(Incremented.make({ amount, count: turn.state.count }))
 
         return turn.state.count
       }),
