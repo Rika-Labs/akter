@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { UsageError } from "../workflows/check.ts"
 import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
 
+/** Usage text for `durable receipts`. */
 export const USAGE =
   "Usage: durable receipts show <Type>/<id> <commandId> --url <runner> --tenant <tenant> [--token-env <name>] [--json]"
 

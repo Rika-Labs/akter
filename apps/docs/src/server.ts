@@ -17,13 +17,16 @@ const notFound = () =>
  * Builds a fetch handler that serves the built site in `distDir` as static
  * files. `/` serves `index.html`, and an address without an extension falls
  * back to its `.html` page.
+ *
+ * Paths are compared against the real path of `distDir`, so a symlink inside
+ * the site cannot serve a file outside it, and the resolved file of every
+ * request is checked against it because decoded `%2F` separators can climb out
+ * of the site. `distDir` may not be built yet when the server starts.
  */
 export const staticSiteHandler = Effect.fn("staticSiteHandler")(function* (distDir: string) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
 
-  // Compared against real paths, so a symlink inside the site cannot serve a
-  // file outside it. The directory may not be built yet when the server starts.
   const root = yield* fs
     .realPath(path.resolve(distDir))
     .pipe(Effect.orElseSucceed(() => path.resolve(distDir)))
@@ -59,8 +62,6 @@ export const staticSiteHandler = Effect.fn("staticSiteHandler")(function* (distD
     for (const candidate of candidates) {
       const file = path.resolve(root, `.${candidate}`)
 
-      // Decoded `%2F` separators can climb out of the site, so the resolved
-      // file is checked against the output directory.
       if (!insideRoot(file)) return notFound()
 
       const servable = yield* servableFile(file)

@@ -8,9 +8,11 @@ import type { SqlClient } from "effect/unstable/sql"
 import { UsageError } from "../workflows/check.ts"
 import { pageRoutes } from "./inspector/page.ts"
 
+/** Usage text for `durable dev`. */
 export const USAGE =
   "Usage: durable dev --entry <module> [--database-url <url> | --data-dir <dir>] [--port <port>] [--hostname <host>] [--tenant <tenant>]"
 
+/** Parsed arguments of `dev`. */
 export interface DevOptions {
   readonly entry: string
   /** Postgres to run on; PGlite when absent. */

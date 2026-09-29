@@ -21,6 +21,7 @@ export type Inbound = Data.TaggedEnum<{
   Closed: {}
 }>
 
+/** Constructors and matchers for `Inbound`. */
 export const Inbound = Data.taggedEnum<Inbound>()
 
 /** What the edge knows about one client socket when it accepts the upgrade. */
@@ -57,6 +58,16 @@ const sendable = (code: number) => (code === 1005 || code === 1006 ? 1011 : code
  * assertions for this session; every other message passes through as is.
  * Holders stay in runners: a lost edge process loses the socket, and the
  * client reconnects.
+ *
+ * `hello` must come first; anything else goes on unchanged, and the runner
+ * refuses it. The upgrade and its hello must prove the same caller, as a
+ * runner requires of both. Like HTTP forwarding, it tries each ready runner of
+ * the region in turn until one accepts.
+ *
+ * The runner authenticates the session from `hello` alone: the credential
+ * becomes an assertion bound to the upgrade and carrying this session's id. It
+ * is signed once a runner has accepted the socket, so failing over first can't
+ * age it. A renewal binds the same upgrade path and session id.
  */
 export const proxySocket = Effect.fnUntraced(function* (
   edge: Edge,
@@ -104,7 +115,6 @@ export const proxySocket = Effect.fnUntraced(function* (
 
   if (Inbound.$is("Closed")(first)) return
 
-  // `hello` must come first; anything else goes on unchanged, and the runner refuses it.
   const decoded = Predicate.isString(first.data) ? decodeClient(first.data) : Option.none()
   const hello = Option.isSome(decoded) && decoded.value.t === "hello" ? decoded.value : undefined
   let principal = upgrade
@@ -114,7 +124,6 @@ export const proxySocket = Effect.fnUntraced(function* (
 
     if (Result.isFailure(proved)) return yield* end(proved.failure)
 
-    // The upgrade and its hello must prove the same caller, as a runner requires of both.
     if (upgrade !== undefined && !samePrincipal(upgrade, proved.success))
       return yield* end(Unauthorized.make({ code: "invalid_credentials" }))
     principal = proved.success
@@ -125,7 +134,6 @@ export const proxySocket = Effect.fnUntraced(function* (
   if (Result.isFailure(chosen)) return yield* end(chosen.failure)
   const routed = chosen.success
 
-  // Like HTTP forwarding, try each ready runner of the region in turn until one accepts.
   const connect = (url: string) =>
     Effect.gen(function* () {
       const opened = yield* Deferred.make<boolean>()
@@ -168,9 +176,6 @@ export const proxySocket = Effect.fnUntraced(function* (
 
   let greeting = first.data
 
-  // The runner authenticates the session from `hello` alone: its credential
-  // becomes an assertion bound to the upgrade, carrying this session's id. It is
-  // signed once a runner has accepted the socket, so failing over first can't age it.
   if (hello !== undefined && principal !== undefined) {
     const opening = yield* requestDigest({
       method: "GET",
@@ -206,7 +211,6 @@ export const proxySocket = Effect.fnUntraced(function* (
       continue
     }
 
-    // A renewal binds this session's upgrade path and its session id.
     const renewed = yield* authenticate(message.value.authorization)
 
     if (Result.isFailure(renewed)) return yield* end(renewed.failure)
