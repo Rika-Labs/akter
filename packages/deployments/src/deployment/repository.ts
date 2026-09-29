@@ -10,6 +10,7 @@ export class Deployments extends Context.Service<
   }
 >()("@durable-actors/deployments/deployment/repository/Deployments") {}
 
+/** `Deployments` over the control-plane database; a database failure is a defect. */
 export const DeploymentsLive = Layer.effect(
   Deployments,
   Effect.gen(function* () {

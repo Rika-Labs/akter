@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect"
 import { type LinkFormat, repositoryFileUrl, rewriteHref } from "./links.ts"
 import { pageBase, repositoryLinks, type Section, sections } from "./pages.ts"
 
+/** A page read from `docs/` with its title, summary and Markdown. */
 export interface SitePage {
   readonly source: string
   readonly section: Section
@@ -20,8 +21,10 @@ export class PageHeaderMissing extends Schema.TaggedError<PageHeaderMissing>()(
 
 const markdownOptions = { headings: { ids: true } } as const
 
-// With no callbacks, the renderer keeps only text: emphasis, code spans, and
-// link syntax go, while literal punctuation such as `actor_id` stays.
+/**
+ * With no callbacks, the renderer keeps only text: emphasis, code spans, and
+ * link syntax go, while literal punctuation such as `actor_id` stays.
+ */
 const plainText = (markdown: string) => Bun.markdown.render(markdown, {}).trim()
 
 /**
@@ -83,8 +86,10 @@ const rewrites = (
     ),
   ).pipe(Effect.map((entries) => new Map(entries)))
 
-// Every Markdown form a link target can take; replacing only these keeps
-// matching text in prose and code blocks untouched.
+/**
+ * Every Markdown form a link target can take; replacing only these keeps
+ * matching text in prose and code blocks untouched.
+ */
 const linkDelimiters = [
   ["](", ")"],
   ["](", " "],
@@ -95,8 +100,10 @@ const linkDelimiters = [
 
 const fenceOpening = /^ {0,3}(`{3,}|~{3,})/
 
-// A closing fence carries no info string, so a line such as "```ts" inside a
-// block opens nothing and closes nothing.
+/**
+ * A closing fence carries no info string, so a line such as "```ts" inside a
+ * block opens nothing and closes nothing.
+ */
 const fenceClosing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
 
 /**
@@ -134,14 +141,15 @@ const outsideFences = (markdown: string, rewrite: (text: string) => string) => {
 /**
  * The page's Markdown with its links rewritten for the site: published pages
  * point at their `.md` copies and everything else in the repository at GitHub.
+ *
+ * Fence and reference-definition matching is line based, so CRLF sources are
+ * read as LF; the copy is written with LF endings.
  */
 export const renderMarkdownCopy = (input: {
   readonly page: SitePage
   readonly published: ReadonlySet<string>
 }) =>
   Effect.gen(function* () {
-    // Fence and reference-definition matching is line based, so CRLF sources
-    // are read as LF; the copy is written with LF endings.
     const source = input.page.markdown.replaceAll("\r\n", "\n")
 
     const targets = yield* rewrites(input.page, linkHrefs(source), "md", input.published)

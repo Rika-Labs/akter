@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 
+/** Units, order count and revenue of one SKU. */
 export const SalesRow = Schema.Struct({
   sku: Schema.String,
   name: Schema.String,

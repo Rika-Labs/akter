@@ -2,7 +2,9 @@ import { Config, Effect } from "effect"
 import { createHandler } from "./server.js"
 import { dashboard } from "./fixtures.js"
 
-// Isolated rendering fixture. Never imported by the application build.
+/**
+ * Isolated rendering fixture. Never imported by the application build.
+ */
 const stylesheet = await Bun.file(
   new URL("../../../packages/ui/dist/styles.css", import.meta.url),
 ).text()

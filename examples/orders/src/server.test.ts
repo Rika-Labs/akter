@@ -12,7 +12,10 @@ import { routes } from "./server.ts"
 
 const ledger = fakeLedger()
 
-// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/**
+ * The same cases run on PGlite (`test`) and on a fresh Postgres database
+ * (`test:integration`).
+ */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("ORDERS_BACKEND")) === "pglite") return undefined
 
@@ -73,7 +76,6 @@ const send = Effect.fnUntraced(function* (
   path: string,
   options: { readonly user?: string; readonly key?: string; readonly body?: unknown } = {},
 ) {
-  // The app's routes run with the runtime's services, as `HttpRouter.serve` provides them.
   const context = yield* Effect.context<Layer.Success<typeof live>>()
   const headers = new Headers()
 
@@ -186,7 +188,6 @@ it("refuses a retry whose catalog read changed under the same key", () =>
         body: { total: 850 },
       })
 
-      // The price read happens outside the turn, so a retry after a change sends new input.
       yield* sql`UPDATE products SET unit_price = 900 WHERE sku = 'tea'`
       expect(yield* send("POST", "/orders/http-2", { user: "ada", key, body })).toMatchObject({
         status: 409,

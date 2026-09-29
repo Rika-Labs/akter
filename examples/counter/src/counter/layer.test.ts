@@ -7,7 +7,10 @@ import { afterAll, expect, it } from "vitest"
 import { Counter, Snapshot } from "./contract.ts"
 import { CounterLive } from "./layer.ts"
 
-// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/**
+ * The same cases run on PGlite (`test`) and on a fresh Postgres database
+ * (`test:integration`).
+ */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("COUNTER_BACKEND")) === "pglite") return undefined
 
@@ -63,7 +66,6 @@ it("resumes a sleeping workflow on the framework clock and replays its result", 
       const counter = yield* Counter.get("workflow")
       const run = yield* counter.Double({ value: 21 })
 
-      // The pause's due time is recorded when the body reaches it, so advance only after it suspends.
       yield* sql<{ status: string }>`SELECT status FROM actor_workflow_executions
         WHERE execution_id = ${run.executionId}`.pipe(
         Effect.repeat({

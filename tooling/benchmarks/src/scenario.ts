@@ -10,10 +10,13 @@ import { afterCommit } from "./probe/effects.ts"
 import { ProbeLive } from "./probe/layer.ts"
 import { SubscriptionProbeLive, subscriptionCommitted } from "./probe/subscriptions.ts"
 
+/** Sizes of a run: `quick` for local checks, `full` for reported numbers. */
 export type Profile = "quick" | "full"
 
+/** Values that distinguish one case of a scenario from another. */
 export type Parameters = Readonly<Record<string, number | string | boolean>>
 
+/** Measurements of one case. */
 export interface CaseResult {
   readonly name: string
   readonly parameters: Parameters
@@ -53,14 +56,16 @@ export interface CaseResult {
   readonly extra: Readonly<Record<string, number | string>> | null
 }
 
+/** Services a scenario body can use to reach actors and the database. */
 export type ActorServices = Layer.Success<ReturnType<typeof runtimeLayer>> | SqlClient.SqlClient
 
-// The effect round trip ends when its route's turn commits, which only the
-// runtime's post-commit hook observes, and a turn batch forms once commands
-// are in the mailbox, which only the queued point observes; every other
-// point stays a no-op.
-// Retention sweeps run only when a scenario asks, so a timed sweep never
-// lands inside another case's measurement.
+/**
+ * The effect round trip ends when its route's turn commits, which only the
+ * runtime's post-commit hook observes, and a turn batch forms once commands
+ * are in the mailbox, which only the queued point observes; every other point
+ * stays a no-op. Retention sweeps run only when a scenario asks, so a timed
+ * sweep never lands inside another case's measurement.
+ */
 const hooks = Layer.mergeAll(
   Layer.succeed(TurnHooks, {
     at: (point, request) => {
@@ -75,12 +80,16 @@ const hooks = Layer.mergeAll(
   Layer.succeed(CleanupHooks, { batchSize: 1000, afterBatch: Effect.void, periodic: false }),
 )
 
-// Subscription probes register only for the cases that use them: a runner
-// with a subscriber type adds subscription probes to every relay claim.
+/**
+ * Subscription probes register only for the cases that use them: a runner with
+ * a subscriber type adds subscription probes to every relay claim.
+ */
 const probes = (subscriptions: boolean | undefined) =>
   subscriptions === true ? Layer.merge(ProbeLive, SubscriptionProbeLive) : ProbeLive
 
-// The `Shelf` probe declares content, so every runtime needs a grant key.
+/**
+ * The `Shelf` probe declares content, so every runtime needs a grant key.
+ */
 const BENCH_CONTENT_KEY = {
   id: "bench",
   secret: Redacted.make("durable-actors benchmark content grant key only"),
@@ -104,6 +113,7 @@ const runtimeLayer = (
     Layer.orDie,
   )
 
+/** What a scenario receives from the runner. */
 export interface ScenarioContext {
   readonly backend: Backend
   readonly profile: Profile
@@ -130,6 +140,7 @@ export interface ScenarioContext {
   ) => Effect.Effect<A, E>
 }
 
+/** A named group of cases, run by the benchmark runner. */
 export interface Scenario {
   readonly name: string
   readonly description: string
@@ -138,6 +149,7 @@ export interface Scenario {
   readonly run: (context: ScenarioContext) => Effect.Effect<ReadonlyArray<CaseResult>>
 }
 
+/** Database connections a case runtime opens unless it asks for another number. */
 export const DEFAULT_POOL = 10
 
 let tenantRoles = 0
@@ -192,9 +204,12 @@ const grantTenantRole = Effect.fnUntraced(function* (database: {
   return { role }
 })
 
-// Well past a case's length, so no runner's shard locks expire while it runs.
+/**
+ * Well past a case's length, so no runner's shard locks expire while it runs.
+ */
 const SHARD_LOCK_EXPIRATION = "30 seconds"
 
+/** Builds `ScenarioContext.withRuntime` for one backend and runner count. */
 export const withRuntime =
   ({
     backend,

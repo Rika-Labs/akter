@@ -74,6 +74,12 @@ export interface TestOptions {
   readonly database?: Redacted.Redacted<string> | PgliteClient.PgliteClientConfig
   /** A streaming replica of the Postgres `database`, which queries read once caught up. */
   readonly replica?: Redacted.Redacted<string> | undefined
+  /**
+   * Sessions each of the runtime's two pools may open; default 10. Many
+   * runtimes share one Postgres server in a test run, so a runtime that
+   * needs few sessions says so instead of sitting near `max_connections`.
+   */
+  readonly maxConnections?: number
   readonly as?: Caller
   readonly authorize?: Options["authorize"]
   readonly retryWindowMs?: number
@@ -659,7 +665,8 @@ export class ActorTest extends Context.Service<
             options.database !== undefined && Redacted.isRedacted(options.database)
               ? Database.postgres({
                   url: options.database,
-                  maxConnections: 10,
+                  maxConnections: options.maxConnections ?? 10,
+                  offTurnConnections: options.maxConnections,
                   stream: member?.connect,
                   replica:
                     options.replica === undefined

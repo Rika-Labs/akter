@@ -238,7 +238,6 @@ const endpoint = Effect.fnUntraced(function* (auth: Auth, send: Send) {
 
   const offset = protocol.now - (yield* Clock.currentTimeMillis)
 
-  // A fresh command id from the database clock, as a thin client's retry loop keeps.
   const mint = Effect.gen(function* () {
     const issued = (yield* Clock.currentTimeMillis) + offset - 1000
 
@@ -252,7 +251,6 @@ const endpoint = Effect.fnUntraced(function* (auth: Auth, send: Send) {
 
   const utf8 = new TextEncoder()
 
-  // A bound credential is signed for each request, after its command id is minted.
   const signed = (path: string, key: string | undefined, body: string) =>
     auth.sign === undefined
       ? Effect.succeed(headers)
@@ -346,7 +344,12 @@ const serveHttp2 = Effect.fnUntraced(function* (auth: Auth = none) {
   return yield* endpoint(auth, yield* connect(url))
 })
 
-/** Commands and queries through `Actor.serve`; compare with hot-actor and query-latency for the embedded cost. */
+/**
+ * Commands and queries through `Actor.serve`; compare with hot-actor and
+ * query-latency for the embedded cost.
+ *
+ * Each lost response is retried with its id; a second turn would count twice.
+ */
 export const http: Scenario = {
   name: "http",
   description:
@@ -476,7 +479,6 @@ export const http: Scenario = {
 
               const count = yield* served.client.query("lossy").pipe(Effect.orDie)
 
-              // Each lost response is retried with its id; a second turn would count twice.
               return {
                 ...result,
                 extra: { ...result.extra, duplicateTurns: Number(count) - warmup - operations },
@@ -520,7 +522,6 @@ export const http: Scenario = {
               const at = (q: number) =>
                 sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!
 
-              // Read from `state.current` as the call returns, before the round trip.
               return {
                 ...result,
                 extra: {

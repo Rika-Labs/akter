@@ -3,10 +3,12 @@ import { Match, Predicate } from "effect"
 import type { HtmlBuilder } from "foldkit/html"
 import { darkTheme, tokens } from "./tokens.stylex.js"
 
+/** The FoldKit HTML builder the view helpers render with. */
 export type Builder = HtmlBuilder<never>
 
 export { tokens } from "./tokens.stylex.js"
 
+/** The console's StyleX style rules, built from `tokens`. */
 export const styles = stylex.create({
   page: {
     minHeight: "100vh",
@@ -185,14 +187,17 @@ export const styles = stylex.create({
   footer: { color: tokens.mutedForeground, fontSize: "12px", marginTop: "32px" },
 })
 
+/** Class name string for the given StyleX styles; later styles win. */
 export function classes(...values: stylex.StyleXStyles[]): string {
   return stylex.props(...values).className ?? ""
 }
 
+/** Page class name for the theme, carrying the dark token overrides for `"dark"`. */
 export function themeClass(theme: "light" | "dark"): string {
   return stylex.props(styles.page, theme === "dark" && darkTheme).className ?? ""
 }
 
+/** Link to the dashboard showing the product mark. */
 export function brand(h: Builder) {
   return h.a(
     [h.Href("/dashboard"), h.Class(classes(styles.brand))],
@@ -200,6 +205,10 @@ export function brand(h: Builder) {
   )
 }
 
+/**
+ * A submit button, secondary-styled when `secondary` is set. Called with a
+ * label alone it returns a function of the builder.
+ */
 export function button(
   label: string,
   secondary?: boolean,
@@ -230,6 +239,10 @@ export function button(
   )
 }
 
+/**
+ * A labelled input named `name`, of `type` (default `text`) with an initial
+ * `value`. Called without the builder it returns a function of the builder.
+ */
 export function field(
   name: string,
   label: string,

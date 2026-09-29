@@ -18,6 +18,25 @@ import {
 } from "./contract.ts"
 import { ModerationApi, Moderators } from "./moderation.ts"
 
+/**
+ * Room command handlers.
+ *
+ * `Post` fails with the declared `RoomClosed`, which rolls back everything the
+ * turn wrote, and re-arms a 24 hour `IdleCheck` under a fixed key so every post
+ * pushes the pending timer back. A timer the relay has already claimed still
+ * fires once after a cancel, so `IdleCheck` reads state instead of trusting
+ * that it was never cancelled.
+ *
+ * A moderation call that already reached the provider is reported to
+ * `ModerationCancelled`, not undone; the message is already gone by then, and
+ * an ambiguous outcome means the provider may have seen it. Deleting a
+ * message's entry frees its bytes and its slot in the room's blob quotas.
+ * `Appeal` may rerun after a runner is lost mid-notify, so `Moderators`
+ * deduplicates by message id. `StartThread` mints the same id on a replayed
+ * turn, and the thread is created after the room commits. `Presence` parks its
+ * connection between frames, so the room hibernates while members stay
+ * connected.
+ */
 export const RoomCommands = Room.toLayer(
   Effect.gen(function* () {
     const moderators = yield* Moderators
@@ -26,7 +45,6 @@ export const RoomCommands = Room.toLayer(
       Post: Effect.fnUntraced(function* ({ body, file }) {
         const turn = yield* Room.Turn
 
-        // A declared failure rolls back everything the turn wrote.
         if (turn.state.closed) return yield* RoomClosed.make({})
 
         const id = turn.commandId
@@ -49,7 +67,6 @@ export const RoomCommands = Room.toLayer(
         yield* turn.emit(MessagePosted.make({ id, author, body }))
         yield* turn.perform(ModerateMessage.make({ id, body }), { key: `moderate:${id}` })
 
-        // The same key replaces the pending timer, so every post pushes it back.
         yield* (yield* Room.intents(turn.id))
           .IdleCheck({ token: turn.commandId })
           .pipe(Intent.after("24 hours"), Intent.key("idle"))
@@ -81,12 +98,9 @@ export const RoomCommands = Room.toLayer(
         if (Option.isSome(attached) && attached.value.attachment === id)
           yield* turn.blob(Attachments).set(id, new Uint8Array())
 
-        // A call that already reached the provider is reported to ModerationCancelled, not undone.
         yield* turn.cancelEffect(`moderate:${id}`)
       }),
 
-      // A timer the relay has already claimed still fires once after a cancel,
-      // so the check reads state instead of trusting that it was never cancelled.
       IdleCheck: Effect.fnUntraced(function* ({ token }) {
         const turn = yield* Room.Turn
 
@@ -99,7 +113,6 @@ export const RoomCommands = Room.toLayer(
 
         if (!flagged) return
 
-        // Deleting the entry frees its bytes and its slot in the room's blob quotas.
         const attached = yield* turn.rows(messages).one({ where: { id } })
         yield* turn.rows(messages).delete().where({ id })
 
@@ -112,7 +125,6 @@ export const RoomCommands = Room.toLayer(
         yield* Effect.logWarning("moderation dead-lettered", dead.effectId)
       }),
 
-      // The message is already gone; an ambiguous outcome means the provider may have seen it.
       ModerationCancelled: Effect.fnUntraced(function* (cancelled) {
         yield* Room.Turn
         yield* Effect.logInfo("moderation cancelled", cancelled.effectId).pipe(
@@ -120,7 +132,6 @@ export const RoomCommands = Room.toLayer(
         )
       }),
 
-      // A runner lost mid-notify reruns it; `Moderators` deduplicates by message id.
       Appeal: Effect.fnUntraced(function* ({ messageId }) {
         const wf = yield* Room.Workflow
 
@@ -139,7 +150,6 @@ export const RoomCommands = Room.toLayer(
         yield* (yield* Room.Turn).emit(AppealDecided.make({ messageId, restore }))
       }),
 
-      // A replayed turn mints the same id, and the thread is created after the room commits.
       StartThread: Effect.fnUntraced(function* ({ messageId }) {
         const turn = yield* Room.Turn
         const id = yield* turn.mint(Thread)
@@ -148,7 +158,6 @@ export const RoomCommands = Room.toLayer(
         return id
       }),
 
-      // The connection parks between frames: the room hibernates while members stay connected.
       Presence: {
         open: Effect.fnUntraced(function* () {
           const conn = yield* Room.Connection
@@ -176,6 +185,7 @@ export const RoomCommands = Room.toLayer(
   }),
 )
 
+/** Handlers for `Thread`. */
 export const ThreadCommands = Thread.toLayer(
   Effect.succeed({
     Open: Effect.fnUntraced(function* ({ room, messageId }) {
@@ -190,6 +200,9 @@ export const ThreadCommands = Thread.toLayer(
   }),
 )
 
+/**
+ * A moderated post keeps its event and cursor but not its body.
+ */
 export const RoomReads = Room.toQueryLayer(
   Effect.succeed({
     Recent: Effect.fnUntraced(function* ({ limit }) {
@@ -207,7 +220,6 @@ export const RoomReads = Room.toQueryLayer(
       const rows = yield* read.rows(messages).all({ where: { id: { in: ids } } })
       const kept = new Set(rows.map(({ id }) => id))
 
-      // A moderated post keeps its event and cursor but not its body.
       return entries.map(({ cursor, event }) => ({
         cursor,
         message: kept.has(event.id)
@@ -241,6 +253,7 @@ export const RoomEffects = Room.toEffectLayer(
   }),
 )
 
+/** Handlers for `Digest`. */
 export const DigestCommands = Digest.toLayer(
   Effect.succeed({
     Send: Effect.fnUntraced(function* () {
@@ -262,4 +275,5 @@ export const RoomHandlers = Layer.unwrap(
   }).pipe(Effect.orDie),
 )
 
+/** Every handler and executor of the room. */
 export const RoomLive = Layer.merge(RoomHandlers, RoomEffects)
