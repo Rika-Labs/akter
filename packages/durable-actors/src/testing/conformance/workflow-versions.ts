@@ -283,7 +283,6 @@ const rollingDeploy = (options: {
           yield* cluster.ready
           let id = ""
 
-          // An owner the newer runner holds, so the execution starts under its code.
           for (let candidate = 0; id === ""; candidate++) {
             const ref = (yield* on(0, next.Versioned.get(`rolling-${candidate}`))).ref
 
@@ -295,7 +294,6 @@ const rollingDeploy = (options: {
           yield* cluster.kill(0)
           yield* cluster.ready
 
-          // The older runner receives the resume, can't run it, and leaves it suspended.
           yield* on(
             1,
             Effect.gen(function* () {
@@ -328,6 +326,7 @@ const rollingDeploy = (options: {
     ),
 })
 
+/** Workflow-version cases: executions suspend on runners that lack their steps or marker range and resume on a compatible one, and startup refuses retention below the retry window. */
 export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   rollingDeploy({
     name: "workflow versions: suspends an execution with an unregistered step on an older runner and resumes it on a compatible runner (rolling deploy)",
@@ -401,7 +400,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* refusal(database, Renamed.layer)).toContain(`step "label" removed`)
 
           expect(yield* deploy(database, Base.layer, finish(Base, open))).toBe("r-o:label:v0")
-          // Once the execution finished, the removal deploys.
           yield* deploy(database, Removed.layer, Effect.void)
         }),
       ),
@@ -434,7 +432,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* refusal(database, MarkedNext.layer)).toContain(
             `marker "fraud" min 1 > 0 for executions that predate it  1 open execution`,
           )
-          // min 0 keeps the pre-marker path.
           yield* deploy(database, Marked.layer, Effect.void)
         }),
       ),
@@ -509,7 +506,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* refusal(database, Audited.layer)).toContain(
             `start manifest missing  1 open execution`,
           )
-          // The deployment whose manifest hash the execution records is its start manifest.
           expect(
             yield* deploy(
               database,
@@ -559,7 +555,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* deploy(database, Base.layer, Effect.void)
           yield* deploy(database, Removed.layer, Effect.void)
 
-          // As if a runner of the Base deployment still serves and started it.
           yield* deploy(
             database,
             Removed.layer,
@@ -629,7 +624,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
 
                 expect(row?.manifest_hash).toBe(yield* hashOf(RestedRelabelled))
                 expect(yield* checkWorkflows([RestedRelabelled.Versioned])).toEqual([])
-                // A rollback would decode the label it settled under the old schema.
                 expect(
                   (yield* checkWorkflows([Rested.Versioned])).map(({ problem }) => problem),
                 ).toEqual([`step "label" result schema changed`])
@@ -658,7 +652,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* deploy(database, MarkedNext.layer, finish(MarkedNext, open))).toBe(
             "r-o:label:v2",
           )
-          // With nothing open, the rollback passes and becomes the latest manifest.
           yield* deploy(database, Marked.layer, Effect.void)
           const accepted = yield* deploy(database, Marked.layer, manifests)
           expect(accepted.at(-1)?.manifest_hash).toBe(yield* hashOf(Marked))
@@ -673,7 +666,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const database = yield* environment.freshDatabase
 
-          // As if a runner with the `audit` step started it during a rolling deploy.
           const open = yield* deploy(
             database,
             Base.layer,
@@ -712,7 +704,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const database = yield* environment.freshDatabase
 
-          // As if a newer deployment, while this runner still serves, started it.
           const open = yield* deploy(
             database,
             Base.layer,
@@ -793,7 +784,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
             return row!.count
           }).pipe(Effect.orDie)
 
-          // A second restart without workflows no longer finds accepted manifests.
           for (const sweeps of [false, true])
             yield* deploy(
               database,
@@ -861,7 +851,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
               expect(gone.map(({ actorType, problem }) => `${actorType}: ${problem}`)).toEqual([
                 "Versioned: actor type removed",
               ])
-              // The check records nothing.
               expect((yield* manifests).map((row) => row.manifest_hash)).toEqual([
                 yield* hashOf(Base),
               ])

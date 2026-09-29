@@ -10,12 +10,10 @@ class Declined extends Schema.TaggedError<Declined>()("OpDeclined", { reason: Sc
 
 class ProviderDown extends Schema.TaggedError<ProviderDown>()("OpProviderDown", {}) {}
 
-// A typed failure: the provider did not apply the call.
 class Charge extends Actor.effect<Charge>()("OpCharge", {
   input: { amount: Schema.Finite },
 }) {}
 
-// Dies: the provider may have applied the call.
 class Ship extends Actor.effect<Ship>()("OpShip", { input: { parcel: Schema.String } }) {}
 
 const Pay = Actor.command("Pay", { input: Schema.Finite, output: Schema.String })
@@ -139,6 +137,7 @@ const reasonOf = (answer: Answer) =>
     Schema.Struct({ reason: Schema.Struct({ _tag: Schema.String, code: Schema.String }) }),
   )(answer.body)
 
+/** Operator cases: application credentials are refused, grants are scoped by action and resource with audited denials, and inspection and repair follow their scopes. */
 export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "refuses an application credential on every operator route and repairs nothing",
@@ -153,7 +152,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
             const at = paths(tenant)
             const body = { ...till(tenant), reason: "customer asked" }
 
-            // The application's own bearer token, and no token at all.
             for (const token of ["app-token", undefined])
               for (const [method, path, payload] of [
                 ["GET", at.inspect, undefined],
@@ -180,7 +178,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
       withOperators(
         environment,
         {
-          // Retry on another actor, and inspection (not repair) on this one.
           "narrow-token": [
             capability("dead-letters.retry", { tenant: "*", actorType: "OpTill", actorId: "t2" }),
             capability("inspect", { tenant: "*", actorType: "OpTill", actorId: "t1" }),
@@ -272,7 +269,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       withOperators(environment, {}, ({ tenant, send, audit, grant }) =>
         Effect.gen(function* () {
-          // The grant names each receipt, so it is given once the command ids exist.
           const actors = yield* Actors
 
           const ids = {
@@ -318,7 +314,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(yield* encodeJson(failure.body).pipe(Effect.orDie)).toContain("closed")
 
-          // A receipt the grant does not name is refused.
           expect((yield* send("GET", at.receipt(ids.other), "receipt-token")).status).toBe(403)
           expect(fixture.handlerRuns).toBe(runs)
           expect(
@@ -377,7 +372,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
             expect(row!.outcome).toContain(`"effectId":"${effectId}"`)
             expect(row!.outcome).toContain('"providerChecked":false')
 
-            // A dead letter is repaired once: the second request finds nothing.
             const again = yield* send(
               "POST",
               paths(tenant).retry(letter!.effect_id),
@@ -395,7 +389,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "lets one of two concurrent repairs of a dead letter through",
-    // Two requests race for the dead letter's row lock on independent connections.
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withOperators(
@@ -481,7 +474,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
             const [letter] = yield* deadLetters
             const body = { ...till(tenant), reason: "refunded by hand" }
 
-            // Discard permission alone does not allow a retry.
             expect(
               (yield* send("POST", paths(tenant).retry(letter!.effect_id), "repair-token", body))
                 .status,

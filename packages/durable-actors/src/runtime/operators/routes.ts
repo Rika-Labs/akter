@@ -48,6 +48,17 @@ const DefectsQuery = Schema.Struct({
   limit: Schema.optional(Limit),
 })
 
+/** Rows that failed this many deliveries in a row count as lagging. */
+export const LAGGING_ATTEMPTS = 8
+
+const LaggingQuery = Schema.Struct({
+  tenant: Tenant,
+  minAttempts: Schema.optional(
+    Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+  ),
+  limit: Schema.optional(Limit),
+})
+
 const AuditQuery = Schema.Struct({ tenant: Tenant, limit: Schema.optional(Limit) })
 
 const Reason = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))
@@ -116,6 +127,7 @@ const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>)
  * - `POST /dead-letters/:effectId/retry` `{ tenant, actorType, actorId, reason, providerChecked? }`: `dead-letters.retry`.
  * - `POST /dead-letters/:effectId/discard` `{ tenant, actorType, actorId, reason }`: `dead-letters.discard`.
  * - `POST /subscriptions/skip` `{ tenant, sourceType, sourceId, subscriberType, subscription, subscriberId, through, reason }`: `subscriptions.skip`, scoped to the source actor.
+ * - `GET /subscriptions/lagging?tenant&minAttempts&limit`: `inspect`, tenant-wide; failing subscription rows with their lag and last error.
  * - `GET /audit?tenant&limit`: `audit.read`; `tenant` may be `*`.
  */
 const serve = <R = never>(options: OperatorsOptions<R>) =>
@@ -362,6 +374,23 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
               Effect.map((result) => HttpServerResponse.jsonUnsafe(result)),
               Effect.catch((error) => Effect.succeed(repairResponse(error))),
             )
+        }),
+      )
+
+      yield* route("GET", "/subscriptions/lagging", (_request, grant) =>
+        Effect.gen(function* () {
+          const { tenant, minAttempts, limit } = yield* query(LaggingQuery)
+          const entry = yield* authorize(grant, "inspect", { tenant })
+
+          yield* runtime.record(entry, "read")
+
+          return HttpServerResponse.jsonUnsafe(
+            yield* runtime.lagging({
+              tenant,
+              minAttempts: minAttempts ?? LAGGING_ATTEMPTS,
+              limit: limit ?? 100,
+            }),
+          )
         }),
       )
 

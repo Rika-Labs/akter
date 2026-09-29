@@ -103,6 +103,15 @@ export class OperatorRuntime extends Context.Service<
       readonly through: string
       readonly audit: AuditEntry
     }) => Effect.Effect<{ readonly through: string }, RepairError>
+    /**
+     * A tenant's active subscription rows that have failed at least
+     * `minAttempts` deliveries in a row, most attempts first.
+     */
+    readonly lagging: (page: {
+      readonly tenant: string
+      readonly minAttempts: number
+      readonly limit: number
+    }) => Effect.Effect<ReadonlyArray<LaggingSubscription>>
     /** A tenant's newest audit rows, or every tenant's for `"*"`. */
     readonly audit: (page: {
       readonly tenant: string
@@ -112,6 +121,21 @@ export class OperatorRuntime extends Context.Service<
     readonly record: (entry: AuditEntry, outcome: Schema.Json) => Effect.Effect<void>
   }
 >()("@durable-actors/core/runtime/operators/repair/OperatorRuntime") {}
+
+/** A subscription row whose deliveries keep failing, and how far behind its source it is. */
+export interface LaggingSubscription {
+  readonly sourceType: string
+  readonly sourceId: string
+  readonly subscriberType: string
+  readonly subscription: string
+  readonly subscriberId: string
+  readonly delivered: string
+  readonly head: string
+  readonly lag: string
+  readonly attempts: number
+  readonly lastError: string
+  readonly dueAtMs: number | null
+}
 
 /** What the runtime's clock and outbox references hold on this runner. */
 type ReferenceOf<T> = T extends Context.Reference<infer S> ? S : never
@@ -386,6 +410,31 @@ export const operatorRuntime = (deps: {
 
         return { through }
       }).pipe(provided),
+    lagging: ({ tenant, minAttempts, limit }) =>
+      readOnly(tenant)(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+
+          return yield* sql<LaggingSubscription>`
+            SELECT s.source_type AS "sourceType", s.source_id AS "sourceId",
+              s.subscriber_type AS "subscriberType", s.subscription,
+              s.subscriber_id AS "subscriberId", s.delivered::text AS delivered,
+              g.event_sequence::text AS head, (g.event_sequence - s.delivered)::text AS lag,
+              s.attempts::int AS attempts, s.last_error AS "lastError",
+              s.due_at_ms::float8 AS "dueAtMs"
+            FROM actor_subscriptions s
+            JOIN actor_generations g ON g.routing_key = s.routing_key
+              AND g.tenant_id = s.tenant_id AND g.actor_type = s.source_type
+              AND g.actor_id = s.source_id
+            WHERE s.tenant_id = ${tenant} AND s.active AND s.last_error IS NOT NULL
+              AND s.attempts >= ${minAttempts}
+            ORDER BY s.attempts DESC, g.event_sequence - s.delivered DESC,
+              s.source_type COLLATE "C", s.source_id COLLATE "C",
+              s.subscriber_type COLLATE "C", s.subscription COLLATE "C",
+              s.subscriber_id COLLATE "C"
+            LIMIT ${limit}`
+        }),
+      ).pipe(provided, Effect.orDie),
     audit: (page) => readOnly(page.tenant)(listAudit(page)).pipe(provided, Effect.orDie),
     record: (entry, outcome) =>
       Effect.gen(function* () {

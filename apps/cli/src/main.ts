@@ -42,6 +42,12 @@ import {
   parseInspect,
 } from "./commands/inspect/show.ts"
 import type { OperatorRefused, RunnerUnreachable } from "./commands/operator/request.ts"
+import {
+  USAGE as LIST_USAGE,
+  formatLagging,
+  list,
+  parseList as parseLagging,
+} from "./commands/subscriptions/list.ts"
 import { USAGE as SKIP_USAGE, parseSkip, skip } from "./commands/subscriptions/skip.ts"
 import { USAGE as RECEIPTS_USAGE, parseShow, showReceipt } from "./commands/receipts/show.ts"
 import {
@@ -299,6 +305,9 @@ const program = Effect.gen(function* () {
   if (group === "subscriptions" && command === "skip")
     return yield* operatorCommand(SKIP_USAGE, parseSkip(args), skip, encodeJson)
 
+  if (group === "subscriptions" && command === "list")
+    return yield* operatorCommand(LIST_USAGE, parseLagging(args), list, formatLagging)
+
   return yield* fail(
     [
       `Unknown command: ${[group, command].join(" ")}`,
@@ -311,6 +320,7 @@ const program = Effect.gen(function* () {
       RECEIPTS_USAGE,
       REPAIR_USAGE,
       SKIP_USAGE,
+      LIST_USAGE,
       TENANTS_USAGE,
     ].join("\n"),
   )
