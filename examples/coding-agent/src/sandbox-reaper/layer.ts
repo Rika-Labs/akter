@@ -4,6 +4,7 @@ import { AgentId, CodingAgent } from "../coding-agent/contract.ts"
 import { type SandboxInfo, Sandboxes } from "../coding-agent/sandbox.ts"
 import { SandboxReaper, SweepSandboxes } from "./contract.ts"
 
+/** Handlers for `SandboxReaper`; `Sweep` performs a sweep of sandboxes older than 24 hours. */
 export const SandboxReaperCommands = SandboxReaper.toLayer(
   Effect.succeed({
     Sweep: Effect.fnUntraced(function* () {
@@ -21,6 +22,8 @@ export const SandboxReaperCommands = SandboxReaper.toLayer(
  * rerun is safe. Age alone is not proof of abandonment, so an old sandbox is
  * killed only when its owning agent no longer names it as its sandbox, for
  * example because the agent crashed before `SandboxReady` or replaced it.
+ *
+ * An agent that cannot be asked keeps its sandbox until a later sweep.
  */
 export const SandboxReaperEffects = SandboxReaper.toEffectLayer(
   Effect.gen(function* () {
@@ -31,7 +34,6 @@ export const SandboxReaperEffects = SandboxReaper.toEffectLayer(
         Effect.flatMap((agent) => agent.Sandbox()),
         Actor.tenant(owner.tenant),
         Effect.map((current) => current !== sandboxId),
-        // An agent that cannot be asked keeps its sandbox until a later sweep.
         Effect.orElseSucceed(() => false),
       )
 
@@ -49,4 +51,5 @@ export const SandboxReaperEffects = SandboxReaper.toEffectLayer(
   }),
 )
 
+/** Every handler and executor of the reaper. */
 export const SandboxReaperLive = Layer.mergeAll(SandboxReaperCommands, SandboxReaperEffects)

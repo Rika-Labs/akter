@@ -11,7 +11,10 @@ import { Order, OrderAlreadyPlaced, OrderId } from "./contract.ts"
 
 const ledger = fakeLedger()
 
-// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/**
+ * The same cases run on PGlite (`test`) and on a fresh Postgres database
+ * (`test:integration`).
+ */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("ORDERS_BACKEND")) === "pglite") return undefined
 
@@ -91,7 +94,6 @@ const settled = Effect.fnUntraced(function* (id: string) {
         shipment(child).pipe(Effect.flatMap((handle) => handle.Tracking())),
       )
 
-      // An unknown payment leaves the shipments pending for an operator.
       if (
         summary.status === "payment_unknown" ||
         tracking.every(({ status }) => status !== "pending")
@@ -221,13 +223,11 @@ it("applies one charge when the executor's result is lost after the provider app
       const before = new Set(ledger.calls.keys())
       const order = yield* Order.get(OrderId.make("o-5"))
 
-      // The first attempt's result is lost after the provider answered, so the relay runs it again.
       yield* test.crashNext("afterExecute")
       yield* order.Place({ customer: ada, lines: [kettle] })
 
       while (newKeys(before).length === 0) yield* Effect.sleep("20 millis")
 
-      // The crashed attempt keeps its lease; the next attempt runs once the lease has passed.
       yield* test.advance("2 minutes")
       const { summary } = yield* settled("o-5")
       const [key] = newKeys(before)

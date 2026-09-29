@@ -2,10 +2,12 @@ import { eq, inArray } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { appDatabase, customers, products } from "./schema.ts"
 
+/** The order names a customer that does not exist. */
 export class UnknownCustomer extends Schema.TaggedError<UnknownCustomer>()("UnknownCustomer", {
   customerId: Schema.String,
 }) {}
 
+/** The order names SKUs that are not in the catalog. */
 export class UnknownProducts extends Schema.TaggedError<UnknownProducts>()("UnknownProducts", {
   skus: Schema.Array(Schema.String),
 }) {}

@@ -7,6 +7,7 @@ export const CHARGE_LIMIT = 1_000_000
 
 const declined = Schema.is(PaymentDeclined)
 
+/** A charge the fake provider applied. */
 export interface AppliedCharge {
   readonly chargeId: string
   readonly customerId: string
@@ -74,4 +75,5 @@ export const fakeLedger = () => {
   return { charges, calls, charge, layer, routes }
 }
 
+/** The fake provider's books, layer and routes. */
 export type Ledger = ReturnType<typeof fakeLedger>
