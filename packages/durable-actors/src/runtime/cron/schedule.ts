@@ -2,7 +2,7 @@ import { Crypto, Cron, DateTime, Duration, Effect, Option, Result, Schema, Schem
 import { SqlClient, type Statement } from "effect/unstable/sql"
 import { type ActorRef, System } from "../../identity/caller.ts"
 import type { AnyCommand } from "../../members/command.ts"
-import { CRON_CALLER, CRON_PREFIX } from "./key.ts"
+import { CRON_PREFIX } from "./key.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { bucketOf, CallerJson, OutboxRuntime } from "../turn/outbox.ts"
 
@@ -231,9 +231,7 @@ type TickInsert = {
 /**
  * Writes the first tick of every entry `ref` has no pending tick for. The
  * timer-key unique index makes concurrent writers, and entries that already
- * tick, no-ops. An application timer staged under an entry's key before
- * `$cron:` was reserved gives the key up and stays due as a plain intent, so
- * it still fires once and the entry ticks from this write on.
+ * tick, no-ops.
  */
 export const writeTicks = Effect.fnUntraced(function* (
   routingKey: bigint,
@@ -274,25 +272,10 @@ export const writeTicks = Effect.fnUntraced(function* (
     })
   }
 
-  // A conflict with a cron row changes nothing and returns nothing. A conflict
-  // with an application intent is a no-op update that returns that intent,
-  // so the usual first turn, whose ticks are already pending, stays one statement.
-  const legacy = (yield* sql<{ timer_key: string; intent_id: string }>`INSERT INTO actor_outbox AS o
-      ${sql.insert(rows)}
-      ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, timer_key)
-        WHERE timer_key IS NOT NULL
-      DO UPDATE SET timer_key = o.timer_key WHERE strpos(o.caller, ${CRON_CALLER}) = 0
-      RETURNING o.timer_key, o.intent_id`).filter(
-    (row) => !rows.some((tick) => tick.intent_id === row.intent_id),
-  )
-
-  if (legacy.length === 0) return
-
-  yield* sql`UPDATE actor_outbox SET timer_key = NULL
-    WHERE routing_key = ${routingKey} AND intent_id IN ${sql.in(legacy.map((row) => row.intent_id))}`
-
-  const freed = new Set(legacy.map((row) => row.timer_key))
-  yield* sql`INSERT INTO actor_outbox ${sql.insert(rows.filter((row) => freed.has(row.timer_key)))}`
+  yield* sql`INSERT INTO actor_outbox ${sql.insert(rows)}
+    ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, timer_key)
+      WHERE timer_key IS NOT NULL
+    DO NOTHING`
 })
 
 /**
@@ -327,9 +310,8 @@ export interface ClaimedTick {
   readonly intent_id: string
   readonly command: string
   readonly payload: string
-  readonly caller: string
   readonly timer_key: string | null
-  readonly scheduled_at: string | null
+  readonly scheduled_at: string
   readonly claimed_until: string
 }
 
@@ -378,9 +360,8 @@ export const cronTicks = ({
   })
 
   return {
-    /** A tick is a `$cron:` row the runtime wrote, which names a cron caller. */
-    isTick: (row: ClaimedTick) =>
-      row.timer_key?.startsWith(CRON_PREFIX) === true && row.caller.includes(CRON_CALLER),
+    /** A tick is a `$cron:` row; application intents may not use the prefix. */
+    isTick: (row: ClaimedTick) => row.timer_key?.startsWith(CRON_PREFIX) === true,
     /**
      * Settles a tick that must not fire and returns undefined, or returns the
      * command and payload the relay delivers on this claim.
@@ -393,7 +374,7 @@ export const cronTicks = ({
       const schedule = schedules().get(row.actor_type)
       const entry = entryOf(row)
       const now = yield* databaseTime
-      const scheduledAt = Number(row.scheduled_at ?? row.claimed_until)
+      const scheduledAt = Number(row.scheduled_at)
       const stale = schedule !== undefined && now - scheduledAt > schedule.skipMs
 
       const annotations = {

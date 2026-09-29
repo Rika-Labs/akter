@@ -27,7 +27,14 @@ import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
 import { build, document, memberPath, PROTOCOL_OPERATIONS, schemeName } from "./api.ts"
-import { type AuthProvider, type Authenticated, readsCookies, withinLimits } from "./auth.ts"
+import {
+  type AuthProvider,
+  type Authenticated,
+  Credential,
+  readsCookies,
+  withinLimits,
+} from "./auth.ts"
+import { ASSERTION_HEADER, reauthenticationDigest, requestDigest } from "./assertion/binding.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
 import { feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
@@ -268,6 +275,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const requestBytes = options.limits?.requestBytes ?? 1024 * 1024
       const credentialBytes = options.limits?.credentialBytes ?? 8 * 1024
       const withCookies = readsCookies(options.auth)
+      const withAssertion = options.auth.credentials.some(Credential.$is("Assertion"))
       const api = build({ definitions, basePath })
 
       const withProtocol = (
@@ -339,11 +347,13 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         Effect.gen(function* () {
           const authorization = Headers.get(request.headers, "authorization")
           const cookie = Headers.get(request.headers, "cookie")
+          const assertion = Headers.get(request.headers, ASSERTION_HEADER)
 
           if (
             (credential !== undefined && bytes(credential) > credentialBytes) ||
             (Option.isSome(authorization) && bytes(authorization.value) > credentialBytes) ||
-            (withCookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes)
+            (withCookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes) ||
+            (withAssertion && Option.isSome(assertion) && bytes(assertion.value) > credentialBytes)
           )
             return yield* invalidInput("too_large")
 
@@ -376,19 +386,15 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return authenticated
         })
 
-      const readBody = (request: HttpServerRequest.HttpServerRequest) =>
+      // The body's bytes, bounded; empty when there is none.
+      const readBytes = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.gen(function* () {
-          const type = Headers.get(request.headers, "content-type")
-
-          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
-            return yield* invalidInput("unsupported_media_type")
-
           const length = Headers.get(request.headers, "content-length")
 
           if (Option.isSome(length) && Number(length.value) > requestBytes)
             return yield* invalidInput("too_large")
 
-          if (Option.isSome(length) && Number(length.value) === 0) return undefined
+          if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
 
           // A request without framing headers may carry no body stream at all.
           const unframed =
@@ -414,10 +420,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             ),
           )
 
-          if (chunks.size === 0) return undefined
-
-          if (Option.isNone(type)) return yield* invalidInput("unsupported_media_type")
-
           const body = new Uint8Array(chunks.size)
           let offset = 0
 
@@ -426,15 +428,70 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             offset += chunk.byteLength
           }
 
+          return body
+        })
+
+      const decodeJsonBody = (request: HttpServerRequest.HttpServerRequest, body: Uint8Array) =>
+        Effect.gen(function* () {
+          if (body.byteLength === 0) return undefined
+
+          if (!Headers.has(request.headers, "content-type"))
+            return yield* invalidInput("unsupported_media_type")
+
           const text = yield* Effect.try({
             try: () => strictUtf8.decode(body),
             catch: () => invalidInput("decode"),
           })
 
-          const value = yield* decodeBody(text).pipe(Effect.mapError((error) => undecodable(error)))
-
-          return value
+          return yield* decodeBody(text).pipe(Effect.mapError((error) => undecodable(error)))
         })
+
+      const refuseBinding = ActorError.make({
+        reason: Unauthorized.make({ code: "invalid_credentials" }),
+      })
+
+      // A bound credential admits only the request it was issued for, checked before any turn.
+      const checkBinding = (
+        authenticated: Authenticated,
+        request: HttpServerRequest.HttpServerRequest,
+        body: Uint8Array,
+      ) =>
+        authenticated.binding === undefined
+          ? Effect.void
+          : requestDigest({
+              method: request.method,
+              target: request.url,
+              idempotencyKey: Option.getOrUndefined(
+                Headers.get(request.headers, "idempotency-key"),
+              ),
+              body,
+            }).pipe(
+              Effect.flatMap((digest) =>
+                digest === authenticated.binding?.request
+                  ? Effect.void
+                  : Effect.fail(refuseBinding),
+              ),
+            )
+
+      // A renewal binds the session's upgrade path and its own session id.
+      const checkRenewal = (
+        authenticated: Authenticated,
+        request: HttpServerRequest.HttpServerRequest,
+      ) => {
+        const binding = authenticated.binding
+
+        if (binding === undefined) return Effect.void
+
+        if (binding.session === undefined) return Effect.fail(refuseBinding)
+
+        return reauthenticationDigest({ path: request.url, session: binding.session }).pipe(
+          Effect.flatMap((digest) =>
+            digest === binding.request ? Effect.void : Effect.fail(refuseBinding),
+          ),
+        )
+      }
+
+      const empty = new Uint8Array(0)
 
       const commandId = (request: HttpServerRequest.HttpServerRequest) => {
         const header = Headers.get(request.headers, "idempotency-key")
@@ -481,7 +538,15 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           if (key === undefined) return yield* invalidInput("missing_command_id")
 
-          const body = yield* readBody(request)
+          const type = Headers.get(request.headers, "content-type")
+
+          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
+            return yield* invalidInput("unsupported_media_type")
+
+          const bytes = yield* readBytes(request)
+
+          yield* checkBinding(authenticated, request, bytes)
+          const body = yield* decodeJsonBody(request, bytes)
 
           const payload = yield* member
             .payload(body)
@@ -512,7 +577,15 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const id = yield* pathId(definition)
           const authenticated = yield* authenticate(request)
-          const body = yield* readBody(request)
+          const type = Headers.get(request.headers, "content-type")
+
+          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
+            return yield* invalidInput("unsupported_media_type")
+
+          const bytes = yield* readBytes(request)
+
+          yield* checkBinding(authenticated, request, bytes)
+          const body = yield* decodeJsonBody(request, bytes)
 
           const payload = yield* member
             .payload(body)
@@ -547,8 +620,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           // A non-browser client, or a cookie provider, may authenticate the upgrade itself.
           const upgrade =
             Headers.has(request.headers, "authorization") ||
-            (withCookies && Headers.has(request.headers, "cookie"))
-              ? yield* authenticate(request)
+            (withCookies && Headers.has(request.headers, "cookie")) ||
+            (withAssertion && Headers.has(request.headers, ASSERTION_HEADER))
+              ? yield* authenticate(request).pipe(
+                  Effect.tap((authenticated) => checkBinding(authenticated, request, empty)),
+                )
               : undefined
 
           if (awaiting.count >= MAX_AWAITING_HELLO)
@@ -570,7 +646,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
                 holder: actors.holder,
                 ref: (tenant) => ActorRef.make({ tenant, actor: definition.name, id }),
                 upgrade,
-                authenticate: (credential) => authenticate(request, credential),
+                authenticate: (credential) =>
+                  authenticate(request, credential).pipe(
+                    Effect.tap((authenticated) => checkBinding(authenticated, request, empty)),
+                  ),
+                reauthenticate: (credential) =>
+                  authenticate(request, credential).pipe(
+                    Effect.tap((authenticated) => checkRenewal(authenticated, request)),
+                  ),
                 greeted,
               }),
             ),
@@ -606,6 +689,8 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           )
 
           const authenticated = yield* authenticate(request)
+
+          yield* checkBinding(authenticated, request, empty)
           const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
 
           if (!(yield* actors.exists(ref)))
@@ -707,7 +792,10 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         `${basePath}/command-ids` as HttpRouter.PathInput,
         respond((request) =>
           Effect.gen(function* () {
-            yield* authenticate(request)
+            const authenticated = yield* authenticate(request)
+
+            if (authenticated.binding !== undefined)
+              yield* checkBinding(authenticated, request, yield* readBytes(request))
 
             return HttpServerResponse.jsonUnsafe({ commandId: yield* actors.mintCommandId })
           }),
