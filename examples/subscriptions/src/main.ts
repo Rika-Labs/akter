@@ -2,7 +2,6 @@
 // on file, and a `Collect` workflow charges it, waiting for a newer card after a decline. Uses
 // Postgres when DATABASE_URL is set, otherwise an in-memory PGlite, and a stand-in provider:
 //   bun run start
-// Until #187 lands, a collection's step cannot reach `Settle`, so the demo waits forever.
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
