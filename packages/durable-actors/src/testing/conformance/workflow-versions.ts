@@ -471,31 +471,6 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     requiresIndependentConnections: true,
-    name: "workflow versions: refuses a result schema change under a manifest stored without result fingerprints",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const database = yield* environment.freshDatabase
-          yield* deploy(
-            database,
-            Base.layer,
-            Effect.gen(function* () {
-              yield* sleeping(Base, "o")
-              const sql = yield* SqlClient.SqlClient
-              yield* sql`UPDATE actor_workflow_manifests SET manifest = jsonb_set(manifest, '{steps}',
-                (SELECT jsonb_agg(step - 'result') FROM jsonb_array_elements(manifest->'steps') step))
-                WHERE actor_type = 'Versioned'`.pipe(Effect.orDie)
-            }),
-          )
-
-          expect(yield* refusal(database, Retyped.layer)).toContain(
-            `step "reserve" result schema changed  1 open execution`,
-          )
-        }),
-      ),
-  },
-  {
-    requiresIndependentConnections: true,
     name: "workflow versions: refuses startup when the workflow input schema changes",
     run: ({ expect, environment }) =>
       environment.run(

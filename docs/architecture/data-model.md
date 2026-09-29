@@ -21,7 +21,7 @@ Framework-private records include:
 | Subscription         | per-source subscription row with settled cursor on the source's shard; applied cursor on the subscriber's shard                                                                              | subscription delivery                |
 | `actor_outbox`       | intents, timers, workflow starts, effects, subscription feeds and controls; effect `running`, `cancelled_at_ms`, `maybe_applied`, `ready_at_ms`, `waiting` (`0015_effect_control`, ADR 0024) | delivery and recovery                |
 
-An `actor_outbox` effect row's `final_attempt` (`0016_final_effect_failures`) records the attempt whose failure ended the effect before its retries ran out, as after a result its `onSuccess` route rejects. `attempts` keeps the true count; a claim that finds `final_attempt` set retries only the dead letter, whatever the retry policy. `scheduled_at_ms` (`0011_relay`) is required on every row, and `ready_at_ms` on every effect row.
+An `actor_outbox` effect row's `final_failure` (`0016_final_effect_failures`) records that an attempt's failure ended the effect, possibly before its retries ran out, as after a result its `onSuccess` route rejects. A claim that finds it set retries only the dead letter, whatever the retry policy, and the letter reports `attempts`. `scheduled_at_ms` (`0011_relay`) is required on every row, and `ready_at_ms` on every effect row.
 
 One Postgres database belongs to each deployment region. Commands are direct: the receipt is their only durable record, and there is no command message table. `tenant_id` appears on every framework and actor-owned table, with optional RLS. Actor state, tables, events, effects, blobs, and receipts share the actor ownership key and transaction boundary.
 
