@@ -1,16 +1,28 @@
 import { Actor } from "@durable-actors/core"
-import { Deferred, Effect, Schema } from "effect"
+import { Deferred, Effect, Result, Schema } from "effect"
 
 /** Holds its turn open until the scenario releases the gate named by its input. */
 export const Hold = Actor.command("Hold", { input: Schema.String, output: Schema.Int })
 
 export const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
 
+const state = Actor.state({
+  count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+})
+
+/** A commutative reducer: calls already waiting merge into one turn. */
+export const Tick = Actor.reducer("Tick", {
+  state,
+  input: Schema.Int,
+  reduce: (current, amount) => Result.succeed({ count: current.count + amount }),
+  commutative: { combine: (first, second) => first + second },
+})
+
 /** One actor whose next turn the scenario can hold, so commands queue behind it. */
 export const BatchProbe = Actor.make("BatchProbe", {
   key: Schema.NonEmptyString,
-  state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  api: { Hold, Add },
+  state,
+  api: { Hold, Add, Tick },
 })
 
 interface Gate {

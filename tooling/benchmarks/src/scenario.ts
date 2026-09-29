@@ -282,6 +282,13 @@ export const measure = Effect.fnUntraced(function* <E, R>(
     /** Lists the 16 most-called statements, plus every statement containing `including`. */
     readonly listStatements?: boolean | { readonly including: string }
     readonly extra?: Readonly<Record<string, number | string>>
+    /**
+     * Calls each operation stands for, when one operation is a round of many
+     * calls. Statements and round trips are then reported per call, to four
+     * decimals, so work that lands in a long round by elapsed time (a relay
+     * poll) moves them by a fraction of a statement instead of a whole one.
+     */
+    readonly calls?: number
   },
 ) {
   const instruments = options.instruments
@@ -314,6 +321,14 @@ export const measure = Effect.fnUntraced(function* <E, R>(
   const serverSeconds =
     serverBefore === undefined || serverAfter === undefined ? undefined : serverAfter - serverBefore
 
+  const calls = options.calls ?? 1
+  const precision = calls === 1 ? 100 : 10_000
+
+  const perCall = (count: number | undefined) =>
+    count === undefined || attempted === 0
+      ? null
+      : Math.round((count / (attempted * calls)) * precision) / precision
+
   const perOperation = (seconds: number | undefined) =>
     seconds === undefined || attempted === 0 ? null : Math.round((seconds * 1e6) / attempted) / 1000
 
@@ -326,14 +341,8 @@ export const measure = Effect.fnUntraced(function* <E, R>(
     errors: result.errors,
     errorKinds: result.errorKinds,
     latencyMs: summarize(result.samples),
-    statementsPerOperation:
-      statements === undefined || attempted === 0
-        ? null
-        : Math.round((statements.calls / attempted) * 100) / 100,
-    roundTripsPerOperation:
-      flights === undefined || attempted === 0
-        ? null
-        : Math.round((flights / attempted) * 100) / 100,
+    statementsPerOperation: perCall(statements?.calls),
+    roundTripsPerOperation: perCall(flights),
     statements: listed(options.listStatements, statements),
     activity: activity ?? null,
     cpu: {

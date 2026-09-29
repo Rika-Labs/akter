@@ -1,0 +1,165 @@
+{
+  "schema": 2,
+  "label": null,
+  "note": null,
+  "profile": "ci",
+  "startedAt": "2026-09-28T07:11:45.986Z",
+  "finishedAt": "2026-09-28T07:11:57.094Z",
+  "git": {
+    "sha": "ef1a2f8858f1b2d76e910d4ec8657040d342e778",
+    "shortSha": "ef1a2f8",
+    "branch": "feat/161-commutative-merging",
+    "mainBase": "5e7a9acc09cf5fa623171a3a1845da56ef050840",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "edd0c14d1981dd9dd59514a86eb574727b7b133a",
+        "parents": [
+          "940ec5b3b7f8ee32e9d84ec636352be13bf87cf1",
+          "5e7a9acc09cf5fa623171a3a1845da56ef050840"
+        ]
+      },
+      {
+        "commit": "5509cb5e1dae3d07cfb963257c2e1af46d0f6856",
+        "parents": [
+          "5e747d26730e90b572ad9dc529b52178d44ce902",
+          "c6d71cf04af969c64d124ac654c75525b002c79f"
+        ]
+      },
+      {
+        "commit": "5e747d26730e90b572ad9dc529b52178d44ce902",
+        "parents": [
+          "5edc38041f5af74bdd2a47c4e6389032b7ffe960",
+          "28ad2f7904385e827f14d7ed80a7a441ae8bb673"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+    "logicalCpus": 16,
+    "memoryGiB": 31.4,
+    "os": "Linux 6.1.158+",
+    "hostname": "e2b.local",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "turn-batches",
+      "description": "One held turn and calls already waiting behind it, per operation: 32 commands commit as one turn batch, or 1,024 commutative reducer calls commit as one merged turn.",
+      "cases": [
+        {
+          "name": "waiting-32",
+          "parameters": {
+            "actors": 1,
+            "waiting": 32
+          },
+          "operations": 30,
+          "elapsedMs": 1551,
+          "throughput": 19.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 30,
+            "mean": 51.654,
+            "min": 35.326,
+            "p50": 47.479,
+            "p90": 66.904,
+            "p95": 74.878,
+            "p99": 107.96,
+            "max": 107.96
+          },
+          "statementsPerOperation": 107.03,
+          "roundTripsPerOperation": 3,
+          "statements": null,
+          "activity": {
+            "samples": 53,
+            "connections": {
+              "idle:Client/ClientRead": 9.75,
+              "idle in transaction:Client/ClientRead": 0.64,
+              "active": 0.47,
+              "idle": 0.06,
+              "active:Client/ClientRead": 0.04,
+              "active:IO/WalSync": 0.02,
+              "idle in transaction": 0.02
+            },
+            "peakConnections": 11
+          },
+          "cpu": {
+            "client": 181,
+            "server": 48.7,
+            "clientMsPerOperation": 93.711,
+            "serverMsPerOperation": 25.19
+          },
+          "extra": null
+        },
+        {
+          "name": "merged-1024",
+          "parameters": {
+            "actors": 1,
+            "waiting": 1024
+          },
+          "operations": 10,
+          "elapsedMs": 8412,
+          "throughput": 1.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10,
+            "mean": 841.147,
+            "min": 743.198,
+            "p50": 831.266,
+            "p90": 911.521,
+            "p95": 1006.113,
+            "p99": 1006.113,
+            "max": 1006.113
+          },
+          "statementsPerOperation": 3.0086,
+          "roundTripsPerOperation": 0.0029,
+          "statements": null,
+          "activity": {
+            "samples": 277,
+            "connections": {
+              "idle:Client/ClientRead": 7.24,
+              "active": 2.55,
+              "idle in transaction:Client/ClientRead": 0.73,
+              "idle": 0.34,
+              "active:Client/ClientRead": 0.14,
+              "active:IO/DataFileExtend": 0,
+              "idle in transaction": 0
+            },
+            "peakConnections": 11
+          },
+          "cpu": {
+            "client": 154.7,
+            "server": 240.6,
+            "clientMsPerOperation": 1301.06,
+            "serverMsPerOperation": 2023.658
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}

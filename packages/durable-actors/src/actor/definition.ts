@@ -2213,47 +2213,84 @@ const make = <
       for (const reducer of reducers) {
         const reducerCodec = codecs.get(reducer.tag)!
 
-        commands.set(reducer.tag, {
+        // One `reduce` over stored rows: the turn of one call, or of a merged
+        // run of commutative calls whose inputs were combined first.
+        const reduceOnce = Effect.fnUntraced(function* (
+          rows: ReadonlyArray<readonly [string, string]>,
+          input: (typeof reducer.input)["Type"],
+        ) {
+          const loaded = yield* decodeStored(rows)
+
+          // `reduce` gets its own copy, so mutating it in place cannot hide a change.
+          const given = yield* decodeState(
+            yield* encodeState(loaded.state).pipe(Effect.orDie),
+          ).pipe(Effect.orDie)
+
+          const reduced = reducer.reduce(given, input)
+
+          if (Result.isFailure(reduced))
+            return yield* declaredFailure(reducerCodec, reduced.failure)
+
+          // Round-tripping validates the returned state against the actor's schema.
+          const next = yield* decodeState(
+            yield* encodeState(reduced.success).pipe(Effect.orDie),
+          ).pipe(Effect.orDie)
+
+          // Only changed keys are written, unless an upcast rewrites every key.
+          const dirty = new Set(
+            Object.keys(fields).filter(
+              (key) => loaded.upcast || !fieldEquivalences[key]!(loaded.state[key], next[key]),
+            ),
+          )
+
+          const value = yield* reducerCodec
+            .encodeOutput({ value: reducer.commutative === undefined ? next : undefined })
+            .pipe(Effect.orDie)
+
+          return {
+            outcome: Outcome.cases.Success.make({ value }),
+            state: yield* stateWrites(next, dirty),
+            complete: loaded.upcast,
+            events: [],
+            outbox: emptyOutbox,
+          }
+        })
+
+        const decodeInput = (request: Request) =>
+          reducerCodec.decodeInput(request.payload).pipe(
+            Effect.orDie,
+            Effect.map((input) => input.value),
+          )
+
+        const commutative = reducer.commutative
+
+        const single: RegisteredCommand = {
           internal: false,
           handler: false,
           run: Effect.fnUntraced(function* (request, rows) {
-            const loaded = yield* decodeStored(rows)
+            return yield* reduceOnce(rows, yield* decodeInput(request))
+          }),
+        }
 
-            const input = yield* reducerCodec.decodeInput(request.payload).pipe(Effect.orDie)
+        if (commutative === undefined) {
+          commands.set(reducer.tag, single)
+          continue
+        }
 
-            // `reduce` gets its own copy, so mutating it in place cannot hide a change.
-            const given = yield* decodeState(
-              yield* encodeState(loaded.state).pipe(Effect.orDie),
-            ).pipe(Effect.orDie)
+        commands.set(reducer.tag, {
+          ...single,
+          // A commutative reducer declares no errors, so a merged turn cannot
+          // fail short of a defect.
+          merge: Effect.fnUntraced(function* (requests, rows) {
+            const inputs = yield* Effect.forEach(requests, decodeInput)
 
-            const reduced = reducer.reduce(given, input.value)
+            const combined = inputs.reduce((first, second) => commutative.combine(first, second))
 
-            if (Result.isFailure(reduced))
-              return yield* declaredFailure(reducerCodec, reduced.failure)
-
-            // Round-tripping validates the returned state against the actor's schema.
-            const next = yield* decodeState(
-              yield* encodeState(reduced.success).pipe(Effect.orDie),
-            ).pipe(Effect.orDie)
-
-            // Only changed keys are written, unless an upcast rewrites every key.
-            const dirty = new Set(
-              Object.keys(fields).filter(
-                (key) => loaded.upcast || !fieldEquivalences[key]!(loaded.state[key], next[key]),
+            return yield* reduceOnce(rows, combined).pipe(
+              Effect.catch(() =>
+                Effect.die(new Error(`Commutative reducer ${reducer.tag} failed`)),
               ),
             )
-
-            const value = yield* reducerCodec
-              .encodeOutput({ value: reducer.commutative === undefined ? next : undefined })
-              .pipe(Effect.orDie)
-
-            return {
-              outcome: Outcome.cases.Success.make({ value }),
-              state: yield* stateWrites(next, dirty),
-              complete: loaded.upcast,
-              events: [],
-              outbox: emptyOutbox,
-            }
           }),
         })
       }
