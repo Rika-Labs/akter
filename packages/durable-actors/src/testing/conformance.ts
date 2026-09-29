@@ -1503,7 +1503,7 @@ export const describeConformance = (options: {
                     }),
                 ),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
-              ...(overrides?.content === undefined ? {} : { content: overrides.content }),
+              content: overrides?.content,
             }).pipe(
               // Subscription cases fault particular deliveries by command.
               Layer.provide(

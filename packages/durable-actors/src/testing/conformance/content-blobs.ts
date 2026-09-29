@@ -6,13 +6,14 @@ import {
   Fiber,
   Layer,
   Option,
+  Predicate,
   Redacted,
   Schema,
   type Scope,
   Stream,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Content, ContentRef, InvalidContentRef, Tenant } from "../../index.ts"
+import { Actor, Content, ContentRef, InvalidContentRef, Tenant, Unauthorized } from "../../index.ts"
 import { InternalActors } from "../../handles/actors.ts"
 import { migrations, migrator } from "../../runtime/database/migrations.ts"
 import { Database } from "../../runtime/layer.ts"
@@ -143,7 +144,7 @@ const handlers = (fixture: ContentFixture) =>
 
 const reads = Effect.succeed({
   Listed: Effect.fnUntraced(function* () {
-    return yield* (yield* Document.Read).blob(Attachments).list()
+    return yield* (yield* Document.Read).blob(Attachments).list
   }),
   Text: Effect.fnUntraced(function* (name: string) {
     const found = yield* (yield* Document.Read).blob(Attachments).get(name)
@@ -371,11 +372,13 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
 
           const token = `${test.tenant}:alice`
           const label = yield* unique
-          const body = encoder.encode(JSON.stringify({ label, pad: "x".repeat(3000) }))
+          const body = encoder.encode(`{"label":"${label}","pad":"${"x".repeat(3000)}"}`)
 
           const accepted = yield* server.send("/content", { token, bytes: body })
           expect(accepted.status).toBe(200)
-          const ref = Schema.decodeUnknownSync(ContentRef)(accepted.body)
+          const ref = yield* Schema.decodeUnknownEffect(ContentRef)(accepted.body).pipe(
+            Effect.orDie,
+          )
           expect(ref.size).toBe(body.byteLength)
 
           const count = Effect.map(
@@ -388,7 +391,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
 
           const refused = yield* server.send("/content", {
             token,
-            bytes: encoder.encode(JSON.stringify({ label, pad: "y".repeat(5000) })),
+            bytes: encoder.encode(`{"label":"${label}","pad":"${"y".repeat(5000)}"}`),
           })
 
           expect(refused.status).toBe(413)
@@ -556,7 +559,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           // Less than S left, though the grant has not expired yet.
           yield* test.advance("10 seconds")
           const refused = yield* doc.Attach({ name: "late", ref: late }).pipe(Effect.flip)
-          expect(refused).toMatchObject({ _tag: "InvalidContentRef", reason: "expired" })
+          expect(refused).toEqual(InvalidContentRef.make({ reason: "expired" }))
           expect((yield* doc.Listed()).map((entry) => entry.name)).toEqual(["early"])
         }),
       ),
@@ -632,7 +635,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
             Effect.ensuring(Effect.sync(() => fixture.denied.delete("attachments.grant"))),
           )
 
-          expect(denied.reason).toMatchObject({ _tag: "Unauthorized", code: "access_denied" })
+          expect(denied.reason).toEqual(Unauthorized.make({ code: "access_denied" }))
         }),
       ),
   },

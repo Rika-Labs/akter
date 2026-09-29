@@ -2787,7 +2787,7 @@ const make = <
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     connections: connectionMembers.map(servedConnection),
     feeds: [...feeds],
-    contents: blobs.filter(isContent).map((declared) => declared.name),
+    contents: blobs.flatMap((declared) => (isContent(declared) ? [declared.name] : [])),
     deliveryMs: policy.deliveryMs,
   }
 

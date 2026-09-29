@@ -37,7 +37,7 @@ export interface ContentRead {
    */
   readonly stream: (name: string) => Stream.Stream<Uint8Array, Cause.NoSuchElementError>
   /** Every reference under this blob, by name. */
-  readonly list: () => Effect.Effect<ReadonlyArray<ContentEntry>>
+  readonly list: Effect.Effect<ReadonlyArray<ContentEntry>>
 }
 
 /**
@@ -54,7 +54,7 @@ export interface ContentWrite {
   /** Drops the reference under `name`; dropping a missing one does nothing. */
   readonly detach: (name: string) => Effect.Effect<void>
   /** Every reference under this blob, by name, including this turn's changes. */
-  readonly list: () => Effect.Effect<ReadonlyArray<ContentEntry>>
+  readonly list: Effect.Effect<ReadonlyArray<ContentEntry>>
 }
 
 /** What `read.blob(B)` returns for a declared blob `B`. */

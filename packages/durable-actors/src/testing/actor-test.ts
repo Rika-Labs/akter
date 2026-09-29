@@ -78,7 +78,7 @@ export interface TestOptions {
   readonly relay?: Options["relay"]
   readonly executors?: Options["executors"]
   /** Shared content settings; omitted, a fixed test grant key with the default grace and skew. */
-  readonly content?: Options["content"]
+  readonly content?: Options["content"] | undefined
 }
 
 /** The grant key tests sign content grants with unless they configure their own. */

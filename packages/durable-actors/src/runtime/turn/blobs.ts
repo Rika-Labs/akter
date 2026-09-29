@@ -114,18 +114,17 @@ export const bindBlobs = Effect.fnUntraced(function* (
         : Effect.succeed(content),
     )
 
-    const list = () =>
-      run(
-        Effect.gen(function* () {
-          yield* declared(blob)
+    const list = run(
+      Effect.gen(function* () {
+        yield* declared(blob)
 
-          const rows = yield* sql<{ name: string; hash: string; size: number }>`
+        const rows = yield* sql<{ name: string; hash: string; size: number }>`
             SELECT name, hash, size::float8 AS size FROM actor_content_refs
             WHERE ${owner} AND blob = ${blob.name} ORDER BY name COLLATE "C"`
 
-          return rows.map(({ name, hash, size }) => ({ name, hash, size }))
-        }),
-      )
+        return rows.map(({ name, hash, size }) => ({ name, hash, size }))
+      }),
+    )
 
     // The reference on this actor's shard; the bytes are read separately on the tenant's.
     const resolve = (name: string) =>

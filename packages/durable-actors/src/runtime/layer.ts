@@ -89,8 +89,8 @@ import { directMessages } from "./topology/messages.ts"
 import { bindBlobs, type ContentBinding } from "./turn/blobs.ts"
 import { ContentStore } from "../handles/content.ts"
 import { type AnyBlob, isContent } from "../members/blob.ts"
-import { type GrantKey, makeGrants } from "./content/grant.ts"
-import { MAX_CONTENT_BYTES, makeContentStore } from "./content/store.ts"
+import { type GrantKey, grantKeys } from "./content/grant.ts"
+import { MAX_CONTENT_BYTES, tenantContent } from "./content/store.ts"
 import { ContentHooks } from "./turn/hooks.ts"
 import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -319,8 +319,8 @@ export const layer = (options: Options) => {
         const content =
           options.content === undefined
             ? undefined
-            : makeContentStore({
-                grants: yield* makeGrants(options.content.keys, deployment),
+            : tenantContent({
+                grants: yield* grantKeys(options.content.keys, deployment),
                 graceMs: contentGraceMs,
                 skewMs: contentSkewMs,
                 singleConnection: Option.isSome(
@@ -973,6 +973,7 @@ export const layer = (options: Options) => {
                 Effect.orDie,
               )
             }
+
             yield* checkTables(registration.name, registration.tables).pipe(
               Effect.provideContext(services),
               Effect.orDie,

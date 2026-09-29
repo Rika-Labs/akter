@@ -1,4 +1,4 @@
-import { Cause, Effect, Option, Stream } from "effect"
+import { Cause, Crypto, Effect, Option, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { ContentTooLarge } from "../../errors/content.ts"
 import type { ContentRef } from "../../identity/content.ts"
@@ -74,7 +74,7 @@ const complete = (
     : Option.none()
 }
 
-export const makeContentStore = (settings: ContentSettings) => {
+export const tenantContent = (settings: ContentSettings) => {
   const { grants, hooks } = settings
 
   // The database clock plus the framework offset, read inside the statement
@@ -184,7 +184,7 @@ export const makeContentStore = (settings: ContentSettings) => {
         return yield* uploadBytes(tenant, concat(parts, size))
       }
 
-      const pending = `pending:${crypto.randomUUID()}`
+      const pending = `pending:${yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)}`
       const hasher = new Bun.CryptoHasher("sha256")
 
       const stored = yield* sql.withTransaction(
@@ -450,4 +450,4 @@ export const makeContentStore = (settings: ContentSettings) => {
   return { uploadBytes, uploadStream, grant, read, stream, sweep, verify: grants.verify }
 }
 
-export type ContentStoreImpl = ReturnType<typeof makeContentStore>
+export type ContentStoreImpl = ReturnType<typeof tenantContent>

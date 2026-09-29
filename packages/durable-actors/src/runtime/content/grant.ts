@@ -60,7 +60,7 @@ export interface Grants {
  * verifies, so an operator adds the new key first, keeps the old one listed
  * for one grant lifetime, and then removes it.
  */
-export const makeGrants = Effect.fnUntraced(function* (
+export const grantKeys = Effect.fnUntraced(function* (
   keys: ReadonlyArray<GrantKey>,
   deployment: string,
 ) {
