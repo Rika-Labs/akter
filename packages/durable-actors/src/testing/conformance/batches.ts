@@ -30,7 +30,6 @@ const LedgerState = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
-// Calls of `reduce`, so a case can tell one merged turn from one turn per call.
 export const reductions = { count: 0 }
 
 /** Adds to the count; merged calls combine by summing. */
@@ -65,7 +64,6 @@ const Ledger = Actor.make("BatchLedger", {
   internal: { Noted },
 })
 
-// Handler runs per label, so a case can tell a rerun from a replay.
 const runs = new Map<string, number>()
 
 const ran = (label: string) => runs.set(label, (runs.get(label) ?? 0) + 1)
@@ -126,7 +124,6 @@ export const enqueue = Effect.fnUntraced(function* <A, R>(
     fibers.push(yield* Effect.forkChild(call))
     yield* queued.reached
     yield* queued.release
-    // The hook resumes on the next tick, and the command joins a batch only once it has finished.
     yield* Effect.yieldNow
   }
 
@@ -163,6 +160,7 @@ const mint = Effect.fnUntraced(function* (count: number) {
   return yield* Effect.forEach(Array.from({ length: count }), () => actors.mintCommandId)
 })
 
+/** Turn-batch cases: waiting commands share one transaction in delivery order with one receipt each, respect the batch cap, and isolate declared failures and defects. */
 export const batchesConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "turn batch: waiting commands share one transaction in delivery order, each with its own receipt, and none replies before the commit",
@@ -185,11 +183,9 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
 
           const commit = yield* test.pauseNext("beforeCommit")
           yield* first.release
-          // The lone command ran with nothing waiting behind it and committed alone.
           expect(yield* Fiber.join(first.fiber)).toEqual({ log: ["order-first"], marks: 1 })
           yield* commit.reached
 
-          // The batch is inside its transaction, and no caller has an answer yet.
           expect(waiting.map((fiber) => fiber.pollUnsafe())).toEqual(labels.map(() => undefined))
           yield* commit.release
 
@@ -271,7 +267,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
             Exit.succeed({ log: ["declared-first", "declared-a"], marks: 2 }),
           )
           expect(yield* Fiber.join(r!)).toEqual(Exit.fail(Refused.make({ label: "declared-r" })))
-          // The command after the failure sees neither its state nor its row.
           expect(yield* Fiber.join(b!)).toEqual(
             Exit.succeed({ log: ["declared-first", "declared-a", "declared-b"], marks: 3 }),
           )
@@ -284,7 +279,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
             outbox: 0,
           })
 
-          // The failure receipt replays without running the handler again.
           expect(
             yield* ledger.Refuse("declared-r").pipe(Actor.commandId(refused!), Effect.flip),
           ).toEqual(Refused.make({ label: "declared-r" }))
@@ -321,8 +315,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
             Exit.succeed({ log: ["defect-first", "defect-a", "defect-b"], marks: 3 }),
           )
 
-          // The aborted batch stopped at the defect, so only the commands
-          // before it ran twice: once in the batch and once alone.
           expect(["defect-a", "defect-x", "defect-b"].map((label) => runs.get(label))).toEqual([
             2, 2, 1,
           ])
@@ -362,9 +354,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
           yield* Fiber.join(first.fiber)
           yield* Effect.forEach(early, Fiber.join)
 
-          // The crash came before the first handler's commit, so the others
-          // never ran in the batch; nothing committed, and each command then
-          // ran in a transaction of its own.
           expect(before.map((label) => runs.get(label))).toEqual([2, 1, 1])
           let committed = yield* transactions(ledger.ref)
           expect(new Set(ids.slice(0, 3).map((id) => committed.get(id))).size).toBe(3)
@@ -386,7 +375,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
           const replies = yield* Effect.forEach(late, Fiber.join)
           expect(replies.at(-1)).toMatchObject({ marks: 8 })
 
-          // The batch committed before the crash; its retries replayed.
           expect(after.map((label) => runs.get(label))).toEqual([1, 1, 1])
           committed = yield* transactions(ledger.ref)
           expect(new Set(ids.slice(3).map((id) => committed.get(id))).size).toBe(1)
@@ -438,8 +426,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
           yield* Fiber.join(first.fiber)
           expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual(ids.map(() => undefined))
 
-          // Five calls, one reduce over their combined input, one transaction,
-          // and a receipt under every original id.
           expect(reductions.count - before).toBe(1)
           const committed = yield* transactions(ledger.ref)
           expect(ids.every((id) => committed.has(id))).toBe(true)
@@ -449,7 +435,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 6,
           })
 
-          // Each id replays its own receipt without reducing again.
           expect(yield* ledger.Bump(3).pipe(Actor.commandId(ids[2]!))).toBe(undefined)
           expect(reductions.count - before).toBe(1)
           expect((yield* test.inspect(ledger.ref)).receipts).toBe(6)
@@ -476,8 +461,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
           yield* Fiber.join(first.fiber)
           yield* Effect.forEach(waiting, Fiber.join)
 
-          // Two merged turns in one batch: the first 1,024 calls, then the 6
-          // behind them.
           expect(reductions.count - before).toBe(2)
           const committed = yield* transactions(ledger.ref)
           expect(new Set(ids.map((id) => committed.get(id))).size).toBe(1)
@@ -516,8 +499,6 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
           yield* first.release
           yield* Fiber.join(first.fiber)
 
-          // The combined input 16 made the merged reduce throw; alone, only
-          // the call carrying 13 does.
           expect(yield* Fiber.join(a!)).toEqual(Exit.succeed(undefined))
           const failed = yield* Fiber.join(x!)
           expect(Exit.isFailure(failed) && Cause.hasDies(failed.cause)).toBe(true)

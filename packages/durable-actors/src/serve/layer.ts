@@ -29,16 +29,15 @@ import {
   RunnerAtCapacity,
   Unauthorized,
 } from "../errors/actor.ts"
-import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ContentStore } from "../handles/content.ts"
 import { MAX_CONTENT_BYTES } from "../runtime/content/store.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
 import { isVersion } from "../identity/version.ts"
 import {
-  build,
+  buildServedApi,
   CONTENT_ROUTE,
-  document,
+  openApiDocument,
   memberPath,
   PROTOCOL_OPERATIONS,
   PROTOCOL_PATHS,
@@ -62,7 +61,7 @@ import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
 import { handleMcp, type ToolCall, type ToolResult } from "./mcp/endpoint.ts"
 import { mcpTools } from "./mcp/tools.ts"
-import { feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
+import { cursorErrorBody, feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
 import { MAX_AWAITING_HELLO, socketSession } from "./sessions/socket.ts"
 import { streamResponse } from "./sessions/stream.ts"
 import {
@@ -74,6 +73,7 @@ import {
   undecodable,
 } from "./wire.ts"
 
+/** Options of `Actor.serve`; `R` is what `auth` needs from the environment. */
 export interface ServeOptions<R> {
   /** Actor definitions to serve; their layers are provided as usual. */
   readonly actors: ReadonlyArray<{ readonly name: string }>
@@ -99,10 +99,11 @@ export interface ServeOptions<R> {
   }
   /** Browser origins allowed besides the server's own. Requests without `Origin` are always served. */
   readonly origins?: ReadonlyArray<string>
+  /** Size limits; each falls back to its default. */
   readonly limits?: {
-    /** Default 1 MiB. */
+    /** Largest request body in bytes. Default 1 MiB. */
     readonly requestBytes?: number
-    /** Default 8 KiB. */
+    /** Largest `authorization`, `cookie` or assertion header, and frame credential, in bytes. Default 8 KiB. */
     readonly credentialBytes?: number
     /**
      * The body limit of `POST /content`, the one route exempt from
@@ -130,15 +131,17 @@ const ALLOWED_HEADERS = [
   "tracestate",
 ].join(", ")
 
-// Clients mint ids up to a second or a round trip behind the database clock,
-// then retry within the window; shorter windows expire ids before delivery.
+/**
+ * Clients mint ids up to a second or a round trip behind the database clock,
+ * then retry within the window; shorter windows expire ids before delivery.
+ */
 const MIN_RETRY_WINDOW_MS = 60_000
 
 const EXPOSED_HEADERS = ["x-request-id", "durable-now", "durable-version", "retry-after"].join(", ")
 
 const JSON_TYPE = /^application\/json[ ]*(;.*)?$/i
 
-// A quoted value is the idempotency-key draft's structured-field string.
+/** A quoted value is the idempotency-key draft's structured-field string. */
 const QUOTED = /^"(.*)"$/
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true })
@@ -235,8 +238,7 @@ const offeredProtocols = (request: HttpServerRequest.HttpServerRequest) =>
     onSome: (value) => value.split(",").map((protocol) => protocol.trim()),
   })
 
-// A connection route answers only a WebSocket upgrade that offers our subprotocol first,
-// which the server then selects.
+/** A connection route answers only a WebSocket upgrade that offers our subprotocol first, which the server then selects. */
 const isConnectionUpgrade = (request: HttpServerRequest.HttpServerRequest) =>
   Option.exists(
     Headers.get(request.headers, "upgrade"),
@@ -261,9 +263,46 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
 }
 
 /**
- * Serves `actors`' public commands, reducers, and queries over HTTP by adding
- * routes to the `HttpRouter`, plus `/protocol`, `/command-ids`, `/ready`, and,
- * when configured, the OpenAPI document.
+ * Serves `actors`' public commands, reducers, queries, streams, connections,
+ * event feeds, and content over HTTP by adding routes to the `HttpRouter`,
+ * plus `/protocol`, `/command-ids`, `/ready`, and, when configured, the
+ * OpenAPI document. Building the layer dies when an actor is listed twice, a
+ * member collides with a protocol route, the runtime's retry window is under
+ * 60 seconds, an actor's layers are not provided, `limits.contentBytes` is out
+ * of range, or the auth provider declares two credentials of one OpenAPI
+ * scheme (the document names one scheme per kind, so the second would vanish).
+ *
+ * Guarantees and ordering:
+ * - Every route checks the origin before authenticating, then the protocol
+ *   version.
+ * - A credential bound to a request admits only that request, checked before
+ *   any turn; a renewal binds the session's upgrade path and its own session id.
+ * - A malformed `durable-min-version` is refused, because ignoring it would
+ *   silently drop the caller's read-your-writes guarantee.
+ * - A command accepted for execution continues if the client disconnects: the
+ *   turn runs in the layer's scope and only the caller's wait is interrupted.
+ * - A request with neither `content-length` nor `transfer-encoding` may carry
+ *   no body stream at all, and is read as empty.
+ * - A connection is a WebSocket upgrade; nothing is authorized or woken before
+ *   its `hello`. A non-browser client, or a cookie provider, may authenticate
+ *   the upgrade request itself.
+ * - An event feed authorizes every tag the caller reads (there is no
+ *   wildcard), answers cursor errors before any stream starts, and never
+ *   creates the actor it follows. A browser's reconnect resumes from
+ *   `Last-Event-ID`.
+ * - A content upload streams into the store hashed as it arrives; past the
+ *   limit its transaction rolls back and nothing is stored. A sweep between
+ *   resolving a download's name and reading its bytes ends the body before any
+ *   byte, short of its declared length.
+ * - `/ready` carries no credentials and is never cached, because a stale
+ *   answer would route traffic to a draining runner.
+ * - With a provider that has `refreshKeys`, the edge's push after it revokes a
+ *   signing key rereads the key set at once.
+ *
+ * @example
+ * ```ts
+ * const Api = Actor.serve({ actors: [Counter], auth: Actor.auth.none, basePath: "/api" })
+ * ```
  */
 export const serve = <R = never>(options: ServeOptions<R>) =>
   HttpRouter.use(
@@ -313,7 +352,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           new Error(`Actor.serve: mcp.path and openapi.path are both ${options.mcp.path}`),
         )
 
-      // The document names one security scheme per kind, so a second credential of a kind would vanish from it.
       const schemes = options.auth.credentials.map(schemeName)
 
       if (new Set(schemes).size !== schemes.length)
@@ -370,7 +408,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const contentStore = yield* Effect.serviceOption(ContentStore)
       const withCookies = readsCookies(options.auth)
       const withAssertion = options.auth.credentials.some(Credential.$is("Assertion"))
-      const api = build({ definitions, basePath, content: Option.isSome(contentStore) })
+      const api = buildServedApi({ definitions, basePath, content: Option.isSome(contentStore) })
 
       const withProtocol = (
         request: HttpServerRequest.HttpServerRequest,
@@ -392,7 +430,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           : stamped
       }
 
-      // Every route: origin before authentication, then the protocol version.
       const guard = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.gen(function* () {
           const origin = Headers.get(request.headers, "origin")
@@ -436,7 +473,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             ),
           )
 
-      // `credential` is a WebSocket frame's, read instead of the request's `authorization`.
       const authenticate = (request: HttpServerRequest.HttpServerRequest, credential?: string) =>
         Effect.gen(function* () {
           const authorization = Headers.get(request.headers, "authorization")
@@ -480,7 +516,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return authenticated
         })
 
-      // The body's bytes, bounded; empty when there is none.
       const readBytes = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.gen(function* () {
           const length = Headers.get(request.headers, "content-length")
@@ -490,7 +525,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
 
-          // A request without framing headers may carry no body stream at all.
           const unframed =
             Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
 
@@ -544,7 +578,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         reason: Unauthorized.make({ code: "invalid_credentials" }),
       })
 
-      // A bound credential admits only the request it was issued for, checked before any turn.
       const checkBinding = (
         authenticated: Authenticated,
         request: HttpServerRequest.HttpServerRequest,
@@ -567,7 +600,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               ),
             )
 
-      // A renewal binds the session's upgrade path and its own session id.
       const checkRenewal = (
         authenticated: Authenticated,
         request: HttpServerRequest.HttpServerRequest,
@@ -597,8 +629,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         return QUOTED.exec(value)?.[1] ?? value
       }
 
-      // A malformed token is refused rather than ignored, which would silently
-      // drop the caller's read-your-writes guarantee.
       const minVersion = (request: HttpServerRequest.HttpServerRequest) => {
         const token = Option.getOrUndefined(Headers.get(request.headers, "durable-min-version"))
 
@@ -756,7 +786,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           )
         }
 
-      // A stream subscribes on the actor's owner and answers its elements over SSE until it ends.
       const streamHandler = (definition: ServedDefinition, member: ServedMember) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const id = yield* pathId(definition)
@@ -794,14 +823,12 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const awaiting = awaitingHello.get(actors) ?? { count: 0 }
       awaitingHello.set(actors, awaiting)
 
-      // A connection is a WebSocket upgrade; nothing is authorized or woken before its `hello`.
       const connectionHandler = (definition: ServedDefinition, connection: ServedConnection) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const id = yield* pathId(definition)
 
           if (!isConnectionUpgrade(request)) return yield* invalidInput("unsupported_protocol")
 
-          // A non-browser client, or a cookie provider, may authenticate the upgrade itself.
           const upgrade =
             Headers.has(request.headers, "authorization") ||
             (withCookies && Headers.has(request.headers, "cookie")) ||
@@ -849,10 +876,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return HttpServerResponse.empty()
         })
 
-      const encodeCursorError = Schema.encodeEffect(Schema.Union([UnknownCursor, RetentionGap]))
-
-      // An event feed: authorized per event tag, answered with its cursor's errors before any
-      // stream starts, and never creating the actor it follows.
       const feedHandler = (definition: ServedDefinition) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const id = yield* pathId(definition)
@@ -861,11 +884,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           if (tags.length > MAX_FEED_FILTERS) return yield* invalidInput("too_many_filters")
 
-          // No wildcard: every tag a caller reads is one `authorize` sees.
           if (tags.length === 0 || tags.some((tag) => !definition.feeds.includes(tag)))
             return yield* invalidInput("unknown_event")
 
-          // A browser's own reconnect resumes where it stopped.
           const after = Option.getOrUndefined(
             Option.orElse(Headers.get(request.headers, "last-event-id"), () =>
               Option.fromNullishOr(query.get("after")),
@@ -904,7 +925,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           if (checked !== undefined) {
             yield* held.close
-            const body = yield* encodeCursorError(checked.error).pipe(Effect.orDie)
+            const body = yield* cursorErrorBody(checked.error)
 
             return HttpServerResponse.jsonUnsafe(body, { status: checked.status })
           }
@@ -915,8 +936,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           })
         })
 
-      // The body streams into the store as it arrives, hashed on the way; past
-      // the limit the upload's transaction rolls back and nothing is stored.
       const uploadHandler = (store: ContentStore["Service"]) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const authenticated = yield* authenticate(request)
@@ -925,7 +944,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           if (Option.isSome(length) && Number(length.value) > contentBytes)
             return yield* invalidInput("too_large")
 
-          // A request without framing headers may carry no body stream at all.
           const empty =
             (Option.isSome(length) && Number(length.value) === 0) ||
             (Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding"))
@@ -960,8 +978,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           if (Option.isNone(found)) return yield* invalidInput("unknown_content")
 
-          // A sweep between resolving the name and reading the bytes ends the
-          // body before any byte, short of its declared length.
           return HttpServerResponse.stream(found.value.bytes, {
             contentType: "application/octet-stream",
             contentLength: found.value.size,
@@ -1063,7 +1079,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         ),
       )
 
-      // Probes carry no credentials, and a stale answer would route traffic to a draining runner.
       yield* router.add(
         "GET",
         `${basePath}/ready` as HttpRouter.PathInput,
@@ -1092,7 +1107,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         ),
       )
 
-      // The edge's push after it revokes a signing key: reread the key set now.
       const refreshKeys = options.auth.refreshKeys
 
       if (refreshKeys !== undefined)
@@ -1125,7 +1139,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       yield* router.add("OPTIONS", `${basePath}/*` as HttpRouter.PathInput, fallback)
 
       if (options.openapi !== undefined || options.mcp !== undefined) {
-        const spec = document({
+        const spec = openApiDocument({
           api,
           auth: options.auth,
           title: options.openapi?.title ?? "durable-actors",

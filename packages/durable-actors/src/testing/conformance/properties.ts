@@ -43,14 +43,11 @@ export const propertiesLayer = Tally.toLayer(
   }),
 )
 
-// Every injected crash restarts the entity through Cluster's defect backoff, which
-// starts at 500 ms and grows for the entity type, so crash cases stay few.
 const CRASH_RUNS = 8
 
 const small = (maximum: number) =>
   Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum })))
 
-// Distinct per generated case, so no case observes another's durable rows.
 let cases = 0
 
 const nextCase = (prefix: string) => {
@@ -213,7 +210,6 @@ const reversed = (value: typeof Json.Type): typeof Json.Type => {
 const storableText = (text: string) =>
   !text.includes("\u0000") && new TextDecoder().decode(new TextEncoder().encode(text)) === text
 
-// JSONB text is well-formed Unicode without NUL; Postgres rejects anything else before hashing.
 const storable = (value: typeof Json.Type): boolean => {
   if (Predicate.isString(value)) return storableText(value)
 
@@ -225,6 +221,7 @@ const storable = (value: typeof Json.Type): boolean => {
   return true
 }
 
+/** Property cases: payload hashing and receipts checked against a model over generated inputs. */
 export const propertiesConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "property: hashes a payload by its JSONB canonical text regardless of key order or spacing",

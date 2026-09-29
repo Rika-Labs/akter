@@ -21,7 +21,6 @@ const TallyState = Actor.state({
   count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
-// Calls of `reduce`, so the merging case can count merged turns.
 const tickReductions = { count: 0 }
 
 /** A commutative reducer: calls already waiting on the owner merge into one turn. */
@@ -189,19 +188,15 @@ const killDuringTurn = (expect: ConformanceExpect, point: "beforeCommit" | "afte
     yield* pause.reached
     const killed = (yield* lockOf(caller, ref)).now
     yield* cluster.kill(owner)
-    // Read after the kill, the row holds the dead runner's last refresh.
     const held = yield* lockOf(caller, ref)
     yield* pause.release
 
-    // Runner loss before COMMIT leaves no consequence; after COMMIT, the turn stands.
     expect(yield* inspect(caller, ref)).toMatchObject(
       point === "beforeCommit"
         ? { state: { count: 1 }, receipts: 1, events: 1 }
         : { state: { count: 3 }, receipts: 2, events: 2 },
     )
 
-    // Polled well inside the refresh interval, the first row under a new
-    // address still carries the survivor's acquisition time.
     const taken = yield* lockOf(caller, ref).pipe(
       Effect.repeat({
         schedule: Schedule.spaced("10 millis"),
@@ -215,7 +210,6 @@ const killDuringTurn = (expect: ConformanceExpect, point: "beforeCommit" | "afte
 
     const next = (yield* cluster.owner(ref))!
     expect(next === owner).toBe(false)
-    // No survivor takes the shard while the dead runner's lock is live.
     expect(taken.acquired - held.acquired >= EXPIRATION_SECONDS * 1000).toBe(true)
 
     expect(yield* Fiber.join(retried)).toBe(3)
@@ -233,6 +227,7 @@ const killDuringTurn = (expect: ConformanceExpect, point: "beforeCommit" | "afte
     )
   })
 
+/** Multi-runner cases on three runners: placement on exactly one runner, merging of commutative calls into one turn, and retry on the next owner after a kill. */
 export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "merges commutative calls from three runners on the owner into one turn with one receipt per command id",
@@ -250,8 +245,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           const owner = (yield* cluster.owner(ref))!
           const onOwner = cluster.on(owner)
 
-          // The owner holds one turn open, and each runner's calls queue
-          // behind it, one arrival at a time.
           const held = yield* onOwner(ActorTest.use((test) => test.pauseNext("beforeCommit")))
           const first = yield* add((owner + 1) % 3, id, 1).pipe(Effect.forkChild)
           yield* held.reached
@@ -281,7 +274,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
 
               yield* queued.reached
               yield* queued.release
-              // The hook resumes on the next tick, and the call joins a batch only once it has finished.
               yield* Effect.yieldNow
               calls.push({ runner, commandId })
             }
@@ -291,8 +283,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Fiber.join(first)).toBe(2)
           expect(yield* Effect.forEach(ticks, Fiber.join)).toEqual(calls.map(() => undefined))
 
-          // One reduce for twelve calls from three runners, one transaction,
-          // and a receipt under every original id.
           expect(tickReductions.count - before).toBe(1)
 
           const receipts = yield* cluster.on(owner)(
@@ -315,7 +305,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 14,
           })
 
-          // A retry from another runner replays its own receipt.
           const retried = calls[5]!
           expect(
             yield* cluster.on((retried.runner + 1) % 3)(
@@ -346,7 +335,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
             const activated = (yield* inspect(0, yield* refOf(id))).generation
 
             for (let runner = 1; runner < 3; runner++) yield* add(runner, id, 1)
-            // One activation served all three calls, so the others crossed to it.
             expect((yield* inspect(0, yield* refOf(id))).generation).toBe(activated)
 
             const owner = yield* cluster.owner(yield* refOf(id))
@@ -395,13 +383,10 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* add(stale, "stale", 1)).toBe(1)
           const first = Number((yield* inspect(rival, ref)).generation)
 
-          // The paused runner keeps its activation and still routes the actor
-          // to itself; the rival takes the shard once the locks expire.
           const heartbeat = yield* cluster.pauseHeartbeat(stale)
           yield* awaitOwner(ref, (current) => current === rival)
           expect(yield* add(rival, "stale", 10)).toBe(11)
 
-          // A commit from the stale cache would answer 101 and lose the rival's turn.
           expect(yield* add(stale, "stale", 100)).toBe(111)
           yield* heartbeat.resume
 
@@ -448,7 +433,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
 
           const inspection = yield* inspect(rival, ref)
           expect(inspection).toMatchObject({ state: { count: 25 }, receipts: 25, events: 25 })
-          // The runners took authority from each other at least once each way.
           expect(Number(inspection.generation) >= first + 2).toBe(true)
         }),
       ),
@@ -472,8 +456,6 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* add(other, "restart", 1)).toBe(2)
           expect(yield* cluster.owner(ref)).toBe(other)
 
-          // The restarted runner is a new process under a new address, so the
-          // shards it is assigned now need not be the ones it held before.
           yield* cluster.restart(owner)
           yield* cluster.ready
           expect((yield* cluster.owner(ref)) === undefined).toBe(false)

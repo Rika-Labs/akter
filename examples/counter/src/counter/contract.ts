@@ -1,6 +1,12 @@
 import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
+/** The count after an increment commits, so a browser can follow it over the event feed. */
+export class Incremented extends Actor.Event<Incremented>()("Incremented", {
+  amount: Schema.Int,
+  count: Schema.Int,
+}) {}
+
 /** Adds the amount to the count and replies with the new total. */
 export const Increment = Actor.command("Increment", { input: Schema.Int, output: Schema.Int })
 
@@ -37,5 +43,7 @@ export const Snapshot = Actor.make("Snapshot", {
 export const Counter = Actor.make("Counter", {
   key: Schema.NonEmptyString,
   state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  events: [Incremented],
+  feeds: [Incremented],
   api: { Increment, Checkpoint, Double },
 })

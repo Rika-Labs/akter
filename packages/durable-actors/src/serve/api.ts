@@ -112,7 +112,8 @@ const NotReady = Schema.Struct({ ready: Schema.Literal(false), reason: Readiness
   httpApiStatus: 503,
 })
 
-export const MintedCommandId = Schema.Struct({ commandId: Schema.String }).annotate({
+/** The body of `POST /command-ids`. */
+const MintedCommandId = Schema.Struct({ commandId: Schema.String }).annotate({
   identifier: "MintedCommandId",
 })
 
@@ -121,11 +122,12 @@ const IdempotencyKey = Schema.String.annotate({
 })
 
 /** The path of one served member, with `:id` for keyed and minted actors. */
-export interface ServedRoute {
+interface ServedRoute {
   readonly definition: ServedDefinition
   readonly member: { readonly tag: string }
 }
 
+/** The path of a served member below the base path, as the router and the OpenAPI document both spell it. */
 export const memberPath = ({ definition, member }: ServedRoute) =>
   definition.key === "singleton"
     ? `/actors/${definition.name}/${member.tag}`
@@ -163,8 +165,10 @@ const frameParts = (connection: ServedConnection) => ({
   client: connection.client,
 })
 
-// OpenAPI can't describe a socket's message flow, so a connection is an upgrade
-// operation that names its frame schemas; the envelope is the served protocol's.
+/**
+ * OpenAPI can't describe a socket's message flow, so a connection is an upgrade
+ * operation that names its frame schemas; the envelope is the served protocol's.
+ */
 const connectionEndpoint = (
   basePath: string,
   definition: ServedDefinition,
@@ -198,7 +202,7 @@ const connectionEndpoint = (
     }
   })
 
-// An event feed is served over SSE: one message per event, its cursor as the `id`.
+/** An event feed is served over SSE: one message per event, its cursor as the `id`. */
 const feedEndpoint = (basePath: string, definition: ServedDefinition) =>
   HttpApiEndpoint.get(
     "events",
@@ -242,7 +246,7 @@ const STREAM_ERRORS = {
 
 const streamErrors = errorSchemas(STREAM_ERRORS, "Stream")
 
-// A stream is served over SSE: `element` messages, then one `end`; OpenAPI names its element schema.
+/** A stream is served over SSE: `element` messages, then one `end`; OpenAPI names its element schema. */
 const streamEndpoint = (basePath: string, definition: ServedDefinition, member: ServedMember) =>
   HttpApiEndpoint.post(
     member.tag,
@@ -294,7 +298,7 @@ const contentParams = (definition: ServedDefinition) => {
   return definition.key === "singleton" ? entry : { id: Schema.String, ...entry }
 }
 
-// Downloads stream the entry's bytes; grants answer a fresh `ContentRef`.
+/** Downloads stream the entry's bytes; grants answer a fresh `ContentRef`. */
 const contentEndpoints = (basePath: string, definition: ServedDefinition) => [
   HttpApiEndpoint.get(CONTENT_ROUTE, contentPath(basePath, definition) as `/${string}`, {
     params: contentParams(definition),
@@ -359,14 +363,15 @@ const UNAUTHENTICATED: ReadonlySet<string> = new Set([
   `${PROTOCOL_GROUP}.ready`,
 ])
 
-export interface ServedRoutes {
+interface ServedRoutes {
   readonly definitions: ReadonlyArray<ServedDefinition>
   readonly basePath: string
   /** Whether the runtime serves content, so `POST /content` and the content routes exist. */
   readonly content: boolean
 }
 
-export const build = ({ definitions, basePath, content }: ServedRoutes) => {
+/** The `HttpApi` of the served actors: the protocol group, then one group per actor with members, connections, feed, content, and streams. */
+export const buildServedApi = ({ definitions, basePath, content }: ServedRoutes) => {
   const groups: Array<HttpApiGroup.Constraint> = [
     HttpApiGroup.make(PROTOCOL_GROUP).add(
       HttpApiEndpoint.get("protocol", `${basePath}/protocol` as `/${string}`, {
@@ -417,9 +422,9 @@ export const build = ({ definitions, basePath, content }: ServedRoutes) => {
   return api
 }
 
-export type ServedApi = ReturnType<typeof build>
+type ServedApi = ReturnType<typeof buildServedApi>
 
-export interface DocumentOptions {
+interface DocumentOptions {
   readonly api: ServedApi
   readonly auth: AuthProvider<unknown>
   readonly title: string
@@ -445,7 +450,7 @@ const securityScheme = Credential.$match({
  * The OpenAPI 3.1 document of `api`. Every authenticated operation lists the
  * provider's credentials as alternatives, since any one of them authenticates.
  */
-export const document = ({ api, auth, title, version }: DocumentOptions) => {
+export const openApiDocument = ({ api, auth, title, version }: DocumentOptions) => {
   const spec = OpenApi.fromApi(api)
 
   const security = auth.credentials.map((credential) => ({
