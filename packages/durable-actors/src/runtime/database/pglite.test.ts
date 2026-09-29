@@ -146,6 +146,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [18, "rls"],
           ])
           expect(yield* sql`SELECT to_regclass('actor_blobs')::text AS blobs`).toEqual([
             { blobs: "actor_blobs" },
@@ -180,6 +181,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [18, "rls"],
           ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
@@ -224,6 +226,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [18, "rls"],
           ])
           expect(
             yield* sql`SELECT intent_id, due_at_ms::int AS due, scheduled_at_ms FROM actor_outbox`,
@@ -273,6 +276,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [18, "rls"],
           ])
           expect(
             yield* sql`SELECT intent_id, running, maybe_applied, ready_at_ms::int AS ready,
@@ -350,6 +354,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [18, "rls"],
           ])
           expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toHaveLength(
             11,
@@ -416,6 +421,7 @@ describe("PGlite migrations", () => {
             [15, "effect_control"],
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [18, "rls"],
           ])
           expect(
             yield* sql`SELECT indexname FROM pg_indexes
@@ -452,6 +458,7 @@ describe("PGlite migrations", () => {
           expect(yield* migrate).toEqual([
             [16, "final_effect_failures"],
             [17, "subscriptions"],
+            [18, "rls"],
           ])
           // A row written before the column retries by its attempt count, as it did.
           expect(yield* sql`SELECT intent_id, attempts, final_attempt FROM actor_outbox`).toEqual([
@@ -483,7 +490,10 @@ describe("PGlite migrations", () => {
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
               actor_type, actor_id, target_type, target_id, command, payload, caller)
             VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
-          expect(yield* migrate).toEqual([[17, "subscriptions"]])
+          expect(yield* migrate).toEqual([
+            [17, "subscriptions"],
+            [18, "rls"],
+          ])
           // Pending intents survive; the outbox now takes feed and control rows too.
           expect(yield* sql`SELECT intent_id, kind FROM actor_outbox`).toEqual([
             { intent_id: "pending", kind: "intent" },
@@ -504,6 +514,40 @@ describe("PGlite migrations", () => {
               due: "actor_subscriptions_due",
             },
           ])
+          expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+
+  it("applies 0018_rls to a populated database, leaving the owner every tenant's rows", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    const throughSubscriptions = Migrator.make({})({
+      table: "actor_migrations",
+      loader: Migrator.fromRecord(
+        Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0018")),
+      ),
+    })
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* throughSubscriptions
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (1, 'a', 'Sender', 's'), (2, 'b', 'Sender', 's')`
+          expect(yield* migrate).toEqual([[18, "rls"]])
+
+          // The migrating role owns the tables, so the policies leave it every row.
+          expect(yield* sql`SELECT tenant_id FROM actor_generations ORDER BY tenant_id`).toEqual([
+            { tenant_id: "a" },
+            { tenant_id: "b" },
+          ])
+          expect(
+            yield* sql`SELECT count(*)::int AS tables FROM pg_class c JOIN pg_policy p ON p.polrelid = c.oid
+              WHERE p.polname = 'durable_tenant' AND c.relrowsecurity AND NOT c.relforcerowsecurity`,
+          ).toEqual([{ tables: 13 }])
           expect(yield* migrate).toEqual([])
         }),
       )
@@ -543,6 +587,7 @@ describe("PGlite migrations", () => {
             { migration_id: 15 },
             { migration_id: 16 },
             { migration_id: 17 },
+            { migration_id: 18 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },
