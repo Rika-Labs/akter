@@ -473,6 +473,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "answers /ready with 503 draining while a drain waits for an in-flight command, which still commits",
+    timeoutMs: 60_000,
     run: ({ expect, environment }) =>
       Effect.runPromise(
         Effect.promise(() =>
@@ -480,17 +481,19 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             Effect.gen(function* () {
               const server = yield* serveHttp()
               const token = `${yield* tenantOf}:alice`
-              const pause = yield* ActorTest.use((test) => test.pauseNext("beforeCommit"))
+              const entered = yield* Deferred.make<void>()
+              const release = yield* Deferred.make<void>()
 
-              const post = yield* server
-                .send("/actors/HttpRoom/in-flight/Post", {
-                  token,
-                  key: yield* server.mint(),
-                  body: { text: "held" },
-                })
+              // Only this command waits on the gate, so no other turn on the runtime is held.
+              gate.hold = Deferred.succeed(entered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+              )
+
+              const held = yield* server
+                .send("/actors/HttpRoom/in-flight/Hold", { token, key: yield* server.mint() })
                 .pipe(Effect.forkChild)
 
-              yield* pause.reached
+              yield* Deferred.await(entered)
 
               const drain = yield* RuntimeControl.use((control) =>
                 control.drain({ deadline: "30 seconds" }),
@@ -505,12 +508,19 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
               expect(draining.body).toEqual({ ready: false, reason: "draining" })
 
-              yield* pause.release
+              yield* Deferred.succeed(release, undefined)
               expect((yield* Fiber.join(drain)).outcome).toBe("clean")
-              expect(yield* Fiber.join(post)).toMatchObject({ status: 200, body: 1 })
+              expect(yield* Fiber.join(held)).toMatchObject({ status: 200, body: 1 })
             }),
           ),
-        ).pipe(Effect.ensuring(environment.restart)),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              gate.hold = Effect.void
+            }),
+          ),
+          Effect.ensuring(environment.restart),
+        ),
       ),
   },
   {
