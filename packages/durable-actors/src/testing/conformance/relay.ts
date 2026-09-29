@@ -7,8 +7,10 @@ import {
   Exit,
   Fiber,
   Layer,
+  Predicate,
   Schedule,
   Schema,
+  Tracer,
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, Intent, User } from "../../index.ts"
@@ -16,6 +18,7 @@ import type { Request } from "../../handles/actors.ts"
 import type { EffectPolicy } from "../../members/effect.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { layer as runtimeLayer } from "../../runtime/layer.ts"
+import { SpanNames } from "../../runtime/telemetry/spans.ts"
 import { TurnHooks } from "../../runtime/turn/hooks.ts"
 import { claimIntents } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -267,6 +270,8 @@ interface ClusterSettings {
   readonly executors?: RuntimeOptions["executors"]
   /** Runners built without the relay executors. */
   readonly withoutExecutors?: ReadonlyArray<number>
+  /** Receives every span the runners start, in start order. */
+  readonly spans?: Array<Tracer.Span>
 }
 
 /** Builds a fresh database and `runners` runners on it for one case. */
@@ -281,21 +286,39 @@ const withCluster = <A, E>(
     Effect.gen(function* () {
       yield* reset(fixture)
       const database = yield* environment.freshDatabase
+      const spans = settings.spans
+
+      const cluster = ActorTest.cluster({
+        database,
+        runners,
+        shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
+        actors: Layer.merge(relayLayer(fixture), mintLayer),
+        runnerActors: (runner) =>
+          (settings.withoutExecutors ?? []).includes(runner)
+            ? Layer.empty
+            : (runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>),
+        as: User.make({ subject: "alice" }),
+        relay: settings.relay,
+        executors: settings.executors,
+      })
 
       const context = yield* Layer.build(
-        ActorTest.cluster({
-          database,
-          runners,
-          shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
-          actors: Layer.merge(relayLayer(fixture), mintLayer),
-          runnerActors: (runner) =>
-            (settings.withoutExecutors ?? []).includes(runner)
-              ? Layer.empty
-              : (runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>),
-          as: User.make({ subject: "alice" }),
-          relay: settings.relay,
-          executors: settings.executors,
-        }),
+        spans === undefined
+          ? cluster
+          : Layer.provide(
+              cluster,
+              Layer.succeed(
+                Tracer.Tracer,
+                Tracer.make({
+                  span: (options) => {
+                    const span = Tracer.nativeTracer.span(options)
+                    spans.push(span)
+
+                    return span
+                  },
+                }),
+              ),
+            ),
       ).pipe(
         Effect.provideService(TurnHooks, {
           at: (point, request) =>
@@ -432,6 +455,59 @@ const faults = <A>(runner: number, use: (test: ActorTest["Service"]) => Effect.E
 const takenOnce = (fixture: RelayFixture, ids: ReadonlyArray<string>) =>
   ids.every((id) => fixture.taken.get(id) === 1)
 
+/**
+ * Whether every claim's `durable-actors.relay.intent` span has ended, so a
+ * read of `brokenClaims` sees each claim's whole hold.
+ */
+const claimsSettled = (spans: ReadonlyArray<Tracer.Span>) =>
+  spans.every(
+    (span) => span.name !== SpanNames.relayIntent || Predicate.isTagged(span.status, "Ended"),
+  )
+
+/**
+ * Describes each way a row's claims broke "one runner at a time". The relay
+ * opens one `durable-actors.relay.intent` span per claim and holds it until
+ * the row is deleted or backed off, and the claim returns the row's `attempts`
+ * after counting itself. A row claimed again after a failed delivery is a
+ * later attempt that starts once the first ended; a second runner holding it
+ * concurrently overlaps the first, and two claims taken from one row state
+ * carry the same attempt. The runtime's claim count alone cannot tell these
+ * apart, because a legitimate retry raises it too.
+ */
+const brokenClaims = (spans: ReadonlyArray<Tracer.Span>) => {
+  const held = new Map<
+    string,
+    Array<{ readonly attempt: unknown; readonly startedAt: bigint; readonly endedAt: bigint }>
+  >()
+
+  for (const span of spans) {
+    if (span.name !== SpanNames.relayIntent || !Predicate.isTagged(span.status, "Ended")) continue
+    const row = String(span.attributes.get("command.id"))
+
+    held.set(row, [
+      ...(held.get(row) ?? []),
+      {
+        attempt: span.attributes.get("relay.attempt"),
+        startedAt: span.status.startTime,
+        endedAt: span.status.endTime,
+      },
+    ])
+  }
+
+  return [...held].flatMap(([row, claims]) =>
+    claims
+      .sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0))
+      .flatMap((claim, index) => [
+        ...(claim.attempt === index + 1
+          ? []
+          : [`${row}: claim ${index + 1} returned attempt ${String(claim.attempt)}`]),
+        ...(index === 0 || claims[index - 1]!.endedAt <= claim.startedAt
+          ? []
+          : [`${row}: claim ${index + 1} started before claim ${index} ended`]),
+      ]),
+  )
+}
+
 const percentile = (samples: ReadonlyArray<number>, p: number) => {
   const sorted = [...samples].sort((a, b) => a - b)
 
@@ -457,12 +533,14 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "claims each due row on exactly one runner",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
-      withCluster(
+    run: ({ expect, environment, fixture: { relay: fixture } }) => {
+      const spans: Array<Tracer.Span> = []
+
+      return withCluster(
         environment,
         fixture,
         3,
-        {},
+        { spans },
         Effect.gen(function* () {
           const ids = Array.from({ length: 300 }, (_, index) => `claimed-${index}`)
           yield* stage(0, ids)
@@ -476,12 +554,62 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "10 seconds",
             "the outbox to empty",
           )
+          yield* eventually(
+            Effect.sync(() => claimsSettled(spans)),
+            "10 seconds",
+            "every claim to end",
+          )
 
           expect(fixture.claims.size).toBe(300)
-          expect([...fixture.claims.values()].every((count) => count === 1)).toBe(true)
+          expect(brokenClaims(spans)).toEqual([])
           expect(yield* receipts(2, "Take")).toBe(300)
         }),
-      ),
+      )
+    },
+  },
+  {
+    name: "counts a delivery retried after a failure as the row's next attempt, not a second holder",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture: { relay: fixture } }) => {
+      const spans: Array<Tracer.Span> = []
+
+      return withCluster(
+        environment,
+        fixture,
+        3,
+        { spans },
+        Effect.gen(function* () {
+          const ids = Array.from({ length: 30 }, (_, index) => `retried-${index}`)
+          const failing = new Set(ids.filter((_, index) => index % 10 === 0))
+          fixture.onTake = (id) =>
+            failing.delete(id) ? Effect.die(new Error("Receiver defect")) : Effect.void
+          yield* stage(0, ids)
+          yield* eventually(
+            outboxRows(1).pipe(Effect.map((rows) => rows.length === 0)),
+            "60 seconds",
+            "the outbox to empty",
+          )
+          yield* eventually(
+            Effect.sync(() => claimsSettled(spans)),
+            "10 seconds",
+            "every claim to end",
+          )
+
+          expect(failing.size).toBe(0)
+          expect(ids.filter((id) => fixture.taken.get(id) === 2)).toEqual([
+            "retried-0",
+            "retried-10",
+            "retried-20",
+          ])
+          expect(fixture.claims.size).toBe(30)
+          expect([...fixture.claims.values()].filter((count) => count === 2).length).toBe(3)
+          expect([...fixture.claims.values()].filter((count) => count === 1).length).toBe(27)
+          expect(brokenClaims(spans)).toEqual([])
+          expect(yield* receipts(2, "Take")).toBe(30)
+        }),
+      )
+    },
   },
   {
     name: "redelivers a row after its claim lease when the claiming runner is killed",

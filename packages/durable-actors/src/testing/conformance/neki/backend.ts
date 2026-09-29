@@ -2,7 +2,7 @@ import { Config, Effect, Option } from "effect"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { type ConformanceGroup, conformanceGroups, describeConformance } from "../../conformance.ts"
 import { postgresBackend } from "../postgres/database.ts"
-import { nekiGroups } from "./groups.ts"
+import { nekiExcluded } from "./groups.ts"
 
 /** The connection string of a Neki router; the Neki suite runs only when it is set. */
 export const NEKI_URL_VARIABLE = "TEST_NEKI_DATABASE_URL"
@@ -14,7 +14,7 @@ export const NEKI_SKIP_REASON = `${NEKI_URL_VARIABLE} is not set; Neki runs are 
 export const NEKI_NO_FRESH_DATABASE = "needs a fresh database, which the Neki backend cannot create"
 
 /**
- * Runs the conformance groups of `nekiGroups` against the Neki router that
+ * Runs every conformance group except `nekiExcluded` against the Neki router that
  * `TEST_NEKI_DATABASE_URL` names. With no router configured, every case is
  * registered as skipped under a suite name that says why, so a report never
  * shows one passing; with one, the groups the suite cannot run are registered
@@ -24,7 +24,7 @@ export const NEKI_NO_FRESH_DATABASE = "needs a fresh database, which the Neki ba
  * `routing_key` before the suite starts.
  */
 export const describeNeki = () => {
-  const running = new Set<ConformanceGroup>(nekiGroups)
+  const excluded = new Set<ConformanceGroup>(nekiExcluded)
   const groups = Object.keys(conformanceGroups) as Array<ConformanceGroup>
 
   const url = Option.getOrUndefined(
@@ -44,13 +44,13 @@ export const describeNeki = () => {
     backend: postgresBackend({ url: Effect.succeed(url), neki: true }),
     registrar: { describe, it, beforeAll, afterAll, expect, skip: (name) => it.skip(name) },
     cases: groups
-      .filter((group) => running.has(group))
+      .filter((group) => !excluded.has(group))
       .flatMap((group) => conformanceGroups[group]),
   })
 
   describe(`Neki durable turns not run (${NEKI_NO_FRESH_DATABASE})`, () => {
     for (const { name } of groups
-      .filter((group) => !running.has(group))
+      .filter((group) => excluded.has(group))
       .flatMap((group) => conformanceGroups[group]))
       it.skip(name)
   })

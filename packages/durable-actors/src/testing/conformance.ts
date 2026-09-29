@@ -83,6 +83,7 @@ import {
   edgeConformance,
 } from "./conformance/assertions.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
+import { simulationConformance } from "./conformance/simulation.ts"
 import {
   drainConformance,
   drainFixture,
@@ -1472,6 +1473,7 @@ export const conformanceGroups = {
   effects: effectsConformance,
   progress: progressConformance,
   multiRunner: multiRunnerConformance,
+  simulation: simulationConformance,
   drain: drainConformance,
   pipeline: pipelineConformance,
   batches: batchesConformance,
