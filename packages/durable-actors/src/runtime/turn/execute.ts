@@ -16,6 +16,7 @@ import { isMintedId, provesMint } from "../../identity/mint.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
+import { COMMIT_VERSION } from "../database/replica.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
@@ -589,6 +590,12 @@ export const executeTurn = Effect.fnUntraced(function* (
             (error) => error instanceof RolledBack,
             (rolled) => Effect.succeed(rolled.plan),
           ),
+          Effect.flatMap((plan) =>
+            Effect.map(sql.unsafe<{ version: string }>(COMMIT_VERSION), (rows) => ({
+              ...plan,
+              version: rows[0]!.version,
+            })),
+          ),
         )
 
   const done = yield* transaction.pipe(
@@ -623,6 +630,8 @@ export const executeTurn = Effect.fnUntraced(function* (
     } satisfies CommittedEvents,
     /** Started effects this turn cancelled. */
     cancelledEffects: done.outbox.cancelledIds,
+    /** The commit version a caller's later queries wait for. */
+    version: done.version,
   }
 })
 
@@ -638,7 +647,11 @@ export const executeTurn = Effect.fnUntraced(function* (
 const pipelined = <E, R>(
   turns: TurnConnections["Service"],
   turn: (session: Session, begin: ReadonlyArray<Statement>) => Effect.Effect<Plan, E, R>,
-) =>
+): Effect.Effect<
+  Plan & { readonly version: string },
+  E | SqlError.SqlError,
+  R | SqlClient.SqlClient
+> =>
   Effect.scoped(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
@@ -669,17 +682,25 @@ const pipelined = <E, R>(
 
         const ending = decided.writes === undefined ? "ROLLBACK" : "COMMIT"
 
+        let version = ""
+
+        // The version is read on this session after the transaction ends, in
+        // the same flight, so it covers the turn's commit record and any
+        // receipt the turn replayed.
         yield* pipeline([
           ...(decided.writes ?? []),
           Effect.map(end(ending), (command) => {
             tag = command
+          }),
+          Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
+            version = (result.rows[0] as { version: string }).version
           }),
         ])
 
         if (ending === "COMMIT" && tag !== "COMMIT")
           return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
 
-        return decided
+        return { ...decided, version }
       }).pipe(
         Effect.provideService(sql.transactionService, [asSqlConnection(connection), 0]),
         Effect.onExit((exit) => {

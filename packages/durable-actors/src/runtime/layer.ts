@@ -41,6 +41,7 @@ import {
 import {
   Actors,
   type EffectRegistration,
+  type Executed,
   InternalActors,
   Outcome,
   type QueryRegistration,
@@ -51,6 +52,8 @@ import {
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
+import { caughtUp, ReadReplica, replicaLayer } from "./database/replica.ts"
+import { maxVersion } from "../identity/version.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
@@ -269,6 +272,17 @@ export const layer = (options: Options) => {
       >()
 
       const database = yield* rowsDatabase
+      const primary = Context.get(services, SqlClient.SqlClient)
+      const replica = Option.getOrUndefined(yield* Effect.serviceOption(ReadReplica))
+
+      // The highest commit version a command sent through this runtime has
+      // returned; in-process queries wait for it, as a served client's do.
+      let observed: string | undefined
+
+      const observe = (executed: Executed) =>
+        Effect.sync(() => {
+          observed = maxVersion(observed, executed.version)
+        })
 
       // The holder and transport refer to each other: the transport delivers
       // to this runner's holder, which answers through the transport.
@@ -524,7 +538,7 @@ export const layer = (options: Options) => {
 
               if (external) yield* authorize(request)
 
-              return retained
+              return { outcome: retained, version: admission.version } satisfies Executed
             }
 
             const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(address)
@@ -582,11 +596,11 @@ export const layer = (options: Options) => {
                 ),
               )
 
-            const outcome = yield* retrying(0)
+            const executed = yield* retrying(0)
 
             if (external) yield* authorize(request)
 
-            return outcome
+            return executed
           }).pipe(
             Effect.timeoutOrElse({
               duration: registration.policy.deliveryMs,
@@ -717,8 +731,11 @@ export const layer = (options: Options) => {
           return recorded?.placement
         }).pipe(Effect.provideContext(services), Effect.orDie)
 
+      const relayDeliver = (request: Request) =>
+        Effect.map(dispatch(request, false), (executed) => executed.outcome)
+
       const subscriptions: SubscriptionRelay = yield* subscriptionRelay({
-        deliver: (request) => dispatch(request, false),
+        deliver: relayDeliver,
         local: localSubscriptions,
         placementOf,
         wake: Effect.suspend(() => relay.wake),
@@ -732,7 +749,7 @@ export const layer = (options: Options) => {
       })
 
       const relay = yield* outboxRelay(
-        (request) => dispatch(request, false),
+        relayDeliver,
         () =>
           [...effectRegistrations.values()].flatMap((registration) =>
             [...registration.effects].map(([effect, registered]) => ({
@@ -1030,7 +1047,7 @@ export const layer = (options: Options) => {
         // Queries read committed rows on the caller's node: no activation, no
         // generation fence, no receipt, and no command id.
         query: Effect.fnUntraced(
-          function* (request: Request) {
+          function* (request: Request, minVersion?: string) {
             const registration = queryRegistrations.get(request.ref.actor)
             const query = registration?.queries.get(request.command)
 
@@ -1045,43 +1062,74 @@ export const layer = (options: Options) => {
             // Query reads run on the pool outside a transaction, so no
             // statement_timeout bounds them; interrupting a read past
             // commandTimeout cancels its statement on the server instead.
+            const read = (client: SqlClient.SqlClient) =>
+              Effect.gen(function* () {
+                // The event head is read with state in one statement, and every replay
+                // in this query stops at it, so state and events describe one moment.
+                const rows = yield* client<{
+                  head: string | null
+                  key: string | null
+                  value: Uint8Array | null
+                }>`
+                  SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
+                  FROM actor_generations
+                  WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                    AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
+                  UNION ALL
+                  SELECT NULL, key, value
+                  FROM actor_state
+                  WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                    AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+
+                let head: string | undefined
+                const state: Array<readonly [string, string]> = []
+
+                for (const row of rows)
+                  if (row.head !== null) head = row.head
+                  else state.push([row.key!, decompress(row.value!)])
+
+                // State counts only alongside its generation row, which carries the head.
+                if (head === undefined) state.length = 0
+
+                const cursor = head ?? "0"
+
+                const outcome = yield* query.run(request, state, cursor, (tag, after, limit) =>
+                  replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
+                    Effect.catchIf(SqlError.isSqlError, Effect.die),
+                    Effect.provideService(SqlClient.SqlClient, client),
+                    Effect.provideContext(services),
+                  ),
+                )
+
+                // A failed replay read is unavailability, not a deterministic query defect.
+                if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
+                  return yield* outcome.cause
+
+                return outcome
+              })
+
+            // Owned tables and blobs are read through the primary's pools, so a
+            // type that declares them reads its state there too: one server per query.
+            const replicated =
+              replica !== undefined &&
+              registration.tables.length === 0 &&
+              registration.blobs.length === 0
+
+            // A replica answers only once it has replayed the caller's version;
+            // one that is behind or failing hands the read to the primary.
             const outcome = yield* Effect.gen(function* () {
-              const sql = yield* SqlClient.SqlClient
+              if (!replicated) return yield* read(primary)
 
-              // The event head is read with state in one statement, and every replay
-              // in this query stops at it, so state and events describe one moment.
-              const rows = yield* sql<{
-                head: string | null
-                key: string | null
-                value: Uint8Array | null
-              }>`
-                SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
-                FROM actor_generations
-                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-                UNION ALL
-                SELECT NULL, key, value
-                FROM actor_state
-                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+              if (minVersion !== undefined) {
+                const ready = yield* caughtUp(replica, minVersion).pipe(
+                  Effect.catchIf(SqlError.isSqlError, () => Effect.succeed(false)),
+                )
 
-              let head: string | undefined
-              const state: Array<readonly [string, string]> = []
+                if (!ready) return yield* read(primary)
+              }
 
-              for (const row of rows)
-                if (row.head !== null) head = row.head
-                else state.push([row.key!, decompress(row.value!)])
-
-              // State counts only alongside its generation row, which carries the head.
-              if (head === undefined) state.length = 0
-
-              const cursor = head ?? "0"
-
-              return yield* query.run(request, state, cursor, (tag, after, limit) =>
-                replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
-                  Effect.catchIf(SqlError.isSqlError, Effect.die),
-                  Effect.provideContext(services),
-                ),
+              return yield* read(replica).pipe(
+                Effect.catchIf(SqlError.isSqlError, () => read(primary)),
               )
             }).pipe(
               Effect.timeoutOrElse({
@@ -1092,10 +1140,6 @@ export const layer = (options: Options) => {
                   ),
               }),
             )
-
-            // A failed replay read is unavailability, not a deterministic query defect.
-            if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
-              return yield* outcome.cause
 
             // Access can be revoked while the handler runs; like a command's
             // outcome, a query result is released only to a caller still allowed.
@@ -1252,8 +1296,13 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
-        execute: (request) => dispatch(request, true),
-        deliver: (request) => dispatch(request, false),
+        execute: (request) => Effect.tap(dispatch(request, true), observe),
+        deliver: (request) =>
+          dispatch(request, false).pipe(
+            Effect.tap(observe),
+            Effect.map((executed) => executed.outcome),
+          ),
+        observedVersion: () => observed,
         drainOutbox: relay.drain,
         cleanup: cleanup.pipe(Effect.orDie),
         extendOutboxLeases: relay.extendLeases,
@@ -1367,9 +1416,17 @@ export const Database = {
    * pool, `offTurnConnections` (default 10). Both open connections only as
    * load needs them. Keep the sum of both across runners below the server's
    * `max_connections`.
+   *
+   * `replica` is this runner's nearest streaming replica of the same primary.
+   * Queries read there once it has replayed the commit version their caller
+   * last saw, and read the primary when it is behind or fails. Its pool
+   * (`maxConnections` default 10) opens connections only as queries need them.
    */
   postgres: (
-    options: Omit<PgClient.PgPoolConfig, "types"> & { readonly offTurnConnections?: number },
+    options: Omit<PgClient.PgPoolConfig, "types"> & {
+      readonly offTurnConnections?: number
+      readonly replica?: Omit<PgClient.PgPoolConfig, "types">
+    },
   ) => {
     const types = PgTypes.makeRegistry()
     // rc.116 lacks regclass decoding, used by Sql Migrator on restart. Remove after Effect #8309.
@@ -1383,11 +1440,12 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    const { offTurnConnections, ...pool } = options
+    const { offTurnConnections, replica, ...pool } = options
 
-    return Layer.merge(
+    return Layer.mergeAll(
       PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+      replica === undefined ? Layer.empty : replicaLayer({ ...replica, types }),
     )
   },
   pglite,

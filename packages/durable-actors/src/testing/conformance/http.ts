@@ -262,7 +262,7 @@ interface Reply {
   readonly body: Schema.Json | undefined
 }
 
-interface Server {
+export interface Server {
   readonly url: string
   readonly send: (
     path: string,
@@ -1258,7 +1258,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "answers a query without Idempotency-Key or x-request-id, ignoring durable-min-version",
+    name: "answers a query without Idempotency-Key, x-request-id, or durable-version, reading the primary for any durable-min-version without a replica",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {

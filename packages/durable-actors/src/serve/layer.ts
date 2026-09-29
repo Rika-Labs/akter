@@ -22,10 +22,17 @@ import {
   type ServedMember,
   servedDefinitions,
 } from "../actor/served.ts"
-import { ActorError, NotCreated, RunnerAtCapacity, Unauthorized } from "../errors/actor.ts"
+import {
+  ActorError,
+  InvalidInput,
+  NotCreated,
+  RunnerAtCapacity,
+  Unauthorized,
+} from "../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
+import { isVersion } from "../identity/version.ts"
 import { build, document, memberPath, PROTOCOL_OPERATIONS, schemeName } from "./api.ts"
 import { type AuthProvider, type Authenticated, readsCookies, withinLimits } from "./auth.ts"
 import { databaseClock } from "./clock.ts"
@@ -450,6 +457,30 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         return HttpServerResponse.jsonUnsafe(decoded.value ?? null, { status: 200 })
       })
 
+      // A malformed token is refused rather than ignored, which would silently
+      // drop the caller's read-your-writes guarantee.
+      const minVersion = (request: HttpServerRequest.HttpServerRequest) => {
+        const token = Headers.get(request.headers, "durable-min-version")
+
+        if (Option.isNone(token)) return Effect.succeed(undefined)
+
+        if (isVersion(token.value)) return Effect.succeed(token.value)
+
+        return Effect.fail(
+          ActorError.make({
+            reason: InvalidInput.make({
+              code: "decode",
+              issues: [
+                {
+                  path: "durable-min-version",
+                  message: "Expected a non-negative decimal integer without leading zeros",
+                },
+              ],
+            }),
+          }),
+        )
+      }
+
       const outcomeResponse = (member: ServedMember, outcome: Outcome) =>
         Match.value(outcome).pipe(
           Match.tagsExhaustive({
@@ -492,7 +523,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             payload,
           })
 
-          if (isQuery) return yield* outcomeResponse(member, yield* actors.query(call))
+          if (isQuery)
+            return yield* outcomeResponse(
+              member,
+              yield* actors.query(call, yield* minVersion(request)),
+            )
 
           // Accepted work continues if the client disconnects: the turn runs
           // in the layer's scope, and only the wait is interrupted.
@@ -501,7 +536,12 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
 
-          return yield* outcomeResponse(member, exit.value)
+          const { outcome, version } = exit.value
+          const response = yield* outcomeResponse(member, outcome)
+
+          return version === undefined
+            ? response
+            : HttpServerResponse.setHeader(response, "durable-version", version)
         })
 
       const awaiting = awaitingHello.get(actors) ?? { count: 0 }

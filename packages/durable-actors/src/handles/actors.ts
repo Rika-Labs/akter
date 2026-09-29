@@ -35,6 +35,17 @@ export const Outcome = Schema.TaggedUnion({
 export type Outcome = typeof Outcome.Type
 
 /**
+ * A command's outcome, with the commit version its caller's later queries
+ * wait for once the turn committed or replayed a receipt. A defect carries none.
+ */
+export const Executed = Schema.Struct({
+  outcome: Outcome,
+  version: Schema.optionalKey(Schema.String),
+})
+
+export type Executed = typeof Executed.Type
+
+/**
  * What a subscription delivery carries beside its command id: the source-side
  * row it came from, the subscription's epoch, and the source position it
  * applies. Only the relay sets it; the subscriber's cursor row is checked and
@@ -421,7 +432,7 @@ export class InternalActors extends Context.Service<
     readonly holder: Holder
     /** Ends the actor's activation on this runner as idle expiry would. */
     readonly hibernate: (ref: ActorRef) => Effect.Effect<void>
-    readonly execute: (request: Request) => Effect.Effect<Outcome, ActorError>
+    readonly execute: (request: Request) => Effect.Effect<Executed, ActorError>
     /**
      * Delivers a committed intent. The obligation was admitted by its sending
      * turn, so external access and command-id expiry are not checked again.
@@ -438,7 +449,13 @@ export class InternalActors extends Context.Service<
     readonly extendOutboxLeases: (millis: number, jump: Effect.Effect<void>) => Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
     readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
-    readonly query: (request: Request) => Effect.Effect<Outcome, ActorError>
+    /**
+     * Reads committed state. With `minVersion`, a configured replica answers
+     * only once it has replayed that commit version; otherwise the primary does.
+     */
+    readonly query: (request: Request, minVersion?: string) => Effect.Effect<Outcome, ActorError>
+    /** The highest commit version any command sent through this runtime has returned. */
+    readonly observedVersion: () => string | undefined
     /** Sends one progress message to its actor's owner as an executor pool would; for tests. */
     readonly deliverProgress: (message: ProgressMessage) => Effect.Effect<void>
     /** Whether the actor has a generation row, read without waking or creating it. */

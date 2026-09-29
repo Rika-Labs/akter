@@ -22,8 +22,12 @@ const createDatabase = Effect.fnUntraced(function* (
   return { name, url: database.href }
 })
 
+// A physical streaming replica of TEST_DATABASE_URL's server, when one is configured.
+const replicaUrl = process.env["TEST_REPLICA_DATABASE_URL"]
+
 const backend: ConformanceBackend = {
   independentConnections: true,
+  hasReplica: replicaUrl !== undefined,
   services: BunCrypto.layer,
   httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>
@@ -64,10 +68,39 @@ const backend: ConformanceBackend = {
           })),
         )
 
+        // Databases created on the primary replicate, so the replica serves each under the same name.
+        const onReplica = (database: Redacted.Redacted<string>) => {
+          const url = new URL(replicaUrl!)
+          url.pathname = new URL(Redacted.value(database)).pathname
+
+          return Redacted.make(url.href)
+        }
+
+        const replica =
+          replicaUrl === undefined
+            ? undefined
+            : {
+                database: onReplica(main),
+                connect: Effect.acquireRelease(
+                  Effect.sync(
+                    () => new Pool({ connectionString: Redacted.value(onReplica(main)) }),
+                  ),
+                  (pool) => Effect.promise(() => pool.end()),
+                ).pipe(
+                  Effect.map((pool) => ({
+                    query: (statement: string, parameters?: ReadonlyArray<unknown>) =>
+                      Effect.promise(() =>
+                        pool.query(statement, parameters as Array<unknown> | undefined),
+                      ).pipe(Effect.map((result) => result.rows as ReadonlyArray<unknown>)),
+                  })),
+                ),
+              }
+
         return {
           database: main,
           freshDatabase: provision("isolated"),
           connect,
+          ...(replica === undefined ? {} : { replica }),
           close: Effect.gen(function* () {
             for (const name of created)
               yield* Effect.promise(() =>

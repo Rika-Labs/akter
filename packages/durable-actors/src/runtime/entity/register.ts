@@ -21,7 +21,7 @@ import {
 import { Rpc } from "effect/unstable/rpc"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
-import { Outcome, type Registration, Request } from "../../handles/actors.ts"
+import { Executed, Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { routingKey } from "../storage/codec.ts"
@@ -40,7 +40,7 @@ import { activationEngine, kickedExecution, workflowCommands } from "../workflow
 // `Wake` builds the activation without running a turn.
 const makeCommandEntity = (name: string) =>
   Entity.make(name, [
-    Rpc.make("Execute", { payload: Request, success: Outcome, error: ActorError }),
+    Rpc.make("Execute", { payload: Request, success: Executed, error: ActorError }),
     Rpc.make("Wake"),
   ]).annotateRpcs(ClusterSchema.Uninterruptible, true)
 
@@ -255,7 +255,7 @@ export const registerActor = Effect.fnUntraced(function* (
           if (lost) return yield* leaseLost
 
           if (Exit.isFailure(activated))
-            return Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) })
+            return { outcome: Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) }) }
 
           const command =
             activated.value.get(payload.command) ?? workflowRoutes.get(payload.command)
@@ -263,7 +263,7 @@ export const registerActor = Effect.fnUntraced(function* (
           if (command === undefined)
             return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
 
-          const outcome = yield* Effect.gen(function* () {
+          const executed: Executed = yield* Effect.gen(function* () {
             yield* owner.prepare(owned)
 
             const done = yield* executeTurn(
@@ -298,7 +298,7 @@ export const registerActor = Effect.fnUntraced(function* (
               )
             }
 
-            return done.outcome
+            return { outcome: done.outcome, version: done.version }
           }).pipe(
             Effect.catchDefect(
               Effect.fnUntraced(function* (cause) {
@@ -313,7 +313,7 @@ export const registerActor = Effect.fnUntraced(function* (
                 // the cause for operators.
                 yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
 
-                return Outcome.cases.Defect.make({ cause })
+                return { outcome: Outcome.cases.Defect.make({ cause }) }
               }),
             ),
             Effect.annotateLogs({
@@ -338,6 +338,8 @@ export const registerActor = Effect.fnUntraced(function* (
             ),
           )
 
+          const outcome = executed.outcome
+
           // The turn settled, so the next retryable death waits the base delay again.
           restarts.set(activation, 0)
 
@@ -361,7 +363,7 @@ export const registerActor = Effect.fnUntraced(function* (
             }
           }
 
-          return outcome
+          return executed
         }, Effect.provideContext(services)),
       })
     }),
