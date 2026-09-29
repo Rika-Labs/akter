@@ -55,15 +55,10 @@
     "durable-actors/no-generic-directory-segment": "error",
     "durable-actors/no-barrel-index": "error",
     "durable-actors/no-runtime-import-outside-runtime": "error",
-    "durable-actors/no-decision-references": "error"
+    "durable-actors/no-decision-references": "error",
+    "durable-actors/no-inline-comments": "error"
   },
   "overrides": [
-    {
-      "files": ["packages/**", "apps/**", "examples/**", "tooling/**"],
-      "rules": {
-        "durable-actors/no-inline-comments": "error"
-      }
-    },
     {
       "files": ["infra/alchemy.run.ts"],
       "rules": {

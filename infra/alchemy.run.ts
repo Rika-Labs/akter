@@ -111,7 +111,6 @@ export default Alchemy.Stack(
       env: { NODE_ENV: "production", APP_ORIGIN: spec.appOrigin, API_ORIGIN: api.url },
     })
 
-    // Cloudflare is DNS/proxy only; all application execution stays on Railway.
     const zoneId = yield* Config.String("CLOUDFLARE_ZONE_ID").pipe(Config.withDefault(""))
 
     if (zoneId !== "") {
