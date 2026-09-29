@@ -78,6 +78,7 @@ import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
 import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
 import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
+import { seedRuntime } from "./operators/seed.ts"
 import { count, Metrics } from "./telemetry/metrics.ts"
 import { databaseSampler, TelemetrySampler } from "./telemetry/sampler.ts"
 import { OutboxRuntime, textArray } from "./turn/outbox.ts"
@@ -1146,9 +1147,20 @@ export const layer = (options: Options) => {
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
         wake: relay.wake,
+        role: (yield* TenantScope).role,
+      })
+
+      const seeding = seedRuntime({
+        services,
+        clock: frameworkClock,
+        outbox,
+        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        wake: relay.wake,
+        role: (yield* TenantScope).role,
       })
 
       const internalActors = InternalActors.of({
+        seed: seeding,
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintChildId: (input) =>
           deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),

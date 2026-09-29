@@ -10,9 +10,9 @@ import {
   useConnection,
   useEventFeed,
 } from "@durable-actors/react"
-import { ActorError, type Failure } from "@durable-actors/core/client"
+import { ActorError, type Failure, Offline } from "@durable-actors/core/client"
 import { Schema } from "effect"
-import { type FormEvent, StrictMode, useState } from "react"
+import { type FormEvent, StrictMode, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
 import { MessagePosted, Room, RoomId } from "../room/contract.ts"
 
@@ -24,13 +24,19 @@ const roomId = RoomId.make(location.pathname.split("/").at(-1) || "lobby")
 
 /**
  * A short timeout, so a post whose responses keep getting lost fails and
- * offers a retry.
+ * offers a retry. With `?offline=1` every post is also saved in IndexedDB and
+ * delivered under its command id once the server can be reached.
  */
 const rooms = Room.client({
   baseUrl: "/api",
   headers: () => ({ authorization: `Bearer ${user}` }),
   timeoutInMs: 2_000,
+  offline: query.has("offline") ? Offline.indexedDb(`chat-react:${user}`) : undefined,
 })
+
+const noQueued: ReadonlyArray<never> = []
+
+const subscribeQueue = (listener: () => void) => rooms.offline?.subscribe(listener) ?? (() => {})
 
 /** A failure as one line: its tag, and an `ActorError`'s reason. */
 const describe = (failure: Failure) =>
@@ -42,6 +48,13 @@ const App = () => {
   const state = useActorState(room)
   const presence = useConnection(room.Presence, undefined)
   const post = useCommand(rooms, (body: string, options) => room.Post({ body }, options))
+
+  const queued = useSyncExternalStore(
+    subscribeQueue,
+    () => rooms.offline?.pending ?? noQueued,
+    () => noQueued,
+  )
+
   const [body, setBody] = useState("")
 
   const submit = (event: FormEvent) => {
@@ -67,7 +80,8 @@ const App = () => {
           >
             {presence.status}
           </span>{" "}
-          · cursor <span data-testid="cursor">{feed.cursor ?? "none"}</span>
+          · cursor <span data-testid="cursor">{feed.cursor ?? "none"}</span> · queued{" "}
+          <span data-testid="queued">{queued.length}</span>
         </span>
       </header>
       <ul data-testid="messages">

@@ -77,6 +77,7 @@
         "examples/chat/src/web/app.ts",
         "examples/chat/src/web/cursors.ts",
         "examples/chat/src/web/cursors-react.tsx",
+        "examples/chat/src/web/offline.ts",
         "examples/counter/src/web/app.ts",
         "examples/counter/src/web/react.tsx"
       ],
