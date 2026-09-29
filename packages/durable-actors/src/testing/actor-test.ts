@@ -715,7 +715,7 @@ export class ActorTest extends Context.Service<
         return Layer.mergeAll(
           runtime,
           test.pipe(Layer.provide(runtime)),
-          options.as === undefined ? Layer.empty : Layer.succeed(CurrentCaller, options.as),
+          Layer.succeed(CurrentCaller, options.as ?? System.make({ source: "process" })),
           Layer.succeed(Tenant, tenant),
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
         ).pipe(

@@ -27,7 +27,7 @@ per request; falling back to `Anonymous` when credentials are absent or
 invalid on an authenticated endpoint; caching a principal across requests;
 letting a client-supplied identity header through unverified at the edge.
 
-Clean: `CurrentCaller` defaults to `Anonymous` for internal code; each HTTP
+Clean: `CurrentCaller` defaults to `System({ source: "process" })` for code in the application's own process; each HTTP
 request decodes and verifies its own credentials before any turn runs;
 `Unauthorized.code` carries `missing_credentials` / `invalid_credentials` /
 `expired`.

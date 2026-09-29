@@ -88,6 +88,8 @@ const withCluster = <A, E>(
           runners,
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
           actors: TallyLive,
+          as: User.make({ subject: "alice" }),
+          authorize: () => Effect.succeed(true),
         }),
       )
 

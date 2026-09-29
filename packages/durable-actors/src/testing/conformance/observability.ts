@@ -283,7 +283,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
             "actor.id": "a1",
             "command.name": "Bump",
             "command.id": commandId,
-            "caller.kind": "User",
+            "caller.kind": "System",
             "turn.trigger": "command",
             "turn.outcome": "success",
             "turn.replayed": false,

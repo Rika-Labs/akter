@@ -545,6 +545,8 @@ const withStudioCluster = <A, E>(
           shardLockExpiration: "3 seconds",
           actors: studioCommands,
           runnerActors: (runner) => (runner === 2 ? studioExecutors : Layer.empty),
+          as: User.make({ subject: "alice" }),
+          authorize: () => Effect.succeed(true),
         }),
       )
 
