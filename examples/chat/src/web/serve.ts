@@ -2,7 +2,8 @@
  * The chat room served to a browser: Actor.serve under /api, the page at
  * /rooms/<id>?user=<name>, and the same room with @durable-actors/react at
  * /react/rooms/<id>. Presence and live cursors are at /cursors/<doc> and
- * /react/cursors/<doc>. PGlite in memory unless DATABASE_URL names Postgres.
+ * /react/cursors/<doc>, and the room with a persisted offline queue is at
+ * /offline/rooms/<id>. PGlite in memory unless DATABASE_URL names Postgres.
  *   bun run web            # http://localhost:3003/rooms/lobby?user=alice
  *                          # http://localhost:3003/cursors/notes?user=alice
  */
@@ -29,7 +30,7 @@ const pages = HttpRouter.use(
   Effect.fnUntraced(function* (router) {
     const built = yield* Effect.promise(() =>
       Bun.build({
-        entrypoints: ["app.ts", "react.tsx", "cursors.ts", "cursors-react.tsx"].map(
+        entrypoints: ["app.ts", "react.tsx", "cursors.ts", "cursors-react.tsx", "offline.ts"].map(
           (file) => `${import.meta.dir}/${file}`,
         ),
         target: "browser",
@@ -65,6 +66,7 @@ const pages = HttpRouter.use(
 
     yield* router.add("GET", "/rooms/*", Effect.succeed(yield* page("index.html")))
     yield* router.add("GET", "/react/rooms/*", Effect.succeed(yield* page("react.html")))
+    yield* router.add("GET", "/offline/rooms/*", Effect.succeed(yield* page("offline.html")))
     yield* router.add("GET", "/cursors/*", Effect.succeed(yield* page("cursors.html")))
     yield* router.add("GET", "/react/cursors/*", Effect.succeed(yield* page("cursors-react.html")))
     yield* router.add("GET", "/health", Effect.succeed(HttpServerResponse.text("ok")))

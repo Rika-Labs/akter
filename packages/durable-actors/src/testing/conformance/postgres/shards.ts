@@ -18,6 +18,7 @@ export const shards = {
   "effect-control": ["effectControl", "effectControlCluster"],
   heap: ["heap"],
   "multi-runner": ["multiRunner"],
+  offline: ["offline"],
   "payload-migrations": ["payloadMigrations"],
   progress: ["progress", "progressDelivery"],
   properties: ["properties"],
