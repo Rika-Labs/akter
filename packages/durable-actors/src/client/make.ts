@@ -12,13 +12,7 @@ import {
   Stream,
 } from "effect"
 import type { ServedDefinition, ServedMember, StateValue } from "../actor/served.ts"
-import {
-  ActorError,
-  InvalidCommandId,
-  InvalidInput,
-  Timeout,
-  Unauthorized,
-} from "../errors/actor.ts"
+import { ActorError, InvalidCommandId, InvalidInput, Timeout } from "../errors/actor.ts"
 import type { AnyMember, MemberRecord, ValueSchema } from "../members/command.ts"
 import type { AnyConnection } from "../members/connection.ts"
 import type { AnyStream } from "../members/stream.ts"
@@ -32,8 +26,11 @@ import {
 import { type FeedEntry, type FeedOptions, feedStream } from "./sessions/feed.ts"
 import { type StreamOptions, subscription } from "./sessions/stream.ts"
 import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
+import { openCommandQueue, type OfflineQueue, type Refused } from "./offline/queue.ts"
+import type { OfflineStore } from "./offline/store.ts"
 import { Optimistic, type PendingInput } from "./optimistic.ts"
 import {
+  CREDENTIAL_CODES,
   decodeFailure,
   decodeSuccess,
   type Failure,
@@ -65,6 +62,12 @@ export interface ClientOptions {
    * `/protocol`; `server` asks `/command-ids` for each one.
    */
   readonly commandIds?: "client" | "server"
+  /**
+   * Saves every command before its first attempt and delivers it in order per
+   * actor under its original id, across outages and reloads; see
+   * `ActorClient.offline`. Queries and streams are unaffected.
+   */
+  readonly offline?: OfflineStore
 }
 
 /** Options of one query call. */
@@ -163,6 +166,14 @@ export type ActorClient<
 > = {
   /** A fresh command id, for a caller that saves it before sending the command. */
   readonly commandId: () => Promise<string>
+  /**
+   * The persisted command queue when `ClientOptions.offline` is set, else
+   * `undefined`. A command call then resolves with its output once the server
+   * answers, and rejects with `Timeout` carrying the command's id if the
+   * call's own timeout or signal ends the wait first; the command stays
+   * queued and is still delivered under that id.
+   */
+  readonly offline: OfflineQueue | undefined
 } & (Kind extends "singleton"
   ? { readonly get: () => ClientHandle<Members, string, State, Events> }
   : Kind extends "minted"
@@ -179,6 +190,9 @@ const MAX_BACKOFF_MS = 2_000
 
 /** Ids a client remembers minting per origin, so it can tell whether one might have been admitted; the oldest go first. */
 const MINTED_LIMIT = 1_024
+
+/** How long a mint waits for the server before it falls back to the retry window and clock offset this page last learned. */
+const MINT_PROBE_MS = 3_000
 
 /** Base URLs whose clock and token state are shared per process; the least recently used go first. */
 const ORIGIN_LIMIT = 64
@@ -243,12 +257,6 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 const isFramework = Schema.is(ActorError)
 
 const isInvalidCommandId = Schema.is(InvalidCommandId)
-
-const CREDENTIAL_CODES: ReadonlySet<Unauthorized["code"]> = new Set([
-  "missing_credentials",
-  "invalid_credentials",
-  "expired",
-])
 
 /** True when a failure proves the attempt was refused before any turn could run. */
 const refusedBeforeTurn = (failure: Failure) =>
@@ -545,17 +553,85 @@ export const clientOf =
       return clock.mint(window, yield* uuid(4))
     })
 
-    const mint = (options.commandIds === "server" ? mintServer : mintLocal).pipe(
-      Effect.tap((commandId) =>
-        Effect.sync(() => {
-          origin.minted.set(commandId, { admitted: false, inFlight: 0 })
-          const oldest = origin.minted.keys().next()
+    const remember = (commandId: string) =>
+      Effect.sync(() => {
+        origin.minted.set(commandId, { admitted: false, inFlight: 0 })
+        const oldest = origin.minted.keys().next()
 
-          if (origin.minted.size > MINTED_LIMIT && oldest.done !== true)
-            origin.minted.delete(oldest.value)
-        }),
-      ),
+        if (origin.minted.size > MINTED_LIMIT && oldest.done !== true)
+          origin.minted.delete(oldest.value)
+      })
+
+    const mintOnline = (options.commandIds === "server" ? mintServer : mintLocal).pipe(
+      Effect.tap(remember),
     )
+
+    /**
+     * With an offline store, a mint that cannot reach the server within
+     * `MINT_PROBE_MS` uses the retry window and the clock offset this page
+     * last learned, so a command can be queued while the network is down. A
+     * page that never reached the server has learned neither, and fails
+     * with the network error rather than guess a window.
+     */
+    const mintOffline = mintOnline.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(MINT_PROBE_MS),
+        orElse: () => Effect.fail(networkFailure()),
+      }),
+      Effect.catch((failure) => {
+        const window = origin.window
+
+        if (window === undefined || !clock.isSampled) return Effect.fail(failure)
+
+        return uuid(4).pipe(
+          Effect.map((id) => clock.mint(window, id)),
+          Effect.tap(remember),
+        )
+      }),
+    )
+
+    const mint = options.offline === undefined ? mintOnline : mintOffline
+
+    /**
+     * Waits for `work` until the call's timeout or signal ends the wait, which
+     * fails with `Timeout` carrying the command's id: the outcome is unknown,
+     * and that id is what a caller retries later.
+     */
+    const waiting = <A>(
+      work: Effect.Effect<A, Failure>,
+      call: QueryOptions,
+      commandId: () => string | undefined,
+    ): Promise<A> => {
+      const unanswered = Effect.suspend(() => {
+        const id = commandId()
+
+        return Effect.fail(
+          ActorError.make({ reason: Timeout.make(id === undefined ? {} : { commandId: id }) }),
+        )
+      })
+
+      const aborted = Effect.callback<never, Failure>((resume) => {
+        const signal = call.signal
+
+        if (signal === undefined) return
+
+        if (signal.aborted) return resume(unanswered)
+
+        const onAbort = () => resume(unanswered)
+        signal.addEventListener("abort", onAbort, { once: true })
+
+        return Effect.sync(() => signal.removeEventListener("abort", onAbort))
+      })
+
+      const bounded = work.pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(call.timeoutInMs ?? options.timeoutInMs ?? DEFAULT_TIMEOUT_MS),
+          orElse: () => unanswered,
+        }),
+      )
+
+      return Effect.runPromise(Effect.raceFirst(bounded, aborted))
+    }
 
     /**
      * Runs `attempt` until it succeeds or a stop condition holds, surfacing the last failure.
@@ -596,39 +672,149 @@ export const clientOf =
         ),
       )
 
-      const unanswered = Effect.suspend(() => {
-        const id = commandId()
-
-        return Effect.fail(
-          ActorError.make({ reason: Timeout.make(id === undefined ? {} : { commandId: id }) }),
-        )
-      })
-
-      const aborted = Effect.callback<never, Failure>((resume) => {
-        const signal = call.signal
-
-        if (signal === undefined) return
-
-        if (signal.aborted) return resume(unanswered)
-
-        const onAbort = () => resume(unanswered)
-        signal.addEventListener("abort", onAbort, { once: true })
-
-        return Effect.sync(() => signal.removeEventListener("abort", onAbort))
-      })
-
       const queued =
         after === undefined ? loop : Effect.promise(() => after).pipe(Effect.andThen(loop))
 
-      const bounded = queued.pipe(
-        Effect.timeoutOrElse({
-          duration: Duration.millis(call.timeoutInMs ?? options.timeoutInMs ?? DEFAULT_TIMEOUT_MS),
-          orElse: () => unanswered,
-        }),
-      )
-
-      return Effect.runPromise(Effect.raceFirst(bounded, aborted))
+      return waiting(queued, call, commandId)
     }
+
+    /** A failure as the call that sent `commandId` reports it, with whether any attempt might have been admitted. */
+    const admittedFor = (commandId: string | undefined) => (failure: Failure) => {
+      const use = commandId === undefined ? undefined : origin.minted.get(commandId)
+
+      if (use === undefined) return failure
+
+      if (!refusedBeforeTurn(failure)) use.admitted = true
+
+      if (!isFramework(failure) || !isInvalidCommandId(failure.reason)) return failure
+
+      return ActorError.make({
+        reason: InvalidCommandId.make({
+          commandId: failure.reason.commandId,
+          code: failure.reason.code,
+          neverAdmitted: !use.admitted && use.inFlight === 0,
+        }),
+      })
+    }
+
+    /** One attempt of `member` at `path`, sending `payload` under `commandId`, which a query has none of. */
+    const poster = (member: ServedMember) => {
+      const decode = outputDecoder(member)
+      const isQuery = member.kind === "query"
+      const decodeDeclared = declaredDecoder(member)
+
+      return (path: string, payload: string | undefined, commandId: string | undefined) =>
+        Effect.gen(function* () {
+          const headers: Record<string, string> = {}
+
+          if (payload !== undefined) headers["content-type"] = "application/json"
+
+          if (commandId !== undefined) headers["idempotency-key"] = commandId
+
+          const token = origin.token.value
+
+          if (isQuery && token !== undefined) headers["durable-min-version"] = token
+
+          const use = commandId === undefined ? undefined : origin.minted.get(commandId)
+
+          const reply = yield* tracked(use, send({ method: "POST", path, body: payload, headers }))
+
+          if (isOk(reply)) {
+            if (use !== undefined) use.admitted = true
+
+            return yield* decodeSuccess(decode)(reply)
+          }
+
+          const attempted: Attempted = {
+            failure: admittedFor(commandId)(decodeFailure(decodeDeclared)(reply)),
+            reply,
+          }
+
+          return yield* Effect.fail(attempted)
+        }).pipe(
+          Effect.mapError((error): Attempted =>
+            "failure" in error
+              ? error
+              : { failure: admittedFor(commandId)(error), reply: undefined },
+          ),
+        )
+    }
+
+    const members = new Map(definition.members.map((member) => [member.tag, member]))
+
+    const unknownMember = () =>
+      ActorError.make({ reason: InvalidInput.make({ code: "unknown_route" }) })
+
+    /**
+     * The persisted queue of `options.offline`, delivering the commands saved
+     * under this base URL for this actor type. Each delivery keeps its own
+     * retry state, and a member removed since a command was saved fails that
+     * command for good instead of retrying it.
+     */
+    const queue =
+      options.offline === undefined
+        ? undefined
+        : openCommandQueue<ValueSchema["Type"]>({
+            store: options.offline,
+            baseUrl: options.baseUrl,
+            actor: definition.name,
+            now: () => clock.now(),
+            begin: (command) => {
+              const member = members.get(command.member)
+
+              if (member === undefined)
+                return Effect.fail<Refused>({
+                  failure: unknownMember(),
+                  retryAfterMs: Option.none(),
+                  answer: undefined,
+                })
+
+              const retry: Retry = { attempts: 0, futureRetried: false, authRetried: false }
+
+              return poster(member)(
+                `${command.target}/${member.tag}`,
+                command.body,
+                command.commandId,
+              ).pipe(
+                Effect.catch((attempted) =>
+                  retryDelay(
+                    retry,
+                    clock,
+                  )(attempted).pipe(
+                    Effect.tap(() =>
+                      Effect.sync(() => {
+                        retry.attempts += 1
+                      }),
+                    ),
+                    Effect.flatMap((delay) =>
+                      Effect.fail<Refused>({
+                        failure: attempted.failure,
+                        retryAfterMs: delay,
+                        answer:
+                          attempted.reply === undefined
+                            ? undefined
+                            : { status: attempted.reply.status, text: attempted.reply.text },
+                      }),
+                    ),
+                  ),
+                ),
+              )
+            },
+            failureOf: (command) => {
+              const member = members.get(command.member)
+              const answer = command.answer ?? { status: 0, text: "" }
+
+              if (member === undefined) return unknownMember()
+
+              return decodeFailure(declaredDecoder(member))({
+                status: answer.status,
+                headers: new Headers(),
+                text: answer.text,
+                sentAt: 0,
+              })
+            },
+            warm: retryWindow.pipe(Effect.asVoid, Effect.ignore),
+          })
 
     /**
      * Encodes one call's input now, so every attempt under one id sends the same
@@ -655,25 +841,7 @@ export const clientOf =
         ),
       )
 
-      const decode = outputDecoder(member)
-
-      const admitted = (failure: Failure) => {
-        const use = commandId === undefined ? undefined : origin.minted.get(commandId)
-
-        if (use === undefined) return failure
-
-        if (!refusedBeforeTurn(failure)) use.admitted = true
-
-        if (!isFramework(failure) || !isInvalidCommandId(failure.reason)) return failure
-
-        return ActorError.make({
-          reason: InvalidCommandId.make({
-            commandId: failure.reason.commandId,
-            code: failure.reason.code,
-            neverAdmitted: !use.admitted && use.inFlight === 0,
-          }),
-        })
-      }
+      const post = poster(member)
 
       const attempt = Effect.gen(function* () {
         const path = `/actors/${definition.name}${yield* segment}/${member.tag}`
@@ -681,35 +849,10 @@ export const clientOf =
 
         if (!isQuery && commandId === undefined) commandId = yield* mint
 
-        const headers: Record<string, string> = {}
-
-        if (payload !== undefined) headers["content-type"] = "application/json"
-
-        if (commandId !== undefined) headers["idempotency-key"] = commandId
-
-        const token = origin.token.value
-
-        if (isQuery && token !== undefined) headers["durable-min-version"] = token
-
-        const use = commandId === undefined ? undefined : origin.minted.get(commandId)
-
-        const reply = yield* tracked(use, send({ method: "POST", path, body: payload, headers }))
-
-        if (isOk(reply)) {
-          if (use !== undefined) use.admitted = true
-
-          return yield* decodeSuccess(decode)(reply)
-        }
-
-        const attempted: Attempted = {
-          failure: admitted(decodeFailure(declaredDecoder(member))(reply)),
-          reply,
-        }
-
-        return yield* Effect.fail(attempted)
+        return yield* post(path, payload, commandId)
       }).pipe(
         Effect.mapError((error): Attempted =>
-          "failure" in error ? error : { failure: admitted(error), reply: undefined },
+          "failure" in error ? error : { failure: admittedFor(commandId)(error), reply: undefined },
         ),
       )
 
@@ -726,21 +869,85 @@ export const clientOf =
           )
         : undefined
 
+      /**
+       * Saves this command in the offline queue, minting its id first when the
+       * caller gave none, and reports when it is delivered. `call` is the
+       * caller's view, bounded by its timeout and signal; `delivered` outlives
+       * both, so state that follows the command follows its real outcome.
+       */
+      const enqueue =
+        queue === undefined || isQuery
+          ? undefined
+          : () => {
+              const make = Effect.gen(function* () {
+                const target = `/actors/${definition.name}${yield* segment}`
+                const payload = Option.getOrUndefined(yield* body)
+
+                commandId ??= yield* mint
+
+                return { commandId, target, member: member.tag, body: payload }
+              })
+
+              const delivered = queue.submit(make, call.signal).then((delivery) =>
+                delivery === undefined
+                  ? Promise.reject(
+                      ActorError.make({
+                        reason: Timeout.make(commandId === undefined ? {} : { commandId }),
+                      }),
+                    )
+                  : Effect.runPromise(delivery.settled),
+              )
+
+              return {
+                delivered,
+                call: waiting(
+                  Effect.tryPromise({
+                    try: () => delivered,
+                    catch: (thrown) => thrown as Failure,
+                  }),
+                  call,
+                  () => commandId,
+                ),
+              }
+            }
+
       return {
         input: Exit.isSuccess(body) ? Option.some(input) : Option.none(),
         send: (after?: Promise<void>) => withRetries(attempt, call, () => commandId, after),
+        enqueue,
       }
     }
 
     const method =
       (member: ServedMember, segment: Effect.Effect<string, ActorError>, store: Optimistic) =>
       (...args: ReadonlyArray<unknown>) => {
-        const { input, send } = prepare(member, segment, args)
+        const { input, send, enqueue } = prepare(member, segment, args)
         const reducer = member.reducer
 
-        if (reducer === undefined || Option.isNone(input)) return send()
+        if (reducer === undefined || Option.isNone(input))
+          return enqueue === undefined ? send() : enqueue().call
 
         const entry = { member: member.tag, input: input.value, reducer }
+
+        if (enqueue !== undefined) {
+          const { call, delivered } = enqueue()
+
+          void delivered.then(
+            (value) => {
+              store.confirm(
+                entry,
+                reducer.commutative || !Predicate.isObject(value) ? undefined : value,
+              )
+            },
+            () => {
+              store.drop(entry)
+            },
+          )
+
+          store.add(entry)
+
+          return call
+        }
 
         const previous = store.queue
         const settled = send(previous)
@@ -913,6 +1120,7 @@ export const clientOf =
       )
 
     const client = {
+      offline: queue,
       commandId: () =>
         withRetries(
           mint.pipe(Effect.mapError((failure): Attempted => ({ failure, reply: undefined }))),
