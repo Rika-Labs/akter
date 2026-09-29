@@ -1,8 +1,10 @@
 import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
+/** Where a shipment stands. */
 export const ShipmentStatus = Schema.Literals(["pending", "ready", "cancelled"])
 
+/** Shipment state: its order, package, SKUs and status. */
 export const ShipmentState = Actor.state({
   order: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   package: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -10,7 +12,10 @@ export const ShipmentState = Actor.state({
   status: ShipmentStatus.pipe(Schema.withDecodingDefault(Effect.succeed("pending" as const))),
 })
 
-// Internal: only the order's intents reach these, delivered by the relay.
+/**
+ * Creates the shipment for a package. Internal: only the order's intents reach
+ * `Open`, `Release` and `Cancel`, delivered by the relay.
+ */
 export const Open = Actor.command("Open", {
   input: Schema.Struct({
     order: Schema.String,
@@ -19,10 +24,13 @@ export const Open = Actor.command("Open", {
   }),
 })
 
+/** Marks a pending shipment ready. */
 export const Release = Actor.command("Release")
 
+/** Marks a pending shipment cancelled. */
 export const Cancel = Actor.command("Cancel")
 
+/** The shipment's order, package, SKUs and status. */
 export const Tracking = Actor.query("Tracking", {
   output: Schema.Struct({
     order: Schema.String,

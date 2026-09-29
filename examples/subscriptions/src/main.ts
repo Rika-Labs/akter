@@ -1,7 +1,9 @@
-// Subscription billing. Each account bills itself: the first invoice is issued once its card is
-// on file, and a `Collect` workflow charges it, waiting for a newer card after a decline. Uses
-// Postgres when DATABASE_URL is set, otherwise an in-memory PGlite, and a stand-in provider:
-//   bun run start
+/**
+ * Subscription billing. Each account bills itself: the first invoice is issued once its card is
+ * on file, and a `Collect` workflow charges it, waiting for a newer card after a decline. Uses
+ * Postgres when DATABASE_URL is set, otherwise an in-memory PGlite, and a stand-in provider:
+ *   bun run start
+ */
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
@@ -38,12 +40,15 @@ const invoicesUntil = (
     }),
   )
 
+/**
+ * Bills two accounts: `acme` pays at once; `globex`'s card is declined, so its
+ * collection waits until the customer adds a newer one.
+ */
 const program = Effect.gen(function* () {
   const acme = yield* Account.get(AccountId.make("acme"))
   yield* acme.Subscribe({ plan: "pro", card: "tok_visa" })
   yield* Console.log("acme", yield* invoicesUntil(acme, (s) => s.includes("paid")))
 
-  // A declined card: the collection waits until the customer adds a newer one.
   const globex = yield* Account.get(AccountId.make("globex"))
   yield* globex.Subscribe({ plan: "basic", card: "tok_declined" })
   yield* Effect.sleep("1 second")

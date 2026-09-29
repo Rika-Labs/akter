@@ -106,7 +106,10 @@ const until = <A, E, R>(
     }),
   )
 
-// Killing a process needs separate processes and a real database, so the drill runs on Postgres only.
+/**
+ * Killing a process needs separate processes and a real database, so the drill
+ * runs on Postgres only.
+ */
 const runtime = ManagedRuntime.make(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))
 
 afterAll(() => runtime.dispose())
@@ -144,7 +147,6 @@ describe.skipIf(pglite)("orders crash drill with Postgres", () => {
                 Effect.map((result) => Number(result.rows[0].count)),
               )
 
-            // The provider outlives every runner, so its ledger sees every attempt.
             const ledger = fakeLedger()
 
             const provider = yield* Layer.build(
@@ -240,7 +242,6 @@ describe.skipIf(pglite)("orders crash drill with Postgres", () => {
               "30 seconds",
             )
 
-            // An acknowledged order had its reply before the runner reached the fault.
             if (acknowledged)
               expect(yield* Fiber.join(reply).pipe(Effect.orDie)).toMatchObject({ status: 200 })
 
@@ -250,12 +251,10 @@ describe.skipIf(pglite)("orders crash drill with Postgres", () => {
               "SIGKILL",
             )
 
-            // Stopped inside Place, the killed runner never answered.
             if (!acknowledged) expect(Exit.isFailure(yield* Fiber.await(reply))).toBe(true)
 
             const second = yield* start("none")
 
-            // The client retries under the same key until a runner answers, as any client must.
             const retried = yield* place(second.url).pipe(Effect.orDie)
             expect(retried.status).toBe(200)
 
@@ -300,8 +299,6 @@ describe.skipIf(pglite)("orders crash drill with Postgres", () => {
               "60 seconds",
             )
 
-            // The provider applied exactly one charge for the order, for its total,
-            // however many attempts reached it.
             const applied = [...ledger.charges.values()]
             expect(applied).toEqual([
               { chargeId: summary.chargeId, customerId: "ada", amount: TOTAL },
@@ -331,7 +328,6 @@ describe.skipIf(pglite)("orders crash drill with Postgres", () => {
               ),
             ).toBe(2)
 
-            // Tagged so each run's recovery can be read from the test output.
             yield* Console.error(
               `DRILL fault=${fault} acknowledged=${acknowledged} providerCalls=${calls} appliedCharges=${applied.length} recoveryMs=${recoveredAt - killedAt}`,
             )
