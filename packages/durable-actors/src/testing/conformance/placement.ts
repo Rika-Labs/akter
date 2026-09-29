@@ -23,7 +23,6 @@ const shipmentRows = Actor.table(
   }),
 )
 
-// What drizzle-kit generates for the owned tables, row-level security policy included.
 const placementDdl = [
   `CREATE TABLE IF NOT EXISTS placement_orders (
     routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL, id text NOT NULL,
@@ -123,7 +122,6 @@ const Parcel = Actor.make("PlacementParcel", {
   policy: { createdBy: Open },
 })
 
-// The group read a family member sees: every order and shipment row on its shard.
 const familyOf = Effect.fnUntraced(function* (group: Group) {
   const orders = yield* group((db) => db.select({ id: orderRows.id }).from(orderRows))
 
@@ -230,7 +228,6 @@ export const placementLayer = Layer.unwrap(
   }).pipe(Effect.orDie),
 )
 
-// Outputs carry ids as plain strings; handles take the branded id.
 const shipment = (id: string) => Shipment.get(id as Parameters<typeof Shipment.get>[0])
 
 const parcel = (id: string) => Parcel.get(id as Parameters<typeof Parcel.get>[0])
@@ -269,7 +266,6 @@ const storedKeys = Effect.fnUntraced(function* (tenant: string, ids: ReadonlyArr
   return found
 })
 
-// `<tenant>:<subject>` bearer tokens, as the HTTP cases use.
 const bearer = (request: AuthRequest) =>
   Option.match(Headers.get(request.headers, "authorization"), {
     onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
@@ -375,6 +371,7 @@ export const placementWorkload: PlacementWorkload = {
   }).pipe(Effect.orDie),
 }
 
+/** Placement cases: rows of a family share their root's routing key, family reads use one snapshot, and a build that changes placement is refused. */
 export const placementConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "stores every framework and owned row of a child under its root's routing key",
@@ -501,7 +498,6 @@ export const placementConformance: ReadonlyArray<ConformanceCase> = [
             WHERE actor_type = 'PlacementMoved'`.pipe(Effect.orDie)
           expect(defect(yield* deploy("PlacementMoved", { parent: Order }))).toBe("succeeded")
 
-          // A child's build checks every ancestor it routes through, too.
           expect(defect(yield* deploy("PlacementRootMoved", "actor"))).toBe("succeeded")
 
           const RootAsChild = Actor.make("PlacementRootMoved", {
@@ -628,7 +624,6 @@ export const placementConformance: ReadonlyArray<ConformanceCase> = [
           ).toBe(1)
           expect(yield* test.inspect(order.ref)).toMatchObject({ outbox: 0 })
 
-          // A caller outside the relay cannot create one, even under a real parent's id.
           const unminted = childId({
             parent: "o-mint",
             local: yield* deriveMintId({
@@ -773,8 +768,6 @@ export const placementConformance: ReadonlyArray<ConformanceCase> = [
           ).toEqual({ status: 200, body: "parcel" })
           expect(parseChildId(parcelId)?.parent).toBe("o-served")
 
-          // A well-formed id under a real parent is still not a mint: over HTTP
-          // the creating command is refused before any turn, and nothing is created.
           const forged = childId({
             parent: "o-served",
             local: parseChildId(parcelId)!.local.replace(/^./, (c) => (c === "0" ? "1" : "0")),

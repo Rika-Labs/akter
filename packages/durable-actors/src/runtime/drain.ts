@@ -137,6 +137,7 @@ export const turnGate = () => {
   }
 }
 
+/** The turn gate a runtime creates once and shares with its drain. */
 export type TurnGate = ReturnType<typeof turnGate>
 
 /** The runtime's side of a drain: its relay and background work. */

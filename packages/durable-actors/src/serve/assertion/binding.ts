@@ -40,7 +40,7 @@ const hex = (bytes: ArrayBuffer) =>
 const sha256 = (bytes: Uint8Array) =>
   Effect.promise(() => crypto.subtle.digest("SHA-256", new Uint8Array(bytes))).pipe(Effect.map(hex))
 
-// RFC 3986 unreserved characters, which percent-encoding never changes the meaning of.
+/** RFC 3986 unreserved characters, which percent-encoding never changes the meaning of. */
 const UNRESERVED = /^[A-Za-z0-9\-._~]$/
 
 /** Uppercases percent-encoding hex, and decodes it where it encodes an unreserved character. */
@@ -51,7 +51,7 @@ const normalizeEscapes = (segment: string) =>
     return UNRESERVED.test(character) ? character : `%${digits.toUpperCase()}`
   })
 
-/** RFC 3986 section 5.2.4: removes `.` and `..` segments. */
+/** RFC 3986 section 5.2.4: removes `.` and `..` segments. `..` never climbs above the root, the path's leading empty segment. */
 const removeDotSegments = (path: string) => {
   const output: Array<string> = []
   const segments = path.split("/")
@@ -65,7 +65,6 @@ const removeDotSegments = (path: string) => {
     }
 
     if (segment === "..") {
-      // The leading empty segment is the root, which `..` never climbs above.
       if (output.length > 1) output.pop()
 
       if (last) output.push("")
@@ -85,7 +84,7 @@ export const canonicalPath = (path: string) => {
   return normalized.startsWith("/") ? normalized : `/${normalized}`
 }
 
-// Encodes everything but unreserved characters, so both sides agree whatever the client escaped.
+/** Encodes everything but unreserved characters, so both sides agree whatever the client escaped. */
 const strictEncode = (value: string) =>
   encodeURIComponent(value).replace(
     /[!'()*]/g,

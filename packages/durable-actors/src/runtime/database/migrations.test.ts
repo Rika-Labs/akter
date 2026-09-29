@@ -62,8 +62,6 @@ describe("migrations with Postgres", () => {
 
           yield* migrate(migrator(through9))
 
-          // The older runner has 13 but not 12, and commits 13 only after the
-          // newer runner has checked the table and is waiting for the lock.
           yield* Effect.promise(() => older.query("BEGIN"))
           yield* Effect.promise(() =>
             older.query(

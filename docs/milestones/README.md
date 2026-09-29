@@ -7,7 +7,7 @@
 
 Each milestone owns a vertical slice with explicit non-goals, acceptance tests, evidence, and exit criteria. No later feature is allowed to hide an unproven earlier invariant.
 
-M0's embedded Postgres foundation is complete. M1 is in progress, and M2–M6 are planned. Provider and recovery gates apply as soon as their feature is introduced. Grouping them under M5 doesn't allow support to be claimed before they pass.
+M0's embedded Postgres foundation is complete. M1 is in progress. M2 and M4 are built and closed with the open items listed in their exit status sections, and M3, M5 and M6 are not closed. Provider and recovery gates apply as soon as their feature is introduced. Grouping them under M5 doesn't allow support to be claimed before they pass.
 
 - [M0](M0-foundation.md): framework package skeleton, Postgres runtime, fenced command turns, receipts, `ActorTest`, and database conformance.
 - [M1](M1.md): actor members, state, owned tables, blobs, events, intents, timers, effects, server reducers, and retention policies.
