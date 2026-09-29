@@ -4,6 +4,7 @@ import { stressSummary, tallyFlakes, type StressRun } from "./stress.ts"
 const run = (name: string, results: ReadonlyArray<[string, string]>): StressRun => ({
   run: name,
   suite: "test",
+  started: true,
   status: results.some(([, status]) => status === "failed") ? 1 : 0,
   unhandledErrors: false,
   report: {
@@ -45,7 +46,14 @@ describe("stress tally", () => {
   it("counts a run without a report as a failure", () => {
     expect(
       tallyFlakes([
-        { run: "4", suite: "test", report: undefined, status: 124, unhandledErrors: false },
+        {
+          run: "4",
+          suite: "test",
+          started: true,
+          report: undefined,
+          status: 124,
+          unhandledErrors: false,
+        },
       ]),
     ).toEqual([{ name: "test (no report: the run died before Vitest finished)", failed: ["4"] }])
   })
@@ -56,6 +64,7 @@ describe("stress tally", () => {
         {
           run: "5",
           suite: "test",
+          started: true,
           status: 1,
           unhandledErrors: false,
           report: {
@@ -68,6 +77,7 @@ describe("stress tally", () => {
         {
           run: "6",
           suite: "test",
+          started: true,
           status: 1,
           unhandledErrors: false,
           report: {
@@ -95,6 +105,7 @@ describe("stress tally", () => {
         {
           run: "7",
           suite: "test",
+          started: true,
           status: 1,
           unhandledErrors: true,
           report: {
@@ -117,6 +128,35 @@ describe("stress tally", () => {
     ])
   })
 
+  it("names a run the step's time budget cut off before it started apart from one that died", () => {
+    expect(
+      tallyFlakes([
+        {
+          run: "test-9",
+          suite: "test",
+          started: false,
+          report: undefined,
+          status: undefined,
+          unhandledErrors: false,
+        },
+        {
+          run: "test-8",
+          suite: "test",
+          started: true,
+          report: undefined,
+          status: undefined,
+          unhandledErrors: false,
+        },
+      ]),
+    ).toEqual([
+      {
+        name: "test (never started: the step ran out of time before this run)",
+        failed: ["test-9"],
+      },
+      { name: "test (no report: the run died before Vitest finished)", failed: ["test-8"] },
+    ])
+  })
+
   it("counts a passing report without an exit status as cut off", () => {
     expect(tallyFlakes([{ ...run("8", [["a", "passed"]]), status: undefined }])).toEqual([
       { name: "test (no exit status: the run was cut off)", failed: ["8"] },
@@ -126,10 +166,18 @@ describe("stress tally", () => {
   it("keeps failures without a case apart per suite", () => {
     expect(
       tallyFlakes([
-        { run: "test-1", suite: "test", report: undefined, status: 124, unhandledErrors: false },
+        {
+          run: "test-1",
+          suite: "test",
+          started: true,
+          report: undefined,
+          status: 124,
+          unhandledErrors: false,
+        },
         {
           run: "test:integration-1",
           suite: "test:integration",
+          started: true,
           report: undefined,
           status: 124,
           unhandledErrors: false,
