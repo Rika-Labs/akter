@@ -182,6 +182,25 @@ export type Baseline = typeof Baseline.Type
 export const STATEMENT_TOLERANCE = 0.2
 
 /**
+ * A case with concurrent callers or deliveries counts the statements of
+ * whatever batch, claim, or relay pass its operations happen to share, so its
+ * count follows scheduling and not the code. Its tolerance is a share of the
+ * baseline, never below `STATEMENT_TOLERANCE`. Across 23 CI runs of one code
+ * version, `hot-actor/concurrent-8` fell into two groups, 4.27 to 4.29 and
+ * 4.69 to 4.88 (up to 11% under the baseline); the other concurrent cases
+ * stayed within 1.5%, and runs on other days went out 1.7%.
+ */
+export const CONCURRENT_TOLERANCE = 0.05
+
+const CONCURRENT_TOLERANCES: Readonly<Record<string, number>> = { "hot-actor/concurrent-8": 0.12 }
+
+/** How far `key`'s count may drift from `baseline`: exact except for concurrent cases. */
+export const toleranceOf = (key: string, baseline: number) =>
+  key.includes("concurrent")
+    ? Math.max(STATEMENT_TOLERANCE, baseline * (CONCURRENT_TOLERANCES[key] ?? CONCURRENT_TOLERANCE))
+    : STATEMENT_TOLERANCE
+
+/**
  * Reduces a `ci` profile run on Postgres to a baseline; throws for any other
  * run or a case without a statement count.
  */
@@ -231,7 +250,7 @@ const drift = (
             metric,
             before,
             after,
-            changed: Math.round(Math.abs(after - before) * 100) / 100 > STATEMENT_TOLERANCE,
+            changed: Math.round(Math.abs(after - before) * 100) / 100 > toleranceOf(key, before),
           },
         ]
   })
@@ -411,7 +430,11 @@ const statements = Effect.fnUntraced(function* (
     .pipe(Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(Baseline))), Effect.orDie)
 
   yield* Console.log(
-    `baseline: ${baseline.sha}\nrun:      ${result.git.shortSha}\ntolerance: ±${STATEMENT_TOLERANCE} statements or round trips per operation\n`,
+    `baseline: ${baseline.sha}\nrun:      ${result.git.shortSha}\ntolerance: ±${STATEMENT_TOLERANCE} statements or round trips per operation, or ${CONCURRENT_TOLERANCE * 100}% of the baseline for concurrent cases (${Object.entries(
+      CONCURRENT_TOLERANCES,
+    )
+      .map(([key, share]) => `${share * 100}% for ${key}`)
+      .join(", ")})\n`,
   )
 
   const { cases, unmeasured, added, removed } = compareStatements({ baseline, result })

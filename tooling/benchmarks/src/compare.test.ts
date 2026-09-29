@@ -5,6 +5,7 @@ import {
   compareStatements,
   type Result,
   STATEMENT_TOLERANCE,
+  toleranceOf,
   toBaseline,
 } from "./compare.ts"
 
@@ -155,6 +156,28 @@ describe("compareStatements", () => {
 
     expect(cases.some((entry) => entry.changed)).toBe(false)
     expect([...added, ...removed]).toEqual([])
+  })
+
+  it("gives concurrent cases a share of the baseline and keeps the rest exact", () => {
+    expect(toleranceOf("hot-actor/sequential", 8)).toBe(STATEMENT_TOLERANCE)
+    expect(toleranceOf("cold-activation/new-actor", 10)).toBe(STATEMENT_TOLERANCE)
+    expect(toleranceOf("hot-actor/concurrent-64", 3.37)).toBe(STATEMENT_TOLERANCE)
+    expect(toleranceOf("outbox/delivery-concurrent-16", 14.58)).toBeCloseTo(0.729)
+    expect(toleranceOf("effect-round-trip/concurrent-64", 17.35)).toBeCloseTo(0.8675)
+    expect(toleranceOf("hot-actor/concurrent-8", 4.79)).toBeCloseTo(0.5748)
+  })
+
+  it("passes a concurrent case's scheduling noise and fails a deterministic case's one statement", () => {
+    const recorded = toBaseline(ci({ sequential: 8, "concurrent-8": 4.79, "concurrent-64": 3.37 }))
+
+    const { cases } = compareStatements({
+      baseline: recorded,
+      result: ci({ sequential: 8.25, "concurrent-8": 4.27, "concurrent-64": 3.47 }),
+    })
+
+    expect(cases.filter((entry) => entry.changed).map((entry) => entry.key)).toEqual([
+      "hot-actor/sequential",
+    ])
   })
 
   it("fails one extra statement in every fourth operation", () => {
