@@ -13,3 +13,15 @@ export type { Incompatibility } from "./workflows/compatibility.ts"
 export { Inspector } from "./inspector/layer.ts"
 
 export type { InspectorOptions } from "./inspector/layer.ts"
+
+export { Telemetry } from "./telemetry/routes.ts"
+
+export type { TelemetryOptions } from "./telemetry/routes.ts"
+
+export { DefectLog, DefectRecord, DefectRecords } from "./telemetry/defects.ts"
+
+export { TelemetrySampler } from "./telemetry/sampler.ts"
+
+export { Metrics } from "./telemetry/metrics.ts"
+
+export { SpanNames } from "./telemetry/spans.ts"

@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { databaseTime } from "../turn/admission.ts"
 import { CleanupHooks } from "../turn/hooks.ts"
+import { count, Metrics } from "../telemetry/metrics.ts"
 
 export interface RetentionPolicy {
   readonly actorType: string
@@ -114,6 +115,7 @@ export const sweep = Effect.fnUntraced(function* (
         FROM gone`)
 
       receipts += pruned!.count
+      yield* count(Metrics.receiptsPruned, { actor_type: policy.actorType }, pruned!.count)
 
       if (pruned!.count === 0) break
       from = pruned!.last ?? from
@@ -160,6 +162,7 @@ export const sweep = Effect.fnUntraced(function* (
         FROM gone`)
 
       events += pruned!.count
+      yield* count(Metrics.eventsPruned, { actor_type: policy.actorType }, pruned!.count)
 
       if (pruned!.count === 0) break
       from = pruned!.last ?? from

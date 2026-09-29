@@ -1,4 +1,4 @@
-import { Crypto, Effect, Exit, Option, Result, Schema } from "effect"
+import { Clock, Crypto, Effect, Exit, Option, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
@@ -18,6 +18,8 @@ import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
+import { Metrics, record } from "../telemetry/metrics.ts"
+import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
@@ -167,7 +169,21 @@ interface Plan {
   readonly outbox: OutboxReplies
   /** Filled in as the commit group replies: the stamp, and whether a subscription feed row is due. */
   readonly emitted: { readonly emittedAtMs: number; readonly fed: boolean }
+  /** The turn answered from a stored receipt without running its handler. */
+  readonly replayed: boolean
+  /** What the commit group writes, for the runner's growth metrics. */
+  readonly written: Written
 }
+
+/** Rows a committed turn adds; nothing when it replays, acknowledges, or rolls back. */
+export interface Written {
+  readonly receipts: number
+  readonly events: number
+  readonly intents: number
+  readonly effects: number
+}
+
+const nothingWritten: Written = { receipts: 0, events: 0, intents: 0, effects: 0 }
 
 class RolledBack {
   constructor(readonly plan: Plan) {}
@@ -356,6 +372,8 @@ export const executeTurn = Effect.fnUntraced(function* (
         committed: { after: admitted.head, events: [], commandId: request.commandId },
         outbox: { wake: false, cancelled: false, cancelledIds: [] },
         emitted: { emittedAtMs: 0, fed: false },
+        replayed: true,
+        written: nothingWritten,
       } satisfies Plan
     }
 
@@ -395,6 +413,8 @@ export const executeTurn = Effect.fnUntraced(function* (
         committed: { after: admitted.head, events: [], commandId: request.commandId },
         outbox: { wake: false, cancelled: false, cancelledIds: [] },
         emitted: { emittedAtMs: 0, fed: false },
+        replayed: false,
+        written: nothingWritten,
       }) satisfies Plan
 
     // Only the relay's subscription deliveries reach a handler, and only a
@@ -563,6 +583,13 @@ export const executeTurn = Effect.fnUntraced(function* (
       committed: { after: admitted.head, events: result.events, commandId: request.commandId },
       outbox: outbox.replies,
       emitted: events.stamp,
+      replayed: false,
+      written: {
+        receipts: 1,
+        events: result.events.length,
+        intents: result.outbox.intents.length,
+        effects: result.outbox.effects.length,
+      },
     } satisfies Plan
   })
 
@@ -579,7 +606,7 @@ export const executeTurn = Effect.fnUntraced(function* (
             )
 
             if (plan.writes === undefined) return yield* Effect.fail(new RolledBack(plan))
-            yield* sequential(plan.writes)
+            yield* sequential(plan.writes).pipe(Effect.withSpan(SpanNames.commit))
 
             return plan
           }),
@@ -623,6 +650,10 @@ export const executeTurn = Effect.fnUntraced(function* (
     } satisfies CommittedEvents,
     /** Started effects this turn cancelled. */
     cancelledEffects: done.outbox.cancelledIds,
+    generation: done.generation,
+    replayed: done.replayed,
+    /** A plan without writes rolled back, so it added nothing. */
+    written: done.writes === undefined ? nothingWritten : done.written,
   }
 })
 
@@ -642,7 +673,9 @@ const pipelined = <E, R>(
   Effect.scoped(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
+      const leasing = yield* Clock.currentTimeMillis
       const connection = yield* turns.lease
+      yield* record(Metrics.poolWait, {}, (yield* Clock.currentTimeMillis) - leasing)
       let open = false
 
       const control = (text: string) => connection.query(text, [], true)
@@ -669,12 +702,14 @@ const pipelined = <E, R>(
 
         const ending = decided.writes === undefined ? "ROLLBACK" : "COMMIT"
 
-        yield* pipeline([
+        const group = pipeline([
           ...(decided.writes ?? []),
           Effect.map(end(ending), (command) => {
             tag = command
           }),
         ])
+
+        yield* ending === "COMMIT" ? group.pipe(Effect.withSpan(SpanNames.commit)) : group
 
         if (ending === "COMMIT" && tag !== "COMMIT")
           return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))

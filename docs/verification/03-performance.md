@@ -434,7 +434,7 @@ The `subscriptions` scenario now also runs the built feature ([`b63a32a-m3.7-sub
 - **Waking a hibernated subscriber adds nothing measurable** at this scale: the trip, including the new activation, stays at about 14 ms.
 - **A poison row doesn't hold its neighbours back.** Beside one follower whose handler always dies, the other 63 drain the same backlog about 5% slower. The poison row backs off on its own, as the per-row hold requires.
 - **An expansion page is bounded by its key range.** A first run of the full profile stalled in `prune-beside-10000-subscriptions`. With 10^4 freshly seeded rows and no statistics yet, the planner joined the expansion page to `actor_subscriptions` as a nested loop and rescanned the page for every stored row, about 10^7 comparisons per statement. The updates now bound their rows by the page's key range, and the page and leased set are materialized.
-- **Metrics:** the subscription metrics ADR 0026 names are not emitted yet; they wait for the M4.3 observability layer.
+- **Metrics:** M4.3 emits the subscription metrics ADR 0026 names, as `durable-actors.subscription.lag_events`, `.lag_ms`, `.pinned_events`, and `.undeliverable_gaps`, and `durable-actors.relay.stuck_rows` ([ADR 0049](../decisions/0049-observability-names-metrics-and-defect-spans.md)).
 
 ### Effect cancellation and per-actor caps (M2.13)
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { Database } from "@durable-actors/core/runtime"
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Console, Effect, Layer, Redacted } from "effect"
-import { HttpRouter, HttpServer } from "effect/unstable/http"
+import { Clock, Config, Console, Effect, Layer, Option, Redacted } from "effect"
+import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
 
 import {
   INSPECTOR_PATH,
@@ -11,6 +11,12 @@ import {
   devRoutes,
   parseDev,
 } from "./commands/dev/run.ts"
+import {
+  USAGE as DEFECTS_USAGE,
+  formatDefects,
+  listDefects,
+  parseList,
+} from "./commands/defects/list.ts"
 import { USAGE, actorsOf, check, loadEntry, parseCheck } from "./commands/workflows/check.ts"
 
 const fail = (message: string) =>
@@ -88,6 +94,27 @@ const dev = (args: ReadonlyArray<string>) =>
     Effect.catchTag("UsageError", (error) => fail(`${error.message}\n${DEV_USAGE}`)),
   )
 
+const defectsList = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const options = yield* parseList({ args, nowMs: yield* Clock.currentTimeMillis })
+    const token = yield* Config.option(Config.Redacted(options.tokenEnv))
+    const services = yield* Layer.build(FetchHttpClient.layer)
+
+    const defects = yield* listDefects(
+      options,
+      Option.match(token, { onNone: () => undefined, onSome: (value) => Redacted.value(value) }),
+    ).pipe(Effect.provideContext(services))
+
+    yield* Console.log(formatDefects({ defects, json: options.json }))
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      UsageError: (error) => fail(`${error.message}\n${DEFECTS_USAGE}`),
+      RunnerUnreachable: (error) => fail(`Cannot read defects from ${error.url}: ${error.message}`),
+      ConfigError: (error) => fail(`Cannot read the operator token: ${error.message}`),
+    }),
+  )
+
 // `durable login` and `durable deploy` join these under commands/.
 const program = Effect.gen(function* () {
   const [group, command, ...args] = process.argv.slice(2)
@@ -96,7 +123,11 @@ const program = Effect.gen(function* () {
 
   if (group === "workflows" && command === "check") return yield* workflowsCheck(args)
 
-  return yield* fail(`Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}`)
+  if (group === "defects" && command === "list") return yield* defectsList(args)
+
+  return yield* fail(
+    `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${DEFECTS_USAGE}`,
+  )
 })
 
 BunRuntime.runMain(program)

@@ -70,6 +70,10 @@ import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
+import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
+import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
+import { count, Metrics } from "./telemetry/metrics.ts"
+import { databaseSampler, TelemetrySampler } from "./telemetry/sampler.ts"
 import { OutboxRuntime, textArray } from "./turn/outbox.ts"
 import { turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
@@ -139,6 +143,17 @@ export interface Options {
     readonly subscriptionConcurrency?: number
     /** Matching events one claimed subscription row delivers before it settles. Default 16. */
     readonly subscriptionBatch?: number
+  }
+  /** Telemetry this runner keeps beside the spans and metrics it reports. */
+  readonly observability?: {
+    /** Defect spans the runner keeps for `durable defects list`, newest last. Default 1,000. */
+    readonly defects?: number
+    /**
+     * How often one runner of the deployment samples the database gauges
+     * (outbox rows, relay lag, stuck rows, subscription lag, pinned events).
+     * Default 15 seconds.
+     */
+    readonly sampleEvery?: Duration.Input
   }
   /** The effect executor pool of this runner. */
   readonly executors?: {
@@ -248,6 +263,10 @@ export const layer = (options: Options) => {
     cancelCheckMs,
   }
 
+  const defectCapacity = Count.make(options.observability?.defects ?? 1000)
+
+  const sampleEveryMs = millis(options.observability?.sampleEvery ?? "15 seconds")
+
   const subscriptionConcurrency = Count.make(options.relay?.subscriptionConcurrency ?? 16)
   const subscriptionBatch = Count.make(options.relay?.subscriptionBatch ?? 16)
 
@@ -267,6 +286,8 @@ export const layer = (options: Options) => {
       const services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
       >()
+
+      const defectLog = boundedDefectLog(defectCapacity)
 
       const database = yield* rowsDatabase
 
@@ -522,6 +543,9 @@ export const layer = (options: Options) => {
             if (admission.receipt !== undefined && request.command !== RESUME) {
               const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
 
+              yield* Effect.annotateCurrentSpan({ "admission.replayed": true })
+              yield* count(Metrics.receiptsReplayed, { actor_type: request.ref.actor }, 1)
+
               if (external) yield* authorize(request)
 
               return retained
@@ -532,11 +556,14 @@ export const layer = (options: Options) => {
             yield* (yield* TurnHooks).at("beforeDelivery", request)
 
             // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
-            const deliver = Effect.suspend(() =>
-              client
-                .Execute(external ? { ...request, external } : request)
-                .pipe(Effect.forkIn(scope)),
-            ).pipe(
+            const deliver = Clock.currentTimeMillis.pipe(
+              Effect.flatMap((queuedAtMs) =>
+                client
+                  .Execute(
+                    external ? { ...request, external, queuedAtMs } : { ...request, queuedAtMs },
+                  )
+                  .pipe(Effect.forkIn(scope)),
+              ),
               Effect.flatMap(Fiber.join),
               Effect.catchCause((cause) => {
                 const failure = Cause.findErrorOption(cause)
@@ -609,6 +636,14 @@ export const layer = (options: Options) => {
         Effect.catchIf(SqlError.isSqlError, (cause) =>
           Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
         ),
+        (effect, request, external) =>
+          effect.pipe(
+            Effect.withSpan(
+              SpanNames.admission,
+              { attributes: { ...requestAttributes(request), "admission.external": external } },
+              { captureStackTrace: false },
+            ),
+          ),
       )
 
       // A claimed intent's lease covers the longest turn its receiver may take here.
@@ -816,6 +851,32 @@ export const layer = (options: Options) => {
           Effect.forever,
           Effect.forkIn(scope),
         )
+      const sampler = databaseSampler()
+
+      const sample = Effect.suspend(() =>
+        sampler(
+          Array.from(registrations.values(), ({ name, policy }) => ({
+            actorType: name,
+            keepEventsMs: policy.keepEventsMs,
+            holdEventsMs: policy.holdEventsMs,
+          })),
+        ),
+      ).pipe(
+        Effect.provideContext(services),
+        Effect.provideService(FrameworkClock, frameworkClock),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("Telemetry sampling failed", cause),
+        ),
+      )
+
+      // One runner of the deployment samples, so the database sees one set of reads per interval.
+      yield* sharding.registerSingleton(
+        "durable-actors/telemetry",
+        sample.pipe(Effect.andThen(Effect.sleep(sampleEveryMs)), Effect.forever),
+      )
+
       // Routed subscriptions registered here, by source type.
 
       const routed = (sourceType: string) =>
@@ -904,11 +965,17 @@ export const layer = (options: Options) => {
               ),
             )
 
+          // The log goes inside `services`: those carry whatever context built the
+          // layer, which may hold another runtime's log.
           const { isResident, owner } = yield* registerActor(
             registration,
             transport,
             options.authorize,
-          ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
+          ).pipe(
+            Effect.provideService(DefectLog, defectLog),
+            Effect.provideContext(services),
+            Effect.provideService(OutboxRuntime, outbox),
+          )
 
           yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
           yield* requireRoutedSubscribers(registration.name).pipe(
@@ -1265,7 +1332,11 @@ export const layer = (options: Options) => {
           ),
       })
 
-      return Context.make(Actors, publicActors).pipe(Context.add(InternalActors, internalActors))
+      return Context.make(Actors, publicActors).pipe(
+        Context.add(InternalActors, internalActors),
+        Context.add(DefectLog, defectLog),
+        Context.add(TelemetrySampler, TelemetrySampler.of({ sample })),
+      )
     }),
   )
 
