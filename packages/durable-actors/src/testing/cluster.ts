@@ -78,6 +78,12 @@ export class ActorCluster extends Context.Service<
      * open turns, and its shard locks and heartbeat are left to expire.
      */
     readonly kill: (runner: number) => Effect.Effect<void>
+    /**
+     * Stops `runner` the way a graceful process exit does: its layer closes,
+     * so its activations end and it releases its shard locks for the others
+     * to take at once. Drain it first to finish or interrupt its work.
+     */
+    readonly shutdown: (runner: number) => Effect.Effect<void>
     /** Starts a stopped runner again as a new process, under a new address. */
     readonly restart: (runner: number) => Effect.Effect<void>
     /**
@@ -394,6 +400,18 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           stopping.push(yield* Effect.forkDetach(Scope.close(scope, Exit.void)))
       })
 
+      // A graceful exit closes the runner's layer while its connections still
+      // work, so it releases its locks; only then is it cut off.
+      const shutdown = Effect.fnUntraced(function* (runner: Runner) {
+        const scope = runner.scope
+
+        runner.scope = undefined
+        runner.context = undefined
+
+        if (scope !== undefined) yield* Scope.close(scope, Exit.void)
+        yield* stop(runner)
+      })
+
       const at = (index: number) =>
         Effect.suspend(() => {
           const runner = runners[index]
@@ -471,6 +489,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         on: (index) => (effect) =>
           live(index).pipe(Effect.flatMap((context) => Effect.provideContext(effect, context))),
         kill: (index) => at(index).pipe(Effect.flatMap(stop)),
+        shutdown: (index) => at(index).pipe(Effect.flatMap(shutdown)),
         restart: (index) =>
           at(index).pipe(
             Effect.tap((runner) => (runner.scope === undefined ? Effect.void : stop(runner))),

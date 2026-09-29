@@ -42,6 +42,7 @@ import { FrameworkClock } from "../turn/admission.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
+import type { TurnGate } from "../drain.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
@@ -149,6 +150,7 @@ export const registerActor = Effect.fnUntraced(function* (
   registration: Registration,
   transport: Transport,
   authorize: Authorize,
+  gate: TurnGate,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -496,8 +498,15 @@ export const registerActor = Effect.fnUntraced(function* (
 
           if (waiting.length === 0) ready.closeUnsafe()
 
+          // A draining runner refuses the batch, or interrupts it at the
+          // deadline, and every caller it has not answered retries elsewhere.
           if (batch.length > 0)
-            yield* runBatch(batch).pipe(
+            yield* gate.run(runBatch(batch)).pipe(
+              Effect.catchIf(Schema.is(ActorError), (error) =>
+                Effect.forEach(batch, (entry) => Deferred.fail(entry.reply, error), {
+                  discard: true,
+                }),
+              ),
               Effect.provideContext(Context.merge(batch[0]!.context, services)),
               Effect.catchCauseIf(
                 (cause) => !Cause.hasInterruptsOnly(cause),
