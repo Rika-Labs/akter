@@ -18,6 +18,7 @@
     "@durable-actors/accounts": "workspace:*",
     "@durable-actors/billing": "workspace:*",
     "@durable-actors/contracts": "workspace:*",
+    "@durable-actors/deployments": "workspace:*",
     "@durable-actors/email": "workspace:*",
     "@durable-actors/observability": "workspace:*",
     "@durable-actors/postgres": "workspace:*",

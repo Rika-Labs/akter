@@ -1,10 +1,16 @@
-import { Effect, Schema } from "effect"
-import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { Effect, Option, Schema } from "effect"
+import {
+  Headers,
+  HttpRouter,
+  type HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http"
 import { PrometheusMetrics } from "effect/unstable/observability"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { Anonymous, User } from "../../identity/caller.ts"
 import { type AuthProvider, readsCookies, withinLimits } from "../../serve/auth.ts"
-import { actorErrorResponse, undecodable } from "../../serve/wire.ts"
+import { isSameOrigin } from "../../serve/layer.ts"
+import { actorErrorResponse, invalidInput, undecodable } from "../../serve/wire.ts"
 import { DefectLog } from "./defects.ts"
 
 export interface TelemetryOptions<R> {
@@ -41,7 +47,9 @@ const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
  *   attributes carry no tenant or actor id, so the route is unauthenticated,
  *   like any scrape target; keep it on a private listener.
  * - `GET /defects?actor&sinceMs&limit`: the defect turn spans this runner
- *   kept, newest last, for the authenticated principal's tenant only.
+ *   kept, newest last, for the authenticated principal's tenant only. A
+ *   request from another browser origin is refused before its credentials are
+ *   read.
  */
 const serve = <R = never>(options: TelemetryOptions<R>) =>
   HttpRouter.use(
@@ -85,6 +93,11 @@ const serve = <R = never>(options: TelemetryOptions<R>) =>
         `${basePath}/defects` as HttpRouter.PathInput,
         (request: HttpServerRequest.HttpServerRequest) =>
           Effect.gen(function* () {
+            const origin = Headers.get(request.headers, "origin")
+
+            if (Option.isSome(origin) && !isSameOrigin({ request, origin: origin.value }))
+              return yield* invalidInput("origin_not_allowed")
+
             const tenant = yield* authenticate(request)
 
             const params = yield* HttpRouter.schemaParams(DefectsParams).pipe(

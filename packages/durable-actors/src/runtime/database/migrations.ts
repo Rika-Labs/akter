@@ -493,6 +493,209 @@ export const migrations = {
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),
+  // Every tenant row admits only the tenant its transaction names. The table
+  // owner and superusers are exempt, so nothing changes until a deployment
+  // runs its turns and views as a role that is neither.
+  "0018_rls": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    for (const table of [
+      "actor_generations",
+      "actor_state",
+      "actor_receipts",
+      "actor_outbox",
+      "actor_events",
+      "actor_dead_letters",
+      "actor_blobs",
+      "actor_workflow_executions",
+      "actor_workflow_step",
+      "actor_connections",
+      "actor_subscriptions",
+      "actor_subscription_tags",
+      "actor_subscription_cursors",
+    ]) {
+      yield* sql`ALTER TABLE ${sql(table)} ENABLE ROW LEVEL SECURITY`
+      yield* sql`CREATE POLICY durable_tenant ON ${sql(table)}
+          USING (tenant_id = current_setting('durable.tenant', true))
+          WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
+    }
+  }),
+  // Content is stored once per tenant on the tenant's routing key; actors
+  // hold references on their own shard. Nothing counts references and no key
+  // points from a reference or a chunk to a content row: the sweep finds
+  // unreferenced content by scanning references, and grants gate it.
+  "0020_content_blobs": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    // Grants name the database they were issued by, so a key shared with
+    // another deployment never makes its grants valid here.
+    yield* sql`ALTER TABLE actor_deployment
+        ADD COLUMN deployment_id text NOT NULL DEFAULT gen_random_uuid()::text`
+    yield* sql`CREATE TABLE tenant_contents (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        hash text NOT NULL,
+        size bigint NOT NULL CHECK (size >= 0),
+        granted_until_ms bigint NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, hash)
+      )`
+    yield* sql`CREATE INDEX tenant_contents_granted
+        ON tenant_contents (routing_key, tenant_id, granted_until_ms, hash)`
+    yield* sql`CREATE TABLE tenant_content_chunks (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        hash text NOT NULL,
+        chunk integer NOT NULL CHECK (chunk >= 0),
+        bytes bytea NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id, hash, chunk)
+      )`
+    yield* sql`CREATE TABLE actor_content_refs (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text NOT NULL,
+        actor_id text NOT NULL,
+        blob text NOT NULL,
+        name text NOT NULL,
+        hash text NOT NULL,
+        size bigint NOT NULL CHECK (size >= 0),
+        PRIMARY KEY (routing_key, tenant_id, actor_type, actor_id, blob, name),
+        FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations
+      )`
+    yield* sql`CREATE INDEX actor_content_refs_hash ON actor_content_refs (tenant_id, hash)`
+    // Every tenant that ever uploaded, and when its content was last swept.
+    yield* sql`CREATE TABLE tenant_content_sweeps (
+        routing_key bigint NOT NULL,
+        tenant_id text NOT NULL,
+        swept_at_ms bigint NOT NULL,
+        PRIMARY KEY (routing_key, tenant_id)
+      )`
+
+    // A query reads references and chunks as the tenant role when row-level
+    // security is on; uploads, grants, and the sweep keep the exempt connecting role.
+    for (const table of [
+      "actor_content_refs",
+      "tenant_contents",
+      "tenant_content_chunks",
+      "tenant_content_sweeps",
+    ]) {
+      yield* sql`ALTER TABLE ${sql(table)} ENABLE ROW LEVEL SECURITY`
+      yield* sql`CREATE POLICY durable_tenant ON ${sql(table)}
+          USING (tenant_id = current_setting('durable.tenant', true))
+          WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
+    }
+
+    // The longest turn of each actor type that declares content, which the
+    // sweep waits out; it only grows, so a runner still on an earlier
+    // deploy with longer turns stays covered.
+    yield* sql`CREATE TABLE actor_content_types (
+        actor_type text PRIMARY KEY,
+        turn_ms bigint NOT NULL CHECK (turn_ms > 0)
+      )`
+    // The sweep join shows how far each tenant's collection lags, and keeps
+    // the view from being automatically updatable.
+    yield* sql`CREATE VIEW durable.contents AS
+      SELECT c.tenant_id, c.routing_key, c.hash, c.size,
+        c.granted_until_ms, to_timestamp(c.granted_until_ms::float8 / 1000) AS granted_until,
+        s.swept_at_ms, to_timestamp(s.swept_at_ms::float8 / 1000) AS swept_at
+      FROM tenant_contents c
+      LEFT JOIN tenant_content_sweeps s ON s.routing_key = c.routing_key AND s.tenant_id = c.tenant_id`
+    yield* sql`CREATE VIEW durable.content_refs AS
+      SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
+        r.blob, r.name, r.hash, r.size
+      FROM actor_content_refs r
+      LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`
+    yield* sql`CREATE OR REPLACE VIEW durable.views AS
+      SELECT view_name, version FROM (VALUES
+        ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
+        ('timers', 1), ('effects', 1), ('dead_letters', 1), ('workflows', 1),
+        ('workflow_steps', 1), ('views', 1), ('contents', 1), ('content_refs', 1)
+      ) AS v(view_name, version)`
+  }),
+  // Stored events and effect payloads carry the version of their class's
+  // migration chain they were written at; readers upcast from it. A settled
+  // effect row becomes its route intent and goes back to 0. The two tables
+  // let startup refuse a deploy that would strand a stored version:
+  // `actor_payload_versions` records each version some runtime has written,
+  // and `actor_payload_writers` is each runtime's heartbeat per version it
+  // writes, which a clear waits out before it scans.
+  // Nothing written before it has a recorded version, so a database that
+  // already holds events or effect rows is refused rather than guessed at.
+  "0021_payload_versions": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    const [held] = yield* sql<{ held: boolean }>`SELECT
+      EXISTS (SELECT 1 FROM actor_events) OR EXISTS (SELECT 1 FROM actor_outbox)
+        OR EXISTS (SELECT 1 FROM actor_dead_letters) AS held`
+
+    if (held?.held === true)
+      return yield* new Migrator.MigrationError({
+        kind: "BadState",
+        message:
+          "Migration 0021_payload_versions needs a database without events, outbox rows, or dead letters; recreate this development database",
+      })
+    yield* sql`ALTER TABLE actor_events ADD COLUMN payload_version integer NOT NULL DEFAULT 0
+      CHECK (payload_version >= 0)`
+    yield* sql`ALTER TABLE actor_outbox ADD COLUMN payload_version integer NOT NULL DEFAULT 0
+      CHECK (payload_version >= 0)`
+    yield* sql`ALTER TABLE actor_dead_letters ADD COLUMN payload_version integer NOT NULL DEFAULT 0
+      CHECK (payload_version >= 0)`
+    yield* sql`CREATE TABLE actor_payload_versions (
+        actor_type text NOT NULL,
+        kind text NOT NULL CHECK (kind IN ('event', 'effect')),
+        tag text NOT NULL,
+        version integer NOT NULL CHECK (version >= 0),
+        first_written_at_ms bigint NOT NULL,
+        superseded_at_ms bigint,
+        cleared_at_ms bigint,
+        PRIMARY KEY (actor_type, kind, tag, version)
+      )`
+    yield* sql`CREATE TABLE actor_payload_writers (
+        runtime_id text NOT NULL,
+        actor_type text NOT NULL,
+        kind text NOT NULL CHECK (kind IN ('event', 'effect')),
+        tag text NOT NULL,
+        version integer NOT NULL CHECK (version >= 0),
+        window_ms bigint NOT NULL CHECK (window_ms > 0),
+        refreshed_at_ms bigint NOT NULL,
+        PRIMARY KEY (runtime_id, actor_type, kind, tag, version)
+      )`
+    yield* sql`CREATE INDEX actor_payload_writers_version
+      ON actor_payload_writers (actor_type, kind, tag, version, refreshed_at_ms)`
+    // Columns are added at the end, which a view version allows.
+    yield* sql`CREATE OR REPLACE VIEW durable.events AS
+      SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key, p.placement,
+        e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
+        e.emitted_at_ms, to_timestamp(e.emitted_at_ms::float8 / 1000) AS emitted_at,
+        e.payload_version
+      FROM actor_events e
+      LEFT JOIN actor_placements p ON p.actor_type = e.actor_type`
+    yield* sql`CREATE OR REPLACE VIEW durable.effects AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+        o.intent_id AS effect_id, o.command AS effect, o.payload, o.caller,
+        o.attempts, o.last_error, o.ambiguous,
+        o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at,
+        o.payload_version
+      FROM actor_outbox o
+      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+      WHERE o.kind = 'effect'`
+    yield* sql`CREATE OR REPLACE VIEW durable.dead_letters AS
+      SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
+        d.effect_id, d.effect, d.payload, d.attempts, d.cause, d.ambiguous,
+        d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at,
+        d.payload_version
+      FROM actor_dead_letters d
+      LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+  }),
+  // A parent-placed type routes through its parent type's placement, so the
+  // parent is part of the record a later build must match.
+  "0022_parent_placement": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_placements ADD COLUMN parent_type text,
+        DROP CONSTRAINT actor_placements_placement_check,
+        ADD CONSTRAINT actor_placements_placement_check
+          CHECK (placement IN ('tenant', 'actor', 'parent')),
+        ADD CONSTRAINT actor_placements_parent_type_check
+          CHECK ((placement = 'parent') = (parent_type IS NOT NULL))`
+  }),
 }
 
 /**

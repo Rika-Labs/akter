@@ -4,22 +4,31 @@ import type { ValueSchema } from "../members/command.ts"
 type Fields = Readonly<Record<string, ValueSchema>>
 
 /**
- * One step of a state schema's history: `from` is the stored shape, `to` the
- * next one, and `upcast` a pure conversion. A chain's last `to` is the
- * declared state, so a stored value upcasts through every later step in order.
+ * One step of a schema's history: `from` is the stored shape, `to` the next
+ * one, and `upcast` a pure conversion. A chain's last `to` is the declared
+ * shape, so a stored value upcasts through every later step in order.
+ * `downcast` converts back; an event or effect needs it only for the steps
+ * above its `writeVersion`, while a rolling deploy still writes the old shape.
  */
 export interface StateMigration<From extends Fields = Fields, To extends Fields = Fields> {
   readonly from: From
   readonly to: To
-  // Method syntax keeps the parameter bivariant so any migration fits a chain.
+  // Method syntax keeps the parameters bivariant so any migration fits a chain.
   upcast(previous: Schema.Struct<From>["Type"]): Schema.Struct<To>["Type"]
+  downcast?(next: Schema.Struct<To>["Type"]): Schema.Struct<From>["Type"]
 }
 
 const migration = <const From extends Fields, const To extends Fields>(
   from: From,
   to: To,
   upcast: StateMigration<From, To>["upcast"],
-): StateMigration<From, To> => ({ from, to, upcast })
+  options?: {
+    readonly downcast?: (next: Schema.Struct<To>["Type"]) => Schema.Struct<From>["Type"]
+  },
+): StateMigration<From, To> =>
+  options?.downcast === undefined
+    ? { from, to, upcast }
+    : { from, to, upcast, downcast: options.downcast }
 
 /** Stored with the actor's state rows; version `n` means `n` migrations have been applied. */
 export const VERSION_KEY = "$version"

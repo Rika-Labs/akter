@@ -116,6 +116,18 @@ describe("durable defects list", () => {
       expect(yield* read("plant", "Kettle")).toEqual([])
       expect(Exit.isFailure(yield* read(undefined).pipe(Effect.exit))).toBe(true)
 
+      const browse = (origin: string) =>
+        web.handler(
+          new Request("http://runner/defects", {
+            headers: { authorization: "Bearer plant", origin },
+          }),
+        )
+
+      const foreign = yield* Effect.promise(() => browse("https://elsewhere.example"))
+      expect(foreign.status).toBe(403)
+      expect(yield* Effect.promise(() => foreign.text())).toContain("origin_not_allowed")
+      expect((yield* Effect.promise(() => browse("http://runner"))).status).toBe(200)
+
       const text = formatDefects({ defects, json: false }).split("\n")
       expect(text).toHaveLength(2)
       expect(text[0]).toContain("Boiler/b1  Break ")

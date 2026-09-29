@@ -304,13 +304,16 @@ export const activationOwner = ({
           : [],
       ),
       ({ event, cursor }) =>
-        encodeFeedFrame({
-          tag: event.tag,
-          value: event.value,
-          commandId: committed.commandId,
-          timestampMs: committed.emittedAtMs,
-        }).pipe(
-          Effect.orDie,
+        // Under a writeVersion the stored value is older; a feed serves the current shape.
+        registration.upcastEvent(event.tag, event.version, event.value).pipe(
+          Effect.flatMap((value) =>
+            encodeFeedFrame({
+              tag: event.tag,
+              value,
+              commandId: committed.commandId,
+              timestampMs: committed.emittedAtMs,
+            }).pipe(Effect.orDie),
+          ),
           Effect.map((frame): Broadcast => ({ member: FEED_MEMBER, frame, event: cursor })),
         ),
     )
@@ -1079,16 +1082,23 @@ export const activationOwner = ({
 
         if (row === undefined) return
 
-        const result = yield* run(
-          activation,
-          row,
-          ConnectionPhase.cases.Close.make({ reason: request.cause.cause }),
-        ).pipe(
-          Effect.catchDefect((cause) =>
-            Effect.as(Effect.logError("Connection close defect", Cause.die(cause)), undefined),
-          ),
-          Effect.orElseSucceed(() => undefined),
-        )
+        // A feed has no handler to run on close; its row just goes.
+        const result =
+          row.member === FEED_MEMBER
+            ? undefined
+            : yield* run(
+                activation,
+                row,
+                ConnectionPhase.cases.Close.make({ reason: request.cause.cause }),
+              ).pipe(
+                Effect.catchDefect((cause) =>
+                  Effect.as(
+                    Effect.logError("Connection close defect", Cause.die(cause)),
+                    undefined,
+                  ),
+                ),
+                Effect.orElseSucceed(() => undefined),
+              )
 
         yield* dropRows(activation, [request.connectionId])
         activation.opened.delete(request.connectionId)

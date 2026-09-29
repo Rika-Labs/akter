@@ -17,6 +17,7 @@ import {
 import { SqlClient } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
+import type { Placement } from "../storage/codec.ts"
 import { type ConnectionCommands, connectionSecret } from "../../identity/command.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import { BUCKETS } from "../turn/outbox.ts"
@@ -138,7 +139,7 @@ export interface HeldActorType {
   readonly takeoverMs: number
   readonly reauthorizeMs: number
   readonly retryWindowMs: number
-  readonly placement: "tenant" | "actor"
+  readonly placement: Placement
   readonly hasResync: (member: string) => boolean
   readonly hasMember: (member: string) => boolean
   readonly channel: OwnerChannel

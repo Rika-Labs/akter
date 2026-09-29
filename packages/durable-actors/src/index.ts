@@ -11,7 +11,7 @@ import { Event } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
 import { Cancelled, DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
-import { blob } from "./members/blob.ts"
+import { blob, content } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
 import { WorkflowMember } from "./members/workflow.ts"
 import { Delivery, SubscriptionMember } from "./members/subscription.ts"
@@ -35,6 +35,8 @@ export const Actor = {
   state: ActorStates.make,
   table,
   blob,
+  /** Declares shared content: immutable bytes stored once per tenant that actors reference by name. */
+  content,
   migration: ActorStates.migration,
   singleton: Definition.singleton,
   /** Declares a subscription to another actor type's committed events. */
@@ -67,6 +69,14 @@ export { Actors } from "./handles/actors.ts"
 
 export { Intent } from "./handles/intents.ts"
 
+export { Content, ContentStore } from "./handles/content.ts"
+
+export { ContentRef } from "./identity/content.ts"
+
+export type { ContentEntry } from "./identity/content.ts"
+
+export { ContentTooLarge, InvalidContentRef } from "./errors/content.ts"
+
 export {
   ActorRef,
   Anonymous,
@@ -86,6 +96,7 @@ export {
   CommandConflict,
   CommandExpired,
   InvalidCommandId,
+  InvalidInput,
   Unauthorized,
   Timeout,
   NotCreated,
@@ -129,11 +140,13 @@ export type { ConnectionHandlers, StreamHandler } from "./actor/definition.ts"
 
 export type { EffectClass, EffectPolicy, ProgressEffect, ProgressOf } from "./members/effect.ts"
 
+export type { PayloadMigrations, PayloadOptions } from "./members/payload.ts"
+
 export type { Executors, Handle, Intents, WorkflowHandlers } from "./actor/definition.ts"
 
 export type { Commutative, Reducer } from "./members/reducer.ts"
 
-export type { AnyBlob, Blob } from "./members/blob.ts"
+export type { AnyBlob, AnyContent, Blob, ContentBlob } from "./members/blob.ts"
 
 export type {
   AnySubscription,
@@ -147,7 +160,7 @@ export type {
   Subscription,
 } from "./members/subscription.ts"
 
-export type { BlobRead, BlobWrite } from "./state/blob.ts"
+export type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "./state/blob.ts"
 
 export type {
   Filter,
@@ -171,6 +184,7 @@ export {
   AssertionClaims,
   AssertionKey,
   AssertionKeySet,
+  KeyRefreshClaims,
   MAX_ASSERTION_SECONDS,
 } from "./serve/assertion/verify.ts"
 
@@ -180,8 +194,14 @@ export {
   ASSERTION_HEADER,
   ASSERTION_TYPE,
   canonicalRequest,
+  KEY_REFRESH_PATH,
+  KEY_REFRESH_TYPE,
   reauthenticationDigest,
   requestDigest,
 } from "./serve/assertion/binding.ts"
 
 export type { BoundRequest } from "./serve/assertion/binding.ts"
+
+export { actorErrorBody, closeCodeOf, statusOf } from "./serve/wire.ts"
+
+export { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "./serve/frames.ts"

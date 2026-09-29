@@ -13,6 +13,12 @@ export const ASSERTION_HEADER = "durable-assertion"
 /** The JWS `typ` of an assertion. */
 export const ASSERTION_TYPE = "durable-assertion+jwt"
 
+/** The JWS `typ` of the edge's push asking a runner to reread its key set. */
+export const KEY_REFRESH_TYPE = "durable-key-refresh+jwt"
+
+/** The route, under a served layer's base path, that takes the edge's key-set refresh push. */
+export const KEY_REFRESH_PATH = "/assertion-keys/refresh"
+
 const VERSION = "durable-assertion/v1"
 
 /** What the canonical string binds, as the edge forwards and the runner receives it. */

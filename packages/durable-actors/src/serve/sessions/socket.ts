@@ -11,14 +11,14 @@ import {
   Stream,
 } from "effect"
 import { Socket } from "effect/unstable/socket"
-import type { ServedConnection } from "../actor/served.ts"
-import { ActorError, SessionEnded, Unauthorized } from "../errors/actor.ts"
-import { type ActorRef, callerKey } from "../identity/caller.ts"
-import { type Holder, MAX_INBOUND_BYTES } from "../runtime/connections/holder.ts"
-import { ClientMessage } from "../runtime/connections/protocol.ts"
-import type { Authenticated } from "./auth.ts"
-import { ClientWireMessage, ServerWireMessage } from "./frames.ts"
-import { actorErrorBody, closeCodeOf, invalidInput, undecodable } from "./wire.ts"
+import type { ServedConnection } from "../../actor/served.ts"
+import { ActorError, SessionEnded, Unauthorized } from "../../errors/actor.ts"
+import { type ActorRef, callerKey } from "../../identity/caller.ts"
+import { type Holder, MAX_INBOUND_BYTES } from "../../runtime/connections/holder.ts"
+import { ClientMessage } from "../../runtime/connections/protocol.ts"
+import type { Authenticated } from "../auth.ts"
+import { ClientWireMessage, ServerWireMessage } from "../frames.ts"
+import { actorErrorBody, closeCodeOf, invalidInput, undecodable } from "../wire.ts"
 
 /** How long a socket may wait after its upgrade for `hello`. */
 export const HELLO_TIMEOUT_MS = 10_000
@@ -44,6 +44,9 @@ const encodeServerMessage = Schema.encodeEffect(Schema.fromJsonString(ServerWire
 
 // An unknown `t` fails to decode, which ends the session.
 const decodeClientMessage = Schema.decodeUnknownEffect(Schema.fromJsonString(ClientWireMessage))
+
+/** A progress frame as the effect's progress schema encoded it, as the JSON value a client reads. */
+const progressFrame = Schema.decodeEffect(Schema.fromJsonString(Schema.Json))
 
 /** Ends a session: the `end` message's error and the close code after it. */
 class Refusal extends Data.TaggedError("Refusal")<{
@@ -268,13 +271,23 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
         deadline: message.deadlineMs,
       }),
     ResyncReplayed: () => Effect.succeed<ServerWireMessage>({ t: "resyncReplayed" }),
-    Progress: () => Effect.die(new Error("Progress has no wire message")),
+    // Progress has its own message, never `frame`, and no cursor: it is not replayed.
+    Progress: (message) =>
+      progressFrame(message.frame).pipe(
+        Effect.orDie,
+        Effect.map((frame): ServerWireMessage => ({
+          t: "progress",
+          effect: message.effect,
+          effectId: message.effectId,
+          attempt: message.attempt,
+          seq: message.seq,
+          frame,
+        })),
+      ),
   })
 
   // The holder's messages, then its ending as the last message and close code.
   const outbound = held.messages.pipe(
-    // The wire has no progress message yet, so WebSocket clients get none.
-    Stream.filter((message) => !ClientMessage.guards.Progress(message)),
     Stream.runForEach((message) => wire(message).pipe(Effect.flatMap(send))),
     Effect.matchEffect({
       onFailure: (error) =>

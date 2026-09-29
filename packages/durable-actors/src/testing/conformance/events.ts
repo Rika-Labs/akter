@@ -414,6 +414,7 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
                         value: yield* Schema.encodeEffect(PostedJson)(
                           Posted.make({ body: `rival-${index}` }),
                         ),
+                        version: 0,
                       },
                     ],
                   )
