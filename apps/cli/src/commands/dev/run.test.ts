@@ -132,7 +132,6 @@ describe("durable dev", () => {
 
       expect(added).toEqual({ status: 200, body: 5 })
 
-      // Commands reach Actor.auth.none's "default" tenant; this one lands elsewhere.
       yield* Effect.gen(function* () {
         yield* (yield* Tally.get("t2").pipe(Actor.tenant("elsewhere"))).Add(1)
       }).pipe(Effect.provideContext(context))

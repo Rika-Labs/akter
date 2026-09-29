@@ -3,10 +3,16 @@ import { PgClient } from "@effect/sql-pg"
 import { drizzle } from "drizzle-orm/node-postgres"
 import { Pool } from "pg"
 
+/** Drizzle handle over its own pool for the auth library. */
 export class AuthDatabase extends Context.Service<AuthDatabase, ReturnType<typeof drizzle>>()(
   "@durable-actors/postgres/AuthDatabase",
 ) {}
 
+/**
+ * Provides the Effect SQL client (10 connections) and `AuthDatabase` (5) for
+ * the database at `url`; verifies connectivity on start and closes the pool
+ * with the scope.
+ */
 export const databaseLayer = (url: string) =>
   Layer.mergeAll(
     PgClient.layer({ url: Redacted.make(url), maxConnections: 10 }),

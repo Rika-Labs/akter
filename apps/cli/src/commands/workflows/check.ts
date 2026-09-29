@@ -3,12 +3,15 @@ import type { Incompatibility } from "@durable-actors/core/runtime"
 import { Effect, Schema } from "effect"
 import { pathToFileURL } from "node:url"
 
+/** The arguments could not be parsed; the message says why. */
 export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
   message: Schema.String,
 }) {}
 
+/** Usage text for `durable workflows`. */
 export const USAGE = "Usage: durable workflows check --entry <module> --database-url <url> [--json]"
 
+/** Parsed arguments of `workflows check`. */
 export interface CheckOptions {
   readonly entry: string
   readonly databaseUrl: string

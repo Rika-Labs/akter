@@ -12,7 +12,10 @@ const body = JSON.stringify({
   data: {},
 })
 
-// Independently generated with Python hmac.sha256 over event-1.<timestamp>.<body>.
+/**
+ * Independently generated with Python hmac.sha256 over
+ * event-1.<timestamp>.<body>.
+ */
 const signatures = new Map([
   [699, "3OusZfBFZVKRurmK71+eRwPuDkJfequB1eF8EyOayBI="],
   [700, "7ED4J0zS35zKMLGab096BeqACm5doP4r569GISMzbkA="],
