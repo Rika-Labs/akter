@@ -47,7 +47,6 @@ it("gives executors no content access, by type and at run time", () => {
     download: () => Effect.die(new Error("unreachable")),
   })
 
-  // A store in the effect layer's build context never reaches an attempt.
   const seen = Effect.runSync(
     Effect.serviceOption(ContentStore).pipe(
       withoutDatabase(Context.make(ContentStore, store) as Context.Context<never>),
