@@ -1254,7 +1254,7 @@ const make = <
         if (CallPhase.$is("Activity")(yield* CurrentCallPhase))
           return yield* internalActors.deliver(request)
 
-        return yield* internalActors.execute(request)
+        return (yield* internalActors.execute(request)).outcome
       })
 
     const callId = (command: string) =>
@@ -1359,7 +1359,8 @@ const make = <
                     ref,
                     caller,
                     executionId,
-                    internalActors.execute,
+                    (request) =>
+                      Effect.map(internalActors.execute(request), (executed) => executed.outcome),
                     internalActors.pollWorkflow,
                     actors.mintCommandId,
                   )
@@ -1389,10 +1390,12 @@ const make = <
                 const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
                 // Queries are reads: no command id, receipt, or retry identity.
+                // They wait for every commit this runtime's commands returned.
                 const outcome =
                   member.kind === "query"
                     ? yield* internalActors.query(
                         Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
+                        internalActors.observedVersion(),
                       )
                     : yield* send(
                         Request.make({
@@ -2942,7 +2945,7 @@ const make = <
       ActorRef.make({ actor: name, tenant, id }),
       caller,
       executionId,
-      internalActors.execute,
+      (request) => Effect.map(internalActors.execute(request), (executed) => executed.outcome),
       internalActors.pollWorkflow,
       actors.mintCommandId,
     ) as WorkflowRun<W>

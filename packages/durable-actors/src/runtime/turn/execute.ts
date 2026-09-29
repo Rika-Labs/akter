@@ -17,6 +17,7 @@ import { parseChildId } from "../../identity/child.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
+import { COMMIT_VERSION } from "../database/replica.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -283,6 +284,8 @@ export interface Done {
   readonly replays: ReadonlySet<number>
   /** Rows the batch committed; none when it rolled back. */
   readonly written: Written
+  /** The commit version each caller's later queries wait for. */
+  readonly version: string
 }
 
 /**
@@ -882,7 +885,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const view = (): View => ({ generation: cache.generation, state: cache.state })
 
   // A committed batch moves the cache; a rolled-back one changed nothing.
-  const finish = Effect.fnUntraced(function* (batch: ReadonlyArray<W>, plan: Plan) {
+  const finish = Effect.fnUntraced(function* (
+    batch: ReadonlyArray<W>,
+    plan: Plan,
+    version: string,
+  ) {
     if (plan.writes !== undefined) {
       cache.generation = plan.generation
       cache.state = plan.state
@@ -911,6 +918,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       generation: plan.generation,
       replays: plan.replays,
       written: plan.writes === undefined ? nothingWritten : plan.written,
+      version,
     })
 
     answering = false
@@ -1054,6 +1062,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   after.state !== undefined
 
                 let tag: string | undefined
+                let version = ""
 
                 const commit: ReadonlyArray<Statement> = [
                   ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
@@ -1061,6 +1070,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                     tag = result.command
 
                     if (!chained) open = false
+                  }),
+                  // Read on this session after the transaction ends, in the same
+                  // flight, so it covers the batch's commit record and any
+                  // receipt it replayed.
+                  Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
+                    version = (result.rows[0] as { version: string }).version
                   }),
                 ]
 
@@ -1071,7 +1086,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                     ? pipeline(commit).pipe(Effect.withSpan(SpanNames.commit))
                     : pipeline(commit)
 
-                  return { plan, ending, tag, following, next: undefined }
+                  return { plan, ending, tag, version, following, next: undefined }
                 }
 
                 const upcoming = admit(following, yield* canonicalsOf(following), after, session, [
@@ -1090,6 +1105,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   plan,
                   ending,
                   tag,
+                  version,
                   following,
                   next: { admission: upcoming, admitted: flight.slice(commit.length) },
                 }
@@ -1098,7 +1114,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               if (stepped.ending === "COMMIT" && stepped.tag !== "COMMIT")
                 return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
 
-              yield* finish(current, stepped.plan)
+              yield* finish(current, stepped.plan, stepped.version)
 
               return stepped
             }).pipe(run.observe(current))
@@ -1180,7 +1196,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 ),
             )
 
-            yield* finish(admitting, plan)
+            const rows = yield* sql.unsafe<{ version: string }>(COMMIT_VERSION)
+
+            yield* finish(admitting, plan, rows[0]!.version)
           }).pipe(run.observe(admitting))
 
           batch = yield* run.next

@@ -74,7 +74,7 @@
       "dependsOn": ["^build", "transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
       "cache": false,
-      "passThroughEnv": ["TEST_DATABASE_URL"]
+      "passThroughEnv": ["TEST_DATABASE_URL", "TEST_REPLICA_DATABASE_URL", "CI"]
     },
     "@durable-actors/create#test:integration": {
       "dependsOn": ["^build", "transit"],

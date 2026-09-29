@@ -59,7 +59,7 @@
     "format": "oxfmt . '!research/**'",
     "format:check": "oxfmt --check . '!research/**'",
     "check": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100% && bun run pack:check",
-    "check:ci": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run pack:check && bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell && GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration test:e2e --concurrency=100% --summarize"
+    "check:ci": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run pack:check && bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell && REPLICA=$(bun .github/src/replica.ts) && TEST_REPLICA_DATABASE_URL=$REPLICA GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration test:e2e --concurrency=100% --summarize"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",
