@@ -215,6 +215,9 @@ const CLEANUP_INTERVAL = "1 minute"
 /** How long readiness waits for the database before it reports storage unavailable. */
 const READINESS_STORAGE_TIMEOUT = "2 seconds"
 
+/** How long readiness reuses its last storage answer. */
+const READINESS_CACHE = "1 second"
+
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
@@ -1279,24 +1282,27 @@ export const layer = (options: Options) => {
           ),
       })
 
+      // Probes may come often and unauthenticated, so the database answers at most once a second.
+      const storage = yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
+
+        return yield* sql`SELECT 1`.pipe(
+          Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
+          Effect.map(Option.isSome),
+          Effect.orElseSucceed(() => false),
+        )
+      }).pipe(Effect.provideContext(services), Effect.cachedWithTTL(READINESS_CACHE))
+
       const serving = Effect.gen(function* () {
         if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
 
         if (registrations.size + queryRegistrations.size + effectRegistrations.size === 0)
           return { ready: false, reason: "unregistered" } as const
 
-        const sql = yield* SqlClient.SqlClient
-
-        const answered = yield* sql`SELECT 1`.pipe(
-          Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
-          Effect.map(Option.isSome),
-          Effect.orElseSucceed(() => false),
-        )
-
-        return answered
+        return (yield* storage)
           ? ({ ready: true } as const)
           : ({ ready: false, reason: "storage" } as const)
-      }).pipe(Effect.provideContext(services)) satisfies Effect.Effect<Readiness>
+      }) satisfies Effect.Effect<Readiness>
 
       const control = runtimeControl({
         gate,
