@@ -22,6 +22,7 @@ export const ReadReplica = Context.Reference<SqlClient.SqlClient | undefined>(
   { defaultValue: () => undefined },
 )
 
+/** Provides `ReadReplica` as a client for `options`, or none when no replica is configured. */
 export const replicaLayer = (options: PgClient.PgPoolConfig | undefined) =>
   Layer.effect(
     ReadReplica,

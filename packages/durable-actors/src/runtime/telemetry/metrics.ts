@@ -1,16 +1,18 @@
 import { Effect, Metric } from "effect"
 import { dual } from "effect/Function"
 
+const milliseconds = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000]
+
 /**
  * Metric names and attribute keys are public, like span names. Prometheus
  * exposition replaces `.` and `-` with `_`, so `durable-actors.turns` is
  * scraped as `durable_actors_turns`. Attributes are bounded by the
  * deployment's declarations (actor types, commands, effects, subscriptions)
  * or by fixed sets; no metric carries a tenant, actor id, or command id.
+ *
+ * The database gauges (`outboxRows` and the other sampled series) are read
+ * from the database by one runner of the deployment.
  */
-
-const milliseconds = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000]
-
 export const Metrics = {
   turns: Metric.counter("durable-actors.turns", {
     description:
@@ -82,7 +84,6 @@ export const Metrics = {
       "Retention gaps an id-routed subscription row counted without a recipient, by subscriber_type and subscription.",
     incremental: true,
   }),
-  // Sampled from the database by one runner of the deployment.
   outboxRows: Metric.gauge("durable-actors.outbox.rows", {
     description: "Outbox rows waiting, by kind (intent, effect, feed, control).",
   }),

@@ -117,6 +117,7 @@ import type { AnyOwnedTable } from "../tables/owned.ts"
 import { checkReceipt } from "./turn/receipt.ts"
 import { type Readiness, RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 
+/** Configuration for `Actors.layer`: authorization, actor and effect layers, timing, retention, and row-level security. */
 export interface Options {
   readonly authorize: (request: {
     readonly caller: Caller
@@ -300,6 +301,59 @@ const READINESS_STORAGE_TIMEOUT = "2 seconds"
 /** How long readiness reuses its last storage answer. */
 const READINESS_CACHE = "1 second"
 
+/**
+ * Builds the runtime: migrates and checks the database, registers every actor,
+ * effect, query, and subscription layer, and starts the relay and background
+ * sweeps. The returned layer provides `RuntimeControl`, and fails to build when
+ * the schema or declared payloads are incompatible.
+ *
+ * Constraints the wiring keeps:
+ * - Turns run through the drain gate, so a drain refuses new turns and
+ *   interrupts the rest. The runtime scope, not the caller, owns an in-flight
+ *   turn: interrupting a waiter never cancels it.
+ * - Commands are direct, so Cluster keeps no messages and the receipt is the
+ *   only admission record; a restarted activation or lost runner drops the
+ *   uncommitted attempt, the handle retries with the same command id, and the
+ *   receipt replays anything that committed. Durable intents use the
+ *   actor-shard outbox. Retries wait from the error's own `retryAfter`, bounded
+ *   in total by the delivery timeout.
+ * - Intents are admitted by their sending turn, so internal delivery skips the
+ *   external access and expiry checks: revocation stops new commands, not
+ *   committed obligations. A draining runner admits no new external work. Only
+ *   the relay presents a mint proof or delivers a subscription envelope.
+ * - A turn runs only in a resident activation. After a capacity rejection with
+ *   none resident, the latest attempt was not admitted, though an earlier one
+ *   may have committed.
+ * - Queries and feeds read committed rows on the caller's node without an
+ *   activation, generation fence, receipt, or command id. State and events are
+ *   read against one event head so they describe one moment; a replica answers
+ *   only once it has replayed the caller's commit version, else the primary
+ *   does. Types with owned tables or blobs read their state on the primary,
+ *   one server per query. No `statement_timeout` bounds query reads;
+ *   interrupting one past `commandTimeout` cancels its statement on the server.
+ *   Access is rechecked after the handler, so a result is released only to a
+ *   caller still allowed. A failed replay read is unavailability, not a defect.
+ * - Effect progress is fire-and-forget to the performing actor's connection
+ *   entity: no retry, no acknowledgment, and a lost message is a lost frame.
+ *   Each effect's last frame is awaited so its close never overtakes it.
+ * - Payload versions this runtime writes are recorded and heartbeat before a
+ *   type takes any shard, refreshed one at a time with the time taken before
+ *   the statement is sent, so the gate's window can only end early.
+ * - Content grants are bound to the database's deployment id. The content
+ *   sweep waits out the longest turn that may attach content across every
+ *   runner, and each tenant is swept at most once an hour.
+ * - Exactly one runner of the deployment runs the telemetry sampler; runtimes
+ *   sharing one Sharding in a process share its one sampler.
+ * - Readiness on PGlite always answers from the layer's own lifetime, since a
+ *   single connection held by a turn would make a probe report unready; on
+ *   Postgres the database answers at most once a second.
+ * - PGlite keeps runner bookkeeping in memory because SqlRunnerStorage would
+ *   reserve its single connection for the layer's lifetime. Postgres uses
+ *   advisory locks, held by a live session, so no second runner can take a
+ *   shard while its holder runs.
+ * - An unreachable database fails a read as `ActorUnavailable`, which callers
+ *   retry like any delivery failure; it is not a defect.
+ */
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
@@ -311,7 +365,6 @@ export const layer = (options: Options) => {
 
   const executorLeaseMs = millis(options.executors?.lease ?? "60 seconds")
 
-  // Renewals every third of the lease stay at least a second apart.
   if (executorLeaseMs < 3000) throw new Error("executors.lease must be at least 3 seconds")
 
   const cancelCheckMs = Math.min(
@@ -377,15 +430,12 @@ export const layer = (options: Options) => {
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
       const owners = new Map<string, Owner>()
-      // Actor types whose workflow rows retention sweeps, removed workflows included.
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
       const effectRegistrations = new Map<string, EffectRegistration>()
-      // Payload versions this runtime's turns write, heartbeat under its own id.
       const runtimeId = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
       const frameworkClock = yield* FrameworkClock
       const writerDeclarations: Array<PayloadDeclaration> = []
-      // Local time of the last refresh sent that succeeded; the gate never reads the database.
       let refreshedAt: number | undefined
 
       const services = yield* Effect.context<
@@ -397,8 +447,6 @@ export const layer = (options: Options) => {
       const database = yield* rowsDatabase
       const clockOffset = yield* FrameworkClock
 
-      // Grants are bound to the database's deployment id, so another
-      // deployment's grants never verify here.
       const content =
         options.content === undefined
           ? undefined
@@ -425,8 +473,6 @@ export const layer = (options: Options) => {
       const primary = Context.get(services, SqlClient.SqlClient)
       const replica = yield* ReadReplica
 
-      // The highest commit version a command sent through this runtime has
-      // returned; in-process queries wait for it, as a served client's do.
       let observed: string | undefined
 
       const observe = (executed: Executed) =>
@@ -440,11 +486,8 @@ export const layer = (options: Options) => {
             observed = version
         })
 
-      // Turns run through the gate so a drain can refuse new ones and interrupt the rest.
       const gate = turnGate()
 
-      // The holder and transport refer to each other: the transport delivers
-      // to this runner's holder, which answers through the transport.
       let holder: Holder | undefined
 
       const transport: Transport = yield* holderTransport((message) =>
@@ -492,7 +535,6 @@ export const layer = (options: Options) => {
           retryWindowMs,
           placement: registration.placement,
           routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
-          // A feed's holder rereads its events after an owner loss, so it waits for the new owner's answer.
           hasResync: (member) =>
             member === FEED_MEMBER || (registration.connections.get(member)?.hasResync ?? false),
           hasMember: (member) =>
@@ -518,11 +560,8 @@ export const layer = (options: Options) => {
         authorize: (request) => options.authorize(request),
       })
 
-      // Tables that passed the startup check for an actor type of this runtime;
-      // group reads may only touch these, never other Actor.table values.
       const checked = new Set<AnyOwnedTable>()
 
-      // An interrupt is authorized as the workflow member its execution id names.
       const authorizedAs = (request: Request) =>
         request.command !== INTERRUPT
           ? Effect.succeed(request)
@@ -571,9 +610,6 @@ export const layer = (options: Options) => {
           )
       })
 
-      // One refresh at a time: concurrent layer builds would otherwise
-      // upsert the same rows in different orders. The time is taken before
-      // the statement is sent, so the gate's window can only end early.
       const refreshing = Semaphore.makeUnsafe(1)
 
       const refreshPayloadWriters = Effect.gen(function* () {
@@ -607,8 +643,6 @@ export const layer = (options: Options) => {
 
       const entityId = (ref: ActorRef) => encodeEntityId([ref.tenant, ref.id]).pipe(Effect.orDie)
 
-      // Records this type's routed declarations for every runner of the
-      // deployment, and drops the ones it no longer declares.
       const recordRouted = Effect.fnUntraced(function* (registration: Registration) {
         const sql = yield* SqlClient.SqlClient
 
@@ -675,8 +709,6 @@ export const layer = (options: Options) => {
           ? Effect.die(new Error(`Actor ${name} declares content; give the runtime content.keys`))
           : Effect.void
 
-      // The sweep waits out the longest turn that may attach content, across
-      // every runner of the deployment; the value only grows.
       const recordContentTurn = Effect.fnUntraced(function* (registration: Registration) {
         const sql = yield* SqlClient.SqlClient
         yield* sql`INSERT INTO actor_content_types (actor_type, turn_ms)
@@ -685,8 +717,6 @@ export const layer = (options: Options) => {
           SET turn_ms = greatest(actor_content_types.turn_ms, EXCLUDED.turn_ms)`
       })
 
-      // An unreachable database fails the read as ActorUnavailable, which a
-      // caller retries like any other delivery failure; it is not a defect.
       const databaseNow = databaseTime.pipe(
         Effect.provideContext(services),
         Effect.catchIf(SqlError.isSqlError, (cause) =>
@@ -703,9 +733,6 @@ export const layer = (options: Options) => {
 
       const publicActors = Actors.of({ mintCommandId })
 
-      // Intents are admitted by their sending turn, so internal delivery skips
-      // the external access and expiry checks; revocation stops new commands,
-      // not committed obligations.
       const dispatch = Effect.fnUntraced(
         function* (request: Request, external: boolean) {
           const registration = registrations.get(request.ref.actor)
@@ -715,7 +742,6 @@ export const layer = (options: Options) => {
               reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
             })
 
-          // A draining runner admits no new external work; the caller retries on another runner.
           if (external && !gate.open)
             return yield* ActorError.make({
               reason: ActorUnavailable.make({ cause: new Error("Runner is draining") }),
@@ -727,9 +753,6 @@ export const layer = (options: Options) => {
           let rejectedAtCapacity = false
 
           return yield* Effect.gen(function* () {
-            // Only the relay presents a mint proof, as the delivery of the
-            // parent's committed creating intent, and only the relay delivers
-            // a subscription, with its envelope.
             if (
               external &&
               (request.delivery !== undefined ||
@@ -742,8 +765,6 @@ export const layer = (options: Options) => {
 
             if (external) yield* allow(request, "command")
 
-            // Postgres rejects some malformed ids and payloads outright; they
-            // still fail as terminal identity errors, checked as before.
             const admission = yield* readAdmission(
               request,
               routingKey({ ref: request.ref, placement: registration.placement }),
@@ -759,8 +780,6 @@ export const layer = (options: Options) => {
 
             if (external) yield* checkIdentity(request.commandId, retryWindowMs, admission.now)
 
-            // A replayed resume still reaches the owner, whose turn replays the
-            // receipt and then wakes the execution the lost delivery would have.
             if (admission.receipt !== undefined && request.command !== RESUME) {
               const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
 
@@ -776,7 +795,6 @@ export const layer = (options: Options) => {
 
             yield* (yield* TurnHooks).at("beforeDelivery", request)
 
-            // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
             const deliver = Clock.currentTimeMillis.pipe(
               Effect.flatMap((queuedAtMs) =>
                 client
@@ -792,8 +810,6 @@ export const layer = (options: Options) => {
                 if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
                   return Effect.fail(failure.value)
 
-                // An unbounded mailbox cannot fill, so the runner is out of
-                // activation slots; a bounded one is full only while resident.
                 if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value)) {
                   if (registration.policy.mailboxCapacity !== "unbounded" && isResident())
                     return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
@@ -803,10 +819,6 @@ export const layer = (options: Options) => {
                   return Effect.fail(ActorError.make({ reason: RunnerAtCapacity.make({}) }))
                 }
 
-                // Direct commands are not persisted. A restarted activation
-                // or lost runner drops the uncommitted attempt, so
-                // the handle retries with the same command id; the receipt
-                // replays anything that did commit.
                 return Effect.fail(
                   ActorError.make({
                     reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
@@ -815,8 +827,6 @@ export const layer = (options: Options) => {
               }),
             )
 
-            // Each retry waits from the error's own retryAfter, as a served
-            // caller would; the delivery timeout bounds the total.
             const retrying = (attempt: number): typeof deliver =>
               deliver.pipe(
                 Effect.catchIf(
@@ -838,9 +848,6 @@ export const layer = (options: Options) => {
           }).pipe(
             Effect.timeoutOrElse({
               duration: registration.policy.deliveryMs,
-              // A turn runs only in a resident activation. After a capacity
-              // rejection with none resident, the latest attempt was not
-              // admitted; an earlier one may still have committed.
               orElse: () =>
                 Effect.fail(
                   ActorError.make({
@@ -867,7 +874,6 @@ export const layer = (options: Options) => {
           ),
       )
 
-      // A claimed intent's lease covers the longest turn its receiver may take here.
       const leaseForTurns = () => {
         let longest = 0
 
@@ -877,10 +883,6 @@ export const layer = (options: Options) => {
         return longest === 0 ? DEFAULT_CLAIM_LEASE_MS : longest + CLAIM_MARGIN_MS
       }
 
-      // Executor progress goes to the performing actor's connection entity,
-      // fire-and-forget: no retry, no acknowledgment, and a lost message is a
-      // lost frame. Actor types with no member that receives an effect's
-      // progress get no messages at all.
       const progressTap = yield* ProgressTap
       const utf8Decoder = new TextDecoder()
 
@@ -894,10 +896,8 @@ export const layer = (options: Options) => {
       const fireAndForget = <E>(send: Effect.Effect<void, E>) =>
         send.pipe(Effect.timeout(PROGRESS_SEND_TIMEOUT), Effect.ignoreCause, Effect.forkIn(scope))
 
-      // Each effect's last frame still on its way, so its close never overtakes it.
       const inflight = new Map<string, Fiber.Fiber<void>>()
 
-      // Sends one progress message to its owner as the pool does, past the tap.
       const deliverProgress = (message: ProgressMessage) =>
         Effect.flatMap(ownerOf(message.ref), (client) =>
           client.Progress(
@@ -941,7 +941,6 @@ export const layer = (options: Options) => {
           ),
       })
 
-      // Every subscription this runner registers, by subscriber type.
       const localSubscriptions = (): ReadonlyArray<LocalSubscription> =>
         [...registrations.values()].flatMap((registration) =>
           registration.subscriptions.map((subscription) => ({
@@ -952,8 +951,6 @@ export const layer = (options: Options) => {
 
       const placements = new Map<string, Placement>()
 
-      // A source may be registered only on other runners; its recorded
-      // placement is fixed once written, so it is cached.
       const placementOf = (actorType: string) =>
         Effect.gen(function* () {
           const known =
@@ -1028,7 +1025,6 @@ export const layer = (options: Options) => {
 
       const cleanupHooks = yield* CleanupHooks
 
-      // A sweep refreshes the writer rows too, as the loop below does.
       const cleanup = Effect.suspend(() =>
         refreshPayloadWriters.pipe(
           Effect.orDie,
@@ -1045,8 +1041,6 @@ export const layer = (options: Options) => {
               })),
               retryWindowMs,
             ).pipe(
-              // Rows of a subscription a registered subscriber type no longer
-              // declares go a day after they fall due.
               Effect.tap(() =>
                 Effect.forEach(
                   [...registrations.values()],
@@ -1060,7 +1054,6 @@ export const layer = (options: Options) => {
               ),
             ),
           ),
-          // Each tenant's content goes at most once an hour, whichever runner claims it.
           Effect.flatMap((swept) =>
             Effect.map(
               content === undefined ? Effect.succeed(0) : content.sweep(false),
@@ -1074,8 +1067,6 @@ export const layer = (options: Options) => {
         Effect.provideService(CleanupHooks, cleanupHooks),
       )
 
-      // Writer rows refresh every half window whatever the sweep schedule, so
-      // a runtime whose refreshes keep succeeding never stops its turns.
       yield* Effect.sleep(writerWindowMs / 2).pipe(
         Effect.andThen(
           refreshPayloadWriters.pipe(
@@ -1097,8 +1088,6 @@ export const layer = (options: Options) => {
         ),
       )
 
-      // Horizons are days long, so a sweep a minute keeps up; each batch is
-      // its own short transaction, so turns never wait on a whole sweep.
       const sweeping = cleanupHooks.periodic
         ? yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
             Effect.andThen(
@@ -1135,9 +1124,6 @@ export const layer = (options: Options) => {
         ),
       )
 
-      // One runner of the deployment samples, so the database sees one set of
-      // reads per interval. Runtimes built on one Sharding in one process, as
-      // tests do, share its one sampler: Cluster refuses a second registration.
       if (!sampled.has(sharding)) {
         sampled.add(sharding)
         yield* sharding.registerSingleton(
@@ -1146,9 +1132,6 @@ export const layer = (options: Options) => {
         )
       }
 
-      // Routed subscriptions registered here, by source type.
-
-      // Routed subscriptions registered here, by source type.
       const routed = (sourceType: string) =>
         localSubscriptions().flatMap(({ subscriberType, subscription }) =>
           subscription.routed !== undefined && subscription.sourceType === sourceType
@@ -1229,9 +1212,6 @@ export const layer = (options: Options) => {
               ),
             )
 
-          // A runner that dies mid-activity is replaced after the recovery
-          // interval; if the rerun is then already past its call ids' expiry
-          // bound, the activity dies with ActivityOutcomeUnknown instead.
           if (
             registration.workflows.size > 0 &&
             retryWindowMs - registration.policy.deliveryMs <= RECOVERY_MS
@@ -1262,8 +1242,6 @@ export const layer = (options: Options) => {
               .map((declared) => declared.tag),
           })
 
-          // Recorded and heartbeat before the type takes any shard, so no turn
-          // writes a version the database doesn't know is being written.
           yield* recordPayloadVersions(registration.payloads).pipe(
             Effect.provideContext(services),
             Effect.provideService(FrameworkClock, frameworkClock),
@@ -1280,16 +1258,12 @@ export const layer = (options: Options) => {
             Effect.orDie,
           )
 
-          // A deploy may add an event class to a dynamic subscription; its
-          // caught-up rows must wake for it.
           for (const declared of registration.subscriptions)
             if (declared.routed === undefined)
               yield* subscriptions
                 .widen(registration.name, declared)
                 .pipe(Effect.provideContext(services), Effect.orDie)
 
-          // Registered before the entity starts serving: a singleton's first
-          // activation may call itself at once, and must find its type.
           registrations.set(registration.name, registration)
 
           if (registration.connections.size > 0 || registration.feeds.size > 0)
@@ -1307,8 +1281,6 @@ export const layer = (options: Options) => {
             }),
           )
 
-          // The log goes inside `services`: those carry whatever context built the
-          // layer, which may hold another runtime's log.
           const { isResident, owner } = yield* registerActor(
             registration,
             transport,
@@ -1346,7 +1318,6 @@ export const layer = (options: Options) => {
             }),
           )
         }),
-        // Executors need no placement: they never touch the actor's rows.
         registerEffects: Effect.fnUntraced(function* (registration: EffectRegistration) {
           if (effectRegistrations.has(registration.name))
             return yield* Effect.die(new Error(`Duplicate effect layer: ${registration.name}`))
@@ -1383,7 +1354,6 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
-        // Feeds read committed events on the serving node, like queries: no activation.
         readFeed: Effect.fnUntraced(
           function* (
             ref: ActorRef,
@@ -1407,13 +1377,11 @@ export const layer = (options: Options) => {
                 WHERE routing_key = ${key} AND tenant_id = ${ref.tenant}
                   AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-              // A feed never creates an actor, so a missing generation row is an answer, not a wake.
               if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
 
               return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
             }).pipe(withTenant(ref.tenant))
 
-            // Clients read the current shape, whatever version each event was written at.
             return yield* Effect.forEach(events, (event) =>
               registration.upcastEvent(event.tag, event.version, event.value).pipe(
                 Effect.map((value) => ({
@@ -1431,8 +1399,6 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
-        // Queries read committed rows on the caller's node: no activation, no
-        // generation fence, no receipt, and no command id.
         query: Effect.fnUntraced(
           function* (request: Request, minVersion?: string) {
             const registration = queryRegistrations.get(request.ref.actor)
@@ -1446,14 +1412,8 @@ export const layer = (options: Options) => {
             yield* allow(request, "query")
             const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-            // No statement_timeout bounds query reads, whether they run on
-            // the pool or, with row-level security, in a transaction bound to
-            // the tenant on the server that answers; interrupting a read past
-            // commandTimeout cancels its statement on the server instead.
             const read = (client: SqlClient.SqlClient) =>
               Effect.gen(function* () {
-                // The event head is read with state in one statement, and every replay
-                // in this query stops at it, so state and events describe one moment.
                 const rows = yield* client<{
                   head: string | null
                   key: string | null
@@ -1476,7 +1436,6 @@ export const layer = (options: Options) => {
                   if (row.head !== null) head = row.head
                   else state.push([row.key!, decompress(row.value!)])
 
-                // State counts only alongside its generation row, which carries the head.
                 if (head === undefined) state.length = 0
 
                 const cursor = head ?? "0"
@@ -1489,7 +1448,6 @@ export const layer = (options: Options) => {
                   ),
                 )
 
-                // A failed replay read is unavailability, not a deterministic query defect.
                 if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
                   return yield* outcome.cause
 
@@ -1499,15 +1457,11 @@ export const layer = (options: Options) => {
                 Effect.provideService(SqlClient.SqlClient, client),
               )
 
-            // Owned tables and blobs are read through the primary's pools, so a
-            // type that declares them reads its state there too: one server per query.
             const replicated =
               replica !== undefined &&
               registration.tables.length === 0 &&
               registration.blobs.length === 0
 
-            // A replica answers only once it has replayed the caller's version;
-            // one that is behind or failing hands the read to the primary.
             const outcome = yield* Effect.gen(function* () {
               if (!replicated) return yield* read(primary)
 
@@ -1532,8 +1486,6 @@ export const layer = (options: Options) => {
               }),
             )
 
-            // Access can be revoked while the handler runs; like a command's
-            // outcome, a query result is released only to a caller still allowed.
             yield* allow(request, "query")
 
             return outcome
@@ -1564,8 +1516,6 @@ export const layer = (options: Options) => {
                 frameworkClock.offsetMillis() +
                 registration.policy.reauthorizeMs
 
-              // The owner the stream runs on, once it answers; a runner that
-              // stops answering ends the stream as its activation would.
               const started = yield* Deferred.make<{ owner: string; ownerEpoch: string }>()
               const lost = yield* Deferred.make<never, ActorError>()
               let owner: { owner: string; ownerEpoch: string } | undefined
@@ -1601,7 +1551,6 @@ export const layer = (options: Options) => {
 
                       if (!StreamItem.guards.Started(item)) return
 
-                      // Cluster resends a request whose runner died; a stream never resumes by itself.
                       if (owner !== undefined) return yield* activationEnded()
                       owner = item
                       yield* Deferred.succeed(started, item)
@@ -1610,7 +1559,6 @@ export const layer = (options: Options) => {
                   Stream.takeWhile((item) => !StreamItem.guards.Done(item)),
                   Stream.filter(StreamItem.guards.Element),
                   Stream.map((item) => item.value),
-                  // Only `Done` ends a stream cleanly; anything else is its activation ending.
                   Stream.concat(
                     Stream.fromEffect(
                       Effect.suspend(() => (finished ? Effect.void : activationEnded())),
@@ -1630,7 +1578,6 @@ export const layer = (options: Options) => {
 
                       if (Cause.hasInterruptsOnly(cause)) return Stream.fromEffect(Effect.interrupt)
 
-                      // Before the owner answered, the subscription never started.
                       return Stream.fail(
                         owner === undefined
                           ? ActorError.make({
@@ -1672,7 +1619,6 @@ export const layer = (options: Options) => {
                 AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
                 AND workflow = ${request.command}`.pipe(withTenant(request.ref.tenant))
 
-            // Access can be revoked while the read runs, as for a query.
             yield* allow(request)
 
             if (row === undefined) return undefined
@@ -1705,11 +1651,6 @@ export const layer = (options: Options) => {
           ),
       })
 
-      // An embedded PGlite has one connection, which a turn holds for its
-      // whole transaction, so a probe would queue behind any long turn and
-      // report the runner unready; the in-process database is usable for as
-      // long as this layer is. On Postgres probes may come often and
-      // unauthenticated, so the database answers at most once a second.
       const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
 
       const storage = embedded
@@ -1754,8 +1695,6 @@ export const layer = (options: Options) => {
           : Effect.succeed(content),
       )
 
-      // The actor's reference to content, read on the actor's shard after
-      // `authorize` allows the operation; none for a name or blob it doesn't hold.
       const contentEntry = Effect.fnUntraced(
         function* (ref: ActorRef, caller: Caller, blob: string, name: string, operation: string) {
           const registration = registrations.get(ref.actor) ?? queryRegistrations.get(ref.actor)
@@ -1868,17 +1807,12 @@ export const layer = (options: Options) => {
         )
       }
 
-      // SqlRunnerStorage reserves a SQL connection for the layer's lifetime,
-      // which starves PGlite's single connection; runner bookkeeping moves to
-      // memory while migrations and receipts stay in SQL.
       const runnerStorage: "memory" | "sql" = Option.isSome(
         yield* Effect.serviceOption(PgliteClient.PgliteClient),
       )
         ? "memory"
         : "sql"
 
-      // Commands are direct, so Cluster keeps no messages; durable intents
-      // use the actor-shard outbox instead.
       const sharding = (
         wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))
       ).pipe(
@@ -1909,9 +1843,6 @@ export const layer = (options: Options) => {
         ),
       )
 
-      // Advisory locks are held by a live session, so no second runner can
-      // take a shard while its holder runs; table locks can expire under a
-      // runner that keeps serving, and singletons then check their lease.
       const config = wiring?.config
       const address = config?.runnerAddress
 
@@ -1941,6 +1872,7 @@ export const layer = (options: Options) => {
   )
 }
 
+/** Database layers for `Actors.layer`: `postgres` for real deployments, `pglite` for embedded and test use. */
 export const Database = {
   /**
    * A runner holds two pools. Turns lease sessions from the turn pool,
@@ -1955,6 +1887,9 @@ export const Database = {
    * Queries read there once it has replayed the commit version their caller
    * last saw, and read the primary when it is behind or fails. Its pool
    * (`maxConnections` default 10) opens connections only as queries need them.
+   *
+   * Registers a `regclass` codec because the pinned driver lacks one and the
+   * migrator needs it on restart; remove once Effect #8309 lands.
    */
   postgres: (
     options: Omit<PgClient.PgPoolConfig, "types"> & {
@@ -1963,7 +1898,6 @@ export const Database = {
     },
   ) => {
     const types = PgTypes.makeRegistry()
-    // rc.116 lacks regclass decoding, used by Sql Migrator on restart. Remove after Effect #8309.
     types.register(2205, {
       encode: (value: number) => PgTypes.encode(value, PgTypes.OID.oid),
       decode: (bytes) =>
