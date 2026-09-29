@@ -121,6 +121,7 @@ const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>)
  * refused before its credentials are read.
  *
  * - `GET /actors/:type/:id?tenant&limit`: `inspect`; receipt outcomes only under `receipts.read`.
+ * - `GET /actors/:type/:id/export?tenant`: `export`; the actor's seed, read-only. Answers 409 `ExportRefused` when a stored value does not decode or the actor holds too much pending work.
  * - `GET /receipts/:type/:id/:commandId?tenant`: `receipts.read`; never runs the command.
  * - `GET /defects?tenant&actor&sinceMs&limit`: `defects.read`; `tenant` may be `*`.
  * - `POST /dead-letters/:effectId/retry` `{ tenant, actorType, actorId, reason, providerChecked? }`: `dead-letters.retry`.
@@ -234,6 +235,29 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
             onNone: () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 }),
             onSome: (value) => HttpServerResponse.jsonUnsafe(value),
           })
+        }),
+      )
+
+      yield* route("GET", "/actors/:type/:id/export", (_request, grant) =>
+        Effect.gen(function* () {
+          const { type, id } = yield* HttpRouter.schemaPathParams(ActorParams)
+          const { tenant } = yield* query(TenantQuery)
+          const resource = { tenant, actorType: type, actorId: id }
+          const entry = yield* authorize(grant, "export", resource)
+
+          yield* runtime.record(entry, "read")
+
+          return yield* runtime.exportSeed(target(resource)).pipe(
+            Effect.map(
+              Option.match({
+                onNone: () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 }),
+                onSome: (seed) => HttpServerResponse.jsonUnsafe(seed),
+              }),
+            ),
+            Effect.catchTag("ExportRefused", (refused) =>
+              Effect.succeed(HttpServerResponse.jsonUnsafe(refused, { status: 409 })),
+            ),
+          )
         }),
       )
 
