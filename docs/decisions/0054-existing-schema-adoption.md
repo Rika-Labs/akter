@@ -1,6 +1,6 @@
 # ADR 0054: Existing-schema adoption: `Actor.table(existing, { owner })` and observe-then-enforce
 
-**Status:** proposed (2026-09-29). It gates M6.1 ([#299](https://github.com/Rika-Labs/durable-actors/issues/299) drafts it) and uses migration `0024_adoption`, which the M6 plan already reserves. It is the first item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. When accepted it amends [contract 06](../contracts/06-storage-ownership.md), [contract 10](../contracts/10-security.md), invariant A4, the [migrations guide](../operations/02-migrations.md), and the [post-foundation sketch](../api/post-foundation-sketches.md).
+**Status:** accepted (2026-09-30, Dallen; proposed 2026-09-29). It gates M6.1 ([#299](https://github.com/Rika-Labs/durable-actors/issues/299) drafts it) and uses migration `0024_adoption`, which the M6 plan already reserves. It is the first item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. When accepted it amends [contract 06](../contracts/06-storage-ownership.md), [contract 10](../contracts/10-security.md), invariant A4, the [migrations guide](../operations/02-migrations.md), and the [post-foundation sketch](../api/post-foundation-sketches.md).
 
 **Responsibility:** decide how an actor type takes over a table that already exists and is written by other code: how its tenant and actor columns are mapped, how direct legacy writers are measured and then rejected, what `routing_key` means for old rows, and what the runtime refuses at startup.
 

@@ -3,6 +3,7 @@ import { Option, Schema } from "effect"
 /** What an operator may do; each action is granted separately. */
 export const OperatorAction = Schema.Literals([
   "inspect",
+  "export",
   "receipts.read",
   "defects.read",
   "dead-letters.retry",
