@@ -8,7 +8,7 @@ import * as Actions from "@distilled.cloud/github/actions"
 import * as Checks from "@distilled.cloud/github/checks"
 import * as Repos from "@distilled.cloud/github/repos"
 
-// Imperative Actions boundary: one shared runtime owns provider layers.
+/** Imperative Actions boundary: one shared runtime owns provider layers. */
 const runtime = ManagedRuntime.make(Layer.mergeAll(CredentialsFromEnv, FetchHttpClient.layer))
 
 export const github = {

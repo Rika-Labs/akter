@@ -61,6 +61,7 @@ const database = Effect.fn("database")(function* (base: string, name: string) {
   return url.toString()
 })
 
+/** `bun create @durable-actors` runs the `@durable-actors/create` bin, so the bin is installed from its tarball. */
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
@@ -93,7 +94,6 @@ const program = Effect.gen(function* () {
     ),
   )
 
-  // `bun create @durable-actors` runs the `@durable-actors/create` bin; install that bin from its tarball.
   const runner = path.join(work, "runner")
   yield* fs.makeDirectory(runner)
   yield* fs.writeFileString(
