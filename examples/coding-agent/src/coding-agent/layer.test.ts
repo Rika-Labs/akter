@@ -11,11 +11,12 @@ import {
   ManagedRuntime,
   Predicate,
   Redacted,
+  Schema,
   Stream,
 } from "effect"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
-import { AgentId, CodingAgent, NoActiveTurn, TurnInProgress } from "./contract.ts"
+import { AgentId, CodingAgent, Delta, Ended, NoActiveTurn, TurnInProgress } from "./contract.ts"
 import { CodingAgentLive } from "./layer.ts"
 import { fakeLayer, fakeSandboxes } from "./sandbox.ts"
 
@@ -88,9 +89,7 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
       const turnId = yield* agent.Prompt({ text: "hello" })
 
       // A client following this turn's reply live, subscribed before the executor runs.
-      const streamed = yield* agent
-        .Streaming({ turnId })
-        .pipe(Stream.take(1), Stream.runCollect, Effect.forkChild)
+      const streamed = yield* agent.Streaming({ turnId }).pipe(Stream.runCollect, Effect.forkChild)
 
       yield* Effect.sleep("200 millis")
       yield* test.advance(0)
@@ -114,9 +113,29 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
       expect(frames.length).toBeGreaterThan(0)
       expect(frames.every((frame) => frame.includes(turnId))).toBe(true)
 
-      const [delta] = [...(yield* Fiber.join(streamed).pipe(Effect.timeout("10 seconds")))]
-      expect(["Done: ", "hello"]).toContain(delta)
+      // Deltas while the reply is written, then its committed end, and the stream completes.
+      const elements = [...(yield* Fiber.join(streamed).pipe(Effect.timeout("10 seconds")))]
+      const deltas = elements.filter((element) => Schema.is(Delta)(element))
+      expect(deltas.length).toBeGreaterThan(0)
+      expect(deltas.every(({ text }) => ["Done: ", "hello"].includes(text))).toBe(true)
+      expect(elements.at(-1)).toEqual(Ended.make({ outcome: "replied", text: "Done: hello" }))
       fake.paceMs = 0
+    }),
+  ))
+
+it("streams a finished turn's end to a subscriber that arrives after it", () =>
+  run(
+    Effect.gen(function* () {
+      const test = yield* ActorTest
+      const agent = yield* started("g7")
+      const turnId = yield* agent.Prompt({ text: "late" })
+      yield* test.advance(0)
+
+      const elements = yield* agent
+        .Streaming({ turnId })
+        .pipe(Stream.runCollect, Effect.timeout("10 seconds"))
+
+      expect([...elements]).toEqual([Ended.make({ outcome: "replied", text: "Done: late" })])
     }),
   ))
 
