@@ -33,6 +33,34 @@ Measured on one machine (see [performance](../verification/03-performance.md#act
 
 Memory bounds the other runner limit. A resident activation holds about 20 KiB of JavaScript heap, so the default `maxResidentActors` of 10,000 is about 200 MiB per runner before the rest of the process. Raise it only with the memory you give the process.
 
+## Row-level security
+
+Row-level security is opt-in defense in depth under the mandatory `tenant_id` predicates ([ADR 0051](../decisions/0051-row-level-security.md)). Migration `0018_rls` puts a `durable_tenant` policy on every tenant-bearing framework table, and `Actor.table` puts the same policy in each owned table's drizzle-kit migration. The policy admits only the tenant named by the transaction's `durable.tenant` setting. It exempts the table owner, so a deployment that doesn't opt in sees no change.
+
+To opt in:
+
+1. Run the framework and owned-table migrations, for example by starting one runner without the option.
+2. As the table owner, create the tenant role, grant it the tables, grant it to the runtime's login, and give it the inspection views. Replace `public` with the runtime's schema and `runtime_login` with its login:
+
+   ```sql
+   CREATE ROLE durable_tenant NOLOGIN;
+   GRANT USAGE ON SCHEMA public TO durable_tenant;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO durable_tenant;
+   GRANT durable_tenant TO runtime_login;
+   GRANT CREATE ON SCHEMA durable TO durable_tenant;
+   DO $$ DECLARE v record; BEGIN
+     FOR v IN SELECT relname FROM pg_class WHERE relnamespace = 'durable'::regnamespace AND relkind = 'v'
+     LOOP EXECUTE format('ALTER VIEW durable.%I OWNER TO durable_tenant', v.relname); END LOOP;
+   END $$;
+   REVOKE CREATE ON SCHEMA durable FROM durable_tenant;
+   ```
+
+3. Start every runner with `Actors.layer({ authorize, rowLevelSecurity: { role: "durable_tenant" } })`.
+
+Command turns and queries then run as `durable_tenant` with their actor's tenant set, and the inspection views return only the tenant the reader's transaction names. The relay, executors, retention, and other cross-tenant framework work keep the connecting role. With the option on, queries cost two more statements (`BEGIN` and `COMMIT` around the tenant settings); turns cost nothing more.
+
+Rerun step 2 after any migration that adds a table or a view. Until then, a runner with the option refuses to start and names the object ([runbooks](runbooks.md)). The role must not be a superuser or have `BYPASSRLS`, and the runtime's login must be able to `SET ROLE` to it.
+
 ## Readiness and bounded graceful drain
 
 The accepted behavior in [ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md) requires usable storage, compatible schemas, registered actors, operational routing, and a runner that is not draining before advertising readiness. Listening on a port is insufficient; waking every actor or finishing all workflows is unnecessary.

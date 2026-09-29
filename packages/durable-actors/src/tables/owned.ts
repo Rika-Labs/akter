@@ -1,8 +1,9 @@
-import { is, type InferInsertModel, type InferSelectModel, type SQL } from "drizzle-orm"
+import { is, sql, type InferInsertModel, type InferSelectModel, type SQL } from "drizzle-orm"
 import {
   bigint,
   ForeignKeyBuilder,
   IndexBuilder,
+  pgPolicy,
   PgTable,
   PrimaryKeyBuilder,
   primaryKey,
@@ -319,6 +320,11 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
 
     const [first, ...rest] = [...owner, ...key.map((column) => self[column]!)]
     result.push(primaryKey({ name: primaryName, columns: [first!, ...rest] }))
+
+    // The tenant policy the framework tables carry: the table owner is exempt,
+    // and a runtime with row-level security sees only each transaction's tenant.
+    const scoped = sql`tenant_id = current_setting('durable.tenant', true)`
+    result.push(pgPolicy("durable_tenant", { for: "all", using: scoped, withCheck: scoped }))
 
     return result
   }
