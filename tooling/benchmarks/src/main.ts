@@ -30,6 +30,7 @@ import { multiRunner } from "./scenarios/multi-runner.ts"
 import { outbox } from "./scenarios/outbox.ts"
 import { queryLatency } from "./scenarios/query-latency.ts"
 import { receiptReplay } from "./scenarios/receipt-replay.ts"
+import { rls } from "./scenarios/rls.ts"
 import { reducers } from "./scenarios/reducers.ts"
 import { capacity } from "./scenarios/scale/capacity.ts"
 import { manyActors } from "./scenarios/scale/many-actors.ts"
@@ -76,6 +77,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   mint,
   cron,
   orders,
+  rls,
 ]
 
 /**
