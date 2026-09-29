@@ -297,7 +297,7 @@ const claimEffects = (
   candidates: Statement.Fragment,
 ) => {
   const attempting = sql`o.cancelled_at_ms IS NULL AND o.attempts < c.max_attempts
-    AND o.final_attempt IS NULL`
+    AND NOT o.final_failure`
 
   return sql`UPDATE actor_outbox o SET
       due_at_ms = ${now} + ${leaseMs}::bigint,
@@ -314,7 +314,7 @@ const claimEffects = (
     WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
     RETURNING ${claimedColumns(sql)}, ${candidates} AS candidates,
       o.cancelled_at_ms IS NULL
-        AND (c.previous >= c.max_attempts OR o.final_attempt IS NOT NULL) AS exhausted`
+        AND (c.previous >= c.max_attempts OR o.final_failure) AS exhausted`
 }
 
 /** One effect type of one actor whose attempts run under a per-actor cap. */
@@ -1134,15 +1134,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 
-      // A failure that is final before the retries run out is recorded in
-      // `final_attempt`, which the next claim reads as exhaustion.
-      const early = final === true && attempt < registered.attempts
-
       // The outcome is recorded first, so a failed dead-letter transaction is
       // retried with this attempt's cause rather than the claim's, and a final
-      // failure is never followed by another attempt.
-      // An attempt that never started applied nothing: the row stays as
-      // ambiguous as its earlier attempts left it, which `maybe_applied` records.
+      // failure, which the next claim reads as exhaustion even with retries
+      // left, is never followed by another attempt. An attempt that never
+      // started applied nothing: the row stays as ambiguous as its earlier
+      // attempts left it, which `maybe_applied` records.
       const recorded = yield* sql<{
         cancelled: boolean
         maybe_applied: boolean
@@ -1150,7 +1147,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       }>`UPDATE actor_outbox
         SET last_error = ${cause},
           ambiguous = ${notStarted === true ? sql`maybe_applied` : sql`${failure.ambiguous}`},
-          running = false, final_attempt = ${early ? attempt : null},
+          running = false, final_failure = ${final === true},
           due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
         WHERE ${attemptRow(attempt)}
         RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied, ambiguous`

@@ -13,6 +13,12 @@ import {
 } from "./commands/dev/run.ts"
 import { USAGE, actorsOf, check, loadEntry, parseCheck } from "./commands/workflows/check.ts"
 import { USAGE as PAYLOADS_USAGE, parsePayloads, payloads } from "./commands/payloads/run.ts"
+import {
+  USAGE as TENANTS_USAGE,
+  controlPlane,
+  create as createTenant,
+  parseCreate,
+} from "./commands/tenants/create.ts"
 
 const fail = (message: string) =>
   Console.error(message).pipe(
@@ -119,6 +125,20 @@ const dev = (args: ReadonlyArray<string>) =>
     Effect.catchTag("UsageError", (error) => fail(`${error.message}\n${DEV_USAGE}`)),
   )
 
+const tenantsCreate = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const options = yield* parseCreate(args)
+    const services = yield* Layer.build(controlPlane(options.databaseUrl))
+
+    yield* Console.log(yield* createTenant(options).pipe(Effect.provideContext(services)))
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      UsageError: (error) => fail(`${error.message}\n${TENANTS_USAGE}`),
+      ActorError: (error) => fail(`durable tenants create failed: ${error.reason._tag}`),
+    }),
+  )
+
 // `durable login` and `durable deploy` join these under commands/.
 const program = Effect.gen(function* () {
   const [group, command, ...args] = process.argv.slice(2)
@@ -129,8 +149,10 @@ const program = Effect.gen(function* () {
 
   if (group === "payloads") return yield* payloadsCommand(process.argv.slice(3))
 
+  if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
+
   return yield* fail(
-    `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${PAYLOADS_USAGE}`,
+    `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${PAYLOADS_USAGE}\n${TENANTS_USAGE}`,
   )
 })
 

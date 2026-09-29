@@ -165,7 +165,6 @@ In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
 - `fails a read as a missing name, never with partial bytes, when a detach and a sweep run between resolving the reference and reading the chunks` (Postgres, independent connections, for both get and stream)
 - `never returns a grant for content a concurrent detach and sweep deleted` (Postgres, independent connections: the sweep deletes between the reference read and the raise)
 - `verifies grants under the previous key for one grant lifetime after rotation`
-- `applies 0020_content_blobs to a database that ran the previous migration`
 
 Benchmark `content-blobs`: deduplication ratio and bytes stored for a skewed upload set, upload and attach latency, read latency, and sweep cost per thousand candidates.
 
