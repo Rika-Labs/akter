@@ -519,6 +519,7 @@ export const migrations = {
           USING (tenant_id = current_setting('durable.tenant', true))
           WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
     }
+  }),
   // Stored events and effect payloads carry the version of their class's
   // migration chain they were written at; readers upcast from it. A settled
   // effect row becomes its route intent and goes back to 0. The two tables
