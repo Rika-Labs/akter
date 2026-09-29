@@ -21,6 +21,8 @@ Expiry MUST NOT cancel accepted durable work or reject its trusted internal rede
 
 Per [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md): a workflow activity's actor calls use derived command ids whose receipts follow the normal retry window. An activity that would send such a call past its expiry bound does not send it and dies with `ActivityOutcomeUnknown`, so the framework never relies on a receipt that cleanup may have removed. This is an explicit exception to automatic recovery for that case, not a relaxation of cleanup.
 
+A client that persists commands MUST save each with its id, expiry, and encoded payload before its first attempt and MUST send that id and payload on every attempt in every session, so a replay after a lost reply, a reload, or a second reader of the same store is a retry the receipt answers. It MUST NOT send a command whose id has passed its retry window, MUST surface it as `CommandExpired` carrying the id, and MUST NOT mint a replacement; a caller's fresh call is a new operation ([ADR 0058](../decisions/0058-offline-command-queue.md)).
+
 Framework retry guidance MUST use `ActorError.isRetryable` and `retryAfter`; declared failures MUST never be wrapped. Expiry MUST NOT trigger an automatic retry with a new id: a fresh id is an explicit new operation and does not resolve the old outcome. Concrete expiry and receipt-access-denial mappings require the compatibility design noted in the [error model](error-model.md).
 
 Verification: invariants R1–R5 in [invariants](../verification/invariants.md) and the receipt-access, expiry, and before/after commit rows in [failure cases](../verification/02-failure-matrix.md).
