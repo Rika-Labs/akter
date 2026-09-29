@@ -17,6 +17,7 @@ import { databaseTime, FrameworkClock } from "./admission.ts"
  */
 export const bucketOf = (routingKey: bigint) => Number(routingKey >> 56n)
 
+/** The inclusive range of values `bucketOf` returns. */
 export const BUCKETS = { first: -128, last: 127 } as const
 
 /**
@@ -26,6 +27,7 @@ export const BUCKETS = { first: -128, last: 127 } as const
  */
 export const OutboxRuntime = Context.Reference<{
   readonly retryWindowMs: number
+  /** Wakes this runner's relay to claim due rows now instead of at its next poll. */
   readonly wake: Effect.Effect<void>
   /** Makes this runner's running attempts check for cancellation now. */
   readonly cancelled: Effect.Effect<void>
@@ -46,9 +48,7 @@ export const OutboxRuntime = Context.Reference<{
   }),
 })
 
-/**
- * A text array parameter, passed as JSON so every driver binds it alike.
- */
+/** A `text[]` expression of `values`, each bound as its own text parameter so every driver binds it alike. */
 export const textArray = ({
   sql,
   values,
@@ -57,10 +57,10 @@ export const textArray = ({
   readonly values: ReadonlyArray<string>
 }) => sql`ARRAY[${sql.csv(values.map((value) => sql`${value}::text`))}]::text[]`
 
-/** A list of strings as JSON text. */
+/** Codec between a string array and its JSON text. */
 export const StringsJson = Schema.fromJsonString(Schema.Array(Schema.String))
 
-/** The control payload a subscribing turn stages for the relay to register at the source. */
+/** The payload of a `control` row: the registration change a subscribing turn stages for the relay to apply at the source. */
 export const ControlPayload = Schema.fromJsonString(
   Schema.Struct({
     op: Schema.Literals(["subscribe", "remove"]),
@@ -71,13 +71,14 @@ export const ControlPayload = Schema.fromJsonString(
   }),
 )
 
-/** The outbox key of a subscription's control row: a later change replaces a pending one. */
-export const controlKey = (change: Pick<StagedSubscription, "subscription" | "source">) =>
+/** The outbox key of a subscription's control row, so a later change replaces a pending one. */
+const controlKey = (change: Pick<StagedSubscription, "subscription" | "source">) =>
   JSON.stringify(["$sub", change.subscription, change.source.actor, change.source.id])
 
+/** Codec between a `Caller` and the JSON text stored in an outbox row's `caller` column. */
 export const CallerJson = Schema.fromJsonString(Caller)
 
-/** What the relay needs to hear once a turn's outbox writes commit. */
+/** What the relay needs to hear once a turn's outbox writes commit; filled in as the statements reply. */
 export interface OutboxReplies {
   /** Some row is due now, so the relay should wake. */
   wake: boolean
@@ -88,13 +89,38 @@ export interface OutboxReplies {
 }
 
 /**
- * The statements that write one turn's intents and effects inside its
- * transaction: a delete of committed rows whose keys the turn replaced, the
- * cancellation of committed effects whose keys it cancelled or performed
- * again, then an insert of the staged rows. `now` is the database time due
- * times are measured from; it is read only when there are rows to insert.
- * No statement takes a parameter from another's reply, so they can be sent as
- * one group; `replies` is complete once every statement has replied.
+ * The statements that write one turn's intents, effects, and subscription
+ * changes inside its transaction, and the effect ids of the new effect rows in
+ * `outbox.effects` order. In order they: delete committed rows whose keys the
+ * turn replaced; cancel committed effects whose keys it cancelled or performed
+ * again; insert the staged rows; upsert each subscription's cursor row and
+ * stage its control row; shift delayed rows; order capped effects. No
+ * statement takes a parameter from another's reply, so they can be sent as one
+ * group; `replies` is complete once every statement has replied.
+ *
+ * `databaseNow` is the time due times are measured from; it is read only when
+ * there are rows to insert. When it was read before the handler ran, `commit`
+ * moves each relative delay to the commit statement's clock by one shift, read
+ * once because `clock_timestamp()` changes while a statement runs, and its
+ * `slackMs` extends the receipt horizon of those rows over the turn's longest
+ * possible run.
+ *
+ * A row's id is the receiver's command id, and its expiry keeps that receipt
+ * at least one retry window past the due time. An effect row names its effect
+ * in `command` and targets its own actor, where its routes deliver; the relay
+ * runs its executor when it is due.
+ *
+ * A never-claimed cancelled effect is deleted; a claim that won the row lock
+ * first makes that delete skip it, and the later update statement then sees it
+ * running. A started effect keeps its row as evidence and gives up its key:
+ * one not running is settled by the next claim, a running one by its attempt
+ * or, once its lease ends, by any runner.
+ *
+ * Each subscription change moves the subscriber's cursor row to a new epoch,
+ * kept forever so the epoch never goes back, and stages the control row that
+ * carries that epoch to the source, replacing a pending earlier change for the
+ * same subscription and source. A `"now"` start is set by the source when the registration
+ * reaches it; `"start"` is cursor 0.
  */
 export const outboxStatements = Effect.fnUntraced(function* <R>(
   routingKey: bigint,
@@ -112,7 +138,6 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant}
     AND actor_type = ${actor} AND actor_id = ${id}`
 
-  // The database clock when the statement runs, on the framework's time line.
   const statementNow = sql`floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint + ${clock.offsetMillis()}`
 
   if (outbox.replaced.length > 0)
@@ -125,17 +150,11 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   if (outbox.cancelledEffects.length > 0) {
     const keys = sql.in(outbox.cancelledEffects.map(effectKey))
 
-    // A never-claimed effect goes. A claim that won the row lock first makes
-    // this delete skip it, and the update below, a later statement, then sees
-    // it running.
     statements.push(
       Effect.asVoid(sql`DELETE FROM actor_outbox WHERE ${actorRow} AND kind = 'effect'
         AND timer_key IN ${keys} AND attempts = 0 AND NOT running`),
     )
 
-    // A started effect keeps its row as evidence and gives up its key; one not
-    // running now is settled by the next claim, a running one by its attempt
-    // or, once its lease ends, by any runner.
     statements.push(
       Effect.map(
         sql<{ running: boolean; intent_id: string }>`UPDATE actor_outbox
@@ -166,9 +185,6 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   replies.wake ||= outbox.subscriptions.length > 0
   const rows = []
 
-  // The row id is the receiver's command id: an intent's, or an effect's
-  // route's. Its expiry keeps that receipt at least one retry window past the
-  // due time.
   const rowId = (dueAt: number, slackMs = 0) =>
     crypto.randomUUIDv4.pipe(
       Effect.orDie,
@@ -183,9 +199,6 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
           At: ({ epochMillis }) => epochMillis,
         })
 
-  // When `now` was read before the handler ran, a relative delay is moved to
-  // the commit statement's clock, and its receipt horizon covers the turn's
-  // longest possible run.
   const delayed: Array<string> = []
 
   const rowIdOf = Effect.fnUntraced(function* (due: Due | undefined, dueAt: number) {
@@ -223,10 +236,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     })
   }
 
-  // An effect row names its effect in `command` and targets its own actor,
-  // where its routes deliver; the relay runs its executor when it is due.
   const capped: Array<{ readonly id: string; readonly effect: string; readonly dueAt: number }> = []
-  // The new rows' effect ids, in `outbox.effects` order.
   const effectIds: Array<string> = []
 
   for (const effect of outbox.effects) {
@@ -262,16 +272,12 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   if (rows.length > 0)
     statements.push(Effect.asVoid(sql`INSERT INTO actor_outbox ${sql.insert(rows)}`))
 
-  // Each change moves the subscriber's cursor row to a new epoch, kept
-  // forever so the epoch never goes back, and stages the control row that
-  // carries that epoch to the source, replacing a pending earlier change.
   const caller = yield* Schema.encodeEffect(CallerJson)(
     System.make({ source: "actor", ref: sender }),
   ).pipe(Effect.orDie)
 
   for (const change of outbox.subscriptions) {
     const subscribe = change.op === "subscribe"
-    // "now" is set by the source when the registration reaches it; "start" is cursor 0.
 
     const applied = Match.value(change.from).pipe(
       Match.when("now", () => "-1"),
@@ -306,8 +312,6 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     )
   }
 
-  // clock_timestamp() changes while a statement runs, so the shift is read
-  // once: every column of every delayed row moves by the same amount.
   if (delayed.length > 0)
     statements.push(
       Effect.asVoid(sql`UPDATE actor_outbox
@@ -331,6 +335,11 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
  * the same millisecond, would otherwise run in any order. The actor's lock
  * serializes its turns, so the rows this statement reads are every earlier
  * perform. It runs after any delay shift, so `scheduled_at_ms` is final.
+ *
+ * Within the turn, an earlier row of one effect type that is due at the same
+ * time or no later always ends ahead of the rows after it. The latest
+ * `ready_at_ms` of earlier committed rows is probed twice, over rows not
+ * running and over running rows, each reading one partial index.
  */
 export const orderCapped = ({
   sql,
@@ -347,8 +356,6 @@ export const orderCapped = ({
     readonly dueAt: number
   }>
 }) => {
-  // An earlier row of this turn, of one type, due at the same time (`tied`)
-  // or no later (`before`), always ends ahead of the rows after it.
   const ranked = capped.map((row, index) => {
     const earlier = capped.slice(0, index).filter(({ effect }) => effect === row.effect)
 
@@ -361,7 +368,6 @@ export const orderCapped = ({
 
   const ids = ranked.map(({ id }) => id)
 
-  // Each probe reads one partial index: rows not running, then running ones.
   const latestOf = (rows: Statement.Fragment) => sql`(SELECT max(e.ready_at_ms)
     FROM actor_outbox e
     WHERE e.routing_key = o.routing_key AND e.tenant_id = o.tenant_id
@@ -384,9 +390,10 @@ export const orderCapped = ({
 }
 
 /**
- * Writes one turn's intents and effects now, reading the database time when it
- * needs it. Returns whether any row is now due, so the caller can wake the
- * relay after commit, and whether it cancelled a running attempt.
+ * Writes one turn's intents and effects now, reading the database time only
+ * when there are rows to insert. Returns the `OutboxReplies`, so the caller can
+ * wake the relay after commit when a row is due and tell it about cancelled
+ * attempts.
  */
 export const writeOutbox = Effect.fnUntraced(function* (
   routingKey: bigint,
