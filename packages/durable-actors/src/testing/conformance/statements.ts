@@ -37,6 +37,10 @@ export type StatementScope =
 
 const collapse = (sql: string) => sql.replace(/\s+/g, " ").trim()
 
+/**
+ * The tables a statement names: `INTO t (columns)` and `UPDATE t SET` name a
+ * table, while `FROM f(...)` names a function.
+ */
 const tablesOf = (sql: string) => {
   const defined = new Set(
     Array.from(sql.matchAll(/(?:\bwith\b|,)\s*([a-z_]\w*)\s*(?:\([^)]*\))?\s+as\s*\(/gi), (match) =>
@@ -45,7 +49,6 @@ const tablesOf = (sql: string) => {
   )
 
   const named = [
-    // `INTO t (columns)` and `UPDATE t SET` name a table; `FROM f(...)` names a function.
     ...sql.matchAll(/\b(?:into|update)\s+"?([a-z_]\w*)"?(?![\w"])/gi),
     ...sql.matchAll(/\b(?:from|join)\s+"?([a-z_]\w*)"?(?![\w"]|\s*\()/gi),
   ]

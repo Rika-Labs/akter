@@ -8,7 +8,7 @@ const harness = ManagedRuntime.make(BunFileSystem.layer)
 
 afterAll(() => harness.dispose())
 
-// A group's cases live in the module its name gives, beside the Neki folder, except for these.
+/** A group's cases live in the module its name gives, beside the Neki folder, except for these. */
 const modules: Partial<Record<ConformanceGroup, string>> = {
   foundation: "../foundation.ts",
   counter: "../conformance.ts",

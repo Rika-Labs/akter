@@ -17,12 +17,13 @@ import { type RecordedStatement, scopeOf, statementLog, type StatementScope } fr
  * did. The suite's runtime stops meanwhile: the first runtime creates the
  * actors, and a second one wakes them from storage, so the recorder sits on
  * runtimes of this case alone. The suite's runtime is running again on return.
+ * Start-up runs its own migrations and registry reads, so recording starts
+ * only once a runtime has finished starting.
  */
 const frameworkStatements = (environment: ConformanceEnvironment) =>
   Effect.gen(function* () {
     const log = statementLog()
 
-    // Start-up runs its own migrations and registry reads; recording starts once it is done.
     const on = (effect: Effect.Effect<void, never, ConformanceServices>, record: boolean) =>
       Effect.acquireUseRelease(
         Effect.sync(() => environment.build({ observe: log.observe })),
@@ -112,7 +113,6 @@ export const singleShardConformance: ReadonlyArray<ConformanceCase> = [
           expect(scopes.keyed.length > 10).toBe(true)
           expect(scopes.scan.length).toBe(2)
 
-          // A scan takes its bucket range as parameters, so a claim per shard range needs no new statement.
           expect(
             scopes.scan.every(({ sql }) => /generate_series\(\$\d+::int, \$\d+::int\)/.test(sql)),
           ).toBe(true)

@@ -43,6 +43,10 @@ export interface PostgresBackendOptions {
 /**
  * The conformance backend for a Postgres-protocol server: each suite gets its
  * own databases on it, and the backend drops them when the suite closes.
+ * Databases created on the primary replicate, so a replica serves each under
+ * the same name. A template copy is a whole-database snapshot of a stopped
+ * deployment; a disposed runtime's server sessions can outlive its pool
+ * briefly, and Postgres refuses to copy a database with sessions.
  */
 export const postgresBackend = (options: PostgresBackendOptions): ConformanceBackend => ({
   independentConnections: true,
@@ -88,7 +92,6 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
           })),
         )
 
-        // Databases created on the primary replicate, so the replica serves each under the same name.
         const onReplica = (database: Redacted.Redacted<string>) => {
           const url = new URL(options.replicaUrl!)
           url.pathname = new URL(Redacted.value(database)).pathname
@@ -116,9 +119,6 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
                 ),
               }
 
-        // A template copy is a whole-database snapshot of a stopped deployment.
-        // A disposed runtime's server sessions can outlive its pool briefly, and
-        // Postgres refuses to copy a database with sessions.
         const copy = Effect.fnUntraced(function* (database: Redacted.Redacted<string>) {
           const source = new URL(Redacted.value(database)).pathname.slice(1)
           const name = `restored_${(yield* crypto.randomUUIDv4).replaceAll("-", "")}`

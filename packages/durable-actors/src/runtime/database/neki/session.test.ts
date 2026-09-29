@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 import { NekiTurnSessions } from "./session.ts"
 import { TurnConnections, turnConnections } from "../../turn/pipeline.ts"
 
-// The session settings a turn's connection reports on each of two leases.
+/** The session settings a turn's connection reports on each of two leases. */
 const sessionSettings = (neki: boolean) =>
   Effect.gen(function* () {
     const url = yield* Config.String("TEST_DATABASE_URL")

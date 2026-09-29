@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { nekiPlanNodes, touchesOneShard } from "./plan.ts"
 
-// Plans as PlanetScale's query-planning documentation prints them.
+/** Plans as PlanetScale's query-planning documentation prints them. */
 const equalUnique = `Route [EqualUnique]
   Query: SELECT event_id FROM public.events WHERE tenant_id = $1
   ShardGroup: tenant_data

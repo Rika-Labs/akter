@@ -6,8 +6,10 @@ export interface NekiPlanNode {
   readonly kind: string | undefined
 }
 
-// A node line is an operator name with an optional bracketed kind. Attribute
-// lines such as `Query:` and `ShardGroup:` carry a colon and are not nodes.
+/**
+ * A node line is an operator name with an optional bracketed kind. Attribute
+ * lines such as `Query:` and `ShardGroup:` carry a colon and are not nodes.
+ */
 const NODE = /^([A-Za-z][A-Za-z ]*?)(?: \[([^\]]+)\])?$/
 
 /**
