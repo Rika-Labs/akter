@@ -464,7 +464,7 @@ The cases live in [`conformance/client.ts`](../../packages/durable-actors/src/te
 
 [`crash/client.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/client.test.ts) runs on real Postgres only. It serves a counter from a child process, blocks the turn at `beforeCommit` or `afterCommit`, SIGKILLs the process while the client waits, and starts a replacement on the same port. The pending call then returns its output, with one receipt, one event, and the same `Idempotency-Key` on every attempt.
 
-These cases cover one runtime process on loopback with Bun's `fetch`. Browsers, proxies, and TLS are not exercised; the browser claim rests on the import-graph and `target: "browser"` build test, and the Playwright e2e test M3.5 asks for is still to come. The `http` benchmark scenario reports client latency beside raw `fetch`, and duplicate turns under 1% response loss.
+These cases cover one runtime process on loopback with Bun's `fetch`; proxies and TLS are not exercised. The browser claim rests on the import-graph and `target: "browser"` build test, and on M3.5's Playwright tests below. The `http` benchmark scenario reports client latency beside raw `fetch`, and duplicate turns under 1% response loss.
 
 ### Served WebSocket connections (M3.3)
 
@@ -513,6 +513,52 @@ Not covered by an executable case yet:
 - The 10,000-feeds-per-actor cap.
 - The 15-second keepalive comment.
 - The extra statement a cold activation of an actor type with feeds pays. The feed rows load with the connection rows; the `sse` benchmark is not written yet.
+
+### Served streams (M3.3)
+
+The cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) and run on PGlite and Postgres, with `FeedRoom`'s stream members `Count` (numbers, then its own end, or a declared `Refused` after the first element) and `Heard` (`read.follow` over `Said`):
+
+- `serves a stream over SSE: element messages, then end, with a declared failure in its end message` — the exact wire text. `Count(3)` is three `element` messages, then `end` with `null`. `Count(101)` is one element, then `end` with `{"_tag":"Refused","at":1}`.
+- `client subscribes to a stream as an AsyncIterable, and gets its declared failure as its class` — `[1, 2, 3]`, then `Refused` thrown as its class, then a live `Heard` subscription that yields the committed text and one committed while subscribed.
+
+`Actor.stream`'s own semantics (activation residency, `ActivationEnded`, `SlowConsumer`, revocation) are M2.10's cases in `conformance/streams.ts`. Here they only reach the wire as `end` messages, and no served case repeats them. The `sse` benchmark is not written yet.
+
+### Client feeds and connections, and the browser (M3.5)
+
+The client cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) and use the same served fixtures as the transport cases, through `FeedRoom.client` and `SocketRoom.client`:
+
+- `client reads an event feed as an AsyncIterable and resumes from its cursor after the response drops` — a `fetch` that cuts the first feed response after one event. The client reopens with `Last-Event-ID: 1` and delivers `1:one`, `2:two`, `3:three` with no repeat.
+- `client feed reopens with fresh headers when its credential expires, and loses nothing` — each request's credential expires 1.5 s later. The feed ends with `Unauthorized expired`, and the client reopens with a fresh credential from `headers` and delivers the event committed meanwhile. The feed opens twice.
+- `client feed fails with RetentionGap for a pruned cursor and UnknownCursor for one never issued` — both are thrown as their classes.
+- `client subscribes to a stream as an AsyncIterable, and gets its declared failure as its class` is listed under served streams above.
+- `client opens a connection with typed frames both ways, rejects a declared open failure or a failing headers provider, and ends on close` — `Banned` is rejected as its class, and `cursor` is the baseline. The greeting, a sent frame's echo, and a normal end all arrive in order. A `headers` provider that rejects fails `connect` with its own error, read before the socket opens, instead of leaving it pending.
+- `carries executor progress over WebSocket as its own progress message, and the client yields it decoded apart from frames` — `SocketRoom`'s `Watch` member lists the `Render` effect with `to: "all"`, and `Render`'s executor reports a percentage every 50 ms. A raw socket receives `t: "progress"` for `Render`, attempt 1, with `seq` ≥ 1, a frame that `Render`'s progress schema accepts, and no `cursor` or `event`. The Promise client's `messages` yields `Progress` with the decoded frame. It runs on PGlite and Postgres.
+- `client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates` (Postgres, two runners) — `Resync { after: "1" }`, `onResync` with `"1"` (which throws, and the resync is still acknowledged), then `ResyncReplayed`, then the next live frame.
+
+[`client/sessions/connection.test.ts`](../../packages/durable-actors/src/client/sessions/connection.test.ts) runs the client against a stand-in WebSocket server that sends what it likes:
+
+- `ends with a decode failure on a frame whose event cursor is not a position` — the frames iterator rejects with `TransportError` `decode` instead of hanging.
+- `ignores a message whose t it doesn't know, and ends with a decode failure on one that isn't a message` — an unknown `t` is skipped and the next frame arrives; invalid JSON ends the frames iterator with `TransportError` `decode`, and the client closes its socket, which the server sees.
+- `keeps the connection when the headers provider fails a renewal` — a `reauthenticate` request whose provider rejects sends nothing, and the next frame still arrives.
+- `delivers an event named end, which carries a cursor, instead of reading it as the feed's end` — only an `end` message without an `id` ends the feed.
+- `waits the Retry-After a refused feed carried before it reopens` — a feed refused with `503` and `Retry-After: 1` reopens no sooner than a second later and delivers the event.
+
+The Playwright tests live in [`apps/e2e/chat.e2e.ts`](../../apps/e2e/chat.e2e.ts). They run in Chromium against `examples/chat` served to a browser page (`examples/chat/src/web/`) on in-memory PGlite. The page follows the room's `MessagePosted` feed, posts through the Promise client, runs `React` optimistically, and shows Presence typing frames.
+
+- `replays events after a dropped connection and never shows a gap as continuous` — the M3 exit test. The page connects through a TCP proxy the test can cut, because Chromium's offline mode leaves an open stream up. The test sets the context offline and cuts every connection; two messages commit while the page is away and are not shown. After the connection is restored, the page shows all three messages with cursors `1`, `2`, `3`, and its feed has opened twice.
+- `rolls back an optimistic reaction the server rejects` — the failure-matrix row **Optimistic reducer rejected by the server** and invariant C3's client half. The room is archived behind the page's back, so the page's committed state still says it's open. A reaction shows `2` at once, the server refuses it with `RoomClosed`, and the count rolls back to `1`.
+- `keeps the original command id across a retried POST after a lost response` — the first response to a committed post is dropped. The retry carries the same `Idempotency-Key`, and the message shows once.
+- `rejects a request with no credentials before any turn runs` — `401 missing_credentials`, and the room's history stays empty.
+
+### React hooks (CR.6)
+
+[`packages/react/src/index.test.ts`](../../packages/react/src/index.test.ts) renders a component that uses every hook with `renderToString` and checks that it renders the empty states and sends no request.
+
+The Playwright tests live in [`apps/e2e/react.e2e.ts`](../../apps/e2e/react.e2e.ts). They run in Chromium against the chat room's React page (`examples/chat/src/web/react.tsx`, under `StrictMode`) on the same server as the chat tests:
+
+- `useCommand retries a command after its responses were lost and the server keeps one receipt` — every response to the post is aborted, so the client times out and the hook shows the intent as not confirmed with its command id. After the user's retry succeeds, every attempt carried that one `Idempotency-Key`, and the room's history holds the message once.
+- `useEventFeed resumes after a dropped connection and after a reload with no gap or repeat` — the page connects through the cuttable TCP proxy. A message committed while the page is cut off appears after the connection is restored, with cursor `2`. After a reload, the feed resumes after the stored cursor: no earlier message is shown again, and the next message arrives with cursor `3`.
+- `useActorState shows an optimistic reaction at once and settles on the committed count` — the Presence connection opens with the `hello` credential, and two reactions show `2`.
 
 ### Multi-runner relay (M2.4)
 
