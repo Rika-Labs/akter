@@ -152,6 +152,7 @@ const grantTenantRole = Effect.fnUntraced(function* (database: {
 }) {
   tenantRoles += 1
   const role = `bench_tenant_${process.pid}_${tenantRoles}`
+  const viewOwner = `bench_views_${process.pid}_${tenantRoles}`
 
   yield* Layer.build(runtimeLayer(undefined).pipe(Layer.provideMerge(database.layer))).pipe(
     Effect.scoped,
@@ -164,18 +165,26 @@ const grantTenantRole = Effect.fnUntraced(function* (database: {
     `GRANT USAGE ON SCHEMA public TO ${role}`,
     `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
     `GRANT ${role} TO CURRENT_USER`,
-    `GRANT CREATE ON SCHEMA durable TO ${role}`,
+    `CREATE ROLE ${viewOwner} NOLOGIN`,
+    `GRANT USAGE ON SCHEMA public TO ${viewOwner}`,
+    `GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${viewOwner}`,
+    `GRANT ${viewOwner} TO CURRENT_USER`,
+    `GRANT CREATE ON SCHEMA durable TO ${viewOwner}`,
     `DO $$ DECLARE v record; BEGIN
       FOR v IN SELECT relname FROM pg_class WHERE relnamespace = 'durable'::regnamespace AND relkind = 'v'
-      LOOP EXECUTE format('ALTER VIEW durable.%I OWNER TO %I', v.relname, '${role}'); END LOOP;
+      LOOP EXECUTE format('ALTER VIEW durable.%I OWNER TO %I', v.relname, '${viewOwner}'); END LOOP;
     END $$`,
-    `REVOKE CREATE ON SCHEMA durable FROM ${role}`,
+    `REVOKE CREATE ON SCHEMA durable FROM ${viewOwner}`,
   ])
     yield* sql.unsafe(statement).pipe(Effect.orDie)
 
   yield* Effect.addFinalizer(() =>
     Effect.forEach(
-      [`REASSIGN OWNED BY ${role} TO CURRENT_USER`, `DROP OWNED BY ${role}`, `DROP ROLE ${role}`],
+      [role, viewOwner].flatMap((name) => [
+        `REASSIGN OWNED BY ${name} TO CURRENT_USER`,
+        `DROP OWNED BY ${name}`,
+        `DROP ROLE ${name}`,
+      ]),
       (statement) => sql.unsafe(statement),
     ).pipe(Effect.ignore),
   )

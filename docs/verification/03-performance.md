@@ -43,7 +43,7 @@ These run on dedicated hardware in [#66](https://github.com/Rika-Labs/durable-ac
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
 - **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region. Deferred to L.1 ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)).
 - **Content blobs** (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)): deduplication ratio and bytes stored for a skewed upload set, upload and attach latency, read latency, and sweep cost per thousand candidates.
-- **File-backed PGlite** (M4.14, [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)): turn and wake latency and throughput at several `dataDir` sizes; the largest measured size bounds the claim.
+- **File-backed PGlite** (M4.14, [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)): turn and wake latency and throughput at several `dataDir` sizes; the largest measured size bounds the claim. Measured below under [Embedded PGlite](#embedded-pglite-m414).
 - **Cold wakes** (L.2, [ADR 0036](../decisions/0036-cold-tier.md)): latency of a cold wake against the wake-latency target plus one object GET.
 
 ## M1 close (cloud VM)
@@ -560,20 +560,21 @@ The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault
 - **A woken actor's tick write is one statement.** Its first turn re-inserts its pending tick, and the unique index rejects it: 121,158 calls for about 122,000 deliveries in the one-runner round, at 0.066 ms.
 - **The claim mean is read from `statements`.** At `094b4a3`, the scenario's `relayClaimMeanMs` is -1 because it searched for `SKIP LOCKED`, which falls past the 160 characters of query text the harness stores. The claim mean above is read from the listed `WITH intent_candidates …` statement, and the scenario now matches that prefix.
 
-### Row-level security (M4.5, #232)
+### Row-level security (M4.5, #232, #256)
 
-`2026-09-29-b54c241-m4.5-rls-postgres.json` runs `bun run bench --backend postgres --scenario rls` (full profile) on branch `feat/232-row-level-security` at `b54c241` (clean tree). Postgres 18 ran as a local server with `pg_stat_statements` preloaded and default durability, through `BENCH_DATABASE_URL`, so server CPU isn't recorded. Bun 1.4.2 and Effect 4.0.0-rc.116 ran on one Amp orb (E2B cloud VM, 16 vCPUs of an Intel Xeon at 2.60 GHz, 31 GiB), shared by the client, the runtime, and Postgres. Each case is one warm actor with 1,000 owned rows and one caller, first with the runtime as the exempt table owner, then with `rowLevelSecurity` on ([ADR 0051](../decisions/0051-row-level-security.md)).
+`2026-09-29-630e421-m4.5-rls-view-owner-postgres.json` runs `bun run bench --backend postgres --scenario rls` (full profile) on branch `feat/256-rls-follow-ups` at `630e421` (clean tree). Postgres 18.6 ran in the harness's container with `pg_stat_statements` and default durability. Bun 1.3.14 and Effect 4.0.0-rc.116 ran on a 4-vCPU cloud VM (15 GiB) shared by the client, the runtime, and Postgres. Each case is one warm actor with 1,000 owned rows and one caller, first with the runtime as the exempt table owner, then with `rowLevelSecurity` on ([ADR 0051](../decisions/0051-row-level-security.md)). The scenario's role script now hands the views to a separate view-owner role, as the startup check requires; before that change the scenario refused to start with RLS on.
 
 | Case                  | Off: p50 / p99 ms | On: p50 / p99 ms | Statements off → on | Round trips off → on |
 | --------------------- | ----------------- | ---------------- | ------------------- | -------------------- |
-| Command turn          | 2.39 / 6.40       | 2.70 / 6.56      | 7 → 7               | 2 → 2                |
-| State query           | 0.19 / 0.46       | 0.51 / 0.91      | 1 → 2               | 0 → 0                |
-| Owned-row insert turn | 2.73 / 6.63       | 3.09 / 7.86      | 7 → 7               | 3 → 3                |
-| Owned-row point query | 0.49 / 1.05       | 0.80 / 1.76      | 2 → 3               | 0 → 0                |
+| Command turn          | 6.01 / 15.12      | 5.80 / 14.59     | 7 → 7               | 2 → 2                |
+| State query           | 0.32 / 5.90       | 0.62 / 3.75      | 1 → 2               | 0 → 0                |
+| Owned-row insert turn | 9.13 / 15.83      | 5.30 / 13.79     | 7 → 7               | 3 → 3                |
+| Owned-row point query | 0.77 / 7.46       | 0.91 / 3.99      | 2 → 3               | 0 → 0                |
 
-- **Turns pay no statement or round trip.** The role and tenant settings ride on the `set_config` statement a turn already opens with. The latency difference is within run-to-run noise: an earlier run on the same commit measured the turn at 3.34 ms off and 3.07 ms on.
+- **Turns pay no statement or round trip.** The role and tenant settings ride on the `set_config` statement a turn already opens with. The turn latencies are noise on this VM: a first run of the same scenario measured the turn at 5.54 ms off and 6.44 ms on, and the insert turn at 9.17 ms off and 6.70 ms on.
 - **Queries pay their transaction.** With RLS on, a query runs as `BEGIN`, one `set_config` statement, its reads, and `COMMIT`. That adds about 0.3 ms at p50 here. `pg_stat_statements` counts transaction control once per distinct text, so the statement column shows only the `set_config` statement.
 - **The policy predicate costs nothing measurable here.** Each scoped statement already filters on `tenant_id`.
+- **Feed pages and workflow polls** open the same tenant transaction with RLS on and are unchanged with it off. The scenario doesn't time them; the conformance case proves they run as the tenant role.
 
 ### Content blobs (M4.13, #222)
 
@@ -608,6 +609,21 @@ The `content-blobs` scenario ([`6b35562-m4.13-content-blobs`](../../benchmarks/r
 | Lost / duplicated operations                   | 0 / 0  | 0 / 0  | 0 / 0            |
 
 Recovery runs from the kill to the commit of the slowest command the first runner, which stays up and serving throughout, started after it on one of the killed runner's shards. Each runner reports the shards its commands went to, and the drill reads the killed runner's shards from `cluster_locks` just before the kill and asserts at least one such command, so the measured command provably waited on a dead runner's shard and its commit marks that shard serving again. It is bounded by the 3 s shard-lock expiry plus Cluster's shard refresh, and can be under 3 s because the dead runner's last lock refresh predates the kill. Until [#219](https://github.com/Rika-Labs/durable-actors/issues/219) the first runner started its operations before the other two were up and could finish them all before the kill, which left no post-kill command on it to measure and the kill not under load. With 10 samples, p99 is not meaningful. Committed operations vary because a runner killed mid-operation may commit an `Increment` without its `Send`; those are counted as committed, never lost.
+
+### Embedded PGlite (M4.14)
+
+`2026-09-29-378a83d-m4.14-embedded-pglite-file.json` runs `bun run bench --profile full --backend pglite-file --scenario embedded-pglite --label m4.14-embedded` on `378a83d`: PGlite 0.5.8 (Postgres 18.3), Bun 1.4.2, on an Amp orb (an E2B cloud sandbox VM, 16 logical CPUs of an Intel Xeon at 2.60 GHz, 31.4 GiB, Linux 6.1). Each case's `dataDir` is a fresh directory under `/tmp` on ext4. One run; nothing else ran during it.
+
+| Stored actors | Database size | Warm turn p50 / p99 (ms) | Wake p50 / p99 (ms) | 16 callers (op/s) |
+| ------------- | ------------- | ------------------------ | ------------------- | ----------------- |
+| 0             | 9.6 MB        | 4.53 / 13.2              | 6.06 / 16.0         | 219               |
+| 10,000        | 17.1 MB       | 4.50 / 11.1              | 5.84 / 13.6         | 213               |
+| 100,000       | 82.4 MB       | 4.49 / 10.8              | 5.76 / 10.0         | 213               |
+
+- A turn takes about 4.5 ms and costs about 5 ms of CPU, whatever the stored size up to 100,000 actors. On one connection turns run one after another, so 16 callers get the same ~213 turns per second as one, and each waits about 16 turns (p50 74 ms).
+- A wake after hibernation adds about 1.5 ms for the generation fence and the state read. Every measured wake took a new generation (`reactivatedFraction` 1).
+- The largest measured database is 82 MB (100,000 seeded actors, each with a 256-byte state value and one receipt). ADR 0035 claims nothing larger.
+- These numbers include the WAL writes a file-backed `dataDir` makes on every commit. They do not measure power-loss durability, which is not claimed.
 
 ### Failure drill II: Postgres primary failover (T10)
 

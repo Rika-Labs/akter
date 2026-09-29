@@ -4,6 +4,8 @@ export const Actors = { layer }
 
 export { Database } from "./layer.ts"
 
+export { DataDirLocked, DataDirVersion } from "../errors/database.ts"
+
 export type { Options } from "./layer.ts"
 
 export { RuntimeControl } from "./drain.ts"
@@ -29,6 +31,16 @@ export { TelemetrySampler } from "./telemetry/sampler.ts"
 export { Metrics } from "./telemetry/metrics.ts"
 
 export { SpanNames } from "./telemetry/spans.ts"
+
+export { Operators } from "./operators/routes.ts"
+
+export type { OperatorsOptions } from "./operators/routes.ts"
+
+export { OperatorAuth } from "./operators/auth.ts"
+
+export { Capability, OperatorAction, OperatorGrant } from "./operators/grants.ts"
+
+export { AuditRecord } from "./operators/audit.ts"
 
 export { checkPayloads, clearPayloads, formatPayloadProblem } from "./payloads/versions.ts"
 

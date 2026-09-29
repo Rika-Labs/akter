@@ -1,13 +1,120 @@
+import { dlopen, FFIType } from "bun:ffi"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Effect } from "effect"
+import { DataDirLocked, DataDirVersion } from "../../errors/database.ts"
 
-/** Own fresh instances; borrowed clients retain their original methods and lifetime. */
+/**
+ * The Postgres major the pinned PGlite embeds. Postgres cannot open a data
+ * directory another major wrote, so a PGlite upgrade across a major must
+ * change this, and a test checks it against what a fresh directory records.
+ */
+export const POSTGRES_MAJOR = "18"
+
+/** The lock file inside a data directory; the kernel drops its lock when the holder dies. */
+export const LOCK_FILE = ".durable-actors.lock"
+
+const LOCK_EX = 2
+
+const LOCK_NB = 4
+
+const O_RDWR = 2
+
+// A child process must not inherit the descriptor, or the lock would outlive
+// this process.
+const O_CLOEXEC = process.platform === "darwin" ? 0x1000000 : 0o2000000
+
+const openLibc = () =>
+  dlopen(process.platform === "darwin" ? "libc.dylib" : "libc.so.6", {
+    open: { args: [FFIType.cstring, FFIType.i32], returns: FFIType.i32 },
+    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    close: { args: [FFIType.i32], returns: FFIType.i32 },
+  }).symbols
+
+let libc: ReturnType<typeof openLibc> | undefined
+
+// PGlite takes no lock of its own, and two instances on one directory both
+// open it and write. An exclusive flock is released by the kernel when the
+// holder dies, even by SIGKILL, so a crash leaves nothing to clean up.
+const loadLibc = () => (libc ??= openLibc())
+
+const cString = (value: string) => new TextEncoder().encode(`${value}\0`)
+
+/** A filesystem data directory, or undefined for an in-memory database. */
+const directoryOf = (dataDir: string | undefined) => {
+  if (dataDir === undefined || dataDir.startsWith("memory://")) return undefined
+
+  return dataDir.startsWith("file://") ? dataDir.slice("file://".length) : dataDir
+}
+
+const lockDataDir = (directory: string) =>
+  Effect.acquireRelease(
+    Effect.gen(function* () {
+      if (process.platform !== "linux" && process.platform !== "darwin")
+        return yield* Effect.die(
+          new Error(`A file-backed PGlite database needs flock, which ${process.platform} lacks`),
+        )
+
+      const path = `${directory}/${LOCK_FILE}`
+      const lock = Bun.file(path)
+
+      // Bun.write creates the directory too; the lock is on the open file, not its bytes.
+      if (!(yield* Effect.promise(() => lock.exists())))
+        yield* Effect.promise(() => Bun.write(path, ""))
+
+      const { open, flock, close } = loadLibc()
+      const fd = open(cString(path), O_RDWR | O_CLOEXEC)
+
+      if (fd < 0) return yield* Effect.die(new Error(`Cannot open the lock file ${path}`))
+
+      if (flock(fd, LOCK_EX | LOCK_NB) !== 0) {
+        close(fd)
+
+        return yield* DataDirLocked.make({ dataDir: directory })
+      }
+
+      return { fd, close }
+    }),
+    ({ fd, close }) => Effect.sync(() => close(fd)),
+  )
+
+/** Refuses a directory another Postgres major wrote before PGlite fails on it opaquely. */
+const checkVersion = (directory: string) =>
+  Effect.gen(function* () {
+    const file = Bun.file(`${directory}/PG_VERSION`)
+
+    if (!(yield* Effect.promise(() => file.exists()))) return
+
+    const found = (yield* Effect.promise(() => file.text())).trim()
+
+    if (found !== POSTGRES_MAJOR)
+      return yield* DataDirVersion.make({ dataDir: directory, found, expected: POSTGRES_MAJOR })
+  })
+
+/**
+ * Own fresh instances; borrowed clients retain their original methods and
+ * lifetime. A file-backed instance holds its data directory's lock from
+ * before it opens until after it closes.
+ */
 export const pglite = (config: PgliteClient.PgliteClientConfig = {}) => {
   if ("liveClient" in config) return PgliteClient.layer(config)
 
+  const directory = directoryOf(config.dataDir)
+
   return PgliteClient.layerFrom(
     Effect.gen(function* () {
+      if (directory !== undefined) {
+        // Relaxed durability acknowledges a commit before its WAL is written,
+        // so a crash could lose a turn whose receipt the caller already has.
+        if (config.relaxedDurability === true)
+          return yield* Effect.die(
+            new Error("A file-backed PGlite database refuses relaxedDurability"),
+          )
+
+        yield* lockDataDir(directory)
+        yield* checkVersion(directory)
+      }
+
       const pending = new Set<Promise<unknown>>()
 
       const database = yield* Effect.acquireRelease(

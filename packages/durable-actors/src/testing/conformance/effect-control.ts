@@ -947,7 +947,8 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
 
               const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
                 FROM pg_stat_activity
-                WHERE wait_event_type = 'Lock' AND query LIKE 'UPDATE actor_outbox SET due_at_ms%'`
+                WHERE datname = current_database()
+                  AND wait_event_type = 'Lock' AND query LIKE 'UPDATE actor_outbox SET due_at_ms%'`
 
               return blocked!.n > 0
             }).pipe(Effect.orDie),
@@ -972,6 +973,91 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             { id: "next", running: false, waiting: false, due: String(now) },
             { id: "oldest", running: true, waiting: false, due: String(leaseEnd) },
           ])
+        }),
+      ),
+  },
+  {
+    name: "wakes the oldest waiting row only after a claim of its group has committed",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+
+          const group = {
+            routing_key: "8",
+            tenant_id: "wake-order",
+            actor_type: "Controlled",
+            actor_id: "ordered",
+            command: "Serial",
+          }
+
+          const now = yield* Clock.currentTimeMillis
+
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (8, 'wake-order', 'Controlled', 'ordered')`
+
+          yield* sql`INSERT INTO actor_outbox ${sql.insert({
+            routing_key: 8,
+            intent_id: "oldest",
+            kind: "effect",
+            bucket: 0,
+            due_at_ms: now + 60_000,
+            scheduled_at_ms: now,
+            ready_at_ms: now,
+            waiting: true,
+            tenant_id: "wake-order",
+            actor_type: "Controlled",
+            actor_id: "ordered",
+            target_type: "Controlled",
+            target_id: "ordered",
+            command: "Serial",
+            payload: "{}",
+            caller: "{}",
+          })}`
+
+          // A claim of the group is in flight, holding the group's lock as a capped claim does.
+          const locked = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+
+          const claim = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT pg_advisory_xact_lock(hashtextextended(
+                  '["wake-order","Controlled","ordered","Serial"]', 0))`
+                yield* Deferred.succeed(locked, undefined)
+                yield* Deferred.await(release)
+              }),
+            )
+            .pipe(Effect.forkChild)
+
+          yield* Deferred.await(locked)
+
+          const wake = yield* wakeWaiting({ sql, group, at: now }).pipe(Effect.forkChild)
+
+          // The wake must queue behind the claim instead of locking a row the claim would skip.
+          yield* eventually(
+            Effect.gen(function* () {
+              const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND wait_event_type = 'Lock' AND wait_event = 'advisory'`
+
+              return blocked!.n > 0
+            }).pipe(Effect.orDie),
+            "10 seconds",
+            "the wake to wait on the group's lock",
+          )
+          expect(wake.pollUnsafe()).toBe(undefined)
+
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(claim)
+          yield* Fiber.join(wake)
+
+          const [row] = yield* sql<{ waiting: boolean; due: string }>`SELECT waiting,
+            due_at_ms::text AS due FROM actor_outbox WHERE routing_key = 8 AND intent_id = 'oldest'`
+
+          expect(row).toEqual({ waiting: false, due: String(now) })
         }),
       ),
   },

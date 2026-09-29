@@ -79,6 +79,6 @@ PGlite in the generated app is for development and single-process use. It has on
 
 - run one process against a data directory; a second process opening it at the same time is unsupported;
 - nothing on PGlite proves lock contention, independent connections, multi-runner relay, or process-kill recovery, which the framework verifies on Postgres only;
-- PGlite is not a production backend. Production PGlite support is gated on M4.14; until then deploy on Postgres, and see the [support matrix](operations/support-matrix.md).
+- File-backed PGlite is a production backend for one process per data directory, within the limits of [ADR 0035](decisions/0035-pglite-embedded-production-backend.md): the data directory is locked to one process, a process crash recovers to the last commit (power loss is not claimed), backups are stopped copies, and there are no replicas or multiple runners. Set `DATABASE_URL` to move to Postgres when those limits bind; see the [support matrix](operations/support-matrix.md).
 
 On Postgres the app is still alpha and single-runner: run one runtime process per database.

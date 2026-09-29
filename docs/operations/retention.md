@@ -30,7 +30,7 @@ Every runtime sweeps once a minute, per registered actor type and across every t
 
 An interrupted sweep leaves whole batches and resumes on the next one. A replay whose cursor precedes pruned events fails `RetentionGap`, and the reader resynchronizes from state and `read.cursor`. Lowering a horizon takes effect at the next sweep and removes history that readers may still hold cursors into; raising it cannot bring pruned rows back. Every process uses its own policy values, so during a rolling deploy that lowers `keepReceipts`, a new process can prune a receipt that an old process's in-flight turn still counts on; lower it in two steps, or while no retries of old ids are in flight. Version-skew support is an M4 item. Blob quotas and emit budgets bound what a single actor stores, not how long it keeps it.
 
-Supported restore across pruned history, per-tenant horizons, and automatic dead-letter retention are not implemented.
+Restore of a whole-database snapshot, including across pruned history, follows [backup and restore](04-backup-restore.md). Per-tenant horizons and automatic dead-letter retention are not implemented.
 
 ## Content sweep
 

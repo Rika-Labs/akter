@@ -12,6 +12,7 @@ import {
   Schedule,
   Schema,
   Scope,
+  type Redacted,
 } from "effect"
 import type { HttpServer } from "effect/unstable/http"
 import { SqlClient, Statement } from "effect/unstable/sql"
@@ -55,7 +56,10 @@ import {
 import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
+import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
+import { OperatorRuntime } from "../runtime/operators/repair.ts"
+import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
@@ -66,6 +70,12 @@ import {
   retentionLayer,
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
+import {
+  restoreConformance,
+  restoreFixture,
+  type RestoreFixture,
+  restoreLayer,
+} from "./conformance/restore.ts"
 import {
   assertionsConformance,
   type ConformanceEdge,
@@ -201,6 +211,7 @@ export type ConformanceServices =
   | SqlClient.SqlClient
   | Crypto.Crypto
   | ContentStore
+  | OperatorRuntime
 
 export type ConformanceRuntime = ManagedRuntime.ManagedRuntime<ConformanceServices, never>
 
@@ -211,6 +222,8 @@ export interface ConformanceEnvironment {
   readonly build: (options?: {
     readonly retryWindowMs?: number
     readonly database?: ConformanceDatabase
+    /** Queries read this streaming replica of `database` once it has caught up. */
+    readonly replica?: Redacted.Redacted<string> | undefined
     readonly content?: Options["content"]
   }) => ConformanceRuntime
   /** Stops the current runtime; the retained database survives. */
@@ -220,19 +233,36 @@ export interface ConformanceEnvironment {
   /** A second database untouched by the current runtime, for isolation cases. */
   readonly freshDatabase: Effect.Effect<ConformanceDatabase>
   /**
+   * Copies the retained database whole, as a backup of a stopped deployment
+   * would, into a new database no runtime has opened. Requires `stop` first.
+   */
+  readonly snapshot: Effect.Effect<ConformanceDatabase>
+  /**
    * Opens an independent SQL connection to the same database. Only present
    * when the backend advertises `independentConnections`.
    */
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+  /** The retained database on a streaming replica; only present when the backend has one. */
+  readonly replica?: ConformanceReplica | undefined
   /** A fresh listening HTTP server that supports WebSocket upgrades; each build listens anew. */
   readonly httpServer: Layer.Layer<HttpServer.HttpServer>
   /** The hosted edge under test, when the backend supplies one. */
   readonly edge?: ConformanceEdge
 }
 
+/** A physical streaming replica of the backend's Postgres primary. */
+export interface ConformanceReplica {
+  /** The retained database's connection string on the replica. */
+  readonly database: Redacted.Redacted<string>
+  /** A superuser connection to the replica, e.g. to pause and resume WAL replay. */
+  readonly connect: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+}
+
 export interface ConformanceBackend {
   /** True when the backend can open concurrent SQL connections (real Postgres). */
   readonly independentConnections: boolean
+  /** True when `open` returns a streaming replica of the primary. */
+  readonly hasReplica?: boolean
   /** Extra services merged into every test runtime, e.g. BunCrypto.layer. */
   readonly services: Layer.Layer<Crypto.Crypto, never, never>
   /**
@@ -249,7 +279,10 @@ export interface ConformanceBackend {
   readonly open: () => Promise<{
     readonly database: ConformanceDatabase
     readonly freshDatabase: Effect.Effect<ConformanceDatabase>
+    /** Copies a database that no runtime has open into a new one. */
+    readonly copy: (database: ConformanceDatabase) => Effect.Effect<ConformanceDatabase>
     readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+    readonly replica?: ConformanceReplica | undefined
     readonly close: Effect.Effect<void>
   }>
 }
@@ -266,6 +299,7 @@ export interface ConformanceFixture {
   readonly relay: RelayFixture
   readonly effectControl: EffectControlFixture
   readonly retention: RetentionFixture
+  readonly restore: RestoreFixture
   readonly workflows: WorkflowsFixture
   readonly subscriptions: SubscriptionsFixture
   readonly connections: ConnectionsFixture
@@ -297,6 +331,8 @@ export interface ConformanceCase {
    * the case through `registrar.skip` instead of running it.
    */
   readonly requiresIndependentConnections?: boolean
+  /** Requires a streaming replica; backends without one skip the case. */
+  readonly requiresReplica?: boolean
   /** Requires `backend.edge`; backends without one register the case through `registrar.skip`. */
   readonly requiresEdge?: boolean
   readonly run: (ctx: ConformanceContext) => Promise<void>
@@ -400,6 +436,7 @@ const makeFixture = (): ConformanceFixture => ({
   relay: relayFixture(),
   effectControl: effectControlFixture(),
   retention: retentionFixture(),
+  restore: restoreFixture(),
   workflows: workflowsFixture(),
   subscriptions: subscriptionsFixture(),
   connections: connectionsFixture(),
@@ -416,55 +453,8 @@ const makeFixture = (): ConformanceFixture => ({
   revoked: new Set(),
 })
 
-/**
- * The shared durable-turn conformance cases. Cases flagged
- * `requiresIndependentConnections` need real Postgres: a second database
- * connection to read committed state while a turn holds its transaction open
- * or to take a competing row lock, or a database outside the JavaScript heap
- * they measure. They never run on single-connection backends such as PGlite.
- */
-export const conformance: ReadonlyArray<ConformanceCase> = [
-  ...foundationConformance,
-  ...admissionConformance,
-  ...httpConformance,
-  ...assertionsConformance,
-  ...edgeConformance,
-  ...clientConformance,
-  ...capacityConformance,
-  ...heapConformance,
-  ...eventsConformance,
-  ...reducerConformance,
-  ...outboxConformance,
-  ...tablesConformance,
-  ...effectsConformance,
-  ...progressConformance,
-  ...multiRunnerConformance,
-  ...drainConformance,
-  ...pipelineConformance,
-  ...batchesConformance,
-  ...relayConformance,
-  ...relayClusterConformance,
-  ...effectControlConformance,
-  ...effectControlClusterConformance,
-  ...singletonConformance,
-  ...cronConformance,
-  ...cronClusterConformance,
-  ...blobsConformance,
-  ...inspectionViewsConformance,
-  ...inspectorConformance,
-  ...rlsConformance,
-  ...retentionConformance,
-  ...workflowsConformance,
-  ...connectionsConformance,
-  ...streamsConformance,
-  ...progressDeliveryConformance,
-  ...transportsConformance,
-  ...workflowVersionsConformance,
-  ...payloadMigrationsConformance,
-  ...subscriptionsConformance,
-  ...subscriptionsRetentionConformance,
-  ...subscriptionsClusterConformance,
-  ...contentConformance,
+/** Cases written against the Counter actor defined in this file. */
+const counterConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1449,16 +1439,82 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
         }).pipe(Effect.scoped),
       ),
   },
-  ...propertiesConformance,
-  ...mintConformance,
-  ...observabilityConformance,
-  ...placementConformance,
 ]
+
+/**
+ * Every conformance case, grouped by the file that owns it. `describeConformance`
+ * runs a subset through `cases`, so a group can run in its own Vitest file and
+ * worker; `conformance` is their union and the order within a group is kept.
+ */
+export const conformanceGroups = {
+  foundation: foundationConformance,
+  admission: admissionConformance,
+  http: httpConformance,
+  assertions: assertionsConformance,
+  edge: edgeConformance,
+  client: clientConformance,
+  capacity: capacityConformance,
+  heap: heapConformance,
+  events: eventsConformance,
+  reducer: reducerConformance,
+  outbox: outboxConformance,
+  tables: tablesConformance,
+  effects: effectsConformance,
+  progress: progressConformance,
+  multiRunner: multiRunnerConformance,
+  drain: drainConformance,
+  pipeline: pipelineConformance,
+  batches: batchesConformance,
+  relay: relayConformance,
+  relayCluster: relayClusterConformance,
+  effectControl: effectControlConformance,
+  effectControlCluster: effectControlClusterConformance,
+  singleton: singletonConformance,
+  cron: cronConformance,
+  cronCluster: cronClusterConformance,
+  blobs: blobsConformance,
+  inspectionViews: inspectionViewsConformance,
+  inspector: inspectorConformance,
+  rls: rlsConformance,
+  retention: retentionConformance,
+  restore: restoreConformance,
+  workflows: workflowsConformance,
+  connections: connectionsConformance,
+  streams: streamsConformance,
+  progressDelivery: progressDeliveryConformance,
+  transports: transportsConformance,
+  workflowVersions: workflowVersionsConformance,
+  payloadMigrations: payloadMigrationsConformance,
+  subscriptions: subscriptionsConformance,
+  subscriptionsRetention: subscriptionsRetentionConformance,
+  subscriptionsCluster: subscriptionsClusterConformance,
+  content: contentConformance,
+  counter: counterConformance,
+  properties: propertiesConformance,
+  mint: mintConformance,
+  readYourWrites: readYourWritesConformance,
+  observability: observabilityConformance,
+  operator: operatorConformance,
+  placement: placementConformance,
+} satisfies Record<string, ReadonlyArray<ConformanceCase>>
+
+export type ConformanceGroup = keyof typeof conformanceGroups
+
+/**
+ * The shared durable-turn conformance cases. Cases flagged
+ * `requiresIndependentConnections` need real Postgres: a second database
+ * connection to read committed state while a turn holds its transaction open
+ * or to take a competing row lock, or a database outside the JavaScript heap
+ * they measure. They never run on single-connection backends such as PGlite.
+ */
+export const conformance: ReadonlyArray<ConformanceCase> = Object.values(conformanceGroups).flat()
 
 interface ConformanceStore {
   readonly database: ConformanceDatabase
   readonly freshDatabase: Effect.Effect<ConformanceDatabase>
+  readonly copy: (database: ConformanceDatabase) => Effect.Effect<ConformanceDatabase>
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+  readonly replica?: ConformanceReplica | undefined
   readonly close: Effect.Effect<void>
 }
 
@@ -1499,6 +1555,7 @@ export const describeConformance = (options: {
     effectControlLayer,
     effectControlEffects(fixture.effectControl),
     retentionLayer(fixture.retention),
+    restoreLayer(fixture.restore),
     propertiesLayer,
     workflowsLive(fixture.workflows),
     connectionsLayer(fixture.connections),
@@ -1533,6 +1590,7 @@ export const describeConformance = (options: {
           Layer.provideMerge(
             ActorTest.layer({
               database,
+              replica: overrides?.replica,
               as: User.make({ subject: "alice" }),
               authorize: (request) =>
                 Effect.sync(
@@ -1588,8 +1646,19 @@ export const describeConformance = (options: {
         ? Effect.die(new Error("Conformance environment is not open"))
         : store.freshDatabase,
     ),
+    snapshot: Effect.suspend(() => {
+      if (store === undefined) return Effect.die(new Error("Conformance environment is not open"))
+
+      if (current !== undefined)
+        return Effect.die(new Error("A snapshot needs the conformance runtime stopped"))
+
+      return store.copy(store.database)
+    }),
     get connect() {
       return store?.connect
+    },
+    get replica() {
+      return store?.replica
     },
     httpServer: backend.httpServer,
     get edge() {
@@ -1625,6 +1694,7 @@ export const describeConformance = (options: {
       if (
         (conformanceCase.requiresIndependentConnections === true &&
           backend.independentConnections === false) ||
+        (conformanceCase.requiresReplica === true && backend.hasReplica !== true) ||
         (conformanceCase.requiresEdge === true && backend.edge === undefined)
       ) {
         registrar.skip(conformanceCase.name)

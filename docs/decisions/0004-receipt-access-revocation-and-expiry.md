@@ -1,6 +1,6 @@
 # ADR 0004: Receipt access, revocation, and command expiry
 
-**Status:** accepted design (2026-09-22); implementation and conformance remain pending.
+**Status:** accepted design (2026-09-22); command expiry and whole-database restore are implemented and covered by `conformance/restore.ts`; conformance for the remaining checks below stays with their owning slices.
 
 **Responsibility:** record the owner's remaining retry and authorization choices before decomposing the framework backlog.
 

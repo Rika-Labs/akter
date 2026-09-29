@@ -562,7 +562,11 @@ export const deadLettersView = ({
   section(
     "Dead letters",
     shown(rows.length, total),
-    h("p", { class: "hint" }, "Retrying a dead letter waits for audited repair (M4.6)."),
+    h(
+      "p",
+      { class: "hint" },
+      "Retry or discard a dead letter with durable dead-letters, under operator authority.",
+    ),
     truncated(rows.length, total),
     table(
       ["Actor", ...DEAD_LETTER_HEADERS],
