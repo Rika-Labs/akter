@@ -638,7 +638,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
             System.make({ source: "timer", ref }),
           ).pipe(Effect.orDie)
 
-          // An older deployment's `Intent.key("$cron:UTC * * * * *")` holds the
+          // An older deployment's `Intent.key("$cron:* * * * *")` holds the
           // entry's canonical key, and the actor has no cron tick for it.
           yield* sql`DELETE FROM actor_outbox WHERE tenant_id = ${ref.tenant}
             AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
