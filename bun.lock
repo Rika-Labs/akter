@@ -47,10 +47,14 @@
       },
       "dependencies": {
         "@durable-actors/core": "workspace:*",
+        "@durable-actors/deployments": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
       },
       "devDependencies": {
+        "@durable-actors/postgres": "workspace:*",
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
         "vitest": "catalog:",
       },
     },
@@ -231,7 +235,16 @@
       "name": "@durable-actors/deployments",
       "dependencies": {
         "@durable-actors/core": "workspace:*",
+        "drizzle-orm": "catalog:",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@durable-actors/postgres": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
       },
     },
     "packages/durable-actors": {

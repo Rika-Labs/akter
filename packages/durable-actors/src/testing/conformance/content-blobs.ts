@@ -15,8 +15,6 @@ import {
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Content, ContentRef, InvalidContentRef, Tenant, Unauthorized } from "../../index.ts"
 import { InternalActors } from "../../handles/actors.ts"
-import { migrations, migrator } from "../../runtime/database/migrations.ts"
-import { Database } from "../../runtime/layer.ts"
 import { CHUNK_BYTES, MAX_CONTENT_BYTES } from "../../runtime/content/store.ts"
 import type { ContentPoint } from "../../runtime/turn/hooks.ts"
 import { ActorTest, TEST_CONTENT_KEY } from "../actor-test.ts"
@@ -729,57 +727,6 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* attachAs([SECOND_KEY, TEST_CONTENT_KEY], "rotated")).toBe("attached")
           expect(yield* attachAs([SECOND_KEY], "retired")).toBe("invalid")
         }).pipe(Effect.ensuring(environment.restart)),
-      ),
-  },
-  {
-    name: "applies 0020_content_blobs to a database that ran the previous migration",
-    run: ({ expect, environment }) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const database = yield* environment.freshDatabase
-
-          const client = yield* Layer.build(
-            Redacted.isRedacted(database)
-              ? Database.postgres({ url: database })
-              : Database.pglite(database),
-          )
-
-          const inClient = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-            Effect.provide(effect, client)
-
-          const through17 = Object.fromEntries(
-            Object.entries(migrations).filter(([id]) => id < "0020"),
-          )
-
-          yield* inClient(migrator(through17))
-
-          yield* inClient(
-            Effect.gen(function* () {
-              const sql = yield* SqlClient.SqlClient
-              yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, 60000)`
-            }),
-          )
-
-          yield* inClient(migrator(migrations))
-
-          const [row] = yield* inClient(
-            Effect.gen(function* () {
-              const sql = yield* SqlClient.SqlClient
-
-              return yield* sql<{ deployment: string | null; tables: number; views: number }>`
-                SELECT (SELECT deployment_id FROM actor_deployment) AS deployment,
-                  (SELECT count(*)::int FROM pg_tables WHERE tablename IN ('tenant_contents',
-                    'tenant_content_chunks', 'actor_content_refs', 'tenant_content_sweeps',
-                    'actor_content_types')) AS tables,
-                  (SELECT count(*)::int FROM durable.views
-                    WHERE view_name IN ('contents', 'content_refs')) AS views`
-            }),
-          )
-
-          expect(/^[0-9a-f-]{36}$/.test(row!.deployment ?? "")).toBe(true)
-          expect(row!.tables).toBe(5)
-          expect(row!.views).toBe(2)
-        }).pipe(Effect.scoped, Effect.orDie),
       ),
   },
 ]
