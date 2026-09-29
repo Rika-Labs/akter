@@ -20,7 +20,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --threads 1 src",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 src",
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/create/src",
     "test:integration": "bun ../../.github/src/release/quickstart.ts"
   },

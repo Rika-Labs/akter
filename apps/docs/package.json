@@ -7,7 +7,7 @@
     "dev": "bun src/build.ts && PORT=${DOCS_PORT:-3002} bun src/main.ts",
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --threads 1 .",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/docs/src"
   },
   "dependencies": {
