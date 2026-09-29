@@ -49,16 +49,7 @@ Ship: Effect.fn(function* (order) {
 
 ## Inspect and reproduce
 
-```text
-durable inspect Chat/room-42 --turns 5
-durable export Chat/room-42 --output room-42.seed
-```
-
-```ts
-const room = yield * test.actor(Chat, "room-42", { seed: "room-42.seed" })
-```
-
-These are operator-authorized operations with explicit redaction and retention. The baseline export is current actor state plus relevant durable obligations and metadata; arbitrary past-turn rewind requires a separately costed history feature.
+`durable inspect Chat/room-42` and `durable export Chat/room-42 --output room-42.seed` shipped, with `test.actor(Chat, "room-42", { seed: "room-42.seed" })` ([server API](01-server-api.md)). The baseline export is current actor state plus pending intents and effects; arbitrary past-turn rewind, and so a `--turns` option, requires a separately costed history feature.
 
 ## Derive protocols
 

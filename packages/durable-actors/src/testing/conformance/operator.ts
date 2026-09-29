@@ -1,13 +1,10 @@
-import { Context, Crypto, Effect, Layer, Option, Schema, type Scope } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { Effect, Layer, Option, Schema, type Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, Unauthorized, User } from "../../index.ts"
-import { OperatorAuth } from "../../runtime/operators/auth.ts"
-import { bearerToken } from "../../serve/auth.ts"
+import { Actor, Actors } from "../../index.ts"
 import type { Capability } from "../../runtime/operators/grants.ts"
-import { Operators } from "../../runtime/operators/routes.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import { type Answer, type Harness, operatorHarness } from "./operator-harness.ts"
 
 class Declined extends Schema.TaggedError<Declined>()("OpDeclined", { reason: Schema.String }) {}
 
@@ -84,6 +81,7 @@ const live = Layer.mergeAll(
   ),
 )
 
+/** One capability of `action` over `scope`. */
 const capability = (
   action: Capability["action"],
   scope: Omit<Capability, "action">,
@@ -92,42 +90,8 @@ const capability = (
   ...scope,
 })
 
-interface Answer {
-  readonly status: number
-  readonly body: unknown
-}
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
 
-interface Harness {
-  readonly tenant: string
-  /** Gives `token` a grant of these capabilities from now on. */
-  readonly grant: (token: string, capabilities: ReadonlyArray<Capability>) => Effect.Effect<void>
-  /** Sends one operator request with `token` as its bearer credential. */
-  readonly send: (
-    method: "GET" | "POST",
-    path: string,
-    token: string | undefined,
-    body?: Schema.Json,
-  ) => Effect.Effect<Answer>
-  readonly deadLetters: Effect.Effect<
-    ReadonlyArray<{ effect_id: string; effect: string; ambiguous: boolean }>
-  >
-  readonly audit: Effect.Effect<ReadonlyArray<AuditRow>>
-}
-
-interface AuditRow {
-  readonly operator: string
-  readonly action: string
-  readonly actor_id: string | null
-  readonly target: string | null
-  readonly capability: string | null
-  readonly reason: string | null
-  readonly outcome: string
-}
-
-/**
- * A runtime of its own on a fresh database, serving `Operators.serve` with
- * these tokens through an in-memory web handler.
- */
 const withOperators = <A, E>(
   environment: ConformanceEnvironment,
   tokens: Record<string, ReadonlyArray<Capability>>,
@@ -135,114 +99,15 @@ const withOperators = <A, E>(
     harness: Harness,
   ) => Effect.Effect<A, E, Actors | ActorTest | SqlClient.SqlClient | Scope.Scope>,
 ) =>
-  environment.run(
-    Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto
-      const database = yield* environment.freshDatabase
-
+  operatorHarness({
+    environment,
+    live,
+    reset: () => {
       Object.assign(fixture, { handlerRuns: 0, charges: [], ships: [], up: false })
-
-      const services = yield* Layer.buildWithMemoMap(
-        live.pipe(
-          Layer.provideMerge(
-            ActorTest.layer({
-              database,
-              as: User.make({ subject: "alice" }),
-              retryWindowMs: 60_000,
-            }),
-          ),
-          Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
-          Layer.orDie,
-        ),
-        yield* Layer.makeMemoMap,
-        yield* Effect.scope,
-      )
-
-      const grants = new Map(
-        Object.entries(tokens).map(([token, capabilities]) => [
-          token,
-          { operator: `op-${token}`, capabilities },
-        ]),
-      )
-
-      const auth = OperatorAuth.make((request) =>
-        Effect.flatMap(bearerToken(request), (token) => {
-          const grant = grants.get(token)
-
-          return grant === undefined
-            ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
-            : Effect.succeed(grant)
-        }),
-      )
-
-      const web = HttpRouter.toWebHandler(
-        Operators.serve({ auth }).pipe(Layer.provide(Layer.succeedContext(services))),
-        { disableLogger: true },
-      )
-
-      yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
-
-      const sql = Context.get(services, SqlClient.SqlClient)
-      const tenant = Context.get(services, ActorTest).tenant
-
-      const harness: Harness = {
-        tenant,
-        grant: (token, capabilities) =>
-          Effect.sync(() => {
-            grants.set(token, { operator: `op-${token}`, capabilities })
-          }),
-        send: (method, path, token, payload) =>
-          Effect.gen(function* () {
-            const encoded =
-              payload === undefined ? undefined : yield* encodeJson(payload).pipe(Effect.orDie)
-
-            const response = yield* Effect.promise(() =>
-              web.handler(
-                encoded === undefined
-                  ? new Request(`http://runner${path}`, {
-                      method,
-                      headers: requestHeaders(token, encoded),
-                    })
-                  : new Request(`http://runner${path}`, {
-                      method: "POST",
-                      headers: requestHeaders(token, encoded),
-                      body: encoded,
-                    }),
-              ),
-            )
-
-            const text = yield* Effect.promise(() => response.text())
-
-            return {
-              status: response.status,
-              body: text.length === 0 ? null : yield* decodeJson(text).pipe(Effect.orDie),
-            }
-          }),
-        deadLetters: sql<{ effect_id: string; effect: string; ambiguous: boolean }>`
-          SELECT effect_id, effect, ambiguous FROM actor_dead_letters ORDER BY dead_at_ms`.pipe(
-          Effect.orDie,
-        ),
-        audit: sql<AuditRow>`SELECT operator, action, actor_id, target, capability, reason, outcome
-          FROM durable.operator_audit ORDER BY at_ms, audit_id`.pipe(Effect.orDie),
-      }
-
-      return yield* body(harness).pipe(Effect.provideContext(services))
-    }),
-  )
-
-const requestHeaders = (token: string | undefined, body: string | undefined) => {
-  const headers = new Headers()
-
-  if (token !== undefined) headers.set("authorization", `Bearer ${token}`)
-
-  if (body !== undefined) headers.set("content-type", "application/json")
-
-  return headers
-}
-
-const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
-
-const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+    },
+    tokens,
+    body,
+  })
 
 const till = (tenant: string) => ({ tenant, actorType: "OpTill", actorId: "t1" })
 
