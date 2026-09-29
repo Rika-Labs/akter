@@ -1,10 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs"
 import { connect } from "node:net"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import { Database } from "@durable-actors/core/runtime"
 import { TurnPoolSettings } from "@durable-actors/core/testing"
-import { Context, Effect, Fiber, Layer, Redacted, Schedule, type Scope } from "effect"
+import { Context, Effect, Fiber, FileSystem, Layer, Redacted, Schedule, type Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { flightCounter } from "./flights.ts"
 
@@ -301,30 +298,30 @@ export const pglite = Effect.gen(function* () {
  * the local filesystem, removed when the case ends.
  */
 export const pgliteFile = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
   const probe = Context.get(yield* Layer.build(Database.pglite()), SqlClient.SqlClient)
   const version = (yield* probe<{ version: string }>`SELECT version()`)[0]!.version
-  const root = tmpdir()
+  const sample = yield* fs.makeTempDirectoryScoped({ prefix: "durable-actors-bench-" })
 
   return {
     name: "pglite-file",
     version,
     settings: {
       connections: "1 (in-process)",
-      storage: `file-backed dataDir under ${root} (${filesystemOf(root)})`,
+      storage: `file-backed dataDir in the system temporary directory (${filesystemOf(sample)})`,
     },
     database: () =>
-      Effect.gen(function* () {
-        const dataDir = yield* Effect.acquireRelease(
-          Effect.sync(() => mkdtempSync(join(root, "durable-actors-bench-"))),
-          (directory) => Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
-        )
-
-        return {
-          layer: Database.pglite({ dataDir }).pipe(Layer.orDie),
-          url: undefined,
-          instruments: undefined,
-        } satisfies CaseDatabase
-      }),
+      fs.makeTempDirectoryScoped({ prefix: "durable-actors-bench-" }).pipe(
+        Effect.map(
+          (dataDir) =>
+            ({
+              layer: Database.pglite({ dataDir }).pipe(Layer.orDie),
+              url: undefined,
+              instruments: undefined,
+            }) satisfies CaseDatabase,
+        ),
+        Effect.orDie,
+      ),
   } satisfies Backend
 }).pipe(Effect.orDie)
 

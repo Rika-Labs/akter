@@ -181,12 +181,12 @@ const program = Effect.gen(function* () {
   for (const name of backends)
     yield* Effect.scoped(
       Effect.gen(function* () {
-        const backend: Backend =
-          name === "postgres"
-            ? yield* postgres(external)
-            : name === "pglite"
-              ? yield* pglite
-              : yield* pgliteFile
+        const backend: Backend = yield* {
+          postgres: () => postgres(external),
+          pglite: () => pglite,
+          "pglite-file": () => pgliteFile,
+        }[name]()
+
         const startedAt = DateTime.formatIso(yield* DateTime.now)
         yield* Console.log(`${backend.name}: ${backend.version}`)
 

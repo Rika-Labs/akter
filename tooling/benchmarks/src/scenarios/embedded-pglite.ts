@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Clock, Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { load } from "../measure.ts"
 import { Probe, SleepyProbe } from "../probe/contract.ts"
@@ -14,7 +14,7 @@ const seed = (actors: number) =>
   Effect.gen(function* () {
     if (actors === 0) return
     const sql = yield* SqlClient.SqlClient
-    const now = Date.now()
+    const now = yield* Clock.currentTimeMillis
 
     yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id,
         generation, created, event_sequence)
@@ -44,8 +44,8 @@ const databaseBytes = Effect.gen(function* () {
 
 /**
  * Turn latency, wake latency, and throughput at several stored sizes. Run it
- * with `--backend pglite-file` for ADR 0035's embedded production shape; on
- * other backends it measures the same cases there.
+ * with `--backend pglite-file` for the embedded production shape, one process
+ * on a file-backed `dataDir`; on other backends it measures the same cases there.
  */
 export const embeddedPglite: Scenario = {
   name: "embedded-pglite",
