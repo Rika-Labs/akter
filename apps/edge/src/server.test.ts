@@ -21,6 +21,7 @@ import {
   Layer,
   ManagedRuntime,
   Redacted,
+  Schedule,
   Schema,
   Scope,
 } from "effect"
@@ -210,6 +211,34 @@ const backend: ConformanceBackend = {
         return {
           database: yield* provision("runners"),
           freshDatabase: provision("isolated"),
+          copy: (database) =>
+            Effect.gen(function* () {
+              if (!Redacted.isRedacted(database))
+                return yield* Effect.die(
+                  new Error("The edge backend copies only Postgres databases"),
+                )
+              const source = new URL(Redacted.value(database)).pathname.slice(1)
+              const base = new URL(Redacted.value(database))
+              const name = `restored_${(yield* crypto.randomUUIDv4).replaceAll("-", "")}`
+
+              const admin = yield* Effect.acquireRelease(
+                Effect.sync(() => new Pool({ connectionString: base.href })),
+                (pool) => Effect.promise(() => pool.end()),
+              )
+
+              yield* Effect.acquireRelease(
+                Effect.tryPromise(() =>
+                  admin.query(`CREATE DATABASE "${name}" TEMPLATE "${source}"`),
+                ).pipe(Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") })),
+                () =>
+                  Effect.promise(() =>
+                    admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`),
+                  ),
+              )
+              base.pathname = `/${name}`
+
+              return Redacted.make(base.href)
+            }).pipe(Scope.provide(scope), Effect.orDie),
           close: Scope.close(scope, Exit.void),
         }
       }),
