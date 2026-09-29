@@ -46,6 +46,7 @@ export const source = Effect.gen(function* () {
   }
 })
 
+/** Describes the host running the benchmark; `external` says Postgres runs elsewhere. */
 export const machine = (external: boolean) =>
   Effect.sync(() => {
     const processors = cpus()
@@ -62,6 +63,7 @@ export const machine = (external: boolean) =>
     }
   })
 
+/** Versions of the runtimes whose behavior the results depend on. */
 export const runtimeVersions = Effect.gen(function* () {
   return {
     bun: Bun.version,

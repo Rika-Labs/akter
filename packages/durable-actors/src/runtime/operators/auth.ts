@@ -22,8 +22,11 @@ const make = <R = never>(authenticate: OperatorAuth<R>["authenticate"]): Operato
 
 const digest = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest()
 
-// Every configured digest is compared in full, so timing reveals neither
-// which entry matched nor how much of a digest did.
+/**
+ * Compares digests without an early exit, and every configured digest is
+ * compared in full, so timing reveals neither which entry matched nor how much
+ * of a digest did.
+ */
 const equalDigests = (a: Uint8Array, b: Uint8Array) => {
   let difference = a.length ^ b.length
 
@@ -61,4 +64,5 @@ const tokens = (
   )
 }
 
+/** Constructors for operator providers: `make` from a function, `tokens` from configured bearer tokens. */
 export const OperatorAuth = { make, tokens }

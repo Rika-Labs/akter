@@ -1,13 +1,16 @@
 import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { Effect, Layer, Schema } from "effect"
 
+/** Adds the amount to the count and replies with the new total. */
 export const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
 
+/** Stores the payload as state and replies with its length. */
 export const Fill = Actor.command("Fill", { input: Schema.String, output: Schema.Int })
 
 /** Counts a payload without storing it, so its size is limited by the request, not by state. */
 export const Weigh = Actor.command("Weigh", { input: Schema.String, output: Schema.Int })
 
+/** Current count. */
 export const Peek = Actor.query("Peek", { output: Schema.Int })
 
 const state = Actor.state({
@@ -38,10 +41,16 @@ export const ResidentProbe = Actor.make("ResidentProbe", {
   policy: { hibernateAfter: "1 hour" },
 })
 
+/** Event emitted by `Emit`, numbered from zero within one call. */
 export class Ticked extends Actor.Event<Ticked>()("Ticked", { n: Schema.Int }) {}
 
+/** Emits that many `Ticked` events in one turn and replies with the count. */
 export const Emit = Actor.command("Emit", { input: Schema.Int, output: Schema.Int })
 
+/**
+ * Reads the whole event stream after the cursor, page by page, and replies
+ * with the event count and the last cursor.
+ */
 export const Replay = Actor.query("Replay", {
   input: Schema.optional(Schema.String),
   output: Schema.Struct({ events: Schema.Int, last: Schema.String }),
@@ -70,6 +79,7 @@ export const RetentionProbe = Actor.make("RetentionProbe", {
   policy: { keepReceipts: "1 day", keepEvents: "1 day" },
 })
 
+/** Relay-delivered intent; its handler completes the pending delivery for the payload. */
 export const Deliver = Actor.command("Deliver", { input: Schema.String })
 
 /** Receives relay-delivered intents; only System callers reach `Deliver`. */
@@ -79,8 +89,10 @@ export const Sink = Actor.make("Sink", {
   internal: { Deliver },
 })
 
+/** Stages one `Deliver` intent to the sink chosen by the id. */
 export const Send = Actor.command("Send", { input: Schema.String })
 
+/** Stages one `Deliver` intent per id, all due at `atMs` (epoch milliseconds). */
 export const SendAt = Actor.command("SendAt", {
   input: Schema.Struct({ ids: Schema.Array(Schema.String), atMs: Schema.Int }),
 })
@@ -96,8 +108,10 @@ export const Sender = Actor.make("Sender", {
   api: { Send, SendAt, SendMany },
 })
 
+/** Creates the actor by bumping its count, which schedules its cron entry. */
 export const Open = Actor.command("Open")
 
+/** Cron handler; records the run in `cronFires`. */
 export const Tick = Actor.command("Tick")
 
 /** An actor with one minutely cron entry; `Open` creates it and writes its first tick. */
@@ -108,7 +122,9 @@ export const CronProbe = Actor.make("CronProbe", {
   policy: { cron: { "* * * * *": Tick } },
 })
 
-// The history of one event: a count, then a unit, then a note.
+/**
+ * The history of one event: a count, then a unit, then a note.
+ */
 const V0 = { n: Schema.Int }
 
 const V1 = { count: Schema.Int }
@@ -129,8 +145,10 @@ const steps = [
   }),
 ]
 
+/** `Emit` for the evolved actors: emits `Tallied` events and replies with the count. */
 export const EvolvedEmit = Actor.command("Emit", { input: Schema.Int, output: Schema.Int })
 
+/** `Replay` for the evolved actors. */
 export const EvolvedReplay = Actor.query("Replay", {
   input: Schema.optional(Schema.String),
   output: Schema.Struct({ events: Schema.Int, last: Schema.String }),
@@ -168,7 +186,6 @@ const evolved = (behind: 0 | 1 | 3) => {
 
   const reads = Probe.toQueryLayer(
     Effect.succeed({
-      // Paged like `EventProbe.Replay`, so only the stored versions differ.
       Replay: Effect.fnUntraced(function* (after: string | undefined) {
         const read = yield* Probe.Read
         let events = 0
@@ -188,6 +205,8 @@ const evolved = (behind: 0 | 1 | 3) => {
   return { Probe, layer: Layer.merge(commands, reads) }
 }
 
+/** Evolved actors keyed by how many versions behind the stored events are. */
 export const Evolved = { 0: evolved(0), 1: evolved(1), 3: evolved(3) } as const
 
+/** Handlers for every evolved actor. */
 export const EvolvedLive = Layer.mergeAll(Evolved[0].layer, Evolved[1].layer, Evolved[3].layer)

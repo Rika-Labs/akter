@@ -38,7 +38,10 @@ const CountingModeration = Layer.succeed(ModerationApi, {
     }),
 })
 
-// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/**
+ * The same cases run on PGlite (`test`) and on a fresh Postgres database
+ * (`test:integration`).
+ */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("CHAT_BACKEND")) === "pglite") return undefined
 
@@ -140,7 +143,6 @@ it("delivers an intent exactly once across a crash after the receiver commits", 
       yield* room.Post({ body: "hello" })
       yield* moderated(room, 1)
 
-      // The idle check commits, then its turn crashes before the relay deletes the timer.
       yield* test.crashNext("afterCommit")
       yield* test.advance("24 hours")
       expect((yield* test.inspect(room.ref)).state).toMatchObject({ closed: true })
@@ -156,21 +158,16 @@ it("routes a moderation result once, even if the executor succeeds twice", () =>
       const test = yield* ActorTest
       const room = yield* Room.get(RoomId.make("r3"))
 
-      // The first attempt's result is lost after the provider answered, so the relay runs it again.
       const before = new Set(provider.calls.keys())
       yield* test.crashNext("afterExecute")
       const id = yield* room.Post({ body: "buy spam", file: bytes })
 
-      // Waits, without moving the clock, until the first attempt has crashed; advancing while it
-      // still ran would move its lease with the clock.
       yield* test.advance(0)
       expect([...provider.calls].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([1])
 
-      // The crashed attempt keeps its lease; the relay retries once the lease has passed.
       yield* test.advance("2 minutes")
       yield* moderated(room, 1)
 
-      // Both attempts carried the same effect id as the provider's idempotency key.
       expect([...provider.calls].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([2])
       expect(yield* test.receiptsFor(room.ref, "Moderated")).toBe(1)
       expect(yield* room.Recent({ limit: 10 })).toEqual([])
@@ -203,7 +200,6 @@ it("replays MessagePosted in order after a cursor, and errors on a retention gap
       expect(bodies(yield* room.History({ after: "1" }))).toEqual(["b", "c"])
       expect(bodies(yield* room.History({ after: "1", limit: 1 }))).toEqual(["b"])
 
-      // A month later the idle timer has archived the room and cleanup pruned the posts.
       yield* test.advance("31 days")
       yield* test.cleanup
       expect((yield* test.inspect(room.ref)).state).toMatchObject({ closed: true })
@@ -274,7 +270,6 @@ it("retracts a message and settles its moderation call once", () =>
 
       while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
 
-      // Deleted before its claim, reported cancelled mid-call, or already moderated: one fate.
       const settled =
         (yield* test.receiptsFor(room.ref, "Moderated")) +
         (yield* test.receiptsFor(room.ref, "ModerationCancelled"))

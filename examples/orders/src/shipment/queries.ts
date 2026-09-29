@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { Shipment } from "./contract.ts"
 
+/** Query handlers for `Shipment`. */
 export const ShipmentReads = Shipment.toQueryLayer(
   Effect.succeed({
     Tracking: Effect.fnUntraced(function* () {

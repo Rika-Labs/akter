@@ -2,6 +2,7 @@ import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { integer, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Effect, Result, Schema } from "effect"
 
+/** Room key: a non-empty string. */
 export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
 
 /** An owned table: the framework adds and scopes routing_key, tenant_id, and actor_id. */
@@ -22,14 +23,17 @@ export const messagesDdl = `CREATE TABLE IF NOT EXISTS chat_messages (
   sent_at timestamp with time zone NOT NULL,
   PRIMARY KEY (routing_key, tenant_id, actor_id, id))`
 
+/** Emitted when a message is posted. */
 export class MessagePosted extends Actor.Event<MessagePosted>()("MessagePosted", {
   id: Schema.String,
   author: Schema.String,
   body: Schema.String,
 }) {}
 
+/** Declared failure of `Post` once the room is closed. */
 export class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {}) {}
 
+/** Room state: whether it is closed and the counts of posted messages and reactions. */
 export const RoomState = Actor.state({
   closed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   posted: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -43,14 +47,17 @@ export const React = Actor.reducer("React", {
   reduce: (state, n) => Result.succeed({ ...state, reactions: state.reactions + n }),
 })
 
+/** Posts a message and replies with its id; fails with `RoomClosed` after `Close`. */
 export const Post = Actor.command("Post", {
   input: Schema.Struct({ body: Schema.String }),
   output: Schema.String,
   errors: [RoomClosed],
 })
 
+/** Closes the room to further posts. */
 export const Close = Actor.command("Close")
 
+/** The latest messages, newest first, up to `limit` (1 to 100). */
 export const Recent = Actor.query("Recent", {
   input: Schema.Struct({ limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) }),
   output: Schema.Array(
@@ -68,6 +75,10 @@ export const History = Actor.query("History", {
   errors: [UnknownCursor, RetentionGap],
 })
 
+/**
+ * A chat room: state, messages table and event stream; receipts are kept 7
+ * days and events 30.
+ */
 export const Room = Actor.make("Room", {
   key: RoomId,
   state: RoomState,

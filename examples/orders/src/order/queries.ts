@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { Order, orderLines } from "./contract.ts"
 
+/** Query handlers for `Order`. */
 export const OrderReads = Order.toQueryLayer(
   Effect.succeed({
     Summary: Effect.fnUntraced(function* () {

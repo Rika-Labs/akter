@@ -12,6 +12,7 @@ export interface FlightCounter {
   readonly flights: Effect.Effect<number>
 }
 
+/** Starts a `FlightCounter` relay to `upstream`, closed with the scope. */
 export const flightCounter = (upstream: URL): Effect.Effect<FlightCounter, never, Scope.Scope> =>
   Effect.acquireRelease(
     Effect.callback<FlightCounter & { readonly close: () => void }>((resume) => {

@@ -1590,6 +1590,7 @@ export const describeConformance = (options: {
           Layer.provideMerge(
             ActorTest.layer({
               database,
+              maxConnections: 6,
               replica: overrides?.replica,
               as: User.make({ subject: "alice" }),
               authorize: (request) =>

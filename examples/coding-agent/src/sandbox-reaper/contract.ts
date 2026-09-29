@@ -9,11 +9,13 @@ export class SweepSandboxes extends Actor.effect<SweepSandboxes>()("SweepSandbox
 /** Runs every hour on the hour from cron; safe to send by hand. */
 export const Sweep = Actor.command("Sweep")
 
+/** Records a finished sweep. */
 export const Swept = Actor.command("Swept")
 
 /**
  * Hourly, kills sandboxes that outlived their agent, such as one whose agent crashed
- * before `SandboxReady`, so the provider does not bill for orphans.
+ * before `SandboxReady`, so the provider does not bill for orphans. A tick missed while every runner was down is dropped rather than replayed
+ * late.
  */
 export const SandboxReaper = Actor.make("SandboxReaper", {
   key: Actor.singleton,
@@ -23,7 +25,6 @@ export const SandboxReaper = Actor.make("SandboxReaper", {
   effects: [SweepSandboxes],
   api: { Sweep },
   internal: { Swept },
-  // A tick missed while every runner was down is dropped rather than replayed late.
   policy: {
     effects: { SweepSandboxes: { onSuccess: Swept } },
     cron: { "0 * * * *": Sweep },
