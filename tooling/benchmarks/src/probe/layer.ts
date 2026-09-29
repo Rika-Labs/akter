@@ -3,6 +3,7 @@ import { Intent } from "@durable-actors/core"
 import {
   CronProbe,
   EventProbe,
+  EvolvedLive,
   Probe,
   ResidentProbe,
   RetentionProbe,
@@ -184,4 +185,5 @@ export const ProbeLive = Layer.mergeAll(
   WorkflowProbeLive,
   MintLive,
   CronProbeCommands,
+  EvolvedLive,
 )
