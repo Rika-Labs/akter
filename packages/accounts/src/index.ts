@@ -7,20 +7,27 @@ import { AuthDatabase } from "@durable-actors/postgres"
 import * as schema from "@durable-actors/postgres/schema"
 import { Email } from "@durable-actors/email"
 
+/**
+ * Settings for the auth service: signing `secret`, public `origin` (also the
+ * only trusted origin) and whether cookies are secure-only.
+ */
 export interface AuthConfig {
   readonly secret: string
   readonly origin: string
   readonly production: boolean
 }
 
+/**
+ * Builds the better-auth instance over the Drizzle database. The database is
+ * checked, not decoded: the adapter must receive the raw instance with
+ * Drizzle's prototype, not a copy or an Effect proxy.
+ */
 const makeAuth = Effect.fn("Auth.make")(function* (config: AuthConfig) {
   const effectContext = yield* Effect.context<never>()
 
   const db = yield* AuthDatabase
   const email = yield* Email
 
-  // Validate the wrapper's broad object input while retaining Drizzle's prototype.
-  // The adapter must receive the raw instance, not a decoded copy or Effect proxy.
   if (!Schema.is(Schema.Record(Schema.String, Schema.Unknown))(db)) {
     return yield* Effect.die(new Error("Drizzle database must be an object"))
   }
@@ -81,11 +88,14 @@ export class Auth extends Context.Service<Auth, Effect.Success<ReturnType<typeof
     )
 }
 
-// A long-lived Bun process is the host. Raw Drizzle owns no Alchemy Outputs.
-// Every request has its own Scope, which is the wrapper's execution memo key.
-// No global __ALCHEMY_RUNTIME__ spoofing, stack, or deployment action is needed.
 const runtimeEnvironment = process.env
 
+/**
+ * Runtime context for a long-lived Bun process. Bindings come from the process
+ * environment and are read-only: setting one dies, since resources must be
+ * provisioned before the API starts. Each request has its own scope, which is
+ * the wrapper's execution memo key.
+ */
 export const processRuntimeLayer = Layer.succeed(RuntimeContext, {
   Type: "BunProcess",
   id: "project-api",

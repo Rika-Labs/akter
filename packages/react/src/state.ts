@@ -23,6 +23,10 @@ export const useActorState = <State>(handle: { readonly state: ClientState<State
     () => undefined,
   )
 
+/**
+ * Result of `useQuery`: the last successful `data`, the latest `error`, and
+ * whether a read is in flight.
+ */
 export interface QueryResult<Output> {
   readonly data: Output | undefined
   readonly error: Failure | undefined
@@ -34,6 +38,8 @@ export interface QueryResult<Output> {
 /**
  * Runs a query when mounted and whenever `deps` change, reading committed
  * rows without waking the actor. Only the latest read updates the result.
+ * `deps` is named by the caller, as for `useEffect`; `error` is the Promise
+ * client's: a declared error or an `ActorError`.
  */
 export const useQuery = <Output>(
   query: (options: QueryOptions) => Promise<Output>,
@@ -58,7 +64,6 @@ export const useQuery = <Output>(
         if (!controller.signal.aborted) setResult({ data, error: undefined, loading: false })
       },
       (thrown) => {
-        // The Promise client rejects only with declared errors and `ActorError`s.
         const error = thrown as Failure
 
         if (!controller.signal.aborted)
@@ -67,7 +72,6 @@ export const useQuery = <Output>(
     )
 
     return () => controller.abort()
-    // The caller names what the query depends on, like `useEffect`.
   }, [...deps, generation])
 
   const refetch = useCallback(() => setGeneration((value) => value + 1), [])

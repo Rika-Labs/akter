@@ -1,6 +1,7 @@
 import { Effect, Option } from "effect"
 import { TenantHome, tenantDirectory } from "./contract.ts"
 
+/** Query handlers for `TenantHome`. */
 export const TenantHomeReads = TenantHome.toQueryLayer(
   Effect.succeed({
     Lookup: Effect.fnUntraced(function* () {
