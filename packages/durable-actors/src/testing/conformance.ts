@@ -117,6 +117,7 @@ import {
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
+import { rlsConformance } from "./conformance/rls.ts"
 import {
   progressDeliveryConformance,
   studioLayer,
@@ -434,6 +435,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...blobsConformance,
   ...inspectionViewsConformance,
   ...inspectorConformance,
+  ...rlsConformance,
   ...retentionConformance,
   ...workflowsConformance,
   ...connectionsConformance,
