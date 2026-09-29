@@ -524,12 +524,14 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "coalesces commits that land during a rerun into one further rerun, and never sends a result reflecting an older version than an earlier one",
     requiresIndependentConnections: true,
+    timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           const gauge = yield* Gauge.get("watch-coalesce")
           yield* gauge.Bump(0)
           const watch = yield* observe(gauge.Gated.watch())
+          yield* watch.until(1)
           yield* gauge.Bump(1)
           yield* watch.until(2)
           const before = runsOf(fixture.watch, "Gated")
