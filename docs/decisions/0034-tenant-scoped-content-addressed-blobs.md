@@ -148,6 +148,16 @@ Dallen accepted every recommended default on 2026-09-28.
 5. **Spelling.** Decided: `Actor.content(name)`. Rejected alternative: `Actor.blob(name, { shared: true })`, which puts two behaviours behind one constructor.
 6. **Content in effect executors.** Decided: none in M4.13; executors that need bytes wait for a later ADR. Rejected alternative: a read-only `X.Executor.content(ref)` that reads by grant from the tenant's shard, which amends contract 08's rule that executors hold no database capability.
 
+## Implementation choices
+
+Dallen accepted these on 2026-09-30.
+
+1. **Grant spelling.** `Content.grant(X, id, C, name)` takes the actor type, its id, the content blob `C`, and the entry name.
+2. **Listing.** `list` is an Effect property of the blob handle, not a method.
+3. **Sweep scheduling.** The hourly per-tenant sweep is scheduled through a claim row, so at most one runner sweeps a tenant per hour.
+4. **PGlite uploads.** PGlite buffers an upload in memory up to the limit and streams reads; Postgres streams both.
+5. **Authorization.** `authorize` receives the kind `"content"` with the operations `<blob>.grant` and `<blob>.get`.
+
 ## Evidence required
 
 In `conformance/content-blobs.ts`, shared by PGlite and Postgres unless noted:
