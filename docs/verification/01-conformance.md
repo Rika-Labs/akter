@@ -788,6 +788,28 @@ Without an executable case: a stream on an activation whose heartbeat is paused 
 
 **Executed 2026-09-27 (CR.2, branch `feat/86-quickstart`):** Bun 1.4.2 and disposable Postgres 18.6. `bun run check` passed 62/62 tasks. `bun run test:integration` passed, including the four scaffold/install/test/restart combinations (counter and chat on PGlite and Postgres; 3 counter and 4 chat generated tests each).
 
+### Payload migration chains (M4.7)
+
+The cases live in [`conformance/payload-migrations.ts`](../../packages/durable-actors/src/testing/conformance/payload-migrations.ts). Each case deploys several versions of one `Ledger` actor type in turn against one database: a fresh Postgres database, or one in-memory PGlite instance each deployment borrows. `Placed` and `Charge` start as `{ orderId, amount }` and gain a step to `{ orderId, total: { amount, currency } }` with a downcast; a negative amount makes the upcast throw. On PGlite and Postgres:
+
+- `refuses 0021_payload_versions on a database that already holds events, outbox rows, or dead letters`, and migrates the database once it is emptied.
+- `stores the current payload version with each emitted event and performed effect`, in the tables, in `actor_payload_versions`, and in `durable.events` and `durable.effects`.
+- `upcasts version-0 events written before a chain step was added through the chain in read.events, feeds, and subscription deliveries`: the feed is `readFeed`, and the routed delivery is held back by its handler until the next deployment.
+- `runs a pending effect written at an older version with the upcast payload`, and `delivers an onDeadLetter route with the upcast effect and keeps the dead letter's version`.
+- `resets payload_version to 0 when a settled effect row becomes its route intent`, observed by a trigger on the row's `kind`.
+- `fails a read as a defect, never a skip, when an upcast throws or the stored version is newer than the chain`.
+- `keeps an earlier attempt's ambiguity on the row and in the dead letter when a later attempt fails to decode its payload`: the first attempt dies, the payload is then set to version 9, and the dead letter records `ambiguous: true` with one executor call.
+- `refuses startup after a rollback past a recorded version, and when a shortened chain drops a version still retained`, for an event version and for a pending effect, with `checkPayloads` naming both.
+- `refuses a shortened chain after the retention horizon until durable payloads clear finds no row of the dropped version, and refuses again after restoring a snapshot taken before the clear`: the horizon is passed by moving `superseded_at_ms` back 31 days, and the snapshot is a copy of `actor_payload_versions`.
+- `records the writeVersion, not the chain's last version, while a two-phase deploy is in its first phase`, in both tables.
+- `writes the old version under writeVersion and reads both versions on one runtime`.
+- `refuses removing an event class while a subscription has undelivered events of that tag or an open workflow waits on it`: the workflow half is refused by the workflow manifest check, and both removals deploy once the event is delivered and the execution finishes.
+- `replays a subscription receipt after a schema change without CommandConflict`: the source's cursor is reset under the new chain, and the redelivery settles with no error and no second handler run.
+
+On Postgres only: `refuses durable payloads clear while a runtime writing that version refreshed within the window, and a runtime past its window refuses new turns until it refreshes` runs two runners through `ActorTest.cluster` with a 2-second writer window; runner 0 writes version 0 and runner 1, started after it, supersedes it. Another session holds every writer row `FOR UPDATE`, a command then times out without appending, and it succeeds once the lock is released. `two runners, one with the new chain under writeVersion, both write and read version 0` covers the rolling deploy. [`migrations.test.ts`](../../packages/durable-actors/src/runtime/database/migrations.test.ts) `applies 0021_payload_versions to a database that ran the previous one`. `apps/cli` tests `durable payloads check` and `clear`.
+
+Not covered: the writer-window refusal is shown by stalling refreshes with a row lock, not by a lost database connection, and the legacy-runtime and version-0-seed paths of the proposed ADR are gone because 0021 refuses a database with rows.
+
 ## Faithful test boundary
 
 `ActorTest` MUST exercise the real turn, Cluster entity, SQL tables, serialization, receipts, and outbox. There is no handler-only fake-context runtime. Only the database, transport, clock, executor implementations, and caller are substituted. Use production `SqlMessageStorage` on the test transaction connection, not in-memory message storage whose writes could survive a rolled-back turn. On PGlite, Cluster runner bookkeeping additionally moves to memory because `SqlRunnerStorage` would reserve the sole connection; message storage, migrations, and receipts stay in SQL and this substitution is only valid under `SingleRunner`.
