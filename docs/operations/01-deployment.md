@@ -44,9 +44,11 @@ Stopping an executor cannot undo a completed external call; ambiguous provider o
 <<<<<<< HEAD
 `RuntimeControl` from `@durable-actors/core/runtime` implements this (M4.2); [the server API](../api/01-server-api.md#runtime-control-readiness-and-drain) lists its signatures. There is no default deadline: every `drain` names its own, so no timeout is an implied availability guarantee. The drained runner keeps its shard locks until its layer closes, so exit the process as soon as `drain` returns; a graceful exit hands the shards to the other runners at once, while a crash leaves them to lock expiry. Readiness answers `{ ready: false, reason }` with `draining`, `drained`, `storage`, `routing`, or `unregistered`; wire it into the orchestrator's readiness probe, since `Actor.serve` does not expose a readiness route. `conformance/drain.ts` covers clean and deadline-expired drains, new-work rejection, interrupted transactions, pending delivery, safe takeover, receipt replay, and provider ambiguity.
 =======
+
 `RuntimeControl` remains unimplemented. Its concrete signatures and default deadline still need specification; no example timeout is an accepted default or availability guarantee. Verification must exercise both clean and deadline-expired drain, new-work rejection, interrupted transactions, pending delivery, safe takeover, and provider ambiguity.
 
 ## Embedded PGlite in production
 
 Target, built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). One process embeds `Actors.layer`, and optionally `Actor.serve`, with `Database.pglite({ dataDir })` on a local Linux or macOS filesystem. The layer locks the `dataDir`, so a second process fails with `DataDirLocked`. It recovers from a process crash to the last commit, but power-loss durability is not claimed. It runs one turn or query at a time on one connection, with no replicas, failover, or multi-runner support. Back it up by stopping the process and copying the `dataDir`. Move to Postgres with `DATABASE_URL` when those limits bind.
->>>>>>> origin/main
+
+> > > > > > > origin/main
