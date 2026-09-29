@@ -535,6 +535,21 @@ The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault
 - **A woken actor's tick write is one statement.** Its first turn re-inserts its pending tick, and the unique index rejects it: 121,158 calls for about 122,000 deliveries in the one-runner round, at 0.066 ms. Before `094b4a3`, the release of pre-reservation `$cron:` intents ran as a second statement on each of those turns (96,439 calls in a round at `bc723f5`). It now runs only when such an intent holds a key.
 - **The claim mean is read from `statements`.** At `094b4a3`, the scenario's `relayClaimMeanMs` is -1 because it searched for `SKIP LOCKED`, which falls past the 160 characters of query text the harness stores. The claim mean above is read from the listed `WITH intent_candidates …` statement, and the scenario now matches that prefix.
 
+### Row-level security (M4.5, #232)
+
+`2026-09-29-b54c241-m4.5-rls-postgres.json` runs `bun run bench --backend postgres --scenario rls` (full profile) on branch `feat/232-row-level-security` at `b54c241` (clean tree). Postgres 18 ran as a local server with `pg_stat_statements` preloaded and default durability, through `BENCH_DATABASE_URL`, so server CPU isn't recorded. Bun 1.4.2 and Effect 4.0.0-rc.116 ran on one Amp orb (E2B cloud VM, 16 vCPUs of an Intel Xeon at 2.60 GHz, 31 GiB), shared by the client, the runtime, and Postgres. Each case is one warm actor with 1,000 owned rows and one caller, first with the runtime as the exempt table owner, then with `rowLevelSecurity` on ([ADR 0051](../decisions/0051-row-level-security.md)).
+
+| Case                  | Off: p50 / p99 ms | On: p50 / p99 ms | Statements off → on | Round trips off → on |
+| --------------------- | ----------------- | ---------------- | ------------------- | -------------------- |
+| Command turn          | 2.39 / 6.40       | 2.70 / 6.56      | 7 → 7               | 2 → 2                |
+| State query           | 0.19 / 0.46       | 0.51 / 0.91      | 1 → 2               | 0 → 0                |
+| Owned-row insert turn | 2.73 / 6.63       | 3.09 / 7.86      | 7 → 7               | 3 → 3                |
+| Owned-row point query | 0.49 / 1.05       | 0.80 / 1.76      | 2 → 3               | 0 → 0                |
+
+- **Turns pay no statement or round trip.** The role and tenant settings ride on the `set_config` statement a turn already opens with. The latency difference is within run-to-run noise: an earlier run on the same commit measured the turn at 3.34 ms off and 3.07 ms on.
+- **Queries pay their transaction.** With RLS on, a query runs as `BEGIN`, one `set_config` statement, its reads, and `COMMIT`. That adds about 0.3 ms at p50 here. `pg_stat_statements` counts transaction control once per distinct text, so the statement column shows only the `set_config` statement.
+- **The policy predicate costs nothing measurable here.** Each scoped statement already filters on `tenant_id`.
+
 ### Failure drills (T7)
 
 `TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `test/133-m2-exit` at `801336e`; each run prints one `DRILL` line. Postgres 18.6 in Docker, Bun 1.4.2, one 8-vCPU Xeon 8559C machine shared by the five runner processes and Postgres. Workload: three processes, then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
