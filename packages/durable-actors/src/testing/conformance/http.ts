@@ -122,6 +122,9 @@ export const HttpTally = Actor.make("HttpTally", {
 /** Handler runs, so a replay can be shown not to rerun the handler. */
 export const runs = { count: 0 }
 
+/** The `text` of every `HttpRoom.Post` the handler ran, in the order it ran them. */
+export const posted: Array<string> = []
+
 interface Gate {
   hold: Effect.Effect<void>
 }
@@ -134,6 +137,7 @@ export const httpLayer = Layer.mergeAll(
       Post: Effect.fnUntraced(function* ({ text }: { readonly text: string }) {
         const turn = yield* HttpRoom.Turn
         runs.count += 1
+        posted.push(text)
         yield* turn.state.set({ count: turn.state.count + 1 })
 
         if (text === "full") return yield* Full.make({ capacity: turn.state.count })

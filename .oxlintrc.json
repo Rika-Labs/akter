@@ -72,7 +72,7 @@
       }
     },
     {
-      "files": ["examples/chat/src/web/app.ts"],
+      "files": ["examples/chat/src/web/app.ts", "examples/chat/src/web/offline.ts"],
       "rules": {
         "effecttsgo/async-function": "off",
         "effecttsgo/global-fetch": "off",

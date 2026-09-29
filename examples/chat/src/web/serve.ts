@@ -1,7 +1,8 @@
 /**
  * The chat room served to a browser: Actor.serve under /api, the page at
  * /rooms/<id>?user=<name>, and the same room with @durable-actors/react at
- * /react/rooms/<id>. PGlite in memory unless DATABASE_URL names Postgres.
+ * /react/rooms/<id>, and the room with a persisted offline queue at
+ * /offline/rooms/<id>. PGlite in memory unless DATABASE_URL names Postgres.
  *   bun run web            # http://localhost:3003/rooms/lobby?user=alice
  */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
@@ -16,14 +17,18 @@ import { demoAuth } from "../server.ts"
 const api = Actor.serve({ actors: [Room], auth: demoAuth, basePath: "/api" })
 
 /**
- * The pages' scripts, bundled for browsers from app.ts and react.tsx once at
- * startup.
+ * The pages' scripts, bundled for browsers from app.ts, react.tsx and offline.ts
+ * once at startup.
  */
 const pages = HttpRouter.use(
   Effect.fnUntraced(function* (router) {
     const built = yield* Effect.promise(() =>
       Bun.build({
-        entrypoints: [`${import.meta.dir}/app.ts`, `${import.meta.dir}/react.tsx`],
+        entrypoints: [
+          `${import.meta.dir}/app.ts`,
+          `${import.meta.dir}/react.tsx`,
+          `${import.meta.dir}/offline.ts`,
+        ],
         target: "browser",
         minify: true,
       }),
@@ -57,6 +62,7 @@ const pages = HttpRouter.use(
 
     yield* router.add("GET", "/rooms/*", Effect.succeed(yield* page("index.html")))
     yield* router.add("GET", "/react/rooms/*", Effect.succeed(yield* page("react.html")))
+    yield* router.add("GET", "/offline/rooms/*", Effect.succeed(yield* page("offline.html")))
     yield* router.add("GET", "/health", Effect.succeed(HttpServerResponse.text("ok")))
   }),
 )

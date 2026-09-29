@@ -30,16 +30,7 @@ for await (const page of room.Recent.watch({ limit: 50 })) render(page)
 
 ## Work offline
 
-```ts
-const client = Chat.client({
-  baseUrl,
-  offline: Offline.indexedDb("chat"),
-})
-const pending = client.get("room-42").SendMessage({ body: "On a plane" })
-// pending represents queued, committed, failed, or expired—not a Promise that must stay open offline.
-```
-
-The persisted queue stores the original command ID and expiry metadata, then replays in order per actor. `CommandExpired` requires explicit application resolution; replacing the ID is a new operation. Optimistic UI applies only where a reducer is declared.
+Shipped in M6.5: see [Offline queue](03-typescript-sdk.md#offline-queue-m65) and [ADR 0058](../decisions/0058-offline-command-queue.md).
 
 ## Version a workflow
 

@@ -13,6 +13,12 @@ export type {
 
 export type { PendingInput } from "./optimistic.ts"
 
+export type { OfflineQueue, PendingCommand } from "./offline/queue.ts"
+
+export { Offline, OfflineStoreError } from "./offline/store.ts"
+
+export type { OfflineStore, QueuedCommand } from "./offline/store.ts"
+
 export type { ClientConnection, ConnectionMessage, ConnectOptions } from "./sessions/connection.ts"
 
 export type { FeedEntry, FeedOptions } from "./sessions/feed.ts"

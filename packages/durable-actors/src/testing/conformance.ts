@@ -55,6 +55,7 @@ import {
 } from "./foundation.ts"
 import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
+import { offlineConformance } from "./conformance/offline.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
@@ -1446,6 +1447,7 @@ export const conformanceGroups = {
   assertions: assertionsConformance,
   edge: edgeConformance,
   client: clientConformance,
+  offline: offlineConformance,
   capacity: capacityConformance,
   heap: heapConformance,
   events: eventsConformance,
