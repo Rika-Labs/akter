@@ -820,6 +820,9 @@ export const migrations = {
           THEN session_user::text ELSE current_setting('role') END;
         changed bigint := 0;
       BEGIN
+        IF coalesce(current_setting('durable.backfill', true), '') = 'on' THEN
+          RETURN NULL;
+        END IF;
         IF TG_NARGS > 0 AND caller = TG_ARGV[0] THEN
           RETURN NULL;
         END IF;

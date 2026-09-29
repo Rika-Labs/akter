@@ -176,8 +176,10 @@ const backfillTable = Effect.fnUntraced(function* (target: AdoptionTarget, batch
         ...keys.map((key, index) => `t.${key} = v.k${index}`),
       ].join(" AND ")
 
-      const updated = yield* sql
-        .unsafe<{ n: string }>(
+      const updated = yield* Effect.gen(function* () {
+        yield* sql`SELECT set_config('durable.backfill', 'on', true)`
+
+        return yield* sql.unsafe<{ n: string }>(
           `WITH changed AS (
              UPDATE ${table} AS t SET routing_key = v.routing_key
              FROM (VALUES ${tuples}) AS v (tenant, actor, ${keys.map((_, index) => `k${index}`).join(", ")}, routing_key)
@@ -185,7 +187,7 @@ const backfillTable = Effect.fnUntraced(function* (target: AdoptionTarget, batch
            SELECT count(*)::text AS n FROM changed`,
           parameters,
         )
-        .pipe(sql.withTransaction)
+      }).pipe(sql.withTransaction)
 
       passFilled += Number(updated[0]!.n)
       cursor = target.primaryKey.map((_, index) => rows[rows.length - 1]![`k${index}`]!)
