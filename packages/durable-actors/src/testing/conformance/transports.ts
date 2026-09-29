@@ -173,12 +173,15 @@ const tokens = Actor.auth.make((request) =>
   }),
 )
 
-/** Serves `SocketRoom` from a fresh listening server for the rest of the scope; returns its host. */
 export const transportsLayer = Layer.mergeAll(socketLayer, feedLayer)
 
+/**
+ * Serves `SocketRoom` and `FeedRoom` from a fresh listening server for the
+ * rest of the scope; returns its host. A provider may fetch over HTTP.
+ */
 export const serveSockets = Effect.fnUntraced(function* (
   environment: ConformanceEnvironment,
-  options?: Partial<ServeOptions<never>>,
+  options?: Partial<ServeOptions<HttpClient.HttpClient>>,
 ): Effect.fn.Return<string, never, InternalActors | Scope.Scope> {
   const context = yield* Effect.context<InternalActors>()
 
@@ -187,7 +190,7 @@ export const serveSockets = Effect.fnUntraced(function* (
     auth: tokens,
     basePath: "/api",
     ...options,
-  }).pipe(Layer.provide(Layer.succeedContext(context)))
+  }).pipe(Layer.provide(Layer.succeedContext(context)), Layer.provide(FetchHttpClient.layer))
 
   const built = yield* Layer.build(
     HttpRouter.serve(app, { disableLogger: true, disableListenLog: true }).pipe(
