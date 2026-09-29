@@ -223,9 +223,10 @@ export interface Options {
    * the `durable.tenant` setting of the actor they serve, so the
    * `durable_tenant` policies admit no other tenant's rows. The role must not
    * be a superuser or bypass row-level security, this login must be able to
-   * `SET ROLE` to it, it must read and write every framework and owned table,
-   * and it must own every `durable` inspection view; the runtime refuses to
-   * start otherwise. Framework work that spans tenants, such as the relay,
+   * `SET ROLE` to it, and it must read and write every framework and owned
+   * table. Every `durable` inspection view must belong to a separate
+   * view-owner role that the policies bind and that `role` is not a member
+   * of. The runtime refuses to start otherwise. Framework work that spans tenants, such as the relay,
    * executors, and retention, keeps the connecting role, which the policies exempt.
    */
   readonly rowLevelSecurity?: {
@@ -1349,7 +1350,9 @@ export const layer = (options: Options) => {
             const rows = yield* sql`
               SELECT 1 FROM actor_generations
               WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
-                AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+                AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`.pipe(
+              withTenant(ref.tenant),
+            )
 
             return rows.length > 0
           },
@@ -1376,15 +1379,17 @@ export const layer = (options: Options) => {
             const key = routingKey({ ref, placement: registration.placement })
             const sql = yield* SqlClient.SqlClient
 
-            const [row] = yield* sql<{ head: string }>`
-              SELECT event_sequence::text AS head FROM actor_generations
-              WHERE routing_key = ${key} AND tenant_id = ${ref.tenant}
-                AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+            const events = yield* Effect.gen(function* () {
+              const [row] = yield* sql<{ head: string }>`
+                SELECT event_sequence::text AS head FROM actor_generations
+                WHERE routing_key = ${key} AND tenant_id = ${ref.tenant}
+                  AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-            // A feed never creates an actor, so a missing generation row is an answer, not a wake.
-            if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
+              // A feed never creates an actor, so a missing generation row is an answer, not a wake.
+              if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
 
-            const events = yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
+              return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
+            }).pipe(withTenant(ref.tenant))
 
             // Clients read the current shape, whatever version each event was written at.
             return yield* Effect.forEach(events, (event) =>
@@ -1640,7 +1645,7 @@ export const layer = (options: Options) => {
               WHERE routing_key = ${routingKey({ ref: request.ref, placement: registration.placement })}
                 AND execution_id = ${request.payload} AND tenant_id = ${request.ref.tenant}
                 AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-                AND workflow = ${request.command}`
+                AND workflow = ${request.command}`.pipe(withTenant(request.ref.tenant))
 
             // Access can be revoked while the read runs, as for a query.
             yield* allow(request)
