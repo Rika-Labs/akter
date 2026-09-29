@@ -144,7 +144,6 @@ describe.skipIf(!postgres)("durable tenants create on Postgres", () => {
               pool.query("SELECT caller_key FROM actor_receipts"),
             )
 
-            // The create and the refused create each have a receipt, both the operator's.
             expect(receipts.rows).toEqual([
               { caller_key: '["User","ops@example.com"]' },
               { caller_key: '["User","ops@example.com"]' },

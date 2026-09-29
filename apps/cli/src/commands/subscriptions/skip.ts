@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { UsageError } from "../workflows/check.ts"
 import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
 
+/** Usage text for `durable subscriptions`. */
 export const USAGE =
   'Usage: durable subscriptions skip --source <Type>/<id> --subscriber <Type>/<id> --subscription <name> --through <cursor> --url <runner> --tenant <tenant> --reason "<why>" [--token-env <name>] [--json]'
 

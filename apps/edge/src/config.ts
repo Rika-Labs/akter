@@ -7,8 +7,13 @@ export const SigningKey = Schema.Struct({
   d: Schema.NonEmptyString,
 })
 
+/** One Ed25519 signing key as a private JWK. */
 export type SigningKey = typeof SigningKey.Type
 
+/**
+ * Everything the edge needs to run: identity, database, signing keys,
+ * listening address and its time settings.
+ */
 export interface EdgeOptions {
   /** The `iss` of every assertion; runners are configured with the same value. */
   readonly issuer: string
@@ -42,14 +47,18 @@ export const isAssertionLifetime = (lifetime: Duration.Duration) => {
   return ms % 1000 === 0 && ms >= 1000 && ms <= 60_000
 }
 
-/** The edge's configuration from its environment. */
+/**
+ * The edge's configuration from its environment.
+ *
+ * Claims carry whole seconds, so a fractional lifetime would be floored, and
+ * one under a second would sign assertions whose `exp` equals `iat`, which
+ * runners refuse.
+ */
 export const loadOptions = Effect.gen(function* () {
   const lifetime = yield* Config.Duration("EDGE_ASSERTION_LIFETIME").pipe(
     Config.withDefault(Duration.seconds(10)),
   )
 
-  // Claims carry whole seconds, so a fractional lifetime would be floored, and one under a
-  // second would sign assertions whose `exp` equals `iat`, which runners refuse.
   if (!isAssertionLifetime(lifetime))
     return yield* Effect.die(
       new Error("EDGE_ASSERTION_LIFETIME is a whole number of seconds from 1 to 60"),

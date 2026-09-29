@@ -2,12 +2,17 @@ import { Config, Effect } from "effect"
 import { Pool } from "pg"
 import { migrate } from "@durable-actors/postgres/migrate"
 
+/** A migrated throwaway database: its `url`, a `pool`, and `dispose` to drop it. */
 export interface TestDatabase {
   readonly url: string
   readonly pool: Pool
   readonly dispose: Effect.Effect<void>
 }
 
+/**
+ * Creates and migrates a database named `<prefix>_<uuid>` on the server at
+ * `TEST_DATABASE_URL`; `dispose` drops it.
+ */
 export function makeTestDatabase(prefix: string) {
   return Effect.gen(function* () {
     const adminUrl = yield* Config.String("TEST_DATABASE_URL")
