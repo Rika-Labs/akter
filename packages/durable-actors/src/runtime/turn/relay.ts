@@ -65,7 +65,7 @@ export interface RelaySettings {
 }
 
 /** An executor this runner has, by actor type and effect tag. */
-export interface LocalExecutor {
+interface LocalExecutor {
   readonly actor: string
   readonly effect: string
   readonly registered: RegisteredEffect
@@ -108,6 +108,7 @@ interface ClaimedEffect extends ClaimedRow {
   readonly exhausted: boolean
 }
 
+/** The `ClaimedRow` columns of the outbox row aliased `o`. */
 const claimedColumns = (sql: SqlClient.SqlClient) =>
   sql`o.kind, o.routing_key::text AS routing_key, o.intent_id, o.attempts, o.last_error,
     o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.target_id, o.command,
@@ -116,9 +117,12 @@ const claimedColumns = (sql: SqlClient.SqlClient) =>
     o.maybe_applied`
 
 /**
- * The due-work probe: one `(bucket, kind, due_at_ms)` index range per bucket,
- * so its cost follows due rows of one kind, not stored actors or future timers.
- * It takes no locks; a claim locks only the rows it takes from it.
+ * The due-work probe: up to `limit` due rows of `kind` from one
+ * `(bucket, kind, due_at_ms)` index range per bucket, so its cost follows due
+ * rows of one kind, not stored actors or future timers. It takes no locks; a
+ * claim locks only the rows it takes from it. `only` filters inside each
+ * bucket's probe, so due rows the caller cannot claim never fill the
+ * per-bucket limit ahead of rows it can.
  */
 export const candidates = ({
   sql,
@@ -154,7 +158,7 @@ export interface IntentClaim {
 }
 
 /** Effects to claim in one statement: up to `permits`, only for local executors. */
-export interface EffectClaim {
+interface EffectClaim {
   readonly permits: number
   readonly leaseMs: number
   readonly executors: ReadonlyArray<LocalExecutor>
@@ -177,8 +181,10 @@ export interface EffectClaim {
  * updates are disjoint. A kind that claims nothing although its probe found
  * candidates returns one `skipped-*` row with the candidate count, so the
  * relay can widen the next probe past rows other transactions hold locked.
+ * Subscription work rides in the same statement, so a pass stays one round
+ * trip.
  */
-export const claimDue = ({
+const claimDue = ({
   sql,
   now,
   intents,
@@ -243,8 +249,6 @@ export const claimDue = ({
           kind: "effect",
           now,
           limit: probe,
-          // Filtered inside each bucket's probe, so due rows no runner here can
-          // execute never fill the per-bucket limit ahead of rows it can.
           only: sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
         })}
         ORDER BY o.due_at_ms LIMIT ${probe}
@@ -264,7 +268,6 @@ export const claimDue = ({
     results.push(sql`SELECT *, NULL::text AS work FROM effect_claimed`, skipped(sql, "effect"))
   }
 
-  // Subscription work rides in the same statement, so a pass stays one round trip.
   if (subscriptions !== undefined) {
     parts.push(...subscriptions.parts)
 
@@ -296,7 +299,7 @@ const claimEffects = (
   now: Statement.Fragment,
   leaseMs: number,
   locked: Statement.Fragment,
-  candidates: Statement.Fragment,
+  candidateCount: Statement.Fragment,
 ) => {
   const attempting = sql`o.cancelled_at_ms IS NULL AND o.attempts < c.max_attempts
     AND NOT o.final_failure`
@@ -314,13 +317,13 @@ const claimEffects = (
       waiting = false
     FROM ${locked} c
     WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
-    RETURNING ${claimedColumns(sql)}, ${candidates} AS candidates,
+    RETURNING ${claimedColumns(sql)}, ${candidateCount} AS candidates,
       o.cancelled_at_ms IS NULL
         AND (c.previous >= c.max_attempts OR o.final_failure) AS exhausted`
 }
 
 /** One effect type of one actor whose attempts run under a per-actor cap. */
-export interface CappedGroup {
+interface CappedGroup {
   readonly routing_key: string
   readonly tenant_id: string
   readonly actor_type: string
@@ -329,7 +332,7 @@ export interface CappedGroup {
 }
 
 /** A due group, with the due rows the probe read: at `limit` or more it may have hidden others. */
-export interface DueGroup extends CappedGroup {
+interface DueGroup extends CappedGroup {
   readonly due_rows: number
 }
 
@@ -338,7 +341,7 @@ export interface DueGroup extends CappedGroup {
  * first; at most `limit`. Like the uncapped probe, it reads one index range
  * per bucket and takes no locks.
  */
-export const cappedGroups = ({
+const cappedGroups = ({
   sql,
   now,
   executors,
@@ -393,7 +396,7 @@ const groupLock = (sql: SqlClient.SqlClient, group: CappedGroup) =>
  * row becomes due again when an attempt of its group settles, or after one
  * lease.
  */
-export const claimCapped = ({
+const claimCapped = ({
   sql,
   now,
   group,
@@ -542,6 +545,7 @@ const widened = (
   return taken.length < capacity && found > taken.length ? Math.min(current * 2, MAX_WIDEN) : 1
 }
 
+/** Logs a non-interrupt failure of the effect under `message` and completes with `void`; an interruption stays one. */
 const logFailure =
   (message: string) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A | void, never, R> =>
@@ -553,18 +557,84 @@ const logFailure =
  * The outbox relay of one runner among any number sharing the database. Each
  * pass claims only as many due intents as it has free delivery slots and only
  * as many effects as its executor pool has permits, then starts each one at
- * once, so no claimed row waits locally while its lease runs down.
+ * once, so no claimed row waits locally while its lease runs down. A pass runs
+ * uninterruptibly under a lock so every row a claim returns reaches a fiber
+ * that can release it. A claim that saw more due candidates than it took
+ * makes each freed slot claim again instead of waiting for the poll, and one
+ * that left capacity free although it found more candidates doubles the next
+ * probe. When both capped and uncapped effects are due, passes alternate which
+ * claims first, so a steady stream of either can't take every permit.
  *
  * An intent is delivered as a direct command whose command id is the intent
  * id, and its row is deleted only after the receiver's receipt has committed.
  * A crash leaves the claim in place until its lease ends; any runner then
- * redelivers, and the receipt deduplicates.
+ * redelivers, and the receipt deduplicates. A row that cannot form a request,
+ * a delivery that fails, and a defect outcome back off and retry with no retry
+ * limit; the logged warning and `attempts` are the operator signal. A declared
+ * failure is a committed receipt, so only a missing receipt retries. An
+ * interrupted delivery makes its row due at once.
  *
  * An effect attempt runs on the pool, outside the pass, and renews its claim
- * while it runs. The first success of any attempt turns the row into an intent
- * to its `onSuccess` route; exhausting retries turns it into one to
- * `onDeadLetter`. The route is then delivered like any intent, so it commits
- * once per effect id however often the executor ran.
+ * every `cancelCheckMs` (at most a third of the lease) while it runs, which
+ * also picks up a cancellation committed on another runner; a local one
+ * signals the attempt directly. The lease is measured on this runner from when
+ * the last claim or renewal was sent, so the database's lease can only end
+ * later, and an attempt that outlives it is interrupted, or never started,
+ * since another runner may hold the row and a started call can't be undone. A
+ * failed renewal retries at the next interval, and a renewal never shortens a
+ * deadline, so it can't undo a test clock's lease shift. The attempt is raced
+ * against its renewals, which are stopped and awaited before any settling
+ * write, so a late renewal can't overwrite a failure's backoff with a fresh
+ * lease.
+ *
+ * The first success of any attempt turns the row into an intent to its
+ * `onSuccess` route; exhausting retries turns it into one to `onDeadLetter`.
+ * The route is then delivered like any intent, so it commits once per effect
+ * id however often the executor ran. A success of a capped effect waits while
+ * a newer attempt's lease is live, so it does not free the slot early, and a
+ * settled attempt of a capped effect wakes the oldest waiting row of its
+ * actor. Failures and dead letters name the attempt they settle, so a stale
+ * attempt changes nothing, and a failure is recorded before its dead letter so
+ * a failed dead-letter transaction is retried with this attempt's cause. A
+ * final failure is never followed by another attempt. An attempt that never
+ * started applied nothing, so the row stays as ambiguous as its earlier
+ * attempts left it (`maybe_applied`). A running attempt is registered before
+ * the pass releases its lock and until its outcome is written, so every clock
+ * jump after the claim moves its lease. A committed terminal settle closes the
+ * effect's progress; a retryable one leaves it open. A dead letter is recorded
+ * even when its row's request is unreadable, since only the fault hook needs
+ * the request.
+ *
+ * A cancelled effect is claimed only to be settled, with what is known: `Failed`
+ * only when no attempt can have applied the call, otherwise `Unknown`,
+ * because interrupting a started call does not undo it. A result `onSuccess`
+ * rejects still reaches `onCancelled` if the effect was cancelled, and a
+ * success that lands after the row was cancelled is reported as the
+ * cancellation's outcome. A success no settle matched is recorded as an
+ * ambiguous dead letter instead of routing a second outcome. A dead letter
+ * that loses to a cancellation settles the row as cancelled instead.
+ *
+ * Subscription work runs in its own slots, so a subscription backlog never
+ * delays intents, timers, or effects; expansion work starts the rows it leased
+ * without a claim pass; `schedules` names the cron actors whose ticks this
+ * runner claims. The returned handle: `run` loops passes on a jittered
+ * poll and `wake`; `drain` waits for in-flight work, which may stage more,
+ * then claims again until a claim finds nothing while nothing was running
+ * (work runs only on fibers a pass starts, so none running means nothing can
+ * stage rows after that claim read), failing if deliveries keep staging due
+ * work, and counting toward that limit only rounds that drained every due row; `stop` ends claims and
+ * interrupts deliveries at once, since a delivery only waits on a turn its
+ * receiver's owner finishes or rolls back on its own, and the receiver's
+ * receipt answers a redelivery of work that did commit; `interruptAttempts`
+ * interrupts running attempts and returns how many, leaving their claims and
+ * `ambiguous` marks because the provider may have applied the call, so another
+ * runner takes the effect over once the lease ends; `attemptsIdle` waits for
+ * attempts to end; `extendLeases` moves running attempts' leases with a jump of
+ * the outbox clock, as the renewals during that time would have, holding the
+ * pass lock so no claim reads the clock between the moved leases and the jump;
+ * `cancelled` makes running attempts check for cancellation now. Closing the
+ * scope stops further claims, after taking the lock so a pass in progress hands
+ * its rows to fibers first and they are interrupted and released.
  */
 export const outboxRelay = Effect.fnUntraced(function* (
   deliver: (request: Request) => Effect.Effect<Outcome, ActorError>,
@@ -588,8 +658,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const signals = yield* Queue.sliding<void>(1)
   const deliveries = yield* FiberSet.make<unknown, unknown>()
   const attempts = yield* FiberSet.make<unknown, unknown>()
-  // Subscription work runs in its own slots, so a subscription backlog never
-  // delays intents, timers, or effects.
 
   const subscriptionWork = {
     feed: yield* FiberSet.make<unknown, unknown>(),
@@ -599,7 +667,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
   const hooks = yield* TurnHooks
   const progress = yield* progressPool()
-  // Effects whose row a settle in the current attempt removed or routed.
   const ended = new Set<string>()
 
   const ticks = cronTicks({
@@ -609,8 +676,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
     retryWindowMs: settings.retryWindowMs,
   })
 
-  // Starts one item of subscription work in its slots; an expansion also
-  // starts the rows it leased this way, without a claim pass.
   const startWork = (work: SubscriptionWork): Effect.Effect<void> =>
     subscriptions === undefined
       ? Effect.void
@@ -632,16 +697,11 @@ export const outboxRelay = Effect.fnUntraced(function* (
     start: startWork,
   }
 
-  // Set when a claim saw more due candidates than it took: a freed slot then
-  // claims again instead of waiting for the poll.
   const more = { intents: false, effects: false, subscriptions: false }
   let cappedTurn = false
-  // How many times the base probe the next claim reads; doubled while a claim
-  // leaves free capacity although it found more candidates than it took.
   const widen = { intents: 1, effects: 1 }
   let stopping = false
 
-  // Attempts this runner is executing, keyed by effect id, with the attempt that holds each lease.
   const running = new Map<
     string,
     {
@@ -686,7 +746,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
     const retryLater = (reason: string, cause: unknown) =>
       Effect.gen(function* () {
-        // Intents have no retry limit; this warning and `attempts` are the operator signal.
         yield* Effect.logWarning("Outbox delivery failed; retrying with backoff", cause).pipe(
           Effect.annotateLogs({
             actor: row.target_type,
@@ -708,7 +767,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       if (route === undefined) return
 
-      // A row that cannot form a request backs off like a failed delivery instead of dying on every claim.
       const decoded = yield* requestOf({ ...row, ...route }, "receiver").pipe(Effect.result)
 
       if (Result.isFailure(decoded)) return yield* retryLater("UnreadableRow", decoded.failure)
@@ -721,7 +779,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
       if (Result.isFailure(delivered))
         return yield* retryLater(delivered.failure.reason._tag, delivered.failure)
 
-      // A declared failure is a committed receipt too; only a missing receipt retries.
       if (Outcome.guards.Defect(delivered.success))
         return yield* retryLater("Defect", delivered.success.cause)
 
@@ -748,8 +805,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
         },
         { captureStackTrace: false },
       ),
-      // An interrupted delivery (shutdown) makes its row due at once; a receiver
-      // that already committed it replays the receipt on redelivery.
       Effect.onInterrupt(() =>
         Effect.gen(function* () {
           yield* sql`UPDATE actor_outbox SET due_at_ms = ${yield* databaseTime} WHERE ${claim}`
@@ -758,8 +813,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
     )
   })
 
-  // Running attempts wait on this between renewals; a local commit that
-  // cancelled a running effect completes it, so they check at once.
   let cancelChecks = Deferred.makeUnsafe<void>()
 
   const cancelled = Effect.sync(() => {
@@ -800,10 +853,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const effectRow = sql`routing_key = ${routingKey} AND intent_id = ${row.intent_id}
       AND kind = 'effect'`
 
-    // Failures and dead letters name the attempt they settle, so a stale attempt changes nothing.
     const attemptRow = (attempts: number) => sql`${effectRow} AND attempts = ${attempts}`
 
-    // The row becomes an intent to `route`, or goes when there is none.
     const settleTo = (
       route: { readonly command: string; readonly payload: string } | undefined,
       guard: typeof effectRow,
@@ -857,7 +908,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
               ${row.actor_id}, ${row.command}, ${row.payload}, ${row.payload_version}, ${attempts},
               ${cause}, ${ambiguous}, ${yield* databaseTime})`
 
-          // Only the fault hook needs the request, so an unreadable one must not block the letter.
           const request = yield* requestOf(row, "sender").pipe(Effect.option)
 
           if (Option.isSome(request)) yield* hooks.at("beforeDeadLetterCommit", request.value)
@@ -904,8 +954,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const cancelledCause = (attempts: number) =>
       `Cancelled while attempt ${attempts} was running; the provider may have applied it`
 
-    // A cancellation that commits before the last attempt's dead letter
-    // settles the row as cancelled instead.
     const exhaustUnlessCancelled = (attempts: number, cause: string, ambiguous: boolean) =>
       Effect.gen(function* () {
         if (yield* exhaust(attempts, cause, ambiguous, false)) return
@@ -921,8 +969,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
           )
       })
 
-    // A cancelled row whose attempt ended without settling it, or that was
-    // backing off: never attempted again, only settled with what is known.
     if (row.cancelled) {
       if (row.attempts === 0) return yield* settleTo(undefined, sql`${attemptRow(0)}`)
 
@@ -935,7 +981,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
       )
     }
 
-    // The last attempt ended without an outcome, or its dead letter failed after recording one.
     if (row.exhausted)
       return yield* exhaustUnlessCancelled(
         row.attempts,
@@ -948,23 +993,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
     const ref = ActorRef.make(request.ref)
     const lease = running.get(row.intent_id)?.lease ?? { until: Number(row.claimed_until) }
     const leaseNanos = BigInt(settings.executorLeaseMs) * 1_000_000n
-    // Measured on this runner from when the last claim or renewal was sent, so
-    // the database's lease can only end later than this one.
     let confirmed = claimedAt
 
     yield* hooks.at("afterClaim", request)
     yield* hooks.at("beforeExecute", request)
 
-    // Another runner may already hold the row, and a started call can't be undone.
     if ((yield* Clock.currentTimeNanos) - confirmed >= leaseNanos)
       return yield* Effect.logWarning("Effect attempt outlived its lease before it started").pipe(
         Effect.annotateLogs({ attempt }),
         annotate,
       )
 
-    // Taken before the claim read the row, so a cancellation committed on this
-    // runner since then is already signalled; each check takes the next signal
-    // before it reads the row.
     let signal = claimSignal
 
     const renewals = Effect.gen(function* () {
@@ -975,12 +1014,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
         signal = cancelChecks
         const sent = yield* Clock.currentTimeNanos
 
-        // A renewal that fails is retried at the next interval; the deadline
-        // interrupts the attempt if none gets through in time.
         const renewed = yield* Effect.gen(function* () {
           yield* hooks.at("beforeRenew", request)
 
-          // Never shortens a deadline, so a renewal can't undo a test clock's lease shift.
           return yield* sql<{ cancelled: boolean; due_at_ms: string }>`UPDATE actor_outbox
               SET due_at_ms = greatest(due_at_ms, ${(yield* databaseTime) + settings.executorLeaseMs})
               WHERE ${attemptRow(attempt)}
@@ -1027,8 +1063,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
     })
 
     return yield* Effect.gen(function* () {
-      // Racing stops and awaits the renewal fiber before any settling write, so
-      // a late renewal can't overwrite a failure's backoff with a fresh lease.
       const outcome = yield* registered
         .execute(row.payload, row.payload_version, {
           effectId: row.intent_id,
@@ -1072,7 +1106,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
           annotate,
         )
 
-      // Interrupting a started call does not undo it, so its outcome is unknown.
       if (outcome === "cancelled") {
         yield* Effect.logInfo("Effect attempt interrupted by its cancellation").pipe(
           Effect.annotateLogs({ attempt }),
@@ -1082,7 +1115,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
         return yield* settleCancelled(attempt, "Unknown", cancelledCause(attempt))
       }
 
-      // A success no settle matched: the effect already ended without it.
       const recordLate = (routes: {
         readonly cancelled?: { readonly command: string } | undefined
       }) =>
@@ -1096,8 +1128,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
               annotate,
             )
 
-          // A cancellation already reported without this result: keep an
-          // ambiguous record of it instead of routing a second outcome.
           const reported = routes.cancelled?.command
 
           if (registered.routesCancelled && reported !== undefined) {
@@ -1127,8 +1157,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
           }
         })
 
-      // A newer attempt of a capped effect holds its slot while its lease is
-      // live, so this success waits for it rather than freeing the slot early.
       const settleSuccess = (
         route: { readonly command: string; readonly payload: string } | undefined,
         guard: typeof effectRow,
@@ -1155,7 +1183,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       const rejected = Result.isSuccess(outcome) ? outcome.success.rejected : undefined
 
-      // A result onSuccess rejects still reaches onCancelled if the effect was cancelled.
       if (rejected !== undefined && registered.routesCancelled && Result.isSuccess(outcome)) {
         yield* hooks.at("afterExecute", request)
 
@@ -1172,11 +1199,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
         yield* hooks.at("afterExecute", request)
         const routes = outcome.success
 
-        // The first success of any attempt wins; the row stops being an effect.
         if (yield* settleSuccess(routes.success, sql`${effectRow} AND cancelled_at_ms IS NULL`))
           return yield* tally(Metrics.relayDelivered, { kind: "effect" }, 1)
 
-        // Cancelled meanwhile: the result is reported as the cancellation's outcome.
         if (
           yield* settleSuccess(
             registered.routesCancelled ? routes.cancelled : routes.success,
@@ -1196,12 +1221,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
       const last = final === true || attempt >= registered.attempts
       const { baseMs, maxMs } = registered.backoff
 
-      // The outcome is recorded first, so a failed dead-letter transaction is
-      // retried with this attempt's cause rather than the claim's, and a final
-      // failure, which the next claim reads as exhaustion even with retries
-      // left, is never followed by another attempt. An attempt that never
-      // started applied nothing: the row stays as ambiguous as its earlier
-      // attempts left it, which `maybe_applied` records.
       const recorded = yield* sql<{
         cancelled: boolean
         maybe_applied: boolean
@@ -1219,7 +1238,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
       if (recorded.length === 0 && rejected !== undefined && Result.isSuccess(outcome))
         return yield* recordLate(outcome.success)
 
-      // A cancellation that committed after the check above still takes the known result.
       if (
         recorded[0]?.cancelled === true &&
         rejected !== undefined &&
@@ -1249,14 +1267,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
     }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })
 
-  // A settled attempt of a capped effect frees a slot for the oldest waiting row of its actor.
   const settleAttempt = (
     row: ClaimedEffect,
     registered: RegisteredEffect,
     claimedAt: bigint,
     claimSignal: Deferred.Deferred<void>,
   ) => {
-    // A committed terminal settle closes the effect's progress; a retryable one leaves it open.
     const attempt = runAttempt(row, registered, claimedAt, claimSignal).pipe(
       Effect.tap(() =>
         ended.delete(row.intent_id)
@@ -1303,15 +1319,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
     )
   })
 
-  // Uninterruptible so every row a claim returns reaches a fiber that can release it.
   const pass = lock
     .withPermit(
       Effect.uninterruptible(
         Effect.gen(function* () {
           if (stopping) return { claimed: 0, backlog: false, quiet: true }
 
-          // Work runs only on fibers a pass starts, so none running now means
-          // nothing can stage rows after this claim reads.
           const quiet = (yield* inFlight) === 0
 
           const slots = Math.min(
@@ -1341,7 +1354,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           const now = outboxNow({ sql, offsetMillis: clock.offsetMillis() })
 
-          // Capped effects are claimed per actor, each under its group's lock.
           const claimGroups = (limit: number) =>
             Effect.gen(function* () {
               const claimed: Array<ClaimedEffect> = []
@@ -1374,8 +1386,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
               return { claimed, backlog }
             })
 
-          // With both kinds due, passes alternate which claims first, so a
-          // steady stream of either can't take every permit.
           const cappedFirst = capped.length > 0 && local.length > 0 && cappedTurn
 
           if (capped.length > 0 && local.length > 0) cappedTurn = !cappedTurn
@@ -1466,8 +1476,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
               ({ actor, effect }) => actor === row.actor_type && effect === row.command,
             )!.registered
 
-            // Registered before the lock is released and until the outcome is
-            // written, so every clock jump after the claim moves this lease.
             running.set(row.intent_id, {
               routingKey: BigInt(row.routing_key),
               attempt: row.attempts,
@@ -1510,8 +1518,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
     yield* FiberSet.awaitEmpty(subscriptionWork.subscription)
   })
 
-  // Waits for in-flight work, which may stage more, then claims again; done
-  // once a claim finds nothing while nothing was running.
   const drain = Effect.gen(function* () {
     for (let rounds = 0; rounds < DRAIN_ROUNDS;) {
       yield* idle
@@ -1519,16 +1525,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       if (claimed === 0 && quiet) return
 
-      // A backlog larger than the free slots takes many rounds; only rounds
-      // that drained every due row count toward the loop guard.
       if (claimed > 0 && !backlog) rounds++
     }
 
     return yield* Effect.die(new Error("Outbox did not settle; intents keep producing due work"))
   }).pipe(Effect.orDie)
 
-  // Shutdown stops claims; interrupted deliveries release their rows in their interrupt handler.
-  // Taking the lock lets a pass in progress hand its rows to fibers first, so they are interrupted and released.
   yield* Effect.addFinalizer(() =>
     lock.withPermit(
       Effect.sync(() => {
@@ -1537,10 +1539,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
     ),
   )
 
-  // Moves this runner's running attempts' leases with a jump of the outbox clock,
-  // as the renewals during that time would have. Holding the pass lock means
-  // no claim reads the clock between the moved leases and the jump, and a pass
-  // in progress registers its rows first.
   const extendLeases = (millis: number, jump: Effect.Effect<void>) =>
     lock
       .withPermit(
@@ -1561,10 +1559,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
       )
       .pipe(Effect.orDie)
 
-  // A draining runner claims nothing more. A delivery only waits on a turn,
-  // which the receiver's owner finishes or rolls back on its own, so it is
-  // interrupted at once and its row falls due for any runner; the receiver's
-  // receipt answers a redelivery of work that did commit.
   const stop = lock
     .withPermit(
       Effect.sync(() => {
@@ -1578,9 +1572,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
       Effect.andThen(FiberSet.clear(subscriptionWork.subscription)),
     )
 
-  // An interrupted attempt keeps its claim and its `ambiguous` mark, because
-  // the provider may have applied the call; another runner takes the effect
-  // over once the lease ends.
   const interruptAttempts = Effect.flatMap(FiberSet.size(attempts), (running) =>
     FiberSet.clear(attempts).pipe(Effect.as(running)),
   )
