@@ -1510,9 +1510,9 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
             FROM generate_series(1, 10000) AS i`
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
               scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
-              payload, caller, kind)
+              payload, caller, kind, ready_at_ms)
             SELECT ((i % 256) - 128)::bigint << 56 | i, 'ghost-' || i, (i % 256) - 128, 0, 0,
-              'ghost', 'Ghost', i::text, 'Ghost', i::text, 'Haunt', '{}', '{}', 'effect'
+              'ghost', 'Ghost', i::text, 'Ghost', i::text, 'Haunt', '{}', '{}', 'effect', 0
             FROM generate_series(1, 10000) AS i`
           yield* sql`ANALYZE actor_outbox`
 
@@ -1591,9 +1591,9 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
             FROM generate_series(1, 200) AS i`
           yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
               scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
-              payload, caller, kind)
+              payload, caller, kind, ready_at_ms)
             SELECT (${placed!.bucket}::bigint << 56) | i, 'orphan-' || i, ${placed!.bucket}, 0, 0,
-              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'effect'
+              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'effect', 0
             FROM generate_series(1, 200) AS i`
 
           yield* Effect.gen(function* () {
