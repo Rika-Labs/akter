@@ -22,6 +22,8 @@ export interface StressRun {
   readonly run: string
   /** The suite the run executed; it names failures that no file or case accounts for. */
   readonly suite: string
+  /** Whether the run began, i.e. wrote a log; false for a run the step's time budget cut off before it started. */
+  readonly started: boolean
   /** Undefined when the run died before Vitest wrote its report. */
   readonly report: typeof VitestReport.Type | undefined
   /** The suite's exit status, or undefined when it was not recorded. */
@@ -41,13 +43,18 @@ export function tallyFlakes(runs: ReadonlyArray<StressRun>): ReadonlyArray<Flake
 
   const record = (name: string, run: string) => failed.set(name, [...(failed.get(name) ?? []), run])
 
-  for (const { run, suite, report, status, unhandledErrors } of runs) {
+  for (const { run, suite, started, report, status, unhandledErrors } of runs) {
     const before = [...failed.values()].flat().length
 
     if (unhandledErrors) record(`${suite} (unhandled errors: see its log)`, run)
 
     if (report === undefined) {
-      record(`${suite} (no report: the run died before Vitest finished)`, run)
+      record(
+        started
+          ? `${suite} (no report: the run died before Vitest finished)`
+          : `${suite} (never started: the step ran out of time before this run)`,
+        run,
+      )
       continue
     }
 

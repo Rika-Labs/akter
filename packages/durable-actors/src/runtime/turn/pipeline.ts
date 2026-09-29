@@ -48,25 +48,42 @@ export const turnConnections = (options: PgPool.Config) =>
     }),
   )
 
+/**
+ * Puts one statement on the session. The runtime passes a sender that queues
+ * its deferred statements in the same flight, ahead of the statement.
+ */
+export type Send = <A>(
+  statement: Effect.Effect<A, SqlError.SqlError>,
+) => Effect.Effect<A, SqlError.SqlError>
+
 /** A leased session as a `SqlClient` connection, so the runtime's statements reach it. */
-export const asSqlConnection = (
-  connection: PgConnection.PgConnection,
-): SqlConnection.Connection => {
+export const asSqlConnection = ({
+  connection,
+  send,
+}: {
+  readonly connection: PgConnection.PgConnection
+  readonly send: Send
+}): SqlConnection.Connection => {
   const run = (sql: string, params: ReadonlyArray<unknown>, prepare: boolean) =>
-    Effect.map(connection.query(sql, params, prepare), (result) => result.rows)
+    send(Effect.map(connection.query(sql, params, prepare), (result) => result.rows))
 
   return {
     execute: (sql, params, transformRows) =>
       transformRows === undefined
         ? run(sql, params, true)
         : Effect.map(run(sql, params, true), transformRows),
-    executeRaw: (sql, params) => connection.query(sql, params),
+    executeRaw: (sql, params) => send(connection.query(sql, params)),
     executeStream: (sql, params, transformRows) =>
-      transformRows === undefined
-        ? connection.stream(sql, params)
-        : Stream.map(connection.stream(sql, params), (row) => transformRows([row])[0]!),
-    executeValues: (sql, params) => connection.queryValues(sql, params),
-    executeValuesUnprepared: (sql, params) => connection.queryValues(sql, params, false),
+      Stream.unwrap(
+        Effect.as(
+          send(Effect.void),
+          transformRows === undefined
+            ? connection.stream(sql, params)
+            : Stream.map(connection.stream(sql, params), (row) => transformRows([row])[0]!),
+        ),
+      ),
+    executeValues: (sql, params) => send(connection.queryValues(sql, params)),
+    executeValuesUnprepared: (sql, params) => send(connection.queryValues(sql, params, false)),
     executeUnprepared: (sql, params, transformRows) =>
       transformRows === undefined
         ? run(sql, params, false)

@@ -12,6 +12,7 @@ import {
   Schedule,
   Schema,
   Scope,
+  type Redacted,
 } from "effect"
 import type { HttpServer } from "effect/unstable/http"
 import { SqlClient, Statement } from "effect/unstable/sql"
@@ -55,7 +56,10 @@ import {
 import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
+import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
+import { OperatorRuntime } from "../runtime/operators/repair.ts"
+import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
@@ -93,6 +97,7 @@ import {
 } from "./conformance/connections.ts"
 import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
+import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
 import {
@@ -206,6 +211,7 @@ export type ConformanceServices =
   | SqlClient.SqlClient
   | Crypto.Crypto
   | ContentStore
+  | OperatorRuntime
 
 export type ConformanceRuntime = ManagedRuntime.ManagedRuntime<ConformanceServices, never>
 
@@ -216,6 +222,8 @@ export interface ConformanceEnvironment {
   readonly build: (options?: {
     readonly retryWindowMs?: number
     readonly database?: ConformanceDatabase
+    /** Queries read this streaming replica of `database` once it has caught up. */
+    readonly replica?: Redacted.Redacted<string> | undefined
     readonly content?: Options["content"]
   }) => ConformanceRuntime
   /** Stops the current runtime; the retained database survives. */
@@ -234,15 +242,27 @@ export interface ConformanceEnvironment {
    * when the backend advertises `independentConnections`.
    */
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+  /** The retained database on a streaming replica; only present when the backend has one. */
+  readonly replica?: ConformanceReplica | undefined
   /** A fresh listening HTTP server that supports WebSocket upgrades; each build listens anew. */
   readonly httpServer: Layer.Layer<HttpServer.HttpServer>
   /** The hosted edge under test, when the backend supplies one. */
   readonly edge?: ConformanceEdge
 }
 
+/** A physical streaming replica of the backend's Postgres primary. */
+export interface ConformanceReplica {
+  /** The retained database's connection string on the replica. */
+  readonly database: Redacted.Redacted<string>
+  /** A superuser connection to the replica, e.g. to pause and resume WAL replay. */
+  readonly connect: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+}
+
 export interface ConformanceBackend {
   /** True when the backend can open concurrent SQL connections (real Postgres). */
   readonly independentConnections: boolean
+  /** True when `open` returns a streaming replica of the primary. */
+  readonly hasReplica?: boolean
   /** Extra services merged into every test runtime, e.g. BunCrypto.layer. */
   readonly services: Layer.Layer<Crypto.Crypto, never, never>
   /**
@@ -262,6 +282,7 @@ export interface ConformanceBackend {
     /** Copies a database that no runtime has open into a new one. */
     readonly copy: (database: ConformanceDatabase) => Effect.Effect<ConformanceDatabase>
     readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+    readonly replica?: ConformanceReplica | undefined
     readonly close: Effect.Effect<void>
   }>
 }
@@ -310,6 +331,8 @@ export interface ConformanceCase {
    * the case through `registrar.skip` instead of running it.
    */
   readonly requiresIndependentConnections?: boolean
+  /** Requires a streaming replica; backends without one skip the case. */
+  readonly requiresReplica?: boolean
   /** Requires `backend.edge`; backends without one register the case through `registrar.skip`. */
   readonly requiresEdge?: boolean
   readonly run: (ctx: ConformanceContext) => Promise<void>
@@ -455,6 +478,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...multiRunnerConformance,
   ...drainConformance,
   ...pipelineConformance,
+  ...batchesConformance,
   ...relayConformance,
   ...relayClusterConformance,
   ...effectControlConformance,
@@ -1465,7 +1489,9 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   },
   ...propertiesConformance,
   ...mintConformance,
+  ...readYourWritesConformance,
   ...observabilityConformance,
+  ...operatorConformance,
   ...placementConformance,
 ]
 
@@ -1474,6 +1500,7 @@ interface ConformanceStore {
   readonly freshDatabase: Effect.Effect<ConformanceDatabase>
   readonly copy: (database: ConformanceDatabase) => Effect.Effect<ConformanceDatabase>
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
+  readonly replica?: ConformanceReplica | undefined
   readonly close: Effect.Effect<void>
 }
 
@@ -1501,6 +1528,7 @@ export const describeConformance = (options: {
     eventsLayer(fixture.events),
     eventsQueryLayer(fixture.events),
     reducerLayer,
+    batchesLayer,
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
@@ -1548,6 +1576,7 @@ export const describeConformance = (options: {
           Layer.provideMerge(
             ActorTest.layer({
               database,
+              replica: overrides?.replica,
               as: User.make({ subject: "alice" }),
               authorize: (request) =>
                 Effect.sync(
@@ -1614,6 +1643,9 @@ export const describeConformance = (options: {
     get connect() {
       return store?.connect
     },
+    get replica() {
+      return store?.replica
+    },
     httpServer: backend.httpServer,
     get edge() {
       return backend.edge
@@ -1648,6 +1680,7 @@ export const describeConformance = (options: {
       if (
         (conformanceCase.requiresIndependentConnections === true &&
           backend.independentConnections === false) ||
+        (conformanceCase.requiresReplica === true && backend.hasReplica !== true) ||
         (conformanceCase.requiresEdge === true && backend.edge === undefined)
       ) {
         registrar.skip(conformanceCase.name)

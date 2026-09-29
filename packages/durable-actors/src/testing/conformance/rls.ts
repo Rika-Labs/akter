@@ -16,9 +16,9 @@ import {
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent, User } from "../../index.ts"
+import { InternalActors, Outcome, Request } from "../../handles/actors.ts"
 import { migrate } from "../../runtime/database/migrations.ts"
 import { Database } from "../../runtime/layer.ts"
-import { InternalActors } from "../../handles/actors.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type {
@@ -26,6 +26,7 @@ import type {
   ConformanceDatabase,
   ConformanceEnvironment,
 } from "../conformance.ts"
+import { pauseReplay, replayedThrough } from "./read-your-writes.ts"
 import { Notebook, tablesDdl, tablesFixture, tablesLayer } from "./tables.ts"
 
 class Recorded extends Actor.Event<Recorded>()("Recorded", { body: Schema.String }) {}
@@ -128,7 +129,38 @@ const ledgerLayer = Layer.mergeAll(
   ),
 )
 
-const live = Layer.mergeAll(ledgerLayer, tablesLayer(tablesFixture()))
+const Replicated = Actor.make("Replicated", {
+  key: Schema.String,
+  state: Actor.state({
+    entries: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  }),
+  api: {
+    Put: Actor.command("Put", { input: Schema.String }),
+    Read: Actor.query("Read", { output: Schema.Array(Schema.String) }),
+  },
+})
+
+const replicatedLayer = Layer.mergeAll(
+  Replicated.toLayer(
+    Effect.succeed({
+      Put: Effect.fnUntraced(function* (body: string) {
+        const turn = yield* Replicated.Turn
+        yield* turn.state.set({ entries: [...turn.state.entries, body] })
+      }),
+    }),
+  ),
+  Replicated.toQueryLayer(
+    Effect.succeed({
+      Read: Effect.fnUntraced(function* () {
+        const read = yield* Replicated.Read
+
+        return read.state.entries
+      }),
+    }),
+  ),
+)
+
+const live = Layer.mergeAll(ledgerLayer, replicatedLayer, tablesLayer(tablesFixture()))
 
 const VIEWS = [
   "actors",
@@ -255,7 +287,7 @@ const prepared = (
     return { target, role, viewOwner }
   })
 
-const runtimeOn = (target: Target, role: string) =>
+const runtimeOn = (target: Target, role: string, replica?: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
 
@@ -268,6 +300,7 @@ const runtimeOn = (target: Target, role: string) =>
               database: Redacted.isRedacted(target) ? target : { liveClient: target.liveClient },
               as: User.make({ subject: "alice" }),
               rowLevelSecurity: { role },
+              replica,
             }),
           ),
           Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
@@ -342,6 +375,10 @@ const populate = (tenant: string) =>
     const notebook = yield* Notebook.get("shared-id").pipe(Actor.tenant(tenant))
     yield* notebook.Write({ id: "note", body: tenant })
   })
+
+const decodeEntries = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ value: Schema.Array(Schema.String) })),
+)
 
 export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   {
@@ -759,6 +796,90 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
           expect(unowned).toContain("which the policies exempt")
           expect(actable).toContain(`which ${shared.role} can act as`)
           expect(owning).toContain(`role ${owner.role} owns public.conformance_notes`)
+        }),
+      ),
+  },
+  {
+    name: "row-level security on: a replica read runs as the tenant role and binds the tenant, falling through to the primary when the role is refused there",
+    requiresReplica: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { target, role } = yield* prepared(environment)
+          const replica = environment.replica!
+
+          if (!Redacted.isRedacted(target)) return yield* Effect.die("A replica needs Postgres")
+
+          // The fresh database replicates under its own name.
+          const onReplica = new URL(Redacted.value(replica.database))
+          onReplica.pathname = new URL(Redacted.value(target)).pathname
+
+          const context = yield* runtimeOn(target, role, Redacted.make(onReplica.href)).pipe(
+            Effect.orDie,
+          )
+
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            const internal = yield* InternalActors
+            const control = yield* replica.connect
+            const ledger = yield* Replicated.get("replicated")
+
+            const primaryVersion = Effect.map(
+              sql<{
+                version: string
+              }>`SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version`,
+              (rows) => rows[0]!.version,
+            ).pipe(Effect.orDie)
+
+            // A read with no version, so the replica answers whenever it can.
+            const entries = internal
+              .query(
+                Request.make({
+                  ref: ledger.ref,
+                  caller: User.make({ subject: "alice" }),
+                  command: "Read",
+                  commandId: "",
+                  payload: '{"value":null}',
+                }),
+              )
+              .pipe(
+                Effect.flatMap((outcome) =>
+                  Outcome.guards.Success(outcome)
+                    ? decodeEntries(outcome.value)
+                    : Effect.die(`Read answered ${outcome._tag}`),
+                ),
+                Effect.map(({ value }) => value),
+                Effect.orDie,
+              )
+
+            yield* ledger.Put("first")
+            yield* sql.unsafe(`REVOKE SELECT ON actor_state FROM ${role}`)
+            yield* replayedThrough(control, yield* primaryVersion)
+
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                yield* pauseReplay(control)
+                yield* sql.unsafe(`GRANT SELECT ON actor_state TO ${role}`)
+                yield* ledger.Put("second")
+
+                // The role cannot read state on the replica, so the primary answers.
+                expect(yield* entries).toEqual(["first", "second"])
+              }),
+            )
+
+            yield* replayedThrough(control, yield* primaryVersion)
+
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                yield* pauseReplay(control)
+                yield* ledger.Put("third")
+
+                // The stale replica answers for the tenant; unbound, the policy would hide every row.
+                expect(yield* entries).toEqual(["first", "second"])
+              }),
+            )
+          }).pipe(Effect.provideContext(context))
         }),
       ),
   },

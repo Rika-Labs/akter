@@ -17,11 +17,12 @@ import { parseChildId } from "../../identity/child.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
+import { COMMIT_VERSION } from "../database/replica.ts"
 import { compress, decompress } from "../storage/codec.ts"
-import { hashedPayload } from "../subscriptions/identity.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
+import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
@@ -30,6 +31,7 @@ import {
   asSqlConnection,
   isInterrupted,
   pipeline,
+  type Send,
   sequential,
   TurnConnections,
 } from "./pipeline.ts"
@@ -78,6 +80,38 @@ interface Admission {
   readonly sub_applied?: string | null
 }
 
+type SubscriptionDelivery = NonNullable<Request["delivery"]>
+
+/** A subscriber's cursor row as the fenced admission read it; all null when there is none. */
+type Cursor = Pick<Admission, "sub_epoch" | "sub_active" | "sub_applied">
+
+/**
+ * The cursor row once `delivery` applied, as its commit writes it: a routed
+ * delivery creates the epoch-0 row or raises its position, a dynamic one moves
+ * the row of its own epoch, and a rejection deactivates that row.
+ */
+const applied = (delivery: SubscriptionDelivery, cursor: Cursor): Cursor => {
+  const epoch = cursor.sub_epoch ?? null
+
+  if (delivery.kind === "rejected")
+    return epoch === delivery.epoch ? { ...cursor, sub_active: false } : cursor
+
+  if (delivery.epoch === "0") {
+    if (epoch === null) return { sub_epoch: "0", sub_active: true, sub_applied: delivery.position }
+
+    if (epoch !== "0") return cursor
+
+    const position =
+      BigInt(cursor.sub_applied!) >= BigInt(delivery.position)
+        ? cursor.sub_applied!
+        : delivery.position
+
+    return { ...cursor, sub_applied: position }
+  }
+
+  return epoch === delivery.epoch ? { ...cursor, sub_applied: delivery.position } : cursor
+}
+
 type Acknowledgement = (typeof Outcome.cases.Acknowledged.Type)["reason"]
 
 /**
@@ -88,8 +122,8 @@ type Acknowledgement = (typeof Outcome.cases.Acknowledged.Type)["reason"]
  * subscription always has a row, so only a routed one (epoch 0) creates it.
  */
 const acknowledgement = (
-  delivery: NonNullable<Request["delivery"]>,
-  admission: Admission,
+  delivery: SubscriptionDelivery,
+  admission: Cursor,
 ): Acknowledgement | undefined => {
   const epoch = BigInt(delivery.epoch)
 
@@ -153,31 +187,67 @@ type Statement = Effect.Effect<void, SqlError.SqlError>
 interface Session {
   readonly send: (group: ReadonlyArray<Statement>) => Statement
   readonly control: (text: string) => Statement
+  /**
+   * Queues a control statement to go out ahead of the next statement on the
+   * session, or with the commit group, so it adds no round trip of its own.
+   */
+  readonly defer: (text: string) => Statement
+  /** Takes back the last deferred statement if it is `text` and still unsent. */
+  readonly withdraw: (text: string) => boolean
 }
 
-/** What a turn decided once its handler ran, or that it answers from a receipt. */
+/** One command waiting in an activation's mailbox, with the handler it runs. */
+export interface Delivery {
+  readonly request: Request
+  readonly command: RegisteredCommand
+}
+
+/**
+ * How one command of a batch ended: an outcome its receipt records or
+ * replays, or an admission error answered without a receipt.
+ */
+export type Settled = Result.Result<Outcome, ActorError>
+
+/** What a batch decided once its handlers ran. */
 interface Plan {
-  /** The commit group without `COMMIT`; undefined when the turn only rolls back. */
+  /** The commit group without `COMMIT`; undefined when the batch only rolls back. */
   readonly writes: ReadonlyArray<Statement> | undefined
-  readonly outcome: Outcome
+  readonly settled: ReadonlyArray<Settled>
   readonly generation: string
   readonly state: ReadonlyMap<string, string> | undefined
   /** A workflow waits on an emitted class, so the relay should wake after commit. */
   readonly wake: boolean
-  /** Broadcasts a committed success publishes to the actor's connections. */
+  /** Broadcasts the batch's committed successes publish to the actor's connections. */
   readonly broadcasts: ReadonlyArray<Broadcast>
-  /** The actor's event sequence once this turn commits. */
+  /** The actor's event sequence once this batch commits. */
   readonly head: string
-  /** The events this turn commits, without their stamp. */
-  readonly committed: Omit<CommittedEvents, "emittedAtMs">
-  /** Filled in as the commit group replies, so read only after it has. */
-  readonly outbox: OutboxReplies
-  /** Filled in as the commit group replies: the stamp, and whether a subscription feed row is due. */
-  readonly emitted: { readonly emittedAtMs: number; readonly fed: boolean }
-  /** The turn answered from a stored receipt without running its handler. */
-  readonly replayed: boolean
+  /**
+   * Each command's committed events, in delivery order. Their stamps and the
+   * outbox replies are filled in as the commit group replies, so read them
+   * only after it has.
+   */
+  readonly committed: ReadonlyArray<Omit<CommittedEvents, "emittedAtMs">>
+  /** Each events statement's stamp, and whether a subscription feed row is due. */
+  readonly emitted: ReadonlyArray<{ readonly emittedAtMs: number; readonly fed: boolean }>
+  readonly outbox: ReadonlyArray<OutboxReplies>
+  /** The positions in `settled` that answered from a stored receipt without running a handler. */
+  readonly replays: ReadonlySet<number>
   /** What the commit group writes, for the runner's growth metrics. */
   readonly written: Written
+}
+
+/** One `actor_receipts` row a batch commits. */
+type ReceiptRow = {
+  readonly routing_key: bigint
+  readonly tenant_id: string
+  readonly actor_type: string
+  readonly actor_id: string
+  readonly command_id: string
+  readonly command: string
+  readonly payload_hash: string
+  readonly caller_key: string
+  readonly outcome: string
+  readonly expires_at_ms: number
 }
 
 /** Rows a committed turn adds; nothing when it replays, acknowledges, or rolls back. */
@@ -197,20 +267,26 @@ class RolledBack {
 const HANDLER_SAVEPOINT = "durable_handler"
 
 /**
- * One command turn in one framework transaction, sent as two groups. The
- * admission group opens the transaction, takes the generation fence, resolves
- * the receipt, and on a cold activation acquires the next generation and reads
- * state. The handler runs in memory once those replies arrive. The commit group
- * writes dirty state, events, outbox rows, the creation marker, and the
- * receipt, then commits. A stale fence, a replayed receipt, or any failure
- * rolls back instead and writes nothing.
+ * Commands already waiting for one actor, run in delivery order in one
+ * framework transaction sent as two groups. The admission group opens the
+ * transaction, takes the generation fence, resolves every command's receipt
+ * under it, and on a cold activation acquires the next generation and reads
+ * state. The handlers run in memory once those replies arrive, each on the
+ * state the previous one left. The commit group writes the dirty state, each
+ * command's events and outbox rows, the creation marker, and every receipt,
+ * then commits. A lone command is a batch of one.
  *
- * `statements` marks an actor whose handler can issue SQL; only its handler
- * runs under a savepoint, so a declared failure discards the handler's rows.
+ * Each command keeps its own outcome: a declared failure discards only its
+ * own staged work, and an admission error (expiry, `NotCreated`, a receipt
+ * conflict) answers only that command. A stale fence or any defect fails the
+ * whole batch and writes nothing. A batch with nothing to commit rolls back.
+ *
+ * `statements` marks an actor whose handler can issue SQL; only its handlers
+ * run under a savepoint, so a declared failure discards the handler's rows.
+ * Every command id in a batch must be distinct.
  */
-export const executeTurn = Effect.fnUntraced(function* (
-  request: Request,
-  command: RegisteredCommand,
+export const executeBatch = Effect.fnUntraced(function* (
+  deliveries: ReadonlyArray<Delivery>,
   cache: ActivationCache,
   routingKey: bigint,
   policy: TurnPolicy,
@@ -226,45 +302,31 @@ export const executeTurn = Effect.fnUntraced(function* (
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
   const { role } = yield* TenantScope
-  const { tenant, actor, id } = request.ref
+  const { ref } = deliveries[0]!.request
+  const { tenant, actor, id } = ref
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
-  const delivery = request.delivery
+  // A delivery's canonical payload binds its identity, not the event's bytes.
+  const canonicals = yield* Effect.forEach(deliveries, ({ request }) => hashedPayload(request))
 
-  const cursorRow =
-    delivery === undefined
-      ? undefined
-      : sql`${actorRow} AND subscription = ${delivery.subscription}
-          AND source_type = ${delivery.sourceType} AND source_id = ${delivery.sourceId}`
+  // Subscription deliveries read their cursor rows in the fenced admission
+  // statement; a batch without one keeps the statement unchanged.
+  const subscribed = deliveries.some(({ request }) => request.delivery !== undefined)
 
-  // A delivery reads its cursor row in the fenced admission statement; other
-  // turns keep the statement unchanged.
-  const cursorColumns =
-    delivery === undefined
-      ? sql.literal("")
-      : sql`, c.epoch::text AS sub_epoch, c.active AS sub_active, c.applied::text AS sub_applied`
-
-  const cursorJoin =
-    delivery === undefined
-      ? sql.literal("")
-      : sql`LEFT JOIN actor_subscription_cursors c ON c.routing_key = g.routing_key
-          AND c.tenant_id = g.tenant_id AND c.actor_type = g.actor_type AND c.actor_id = g.actor_id
-          AND c.subscription = ${delivery.subscription} AND c.source_type = ${delivery.sourceType}
-          AND c.source_id = ${delivery.sourceId}`
+  const cursorOf = (delivery: SubscriptionDelivery) =>
+    sql`${actorRow} AND subscription = ${delivery.subscription}
+      AND source_type = ${delivery.sourceType} AND source_id = ${delivery.sourceId}`
 
   // A routed subscriber's row starts at epoch 0 with its first delivery.
-  const applyCursor = (position: string) =>
+  const applyCursor = (delivery: SubscriptionDelivery) =>
     Effect.asVoid(sql`INSERT INTO actor_subscription_cursors (routing_key, tenant_id, actor_type, actor_id,
         subscription, source_type, source_id, epoch, active, applied)
-      VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${delivery!.subscription},
-        ${delivery!.sourceType}, ${delivery!.sourceId}, 0, true, ${position})
+      VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${delivery.subscription},
+        ${delivery.sourceType}, ${delivery.sourceId}, 0, true, ${delivery.position})
       ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, subscription, source_type, source_id)
       DO UPDATE SET applied = greatest(actor_subscription_cursors.applied, EXCLUDED.applied)
       WHERE actor_subscription_cursors.epoch = 0`)
-
-  // A delivery's canonical payload binds its identity, not the event's bytes.
-  const canonical = yield* hashedPayload(request)
 
   const turn = Effect.fnUntraced(function* (session: Session, begin: ReadonlyArray<Statement>) {
     const cold = cache.generation === undefined
@@ -277,13 +339,38 @@ export const executeTurn = Effect.fnUntraced(function* (
       ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
     const readsState = cold || cache.state === undefined
-    let admission: Admission | undefined
+    let admissions: ReadonlyArray<Admission> = []
     let bumped: string | undefined
     let stored: ReadonlyArray<{ key: string; value: Uint8Array }> = []
 
+    const commands = sql.csv(
+      deliveries.map(({ request: { commandId, delivery } }, index) =>
+        subscribed
+          ? sql`(${index}::integer, ${commandId}::text, ${canonicals[index]!}::text,
+              ${delivery?.subscription ?? null}::text, ${delivery?.sourceType ?? null}::text,
+              ${delivery?.sourceId ?? null}::text)`
+          : sql`(${index}::integer, ${commandId}::text, ${canonicals[index]!}::text)`,
+      ),
+    )
+
+    const cursorColumns = subscribed
+      ? sql`, s.epoch::text AS sub_epoch, s.active AS sub_active, s.applied::text AS sub_applied`
+      : sql.literal("")
+
+    const values = subscribed
+      ? sql`(VALUES ${commands}) AS c (ordinal, command_id, payload, subscription, source_type, source_id)`
+      : sql`(VALUES ${commands}) AS c (ordinal, command_id, payload)`
+
+    const cursorJoin = subscribed
+      ? sql`LEFT JOIN actor_subscription_cursors s ON s.routing_key = g.routing_key
+          AND s.tenant_id = g.tenant_id AND s.actor_type = g.actor_type AND s.actor_id = g.actor_id
+          AND s.subscription = c.subscription AND s.source_type = c.source_type
+          AND s.source_id = c.source_id`
+      : sql.literal("")
+
     // None of these takes a parameter from another's reply. The insert comes
-    // before the fenced read, so a brand-new actor's receipt is resolved under
-    // the generation row lock too.
+    // before the fenced read, so a brand-new actor's receipts are resolved
+    // under the generation row lock too.
     yield* session.send([
       ...begin,
       // set_config runs before the row is inserted, so lock_timeout bounds the
@@ -299,18 +386,20 @@ export const executeTurn = Effect.fnUntraced(function* (
         sql<Admission>`
           SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
             g.generation::text AS generation, g.created,
-            ${canonical}::jsonb::text AS canonical,
+            c.payload::jsonb::text AS canonical,
             r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
             ${cursorColumns}
           FROM actor_generations g
+          CROSS JOIN ${values}
           LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
-            AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = ${request.commandId}
+            AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
           ${cursorJoin}
           WHERE g.routing_key = ${routingKey} AND g.tenant_id = ${tenant}
             AND g.actor_type = ${actor} AND g.actor_id = ${id}
+          ORDER BY c.ordinal
           FOR UPDATE OF g`,
         (rows) => {
-          admission = rows[0]
+          admissions = rows
         },
       ),
       ...(cold
@@ -339,173 +428,324 @@ export const executeTurn = Effect.fnUntraced(function* (
       ...(statements ? [session.control(`SAVEPOINT ${HANDLER_SAVEPOINT}`)] : []),
     ])
 
+    const first = admissions[0]
+
     // Another runner advanced the generation since this activation acquired
     // it, so its cached state may be stale. Nothing runs or is written; the
     // activation drops its cache and the retry reloads under a new generation.
-    if (admission === undefined || (!cold && cache.generation !== admission.generation)) {
+    if (first === undefined || (!cold && cache.generation !== first.generation)) {
       cache.generation = undefined
       cache.state = undefined
 
       return yield* Effect.die(RetryTurn.make({ message: "Stale actor generation" }))
     }
 
-    const admitted = admission
-    const current = cold ? bumped! : admitted.generation
-    const hash = yield* hashCanonical(admitted.canonical)
+    const current = cold ? bumped! : first.generation
+    const now = Number(first.now) + clock.offsetMillis()
+    const { retryWindowMs } = yield* OutboxRuntime
 
-    // The first turn a generation commits schedules every entry not yet
-    // ticking, from the database clock after its handler ran, so a first tick
-    // is never due before the turn that writes it.
-    const ticks =
-      cold && cron.length > 0
-        ? Effect.gen(function* () {
-            const now = yield* databaseTime
-            const services = yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>()
+    const expiryMarginMs = receiptMarginMs({
+      keepReceiptsMs: policy.keepReceiptsMs,
+      deliveryMs: policy.deliveryMs,
+      retryWindowMs,
+    })
 
-            return [
-              writeTicks(routingKey, request.ref, cron, now).pipe(Effect.provideContext(services)),
-            ]
-          })
-        : Effect.succeed([])
+    // The first batch a generation commits schedules every entry not yet
+    // ticking, from the database clock after its handlers ran, so a first
+    // tick is never due before the batch that writes it.
+    const ticks = Effect.gen(function* () {
+      if (!cold || cron.length === 0) return []
 
-    if (admitted.outcome !== null) {
-      const outcome = yield* checkReceipt(request, hash, admitted as StoredReceipt)
+      const now = yield* databaseTime
+      const services = yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>()
 
-      // A cold activation keeps the generation it acquired, so work the
-      // replay wakes runs under it; a warm one has nothing to commit.
-      return {
-        writes: cold ? yield* ticks : undefined,
-        outcome,
-        generation: current,
-        state: cold ? undefined : cache.state,
-        wake: false,
-        broadcasts: [],
-        head: admitted.head,
-        committed: { after: admitted.head, events: [], commandId: request.commandId },
-        outbox: { wake: false, cancelled: false, cancelledIds: [] },
-        emitted: { emittedAtMs: 0, fed: false },
-        replayed: true,
-        written: nothingWritten,
-      } satisfies Plan
-    }
+      return [writeTicks(routingKey, ref, cron, now).pipe(Effect.provideContext(services))]
+    })
 
-    const now = Number(admitted.now) + clock.offsetMillis()
+    const settled: Array<Settled> = []
+    // State after every handler so far, loaded only once a handler runs.
+    let next: Map<string, string> | undefined
+    const dirty = new Map<string, string>()
+    const removed = new Set<string>()
+    // Each command's events and outbox rows, in delivery order.
+    const staged: Array<Statement> = []
+    const receipts: Array<ReceiptRow> = []
+    let created = first.created
+    let creates = false
+    // A cold activation that replays or acknowledges keeps the generation it
+    // acquired, so work the replay wakes runs under it.
+    let replayed = false
+    let wake = false
+    // Broadcasts of committed successes, and how many events the batch appends.
+    const broadcasts: Array<Broadcast> = []
+    let events = 0
+    let intents = 0
+    let effects = 0
+    const replays = new Set<number>()
+    const committed: Array<Omit<CommittedEvents, "emittedAtMs">> = []
+    const emitted: Array<{ readonly emittedAtMs: number; readonly fed: boolean }> = []
+    // Cursor rows as the batch's earlier deliveries left them, so a later
+    // delivery of the same subscription is checked against them.
+    const cursors = new Map<string, Cursor>()
 
-    // Admitted work still runs past expiry, but not once cleanup may have
-    // pruned a receipt of this id that committed meanwhile: without it, an
-    // expired external id would run again.
-    if (
-      request.external === true &&
-      now >=
-        commandTimes(request.commandId).expiresAt +
-          receiptMarginMs({
-            keepReceiptsMs: policy.keepReceiptsMs,
-            deliveryMs: policy.deliveryMs,
-            retryWindowMs: (yield* OutboxRuntime).retryWindowMs,
-          })
-    )
-      return yield* ActorError.make({
-        reason: CommandExpired.make({ commandId: request.commandId }),
-      })
+    const cursorKey = (delivery: SubscriptionDelivery) =>
+      JSON.stringify([delivery.subscription, delivery.sourceType, delivery.sourceId])
 
-    if (command.internal && !isSystem(request.caller))
-      return yield* Effect.die(new Error("Internal commands require a System caller"))
+    const outboxes: Array<OutboxReplies> = []
 
-    // Acknowledged without running the handler; a cold activation keeps the
-    // generation it acquired, as a replay does.
-    const acknowledged = (reason: Acknowledgement, writes: ReadonlyArray<Statement> = []) =>
-      ({
-        writes: cold || writes.length > 0 ? writes : undefined,
-        outcome: Outcome.cases.Acknowledged.make({ reason }),
-        generation: current,
-        state: cold ? undefined : cache.state,
-        wake: false,
-        broadcasts: [],
-        head: admitted.head,
-        committed: { after: admitted.head, events: [], commandId: request.commandId },
-        outbox: { wake: false, cancelled: false, cancelledIds: [] },
-        emitted: { emittedAtMs: 0, fed: false },
-        replayed: false,
-        written: nothingWritten,
-      }) satisfies Plan
+    for (const [index, { request, command }] of deliveries.entries()) {
+      const admitted = admissions[index]!
+      const hash = yield* hashCanonical(admitted.canonical)
 
-    // Only the relay's subscription deliveries reach a handler, and only a
-    // handler takes one, so no caller can reach it around the cursor or route.
-    if (command.handler || delivery !== undefined) {
-      const caller = request.caller
-
-      if (
-        !command.handler ||
-        delivery === undefined ||
-        !isSystem(caller) ||
-        caller.source !== "subscription" ||
-        caller.ref?.actor !== delivery.sourceType ||
-        caller.ref.id !== delivery.sourceId
-      )
-        return yield* Effect.die(
-          new Error("Subscription handlers accept only subscription deliveries"),
+      if (admitted.outcome !== null) {
+        const replay = yield* checkReceipt(request, hash, admitted as StoredReceipt).pipe(
+          Effect.result,
         )
 
-      if (caller.ref.tenant !== tenant)
-        return yield* Effect.die(new Error("A subscription delivery crosses tenants"))
+        if (Result.isSuccess(replay)) {
+          replayed = true
+          replays.add(index)
+        }
 
-      const reason = acknowledgement(delivery, admitted)
+        settled.push(replay)
+        continue
+      }
 
-      if (reason !== undefined) return acknowledged(reason)
-    }
+      // Admitted work still runs past expiry, but not once cleanup may have
+      // pruned a receipt of this id that committed meanwhile: without it, an
+      // expired external id would run again.
+      if (
+        request.external === true &&
+        now >= commandTimes(request.commandId).expiresAt + expiryMarginMs
+      ) {
+        settled.push(
+          Result.fail(
+            ActorError.make({ reason: CommandExpired.make({ commandId: request.commandId }) }),
+          ),
+        )
+        continue
+      }
 
-    if (
-      policy.createdBy !== undefined &&
-      !admitted.created &&
-      policy.createdBy !== request.command
-    ) {
-      // A routed event for a subscriber its creating command hasn't created
-      // is skipped, and the cursor keeps a stale redelivery of it from
-      // running after another command creates the subscriber.
-      if (delivery !== undefined && delivery.epoch === "0" && delivery.kind === "event")
-        return acknowledged("NotCreated", [applyCursor(delivery.position)])
+      if (command.internal && !isSystem(request.caller))
+        return yield* Effect.die(new Error("Internal commands require a System caller"))
 
-      return yield* ActorError.make({ reason: NotCreated.make({}) })
-    }
+      const { delivery } = request
 
-    // A minted actor is created only by the relay delivering the creating
-    // intent its parent's turn staged and committed: the proof binds the id to
-    // the parent's command, and the parent's outbox row, which stays until its
-    // delivery commits, proves that command committed the intent.
-    if (
-      mintable &&
-      policy.createdBy === request.command &&
-      !admitted.created &&
-      isMintedId(parent === undefined ? id : (parseChildId(id)?.local ?? "")) &&
-      (request.external === true || !(yield* committedMintIntent(request, parent)))
-    )
-      return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+      const cursor =
+        delivery === undefined ? admitted : (cursors.get(cursorKey(delivery)) ?? admitted)
 
-    const committed = readsState
-      ? new Map(stored.map(({ key, value }) => [key, decompress(value)] as const))
-      : cache.state!
+      const apply = (delivery: SubscriptionDelivery) =>
+        cursors.set(cursorKey(delivery), applied(delivery, cursor))
 
-    const business = yield* Effect.gen(function* () {
-      yield* hooks.at("beforeHandler", request)
+      // Acknowledged without running the handler or writing a receipt.
+      const acknowledge = (reason: Acknowledgement) => {
+        replayed = true
+        settled.push(Result.succeed(Outcome.cases.Acknowledged.make({ reason })))
+      }
 
-      return yield* command.run(request, [...committed], { head: admitted.head, connections })
-    }).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
+      // Only the relay's subscription deliveries reach a handler, and only a
+      // handler takes one, so no caller can reach it around the cursor or route.
+      if (command.handler || delivery !== undefined) {
+        const caller = request.caller
 
-    const result: BusinessResult = Result.isSuccess(business) ? business.success : business.failure
-    const next = new Map(committed)
-    const dirty = new Map(result.state)
-    const writes: Array<Statement> = []
+        if (
+          !command.handler ||
+          delivery === undefined ||
+          !isSystem(caller) ||
+          caller.source !== "subscription" ||
+          caller.ref?.actor !== delivery.sourceType ||
+          caller.ref.id !== delivery.sourceId
+        )
+          return yield* Effect.die(
+            new Error("Subscription handlers accept only subscription deliveries"),
+          )
 
-    if (statements)
-      writes.push(
-        session.control(
+        if (caller.ref.tenant !== tenant)
+          return yield* Effect.die(new Error("A subscription delivery crosses tenants"))
+
+        const reason = acknowledgement(delivery, cursor)
+
+        if (reason !== undefined) {
+          acknowledge(reason)
+          continue
+        }
+      }
+
+      if (policy.createdBy !== undefined && !created && policy.createdBy !== request.command) {
+        // A routed event for a subscriber its creating command hasn't created
+        // is skipped, and the cursor keeps a stale redelivery of it from
+        // running after another command creates the subscriber.
+        if (delivery !== undefined && delivery.epoch === "0" && delivery.kind === "event") {
+          staged.push(applyCursor(delivery))
+          apply(delivery)
+          acknowledge("NotCreated")
+          continue
+        }
+
+        settled.push(Result.fail(ActorError.make({ reason: NotCreated.make({}) })))
+        continue
+      }
+
+      // A minted actor is created only by the relay delivering the creating
+      // intent its parent's turn staged and committed: the proof binds the id to
+      // the parent's command, and the parent's outbox row, which stays until its
+      // delivery commits, proves that command committed the intent.
+      if (
+        mintable &&
+        policy.createdBy === request.command &&
+        !created &&
+        isMintedId(parent === undefined ? id : (parseChildId(id)?.local ?? "")) &&
+        (request.external === true || !(yield* committedMintIntent(request, parent)))
+      ) {
+        settled.push(
+          Result.fail(ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })),
+        )
+        continue
+      }
+
+      next ??= readsState
+        ? new Map(stored.map(({ key, value }) => [key, decompress(value)] as const))
+        : new Map(cache.state!)
+
+      const given = next
+      const head = String(BigInt(first.head) + BigInt(events))
+
+      // The first handler's savepoint went out with admission; each later
+      // one's goes out with that handler's first statement, if it has one.
+      const savepoint = `SAVEPOINT ${HANDLER_SAVEPOINT}`
+
+      if (statements && index > 0) yield* session.defer(savepoint)
+
+      const business = yield* Effect.gen(function* () {
+        yield* hooks.at("beforeHandler", request)
+
+        return yield* command.run(request, [...given], { head, connections })
+      }).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
+
+      const result: BusinessResult = Result.isSuccess(business)
+        ? business.success
+        : business.failure
+
+      // A handler that issued no statement has nothing to roll back, so its
+      // unsent savepoint is dropped. Rolling back to a savepoint keeps it, so
+      // each failed handler leaves one open until commit: a batch never holds
+      // more savepoints than its cap of commands.
+      if (statements && (index === 0 || !session.withdraw(savepoint)))
+        yield* session.defer(
           Result.isSuccess(business)
             ? `RELEASE SAVEPOINT ${HANDLER_SAVEPOINT}`
             : `ROLLBACK TO SAVEPOINT ${HANDLER_SAVEPOINT}`,
-        ),
+        )
+
+      const written = new Map(result.state)
+
+      // A complete result lists every key it keeps; any other key it was
+      // given is deleted.
+      if (result.complete)
+        for (const key of given.keys())
+          if (!written.has(key)) {
+            given.delete(key)
+            dirty.delete(key)
+            removed.add(key)
+          }
+
+      for (const [key, value] of written) {
+        given.set(key, value)
+        dirty.set(key, value)
+        removed.delete(key)
+      }
+
+      if (result.events.length > 0) {
+        const appended = yield* eventsStatement(request, routingKey, result.events)
+        staged.push(appended.statement)
+        committed.push({
+          after: head,
+          events: result.events,
+          commandId: request.commandId,
+        })
+        emitted.push(appended.stamp)
+      }
+
+      events += result.events.length
+      intents += result.outbox.intents.length
+      effects += result.outbox.effects.length
+
+      if (Outcome.guards.Success(result.outcome)) broadcasts.push(...(result.broadcasts ?? []))
+
+      // Re-arming waiting workflows reads their steps, so it runs before the
+      // commit group; only an actor with a workflow waiting on an emitted class
+      // pays for it.
+      if (yield* notifyEvents(request, routingKey, result.events, waited)) wake = true
+
+      if (
+        Outcome.guards.Success(result.outcome) &&
+        policy.createdBy === request.command &&
+        !created
+      ) {
+        created = true
+        creates = true
+      }
+
+      const outbox = yield* outboxStatements(
+        routingKey,
+        request.ref,
+        result.outbox,
+        Effect.succeed(now),
+        { slackMs: policy.executionMs },
       )
 
-    for (const [key, value] of dirty) next.set(key, value)
+      staged.push(...outbox.statements)
+      outboxes.push(outbox.replies)
+
+      // The delivery's position is applied with its receipt, declared failures included.
+      if (delivery !== undefined) {
+        apply(delivery)
+        staged.push(
+          delivery.kind === "rejected"
+            ? Effect.asVoid(sql`UPDATE actor_subscription_cursors SET active = false
+                WHERE ${cursorOf(delivery)} AND epoch = ${delivery.epoch}`)
+            : delivery.epoch === "0"
+              ? applyCursor(delivery)
+              : Effect.asVoid(sql`UPDATE actor_subscription_cursors SET applied = ${delivery.position}
+                  WHERE ${cursorOf(delivery)} AND epoch = ${delivery.epoch}`),
+        )
+      }
+
+      receipts.push({
+        routing_key: routingKey,
+        tenant_id: tenant,
+        actor_type: actor,
+        actor_id: id,
+        command_id: request.commandId,
+        command: request.command,
+        payload_hash: hash,
+        caller_key: callerKey(request.caller),
+        outcome: yield* encodeOutcome(result.outcome).pipe(Effect.orDie),
+        expires_at_ms: commandTimes(request.commandId).expiresAt,
+      })
+      yield* hooks.at("beforeCommit", request)
+      settled.push(Result.succeed(result.outcome))
+    }
+
+    // Nothing ran, nothing replays on a newly acquired generation, and no
+    // cursor moved, so there is nothing worth committing.
+    if (receipts.length === 0 && staged.length === 0 && !(cold && replayed))
+      return {
+        writes: undefined,
+        settled,
+        generation: current,
+        state: cache.state,
+        wake: false,
+        broadcasts: [],
+        head: first.head,
+        committed: [],
+        emitted: [],
+        outbox: [],
+        replays,
+        written: nothingWritten,
+      } satisfies Plan
+
+    const writes: Array<Statement> = []
 
     if (dirty.size > 0)
       writes.push(
@@ -522,86 +762,36 @@ export const executeTurn = Effect.fnUntraced(function* (
         ON CONFLICT (routing_key, tenant_id, actor_type, actor_id, key) DO UPDATE SET value = EXCLUDED.value`),
       )
 
-    if (result.complete) {
-      const removed = [...committed.keys()].filter((key) => !dirty.has(key))
+    if (removed.size > 0)
+      writes.push(
+        Effect.asVoid(
+          sql`DELETE FROM actor_state WHERE ${actorRow} AND key IN ${sql.in([...removed])}`,
+        ),
+      )
 
-      for (const key of removed) next.delete(key)
-
-      if (removed.length > 0)
-        writes.push(
-          Effect.asVoid(
-            sql`DELETE FROM actor_state WHERE ${actorRow} AND key IN ${sql.in(removed)}`,
-          ),
-        )
-    }
-
-    const events =
-      result.events.length > 0
-        ? yield* eventsStatement(request, routingKey, result.events)
-        : { statement: undefined, stamp: { emittedAtMs: 0, fed: false } }
-
-    if (events.statement !== undefined) writes.push(events.statement)
-
-    // Re-arming waiting workflows reads their steps, so it runs before the
-    // commit group; only an actor with a workflow waiting on an emitted class
-    // pays for it.
-    const notified = yield* notifyEvents(request, routingKey, result.events, waited)
-
-    const creates =
-      Outcome.guards.Success(result.outcome) &&
-      policy.createdBy === request.command &&
-      !admitted.created
+    writes.push(...staged)
 
     if (creates)
       writes.push(Effect.asVoid(sql`UPDATE actor_generations SET created = true WHERE ${actorRow}`))
 
-    const outbox = yield* outboxStatements(
-      routingKey,
-      request.ref,
-      result.outbox,
-      Effect.succeed(now),
-      { slackMs: policy.executionMs },
-    )
+    if (receipts.length > 0)
+      writes.push(Effect.asVoid(sql`INSERT INTO actor_receipts ${sql.insert(receipts)}`))
 
-    writes.push(...outbox.statements, ...(yield* ticks))
-
-    // The delivery's position is applied with its receipt, declared failures included.
-    if (delivery !== undefined)
-      writes.push(
-        delivery.kind === "rejected"
-          ? Effect.asVoid(sql`UPDATE actor_subscription_cursors SET active = false
-              WHERE ${cursorRow!} AND epoch = ${delivery.epoch}`)
-          : delivery.epoch === "0"
-            ? applyCursor(delivery.position)
-            : Effect.asVoid(sql`UPDATE actor_subscription_cursors SET applied = ${delivery.position}
-                WHERE ${cursorRow!} AND epoch = ${delivery.epoch}`),
-      )
-
-    const encoded = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
-    writes.push(
-      Effect.asVoid(sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
-        VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${request.commandId}, ${request.command}, ${hash}, ${callerKey(request.caller)}, ${encoded}, ${commandTimes(request.commandId).expiresAt})`),
-    )
-    yield* hooks.at("beforeCommit", request)
+    writes.push(...(yield* ticks))
 
     return {
       writes,
-      outcome: result.outcome,
+      settled,
       generation: current,
       state: next,
-      wake: notified,
-      broadcasts: Outcome.guards.Success(result.outcome) ? (result.broadcasts ?? []) : [],
-      head: String(BigInt(admitted.head) + BigInt(result.events.length)),
-      committed: { after: admitted.head, events: result.events, commandId: request.commandId },
-      outbox: outbox.replies,
-      emitted: events.stamp,
-      replayed: false,
-      written: {
-        receipts: 1,
-        events: result.events.length,
-        intents: result.outbox.intents.length,
-        effects: result.outbox.effects.length,
-      },
+      wake,
+      broadcasts,
+      head: String(BigInt(first.head) + BigInt(events)),
+      committed,
+      emitted,
+      outbox: outboxes,
+      replays,
+      written: { receipts: receipts.length, events, intents, effects },
     } satisfies Plan
   })
 
@@ -612,8 +802,10 @@ export const executeTurn = Effect.fnUntraced(function* (
     : sql
         .withTransaction(
           Effect.gen(function* () {
+            const control = (text: string) => Effect.asVoid(sql.unsafe(text))
+
             const plan = yield* turn(
-              { send: sequential, control: (text) => Effect.asVoid(sql.unsafe(text)) },
+              { send: sequential, control, defer: control, withdraw: () => false },
               [],
             )
 
@@ -627,6 +819,12 @@ export const executeTurn = Effect.fnUntraced(function* (
           Effect.catchIf(
             (error) => error instanceof RolledBack,
             (rolled) => Effect.succeed(rolled.plan),
+          ),
+          Effect.flatMap((plan) =>
+            Effect.map(sql.unsafe<{ version: string }>(COMMIT_VERSION), (rows) => ({
+              ...plan,
+              version: rows[0]!.version,
+            })),
           ),
         )
 
@@ -645,38 +843,51 @@ export const executeTurn = Effect.fnUntraced(function* (
     ),
   )
 
-  cache.generation = done.generation
-  cache.state = done.state
+  // A rolled-back batch changed nothing, so the cache stays as it was.
+  if (done.writes !== undefined) {
+    cache.generation = done.generation
+    cache.state = done.state
+  }
 
-  if (done.wake || done.outbox.wake || done.emitted.fed) yield* (yield* OutboxRuntime).wake
+  if (
+    done.wake ||
+    done.outbox.some((replies) => replies.wake) ||
+    done.emitted.some((stamp) => stamp.fed)
+  )
+    yield* (yield* OutboxRuntime).wake
 
-  if (done.outbox.cancelled) yield* (yield* OutboxRuntime).cancelled
+  if (done.outbox.some((replies) => replies.cancelled)) yield* (yield* OutboxRuntime).cancelled
 
   return {
-    outcome: done.outcome,
+    settled: done.settled,
     broadcasts: done.broadcasts,
     head: done.head,
-    committed: {
-      ...done.committed,
-      emittedAtMs: done.emitted.emittedAtMs,
-    } satisfies CommittedEvents,
-    /** Started effects this turn cancelled. */
-    cancelledEffects: done.outbox.cancelledIds,
+    committed: done.committed.map((entry, index): CommittedEvents => ({
+      ...entry,
+      emittedAtMs: done.emitted[index]!.emittedAtMs,
+    })),
+    /** Started effects the batch's commands cancelled. */
+    cancelledEffects: done.outbox.flatMap((replies) => replies.cancelledIds),
     generation: done.generation,
-    replayed: done.replayed,
+    replays: done.replays,
     /** A plan without writes rolled back, so it added nothing. */
     written: done.writes === undefined ? nothingWritten : done.written,
+    /** The commit version each caller's later queries wait for. */
+    version: done.version,
   }
 })
 
 /**
- * Runs a turn on a leased Postgres session: the admission group opens with
+ * Runs a batch on a leased Postgres session: the admission group opens with
  * `BEGIN`, and the commit group ends with `COMMIT`, whose command tag must be
  * `COMMIT`, since Postgres answers `COMMIT` in an aborted transaction with
  * `ROLLBACK`. Any other exit rolls back, and a session whose transaction state
- * is unknown never goes back to the pool: an interrupted turn cancels its
+ * is unknown never goes back to the pool: an interrupted batch cancels its
  * backend's statement and discards the session, so an unsent `COMMIT` rolls
  * back with it and one already sent resolves through the receipt on retry.
+ *
+ * Deferred statements go out in the same flight as the next statement a
+ * handler sends, or at the head of the commit group.
  */
 const pipelined = <E, R>(
   turns: TurnConnections["Service"],
@@ -689,6 +900,7 @@ const pipelined = <E, R>(
       const connection = yield* turns.lease
       yield* record(Metrics.poolWait, {}, (yield* Clock.currentTimeMillis) - leasing)
       let open = false
+      const deferred: Array<string> = []
 
       const control = (text: string) => connection.query(text, [], true)
 
@@ -697,6 +909,22 @@ const pipelined = <E, R>(
           open = false
 
           return result.command
+        })
+
+      const flush = () => deferred.splice(0).map((text) => Effect.asVoid(control(text)))
+
+      const send: Send = <A>(statement: Effect.Effect<A, SqlError.SqlError>) =>
+        Effect.suspend(() => {
+          if (deferred.length === 0) return statement
+
+          let reply: { readonly value: A } | undefined
+
+          return pipeline([
+            ...flush(),
+            Effect.map(statement, (value) => {
+              reply = { value }
+            }),
+          ]).pipe(Effect.map(() => reply!.value))
         })
 
       let tag: string | undefined
@@ -708,16 +936,32 @@ const pipelined = <E, R>(
         const begin = Effect.asVoid(control("BEGIN"))
 
         const decided = yield* turn(
-          { send: pipeline, control: (text) => Effect.asVoid(control(text)) },
+          {
+            send: pipeline,
+            control: (text) => Effect.asVoid(control(text)),
+            defer: (text) =>
+              Effect.sync(() => {
+                deferred.push(text)
+              }),
+            withdraw: (text) => deferred.at(-1) === text && deferred.pop() !== undefined,
+          },
           [begin],
         )
 
         const ending = decided.writes === undefined ? "ROLLBACK" : "COMMIT"
 
+        let version = ""
+
+        // The version is read on this session after the transaction ends, in
+        // the same flight, so it covers the batch's commit record and any
+        // receipt it replayed.
         const group = pipeline([
-          ...(decided.writes ?? []),
+          ...(decided.writes === undefined ? [] : [...flush(), ...decided.writes]),
           Effect.map(end(ending), (command) => {
             tag = command
+          }),
+          Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
+            version = (result.rows[0] as { version: string }).version
           }),
         ])
 
@@ -726,9 +970,9 @@ const pipelined = <E, R>(
         if (ending === "COMMIT" && tag !== "COMMIT")
           return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
 
-        return decided
+        return { ...decided, version }
       }).pipe(
-        Effect.provideService(sql.transactionService, [asSqlConnection(connection), 0]),
+        Effect.provideService(sql.transactionService, [asSqlConnection({ connection, send }), 0]),
         Effect.onExit((exit) => {
           if (Exit.isSuccess(exit) || !open) return Effect.void
 

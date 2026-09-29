@@ -1,13 +1,16 @@
 import { DefectRecords, type DefectRecord } from "@durable-actors/core/runtime"
 import { DateTime, Duration, Effect, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { RunnerUnreachable, TOKEN_ENV } from "../operator/request.ts"
 import { UsageError } from "../workflows/check.ts"
 
 export const USAGE =
-  "Usage: durable defects list --url <runner> [--url <runner> ...] [--actor <type>] [--since <duration>] [--limit <n>] [--token-env <name>] [--json]"
+  "Usage: durable defects list --url <runner> [--url <runner> ...] [--tenant <tenant>] [--actor <type>] [--since <duration>] [--limit <n>] [--token-env <name>] [--json]"
 
 export interface ListOptions {
   readonly urls: ReadonlyArray<string>
+  /** A tenant, or `*` for every tenant the operator's grant covers. */
+  readonly tenant: string
   readonly actor: string | undefined
   readonly sinceMs: number | undefined
   readonly limit: number | undefined
@@ -48,7 +51,8 @@ export const parseList = ({
     let actor: string | undefined
     let sinceMs: number | undefined
     let limit: number | undefined
-    let tokenEnv = "DURABLE_TOKEN"
+    let tokenEnv = TOKEN_ENV
+    let tenant = "*"
     let json = false
 
     for (let index = 0; index < args.length; index++) {
@@ -59,7 +63,7 @@ export const parseList = ({
         continue
       }
 
-      if (!["--url", "--actor", "--since", "--limit", "--token-env"].includes(arg))
+      if (!["--url", "--tenant", "--actor", "--since", "--limit", "--token-env"].includes(arg))
         return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
 
       const value = args[++index]
@@ -67,6 +71,7 @@ export const parseList = ({
       if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
 
       if (arg === "--url") urls.push(value.replace(/\/+$/, ""))
+      else if (arg === "--tenant") tenant = value
       else if (arg === "--actor") actor = value
       else if (arg === "--token-env") tokenEnv = value
       else if (arg === "--limit") {
@@ -88,16 +93,11 @@ export const parseList = ({
 
     if (urls.length === 0) return yield* UsageError.make({ message: "--url is required" })
 
-    return { urls, actor, sinceMs, limit, tokenEnv, json } satisfies ListOptions
+    return { urls, tenant, actor, sinceMs, limit, tokenEnv, json } satisfies ListOptions
   })
 
-export class RunnerUnreachable extends Schema.TaggedError<RunnerUnreachable>()(
-  "RunnerUnreachable",
-  { url: Schema.String, message: Schema.String },
-) {}
-
 /**
- * Reads each runner's `GET /defects` and merges them oldest first. Each
+ * Reads each runner's `GET /operator/defects` and merges them oldest first. Each
  * runner keeps only its own recent defect spans, so name every runner of the
  * deployment; older history is in the telemetry backend.
  */
@@ -108,7 +108,7 @@ export const listDefects = Effect.fnUntraced(function* (
   const client = yield* HttpClient.HttpClient
 
   const read = (url: string) => {
-    const query = new URLSearchParams()
+    const query = new URLSearchParams({ tenant: options.tenant })
 
     if (options.actor !== undefined) query.set("actor", options.actor)
 
@@ -116,7 +116,7 @@ export const listDefects = Effect.fnUntraced(function* (
 
     if (options.limit !== undefined) query.set("limit", String(options.limit))
 
-    const request = HttpClientRequest.get(`${url}/defects?${query}`).pipe(
+    const request = HttpClientRequest.get(`${url}/operator/defects?${query}`).pipe(
       token === undefined ? (same) => same : HttpClientRequest.bearerToken(token),
     )
 
