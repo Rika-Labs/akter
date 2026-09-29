@@ -33,7 +33,10 @@ export const revocationPush = Effect.fnUntraced(function* (
 
     if (token === undefined) return yield* Effect.logWarning("No edge key can sign a refresh push")
 
-    const request = HttpClientRequest.post(`${runner.url}${runner.basePath}${KEY_REFRESH_PATH}`, {
+    // `Actor.serve` ignores trailing slashes on its base path, so `/` is the root.
+    const basePath = runner.basePath.replace(/\/+$/, "")
+
+    const request = HttpClientRequest.post(`${runner.url}${basePath}${KEY_REFRESH_PATH}`, {
       headers: { [ASSERTION_HEADER]: token },
     })
 

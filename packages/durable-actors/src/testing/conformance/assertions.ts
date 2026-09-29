@@ -983,7 +983,7 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             }),
           })
 
-          yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api" })
+          yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api/" })
           // A registered runner that refuses connections: the edge must try the next one.
           yield* edge.addRunner({ region: REGION, url: "http://127.0.0.1:9", basePath: "/api" })
 
@@ -1066,7 +1066,8 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             }),
           )
 
-          yield* edge.addRunner({ region: REGION, url: runner.url })
+          // `/` is the root base path, as `Actor.serve` reads it.
+          yield* edge.addRunner({ region: REGION, url: runner.url, basePath: "/" })
 
           const send = yield* clientFor(edge.url)
           const tenant = yield* tenantOf
