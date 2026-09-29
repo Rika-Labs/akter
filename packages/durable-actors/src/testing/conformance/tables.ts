@@ -509,6 +509,7 @@ const defect = (exit: Exit.Exit<unknown, unknown>) =>
 
 const rowsOf = (count: number) => ({ rows: { conformance_notes: count } })
 
+/** Owned-table cases: rows scope by tenant and actor for every operation, and constraint violations are defects without a receipt. */
 export const tablesConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "scopes owned rows by tenant and actor for every supported operation",

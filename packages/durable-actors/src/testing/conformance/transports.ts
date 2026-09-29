@@ -716,6 +716,7 @@ const greet = (ws: WireSocket, authorization: string, name = "alice") =>
     return open
   })
 
+/** Transport cases: WebSocket handshake, framing, origin and socket limits, and delivery of member frames in both directions. */
 export const transportsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "serves a connection over WebSocket: hello, open at its baseline, then member frames both ways with event cursors",

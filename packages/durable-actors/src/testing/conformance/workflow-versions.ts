@@ -326,6 +326,7 @@ const rollingDeploy = (options: {
     ),
 })
 
+/** Workflow-version cases: executions suspend on runners that lack their steps or marker range and resume on a compatible one, and startup refuses retention below the retry window. */
 export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   rollingDeploy({
     name: "workflow versions: suspends an execution with an unregistered step on an older runner and resumes it on a compatible runner (rolling deploy)",

@@ -673,6 +673,7 @@ const run = <A, E>(
     }),
   )
 
+/** Subscription cases: routing, start positions, delivery, and failure handling of event subscriptions. */
 export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "routes each event to the id route returns",
@@ -2310,6 +2311,7 @@ const withCluster = <A, E>(
 const on = <A, E, R>(runner: number, effect: Effect.Effect<A, E, R>) =>
   ActorCluster.use((cluster) => cluster.on(runner)(effect))
 
+/** Multi-runner subscription cases: subscribers wake across runners and one source's events apply in cursor order under redelivery. */
 export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "wakes a subscriber parked on another runner and flushes the delivery's broadcast to its holder",

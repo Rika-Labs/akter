@@ -372,6 +372,7 @@ const decodeEntries = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Struct({ value: Schema.Array(Schema.String) })),
 )
 
+/** Row-level-security cases: every framework and owned table carries the tenant policy, and runners serving two tenants each see only their own rows. */
 export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "row-level security on: three runners serve two tenants' turns, timers, effects, and reads, each seeing only its own",

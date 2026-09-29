@@ -284,6 +284,7 @@ const unbroken = (log: ReadonlyArray<{ readonly by: string }>) =>
 const contiguous = (log: ReadonlyArray<{ readonly cursor: string }>) =>
   log.every(({ cursor }, index) => cursor === String(index + 1))
 
+/** Singleton cases: one activation and one background loop across three runners, and takeover by one survivor after a kill. */
 export const singletonConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps one singleton activation and one background loop across three runners",

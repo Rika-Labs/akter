@@ -683,6 +683,7 @@ const engineConformance: ReadonlyArray<ConformanceCase> = [
   },
 ]
 
+/** Workflow cases: stable execution ids, once-recorded activities, interrupts, and recovery. */
 export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
   ...engineConformance,
   {

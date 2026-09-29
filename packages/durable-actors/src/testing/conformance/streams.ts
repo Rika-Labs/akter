@@ -156,6 +156,7 @@ const ownedBy = (runner: number, prefix: string) =>
     return yield* Effect.die(new Error(`Runner ${runner} owns no probed actor`))
   })
 
+/** Stream cases: follows from a cursor have no gap or repeat, refuse unknown cursors, and complete when the handler's stream ends. */
 export const streamsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "follows events from a cursor with no gap or repeat between replay and live",

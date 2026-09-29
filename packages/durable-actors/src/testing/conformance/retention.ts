@@ -233,6 +233,7 @@ const eventSequence = Effect.fnUntraced(function* (id: string) {
   return row?.sequence
 }, Effect.orDie)
 
+/** Retention cases: pruning of receipts and events keeps expired ids rejected, outbox dedup intact, and sequences continuous. */
 export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "prunes receipts past keepReceipts and still rejects the expired id after pruning and restart",

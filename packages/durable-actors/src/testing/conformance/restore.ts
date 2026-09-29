@@ -173,6 +173,7 @@ const accountVersion = (fixture: RestoreFixture, version: "v1" | "v2") =>
 
 const RETRY_WINDOW_MS = 60_000
 
+/** Restore cases: a backup neither reopens expired command ids nor drops pending intents and effects. */
 export const restoreConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "restores a backup without reopening expired command ids or dropping pending intents",
