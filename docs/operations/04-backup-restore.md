@@ -23,7 +23,11 @@ Record with every backup: the snapshot time, the latest id in `actor_migrations`
 
 1. **Stop every runner process** of the deployment, and stop ingress. Draining one runner is not enough: a runner that keeps running across the restore holds activations whose generation the restored database can issue again, and it would write its cached, newer state over the restored rows. Pause anything else that writes the database.
 2. **Restore one snapshot** into the deployment's database (or a new database the runners will use), including `actor_blobs`, and reconcile any application-owned external resources.
-3. **Check the clock.** Command ids carry their own issue and expiry times, checked against the database clock, so the restored database's clock must not be behind the newest id it holds. Run:
+3. **Check the clock.** Command ids carry their own issue and expiry times, checked against the database clock, so the restored database's clock must not be behind any id that could still be retried. Two checks, both required:
+   - **Against the backup record.** `now()` on the restored database must be later than the snapshot time recorded with the backup. A receipt is never pruned before its id expires, so every id whose receipt was pruned before the snapshot had expired by the snapshot time, and stays expired while the clock is past it. This check does not depend on what the snapshot retained.
+   - **Against a trusted time source.** The database host's clock must agree with NTP or another reference within the offset you accept. The database cannot prove this itself: ids admitted after the snapshot are gone from it, and only real time says whether they have expired.
+
+   As a cross-check on the data, this query reports the newest issue time among the ids the snapshot still holds receipts for:
 
    ```sql
    SELECT to_timestamp((max(expires_at_ms) - (SELECT retry_window_ms FROM actor_deployment)) / 1000.0)
@@ -32,7 +36,7 @@ Record with every backup: the snapshot time, the latest id in `actor_migrations`
    FROM durable.receipts;
    ```
 
-   `newest_issued` is at most one `commandTimeout` later than a time this database's clock has already reached, because a receipt is written only once its id's intent or timer is due. If `database_now` is earlier than `newest_issued` by more than the largest `commandTimeout` of your actor types, the clock is behind: fix it before starting any runner, because a clock behind the ids makes expired ids admissible again.
+   `newest_issued` is at most one `commandTimeout` later than a time this database's clock had already reached, because a receipt is written only once its id's intent or timer is due; it is `NULL` when no receipt is retained, which proves nothing. If `database_now` is earlier than `newest_issued` by more than the largest `commandTimeout` of your actor types, the clock is behind. If any check fails, fix the clock before starting any runner, because a clock behind the ids makes expired ids admissible again.
 
 4. **Deploy code that supports the restored schema.** A snapshot older than the code migrates forward at boot. Code older than the snapshot's latest `actor_migrations` id starts without migrating, and is safe only if every newer migration was an expand ([migrations](02-migrations.md#expand-and-contract)); deploy the release that took the backup or a later one. Startup refuses a snapshot that applied a higher id while lacking a lower id the code registers. The code's retry window and placements must match the restored `actor_deployment` and `actor_placements`.
 5. **List what the provider may have seen beyond the snapshot.** The restored database forgets every turn and every effect attempt after the snapshot:
@@ -71,7 +75,7 @@ Not rehearsed: `pg_restore` of an online `pg_dump` and point-in-time recovery, w
 ## Limits
 
 - **Every runner stops first.** Nothing detects a runner that survived a restore; step 1 is required.
-- **No clock rollback.** Expiry is read from the database clock. The check in step 3 catches a clock behind the restored data at start; a clock stepped back while runners serve is not detected.
+- **No clock rollback.** Expiry is read from the database clock. The checks in step 3 catch a clock behind the backup or real time at start; a clock stepped back while runners serve is not detected.
 - **Whole database only.** There is no tenant-only export, import, or restore. Any future tenant-only procedure must preserve every related row within the deployment database.
 - **PGlite.** A copy of a stopped `dataDir` is the only backup method; see [below](#embedded-pglite).
 

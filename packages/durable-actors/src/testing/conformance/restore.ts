@@ -1,7 +1,6 @@
 import { Effect, Layer, Schedule, Schema, type Scope } from "effect"
 import { Actor, Actors, Intent, User } from "../../index.ts"
 import { CommandExpired } from "../../errors/actor.ts"
-import { databaseTime } from "../../runtime/turn/admission.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type {
@@ -466,10 +465,11 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
                 ),
               )
 
-            // An id that expires eight seconds from now under the deployment's window.
-            const now = yield* on(0, databaseTime.pipe(Effect.orDie))
-            const expiresAt = now + 8_000
-            const commandId = `v1.${expiresAt - RETRY_WINDOW_MS}.${expiresAt}.3b0f5a3c-8d2e-4b71-9c6a-1e2f3a4b5c01`
+            // Minted under the deployment's full window, so no restart below can outlast it.
+            const commandId = yield* on(
+              0,
+              Actors.use((actors) => actors.mintCommandId),
+            )
 
             expect(yield* add(0, 5, commandId)).toBe(5)
             expect(fixture.restore.versions.v1 - v1).toBe(1)
@@ -505,10 +505,13 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               }),
             )
 
-            // Past its expiry the id is refused by every runner, before and
-            // after a sweep prunes its receipt.
-            const remaining = expiresAt - (yield* on(0, databaseTime.pipe(Effect.orDie)))
-            yield* Effect.sleep(`${Math.max(0, remaining) + 100} millis`)
+            // Past its expiry, by each runner's clock, the id is refused by every
+            // runner, before and after a sweep prunes its receipt.
+            for (const runner of [0, 1])
+              yield* on(
+                runner,
+                ActorTest.use((test) => test.advance("2 minutes")),
+              )
             expect((yield* add(0, 5, commandId).pipe(Effect.flip)).reason).toBeInstanceOf(
               CommandExpired,
             )
