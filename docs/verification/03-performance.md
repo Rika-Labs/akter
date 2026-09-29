@@ -538,6 +538,27 @@ The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault
 - **A woken actor's tick write is one statement.** Its first turn re-inserts its pending tick, and the unique index rejects it: 121,158 calls for about 122,000 deliveries in the one-runner round, at 0.066 ms. Before `094b4a3`, the release of pre-reservation `$cron:` intents ran as a second statement on each of those turns (96,439 calls in a round at `bc723f5`). It now runs only when such an intent holds a key.
 - **The claim mean is read from `statements`.** At `094b4a3`, the scenario's `relayClaimMeanMs` is -1 because it searched for `SKIP LOCKED`, which falls past the 160 characters of query text the harness stores. The claim mean above is read from the listed `WITH intent_candidates …` statement, and the scenario now matches that prefix.
 
+### Content blobs (M4.13, #222)
+
+The `content-blobs` scenario ([`6b35562-m4.13-content-blobs`](../../benchmarks/results/2026-09-29-6b35562-m4.13-content-blobs-postgres.json), full profile, Postgres 18.6 with `pg_stat_statements`, one orb VM shared with the runtime) measures the built feature. Latency is from one run; statements per operation are the stable number.
+
+| Case                                              | Rate      | p50 / p99 ms | Stmts/op |
+| ------------------------------------------------- | --------- | ------------ | -------- |
+| dedup-skewed (2,000 uploads of 64 KiB, 200 items) | 1,766/s   | 4.1 / 13.7   | 1.11     |
+| upload-4k                                         | 840/s     | 1.1 / 2.3    | 2        |
+| upload-1024k                                      | 81.7/s    | 11.8 / 23.5  | 2.03     |
+| upload-8192k                                      | 12.5/s    | 78.2 / 97.4  | 9.06     |
+| attach (warm turn)                                | 275.9/s   | 3.5 / 8.6    | 7.01     |
+| read-4k (`get` in a query)                        | 1,736.8/s | 0.53 / 1.06  | 3        |
+| read-1024k                                        | 279.8/s   | 2.8 / 16.6   | 3        |
+| sweep-1000 (1,000 candidates, half referenced)    | one sweep | 17.8         | 11       |
+
+- **Deduplication.** The skewed set uploaded 131,072,000 bytes and stored 13,107,200: a ratio of 10, one copy per distinct item. A duplicate upload costs the upsert alone (1.11 statements per upload on average), so repeated uploads of popular content are cheaper than new ones.
+- **Upload cost** is one upsert plus one statement per 1 MiB chunk (8 MiB: 9 statements), in one transaction on the tenant's shard.
+- **Attach** is a warm turn whose content statement replaces a state write: 7.01 statements, the same as `hot-actor`.
+- **Reads** are the reference on the actor's shard and one statement for every chunk on the tenant's, plus the query's own statement.
+- **Sweep:** 1,000 candidates, half of them referenced, took 18 ms and 11 statements: the tenant list, the turn bound, and per batch of 500 a candidate read, a reference scan, and one delete of content and chunks.
+
 ### Failure drills (T7)
 
 `TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `fix/219-drill-start-gate` (`main` at `aa8af52` plus the fix); each run prints one `DRILL` line. Postgres 18.6 installed in an Amp orb, Bun 1.4.2, one machine shared by the five runner processes and Postgres. Workload: three processes that start their operations together once all three are ready (the first holds at its 60th until the kill), then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.
