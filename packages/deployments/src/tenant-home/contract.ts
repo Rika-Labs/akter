@@ -2,8 +2,13 @@ import { Actor } from "@durable-actors/core"
 import { bigint, pgTable, primaryKey, text } from "drizzle-orm/pg-core"
 import { Schema } from "effect"
 
+/**
+ * A deployment id: lowercase letters, digits and hyphens, starting with a
+ * letter or digit, up to 63 characters.
+ */
 export const DeploymentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/))
 
+/** A region name, in the same form as a deployment id. */
 export const Region = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/))
 
 /** A hosted tenant, with the limits the served protocol puts on every tenant. */
@@ -14,6 +19,7 @@ export const TenantHomeKey = Schema.String.check(
   Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}\/[A-Za-z0-9._:-]{1,128}$/),
 )
 
+/** The `TenantHome` key `<deployment>/<tenant>` for a home. */
 export const tenantHomeKey = (home: { readonly deployment: string; readonly tenant: string }) =>
   `${home.deployment}/${home.tenant}`
 
@@ -36,6 +42,7 @@ export const tenantDirectory = Actor.table(
   ),
 )
 
+/** The deployment named by the tenant's key does not exist. */
 export class UnknownDeployment extends Schema.TaggedError<UnknownDeployment>()(
   "UnknownDeployment",
   { deployment: Schema.String },
@@ -53,6 +60,7 @@ export class TenantAlreadyHomed extends Schema.TaggedError<TenantAlreadyHomed>()
   { region: Schema.String },
 ) {}
 
+/** A tenant's home: its deployment, region and whether it is active or moving. */
 export const Home = Schema.Struct({
   deployment: Schema.String,
   tenant: Schema.String,
@@ -67,6 +75,7 @@ export const Create = Actor.command("Create", {
   errors: [UnknownDeployment, NotPrimaryRegion, TenantAlreadyHomed],
 })
 
+/** The tenant's home, or undefined when none is recorded. */
 export const Lookup = Actor.query("Lookup", { output: Schema.UndefinedOr(Home) })
 
 /** Where one hosted tenant lives, keyed by `<deployment>/<tenant>`. */

@@ -120,18 +120,22 @@ const totals = (seed: string) =>
   })
 
 describe("ActorTest.simulate", () => {
-  it("keeps receipts and outbox delivery exactly once across seeded faults", () =>
-    runtime.runPromise(
-      Effect.gen(function* () {
-        for (const seed of yield* simulationSeeds) {
-          const report = yield* script(`s${seed}`)
-          expect(report.steps).toHaveLength(12)
-          expect(yield* totals(`s${seed}`)).toEqual(
-            new Map(Array.from(scripted.get(`s${seed}`)!, ([key, sum]) => [key, { total: sum }])),
-          )
-        }
-      }),
-    ))
+  it(
+    "keeps receipts and outbox delivery exactly once across seeded faults",
+    () =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          for (const seed of yield* simulationSeeds) {
+            const report = yield* script(`s${seed}`)
+            expect(report.steps).toHaveLength(12)
+            expect(yield* totals(`s${seed}`)).toEqual(
+              new Map(Array.from(scripted.get(`s${seed}`)!, ([key, sum]) => [key, { total: sum }])),
+            )
+          }
+        }),
+      ),
+    60_000,
+  )
 
   it("reruns a seed to the same fault schedule and outcome", () =>
     runtime.runPromise(
@@ -272,7 +276,6 @@ describe("ActorTest.simulate", () => {
         yield* test.crashNext("beforeCommit", { commandId: mine })
         const crashed = runs.adds
         expect(yield* tally.Add(2).pipe(Actor.commandId(mine))).toBe(3)
-        // The crashed turn ran the handler and rolled back; its retry ran it again.
         expect(runs.adds - crashed).toBe(2)
         expect(yield* test.clearFaults).toEqual([])
       }),

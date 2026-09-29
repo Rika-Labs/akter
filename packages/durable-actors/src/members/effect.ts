@@ -34,7 +34,7 @@ export type ProgressEffect = AnyEffect & { readonly progress: ValueSchema }
 export type ProgressOf<E extends ProgressEffect> = E["progress"]["Type"]
 
 /**
- * Declares an effect class. `input` holds the instance fields; `success` is
+ * `Actor.effect`: declares an effect class. `input` holds the instance fields; `success` is
  * the schema of the executor's return value and defaults to `void`.
  * `progress`, when declared, is the schema of the transient frames its
  * executor may report before the result commits; they are never state.
@@ -90,6 +90,7 @@ export const DeadLetter = <E extends AnyEffect>(effect: E) =>
     ambiguous: Schema.Boolean,
   })
 
+/** The decoded input of an `onDeadLetter` command for effect class `E`. */
 export type DeadLetter<E extends AnyEffect> = ReturnType<typeof DeadLetter<E>>["Type"]
 
 /**
@@ -111,6 +112,7 @@ export const Cancelled = <E extends AnyEffect>(effect: E) =>
     ambiguous: Schema.Boolean,
   })
 
+/** The decoded input of an `onCancelled` command for effect class `E`. */
 export type Cancelled<E extends AnyEffect> = ReturnType<typeof Cancelled<E>>["Type"]
 
 /** A cancelled effect's outcome before its route decodes `value`. */
@@ -165,6 +167,7 @@ export interface EffectPolicy<E extends AnyEffect, Command extends AnyCommand> {
   readonly concurrency?: { readonly perActor: number }
 }
 
+/** Per-effect policies keyed by effect tag; see `EffectPolicy`. */
 export type EffectPolicies<Effects extends AnyEffect, Command extends AnyCommand> = {
   readonly [Tag in Effects["tag"]]?: EffectPolicy<Extract<Effects, { readonly tag: Tag }>, Command>
 }

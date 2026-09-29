@@ -24,7 +24,7 @@ const settings: RelaySettings = {
   retryWindowMs: 86_400_000,
 }
 
-// Every row is due at epoch 0 and belongs to one sender, so one bucket holds the backlog.
+/** Seeds one sender with `ROWS` intents due at epoch 0, so a single bucket holds the whole backlog. */
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
   yield* migrate
@@ -45,7 +45,7 @@ const pending = Effect.gen(function* () {
   return (yield* sql<{ count: number }>`SELECT count(*)::int AS count FROM actor_outbox`)[0]!.count
 })
 
-// Rows still due now; a claimed row is not due until its lease ends.
+/** Rows due now; a claimed row is not due until its lease ends. */
 const due = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
@@ -53,8 +53,11 @@ const due = Effect.gen(function* () {
     WHERE due_at_ms <= (extract(epoch FROM clock_timestamp()) * 1000)::bigint`)[0]!.count
 })
 
-// The poll timeout runs on TestClock and never fires, so every claim after the first comes from
-// a freed delivery slot while the backlog lasts.
+/**
+ * Runs the relay over the seeded backlog until deliveries stop, in real time.
+ * The poll timeout runs on `TestClock` and never fires, so every claim after
+ * the first comes from a freed delivery slot while the backlog lasts.
+ */
 const runRelay = () =>
   Effect.gen(function* () {
     yield* seed
@@ -74,7 +77,6 @@ const runRelay = () =>
     const fiber = yield* relay.run.pipe(Effect.forkChild)
     yield* relay.wake
 
-    // Lets the relay run until it settles or starts waiting; real time, not the TestClock.
     let previous = -1
 
     while (delivered.length !== previous) {
@@ -128,8 +130,6 @@ describe("outbox relay loop", () => {
   it("keeps rows whose settle died out of claims until their lease ends", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        // Every row is delivered once and dies before its delete; none is due again, so none
-        // is redelivered and the rows behind them are still reached.
         expect(yield* measureRelay({ failDelete: true })).toEqual({
           delivered: ROWS,
           distinct: ROWS,

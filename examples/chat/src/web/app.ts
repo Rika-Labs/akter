@@ -1,6 +1,8 @@
-// The chat room in a browser, over the Promise client: messages from the room's
-// event feed, posts as commands, reactions as an optimistic reducer, and typing
-// as Presence connection frames.
+/**
+ * The chat room in a browser, over the Promise client: messages from the room's
+ * event feed, posts as commands, reactions as an optimistic reducer, and typing
+ * as Presence connection frames.
+ */
 import { ActorError, type Failure, NotCreated } from "@durable-actors/core/client"
 import { Effect } from "effect"
 import { MessagePosted, Room, RoomClosed, RoomId } from "../room/contract.ts"
@@ -28,7 +30,10 @@ element<HTMLElement>("room").textContent = roomId
 
 element<HTMLElement>("user").textContent = user
 
-// Every request goes through here, so the page can show how often its feed opened.
+/**
+ * Every request goes through here, so the page can show how often its feed
+ * opened.
+ */
 let feedsOpened = 0
 
 const rooms = Room.client({
@@ -55,7 +60,10 @@ const render = (entry: { readonly cursor: string; readonly event: MessagePosted 
   messages.append(item)
 }
 
-// A feed never creates its room: until the first post does, the page waits and asks again.
+/**
+ * A feed never creates its room: until the first post does, the page waits and
+ * asks again.
+ */
 const follow = async (): Promise<void> => {
   try {
     const after =
@@ -76,7 +84,10 @@ const follow = async (): Promise<void> => {
   }
 }
 
-// The reaction count is committed state with this page's pending reactions applied.
+/**
+ * The reaction count is committed state with this page's pending reactions
+ * applied.
+ */
 const history: Array<string> = []
 
 room.state.subscribe((state) => {

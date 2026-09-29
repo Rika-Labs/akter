@@ -24,13 +24,10 @@ import type { ActorRef } from "../identity/caller.ts"
 import { Database, RunnerWiring } from "../runtime/layer.ts"
 import { ActorTest, ClusterMember, type TestOptions } from "./actor-test.ts"
 
-// Enough shards that every runner of a small cluster owns several, so actors
-// spread and a killed runner's actors move.
+/** Enough shards that every runner of a small cluster owns several, so actors spread and a killed runner's actors move. */
 const SHARDS = 32
 
-// Shorter than Cluster's defaults so a test sees runner changes within a
-// second; lock timing itself is the caller's `shardLockExpiration`. A killed
-// runner's leftover entity fibers get the termination timeout to wind down.
+/** Shorter than Cluster's defaults so a test sees runner changes within a second; lock timing is the caller's `shardLockExpiration`. */
 const TIMINGS = {
   refreshAssignmentsInterval: "250 millis",
   entityMessagePollInterval: "250 millis",
@@ -57,6 +54,9 @@ export interface ClusterOptions<ROut, E, RIn> extends TestOptions {
    */
   readonly holdersOnly?: ReadonlyArray<number>
 }
+
+/** Sessions per pool for each runner unless a cluster says otherwise; three runners hold 24 sessions at most. */
+const RUNNER_CONNECTIONS = 4
 
 export class ActorCluster extends Context.Service<
   ActorCluster,
@@ -94,8 +94,8 @@ export class ActorCluster extends Context.Service<
     /**
      * Delays every database reply to every runner, without dropping it, as a
      * partition between the database and its clients would: statements a turn
-     * sends still run, but it hears nothing back until `failover`. A
-     * COMMIT sent meanwhile is made by the database and unknown to its runner.
+     * sends still run, but it hears nothing back until `failover`. A COMMIT
+     * sent meanwhile is made by the database and unknown to its runner.
      */
     readonly holdReplies: Effect.Effect<void>
     /**
@@ -227,7 +227,6 @@ const makeNetwork = Effect.sync(() => {
       ),
   })
 
-  // A runner serves runner RPCs on its own listener and dials the others.
   const runner = (address: RunnerAddress.RunnerAddress) =>
     RunnerServer.layerWithClients.pipe(
       Layer.provide(RpcServer.layerProtocolSocketServer),
@@ -239,6 +238,12 @@ const makeNetwork = Effect.sync(() => {
   return { runner, close }
 })
 
+/**
+ * Provides an `ActorCluster` of `options.runners` real runners sharing one Postgres database, each serving runner RPCs on its own listener.
+ * The first runner migrates the database and the rest start together. Runner rows carry the cluster's tenant, so rows another cluster left in the same database are never mistaken for this one's.
+ * `kill` cuts a runner's database and runner connections at once so Postgres rolls back its open turns; a graceful exit closes its layer first so it releases its locks.
+ * Fails to build when `database` is missing or is not a Postgres URL, since PGlite has a single connection.
+ */
 export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>) =>
   Layer.effect(
     ActorCluster,
@@ -276,8 +281,6 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         SqlClient.SqlClient,
       )
 
-      // Runner rows carry the cluster's tenant, so rows another cluster left
-      // in the same database are never mistaken for this cluster's.
       const host = `runner-${tenant}`
       let incarnation = 0
       const runners: Array<Runner> = []
@@ -296,9 +299,11 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
       const hostsActors = (runner: Runner) =>
         !(options.holdersOnly ?? []).includes(runners.indexOf(runner))
 
-      // Bound to one incarnation's socket set, so a killed process that is
-      // still winding down cannot reach the database again once its runner
-      // has started as a new process.
+      /**
+       * Bound to one incarnation's socket set, so a killed process that is
+       * still winding down cannot reach the database again once its runner
+       * has started as a new process.
+       */
       const dial = (runner: Runner, incarnationSockets: Set<NetSocket>) => () => {
         const sockets = runner.sockets === incarnationSockets ? incarnationSockets : undefined
 
@@ -323,12 +328,15 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         return socket
       }
 
-      // A killed process that is still winding down stays killed when its
-      // runner starts again under a new address.
+      /**
+       * A killed process that is still winding down stays killed when its
+       * runner starts again under a new address.
+       */
       const storage =
         (runner: Runner, mine: RunnerAddress.RunnerAddress) =>
         (inner: RunnerStorage.RunnerStorage["Service"]): RunnerStorage.RunnerStorage["Service"] => {
-          const state = () => (runner.address === mine ? runner.heartbeat : "killed")
+          const state = (): Runner["heartbeat"] =>
+            runner.address === mine ? runner.heartbeat : "killed"
 
           return {
             ...inner,
@@ -347,7 +355,6 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
               Effect.suspend(() => {
                 if (state() === "running") return inner.refresh(address, shardIds)
 
-                // A paused runner believes every lock it asks about is still its own.
                 return Effect.succeed(state() === "paused" ? Array.from(shardIds) : [])
               }),
             acquire: (address, shardIds) =>
@@ -390,7 +397,10 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           options.runnerActors?.(runners.indexOf(runner)) ?? Layer.empty,
         ).pipe(
           Layer.provideMerge(
-            ActorTest.layer(options).pipe(
+            ActorTest.layer({
+              ...options,
+              maxConnections: options.maxConnections ?? RUNNER_CONNECTIONS,
+            }).pipe(
               Layer.provide([
                 Layer.succeed(ClusterMember, { tenant, connect: dial(runner, sockets) }),
                 Layer.succeed(RunnerWiring, {
@@ -417,10 +427,6 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         )
       })
 
-      // A crash cuts the runner's database and runner connections at once, so
-      // Postgres rolls back its open turns and nothing it runs afterwards can
-      // reach anyone. Its fibers then wind down in the background, where a
-      // dead process's would simply vanish.
       const stop = Effect.fnUntraced(function* (runner: Runner) {
         const { scope, sockets } = runner
 
@@ -436,8 +442,6 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           stopping.push(yield* Effect.forkDetach(Scope.close(scope, Exit.void)))
       })
 
-      // A graceful exit closes the runner's layer while its connections still
-      // work, so it releases its locks; only then is it cut off.
       const shutdown = Effect.fnUntraced(function* (runner: Runner) {
         const scope = runner.scope
 
@@ -497,7 +501,6 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
       yield* Effect.addFinalizer(() =>
         Effect.forEach(runners, stop, { discard: true }).pipe(
           Effect.andThen(Fiber.awaitAll(stopping)),
-          // Well past the entity termination timeout a killed runner winds down in.
           Effect.timeoutOrElse({
             duration: "15 seconds",
             orElse: () => Effect.die(new Error("Killed cluster runners did not wind down")),
@@ -515,7 +518,6 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           runners: undefined,
         })
 
-      // The first runner migrates the database; the rest start together.
       yield* start(runners[0]!)
       yield* Effect.forEach(runners.slice(1), start, { concurrency: "unbounded", discard: true })
       yield* ready
@@ -547,7 +549,6 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
                     const paused = runner.address
                     runner.heartbeat = "paused"
 
-                    // A handle outlives a restart; it resumes only the pause it made.
                     return {
                       resume: Effect.sync(() => {
                         if (runner.heartbeat === "paused" && runner.address === paused)

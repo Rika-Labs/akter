@@ -121,7 +121,9 @@ const isActorError = Schema.is(ActorError)
  * command's entry runner and fault; which runner owns an actor depends on
  * runner addresses, which change from run to run, and command ids are minted
  * fresh. Settling advances every runner's clock, so simulate once per
- * cluster after any runner has restarted.
+ * cluster after any runner has restarted: a runner that starts after the
+ * settling has an earlier clock than the others, and a command id minted on a
+ * runner ahead of it is in the future to it.
  */
 export const simulateCluster =
   (cluster: ActorCluster["Service"]) =>
@@ -158,9 +160,6 @@ export const simulateCluster =
 
       const clearFaults = ActorTest.use((test) => test.clearFaults)
 
-      // Settling moves every running runner's clock forward, which a runner
-      // that starts afterwards does not share, and a command id minted on the
-      // runner ahead is in the future to the runner behind.
       const clocks = (yield* eachRunner(ActorTest.use((test) => test.now))).map(
         DateTime.toEpochMillis,
       )
@@ -172,13 +171,19 @@ export const simulateCluster =
           ),
         )
 
-      // The cluster's own pool reconnects through a failover like any other.
+      /** The cluster's own pool reconnects through a failover like any other, so a read that meets one is retried. */
       const read = <A>(query: Effect.Effect<A, SqlError.SqlError>) =>
         query.pipe(
           Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 50 }),
           Effect.orDie,
         )
 
+      /**
+       * Minting a command id reads the database clock, which a failover
+       * briefly takes away, so it is retried. A crash fault is queued on every
+       * runner, and one of them takes it; if all of them still hold theirs,
+       * the turn never reached its point.
+       */
       const command = <A, E1, R1>(
         label: string,
         effect: Effect.Effect<A, E1, R1>,
@@ -200,7 +205,6 @@ export const simulateCluster =
 
           const landed = (fault === "connectionLoss" || fault === "primaryFailover") && draw() < 0.5
 
-          // Minting reads the database clock, which a failover briefly takes away.
           const commandId = yield* on(entry)(
             Effect.gen(function* () {
               return yield* (yield* Actors).mintCommandId
@@ -218,8 +222,10 @@ export const simulateCluster =
           const call = effect.pipe(Actor.commandId(commandId))
           const send = (runner: number) => on(runner)(call).pipe(Effect.timeout(attempt))
 
-          // The same id through each runner in turn, skipping `avoid`, until
-          // a receipt answers; only the command's own declared failures end it.
+          /**
+           * Sends the same id through each runner in turn, skipping `avoid`,
+           * until a receipt answers; only the command's own declared failures end it.
+           */
           const deliver = (from: number, avoid?: number) => {
             const order = runners.filter((runner) => runner !== avoid)
             const start = Math.max(order.indexOf(from), 0)
@@ -244,8 +250,10 @@ export const simulateCluster =
             })
           }
 
-          // Whichever runner runs this command's turn reaches its pause; every
-          // runner holds one, and the others' are cleared once it is known.
+          /**
+           * Whichever runner runs this command's turn reaches its pause, so
+           * every runner holds one and the others' are cleared once the owner is known.
+           */
           const holdTurn = Effect.gen(function* () {
             const paused = yield* Effect.forEach(runners, (runner) =>
               on(runner)(ActorTest.use((test) => test.pauseNext(point, { commandId }))),
@@ -287,7 +295,6 @@ export const simulateCluster =
             const result = yield* deliver(entry)
             const left = (yield* eachRunner(clearFaults)).flat()
 
-            // One runner took its crash; every other runner's stayed queued.
             if (left.length === runners.length)
               violations.push(`${label} (${commandId}) never reached its ${point} crash`)
 
@@ -373,8 +380,10 @@ export const simulateCluster =
         if (planned && steps.length <= failoverAt)
           violations.push(`the primary failover planned for command ${failoverAt} never happened`)
 
-        // A row that was ever attempted is still in flight, while one never
-        // attempted and not yet due is a timer the program scheduled.
+        /**
+         * A row that was ever attempted is still in flight, while one never
+         * attempted and not yet due is a timer the program scheduled.
+         */
         const pending = read(
           Effect.gen(function* () {
             const now = DateTime.toEpochMillis(yield* on(0)(ActorTest.use((test) => test.now)))

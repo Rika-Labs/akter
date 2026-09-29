@@ -283,7 +283,10 @@ const effectRow = (row: EffectRow, now: number, withActor: boolean) =>
     h("td", null, due(row.dueAtMs, now)),
   )
 
-// A cause is often a stack trace; its first line is what an operator scans for.
+/**
+ * A cause is often a stack trace; its first line is what an operator scans
+ * for.
+ */
 const cause = (text: string) => {
   const [first = "", ...rest] = text.split("\n")
 
@@ -499,7 +502,10 @@ export const actorView = ({
   )
 }
 
-// A tenant-wide list is one page; say so when the tenant has more rows than it shows.
+/**
+ * A tenant-wide list is one page; say so when the tenant has more rows than it
+ * shows.
+ */
 const truncated = (length: number, total: number) =>
   length < total
     ? h(

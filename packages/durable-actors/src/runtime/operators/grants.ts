@@ -11,6 +11,7 @@ export const OperatorAction = Schema.Literals([
   "audit.read",
 ])
 
+/** One grantable operator action. */
 export type OperatorAction = typeof OperatorAction.Type
 
 /**
@@ -26,6 +27,7 @@ export const Capability = Schema.Struct({
   commandId: Schema.optionalKey(Schema.NonEmptyString),
 })
 
+/** One capability of a grant. */
 export type Capability = typeof Capability.Type
 
 /** Who the operator is and every capability they hold. */
@@ -34,6 +36,7 @@ export const OperatorGrant = Schema.Struct({
   capabilities: Schema.Array(Capability),
 })
 
+/** An operator's identity and capabilities. */
 export type OperatorGrant = typeof OperatorGrant.Type
 
 /** What one operator request touches; fields it doesn't name are tenant-wide. */
@@ -44,8 +47,10 @@ export interface Resource {
   readonly commandId?: string | undefined
 }
 
-// A capability field left open matches anything; a set one must name the
-// resource's own value, so an actor-scoped grant never covers a tenant-wide read.
+/**
+ * A capability field left open matches anything; a set one must name the
+ * resource's own value, so an actor-scoped grant never covers a tenant-wide read.
+ */
 const covers = (granted: string | undefined, requested: string | undefined) =>
   granted === undefined || granted === requested
 

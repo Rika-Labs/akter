@@ -152,6 +152,12 @@ const withCluster = <A, E>(
 export const sums = (expected: ReadonlyMap<string, number>) =>
   new Map(Array.from(expected, ([key, sum]) => [key, { total: sum }]))
 
+/**
+ * Each seed gets a cluster of its own: settling moves the runners' clocks, and
+ * a runner restarted by one seed's kill would start the next one behind them.
+ * The seeded case logs each seed's schedule tagged `CLUSTER_SIMULATION`, so a
+ * night's schedules can be read from its log.
+ */
 export const simulationConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps receipts and outbox delivery exactly once across seeded runner kills, lost heartbeats, crashes, and lost connections on three runners",
@@ -160,8 +166,6 @@ export const simulationConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          // A cluster per seed: settling moves the runners' clocks, and a runner
-          // restarted by one seed's kill would start the next one behind them.
           for (const seed of yield* clusterSimulationSeeds)
             yield* clusterOn(
               environment,
@@ -182,7 +186,6 @@ export const simulationConformance: ReadonlyArray<ConformanceCase> = [
                   commands: 8,
                 })
 
-                // Tagged so a night's schedules can be read from its log.
                 yield* Console.error(
                   `CLUSTER_SIMULATION seed=${seed} ${report.steps
                     .map(

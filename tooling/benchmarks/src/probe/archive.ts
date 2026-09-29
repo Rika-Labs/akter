@@ -1,6 +1,7 @@
 import { Actor, ContentRef } from "@durable-actors/core"
 import { Effect, Layer, Option, Schema } from "effect"
 
+/** Blob field of `Archive` holding the named documents that `Put`, `Add` and `Compact` write. */
 export const documents = Actor.blob("documents")
 
 const cache = new Map<string, Uint8Array>()
@@ -30,12 +31,16 @@ const bytesOf = (size: number, variant: number) => {
 
 const Write = Schema.Struct({ name: Schema.String, size: Schema.Int, variant: Schema.Int })
 
+/** Writes `size` seeded bytes under `name`, replacing any existing entry. */
 export const Put = Actor.command("Put", { input: Write })
 
+/** Appends `size` seeded bytes to the entry `name`. */
 export const Add = Actor.command("Add", { input: Write })
 
+/** Rewrites the entry `name` as one compact chunk. */
 export const Compact = Actor.command("Compact", { input: Schema.String })
 
+/** Byte length of the entry `name`, or -1 when absent. */
 export const Length = Actor.query("Length", { input: Schema.String, output: Schema.Int })
 
 /** Writes and reads its own entries of `documents` through `turn.blob` and `read.blob`. */
@@ -59,7 +64,10 @@ const ArchiveCommands = Archive.toLayer(
   }),
 )
 
-// Returns the length, not the bytes, so the reply's encoding is not the measured cost.
+/**
+ * Returns the length, not the bytes, so the reply's encoding is not the
+ * measured cost.
+ */
 const ArchiveReads = Archive.toQueryLayer(
   Effect.succeed({
     Length: Effect.fnUntraced(function* (name: string) {
@@ -75,6 +83,7 @@ export const Files = Actor.content("files")
 
 const Attaching = Schema.Struct({ name: Schema.String, ref: ContentRef })
 
+/** Attaches already-uploaded content to the entry `name` without copying its bytes. */
 export const AttachFile = Actor.command("Attach", { input: Attaching })
 
 /** The referenced content's length, read off-turn. */
@@ -88,6 +97,7 @@ export const Shelf = Actor.make("Shelf", {
   api: { Attach: AttachFile, Size },
 })
 
+/** Command and query handlers for `Shelf`. */
 export const ShelfLive = Layer.mergeAll(
   Shelf.toLayer(
     Effect.succeed({
@@ -107,4 +117,5 @@ export const ShelfLive = Layer.mergeAll(
   ),
 )
 
+/** Handlers for `Archive` and `Shelf`. */
 export const ArchiveLive = Layer.mergeAll(ArchiveCommands, ArchiveReads, ShelfLive)

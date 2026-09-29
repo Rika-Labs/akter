@@ -3,6 +3,10 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import type { Config } from "../config.ts"
 import { processWebhook } from "./service.ts"
 
+/**
+ * `POST /api/billing/webhook`: 503 without Polar, 413 above 1 MiB, 400 for an
+ * invalid webhook, otherwise 204.
+ */
 export const webhookRoute = (config: Config) =>
   HttpRouter.add(
     "POST",

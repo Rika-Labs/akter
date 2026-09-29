@@ -21,6 +21,7 @@ export const RecordedExit = Schema.TaggedUnion({
   Die: { message: Schema.String },
 })
 
+/** A step exit as recorded: its encoded value, encoded declared failure, or defect message. */
 export type RecordedExit = typeof RecordedExit.Type
 
 /** A finished execution's result: its body's exit, or an interrupt. */
@@ -31,6 +32,7 @@ export const StoredResult = Schema.TaggedUnion({
   Interrupt: {},
 })
 
+/** A finished execution's result as stored. */
 export type StoredResult = typeof StoredResult.Type
 
 /** What a typed constructor names when it asks the engine to run or replay it. */
@@ -63,6 +65,7 @@ export interface WorkflowSteps {
   ) => Effect.Effect<RecordedExit, never, R>
 }
 
+/** The engine of the workflow run the calling fiber belongs to; undefined outside a workflow body. */
 export const CurrentWorkflow = Context.Reference<WorkflowSteps | undefined>(
   "durable-actors/CurrentWorkflow",
   { defaultValue: () => undefined },
@@ -79,8 +82,10 @@ export type CallPhase = Data.TaggedEnum<{
   Activity: { readonly nextCommandId: Effect.Effect<string> }
 }>
 
+/** Constructors and matchers for `CallPhase`. */
 export const CallPhase = Data.taggedEnum<CallPhase>()
 
+/** The calling fiber's `CallPhase`; `None` by default. */
 export const CurrentCallPhase = Context.Reference<CallPhase>("durable-actors/CurrentCallPhase", {
   defaultValue: () => CallPhase.None(),
 })

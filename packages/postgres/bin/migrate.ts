@@ -50,7 +50,11 @@ const migrateEffect = Effect.fn("Database.migrate")(function* (url: string) {
   }).pipe(Effect.ensuring(query(client, "select pg_advisory_unlock(741902113)").pipe(Effect.orDie)))
 })
 
-// Promise compatibility is retained for deployment tooling and existing callers.
+/**
+ * Applies the `.sql` files in `migrations/` that are not yet recorded, in name
+ * order and one transaction each, under a session advisory lock so concurrent
+ * callers apply each file once. A failing file is rolled back and rejects.
+ */
 export const migrate = (url: string): Promise<void> =>
   Effect.runPromise(
     Effect.scoped(

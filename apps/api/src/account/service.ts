@@ -11,6 +11,10 @@ import {
   projectsFor,
 } from "./repository.ts"
 
+/**
+ * The signed-in session; fails `Unauthorized` without a session or verified
+ * email, `Unavailable` when the lookup fails.
+ */
 export const authenticated = Effect.fn("Api.authenticated")(function* () {
   const auth = yield* Auth
 
@@ -24,6 +28,11 @@ export const authenticated = Effect.fn("Api.authenticated")(function* () {
   return result
 })
 
+/**
+ * The session and the caller's active organization; fails `Forbidden` without
+ * a membership, or when `admin` is set and the role is neither owner nor
+ * admin.
+ */
 export const activeOrganization = Effect.fn("Api.activeOrganization")(function* (
   admin: boolean = false,
 ) {
@@ -37,6 +46,7 @@ export const activeOrganization = Effect.fn("Api.activeOrganization")(function* 
   return { session, org }
 })
 
+/** The signed-in user and their active organization id. */
 export const session = Effect.fn("Api.session")(function* () {
   const result = yield* authenticated()
 
@@ -46,6 +56,10 @@ export const session = Effect.fn("Api.session")(function* () {
   }
 })
 
+/**
+ * Everything the dashboard shows; without any organization membership, an
+ * empty free-plan view.
+ */
 export const dashboard = Effect.fn("Api.dashboard")(function* () {
   const result = yield* authenticated()
 
@@ -83,6 +97,11 @@ export const dashboard = Effect.fn("Api.dashboard")(function* () {
   }
 })
 
+/**
+ * Creates an organization and makes it active for the caller. Returns it with
+ * the cookies to set; fails `Conflict` for a taken slug, `Unavailable`
+ * otherwise.
+ */
 export const createOrganization = Effect.fn("Api.organization")(function* (
   payload: { readonly name: string; readonly slug: string },
   headers: Headers,
@@ -118,12 +137,17 @@ export const createOrganization = Effect.fn("Api.organization")(function* (
   }
 })
 
+/** The active organization's projects, oldest first. */
 export const projects = Effect.fn("Api.projects")(function* () {
   const { org } = yield* activeOrganization()
 
   return yield* projectsFor(org.id)
 })
 
+/**
+ * Creates a project in the active organization; fails `Forbidden` if the
+ * caller's membership vanished meanwhile.
+ */
 export const createProject = Effect.fn("Api.createProject")(function* (name: string) {
   const { org, session } = yield* activeOrganization()
   const crypto = yield* Crypto.Crypto
@@ -136,6 +160,7 @@ export const createProject = Effect.fn("Api.createProject")(function* (name: str
   return project
 })
 
+/** A billing checkout URL for the active organization; owners and admins only. */
 export const checkout = Effect.fn("Api.checkout")(function* () {
   const { org } = yield* activeOrganization(true)
   const billing = yield* Billing
@@ -145,6 +170,7 @@ export const checkout = Effect.fn("Api.checkout")(function* () {
     .pipe(Effect.mapError((error) => Unavailable.make({ message: error.message })))
 })
 
+/** A billing portal URL for the active organization; owners and admins only. */
 export const portal = Effect.fn("Api.portal")(function* () {
   const { org } = yield* activeOrganization(true)
   const billing = yield* Billing

@@ -14,9 +14,6 @@ describe("effect executor process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  // At each point: the provider calls and outbox row the killed process leaves,
-  // and the provider calls after a fresh process recovers the effect. `attempts`
-  // counts claims, so the route the relay claimed before the kill shows 1.
   for (const [point, calls, row, recovered] of [
     ["beforeExecute", 0, ["effect", 1], 1],
     ["afterExecute", 1, ["effect", 1], 2],
@@ -75,7 +72,6 @@ describe("effect executor process death with Postgres", () => {
             yield* child.kill({ killSignal: "SIGKILL" })
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
 
-            // The author committed its effect; nothing was routed yet.
             expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
               { posted: 1, routed: 0, calls, outbox: [row] },
             ])
@@ -88,7 +84,6 @@ describe("effect executor process death with Postgres", () => {
               pool.query<{ idempotency_key: string }>("SELECT idempotency_key FROM provider_calls"),
             )).rows.map(({ idempotency_key }) => idempotency_key)
 
-            // Every provider call used the effect id, which is also the route's command id.
             expect(
               output
                 .split("\n")

@@ -13,6 +13,7 @@ export type PayloadMigrations =
   | ReadonlyArray<StateMigration>
   | { readonly from: number; readonly steps: ReadonlyArray<StateMigration> }
 
+/** Migration options shared by `Actor.Event` and `Actor.effect`. */
 export interface PayloadOptions {
   readonly migrations?: PayloadMigrations
   /**
@@ -25,7 +26,7 @@ export interface PayloadOptions {
 }
 
 /** A validated chain: stored versions `first..current` decode, and new values are written at `writeVersion`. */
-export interface PayloadChain {
+interface PayloadChain {
   readonly first: number
   readonly current: number
   readonly writeVersion: number
@@ -122,7 +123,9 @@ export const payloadChain = (schema: Schema.Top): PayloadChain => {
 /**
  * Encodes and decodes one tagged class's stored values, which carry the tag
  * in `_tag` and their version beside them. Values at the current version take
- * the class's own codec; older ones pass through each later step first.
+ * the class's own codec; older ones pass through each later step first, and
+ * new ones are downcast through each step above `writeVersion`. A stored
+ * value is its class's JSON object: the tag and the fields of its version.
  */
 export const payloadCodec = <S extends ValueSchema & { readonly Type: { readonly _tag: string } }>({
   schema,
@@ -139,7 +142,6 @@ export const payloadCodec = <S extends ValueSchema & { readonly Type: { readonly
   const encodeCurrentJson = Schema.encodeEffect(json)
   const decodeCurrentJson = Schema.decodeUnknownEffect(json)
 
-  // A stored value is its class's JSON object: the tag and the fields of its version.
   const Stored = Schema.StructWithRest(Schema.Struct({ _tag: Schema.Literal(tag) }), [
     Schema.Record(Schema.String, Schema.Json),
   ])
@@ -168,7 +170,6 @@ export const payloadCodec = <S extends ValueSchema & { readonly Type: { readonly
 
   const fieldsOf = ({ _tag, ...fields }: typeof Stored.Type) => fields
 
-  // Upcasts a stored value to an instance of the current class.
   const upcastStored = (text: string, version: number) =>
     Effect.gen(function* () {
       if (version > chain.current)
@@ -207,7 +208,6 @@ export const payloadCodec = <S extends ValueSchema & { readonly Type: { readonly
       )
     })
 
-  // Encodes an instance at `writeVersion`, downcasting through each step above it.
   const downcast = (value: S["Type"]) =>
     Effect.gen(function* () {
       let encoded: unknown = fieldsOf(yield* decodeStored(yield* encodeCurrentJson(value)))
@@ -250,8 +250,6 @@ export const payloadCodec = <S extends ValueSchema & { readonly Type: { readonly
   }
 }
 
-export type PayloadCodec = ReturnType<typeof payloadCodec>
-
 /** One event or effect class an actor type reads or writes, as the startup check sees it. */
 export interface PayloadDeclaration {
   readonly actorType: string
@@ -269,4 +267,5 @@ export interface DefinitionPayloads {
   readonly commandTimeoutMs: number
 }
 
+/** The payload declarations recorded for each actor definition, read by the startup version check. */
 export const definitionPayloads = new WeakMap<object, DefinitionPayloads>()

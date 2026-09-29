@@ -26,7 +26,7 @@ import {
 } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { ActorError } from "../../errors/actor.ts"
+import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
 import {
   Executed,
   Outcome,
@@ -67,10 +67,10 @@ const EntityId = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.Strin
 
 const encodeEntityIdOf = Schema.encodeEffect(EntityId)
 
-// A handler rebuilt after a retryable death waits `RESTART_BASE × 2^n`, capped
-// at `RESTART_CAP`, where `n` counts the activation's rebuilds since its last
-// settled turn: prompt after a one-off death, bounded for a handler that dies
-// on every attempt.
+// A retryable turn failure, and a handler rebuilt after a death, wait
+// `RESTART_BASE × 2^n`, capped at `RESTART_CAP`, where `n` counts the
+// activation's failures and rebuilds since its last settled turn: prompt after
+// a one-off failure, bounded for an actor whose turn fails on every attempt.
 const RESTART_BASE = Duration.millis(50)
 
 const RESTART_CAP = Duration.seconds(5)
@@ -119,7 +119,8 @@ const aloneAfterFailure = new WeakMap<Scope.Scope, Set<string>>()
 /** A command in an activation's mailbox and the caller waiting on its reply. */
 interface Waiting {
   readonly request: Request
-  readonly command: RegisteredCommand
+  /** Resolved against the activation that runs the command, as the worker takes it. */
+  command: RegisteredCommand
   readonly reply: Deferred.Deferred<Executed, ActorError>
   /**
    * The request's own context, under the runtime's services, as the turn ran
@@ -270,24 +271,24 @@ export const registerActor = Effect.fnUntraced(function* (
       // its background work stops as soon as the lease lapses.
       if (lease !== undefined && !(yield* lease.holds(shard!))) return yield* leaseLost
 
-      const scope = yield* Scope.fork(activation)
-
-      handlerScopes.set(activation, scope)
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      // What one activation holds: its resources' scope, its connection
+      // state, its handlers, and its workflow engine. A retryable turn
+      // failure ends it and starts the next in place, as a restart would.
+      interface Current {
+        readonly scope: Scope.Closeable
+        readonly owned: Effect.Success<ReturnType<typeof ownedOf>>
+        readonly activated: Exit.Exit<Effect.Success<ReturnType<Registration["activate"]>>, unknown>
+        engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
+      }
 
       let lost = false
 
-      if (lease !== undefined)
-        yield* lease.holds(shard!).pipe(
-          Effect.repeat({ schedule: Schedule.spaced(lease.interval), until: (held) => !held }),
-          Effect.andThen(
-            Effect.sync(() => {
-              lost = true
-            }),
-          ),
-          Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
-          Effect.forkIn(scope),
-        )
+      // The handler's own scope holds its residency, its worker, and every
+      // activation it starts, so the actor stays resident while an activation
+      // restarts and the worker outlives the activation it ends.
+      const handler = yield* Scope.fork(activation)
+
+      handlerScopes.set(activation, handler)
 
       yield* Effect.acquireRelease(
         Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
@@ -301,21 +302,48 @@ export const registerActor = Effect.fnUntraced(function* (
             if (left === 0) resident.delete(entityId)
             else resident.set(entityId, left)
           }).pipe(Effect.andThen(Metric.modify(activations, -1))),
-      ).pipe(Scope.provide(scope))
+      ).pipe(Scope.provide(handler))
 
-      const owned = yield* ownedOf(entityId)
-      let engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
+      const start = Effect.gen(function* () {
+        const scope = yield* Scope.fork(handler)
 
-      // A singleton builds here, on its owner; a failing build answers every
-      // command with its defect instead of retrying the activation forever.
-      const activated = yield* registration
-        .activate(ActorRef.make({ tenant, actor: registration.name, id }))
-        .pipe(Scope.provide(scope), Effect.exit)
+        if (lease !== undefined)
+          yield* lease.holds(shard!).pipe(
+            Effect.repeat({ schedule: Schedule.spaced(lease.interval), until: (held) => !held }),
+            Effect.andThen(
+              Effect.sync(() => {
+                lost = true
+              }),
+            ),
+            Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
+            Effect.forkIn(scope),
+          )
 
-      if (Exit.isFailure(activated))
-        yield* Effect.logError("Actor activation failed", activated.cause).pipe(
-          Effect.annotateLogs({ actor: registration.name, id, tenant }),
-        )
+        // Entered in the activation's own scope, so ending the activation
+        // seals its broadcasts and, unless its connection entity still holds
+        // it, drops its cached state and generation.
+        const owned = yield* ownedOf(entityId).pipe(Scope.provide(scope))
+
+        // A singleton builds here, on its owner; a failing build answers every
+        // command with its defect instead of retrying the activation forever.
+        const activated = yield* registration
+          .activate(ActorRef.make({ tenant, actor: registration.name, id }))
+          .pipe(Scope.provide(scope), Effect.exit)
+
+        if (Exit.isFailure(activated))
+          yield* Effect.logError("Actor activation failed", activated.cause).pipe(
+            Effect.annotateLogs({ actor: registration.name, id, tenant }),
+          )
+
+        const started: Current = { scope, owned, activated, engine: undefined }
+
+        return started
+      })
+
+      const built = yield* Effect.context<never>()
+      let current = yield* start
+
+      yield* Effect.addFinalizer(() => Scope.close(handler, Exit.void))
 
       const policy = registration.policy
       const statements = registration.tables.length > 0 || registration.blobs.length > 0
@@ -345,15 +373,15 @@ export const registerActor = Effect.fnUntraced(function* (
             const kicked = yield* kickedExecution({ request, outcome: exit.value.outcome })
 
             if (kicked !== undefined) {
-              engine ??= yield* activationEngine({
+              current.engine ??= yield* activationEngine({
                 registration,
                 ref: request.ref,
                 routingKey: routingKeyOf(request.ref),
-                cache: owned.cache,
-                scope,
+                cache: current.owned.cache,
+                scope: current.scope,
                 deliveryMs: policy.deliveryMs,
               })
-              yield* engine.kick(kicked.executionId, kicked.interrupt)
+              yield* current.engine.kick(kicked.executionId, kicked.interrupt)
             }
           }
         }
@@ -361,15 +389,96 @@ export const registerActor = Effect.fnUntraced(function* (
         yield* Deferred.done(entry.reply, exit)
       })
 
-      // A defect that restarts the activation answers every unanswered
-      // caller of the batch with it, and Cluster redelivers those commands to
-      // the rebuilt handler. This worker stops, so it never runs beside it.
+      // Set once the worker has stopped for a handler restart, so a command
+      // arriving before Cluster rebuilds the handler is refused, not queued
+      // for a worker that no longer runs.
+      let ended = false
+
+      const restartIncomplete = Effect.die(
+        RetryTurn.make({ message: "Activation restart did not complete" }),
+      )
+
+      // A defect that restarts the handler answers every unanswered caller of
+      // the batch with it, and Cluster redelivers those commands to the
+      // rebuilt handler. This worker stops, so it never runs beside it.
       const restart = (batch: ReadonlyArray<Waiting>, cause: Cause.Cause<unknown>) =>
-        Effect.forEach(
-          batch,
-          (entry) => Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause))),
-          { discard: true },
-        ).pipe(Effect.andThen(Effect.interrupt))
+        Effect.sync(() => {
+          ended = true
+        }).pipe(
+          Effect.andThen(
+            Effect.forEach(
+              batch,
+              (entry) => Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause))),
+              { discard: true },
+            ),
+          ),
+          Effect.andThen(Effect.interrupt),
+        )
+
+      // A retryable failure committed nothing. The worker ends the activation,
+      // waits its backoff, starts the next one in place, and only then answers
+      // each unanswered command of the batch `ActorUnavailable`, so a caller
+      // never retries into the closed activation. Answering here, instead of
+      // dying so Cluster restarts the entity and re-sends the commands, keeps a
+      // caller from waiting out its delivery timeout: Cluster drops a re-sent
+      // command whose turn fails again mid-restart, as a refused connection
+      // does during a database failover. Commands still waiting, and a
+      // following batch that was rolled back unseen, stay queued and run on the
+      // new activation. The one worker runs batches and restarts in turn, so no
+      // two restarts overlap; if the start fails, the handler restarts as for
+      // any other defect.
+      const restartActivation = (
+        batch: ReadonlyArray<Waiting>,
+        orphan: ReadonlyArray<Waiting>,
+        cause: Cause.Cause<unknown>,
+      ) =>
+        Effect.gen(function* () {
+          const failures = restarts.get(activation) ?? 0
+
+          restarts.set(activation, failures + 1)
+          yield* Scope.close(current.scope, Exit.void)
+          yield* Effect.sleep(restartDelay(failures))
+
+          if (lease !== undefined && !(yield* lease.holds(shard!))) {
+            lost = true
+
+            return yield* Effect.die(leaseLostDefect)
+          }
+
+          current = yield* start.pipe(Effect.provideContext(built))
+
+          if (orphan.length > 0) {
+            waiting.unshift(...orphan)
+            ready.openUnsafe()
+          }
+
+          const unavailable = ActorError.make({
+            reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+          })
+
+          yield* Effect.forEach(batch, (entry) => Deferred.fail(entry.reply, unavailable), {
+            discard: true,
+          })
+        }).pipe(
+          Effect.uninterruptible,
+          Effect.catchCause((failed) => restart([...batch, ...orphan], failed)),
+        )
+
+      // Resolved when a batch is taken, not when its command queued: the
+      // handlers belong to the activation that runs them, and a restart
+      // replaces it.
+      const resolve = (batch: Array<Waiting>) => {
+        const { activated } = current
+
+        if (Exit.isSuccess(activated))
+          for (const entry of batch)
+            entry.command =
+              activated.value.get(entry.request.command) ??
+              workflowRoutes.get(entry.request.command) ??
+              entry.command
+
+        return batch
+      }
 
       // Every command the current run has taken, so a drain can answer them.
       let taken: Array<Waiting> = []
@@ -378,9 +487,15 @@ export const registerActor = Effect.fnUntraced(function* (
       // so its admission rides in the same flight. Nothing waits for one, and
       // a draining runner starts none.
       const following = Effect.gen(function* () {
-        if (lost || !gate.open || Exit.isFailure(yield* Effect.exit(writable))) return undefined
+        if (
+          lost ||
+          !gate.open ||
+          Exit.isFailure(current.activated) ||
+          Exit.isFailure(yield* Effect.exit(writable))
+        )
+          return undefined
 
-        const batch = takeBatch({ waiting, alone })
+        const batch = resolve(takeBatch({ waiting, alone }))
 
         if (waiting[0]?.queued !== true) ready.closeUnsafe()
 
@@ -395,6 +510,8 @@ export const registerActor = Effect.fnUntraced(function* (
       // Connection broadcasts of a batch go out once it commits, and then
       // each caller hears its own outcome.
       const committed = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>, done: Done) {
+        const { owned } = current
+
         const labels = done.settled.map((settled, index) =>
           Result.isSuccess(settled)
             ? outcomeOf(settled.success, done.replays.has(index))
@@ -561,8 +678,10 @@ export const registerActor = Effect.fnUntraced(function* (
 
       // Runs `batch`, and with `pipelining` every batch that is already
       // waiting when the one before it commits.
-      const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) =>
-        executeBatches(
+      const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
+        const { owned } = current
+
+        return executeBatches(
           {
             first: batch,
             next: pipelining ? following : Effect.undefined,
@@ -580,6 +699,7 @@ export const registerActor = Effect.fnUntraced(function* (
           owner.hasConnections ? owner.list(owned) : undefined,
           registration.cron,
         )
+      }
 
       // A defect aborts the whole batch, and a following batch whose
       // admission was already sent is rolled back unseen with it. A retryable
@@ -598,7 +718,9 @@ export const registerActor = Effect.fnUntraced(function* (
             if (!committed && batch.length > 1)
               for (const { request } of batch) alone.add(request.commandId)
 
-            return yield* restart([...batch, ...(orphan ?? [])], cause)
+            if (committed || lost) return yield* restart([...batch, ...(orphan ?? [])], cause)
+
+            return yield* restartActivation(batch, orphan ?? [], cause)
           }
 
           if (orphan !== undefined) {
@@ -632,7 +754,7 @@ export const registerActor = Effect.fnUntraced(function* (
           yield* Effect.logDebug("Turn batch failed; running its commands one at a time", cause)
 
           for (const entry of batch) {
-            const stopped = yield* run([entry], false)
+            const stopped = yield* run(resolve([entry]), false)
 
             if (stopped !== undefined) yield* recover(stopped)
           }
@@ -641,13 +763,30 @@ export const registerActor = Effect.fnUntraced(function* (
       yield* Effect.gen(function* () {
         while (true) {
           yield* ready.await
-          const batch = takeBatch({ waiting, alone })
+          const batch = resolve(takeBatch({ waiting, alone }))
 
           if (waiting[0]?.queued !== true) ready.closeUnsafe()
 
           if (batch.length === 0) continue
 
           taken = [...batch]
+
+          // A command queued before a restart ran into an activation whose
+          // build failed: it answers with that failure, as a new one would.
+          if (Exit.isFailure(current.activated)) {
+            const { cause } = current.activated
+
+            yield* Effect.forEach(
+              batch,
+              (entry) =>
+                Deferred.succeed(entry.reply, {
+                  outcome: Outcome.cases.Defect.make({ cause: Cause.squash(cause) }),
+                }),
+              { discard: true },
+            )
+
+            continue
+          }
 
           // A draining runner refuses the batch, or interrupts its run at the
           // deadline, and every caller the run took but has not answered
@@ -677,10 +816,15 @@ export const registerActor = Effect.fnUntraced(function* (
               ),
             )
         }
-      }).pipe(Effect.provideContext(services), Effect.forkIn(scope))
+      }).pipe(Effect.provideContext(services), Effect.forkIn(handler))
 
       return entity.of({
-        Wake: () => Effect.suspend(() => (lost ? leaseLost : Effect.void)),
+        Wake: () =>
+          Effect.suspend(() => {
+            if (lost) return leaseLost
+
+            return ended ? restartIncomplete : Effect.void
+          }),
         // Enqueues synchronously, when Cluster delivers the request, so the
         // mailbox keeps delivery order; the reply is awaited outside the
         // server's one-at-a-time limit, which the worker enforces instead.
@@ -688,6 +832,10 @@ export const registerActor = Effect.fnUntraced(function* (
         // has its context before the worker can take it.
         Execute: ({ payload }) => {
           if (lost) return leaseLost
+
+          if (ended) return restartIncomplete
+
+          const { activated } = current
 
           if (Exit.isFailure(activated))
             return Effect.succeed<Executed>({

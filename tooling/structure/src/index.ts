@@ -29,11 +29,13 @@ const APP_PACKAGE = /^@durable-actors\/(api|console|docs|edge|cli)$/
 
 const WORKSPACE_PACKAGE = /^@durable-actors\//
 
+/** A tracked file's repository-relative path and its text. */
 export interface TreeFile {
   readonly path: string
   readonly text: string
 }
 
+/** One structure violation at `path` for `rule`. */
 export interface Finding {
   readonly path: string
   readonly rule: Exemption["rule"]
@@ -351,6 +353,10 @@ const checkStaleExemptions = (input: {
   }
 }
 
+/**
+ * Checks the file tree against the structure rules and returns the findings
+ * not covered by an exemption, plus a finding for each stale exemption.
+ */
 export const analyze = (input: {
   readonly files: ReadonlyArray<TreeFile>
   readonly exemptions: ReadonlyArray<Exemption>
@@ -381,6 +387,10 @@ class StructureError extends Schema.TaggedError<StructureError>()("StructureErro
   count: Schema.Int,
 }) {}
 
+/**
+ * Checks the repository's tracked and untracked files; fails with a
+ * `StructureError` counting the findings, which it prints.
+ */
 export const check = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner

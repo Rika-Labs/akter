@@ -12,7 +12,6 @@ describe("reducer turns across process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  // A committed reply is the new count; 1000 overflows, so its reply is the declared failure.
   for (const [amount, reply, state, point] of (
     [
       [5, "5", '"5"'],
@@ -85,8 +84,6 @@ describe("reducer turns across process death with Postgres", () => {
             yield* child.kill({ killSignal: "SIGKILL" })
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
 
-            // A separate pool sees only what the killed process committed: a declared
-            // failure commits its receipt and none of the reducer's state.
             const committed = point === "afterCommit"
             expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
               {
@@ -100,7 +97,6 @@ describe("reducer turns across process death with Postgres", () => {
             const output = yield* recovery.stdout.pipe(Stream.decodeText(), Stream.mkString)
             expect(yield* recovery.exitCode, output).toBe(0)
 
-            // After COMMIT the retry replays the stored outcome without reducing again.
             expect(
               output
                 .split("\n")
