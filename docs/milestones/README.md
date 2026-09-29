@@ -103,11 +103,14 @@ Within a wave, migrations merge in number order. If a higher number is ready fir
 | `0016_final_effect_failures` | #127 final effect failures with retries left      | 4    |
 | `0017_subscriptions`         | M3.7 cross-actor event subscriptions              | 4    |
 | `0018_rls`                   | M4.5 row-level security                           | 7    |
-| `0019_commit_version`        | M4.9 read-your-writes                             | 7    |
+| `0019` (unused gap)          | M4.9 read-your-writes stores nothing (ADR 0052)   | 7    |
 | `0020_content_blobs`         | M4.13 tenant-scoped content-addressed blobs       | 7    |
-| `0021_adoption`              | M6.1 existing-schema adoption                     | 9    |
+| `0021_payload_versions`      | M4.7 event and effect payload evolution           | 7    |
+| `0022_parent_placement`      | M4.11 parent-actor placement                      | 7    |
+| `0023_operator_audit`        | M4.6 operator authority and audited repair        | 7    |
+| `0024_adoption`              | M6.1 existing-schema adoption                     | 9    |
 
-M2.5 (cron) needs no migration ([ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md)). M2.15 (`turn.mint`), M4.7 (payload evolution), M4.11 (parent placement), and M4.14 (PGlite in production) get a number from their ADR only if they need one.
+M2.5 (cron) needs no migration ([ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md)). M2.15 (`turn.mint`) needed none. M4.7 and M4.11 took `0021_payload_versions` and `0022_parent_placement` when ADRs 0032 and 0033 were accepted, and M4.14 needs none ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)).
 
 ADRs 0018 and 0019 belong to the benchmark harness (#38) and runner capacity (#44). The ADRs below are reserved, and unplanned ADRs take 0040 and up.
 
@@ -133,3 +136,5 @@ ADRs 0018 and 0019 belong to the benchmark harness (#38) and runner capacity (#4
 | 0037 | Existing-schema adoption                             | M6.1  |
 | 0038 | Query observation                                    | M6.2  |
 | 0039 | Fleet views                                          | M6.3  |
+| 0049 | Observability                                        | M4.3  |
+| 0050 | Operator authority and audited repair                | M4.6  |

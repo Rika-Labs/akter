@@ -1,6 +1,6 @@
 # ADR 0032: Event and effect payload evolution
 
-**Status:** proposed (2026-09-28).
+**Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.7 builds it in `0021_payload_versions`.
 
 **Responsibility:** decide how stored event values and effect payloads keep decoding after their schemas change.
 
@@ -59,10 +59,10 @@ class ChargeCard extends Actor.effect<ChargeCard>()("ChargeCard", {
 
 ### 2. The version is stored beside the value
 
-- `actor_events` gains `payload_version integer NOT NULL DEFAULT 0`. `turn.emit` writes the class's current version.
+- `actor_events` gains `payload_version integer NOT NULL`. `turn.emit` writes the class's current version.
 - `actor_outbox` gains the same column. Effect rows get the effect's current version; intent rows keep `0` (command inputs are out of scope, §6). When the relay settles an effect, it rewrites the row into its `onSuccess` or `onDeadLetter` route intent in one statement, and that statement also sets `payload_version` back to `0`, because the row now carries a command input.
 - `actor_dead_letters` gains the same column and copies it from the effect row.
-- Existing rows get `0`, which is correct: they were written before any chain existed. Postgres adds a `NOT NULL` column with a constant default without rewriting the table.
+- Nothing is released, so no stored value predates this column. Version `0` is simply the first shape of a class, the one with no chain steps.
 
 A column, rather than a reserved field inside the value, keeps values in the class's own encoding, lets SQL and the [inspection views](0028-sql-inspection-views.md) show the version, and lets the startup check (§4) read versions without decompressing values.
 
@@ -76,15 +76,13 @@ A column, rather than a reserved field inside the value, keeps values in the cla
 ### 4. A deploy that would strand a stored value is refused
 
 - A new table, `actor_payload_versions (actor_type, kind, tag, version, first_written_at_ms, superseded_at_ms, cleared_at_ms)`, records every version that may be stored. `kind` is `event` or `effect`.
-  - **Existing values.** The migration that adds the table seeds a version-0 row for every actor type and tag that already has rows in `actor_events`, `actor_outbox` (effect rows), or `actor_dead_letters`. It reads each table once, when the migration runs. After that, a tag with no row at all is treated as if version 0 were recorded and never superseded, so a guard can never pass for lack of a row.
-  - **New values.** At layer build, a runtime records the version it will write for each declared event and effect: its `writeVersion` when set (§5), and otherwise the chain's last version. It inserts the row if it is missing, and sets `superseded_at_ms` on lower versions of that tag that have none. This is one statement per build, not per turn.
+  - At layer build, a runtime records the version it will write for each declared event and effect: its `writeVersion` when set (§5), and otherwise the chain's last version. It inserts the row if it is missing, and sets `superseded_at_ms` on lower versions of that tag that have none. This is one statement per build, not per turn, and it runs before the runtime takes any shard, so every stored value's version has a row.
 - `Actors.layer` refuses to start, as a placement mismatch or a workflow manifest mismatch does ([ADR 0022](0022-workflow-engine-storage-and-version-markers.md) §7), when:
   1. a recorded version is above the last version the code's chain can read for that tag, which is a rollback past a schema change; or
-  2. the code's chain starts above a version that may still be stored. That includes a tag with no row, which counts as version 0. An event version counts as stored until its row has `cleared_at_ms`. The retention horizon alone is not proof, because a sweep can lag or a restore can bring rows back. Effect versions may be stored while any `actor_outbox` or `actor_dead_letters` row has that version, which the check reads directly because those tables are small.
+  2. the code's chain starts above a version that may still be stored. An event version counts as stored until its row has `cleared_at_ms`. The retention horizon alone is not proof, because a sweep can lag or a restore can bring rows back. Effect versions may be stored while any `actor_outbox` or `actor_dead_letters` row has that version, which the check reads directly because those tables are small.
 - `durable payloads check --entry ./src/actors.ts` runs the same check read-only for CI, like `durable workflows check`.
 - `durable payloads clear --entry ./src/actors.ts` is the only way an event version gets `cleared_at_ms`. It considers only versions whose `superseded_at_ms + keepEvents` has passed. For each one, it looks for any `actor_events` row of that actor type, tag, and version (`LIMIT 1`, on a dedicated connection, as operator maintenance, never on a turn path), and sets `cleared_at_ms` only when it finds none. A restore brings back its own copy of `actor_payload_versions`, so a snapshot from before a clear is refused again until the scan passes on the restored data.
 - **Old writers are fenced before a clear.** A scan alone can race a runner that still writes the old version. So every runtime keeps a row per version it writes in `actor_payload_writers (runtime_id, actor_type, kind, tag, version, refreshed_at_ms)`. It refreshes the row before it takes any shard and then every minute, on the loop that already runs retention sweeps. A runtime whose last successful refresh is older than the writer window W (default 2 minutes) refuses new turns until it refreshes. That check is local to the runtime, so warm turns pay no statement for it. `durable payloads clear` refuses a version while any writer row for it was refreshed within the last W plus the longest `commandTimeout`. After that point, no runtime can start a turn that writes the version, and any turn already running has ended. Only then does it scan and set `cleared_at_ms`, in one transaction that re-checks the writer rows, so a writer that comes back during the scan makes the clear fail. This also enforces M4.4's version-skew rule, instead of trusting operators to follow it.
-- **Runtimes that predate the heartbeat** write only version 0 and never create writer rows. Two rules fence them. First, the migration's version-0 seed rows are marked `legacy`, and `clear` refuses a `legacy` version while Cluster's runner storage (`cluster_runners` on Postgres) lists any live runner that has no row in `actor_payload_writers`. A live runner without a heartbeat is, by definition, running code older than this ADR. Second, where runner storage isn't shared (PGlite keeps it in memory, and there is only one process), `clear` on a `legacy` version also requires `--no-legacy-runtimes`, the operator's statement that every process started before the migration has stopped. The CLI refuses without the flag and records who ran it.
 
 ### 5. Rolling deploys write the old version until every runner reads the new one
 
@@ -118,6 +116,8 @@ With several runners on one database, a new runner's events would reach old runn
 
 ## Amendments on acceptance
 
+These landed with the acceptance, as labelled targets until the slice builds them.
+
 **Contracts.**
 
 - [05 messaging](../contracts/05-messaging.md): every committed event stores its payload version; replay, feeds, subscriptions, and workflow waits decode through the event's chain; a value the chain cannot decode is a defect, never a skip.
@@ -140,21 +140,23 @@ With several runners on one database, a new runner's events would reach old runn
 
 ## Migration
 
-Needs one framework migration: `payload_version` on `actor_events`, `actor_outbox`, and `actor_dead_letters`, and the `actor_payload_versions` and `actor_payload_writers` tables. It is none of the reserved M4 migrations (`0018_rls`, `0019_commit_version`, `0020_content_blobs`). Recommended: reserve the next free number when this ADR is accepted (today `0021`, moving `0021_adoption` from wave 9 up by one), as `00NN_payload_versions`. If a slice merges a migration first, the milestone rule applies and this one takes the next number above the highest merged migration.
+Needs one framework migration: `payload_version` on `actor_events`, `actor_outbox`, and `actor_dead_letters`, and the `actor_payload_versions` and `actor_payload_writers` tables. It is `0021_payload_versions`, reserved for M4.7 when this ADR was accepted; `0021_adoption` moved up, and adoption is now `0024_adoption`.
 
-## Open questions for Dallen, with recommended defaults
+## Decided questions
 
-1. **Read-time upcast only, or also an operator rewrite?** Recommended default: read-time only. Alternative: add `durable events migrate` to rewrite retained events in batches, so old chain steps can be dropped before `keepEvents` has passed.
-2. **Two-phase deploys with `writeVersion` and a downcast.** Recommended default: yes, because M2 made several runners per database a supported shape. Alternative: require stopping every runner for a deploy that adds a step, which is simpler and costs downtime.
-3. **Command inputs in pending intents.** Recommended default: out of scope; they stay additive-only. Alternative: give `Actor.command` inputs the same chain, which also touches receipts' payload hashes and needs its own ADR.
-4. **Workflow waits.** Recommended default: keep ADR 0022's rule that an event schema change waits for open executions that recorded a wait on it. Alternative: fingerprint the chain instead, so recorded waits upcast too.
-5. **Migration number.** Recommended default: reserve the next free number at acceptance and move `0021_adoption` up. Alternative: wait for merge time and apply the milestone renumbering rule.
+Dallen accepted every recommended default on 2026-09-28.
+
+1. **Read-time upcast only, or also an operator rewrite?** Decided: read-time only. Rejected alternative: add `durable events migrate` to rewrite retained events in batches, so old chain steps can be dropped before `keepEvents` has passed.
+2. **Two-phase deploys with `writeVersion` and a downcast.** Decided: yes, because M2 made several runners per database a supported shape. Rejected alternative: require stopping every runner for a deploy that adds a step, which is simpler and costs downtime.
+3. **Command inputs in pending intents.** Decided: out of scope; they stay additive-only. Rejected alternative: give `Actor.command` inputs the same chain, which also touches receipts' payload hashes and needs its own ADR.
+4. **Workflow waits.** Decided: keep ADR 0022's rule that an event schema change waits for open executions that recorded a wait on it. Rejected alternative: fingerprint the chain instead, so recorded waits upcast too.
+5. **Migration number.** Decided: reserve the next free number at acceptance. It is `0021_payload_versions`. Rejected alternative: wait for merge time and apply the milestone renumbering rule.
 
 ## Evidence required
 
 In `conformance/payload-migrations.ts`, on PGlite and Postgres:
 
-- `upcasts seeded version-0 events through the chain in read.events, feeds, and subscription deliveries`
+- `upcasts version-0 events written before a chain step was added through the chain in read.events, feeds, and subscription deliveries`
 - `stores the current payload version with each emitted event and performed effect`
 - `runs a pending effect written at an older version with the upcast payload`
 - `delivers an onDeadLetter route with the upcast effect and keeps the dead letter's version`
@@ -162,10 +164,8 @@ In `conformance/payload-migrations.ts`, on PGlite and Postgres:
 - `fails a read as a defect, never a skip, when an upcast throws or the stored version is newer than the chain`
 - `keeps an earlier attempt's ambiguity on the row and in the dead letter when a later attempt fails to decode its payload`
 - `refuses startup after a rollback past a recorded version, and when a shortened chain drops a version still retained`
-- `seeds version 0 for existing rows, so the first shortened chain after the migration is refused while version-0 values remain`
 - `refuses a shortened chain after the retention horizon until durable payloads clear finds no row of the dropped version, and refuses again after restoring a snapshot taken before the clear`
 - `refuses durable payloads clear while a runtime writing that version refreshed within the window, and a runtime past its window refuses new turns until it refreshes` (Postgres, two runtimes)
-- `refuses to clear a legacy version while a live Cluster runner has no writer row` (Postgres, one runtime built without the heartbeat)
 - `records the writeVersion, not the chain's last version, while a two-phase deploy is in its first phase`
 - `writes the old version under writeVersion and reads both versions on one runtime`
 - `refuses removing an event class while a subscription has undelivered events of that tag or an open workflow waits on it`
