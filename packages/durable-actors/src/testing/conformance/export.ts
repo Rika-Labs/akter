@@ -111,7 +111,14 @@ const replayRuntime = (environment: ConformanceEnvironment, as: Caller) =>
 
     return yield* Layer.buildWithMemoMap(
       live.pipe(
-        Layer.provideMerge(ActorTest.layer({ database, as, retryWindowMs: 60_000 })),
+        Layer.provideMerge(
+          ActorTest.layer({
+            database,
+            as,
+            authorize: () => Effect.succeed(true),
+            retryWindowMs: 60_000,
+          }),
+        ),
         Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
         Layer.orDie,
       ),
