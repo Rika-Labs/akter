@@ -317,7 +317,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const tenant = yield* tenantOf
           const before = runs.count
 
-          // An unsecured JWS: `alg: none` and an empty signature.
           const unsecured = (claims: AssertionClaims) =>
             Effect.gen(function* () {
               const header = yield* segment({ alg: "none", typ: ASSERTION_TYPE, kid: "edge-1" })
@@ -350,7 +349,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(runs.count).toBe(before)
           expect(yield* receipts(tenant, "HttpRoom", "forged")).toBe(0)
 
-          // The same request signed by the published key is admitted.
           const request = yield* command(server, "forged", "Whoami")
           const valid = yield* assertionFor({ edge, server, request, tenant })
 
@@ -395,9 +393,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(runs.count).toBe(before)
           expect(yield* receipts(tenant, "HttpRoom", "lifetime")).toBe(0)
 
-          // Within the 5-second skew, an assertion just past its expiry or just ahead of its issue is
-          // admitted. `iat` is floored to the second and the request takes time to arrive, so the
-          // expired one keeps at least 3 seconds of room for a case slowed by load.
           const skewed: ReadonlyArray<Change> = [
             (claims) => ({ ...claims, iat: claims.iat - 10, exp: claims.iat - 1 }),
             (claims) => ({ ...claims, iat: claims.iat + 4, exp: claims.iat + 14 }),
@@ -440,7 +435,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
             expect(reply.body).toEqual(yield* unauthorizedBody("invalid_credentials"))
           }
 
-          // The edge signed a GET; the runner received a POST.
           const get = yield* assertionFor({
             edge,
             server,
@@ -450,7 +444,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect((yield* asserted(server, original, get)).status).toBe(401)
 
-          // A query is bound too.
           const count = query("bound", "Count")
           const countSigned = yield* assertionFor({ edge, server, request: count, tenant })
 
@@ -484,7 +477,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
             body: `${tenant}/alice`,
           })
 
-          // Without an assertion, a bearer token authenticates nothing.
           const bare = yield* server.send({
             ...(yield* command(server, "caller", "Whoami")),
             headers: { authorization: `Bearer ${tenant}:alice` },
@@ -505,7 +497,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const tenant = yield* tenantOf
           const request = yield* command(server, "expiring", "Hold")
 
-          // Just past its expiry, which the 5-second skew still admits with room to spare.
           const iat = Math.floor((yield* Clock.currentTimeMillis) / 1000) - 10
           const exp = iat + 9
 
@@ -527,7 +518,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const before = runs.count
           const call = yield* asserted(server, request, late).pipe(Effect.forkChild)
 
-          // A refused request never enters the handler; its reply fails the case instead of a hang.
           const admitted = yield* Effect.raceFirst(
             Deferred.await(entered).pipe(Effect.as(undefined)),
             Fiber.join(call),
@@ -535,7 +525,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(admitted).toBe(undefined)
 
-          // Hold the turn until the assertion is past the skew as well.
           while ((yield* Clock.currentTimeMillis) <= (exp + 5) * 1000 + 200)
             yield* Effect.sleep("100 millis")
 
@@ -588,14 +577,12 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* status(old)).toBe(200)
 
-          // A new key is published at least one polling interval before the edge signs with it.
           yield* keySet.publish([old, rotated])
           yield* Effect.sleep("1200 millis")
 
           expect(yield* status(rotated)).toBe(200)
           expect(yield* status(old)).toBe(200)
 
-          // Revoked: the runner refuses the key once it rereads the set, within one interval.
           yield* keySet.publish([rotated])
           yield* Effect.sleep("1200 millis")
 
@@ -615,7 +602,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const stranger = yield* edgeKey("edge-9")
           const keySet = yield* keySetServer([old, rotated])
 
-          // The default 5-minute poll: only a push can make the runner reread in this case.
           const server = yield* serveAsserted(
             Actor.auth.assertion({
               issuer: ISSUER,
@@ -647,14 +633,12 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* keySet.publish([rotated])
 
-          // Still cached: without a push the runner keeps the key until its next poll.
           expect(yield* status(old)).toBe(200)
 
           const refused = [
             yield* push(undefined),
             yield* push(yield* signRefresh(stranger)),
             yield* push(yield* signRefresh(rotated, "dep-other")),
-            // An assertion is not a refresh push.
             yield* push(
               yield* assertionFor({
                 edge: rotated,
@@ -668,7 +652,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(refused.map((reply) => reply.status)).toEqual([401, 401, 401, 401])
           expect(yield* status(old)).toBe(200)
 
-          // A valid push rereads at once, and repeating it changes nothing.
           expect((yield* push(yield* signRefresh(rotated))).status).toBe(204)
           expect(yield* status(old)).toBe(401)
           expect((yield* push(yield* signRefresh(rotated))).status).toBe(204)
@@ -719,7 +702,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
             by: (now + 7200) * 1000,
           })
 
-          // Another session's renewal, correctly bound to that session, is refused.
           yield* ws.send({ t: "reauthenticate", authorization: yield* renewal("session-b") })
 
           expect(yield* endReason((yield* ws.until("end")).at(-1))).toMatchObject({
@@ -728,7 +710,6 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect((yield* ws.closed).code).toBe(1008)
 
-          // An open assertion is not a renewal either, even for the same session.
           const second = yield* socket(host, "asserted")
           const secondOpening = yield* bearer({ ...base, sid: "session-c" })
 
@@ -847,7 +828,6 @@ const delayingProxy = Effect.fnUntraced(function* (target: string) {
 
       const failing = failures.get(path) ?? 0
 
-      // Unavailable, as a runner that is restarting or briefly unreachable would be.
       if (failing > 0) {
         failures.set(path, failing - 1)
 
@@ -910,7 +890,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* edge.addRunner({ region: REGION, url: runner.url })
 
-          // A client's own assertion, even one a runner would otherwise verify, never reaches it.
           const forger = yield* edgeKey("edge-1")
           const request = yield* command(runner, "stripped", "Whoami")
 
@@ -928,7 +907,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(reply).toMatchObject({ status: 200, body: `${tenant}/alice` })
 
-          // Without a credential the edge forwards no assertion, and the runner refuses.
           const bare = yield* send({
             ...(yield* command(runner, "stripped", "Whoami")),
             headers: { [ASSERTION_HEADER]: forged },
@@ -958,7 +936,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
 
           yield* edge.addRunner({ region: REGION, url: proxy.url })
-          // Held past the assertion's lifetime plus the runner's 5-second skew, and within it.
           yield* proxy.delay("held-long", 7_000)
           yield* proxy.delay("held-short", 300)
 
@@ -1016,13 +993,11 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api/" })
-          // A registered runner that refuses connections: the edge must try the next one.
           yield* edge.addRunner({ region: REGION, url: "http://127.0.0.1:9", basePath: "/api" })
 
           const tenant = yield* tenantOf
           const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
 
-          // The edge rotates its runner order per socket, so one of two opens starts at the dead one.
           const probe = yield* socket(new URL(edge.url).host, "through-edge")
 
           yield* probe.send({
@@ -1040,7 +1015,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           const open = yield* opened(yield* ws.next())
           const started = yield* Clock.currentTimeMillis
 
-          // The session is capped by the API key's session bound, never by the 10-second assertion.
           const by = open.reauthenticateBy ?? 0
 
           expect(by > started + 2_000 && by <= started + 4_000).toBe(true)
@@ -1049,7 +1023,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(asked?.t).toBe("reauthenticate")
 
-          // A renewal a second later moves the bound a second on.
           yield* Effect.sleep("1100 millis")
           yield* ws.send({ t: "reauthenticate", authorization: `Bearer ${key}` })
 
@@ -1059,7 +1032,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             renewed?.t === "reauthenticated" && (renewed.by ?? 0) > (open.reauthenticateBy ?? 0),
           ).toBe(true)
 
-          // Revoked: the edge refuses the next renewal, so the session ends at the bound.
           yield* edge.revokeApiKey(key)
           yield* ws.until("reauthenticate", 10_000)
           yield* ws.send({ t: "reauthenticate", authorization: `Bearer ${key}` })
@@ -1088,7 +1060,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             signingKeys: [old, rotated],
           })
 
-          // The default 5-minute poll, so only the push can explain a prompt refusal.
           const runner = yield* serveAsserted(
             Actor.auth.assertion({
               issuer: edge.issuer,
@@ -1098,8 +1069,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             }),
           )
 
-          // The first push fails, as it would for a runner that is briefly unreachable, so the
-          // edge must push again. `/` is the root base path, as `Actor.serve` reads it.
           const door = yield* delayingProxy(runner.url)
 
           yield* door.fail(KEY_REFRESH_PATH, 1)
@@ -1147,7 +1116,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           expect(elapsed < 10_000).toBe(true)
           expect(yield* direct(rotated)).toBe(200)
 
-          // The edge signs with the key that remains.
           const through = yield* send({
             ...(yield* command(runner, "revoked-key", "Whoami")),
             headers: bearerHeaders(apiKey),
@@ -1164,7 +1132,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          // A 2-second assertion outlives no attempt on a runner that never answers.
           const edge = yield* (yield* edgeOf(environment.edge)).start({
             primaryRegion: REGION,
             assertionSeconds: 2,
@@ -1180,7 +1147,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             }),
           })
 
-          // Accepts the connection and never answers the upgrade.
           const hole = Bun.listen({
             hostname: "127.0.0.1",
             port: 0,
@@ -1194,7 +1160,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           const tenant = yield* tenantOf
           const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
 
-          // The edge rotates its runner order per socket, so one of two opens starts at the hole.
           for (let index = 0; index < 2; index++) {
             const ws = yield* socket(new URL(edge.url).host, "fail-over")
 
@@ -1221,7 +1186,6 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           const other = "test-2"
           const primary = yield* edgeRunner(edge, REGION)
           const secondary = yield* edgeRunner(edge, other)
-          // Counting proxies show which region's runner each request reached.
           const primaryDoor = yield* delayingProxy(primary.url)
           const secondaryDoor = yield* delayingProxy(secondary.url)
           const send = yield* clientFor(edge.url)
@@ -1251,10 +1215,8 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* secondaryDoor.arrived).toBe(0)
           expect(yield* call(movedKey)).toMatchObject({ status: 200, body: `${moved}/alice` })
           expect(yield* secondaryDoor.arrived).toBe(1)
-          // Only the row written for the moved tenant exists; routing wrote nothing.
           expect(yield* edge.directoryRows).toBe(1)
 
-          // The cached absence gives way once the directory's version moves past it.
           yield* edge.home({ tenant: homeless, region: other })
 
           const reached = yield* call(homelessKey).pipe(

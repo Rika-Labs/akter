@@ -300,7 +300,6 @@ const drainDuringTurn = (
       interruptedEffects: 0,
     })
 
-    // Interrupted before its commit, the turn left nothing; after it, the turn stands.
     expect(yield* inspect(caller, ref)).toMatchObject(
       point === "beforeCommit"
         ? { state: { balance: 1 }, receipts: 1 }
@@ -333,7 +332,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
                 const clean = { outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 }
                 expect(yield* control.drain({ deadline: "5 seconds" })).toEqual(clean)
                 expect(yield* control.readiness).toEqual({ ready: false, reason: "drained" })
-                // A second drain waits for the first and reports it again.
                 expect(yield* control.drain({ deadline: "1 millis" })).toEqual(clean)
 
                 const refused = yield* single.Deposit(1).pipe(Effect.flip)
@@ -365,7 +363,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
                   Effect.andThen(Deferred.await(hold)),
                 )
 
-                // On a single runner the call can only retry until its delivery timeout.
                 const call = yield* held
                   .Deposit(2)
                   .pipe(Actor.commandId(commandId), Effect.ignore, Effect.forkChild)
@@ -394,7 +391,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.promise(() =>
             environment.run(
               Effect.gen(function* () {
-                // A restarted test runtime calls as a new tenant unless told otherwise.
                 const held = yield* account("held").pipe(Actor.tenant(tenant))
                 expect(yield* held.Deposit(2).pipe(Actor.commandId(commandId))).toBe(3)
                 expect(yield* held.Deposit(2).pipe(Actor.commandId(commandId))).toBe(3)
@@ -402,7 +398,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
                   state: { balance: 3 },
                   receipts: 2,
                 })
-                // The interrupted run rolled back; the retry ran the handler once more.
                 expect(fixture.drain.runs.get(commandId)).toBe(2)
               }),
             ),
@@ -441,12 +436,10 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             "the runner to turn unready",
           )
 
-          // New work is refused on the draining runner, for any actor.
           const elsewhere = yield* placed("elsewhere", (placedOn) => placedOn !== owner)
           const refused = yield* deposit(owner, elsewhere.id, 1).pipe(Effect.flip)
           expect(refused.reason._tag).toBe("ActorUnavailable")
 
-          // The in-flight turn still commits.
           yield* pause.release
           expect(yield* Fiber.join(draining)).toEqual({
             outcome: "clean",
@@ -456,8 +449,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Fiber.join(call)).toBe(3)
           expect(yield* readiness(owner)).toEqual({ ready: false, reason: "drained" })
 
-          // A graceful exit releases the shards, so a survivor serves the actor
-          // without waiting for the drained runner's locks to expire.
           yield* cluster.shutdown(owner)
           const released = yield* Clock.currentTimeMillis
           expect(yield* deposit(caller, id, 4)).toBe(7)
@@ -522,7 +513,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(yield* Fiber.join(first)).toBe(3)
 
-          // The waiting command was neither admitted nor run beside the commit.
           expect(fixture.drain.runs.get(commandId) ?? 0).toBe(0)
           expect(yield* inspect(caller, ref)).toMatchObject({ state: { balance: 3 }, receipts: 2 })
 
@@ -544,7 +534,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
         {},
         Effect.gen(function* () {
           const { commandId } = yield* drainDuringTurn(expect, fixture.drain, "beforeCommit")
-          // Its first run rolled back; the retry ran it once more.
           expect(fixture.drain.runs.get(commandId)).toBe(2)
         }),
       ),
@@ -583,13 +572,11 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             interruptedEffects: 0,
           })
 
-          // Runner 0 alone has the executor, and it no longer claims.
           yield* on(owner, account(id).pipe(Effect.flatMap((handle) => handle.Bill("late"))))
           yield* Effect.sleep("1500 millis")
           expect(fixture.drain.attempts.length).toBe(0)
           expect(yield* chargeRow(owner)).toMatchObject([{ attempts: 0, ambiguous: false }])
 
-          // The pending effect waits in the database for the next runner with the executor.
           yield* cluster.shutdown(0)
           yield* cluster.restart(0)
           yield* eventually(
@@ -630,7 +617,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             interruptedEffects: 1,
           })
           expect(fixture.drain.attempts).toEqual([{ runner: 0, attempt: 1, interrupted: true }])
-          // The provider may have applied the call, so the row keeps its claim and stays ambiguous.
           expect(yield* chargeRow(owner)).toEqual([{ attempts: 1, ambiguous: true, leased: true }])
 
           yield* cluster.shutdown(0)
@@ -642,7 +628,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             ),
             "the interrupted effect to be taken over",
           )
-          // No attempt succeeded, so no success route ever ran.
           expect((yield* stateOf(owner, id)).state).toEqual({
             letters: [{ attempts: 1, ambiguous: true }],
           })
@@ -658,7 +643,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
       withCluster(
         environment,
         fixture.drain,
-        // Only a commit's own wake claims, so the sender's runner takes the intent.
         { poll: "1 hour" },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -686,7 +670,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             interruptedEffects: 0,
           })
 
-          // Released at once rather than after its claim lease, the intent is due again.
           const [row] = yield* on(
             survivor,
             Effect.gen(function* () {
@@ -727,7 +710,6 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           const ids = Array.from({ length: 12 }, (_, index) => `load-${index}`)
           const calls = Array.from({ length: 120 }, (_, index) => ids[index % ids.length]!)
 
-          // The load runs through the two runners that stay.
           const load = yield* Effect.forEach(
             calls,
             (id, index) => deposit(1 + (index % 2), id, 1),

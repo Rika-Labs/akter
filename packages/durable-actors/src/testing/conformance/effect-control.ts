@@ -605,7 +605,6 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
             "the interruption",
           )
 
-          // The local commit reached the attempt without waiting for a renewal.
           expect(fixture.attempts[0]!.endedAt! - cancelledAt < 5000).toBe(true)
           yield* eventually(
             stateOf("running").pipe(Effect.map((state) => (state.cancelled ?? []).length === 1)),
@@ -642,7 +641,6 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
             "the interruption",
           )
 
-          // The commit's local signal came before the renewal loop started.
           expect(fixture.attempts[0]!.endedAt! - cancelledAt < 5000).toBe(true)
           yield* eventually(
             stateOf("claimed").pipe(Effect.map((state) => (state.cancelled ?? []).length === 1)),
@@ -704,9 +702,6 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
           fixture.provider = (attempt) => Effect.sleep("20 millis").pipe(Effect.as(attempt.label))
           const labels = Array.from({ length: 6 }, (_, index) => `hot-${index}`)
 
-          // One turn's performs share its clock millisecond, so only a
-          // tie-break in perform order keeps them in order; the rest arrive
-          // one turn at a time while those wait.
           yield* perform("hot", "Serial", labels.slice(0, 3))
 
           for (const label of labels.slice(3)) yield* perform("hot", "Serial", [label])
@@ -772,7 +767,6 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
           )
           const died = yield* actor.CancelThenDie("kept").pipe(Effect.exit)
           expect(Exit.isFailure(died) && Cause.pretty(died.cause)).toContain("Canceller defect")
-          // A crash before commit rolls the cancellation back; the handle's retry commits it once.
           yield* perform("rollback", "Job", ["retried"], { keyed: true, afterMs: 60_000 })
           yield* test.crashNext("beforeCommit")
           yield* actor.CancelEffect(["retried"]).pipe(Effect.orDie)
@@ -805,7 +799,6 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
           expect(state.done).toEqual(["done"])
           expect(state.cancelled ?? []).toEqual([])
           expect(yield* effectRows(sql)).toEqual([])
-          // The key is free again.
           yield* perform("completed", "Job", ["done"], { keyed: true })
           yield* eventually(
             stateOf("completed").pipe(Effect.map((state) => (state.done ?? []).length === 2)),
@@ -895,7 +888,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
             VALUES (7, 'wake-race', 'Controlled', 'raced')`
 
-          // Two rows wait at the cap; the older one is the one a claim takes.
           yield* sql`INSERT INTO actor_outbox ${sql.insert(
             ["oldest", "next"].map((intentId, index) => ({
               routing_key: 7,
@@ -917,7 +909,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             })),
           )}`
 
-          // A claim of the oldest row, as the capped claim writes it, held open before it commits.
           const locked = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
 
@@ -939,8 +930,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
 
           const wake = yield* wakeWaiting({ sql, group, at: now }).pipe(Effect.forkChild)
 
-          // The claim commits only once the wake has either passed its row by or read it as
-          // waiting and blocked on the claim's row lock: the interleaving that shortened the lease.
           yield* eventually(
             Effect.gen(function* () {
               if (wake.pollUnsafe() !== undefined) return true
@@ -967,8 +956,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           }>`SELECT intent_id AS id, running, waiting, due_at_ms::text AS due FROM actor_outbox
             WHERE routing_key = 7 ORDER BY intent_id`
 
-          // The claimed attempt keeps its whole lease, so it still counts against the cap;
-          // the wake goes to the row still waiting.
           expect(rows).toEqual([
             { id: "next", running: false, waiting: false, due: String(now) },
             { id: "oldest", running: true, waiting: false, due: String(leaseEnd) },
@@ -1016,7 +1003,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             caller: "{}",
           })}`
 
-          // A claim of the group is in flight, holding the group's lock as a capped claim does.
           const locked = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
 
@@ -1035,7 +1021,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
 
           const wake = yield* wakeWaiting({ sql, group, at: now }).pipe(Effect.forkChild)
 
-          // The wake must queue behind the claim instead of locking a row the claim would skip.
           yield* eventually(
             Effect.gen(function* () {
               const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
@@ -1104,7 +1089,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
         environment,
         fixture,
         3,
-        // Long enough that a loaded machine's late renewal cannot lose the lease before the kill.
         { executors: { lease: "9 seconds" } },
         Effect.gen(function* () {
           fixture.provider = (attempt) =>
@@ -1131,7 +1115,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           )
           const later = fixture.attempts.slice(1)
 
-          // Nothing started on a survivor while the dead attempt's lease still counted.
           expect(later.map(({ label, attempt }) => `${label}@${attempt}`)).toEqual([
             "first@2",
             "second@1",
@@ -1191,7 +1174,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             attempt.label === "slow" && attempt.attempt === 2
               ? Deferred.await(newer).pipe(Effect.as("slow@2"))
               : Effect.succeed(`${attempt.label}@${attempt.attempt}`)
-          // Attempt 1 has succeeded but its settle waits until attempt 2 runs.
           fixture.hook = (point) =>
             point === "afterExecute" && fixture.attempts.length === 1
               ? Deferred.succeed(settling, undefined).pipe(Effect.andThen(Deferred.await(held)))
@@ -1202,8 +1184,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* Deferred.await(settling)
           expect(fixture.attempts[0]!.runner).toBe(owner)
 
-          // The other runner sees attempt 1's lease expired and takes attempt 2.
-          // Forked: the drain after the jump waits for the attempt it claims.
           yield* advance(other, "4 seconds").pipe(Effect.forkChild)
           yield* eventually(
             Effect.sync(() => fixture.attempts.length === 2),
@@ -1216,7 +1196,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* on(owner, perform("overlap", "Serial", ["next"]))
           yield* Effect.sleep("2 seconds")
 
-          // Attempt 2 still holds the only slot, so the next effect has not started.
           expect(fixture.attempts.map(({ label }) => label)).toEqual(["slow", "slow"])
           expect(
             (yield* query(other, effectRows)).find(
@@ -1253,7 +1232,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           fixture.provider = () => Effect.never
           const { owner, other } = yield* ownerAndOther(yield* refOf("remote"))
-          // Only the other runner's relay claims the effect: the owner's poll never runs.
           yield* on(owner, perform("remote", "Job", ["remote"], { keyed: true, afterMs: 60_000 }))
           yield* advance(other, "1 minute")
           yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
@@ -1298,7 +1276,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* advance(other, "1 minute").pipe(Effect.forkChild)
           yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
 
-          // The attempt's runner renews every 20 s, so it has not seen the cancellation yet.
           yield* on(owner, cancel("raced", ["raced"]))
           yield* Deferred.succeed(gate, undefined)
           yield* eventually(
@@ -1416,7 +1393,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* renewal.reached
           yield* on(other, cancel("late", ["late"]))
 
-          // The other runner's clock passes the lease and settles the cancellation it finds.
           yield* advance(other, "4 seconds")
           yield* eventually(
             on(other, stateOf("late")).pipe(
@@ -1466,7 +1442,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* renewal.reached
           yield* on(other, cancel("late-picky", ["rejected"]))
 
-          // The other runner's clock passes the lease and settles the cancellation it finds.
           yield* advance(other, "4 seconds")
           yield* eventually(
             on(other, stateOf("late-picky")).pipe(
@@ -1566,7 +1541,6 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* on(survivor, stateOf("orphan"))).cancelled).toMatchObject([
             { outcome: "Unknown", ambiguous: true },
           ])
-          // The relay deletes the delivered route's row after its receiver commits.
           yield* eventually(
             query(survivor, effectRows).pipe(Effect.map((rows) => rows.length === 0)),
             "20 seconds",

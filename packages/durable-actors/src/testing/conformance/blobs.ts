@@ -99,7 +99,6 @@ const Drawer = Actor.make("Drawer", {
     QueryWrite,
     CaptureRead,
   },
-  // Well below the blobs written here: blob bytes never count toward it.
   policy: { maxStateBytes: 1_024 },
 })
 
@@ -119,7 +118,6 @@ const bytes = (text: string) => encoder.encode(text)
 const text = (found: Option.Option<Uint8Array>) =>
   Option.map(found, (value) => decoder.decode(value))
 
-// Blobs seen through the loosest static type, as code bypassing the declared blob types would.
 const misuse = (loose: (blob: AnyBlob) => BlobWrite, kind: typeof Misuse.Type) => {
   switch (kind) {
     case "undeclared":
@@ -131,7 +129,6 @@ const misuse = (loose: (blob: AnyBlob) => BlobWrite, kind: typeof Misuse.Type) =
     case "nul":
       return loose(files).set("a\u0000b", bytes("x"))
     case "longName":
-      // 171 three-byte characters: 513 UTF-8 bytes in 171 code units.
       return loose(files).set("界".repeat(171), bytes("x"))
     case "oversized":
       return loose(files).set("x", new Uint8Array(MAX_ENTRY_BYTES + 1))
@@ -277,7 +274,6 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           const cabinet = yield* Cabinet.get("shared-id")
           const drawers = [home, neighbor, abroad]
 
-          // Interleaved: each step writes the same entry name on every actor.
           for (const [index, drawer] of drawers.entries())
             yield* drawer.Store({ name: "a", text: `a${index}` })
           yield* cabinet.Put({ name: "a", text: "cabinet" })
@@ -308,7 +304,6 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const drawer = yield* Drawer.get("chunks")
 
-          // An append creates the entry; each later one adds a chunk.
           for (const chunk of ["one", "-two", "-three"])
             yield* drawer.Append({ name: "log", text: chunk })
           expect(yield* drawer.Get("log")).toEqual(Option.some("one-two-three"))
@@ -364,7 +359,6 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
             yield* test.crashNext(point)
             const rejected = drawer.WriteThenReject("dropped")
             expect(yield* rejected.pipe(Effect.flip)).toEqual(DrawerRejected.make({}))
-            // The retry with the same command id replays the committed failure.
             expect(yield* rejected.pipe(Effect.flip)).toEqual(DrawerRejected.make({}))
             expect(yield* drawer.Get("kept")).toEqual(Option.some("kept"))
             expect(yield* drawer.Get("dropped")).toEqual(Option.none())
@@ -457,7 +451,6 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           ] as const)
             expect(defect(yield* drawer.WriteThenMisuse(kind).pipe(Effect.exit))).toContain(message)
 
-          // The write before each misuse rolled back with its turn.
           expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(0), receipts: 0 })
         }),
       ),
