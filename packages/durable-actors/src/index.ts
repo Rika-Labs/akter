@@ -17,6 +17,7 @@ import { WorkflowMember } from "./members/workflow.ts"
 import { Delivery, SubscriptionMember } from "./members/subscription.ts"
 import { make as authMake, none as authNone } from "./serve/auth.ts"
 import { jwt } from "./serve/jwt.ts"
+import { assertion } from "./serve/assertion/verify.ts"
 import { serve } from "./serve/layer.ts"
 
 export const Actor = {
@@ -43,7 +44,7 @@ export const Actor = {
   /** Serves actor definitions over HTTP as routes on the application's `HttpRouter`. */
   serve,
   /** Authentication providers for `Actor.serve`; one per served layer. */
-  auth: { none: authNone, make: authMake, jwt },
+  auth: { none: authNone, make: authMake, jwt, assertion },
   /** Provided by the runtime only inside command turns; `X.intents` requires it. */
   InTurn,
   /** Provided by the runtime only inside stream handlers; `read.follow` requires it. */
@@ -162,3 +163,25 @@ export type {
   ScopedRead,
   ScopedRows,
 } from "./tables/owned.ts"
+
+export type { AuthProvider, AuthRequest, Authenticated, Binding } from "./serve/auth.ts"
+
+export {
+  ASSERTION_SKEW_MS,
+  AssertionClaims,
+  AssertionKey,
+  AssertionKeySet,
+  MAX_ASSERTION_SECONDS,
+} from "./serve/assertion/verify.ts"
+
+export type { AssertionOptions } from "./serve/assertion/verify.ts"
+
+export {
+  ASSERTION_HEADER,
+  ASSERTION_TYPE,
+  canonicalRequest,
+  reauthenticationDigest,
+  requestDigest,
+} from "./serve/assertion/binding.ts"
+
+export type { BoundRequest } from "./serve/assertion/binding.ts"

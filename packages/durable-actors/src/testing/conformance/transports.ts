@@ -176,7 +176,7 @@ const tokens = Actor.auth.make((request) =>
 /** Serves `SocketRoom` from a fresh listening server for the rest of the scope; returns its host. */
 export const transportsLayer = Layer.mergeAll(socketLayer, feedLayer)
 
-const serveSockets = Effect.fnUntraced(function* (
+export const serveSockets = Effect.fnUntraced(function* (
   environment: ConformanceEnvironment,
   options?: Partial<ServeOptions<never>>,
 ): Effect.fn.Return<string, never, InternalActors | Scope.Scope> {
@@ -239,7 +239,7 @@ const frameOf = (message: ServerWireMessage | undefined) =>
     : Effect.die(new Error(`Expected a frame, got ${message?.t}`))
 
 /** The reason an `end` message's `ActorError` carries, without its `_tag` key. */
-const endReason = (message: ServerWireMessage | undefined) =>
+export const endReason = (message: ServerWireMessage | undefined) =>
   message?.t === "end"
     ? decodeReason(message.error).pipe(
         Effect.orDie,
@@ -247,7 +247,7 @@ const endReason = (message: ServerWireMessage | undefined) =>
       )
     : Effect.die(new Error(`Expected end, got ${message?.t}`))
 
-const opened = (message: ServerWireMessage | undefined) =>
+export const opened = (message: ServerWireMessage | undefined) =>
   message?.t === "open"
     ? Effect.succeed(message)
     : Effect.die(new Error(`Expected open, got ${message?.t}`))
@@ -269,8 +269,12 @@ interface WireSocket {
 }
 
 /** A client socket to a connection route, closed with the scope. */
-const socket = (host: string, id: string, options?: { readonly member?: string }) =>
-  Effect.acquireRelease(
+export const socket = Effect.fnUntraced(function* (
+  host: string,
+  id: string,
+  options?: { readonly member?: string },
+) {
+  return yield* Effect.acquireRelease(
     Effect.gen(function* () {
       const received = yield* Queue.unbounded<string>()
       const closed = yield* Deferred.make<{ readonly code: number }>()
@@ -336,6 +340,7 @@ const socket = (host: string, id: string, options?: { readonly member?: string }
     }),
     ({ ws }) => Effect.sync(() => ws.close()),
   ).pipe(Effect.map(({ wire }) => wire))
+})
 
 /** The status a raw upgrade request is answered with, for upgrades the server refuses. */
 const upgradeStatus = (host: string, id: string, headers: Readonly<Record<string, string>>) =>
@@ -1488,6 +1493,7 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
             ref: () => ref,
             upgrade: principal,
             authenticate: () => Effect.succeed(principal),
+            reauthenticate: () => Effect.succeed(principal),
             greeted: Effect.void,
           }).pipe(Effect.scoped, Effect.timeout("10 seconds"), Effect.orDie)
 

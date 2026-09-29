@@ -42,6 +42,34 @@ A receipt, the state it covers, and the outbox rows staged with it commit in one
 
 A turn whose `COMMIT` was sent when the primary died is commit-unknown. Its caller's retry under the same command id replays the receipt if the commit reached the standby, and runs the command once if it did not. Commands issued while the database is unreachable, including their command-id mint, fail `ActorUnavailable`, which handles retry. The [failover drill](../verification/01-conformance.md#postgres-primary-failover-drill-t10) measures this on three runner processes. It also records one limit: a command caught by the failover can wait its whole `deliveryTimeout` before its caller retries ([#243](https://github.com/Rika-Labs/durable-actors/issues/243)). The drill runs Cluster's table shard leases (`shardLockDisableAdvisory: true`); shard ownership by session advisory locks, which a failover drops, is not yet covered.
 
+## Row-level security
+
+Row-level security is opt-in defense in depth under the mandatory `tenant_id` predicates ([ADR 0051](../decisions/0051-row-level-security.md)). Migration `0018_rls` puts a `durable_tenant` policy on every tenant-bearing framework table, and `Actor.table` puts the same policy in each owned table's drizzle-kit migration. The policy admits only the tenant named by the transaction's `durable.tenant` setting. It exempts the table owner, so a deployment that doesn't opt in sees no change.
+
+To opt in:
+
+1. Run the framework and owned-table migrations, for example by starting one runner without the option.
+2. As the table owner, create the tenant role, grant it the tables, grant it to the runtime's login, and give it the inspection views. Replace `public` with the runtime's schema and `runtime_login` with its login:
+
+   ```sql
+   CREATE ROLE durable_tenant NOLOGIN;
+   GRANT USAGE ON SCHEMA public TO durable_tenant;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO durable_tenant;
+   GRANT durable_tenant TO runtime_login;
+   GRANT CREATE ON SCHEMA durable TO durable_tenant;
+   DO $$ DECLARE v record; BEGIN
+     FOR v IN SELECT relname FROM pg_class WHERE relnamespace = 'durable'::regnamespace AND relkind = 'v'
+     LOOP EXECUTE format('ALTER VIEW durable.%I OWNER TO durable_tenant', v.relname); END LOOP;
+   END $$;
+   REVOKE CREATE ON SCHEMA durable FROM durable_tenant;
+   ```
+
+3. Start every runner with `Actors.layer({ authorize, rowLevelSecurity: { role: "durable_tenant" } })`.
+
+Command turns and queries then run as `durable_tenant` with their actor's tenant set, and the inspection views return only the tenant the reader's transaction names. The relay, executors, retention, and other cross-tenant framework work keep the connecting role. With the option on, queries cost two more statements (`BEGIN` and `COMMIT` around the tenant settings); turns cost nothing more.
+
+Rerun step 2 after any migration that adds a table or a view. Until then, a runner with the option refuses to start and names the object ([runbooks](runbooks.md)). The role must not be a superuser or have `BYPASSRLS`, and the runtime's login must be able to `SET ROLE` to it.
+
 ## Readiness and bounded graceful drain
 
 The accepted behavior in [ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md) requires usable storage, compatible schemas, registered actors, operational routing, and a runner that is not draining before advertising readiness. Listening on a port is insufficient; waking every actor or finishing all workflows is unnecessary.
@@ -50,7 +78,22 @@ Drain makes the runner unready, stops new local admission and acquisition of add
 
 Stopping an executor cannot undo a completed external call; ambiguous provider outcomes require reconciliation or proven idempotency. Parked sockets survive activation sleep, not transport-process shutdown. Draining one runner is not deployment-wide quiescence: [restore](04-backup-restore.md) also pauses ingress and all relevant execution.
 
-`RuntimeControl` remains unimplemented. Its concrete signatures and default deadline still need specification; no example timeout is an accepted default or availability guarantee. Verification must exercise both clean and deadline-expired drain, new-work rejection, interrupted transactions, pending delivery, safe takeover, and provider ambiguity.
+`RuntimeControl` from `@durable-actors/core/runtime` implements this (M4.2); [the server API](../api/01-server-api.md#runtime-control-readiness-and-drain) lists its signatures. There is no default deadline: every `drain` names its own, so no timeout is an implied availability guarantee. The drained runner keeps its shard locks until its layer closes, so exit the process as soon as `drain` returns; a graceful exit hands the shards to the other runners at once, while a crash leaves them to lock expiry. Readiness answers `{ ready: false, reason }` with `draining`, `drained`, `storage`, `routing`, or `unregistered`; wire it into the orchestrator's readiness probe, since `Actor.serve` does not expose a readiness route. `conformance/drain.ts` covers clean and deadline-expired drains, new-work rejection, interrupted transactions, pending delivery, safe takeover, receipt replay, and provider ambiguity.
+
+## The hosted tenant directory
+
+Implemented (M4.8, [ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md) §5): the control-plane database holds each hosted `deployment` with its `primary_region`, and the `tenant_directory` table maps `(deployment, tenant)` to `{ region, state, version }` (`packages/postgres/migrations/0002_tenant_directory.sql`). A tenant with no row lives in its deployment's primary region, and no request writes a row.
+
+Only the `TenantHome` actor in `packages/deployments`, keyed by `<deployment>/<tenant>`, writes the directory, so every change is a receipted command attributed to its operator. Its `Create` command records the tenant's home and returns it again when repeated with the same region. It refuses an unknown deployment (`UnknownDeployment`), any region but the primary (`NotPrimaryRegion`), and a second region for a tenant that already has one (`TenantAlreadyHomed`), because moves wait for L.1. A trigger gives every insert and update the next `version` from one sequence, under a transaction-scoped advisory lock, so versions are assigned in commit order. A reader that holds every row up to version `v` can poll for rows above `v` and never skip a change that commits later with a lower number.
+
+The operator command runs the control-plane actors embedded against the control-plane database:
+
+```sh
+durable tenants create acme --deployment dep-1 --region us-east \
+  --database-url "$CONTROL_PLANE_DATABASE_URL" --operator ops@example.com
+```
+
+It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `durable tenants move` arrives with L.1.
 
 ## Embedded PGlite in production
 
