@@ -218,6 +218,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
       target_id: intent.target.id,
       command: intent.command,
       payload: intent.payload,
+      payload_version: 0,
       caller: yield* Schema.encodeEffect(CallerJson)(intent.caller).pipe(Effect.orDie),
     })
   }
@@ -250,6 +251,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
       target_id: id,
       command: effect.effect,
       payload: effect.payload,
+      payload_version: effect.version,
       caller: yield* Schema.encodeEffect(CallerJson)(effect.caller).pipe(Effect.orDie),
     })
   }

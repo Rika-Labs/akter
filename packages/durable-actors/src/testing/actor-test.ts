@@ -79,6 +79,7 @@ export interface TestOptions {
   readonly relay?: Options["relay"]
   readonly executors?: Options["executors"]
   readonly rowLevelSecurity?: Options["rowLevelSecurity"]
+  readonly payloadWriterWindow?: Options["payloadWriterWindow"]
   /** Shared content settings; omitted, a fixed test grant key with the default grace and skew. */
   readonly content?: Options["content"] | undefined
 }
@@ -647,6 +648,7 @@ export class ActorTest extends Context.Service<
           relay: options.relay,
           executors: options.executors,
           rowLevelSecurity: options.rowLevelSecurity,
+          payloadWriterWindow: options.payloadWriterWindow,
           content: options.content ?? { keys: [TEST_CONTENT_KEY] },
         })
 

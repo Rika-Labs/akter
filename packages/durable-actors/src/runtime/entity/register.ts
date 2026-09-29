@@ -117,6 +117,8 @@ export const registerActor = Effect.fnUntraced(function* (
   transport: Transport,
   authorize: Authorize,
   gate: TurnGate,
+  /** Fails while this runtime may not start turns, e.g. its payload writer rows are stale. */
+  writable: Effect.Effect<void, ActorError>,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -256,6 +258,7 @@ export const registerActor = Effect.fnUntraced(function* (
         Execute: Effect.fnUntraced(
           function* ({ payload }) {
             if (lost) return yield* leaseLost
+            yield* writable
 
             if (Exit.isFailure(activated))
               return Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) })

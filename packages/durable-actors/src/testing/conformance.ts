@@ -57,6 +57,7 @@ import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
+import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
 import {
   retentionConformance,
   retentionFixture,
@@ -456,6 +457,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...progressDeliveryConformance,
   ...transportsConformance,
   ...workflowVersionsConformance,
+  ...payloadMigrationsConformance,
   ...subscriptionsConformance,
   ...subscriptionsRetentionConformance,
   ...subscriptionsClusterConformance,

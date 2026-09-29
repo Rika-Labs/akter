@@ -872,15 +872,20 @@ export const activationEngine = (options: {
               // `where` runs here, outside any lock; the settle below is fenced
               // and conditional, so a racing timeout or a second run settles once.
               for (;;) {
-                const page = yield* sql<{ sequence: string; value: Uint8Array }>`
-              SELECT sequence::text AS sequence, value FROM actor_events
+                const page = yield* sql<{
+                  sequence: string
+                  value: Uint8Array
+                  payload_version: number
+                }>`
+              SELECT sequence::text AS sequence, value, payload_version FROM actor_events
               WHERE ${ownerRow} AND event = ${event} AND sequence > ${scanned}
               ORDER BY sequence LIMIT 256`
 
                 for (const found of page) {
-                  const value = decompress(found.value)
+                  const matched = yield* matches(decompress(found.value), found.payload_version)
 
-                  if (!(yield* matches(value))) continue
+                  if (Option.isNone(matched)) continue
+                  const value = matched.value
                   const at = yield* now
                   const sequence = BigInt(found.sequence)
                   const exit = RecordedExit.cases.Success.make({ value })
