@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schedule, Schema } from "effect"
 import { afterEach, describe, expect, it } from "vitest"
 import { ActorError, RunnerAtCapacity, TransportError } from "../errors/actor.ts"
 import { Actor } from "../index.ts"
@@ -23,6 +23,7 @@ afterEach(() => {
  */
 const serve = (script: Script) => {
   const received: Array<string> = []
+  const closed = { at: undefined as number | undefined }
 
   const server = Bun.serve({
     port: 0,
@@ -31,6 +32,9 @@ const serve = (script: Script) => {
         ? undefined
         : new Response("upgrade required", { status: 426 }),
     websocket: {
+      close: () => {
+        closed.at = performance.now()
+      },
       message: (ws, text) => {
         received.push(String(text))
         const send = (message: ServerWireMessage) => ws.send(JSON.stringify(message))
@@ -45,7 +49,7 @@ const serve = (script: Script) => {
 
   servers.push(server)
 
-  return { url: `http://127.0.0.1:${server.port}`, received }
+  return { url: `http://127.0.0.1:${server.port}`, received, closed }
 }
 
 // Far enough ahead that nothing expires during a test; the client doesn't read it.
@@ -79,7 +83,7 @@ describe("client connections against a misbehaving server", () => {
   it("ignores a message whose t it doesn't know, and ends with a decode failure on one that isn't a message", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const { url } = serve((send, raw) => {
+        const { url, closed } = serve((send, raw) => {
           raw(JSON.stringify({ t: "later", anything: 1 }))
           send({ t: "frame", frame: "after the unknown one" })
           raw("{not json")
@@ -105,6 +109,11 @@ describe("client connections against a misbehaving server", () => {
 
         expect(Schema.is(TransportError)(failure?.reason)).toBe(true)
         expect(failure?.reason).toMatchObject({ code: "decode" })
+
+        // The client closes its socket once the session failed, so the server sees it go.
+        yield* Effect.suspend(() =>
+          closed.at === undefined ? Effect.fail("open") : Effect.void,
+        ).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 500 }), Effect.orDie)
       }),
     ))
 
@@ -164,6 +173,33 @@ const Board = Actor.make("FeedClientBoard", {
 })
 
 describe("client event feeds", () => {
+  it("delivers an event named end, which carries a cursor, instead of reading it as the feed's end", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const entry = {
+          event: yield* Schema.encodeEffect(Schema.toCodecJson(Posted))(
+            Posted.make({ text: "hi" }),
+          ),
+          commandId: "c1",
+          timestamp: 0,
+        }
+
+        const fetch = (_input: RequestInfo | URL) =>
+          Promise.resolve(
+            new Response(`id: 1\nevent: end\ndata: ${JSON.stringify(entry)}\n\n`, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          )
+
+        const feed = Board.client({ baseUrl: "http://feed.test", fetch }).get("b1").events(Posted)
+        const first = yield* Effect.promise(() => feed[Symbol.asyncIterator]().next())
+
+        expect(first.value?.cursor).toBe("1")
+        expect(first.value?.event).toEqual(Posted.make({ text: "hi" }))
+      }),
+    ))
+
   it("waits the Retry-After a refused feed carried before it reopens", () =>
     Effect.runPromise(
       Effect.gen(function* () {

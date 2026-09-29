@@ -168,6 +168,10 @@ export const connect = <Server, Client>({
           if (finished) return
           finished = true
 
+          // Nothing reads the socket after this, so a failure this client detected closes it too.
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+            ws.close(1000)
+
           yield* Queue.fail(messages, isClientClosed(failure) ? DONE : failure)
           yield* Deferred.fail(opened, failure)
         })

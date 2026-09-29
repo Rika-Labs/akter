@@ -501,8 +501,9 @@ The client cases live in [`conformance/transports.ts`](../../packages/durable-ac
 [`client/connection.test.ts`](../../packages/durable-actors/src/client/connection.test.ts) runs the client against a stand-in WebSocket server that sends what it likes:
 
 - `ends with a decode failure on a frame whose event cursor is not a position` — the frames iterator rejects with `TransportError` `decode` instead of hanging.
-- `ignores a message whose t it doesn't know, and ends with a decode failure on one that isn't a message` — an unknown `t` is skipped and the next frame arrives; invalid JSON ends the frames iterator with `TransportError` `decode`.
+- `ignores a message whose t it doesn't know, and ends with a decode failure on one that isn't a message` — an unknown `t` is skipped and the next frame arrives; invalid JSON ends the frames iterator with `TransportError` `decode`, and the client closes its socket, which the server sees.
 - `keeps the connection when the headers provider fails a renewal` — a `reauthenticate` request whose provider rejects sends nothing, and the next frame still arrives.
+- `delivers an event named end, which carries a cursor, instead of reading it as the feed's end` — only an `end` message without an `id` ends the feed.
 - `waits the Retry-After a refused feed carried before it reopens` — a feed refused with `503` and `Retry-After: 1` reopens no sooner than a second later and delivers the event.
 
 The Playwright tests live in [`apps/e2e/chat.e2e.ts`](../../apps/e2e/chat.e2e.ts). They run in Chromium against `examples/chat` served to a browser page (`examples/chat/src/web/`) on in-memory PGlite. The page follows the room's `MessagePosted` feed, posts through the Promise client, runs `React` optimistically, and shows Presence typing frames.
