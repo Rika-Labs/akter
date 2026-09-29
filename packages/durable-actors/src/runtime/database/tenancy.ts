@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Context, Effect, Option } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 
 /**
@@ -26,20 +26,41 @@ export const tenantSettings = ({
   readonly tenant: string
 }) => sql`set_config('role', ${role}, true), set_config('durable.tenant', ${tenant}, true)`
 
-/** Runs `effect` in a transaction bound to `tenant`, or unchanged when row-level security is off. */
+/**
+ * Runs `effect` in a transaction bound to `tenant` as `role`, or unchanged
+ * when row-level security is off or `effect` already runs in a transaction,
+ * such as a query's, that its caller bound.
+ */
+export const inTenant =
+  ({
+    sql,
+    role,
+    tenant,
+  }: {
+    readonly sql: SqlClient.SqlClient
+    readonly role: string | undefined
+    readonly tenant: string
+  }) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      if (role === undefined) return yield* effect
+
+      if (Option.isSome(yield* Effect.serviceOption(sql.transactionService))) return yield* effect
+
+      return yield* sql.withTransaction(
+        sql`SELECT ${tenantSettings({ sql, role, tenant })}`.pipe(Effect.andThen(effect)),
+      )
+    })
+
+/** `inTenant` with this runtime's role. */
 export const withTenant =
   (tenant: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {
       const { role } = yield* TenantScope
-
-      if (role === undefined) return yield* effect
-
       const sql = yield* SqlClient.SqlClient
 
-      return yield* sql.withTransaction(
-        sql`SELECT ${tenantSettings({ sql, role, tenant })}`.pipe(Effect.andThen(effect)),
-      )
+      return yield* inTenant({ sql, role, tenant })(effect)
     })
 
 const refuse = (message: string) =>
@@ -48,10 +69,11 @@ const refuse = (message: string) =>
 /**
  * Refuses to start unless `role` confines the runtime to one tenant per
  * transaction: it must be settable by this login, must not bypass the
- * policies, must be able to write every framework table, and must own every
- * inspection view, so the views filter by the reader's tenant too. Every
+ * policies, and must be able to write every framework table. Every
  * framework table with a `tenant_id` must carry the policy, including tables
- * later migrations add.
+ * later migrations add. Every inspection view must belong to a view-owner
+ * role the policies bind, so the views filter by the reader's tenant, and
+ * which `role` can't act as, so a turn can't alter or drop a view.
  */
 export const checkRowLevelSecurity = Effect.fnUntraced(function* (role: string) {
   const sql = yield* SqlClient.SqlClient
@@ -101,16 +123,46 @@ export const checkRowLevelSecurity = Effect.fnUntraced(function* (role: string) 
       return yield* refuse(`role ${role} cannot read and write ${table.table}; grant it`)
   }
 
-  const views = yield* sql<{ view: string }>`
-    SELECT c.relname AS view FROM pg_class c
-    WHERE c.relnamespace = 'durable'::regnamespace AND c.relkind = 'v'
-      AND c.relowner <> ${role}::regrole
-    ORDER BY c.relname`
+  const views = yield* sql<{
+    view: string
+    owner: string
+    exempt: boolean
+    shared: boolean
+    readable: boolean
+  }>`
+    SELECT v.relname AS view, o.rolname AS owner,
+      o.rolsuper OR o.rolbypassrls OR EXISTS (
+        SELECT 1 FROM pg_class t
+        WHERE t.relnamespace = current_schema()::regnamespace AND t.relkind = 'r'
+          AND t.relrowsecurity AND pg_has_role(o.oid, t.relowner, 'USAGE')
+      ) AS exempt,
+      pg_has_role(${role}, o.oid, 'MEMBER') AS shared,
+      NOT EXISTS (
+        SELECT 1 FROM pg_class t
+        WHERE t.relnamespace = current_schema()::regnamespace AND t.relkind = 'r'
+          AND t.relname LIKE 'actor\\_%'
+          AND NOT has_table_privilege(o.oid, t.oid, 'SELECT')
+      ) AS readable
+    FROM pg_class v JOIN pg_roles o ON o.oid = v.relowner
+    WHERE v.relnamespace = 'durable'::regnamespace AND v.relkind = 'v'
+    ORDER BY v.relname`
 
-  if (views.length > 0)
-    return yield* refuse(
-      `durable.${views[0]!.view} is not owned by ${role}, so it would show every tenant`,
-    )
+  for (const view of views) {
+    if (view.exempt)
+      return yield* refuse(
+        `durable.${view.view} belongs to ${view.owner}, which the policies exempt, so it would show every tenant; give the views to a dedicated view-owner role`,
+      )
+
+    if (view.shared)
+      return yield* refuse(
+        `durable.${view.view} belongs to ${view.owner}, which ${role} can act as, so a turn could alter or drop it; give the views to a role ${role} is not a member of`,
+      )
+
+    if (!view.readable)
+      return yield* refuse(
+        `durable.${view.view} belongs to ${view.owner}, which cannot read every actor_* table; grant it SELECT`,
+      )
+  }
 })
 
 /**

@@ -1,4 +1,5 @@
 import { Effect, Option, Predicate } from "effect"
+import { inTenant, TenantScope } from "../database/tenancy.ts"
 import { SqlClient } from "effect/unstable/sql"
 import type { AnyBlob } from "../../members/blob.ts"
 import type { BlobAccess, BlobRead, BlobScope, BlobWrite } from "../../state/blob.ts"
@@ -22,6 +23,7 @@ export const MAX_ENTRY_BYTES = 8 * 1024 * 1024
 export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: boolean) {
   const sql = yield* SqlClient.SqlClient
   const connection = yield* Effect.serviceOption(sql.transactionService)
+  const { role } = yield* TenantScope
 
   if (write && Option.isNone(connection))
     return yield* Effect.die(new Error("Blob writes need the turn transaction"))
@@ -79,10 +81,11 @@ export const bindBlobs = Effect.fnUntraced(function* (scope: BlobScope, write: b
 
     const run = <A, E>(effect: Effect.Effect<A, E>) =>
       effect.pipe(
+        // Reads outside a transaction, as in a stream handler, take their own tenant transaction.
         (bound) =>
           Option.isSome(connection)
             ? Effect.provideService(bound, sql.transactionService, connection.value)
-            : bound,
+            : inTenant({ sql, role, tenant: ref.tenant })(bound),
         // The SqlError itself decides whether the turn retries or is a defect.
         Effect.orDie,
       )
