@@ -1,4 +1,4 @@
-import { Crypto, Effect, Exit, Option, Result, Schema } from "effect"
+import { Clock, Crypto, Effect, Exit, Option, Result, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
@@ -18,6 +18,8 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { compress, decompress } from "../storage/codec.ts"
+import { Metrics, record } from "../telemetry/metrics.ts"
+import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
@@ -227,6 +229,10 @@ interface Plan {
   /** Each events statement's stamp, and whether a subscription feed row is due. */
   readonly emitted: ReadonlyArray<{ readonly emittedAtMs: number; readonly fed: boolean }>
   readonly outbox: ReadonlyArray<OutboxReplies>
+  /** The positions in `settled` that answered from a stored receipt without running a handler. */
+  readonly replays: ReadonlySet<number>
+  /** What the commit group writes, for the runner's growth metrics. */
+  readonly written: Written
 }
 
 /** One `actor_receipts` row a batch commits. */
@@ -242,6 +248,16 @@ type ReceiptRow = {
   readonly outcome: string
   readonly expires_at_ms: number
 }
+
+/** Rows a committed turn adds; nothing when it replays, acknowledges, or rolls back. */
+export interface Written {
+  readonly receipts: number
+  readonly events: number
+  readonly intents: number
+  readonly effects: number
+}
+
+const nothingWritten: Written = { receipts: 0, events: 0, intents: 0, effects: 0 }
 
 class RolledBack {
   constructor(readonly plan: Plan) {}
@@ -462,6 +478,9 @@ export const executeBatch = Effect.fnUntraced(function* (
     // Broadcasts of committed successes, and how many events the batch appends.
     const broadcasts: Array<Broadcast> = []
     let events = 0
+    let intents = 0
+    let effects = 0
+    const replays = new Set<number>()
     const committed: Array<Omit<CommittedEvents, "emittedAtMs">> = []
     const emitted: Array<{ readonly emittedAtMs: number; readonly fed: boolean }> = []
     // Cursor rows as the batch's earlier deliveries left them, so a later
@@ -482,7 +501,11 @@ export const executeBatch = Effect.fnUntraced(function* (
           Effect.result,
         )
 
-        replayed ||= Result.isSuccess(replay)
+        if (Result.isSuccess(replay)) {
+          replayed = true
+          replays.add(index)
+        }
+
         settled.push(replay)
         continue
       }
@@ -643,6 +666,8 @@ export const executeBatch = Effect.fnUntraced(function* (
       }
 
       events += result.events.length
+      intents += result.outbox.intents.length
+      effects += result.outbox.effects.length
 
       if (Outcome.guards.Success(result.outcome)) broadcasts.push(...(result.broadcasts ?? []))
 
@@ -715,6 +740,8 @@ export const executeBatch = Effect.fnUntraced(function* (
         committed: [],
         emitted: [],
         outbox: [],
+        replays,
+        written: nothingWritten,
       } satisfies Plan
 
     const writes: Array<Statement> = []
@@ -762,6 +789,8 @@ export const executeBatch = Effect.fnUntraced(function* (
       committed,
       emitted,
       outbox: outboxes,
+      replays,
+      written: { receipts: receipts.length, events, intents, effects },
     } satisfies Plan
   })
 
@@ -780,7 +809,7 @@ export const executeBatch = Effect.fnUntraced(function* (
             )
 
             if (plan.writes === undefined) return yield* Effect.fail(new RolledBack(plan))
-            yield* sequential(plan.writes)
+            yield* sequential(plan.writes).pipe(Effect.withSpan(SpanNames.commit))
 
             return plan
           }),
@@ -832,6 +861,10 @@ export const executeBatch = Effect.fnUntraced(function* (
     })),
     /** Started effects the batch's commands cancelled. */
     cancelledEffects: done.outbox.flatMap((replies) => replies.cancelledIds),
+    generation: done.generation,
+    replays: done.replays,
+    /** A plan without writes rolled back, so it added nothing. */
+    written: done.writes === undefined ? nothingWritten : done.written,
   }
 })
 
@@ -854,7 +887,9 @@ const pipelined = <E, R>(
   Effect.scoped(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
+      const leasing = yield* Clock.currentTimeMillis
       const connection = yield* turns.lease
+      yield* record(Metrics.poolWait, {}, (yield* Clock.currentTimeMillis) - leasing)
       let open = false
       const deferred: Array<string> = []
 
@@ -906,12 +941,14 @@ const pipelined = <E, R>(
 
         const ending = decided.writes === undefined ? "ROLLBACK" : "COMMIT"
 
-        yield* pipeline([
+        const group = pipeline([
           ...(decided.writes === undefined ? [] : [...flush(), ...decided.writes]),
           Effect.map(end(ending), (command) => {
             tag = command
           }),
         ])
+
+        yield* ending === "COMMIT" ? group.pipe(Effect.withSpan(SpanNames.commit)) : group
 
         if (ending === "COMMIT" && tag !== "COMMIT")
           return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))

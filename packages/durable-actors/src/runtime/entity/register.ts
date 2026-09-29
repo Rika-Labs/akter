@@ -1,5 +1,6 @@
 import {
   Cause,
+  Clock,
   Context,
   type Crypto,
   Deferred,
@@ -7,6 +8,7 @@ import {
   Effect,
   Exit,
   Latch,
+  Metric,
   Option,
   Result,
   Schedule,
@@ -43,6 +45,9 @@ import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 import type { TurnGate } from "../drain.ts"
+import { DefectLog } from "../telemetry/defects.ts"
+import { count, Metrics, record } from "../telemetry/metrics.ts"
+import { requestAttributes, SpanNames, triggerOf } from "../telemetry/spans.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
 
 // Commands are direct: the Cluster message is volatile and the receipt
@@ -70,6 +75,23 @@ const RESTART_CAP = Duration.seconds(5)
 
 const restartDelay = (restarts: number) =>
   Duration.min(Duration.times(RESTART_BASE, 2 ** restarts), RESTART_CAP)
+
+/** Carries a deterministic defect out of the turn span, so the span records it as failed. */
+class TurnDefect extends Schema.TaggedError<TurnDefect>()("DeterministicDefect", {
+  defect: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+/** The `outcome` attribute of `durable-actors.turns` and of the turn span. */
+const outcomeOf = (outcome: Outcome, replayed = false) =>
+  replayed
+    ? "replay"
+    : Outcome.match(outcome, {
+        Success: () => "success",
+        Failure: () => "failure",
+        Defect: () => "defect",
+        Acknowledged: () => "acknowledged",
+      })
 
 export const encodeEntityId = (tenantAndId: readonly [string, string]) =>
   encodeEntityIdOf(tenantAndId)
@@ -157,6 +179,10 @@ export const registerActor = Effect.fnUntraced(function* (
   writable: Effect.Effect<void, ActorError>,
 ) {
   const sharding = yield* Sharding.Sharding
+
+  const defects = yield* DefectLog
+  const typeAttributes = { actor_type: registration.name }
+  const activations = Metric.withAttributes(Metrics.activations, typeAttributes)
 
   const owner = activationOwner({
     registration,
@@ -267,14 +293,17 @@ export const registerActor = Effect.fnUntraced(function* (
         )
 
       yield* Effect.acquireRelease(
-        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)),
+        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
+          Effect.andThen(count(Metrics.activationsStarted, typeAttributes, 1)),
+          Effect.andThen(Metric.modify(activations, 1)),
+        ),
         () =>
           Effect.sync(() => {
-            const count = resident.get(entityId)! - 1
+            const left = resident.get(entityId)! - 1
 
-            if (count === 0) resident.delete(entityId)
-            else resident.set(entityId, count)
-          }),
+            if (left === 0) resident.delete(entityId)
+            else resident.set(entityId, left)
+          }).pipe(Effect.andThen(Metric.modify(activations, -1))),
       ).pipe(Scope.provide(scope))
 
       const owned = yield* ownedOf(entityId)
@@ -302,8 +331,21 @@ export const registerActor = Effect.fnUntraced(function* (
       aloneAfterFailure.set(activation, alone)
 
       // Connection broadcasts of a batch go out once it commits.
-      const execute = (batch: ReadonlyArray<Waiting>) =>
-        Effect.gen(function* () {
+      const execute = (batch: ReadonlyArray<Waiting>) => {
+        let labels: ReadonlyArray<string> | undefined
+        let started = 0
+
+        return Effect.gen(function* () {
+          started = yield* Clock.currentTimeMillis
+
+          for (const { request } of batch)
+            if (request.queuedAtMs !== undefined)
+              yield* record(
+                Metrics.mailboxAge,
+                typeAttributes,
+                Math.max(0, started - request.queuedAtMs),
+              )
+
           yield* owner.prepare(owned)
 
           const done = yield* executeBatch(
@@ -318,6 +360,26 @@ export const registerActor = Effect.fnUntraced(function* (
             owner.hasConnections ? owner.list(owned) : undefined,
             registration.cron,
           )
+
+          labels = done.settled.map((settled, index) =>
+            Result.isSuccess(settled)
+              ? outcomeOf(settled.success, done.replays.has(index))
+              : "rejected",
+          )
+          yield* Effect.annotateCurrentSpan({ "actor.generation": done.generation })
+
+          if (batch.length === 1 && Result.isSuccess(done.settled[0]!)) {
+            yield* Effect.annotateCurrentSpan({
+              "turn.replayed": done.replays.has(0),
+              "turn.outcome": labels[0]!,
+            })
+          }
+
+          yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
+          yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
+          yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
+          yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
+          yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
 
           // A route turn's command id is its effect id: its progress stops
           // before the route's broadcasts, as does the progress of every
@@ -341,52 +403,104 @@ export const registerActor = Effect.fnUntraced(function* (
           }
 
           return done.settled
-        })
+        }).pipe(
+          Effect.onExit((exit) =>
+            Effect.gen(function* () {
+              // A deterministic defect aborts the batch; its commands rerun alone and count then.
+              if (Exit.isFailure(exit) && !retryable(exit.cause) && !Cause.hasFails(exit.cause))
+                return
+
+              const elapsed = (yield* Clock.currentTimeMillis) - started
+
+              for (const [index] of batch.entries()) {
+                yield* count(
+                  Metrics.turns,
+                  {
+                    ...typeAttributes,
+                    // A declared ActorError rejects the command; a retryable death reruns it.
+                    outcome:
+                      labels?.[index] ??
+                      (Exit.isFailure(exit) && Cause.hasFails(exit.cause) ? "rejected" : "retried"),
+                  },
+                  1,
+                )
+                yield* record(Metrics.turnDuration, typeAttributes, elapsed)
+              }
+            }),
+          ),
+        )
+      }
 
       // A lone command's turn: its span and logs name the command, and a
       // deterministic defect answers the caller with `Defect`.
       const runAlone = (entry: Waiting) => {
         const { request } = entry
 
-        return execute([entry]).pipe(
-          Effect.flatMap(([settled]) =>
-            Result.isSuccess(settled!)
-              ? Effect.succeed(settled.success)
-              : Effect.fail(settled!.failure),
-          ),
-          Effect.catchDefect(
-            Effect.fnUntraced(function* (cause) {
-              if (retryable(Cause.die(cause))) return yield* Effect.die(cause)
+        return Effect.flatMap(Clock.currentTimeMillis, (started) =>
+          execute([entry]).pipe(
+            Effect.flatMap(([settled]) =>
+              Result.isSuccess(settled!)
+                ? Effect.succeed(settled.success)
+                : Effect.fail(settled!.failure),
+            ),
+            Effect.catchDefect(
+              Effect.fnUntraced(function* (cause) {
+                if (retryable(Cause.die(cause))) return yield* Effect.die(cause)
 
-              // Deterministic defects run no user code, because a defect hook
-              // can loop on corrupt state; the turn span and this log carry
-              // the cause for operators.
-              yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
+                // Deterministic defects run no user code, because a defect hook
+                // can loop on corrupt state; the turn span, the defect log, and
+                // this log carry the cause for operators.
+                yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
 
-              return Outcome.cases.Defect.make({ cause })
+                const span = yield* Effect.currentSpan.pipe(Effect.option)
+
+                yield* defects.record({
+                  span: SpanNames.turn(request.ref.actor, request.command),
+                  traceId: Option.isSome(span) ? span.value.traceId : "",
+                  spanId: Option.isSome(span) ? span.value.spanId : "",
+                  atMs: yield* Clock.currentTimeMillis,
+                  tenant: request.ref.tenant,
+                  actorType: request.ref.actor,
+                  actorId: request.ref.id,
+                  command: request.command,
+                  commandId: request.commandId,
+                  trigger: triggerOf(request),
+                  cause: Cause.pretty(Cause.die(cause)),
+                })
+                yield* Effect.annotateCurrentSpan({ "turn.outcome": "defect" })
+                yield* count(Metrics.turns, { ...typeAttributes, outcome: "defect" }, 1)
+                yield* record(
+                  Metrics.turnDuration,
+                  typeAttributes,
+                  (yield* Clock.currentTimeMillis) - started,
+                )
+
+                // Failing inside the span marks it as a defect for the exporter.
+                return yield* TurnDefect.make({
+                  defect: cause,
+                  message: cause instanceof Error ? cause.message : String(cause),
+                })
+              }),
+            ),
+            Effect.annotateLogs({
+              actor: request.ref.actor,
+              id: request.ref.id,
+              tenant: request.ref.tenant,
+              command: request.command,
+              commandId: request.commandId,
             }),
+            // The span's call site is always this file, so a captured stack
+            // trace would cost an Error per turn and name nothing useful.
+            Effect.withSpan(
+              SpanNames.turn(request.ref.actor, request.command),
+              { kind: "server", attributes: requestAttributes(request) },
+              { captureStackTrace: false },
+            ),
+            Effect.catchIf(Schema.is(TurnDefect), (defect) =>
+              Effect.succeed(Outcome.cases.Defect.make({ cause: defect.defect })),
+            ),
+            Effect.exit,
           ),
-          Effect.annotateLogs({
-            actor: request.ref.actor,
-            id: request.ref.id,
-            tenant: request.ref.tenant,
-            command: request.command,
-            commandId: request.commandId,
-          }),
-          // The span's call site is always this file, so a captured stack
-          // trace would cost an Error per turn and name nothing useful.
-          Effect.withSpan(
-            `durable-actors.${request.ref.actor}/${request.command}`,
-            {
-              attributes: {
-                "actor.tenant": request.ref.tenant,
-                "actor.id": request.ref.id,
-                "command.id": request.commandId,
-              },
-            },
-            { captureStackTrace: false },
-          ),
-          Effect.exit,
         )
       }
 
@@ -451,7 +565,7 @@ export const registerActor = Effect.fnUntraced(function* (
         const exit = yield* execute(batch).pipe(
           Effect.annotateLogs({ actor: ref.actor, id: ref.id, tenant: ref.tenant }),
           Effect.withSpan(
-            `durable-actors.${ref.actor}/batch`,
+            SpanNames.batch(ref.actor),
             {
               attributes: {
                 "actor.tenant": ref.tenant,

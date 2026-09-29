@@ -67,6 +67,12 @@ export const Request = Schema.Struct({
    */
   external: Schema.optionalKey(Schema.Boolean),
   delivery: Schema.optionalKey(SubscriptionEnvelope),
+  /**
+   * When the admitting runner sent the command to its owner, by that
+   * runner's clock; the owner reports the wait as mailbox age. Not part of
+   * the command's identity.
+   */
+  queuedAtMs: Schema.optionalKey(Schema.Finite),
 })
 
 export type Request = typeof Request.Type
