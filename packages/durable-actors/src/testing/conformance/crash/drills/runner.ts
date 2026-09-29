@@ -64,7 +64,6 @@ const runtime = Layer.unwrap(
     const address = RunnerAddress.RunnerAddress.make({ host: "127.0.0.1", port })
     let blocked = false
 
-    // A relay told to block stops at its first claim once the parent asks, holding what it claimed.
     const hooks = Layer.succeed(TurnHooks, {
       at: (point) =>
         blockRelay && point === "afterClaim" && !blocked
@@ -110,9 +109,6 @@ const runtime = Layer.unwrap(
   }),
 ).pipe(Layer.provideMerge(BunCrypto.layer))
 
-// The parent paces each runner with named lines on stdin: GO starts its
-// load, RESUME releases a runner held mid-load. A closed stdin releases every
-// wait, so a runner whose parent died never hangs.
 const received = new Set<string>()
 
 const waiting = new Map<string, () => void>()
@@ -143,16 +139,12 @@ const signal = (line: string) =>
     else waiting.set(line, () => resume(Effect.void))
   })
 
-// Each runner is also a caller: it retries a command under its minted id until
-// it commits, as a client would, and reports each acknowledgment, and each
-// operation with its latency.
 const program = Effect.gen(function* () {
   const actors = yield* ActorClient
   const internal = yield* InternalActors
   const operations = yield* Config.Int("DRILL_OPERATIONS")
   const holdAt = yield* Config.Int("DRILL_HOLD_AT").pipe(Config.withDefault(operations))
 
-  // Minting reads the database clock, so it too waits out a failover.
   const mint = actors.mintCommandId.pipe(
     Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
     Effect.orDie,
@@ -189,7 +181,6 @@ const program = Effect.gen(function* () {
     yield* Console.log(`ACKED ${sendId}`)
 
     const latency = (yield* Clock.currentTimeMillis) - started
-    // The shards each command went to, so the parent can tell which waited for a takeover.
     const counterShard = yield* internal.shardId(counter.ref)
     const senderShard = yield* internal.shardId(sender.ref)
     yield* Console.log(

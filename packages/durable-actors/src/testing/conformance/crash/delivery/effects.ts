@@ -31,8 +31,6 @@ const runtime = Layer.unwrap(
     const mode = yield* Config.String("CRASH_POINT")
     const database = yield* Config.String("CRASH_DATABASE_URL")
 
-    // The fake provider is an idempotent ledger outside the framework: it
-    // counts every call it receives under its idempotency key.
     const provider = new Pool({ connectionString: database, max: 1 })
     yield* Effect.addFinalizer(() => Effect.promise(() => provider.end()))
 
@@ -66,8 +64,6 @@ const runtime = Layer.unwrap(
       ),
     )
 
-    // Only the effect's own steps and its route's delivery stop, so the
-    // author's turn commits first.
     const hooks = Layer.succeed(TurnHooks, {
       at: (point, request) =>
         point === mode && (request.command === "Moderate" || request.command === "Moderated")
@@ -75,7 +71,6 @@ const runtime = Layer.unwrap(
           : Effect.void,
     })
 
-    // The recovering process runs past the crashed attempt's execution lease.
     const clock = Layer.succeed(FrameworkClock, {
       offsetMillis: () => (mode === "recover" ? 120_000 : 0),
     })
@@ -91,8 +86,6 @@ const runtime = Layer.unwrap(
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
 
-// A crashed process leaves its committed effect in actor_outbox; a fresh
-// process must settle it and deliver its route exactly once.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
   const sql = yield* SqlClient.SqlClient
@@ -125,7 +118,6 @@ const program = Effect.gen(function* () {
     state: decompress(rows[0]!.state_bytes),
   })
 
-  // Tagged so the parent ignores runtime logs that share stdout.
   yield* Console.log(`RESULT ${result}`)
 }).pipe(Effect.timeout("10 seconds"))
 

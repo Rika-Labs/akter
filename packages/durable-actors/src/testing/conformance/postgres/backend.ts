@@ -11,11 +11,9 @@ declare module "vitest" {
   }
 }
 
-// A physical streaming replica of TEST_DATABASE_URL's server, when one is configured.
 const { replicaUrl, ci } = Effect.runSync(
   Effect.gen(function* () {
     return {
-      // check:ci passes an empty value when it started no replica.
       replicaUrl: Option.getOrUndefined(
         Option.filter(
           yield* Config.option(Config.String("TEST_REPLICA_DATABASE_URL")),
@@ -27,7 +25,6 @@ const { replicaUrl, ci } = Effect.runSync(
   }),
 )
 
-// CI always provides one, so its read-your-writes evidence can't be skipped unnoticed.
 if (ci && replicaUrl === undefined)
   throw new Error("TEST_REPLICA_DATABASE_URL must name a streaming replica in CI")
 

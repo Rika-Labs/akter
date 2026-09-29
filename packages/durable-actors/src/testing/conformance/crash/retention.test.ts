@@ -64,9 +64,6 @@ describe("retention cleanup process death with Postgres", () => {
           expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
           const id = Array.from(lines)[0]!.slice("ID ".length)
 
-          // Four receipt batches (seven receipts) and one event batch
-          // committed: every receipt is gone, and the events left are a
-          // contiguous suffix under the unchanged sequence.
           expect((yield* Effect.promise(() => pool.query(stored))).rows).toEqual([
             { receipts: 0, events: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12], sequence: 12 },
           ])
@@ -75,8 +72,6 @@ describe("retention cleanup process death with Postgres", () => {
           const output = yield* recovery.stdout.pipe(Stream.decodeText(), Stream.mkString)
           expect(yield* recovery.exitCode, output).toBe(0)
 
-          // The sequence continues past the pruned prefix, and the pruned,
-          // expired id is refused without running its handler again.
           expect(
             output
               .split("\n")

@@ -687,8 +687,6 @@ const counterConformance: ReadonlyArray<ConformanceCase> = [
               return { value, ms: (yield* Clock.currentTimeMillis) - started }
             })
 
-          // Five deaths in a row wait 50 + 100 + 200 + 400 + 800 ms before the
-          // sixth attempt commits; a flat delay would retry in a quarter second.
           for (let crash = 0; crash < 5; crash++) yield* test.crashNext("beforeCommit")
           const before = fixture.executions
           const backedOff = yield* elapsed(crashing.Increment(1))
@@ -696,13 +694,11 @@ const counterConformance: ReadonlyArray<ConformanceCase> = [
           expect(fixture.executions - before).toBe(6)
           expect(backedOff.ms >= 1_500).toBe(true)
 
-          // Another actor of the type restarts at the base delay.
           yield* test.crashNext("beforeCommit")
           const other = yield* elapsed((yield* Counter.get("crash-always-other")).Increment(2))
           expect(other.value).toBe(2)
           expect(other.ms < 1_000).toBe(true)
 
-          // A settled turn resets the crashing actor's own backoff.
           yield* test.crashNext("beforeCommit")
           const reset = yield* elapsed(crashing.Increment(1))
           expect(reset.value).toBe(2)
@@ -771,7 +767,6 @@ const counterConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           expect(yield* counter.Increment(1)).toBe(1)
 
-          // zstd frames start with the magic number 28 b5 2f fd.
           const stored = yield* sql<{ routing_key: string; magic: string }>`
             SELECT routing_key::text AS routing_key, encode(substring(value FROM 1 FOR 4), 'hex') AS magic
             FROM actor_state WHERE tenant_id = ${counter.ref.tenant} AND actor_id = 'warm'`
@@ -1057,8 +1052,6 @@ const counterConformance: ReadonlyArray<ConformanceCase> = [
             .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
 
           yield* committing.reached
-          // Bob passes admission while Alice's receipt is still uncommitted,
-          // then is held before delivery until Alice's turn commits.
           const delivering = yield* test.pauseNext("beforeDelivery")
 
           const competitor = yield* bob
@@ -1624,14 +1617,12 @@ export const describeConformance = (options: {
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
               content: overrides?.content,
             }).pipe(
-              // Subscription cases fault particular deliveries by command.
               Layer.provide(
                 Layer.mergeAll(
                   Layer.succeed(TurnHooks, {
                     at: (point, request) =>
                       Effect.suspend(() => fixture.subscriptions.hook(point, request)),
                   }),
-                  // Content cases pause particular operations between their statements.
                   Layer.succeed(ContentHooks, {
                     at: (point) => Effect.suspend(() => fixture.content.hook(point)),
                   }),

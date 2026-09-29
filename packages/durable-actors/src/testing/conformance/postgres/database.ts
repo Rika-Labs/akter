@@ -4,8 +4,7 @@ import type { Config } from "effect"
 import { Pool } from "pg"
 import type { ConformanceBackend, ConformanceDatabase } from "../../conformance.ts"
 
-// A copy is refused while a session is still open on its source, and the
-// server ends a closed pool's sessions a moment after the client has.
+/** Postgres refuses to copy a database while a session is open on its source, and the server ends a closed pool's sessions a moment after the client has, so template copies retry. */
 const copyDatabase = (admin: Pool, name: string, template: string) =>
   Effect.tryPromise(() => admin.query(`CREATE DATABASE "${name}" TEMPLATE "${template}"`)).pipe(
     Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }),

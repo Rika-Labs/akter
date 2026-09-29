@@ -94,7 +94,7 @@ const SETTLE_ROUNDS = 5
  * every command committed exactly one receipt and no due or attempted outbox
  * row was left undelivered. Any failure dies with the seed, so rerunning that
  * seed repeats the program's choices and the fault on each step; command ids
- * are minted fresh on every run.
+ * are minted fresh on every run. A crashed delivery pushes its row's due time to the end of its claim lease, so an attempted row counts as in flight while an unattempted row that is not yet due is a timer the program scheduled.
  */
 export const simulate =
   (test: ActorTest["Service"]) =>
@@ -159,9 +159,6 @@ export const simulate =
 
         if (steps.length === 0) violations.push("the program sent no command")
 
-        // A crashed delivery pushes its row's due time to the end of its claim
-        // lease; a row that was ever attempted is still in flight, while one
-        // never attempted and not yet due is a timer the program scheduled.
         let unsettled = Number.POSITIVE_INFINITY
 
         for (let round = 0; round < SETTLE_ROUNDS && unsettled > 0; round++) {

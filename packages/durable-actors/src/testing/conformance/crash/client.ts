@@ -53,7 +53,6 @@ const program = Effect.gen(function* () {
     Layer.provide(runtime),
   )
 
-  // The first request waits for the runtime, so a restarted process never answers before its routes.
   const web = HttpRouter.toWebHandler(app, { disableLogger: true })
 
   yield* Effect.acquireRelease(
