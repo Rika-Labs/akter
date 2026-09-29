@@ -144,12 +144,20 @@ const signal = (line: string) =>
   })
 
 // Each runner is also a caller: it retries a command under its minted id until
-// it commits, as a client would, and reports each commit and its latency.
+// it commits, as a client would, and reports each acknowledgment, and each
+// operation with its latency.
 const program = Effect.gen(function* () {
   const actors = yield* ActorClient
   const internal = yield* InternalActors
   const operations = yield* Config.Int("DRILL_OPERATIONS")
   const holdAt = yield* Config.Int("DRILL_HOLD_AT").pipe(Config.withDefault(operations))
+
+  // Minting reads the database clock, so it too waits out a failover.
+  const mint = actors.mintCommandId.pipe(
+    Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
+    Effect.orDie,
+  )
+
   yield* Console.log("READY")
   yield* signal("GO")
 
@@ -157,8 +165,8 @@ const program = Effect.gen(function* () {
     if (index === holdAt) yield* signal("RESUME")
 
     const started = yield* Clock.currentTimeMillis
-    const incrementId = yield* actors.mintCommandId
-    const sendId = yield* actors.mintCommandId
+    const incrementId = yield* mint
+    const sendId = yield* mint
     const counter = yield* Counter.get(`counter-${index % 48}`)
     const sender = yield* Sender.get(`sender-${index % 24}`)
 
@@ -169,6 +177,7 @@ const program = Effect.gen(function* () {
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
         Effect.orDie,
       )
+    yield* Console.log(`ACKED ${incrementId}`)
 
     yield* sender
       .Send(`receiver-${index % 32}`)
@@ -177,6 +186,7 @@ const program = Effect.gen(function* () {
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
         Effect.orDie,
       )
+    yield* Console.log(`ACKED ${sendId}`)
 
     const latency = (yield* Clock.currentTimeMillis) - started
     // The shards each command went to, so the parent can tell which waited for a takeover.
