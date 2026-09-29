@@ -1,5 +1,6 @@
 const OWNED_ROOTS = new Set(["apps", "packages", "examples", "tooling", "infra"])
 
+/** Directory names that say nothing about what a folder owns. */
 export const FORBIDDEN_SEGMENTS = new Set([
   "core",
   "shared",
@@ -15,6 +16,10 @@ export const FORBIDDEN_SEGMENTS = new Set([
 
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/
 
+/**
+ * Path segments from the first governed root (apps, packages, examples,
+ * tooling, infra), or null outside them.
+ */
 export function repoSegments(filename: string): ReadonlyArray<string> | null {
   const segments = filename.replaceAll("\\", "/").split("/").filter(Boolean)
   const anchor = segments.findIndex((segment) => OWNED_ROOTS.has(segment))
@@ -24,6 +29,7 @@ export function repoSegments(filename: string): ReadonlyArray<string> | null {
   return segments.slice(anchor)
 }
 
+/** Like `repoSegments`, but null unless the path is a source file below a root. */
 export function repoSourceSegments(filename: string): ReadonlyArray<string> | null {
   const segments = repoSegments(filename)
 

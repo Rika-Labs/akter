@@ -23,8 +23,10 @@ const testLayer = (database: Parameters<typeof ActorTest.layer>[0]["database"]) 
     ),
   )
 
-// Connections are opened through `ActorTest`'s in-process transport, so each
-// case builds a test runtime on the case database instead of `withRuntime`'s.
+/**
+ * Connections are opened through `ActorTest`'s in-process transport, so each
+ * case builds a test runtime on the case database instead of `withRuntime`'s.
+ */
 const withConnections = <A, E>(
   context: ScenarioContext,
   body: (instruments: Instruments | undefined) => Effect.Effect<A, E, Services>,
@@ -168,7 +170,6 @@ export const connections: Scenario = {
                 Effect.forkScoped,
               )
 
-              // Timed from the command's call until the subscriber holds its event.
               const logged = () => Effect.andThen(probe.Log("hello"), Queue.take(received))
               yield* load({ workers: 1, operations: 50, operation: logged })
 

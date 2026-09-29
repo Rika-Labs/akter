@@ -8,6 +8,10 @@ interface Source {
   readonly text: string
 }
 
+/**
+ * Lint-disable directive comments in the source, as `file:line: message`
+ * strings; throws when the source does not parse.
+ */
 export function violations(source: Source) {
   const parsed = parseSync(source.file, source.text)
 
@@ -23,6 +27,10 @@ export function violations(source: Source) {
   })
 }
 
+/**
+ * Scans the repository's tracked and untracked source files and fails with
+ * every lint-disable directive found.
+ */
 export const check = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner

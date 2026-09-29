@@ -78,7 +78,6 @@ export const listen = Effect.fnUntraced(function* (
 export const connect = Effect.fnUntraced(function* (url: string) {
   const session = http2.connect(url)
 
-  // A session error also fails every open stream, which reports it to its caller.
   session.on("error", () => undefined)
 
   yield* Effect.callback<void, Http2Failure>((resume) => {
