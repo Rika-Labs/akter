@@ -51,3 +51,13 @@ The document's `securitySchemes` come from the server's auth provider, and every
 | `cookie` | `Actor.auth.make({ cookies: { name } })`, an `apiKey` in cookie | the cookie `name`, as a browser or cookie jar sends it |
 
 A server under `Actor.auth.none` declares no schemes. Never put a credential in the URL. A `401` carries `www-authenticate: Bearer` whatever the scheme.
+
+## MCP
+
+`Actor.serve` with `mcp: { path: "/mcp" }` serves the same members as MCP tools, derived from the same OpenAPI document ([ADR 0060](../decisions/0060-generated-protocols-mcp-and-python-client.md)). The endpoint speaks MCP revision 2026-07-28 over Streamable HTTP and nothing earlier: send each JSON-RPC message as its own `POST` with `MCP-Protocol-Version`, `Mcp-Method`, and (for `tools/call`) `Mcp-Name` headers, and the protocol version and client capabilities in `params._meta`. Send the same credentials as any route.
+
+- Tool names are operation ids, `<Actor>.<Member>`. `durable.commandIds` mints a command id.
+- Arguments: `id` (the actor's key; absent for a singleton), `commandId` (commands and reducers only), and `input`.
+- A command's `commandId` is the same id `Idempotency-Key` carries. Mint it once with `durable.commandIds`, keep it with the pending call, and send it with the same `input` on every retry. The JSON-RPC `id` is not a command id and may change on each attempt. A call retried over HTTP with the same id replays the same receipt.
+- A result is `isError: false` with the output as JSON text (and as `structuredContent` when the tool has an `outputSchema`), or `isError: true` with the text holding exactly the error body of the HTTP route: a declared error, `{ _tag: "ActorError", reason, isRetryable, retryAfter? }`, or `{ _tag: "Defect", traceId }`. The retry table above applies to `isRetryable` and `retryAfter`. Failed authentication is an HTTP `401` with the `Unauthorized` body, not a JSON-RPC error.
+- Internal commands, connections, streams, feeds, and content have no tool, and a call to one is `-32602 Unknown tool`.
