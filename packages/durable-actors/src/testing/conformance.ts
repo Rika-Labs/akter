@@ -67,6 +67,12 @@ import {
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import {
+  restoreConformance,
+  restoreFixture,
+  type RestoreFixture,
+  restoreLayer,
+} from "./conformance/restore.ts"
+import {
   assertionsConformance,
   type ConformanceEdge,
   edgeConformance,
@@ -219,6 +225,11 @@ export interface ConformanceEnvironment {
   /** A second database untouched by the current runtime, for isolation cases. */
   readonly freshDatabase: Effect.Effect<ConformanceDatabase>
   /**
+   * Copies the retained database whole, as a backup of a stopped deployment
+   * would, into a new database no runtime has opened. Requires `stop` first.
+   */
+  readonly snapshot: Effect.Effect<ConformanceDatabase>
+  /**
    * Opens an independent SQL connection to the same database. Only present
    * when the backend advertises `independentConnections`.
    */
@@ -248,6 +259,8 @@ export interface ConformanceBackend {
   readonly open: () => Promise<{
     readonly database: ConformanceDatabase
     readonly freshDatabase: Effect.Effect<ConformanceDatabase>
+    /** Copies a database that no runtime has open into a new one. */
+    readonly copy: (database: ConformanceDatabase) => Effect.Effect<ConformanceDatabase>
     readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
     readonly close: Effect.Effect<void>
   }>
@@ -265,6 +278,7 @@ export interface ConformanceFixture {
   readonly relay: RelayFixture
   readonly effectControl: EffectControlFixture
   readonly retention: RetentionFixture
+  readonly restore: RestoreFixture
   readonly workflows: WorkflowsFixture
   readonly subscriptions: SubscriptionsFixture
   readonly connections: ConnectionsFixture
@@ -399,6 +413,7 @@ const makeFixture = (): ConformanceFixture => ({
   relay: relayFixture(),
   effectControl: effectControlFixture(),
   retention: retentionFixture(),
+  restore: restoreFixture(),
   workflows: workflowsFixture(),
   subscriptions: subscriptionsFixture(),
   connections: connectionsFixture(),
@@ -452,6 +467,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...inspectorConformance,
   ...rlsConformance,
   ...retentionConformance,
+  ...restoreConformance,
   ...workflowsConformance,
   ...connectionsConformance,
   ...streamsConformance,
@@ -1456,6 +1472,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
 interface ConformanceStore {
   readonly database: ConformanceDatabase
   readonly freshDatabase: Effect.Effect<ConformanceDatabase>
+  readonly copy: (database: ConformanceDatabase) => Effect.Effect<ConformanceDatabase>
   readonly connect?: Effect.Effect<ConformanceConnection, never, Scope.Scope>
   readonly close: Effect.Effect<void>
 }
@@ -1496,6 +1513,7 @@ export const describeConformance = (options: {
     effectControlLayer,
     effectControlEffects(fixture.effectControl),
     retentionLayer(fixture.retention),
+    restoreLayer(fixture.restore),
     propertiesLayer,
     workflowsLive(fixture.workflows),
     connectionsLayer(fixture.connections),
@@ -1585,6 +1603,14 @@ export const describeConformance = (options: {
         ? Effect.die(new Error("Conformance environment is not open"))
         : store.freshDatabase,
     ),
+    snapshot: Effect.suspend(() => {
+      if (store === undefined) return Effect.die(new Error("Conformance environment is not open"))
+
+      if (current !== undefined)
+        return Effect.die(new Error("A snapshot needs the conformance runtime stopped"))
+
+      return store.copy(store.database)
+    }),
     get connect() {
       return store?.connect
     },
