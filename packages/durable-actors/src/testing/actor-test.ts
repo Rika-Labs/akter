@@ -72,6 +72,8 @@ export interface TestOptions {
    * independent-connection behavior.
    */
   readonly database?: Redacted.Redacted<string> | PgliteClient.PgliteClientConfig
+  /** A streaming replica of the Postgres `database`, which queries read once caught up. */
+  readonly replica?: Redacted.Redacted<string> | undefined
   readonly as?: Caller
   readonly authorize?: Options["authorize"]
   readonly retryWindowMs?: number
@@ -165,7 +167,7 @@ export const executeForTest = (request: Request): Effect.Effect<Outcome, ActorEr
 
     if (actors === undefined) return yield* Effect.die(new Error("ActorTest runtime unavailable"))
 
-    return yield* actors.execute(request)
+    return (yield* actors.execute(request)).outcome
   })
 
 /**
@@ -670,6 +672,10 @@ export class ActorTest extends Context.Service<
                   url: options.database,
                   maxConnections: 10,
                   stream: member?.connect,
+                  replica:
+                    options.replica === undefined
+                      ? undefined
+                      : { url: options.replica, maxConnections: 4 },
                 })
               : Database.pglite(options.database),
           ),

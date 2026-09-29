@@ -58,16 +58,20 @@ export const checkIdentity = Effect.fnUntraced(function* (
  * Reads the database clock, the canonical payload, and any retained receipt
  * outside a turn in one statement, so external admission costs one round trip
  * before delivery. The receipt is only released after the identity and access
- * checks that follow.
+ * checks that follow. The WAL position is read after the statement's snapshot,
+ * which already saw the receipt's commit, so it is a valid version for a replay.
  */
 export const readAdmission = Effect.fnUntraced(function* (request: Request, routingKey: bigint) {
   const sql = yield* SqlClient.SqlClient
   const clock = yield* FrameworkClock
 
   const row = (yield* sql<
-    { now: string; canonical: string } & { [K in keyof StoredReceipt]: StoredReceipt[K] | null }
+    { now: string; canonical: string; version: string } & {
+      [K in keyof StoredReceipt]: StoredReceipt[K] | null
+    }
   >`
     SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
+      (pg_current_wal_insert_lsn() - '0/0')::text AS version,
       ${yield* hashedPayload(request)}::jsonb::text AS canonical,
       r.caller_key, r.command, r.payload_hash, r.outcome
     FROM (VALUES (1)) AS one (x)
@@ -79,5 +83,6 @@ export const readAdmission = Effect.fnUntraced(function* (request: Request, rout
     now: Number(row.now) + clock.offsetMillis(),
     hash: yield* hashCanonical(row.canonical),
     receipt: row.outcome === null ? undefined : (row as StoredReceipt),
+    version: row.version,
   }
 })
