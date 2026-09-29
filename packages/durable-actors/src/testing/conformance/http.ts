@@ -34,6 +34,7 @@ import {
   type Reason,
 } from "../../errors/actor.ts"
 import { InternalActors } from "../../handles/actors.ts"
+import type { ContentStore } from "../../handles/content.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { type AuthProvider, type AuthRequest, Credential } from "../../serve/auth.ts"
 import type { ServeOptions } from "../../serve/layer.ts"
@@ -283,11 +284,11 @@ interface Server {
 /** Serves the HTTP actors from a real listening Bun server for the rest of the scope. */
 export const serveHttp = Effect.fnUntraced(function* (
   options?: Partial<ServeOptions<never>>,
-): Effect.fn.Return<Server, never, InternalActors | Crypto.Crypto | Scope.Scope> {
+): Effect.fn.Return<Server, never, InternalActors | ContentStore | Crypto.Crypto | Scope.Scope> {
   const actors = yield* InternalActors
   const crypto = yield* Crypto.Crypto
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
-  const context = yield* Effect.context<InternalActors>()
+  const context = yield* Effect.context<InternalActors | ContentStore>()
 
   const app = Actor.serve({ actors: served, auth: tokens, ...options }).pipe(
     Layer.provide(Layer.succeedContext(context)),

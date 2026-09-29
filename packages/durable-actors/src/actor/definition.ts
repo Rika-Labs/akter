@@ -94,7 +94,7 @@ import {
   type WorkflowRun,
 } from "../handles/workflow.ts"
 import { isMintedId } from "../identity/mint.ts"
-import { type AnyBlob, isBlob } from "../members/blob.ts"
+import { type AnyBlob, isBlob, isContent } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
 import { isCursor } from "../runtime/events/replay.ts"
 import { SubscriptionFailure } from "../errors/subscription.ts"
@@ -2787,6 +2787,7 @@ const make = <
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     connections: connectionMembers.map(servedConnection),
     feeds: [...feeds],
+    contents: blobs.filter(isContent).map((declared) => declared.name),
     deliveryMs: policy.deliveryMs,
   }
 

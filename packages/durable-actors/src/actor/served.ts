@@ -62,6 +62,8 @@ export interface ServedDefinition {
   readonly connections: ReadonlyArray<ServedConnection>
   /** Tags of the events served as SSE event feeds. */
   readonly feeds: ReadonlyArray<string>
+  /** Names of the declared content blobs, served for download and grants. */
+  readonly contents: ReadonlyArray<string>
   readonly deliveryMs: number
 }
 

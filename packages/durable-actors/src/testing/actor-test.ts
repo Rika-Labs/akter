@@ -77,6 +77,14 @@ export interface TestOptions {
   readonly maxResidentActors?: number
   readonly relay?: Options["relay"]
   readonly executors?: Options["executors"]
+  /** Shared content settings; omitted, a fixed test grant key with the default grace and skew. */
+  readonly content?: Options["content"]
+}
+
+/** The grant key tests sign content grants with unless they configure their own. */
+export const TEST_CONTENT_KEY = {
+  id: "test",
+  secret: Redacted.make("durable-actors test content grant key, never for production"),
 }
 
 export interface Inspection {
@@ -627,6 +635,7 @@ export class ActorTest extends Context.Service<
           maxResidentActors: options.maxResidentActors,
           relay: options.relay,
           executors: options.executors,
+          content: options.content ?? { keys: [TEST_CONTENT_KEY] },
         })
 
         return Layer.mergeAll(
