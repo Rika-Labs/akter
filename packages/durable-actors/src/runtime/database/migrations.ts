@@ -555,10 +555,14 @@ export const migrations = {
         actor_type text PRIMARY KEY,
         turn_ms bigint NOT NULL CHECK (turn_ms > 0)
       )`
+    // The sweep join shows how far each tenant's collection lags, and keeps
+    // the view from being automatically updatable.
     yield* sql`CREATE VIEW durable.contents AS
       SELECT c.tenant_id, c.routing_key, c.hash, c.size,
-        c.granted_until_ms, to_timestamp(c.granted_until_ms::float8 / 1000) AS granted_until
-      FROM tenant_contents c`
+        c.granted_until_ms, to_timestamp(c.granted_until_ms::float8 / 1000) AS granted_until,
+        s.swept_at_ms, to_timestamp(s.swept_at_ms::float8 / 1000) AS swept_at
+      FROM tenant_contents c
+      LEFT JOIN tenant_content_sweeps s ON s.routing_key = c.routing_key AND s.tenant_id = c.tenant_id`
     yield* sql`CREATE VIEW durable.content_refs AS
       SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
         r.blob, r.name, r.hash, r.size
