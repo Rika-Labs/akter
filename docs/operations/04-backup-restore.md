@@ -73,6 +73,14 @@ Not rehearsed: `pg_restore` of an online `pg_dump` and point-in-time recovery, w
 - **Every runner stops first.** Nothing detects a runner that survived a restore; step 1 is required.
 - **No clock rollback.** Expiry is read from the database clock. The check in step 3 catches a clock behind the restored data at start; a clock stepped back while runners serve is not detected.
 - **Whole database only.** There is no tenant-only export, import, or restore. Any future tenant-only procedure must preserve every related row within the deployment database.
-- **PGlite.** A copy of a stopped `dataDir` is the only backup method; see [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md).
+- **PGlite.** A copy of a stopped `dataDir` is the only backup method; see [below](#embedded-pglite).
 
 Retained receipt and effect horizons bound what a restore can deduplicate; see [retention](retention.md).
+
+## Embedded PGlite
+
+Target, built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). The only supported backup is a stopped copy: stop the process, which releases the `dataDir` lock, copy the directory, and start again. Restore copies it back while the process is stopped. A copy taken while the process runs is not a backup. An in-process `pg_dump` waits for a `pgDump` build compatible with the pinned PGlite. The command-expiry check and effect reconciliation above still apply, and there is no point-in-time recovery.
+
+## Cold tier
+
+Target, built by L.2 ([ADR 0036](../decisions/0036-cold-tier.md)). The object store is inside the backup boundary: it must be versioned or replicated with at least the database's durability, objects are kept past the backup retention, and a restore checks that every `cold_ref` in the snapshot exists.

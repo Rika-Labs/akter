@@ -7,12 +7,12 @@
 
 ## Who owns which schema
 
-| Schema                                            | Changed by                                                                                      | Applied                                          |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| Framework tables (`actor_*`, the `durable` views) | the framework's numbered migrations (`runtime/database/migrations.ts`)                          | at boot, by every runtime's `Actors.layer`       |
-| Application tables                                | drizzle-kit migrations                                                                          | by the application, before `Actors.layer` starts |
-| Keyed actor state in `actor_state`                | the ordered chain in `Actor.state(fields, { migrations })`                                      | by the turn that next loads the actor            |
-| Stored event and effect payloads                  | a declared chain per [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md) (M4.7) | on read                                          |
+| Schema                                            | Changed by                                                                                                                                       | Applied                                          |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| Framework tables (`actor_*`, the `durable` views) | the framework's numbered migrations (`runtime/database/migrations.ts`)                                                                           | at boot, by every runtime's `Actors.layer`       |
+| Application tables                                | drizzle-kit migrations                                                                                                                           | by the application, before `Actors.layer` starts |
+| Keyed actor state in `actor_state`                | the ordered chain in `Actor.state(fields, { migrations })`                                                                                       | by the turn that next loads the actor            |
+| Stored event and effect payloads                  | `Actor.migration` chains on `Actor.Event` and `Actor.effect` (target, M4.7, [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)) | upcast on read, without rewriting                |
 
 Separately, `packages/postgres` owns the hosted control-plane schema and `bin/migrate.ts`. The planned `durable migrate` command is not implemented; framework migrations run only at boot.
 
@@ -24,6 +24,8 @@ Separately, `packages/postgres` owns the hosted control-plane schema and `bin/mi
 - `Migrator` skips an id at or below the latest applied one, so before and after running it the framework refuses to start, with a `MigrationError` of kind `BadState` that names the ids, when a registered id below the latest applied one was never applied. The second check catches a concurrent runner with fewer migrations committing a higher id while this one waited for the lock. Ids may leave gaps for slices that land later, but they must land in id order: a database that applied a higher id first cannot take a lower one and must be restored from before that id or recreated.
 - A runtime whose newest id is below the database's applies nothing and starts. So a runner of the previous release keeps starting, and serving, after a newer release migrated the database. Every framework migration must therefore leave the schema usable by the previous release's runtime (see the next section).
 - After migrating, startup refuses a database whose recorded protocol or retry window differs from the runtime's, or whose recorded placement of an actor type differs from its declaration. Those values bind stored command ids and routing keys, so changing them needs an explicit migration, never a rolling deploy.
+
+Event values and effect payloads (target, M4.7) also upcast on read. On several runners, a deploy that adds a step ships first with `writeVersion` set to the previous version, then without it. Shorten a chain only after `durable payloads check` passes; for events, run `durable payloads clear` first. Startup refuses a rollback past a recorded version.
 
 Compressed schema-encoded state migrates lazily: a turn applies the actor's declared chain after it acquires the generation fence and before the handler runs, and commits the current shape on handler success. An unhandled declared failure discards the migration's writes with the rest of the business work while its failure receipt commits. Invalid chains fail at `Actor.make`; decode or upcast defects roll back the whole turn and record the cause in the turn span. A state migration never rewrites actors that are not loaded, so an old shape stays readable for as long as any actor holds it.
 
