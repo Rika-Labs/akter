@@ -28,8 +28,9 @@ export const parseChildId = (
   const bytes = utf8.encode(id.slice(PREFIX.length + length.length))
   const size = Number(length.slice(0, -1))
 
-  // The parent must end on a character boundary, followed by `.` and a non-empty local id.
-  if (bytes.byteLength < size + 2 || bytes[size] !== 0x2e) return undefined
+  // The parent must end on a character boundary and be followed by `.`. The
+  // local id may be empty: the child's key decides whether it is valid.
+  if (bytes.byteLength < size + 1 || bytes[size] !== 0x2e) return undefined
 
   try {
     const parent = strict.decode(bytes.subarray(0, size))
