@@ -478,9 +478,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             )
             yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
               VALUES (1, 't', 'Ledger', 'o1')`
-            yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-                actor_type, actor_id, target_type, target_id, command, payload, caller)
-              VALUES (1, 'pending', 0, 42, 't', 'Ledger', 'o1', 'Ledger', 'o1', 'Note', '{}', '{}')`
+            yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+                scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
+                payload, caller)
+              VALUES (1, 'pending', 0, 42, 42, 't', 'Ledger', 'o1', 'Ledger', 'o1', 'Note', '{}', '{}')`
 
             const refused = yield* Effect.exit(migrate)
             expect(Exit.isFailure(refused)).toBe(true)

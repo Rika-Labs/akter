@@ -34,10 +34,11 @@ const seed = Effect.fnUntraced(function* (actors: number) {
     SELECT routing_key, tenant_id, actor_type, actor_id, 1, 'Touched', 'c-' || actor_id,
       '\\x00'::bytea, ${now}::bigint
     FROM actor_generations WHERE actor_type = 'Inspected'`
-  yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-      actor_type, actor_id, timer_key, target_type, target_id, command, payload, caller)
+  yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+      scheduled_at_ms, tenant_id, actor_type, actor_id, timer_key, target_type, target_id, command,
+      payload, caller)
     SELECT routing_key, 'timer-' || actor_id, routing_key >> 56, ${now + DAY_MS}::bigint,
-      tenant_id, actor_type, actor_id, 'idle', actor_type, actor_id, 'Idle', '{}', '{}'
+      ${now + DAY_MS}::bigint, tenant_id, actor_type, actor_id, 'idle', actor_type, actor_id, 'Idle', '{}', '{}'
     FROM actor_generations WHERE actor_type = 'Inspected'`
   yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id, tenant_id, actor_type,
       actor_id, effect, payload, attempts, cause, ambiguous, dead_at_ms)
