@@ -487,12 +487,10 @@ const observedWithRoles = (environment: ConformanceEnvironment) =>
     yield* loginAs(
       target,
       roles.legacy,
-      Effect.gen(function* () {
-        yield* legacyInsert([
-          { id: "inv-1", org: TENANT, account: "acct-a", amount: 10 },
-          { id: "inv-2", org: TENANT, account: "acct-b", amount: 20 },
-        ])
-      }),
+      legacyInsert([
+        { id: "inv-1", org: TENANT, account: "acct-a", amount: 10 },
+        { id: "inv-2", org: TENANT, account: "acct-b", amount: 20 },
+      ]),
     )
 
     return { target, roles }
@@ -1122,9 +1120,9 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
 
                   const refused = Cause.squash(exit.cause)
 
-                  expect(refused).toBeInstanceOf(AdoptionRefused)
+                  expect(Schema.is(AdoptionRefused)(refused)).toBe(true)
 
-                  return refused instanceof AdoptionRefused ? refused.message : ""
+                  return Schema.is(AdoptionRefused)(refused) ? refused.message : ""
                 })
 
               const reset = Effect.gen(function* () {

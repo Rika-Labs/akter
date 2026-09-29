@@ -60,7 +60,7 @@ export const checkEnforcedTable = Effect.fnUntraced(function* ({
     WHERE n.nspname = ${target.schema} AND c.relname = ${target.table} AND NOT t.tgisinternal
       AND t.tgname IN ('actor_adoption_guard', 'actor_adoption_guard_truncate')`
 
-  const expected = guardArguments(target, { writerRole, allowedRoles })
+  const expected = guardArguments({ target, writerRole, allowedRoles })
 
   for (const [name, type] of [
     ["actor_adoption_guard", GUARD_ROW_TYPE],

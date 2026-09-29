@@ -437,6 +437,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const scope = yield* TenantScope
   const { ref } = run.first[0]!.request
   const { tenant, actor, id } = ref
+
   const role =
     scope.role ?? (scope.adoption?.enforced.has(actor) === true ? scope.adoption.role : undefined)
 

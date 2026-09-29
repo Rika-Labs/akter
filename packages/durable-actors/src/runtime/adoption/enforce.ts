@@ -39,16 +39,15 @@ export const writeGrants = Effect.fnUntraced(function* (
 })
 
 /** The trigger arguments the guard is installed with, in the order `actor_adoption_guard()` reads them. */
-export const guardArguments = (
-  target: Pick<AdoptionTarget, "tenantColumn" | "actorColumn" | "actor">,
-  enforcement: { readonly writerRole: string; readonly allowedRoles: ReadonlyArray<string> },
-) => [
-  enforcement.writerRole,
-  enforcement.allowedRoles.join(","),
-  target.tenantColumn,
-  target.actorColumn,
-  target.actor,
-]
+export const guardArguments = ({
+  target,
+  writerRole,
+  allowedRoles,
+}: {
+  readonly target: Pick<AdoptionTarget, "tenantColumn" | "actorColumn" | "actor">
+  readonly writerRole: string
+  readonly allowedRoles: ReadonlyArray<string>
+}) => [writerRole, allowedRoles.join(","), target.tenantColumn, target.actorColumn, target.actor]
 
 const roleNamed = (name: string, flag: string) => {
   if (name === "" || name.includes(",") || name.includes("'"))
@@ -301,7 +300,7 @@ export const enforceAdoption = Effect.fnUntraced(function* (
             `REVOKE ${grant.privilege} ON ${table} FROM ${grant.grantee === "PUBLIC" ? "PUBLIC" : identifier(grant.grantee)}`,
           )
 
-        const args = guardArguments(target, { writerRole: options.writerRole, allowedRoles })
+        const args = guardArguments({ target, writerRole: options.writerRole, allowedRoles })
           .map(literal)
           .join(", ")
 
