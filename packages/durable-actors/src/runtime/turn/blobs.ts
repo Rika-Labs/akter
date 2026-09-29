@@ -37,7 +37,23 @@ const isContentRef = Schema.is(ContentRef)
  * Binds blob capabilities to the calling fiber's turn or query. Every row is
  * addressed by the trusted scope, so equal blob and entry names of two actors
  * or tenants never meet; writes run on the turn's connection, inside its
- * savepoint, and roll back with it.
+ * savepoint, and roll back with it. Off-turn contexts get read methods only,
+ * and turns get no content bytes.
+ *
+ * Declared blobs, names, and byte arrays are checked on every call, so misuse
+ * is a defect of the turn. Entry names reject lone surrogates, which Postgres
+ * would turn into U+FFFD and alias another name, and NUL. Byte arrays are
+ * copied on the way in and out, since the caller may reuse its buffer and a
+ * driver may decode into a pooled one. Content references count against the
+ * entry cap with the actor's own entries, and an existing entry stays
+ * writable at the cap; the quota is named only after a write changed nothing.
+ * A set overwrites chunk 0 and drops the rest in one statement that changes
+ * nothing past the quota, so a caught defect leaves the entry whole. Turns of
+ * one actor serialize on its generation lock, so an appended chunk index is
+ * free at insert. Attaching content verifies its grant by MAC without a read
+ * and requires the grant to outlive this shard's clock by the skew margin, so
+ * the tenant shard's sweep sees a horizon past this turn's commit. Content
+ * keys are required only when a content blob is used.
  */
 export const bindBlobs = Effect.fnUntraced(function* (
   scope: BlobScope,
@@ -61,14 +77,12 @@ export const bindBlobs = Effect.fnUntraced(function* (
     new Error(`One actor's blobs hold at most ${scope.maxBytes} bytes (policy.maxBlobBytes)`),
   )
 
-  // Content references count against the entry cap with the actor's own entries.
   const references = sql`(SELECT count(*) FROM actor_content_refs WHERE ${owner})`
 
   const tooManyEntries = Effect.die(
     new Error(`One actor's blobs hold at most ${scope.maxEntries} entries (policy.maxBlobEntries)`),
   )
 
-  // Checked per call, like owned rows, so a misuse is a defect of the turn.
   const declared = Effect.fnUntraced(function* (blob: AnyBlob) {
     yield* scope.guard
 
@@ -81,7 +95,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
   const entry = Effect.fnUntraced(function* (blob: AnyBlob, name: string) {
     yield* declared(blob)
 
-    // A lone surrogate would reach Postgres as U+FFFD and alias another name; NUL is rejected by Postgres.
     if (
       !Predicate.isString(name) ||
       name.length === 0 ||
@@ -100,17 +113,14 @@ export const bindBlobs = Effect.fnUntraced(function* (
 
   const run = <A, E>(effect: Effect.Effect<A, E>) =>
     effect.pipe(
-      // Reads outside a transaction, as in a stream handler, take their own tenant transaction.
       (bound) =>
         Option.isSome(connection)
           ? Effect.provideService(bound, sql.transactionService, connection.value)
           : inTenant({ sql, role, tenant: ref.tenant })(bound),
-      // The SqlError itself decides whether the turn retries or is a defect.
       Effect.orDie,
     )
 
   const contentAccess = (blob: AnyBlob): ContentRead | ContentWrite => {
-    // Checked when used, so an actor type without content needs no content keys.
     const bound = Effect.suspend(() =>
       content === undefined
         ? Effect.die(new Error("Content blobs need the runtime's content.keys"))
@@ -129,7 +139,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
       }),
     )
 
-    // The reference on this actor's shard; the bytes are read separately on the tenant's.
     const resolve = (name: string) =>
       run(
         Effect.gen(function* () {
@@ -142,7 +151,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
         }),
       )
 
-    // Off-turn contexts get no mutation methods, and turns get no bytes.
     if (!write)
       return {
         get: (name) =>
@@ -182,7 +190,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
           if (!isContentRef(contentRef))
             return yield* InvalidContentRef.make({ reason: "malformed" })
 
-          // The MAC needs no read, so the turn stays on the actor's shard.
           const verified = yield* store.verify(contentRef.grant, {
             tenant: ref.tenant,
             hash: contentRef.hash,
@@ -192,8 +199,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
           if (Result.isFailure(verified))
             return yield* InvalidContentRef.make({ reason: verified.failure })
 
-          // The grant must outlive this shard's clock by the skew margin, so
-          // the tenant shard's sweep sees a horizon past this turn's commit.
           const [checked] = yield* run(
             sql<{ live: boolean; fits: boolean }>`WITH used AS (
                 SELECT ${verified.success} > floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
@@ -229,7 +234,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
   const access: BlobAccess = (blob: AnyBlob) => {
     if (isContent(blob)) return contentAccess(blob)
 
-    // A copy taken once, so later changes to the caller's buffer never reach the row.
     const copy = (bytes: Uint8Array) => {
       if (!(bytes instanceof Uint8Array))
         return Effect.die(new Error("Blob bytes are a Uint8Array"))
@@ -251,19 +255,16 @@ export const bindBlobs = Effect.fnUntraced(function* (
 
             const bytes = found?.bytes ?? null
 
-            // A copy: a driver may decode into a pooled buffer shared with unrelated values.
             return bytes === null ? Option.none<Uint8Array>() : Option.some(Uint8Array.from(bytes))
           }),
         ),
     }
 
-    // Off-turn contexts get no mutation methods at all, whatever their static type.
     if (!write) return read
 
     const values = (name: string, chunk: ReturnType<typeof sql.literal>, bytes: Uint8Array) =>
       sql`${routingKey}::bigint, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${blob.name}, ${name}, ${chunk}, ${bytes}::bytea`
 
-    // Read only after a write changed nothing, to name the quota it would pass.
     const usage = (where: Effect.Success<ReturnType<typeof entry>>) =>
       sql<{ entries: number; present: boolean; entry_bytes: number }>`
         SELECT (count(*) FILTER (WHERE chunk = 0) + ${references})::float8 AS entries,
@@ -271,8 +272,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
           COALESCE(sum(octet_length(bytes)) FILTER (WHERE ${where}), 0)::float8 AS entry_bytes
         FROM actor_blobs WHERE ${owner}`.pipe(Effect.map(([row]) => row!))
 
-    // Chunk 0 heads every entry, so counting it counts entries; an existing
-    // entry stays writable even when the actor already holds the maximum.
     const refused = (used: { readonly entries: number; readonly present: boolean }) =>
       !used.present && used.entries >= scope.maxEntries ? tooManyEntries : overQuota
 
@@ -284,9 +283,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
             const where = yield* entry(blob, name)
             const copied = yield* copy(bytes)
 
-            // Chunk 0 always heads an entry, so a set overwrites it and drops the
-            // rest. The entry's old bytes don't count against the quota, and past
-            // it the statement changes nothing, so a caught defect leaves the entry whole.
             const written = yield* sql`WITH used AS (
                 SELECT COALESCE(sum(octet_length(bytes)) FILTER (WHERE NOT (${where})), 0) AS other,
                   count(*) FILTER (WHERE chunk = 0) + ${references} AS entries,
@@ -312,8 +308,6 @@ export const bindBlobs = Effect.fnUntraced(function* (
             const where = yield* entry(blob, name)
             const copied = yield* copy(bytes)
 
-            // Turns of one actor are serialized by its generation lock, so the next
-            // chunk is free and the size read here still holds at insert.
             const inserted =
               yield* sql`INSERT INTO actor_blobs (routing_key, tenant_id, actor_type, actor_id, blob, name, chunk, bytes)
               SELECT ${values(name, sql.literal("COALESCE(max(chunk) FILTER (WHERE entry) + 1, 0)"), copied)}

@@ -210,7 +210,6 @@ export const httpLayer = Layer.mergeAll(
   ),
 )
 
-// `<tenant>:<subject>`; `expired` exercises the provider's expiry failure.
 const principal = (token: string) => {
   if (token === "expired") return Effect.fail(Unauthorized.make({ code: "expired" }))
 
@@ -221,7 +220,6 @@ const principal = (token: string) => {
     : Effect.succeed({ tenant: match[1]!, caller: User.make({ subject: match[2]! }) })
 }
 
-// The principal from `authorization: Bearer <tenant>:<subject>`.
 const bearer = (request: AuthRequest) =>
   Option.match(Headers.get(request.headers, "authorization"), {
     onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
@@ -230,7 +228,6 @@ const bearer = (request: AuthRequest) =>
 
 const tokens = Actor.auth.make(bearer)
 
-// The same principal from the `session` cookie.
 const session = (request: AuthRequest) => {
   const value = request.cookies["session"]
 
@@ -245,7 +242,6 @@ const unavailable: AuthProvider = {
     Effect.fail(ActorUnavailable.make({ cause: new Error("identity provider secret detail") })),
 }
 
-// Providers are typed to return User or Anonymous; this one ignores that to prove the runtime check.
 const systemCaller: AuthProvider = {
   credentials: [Credential.Bearer()],
   authenticate: () =>
@@ -493,7 +489,6 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               const entered = yield* Deferred.make<void>()
               const release = yield* Deferred.make<void>()
 
-              // Only this command waits on the gate, so no other turn on the runtime is held.
               gate.hold = Deferred.succeed(entered, undefined).pipe(
                 Effect.andThen(Deferred.await(release)),
               )
@@ -504,8 +499,6 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
               yield* Deferred.await(entered)
 
-              // A long turn is not a storage outage, even on a one-connection
-              // database; waiting out the storage check's cache makes it re-probe.
               yield* Effect.sleep("1100 millis")
 
               expect(yield* server.send("/ready", { method: "GET" })).toMatchObject({
@@ -1207,7 +1200,6 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           expect((yield* whoami(either, { token: `${tenant}:dave` })).body).toBe(`${tenant}/dave`)
 
-          // A provider without a cookie credential never sees the request's cookies.
           const ignored = yield* whoami(yield* serveHttp({ auth: Actor.auth.make(session) }), {
             cookie: `session=${tenant}:erin`,
           })

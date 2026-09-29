@@ -9,7 +9,7 @@ import {
   requestDigest,
 } from "./binding.ts"
 
-// An independent SHA-256, so the digests aren't checked against themselves.
+/** An independent SHA-256, so the digests aren't checked against themselves. */
 const sha256 = (value: string | Uint8Array) =>
   new Bun.CryptoHasher("sha256").update(value).digest("hex")
 

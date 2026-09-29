@@ -13,6 +13,7 @@ import { isSameOrigin } from "../../serve/layer.ts"
 import { actorErrorResponse, Defect, invalidInput, undecodable } from "../../serve/wire.ts"
 import * as Queries from "./queries.ts"
 
+/** Configuration for `Inspector.serve`. */
 export interface InspectorOptions<R> {
   /**
    * Authenticates every inspector request. The inspector reads only the
@@ -68,8 +69,10 @@ const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>)
 /**
  * Serves read-only JSON over the `durable` inspection views as routes on the
  * application's `HttpRouter`. A request from another browser origin is
- * refused with `403` before authentication; each other request is authenticated, and every read
- * is filtered to the principal's tenant and runs in a read-only transaction.
+ * refused with `403` before its credentials are read; each other request is
+ * authenticated per request, never cached, since the tenant is the one fact
+ * every read trusts. Every read is filtered to the principal's tenant and runs
+ * in a read-only transaction.
  *
  * - `GET /overview`: the view catalog and the tenant's row counts.
  * - `GET /actors?type&afterType&afterId&limit`: actors, one keyset page at a time.
@@ -84,7 +87,6 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
       const context = yield* Effect.context<R>()
       const sql = yield* SqlClient.SqlClient
 
-      // Per request, never cached: the tenant is the one fact every read below trusts.
       const authenticate = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.gen(function* () {
           const authenticated = yield* options.auth
@@ -118,7 +120,6 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
           `${basePath}${path}` as HttpRouter.PathInput,
           (request: HttpServerRequest.HttpServerRequest) =>
             Effect.gen(function* () {
-              // A browser page on another origin is refused before its credentials are read.
               const origin = Headers.get(request.headers, "origin")
 
               if (Option.isSome(origin) && !isSameOrigin({ request, origin: origin.value }))
@@ -188,4 +189,5 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
     }),
   )
 
+/** The read-only inspector: `serve` mounts its routes. */
 export const Inspector = { serve }

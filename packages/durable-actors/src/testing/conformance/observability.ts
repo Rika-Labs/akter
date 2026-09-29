@@ -26,7 +26,6 @@ class Ticked extends Actor.Event<Ticked>()("ObsTicked", { n: Schema.Int }) {}
 
 class Ping extends Actor.effect<Ping>()("ObsPing", { input: { body: Schema.String } }) {}
 
-// Never given an executor on any runner, so its rows wait.
 class Orphan extends Actor.effect<Orphan>()("ObsOrphan", { input: { body: Schema.String } }) {}
 
 const Bump = Actor.command("Bump", { input: Schema.Int, output: Schema.Int })
@@ -65,7 +64,6 @@ const TickDelivery = Actor.Delivery({ source: Author, events: [Ticked] })
 
 const OnTick = Actor.command("OnTick", { input: TickDelivery })
 
-// Every tick routes to one watcher, whose handler always dies: its row blocks and backs off.
 const Watch = Actor.subscription("ObsWatch", {
   source: Author,
   events: [Ticked],
@@ -167,14 +165,12 @@ const withTelemetry = <A, E>(
 
       failing.receive = false
 
-      // A memo map of its own: the suite's would share Cluster's Sharding layer with this runtime.
       const services = yield* Layer.buildWithMemoMap(
         live.pipe(
           Layer.provideMerge(
             ActorTest.layer({
               database,
               as: User.make({ subject: "alice" }),
-              // Only the cases sample, so a sample is never racing one of the runtime's own.
               observability: { sampleEvery: "1 hour" },
             }),
           ),
@@ -261,6 +257,7 @@ const sample = Effect.gen(function* () {
 const execute = (sql: SqlClient.SqlClient, statement: string) =>
   sql.unsafe(statement).pipe(Effect.asVoid, Effect.orDie)
 
+/** Observability cases: turn and admission spans, defect logs, and metrics correlate with the command id. */
 export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "names the turn span durable-actors.<Actor>/<Command> and correlates it with the command id (O1)",
@@ -306,7 +303,6 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(commits.length).toBe(1)
 
-          // No credential, payload, or principal reaches a span.
           for (const span of [admission!, turn!, commits[0]!])
             for (const value of span.attributes.values()) expect(value).not.toBe("alice")
         }),
@@ -459,7 +455,6 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
           expect(text).toContain('durable_actors_turns{actor_type="ObsAuthor",outcome="success"} 3')
           expect(text).toContain('durable_actors_activations{actor_type="ObsAuthor"} 2')
           expect(text).toContain("durable_actors_mailbox_age_ms_bucket{")
-          // Metric series name types and outcomes, never tenants or ids.
           expect(text).not.toContain("a5")
           expect(text).not.toContain("tenant")
         }),
@@ -479,9 +474,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
           yield* (yield* Orphanage.get("o1")).Strand("waits")
           yield* test.advance(0)
 
-          // The intent failed once and backs off; eight claims mark it stuck.
           yield* execute(sql, `UPDATE actor_outbox SET attempts = 8 WHERE kind = 'intent'`)
-          // The orphaned effect has been due, unclaimed, for 5 seconds.
           yield* execute(
             sql,
             `UPDATE actor_outbox SET due_at_ms = due_at_ms - 5000 WHERE command = 'ObsOrphan'`,
@@ -497,7 +490,6 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* valueOf(Metrics.relayLag.id, { kind: "intent" })).toBe(0)
           expect(yield* valueOf("durable-actors.relay.retried", { kind: "intent" })).toBe(1)
 
-          // A delivered intent leaves nothing stuck, and the next sample says so.
           failing.receive = false
           yield* execute(sql, `UPDATE actor_outbox SET due_at_ms = 0 WHERE kind = 'intent'`)
           yield* test.advance(0)
@@ -523,7 +515,6 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
           yield* author.Bump(1)
           yield* test.advance(0)
 
-          // The watcher's handler always dies, so its row holds all three ticks and backs off.
           yield* sql<{ attempts: number }>`SELECT attempts FROM actor_subscriptions
             WHERE subscription = 'ObsWatch'`.pipe(
             Effect.repeat({ until: (rows) => (rows[0]?.attempts ?? 0) > 0 }),
@@ -542,14 +533,12 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
             ((yield* valueOf("durable-actors.relay.retried", { kind: "subscription" })) ?? 0) >= 1,
           ).toBe(true)
 
-          // Past keepEvents but inside the hold, the subscription pins every tick.
           yield* test.advance("90 minutes")
           yield* sample
 
           expect(yield* valueOf(Metrics.subscriptionPinned.id, { actor_type: "ObsAuthor" })).toBe(3)
           expect(yield* valueOf(Metrics.workflowPinned.id, { actor_type: "ObsAuthor" })).toBe(0)
 
-          // Past the hold the ticks are pruned, and the id-routed row counts a gap it cannot deliver.
           yield* test.advance("1 hour")
           yield* test.cleanup
           yield* execute(

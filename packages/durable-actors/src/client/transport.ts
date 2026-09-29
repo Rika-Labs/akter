@@ -74,13 +74,21 @@ export const retryAfterHeader = ({
   return Number.isNaN(at) || sent === undefined ? undefined : Math.max(0, at - sent)
 }
 
-export const transport = (reason: TransportError): ActorError => ActorError.make({ reason })
+const transportFailure = (reason: TransportError): ActorError => ActorError.make({ reason })
+
+/** A request that got no response, or a body that stopped mid-read; retryable. */
+export const networkFailure = () =>
+  transportFailure(TransportError.make({ code: "network", retryable: true }))
+
+/** A response or message the client could not decode; not retryable. */
+export const undecodableFailure = () =>
+  transportFailure(TransportError.make({ code: "decode", retryable: false }))
 
 /** A status a proxy or gateway may answer before any runner saw the request. */
 const isRetryableStatus = (status: number) => status >= 500 || status === 429 || status === 408
 
 const statusError = (reply: Reply) =>
-  transport(
+  transportFailure(
     TransportError.make({
       code: "status",
       status: reply.status,
@@ -112,7 +120,7 @@ export const decodeFailure =
     if (isEnvelope(body.value)) return framework(body.value, reply) ?? statusError(reply)
 
     if (isDefect(body.value))
-      return transport(
+      return transportFailure(
         TransportError.make({ code: "defect", status: reply.status, retryable: false }),
       )
 
@@ -125,7 +133,7 @@ export const decodeFailure =
 export const decodeSuccess =
   <A>(decode: (body: Schema.Json | undefined) => Effect.Effect<A, Schema.SchemaError>) =>
   (reply: Reply): Effect.Effect<A, ActorError> => {
-    const undecodable = transport(
+    const undecodable = transportFailure(
       TransportError.make({ code: "decode", status: reply.status, retryable: false }),
     )
 

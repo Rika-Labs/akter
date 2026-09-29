@@ -1,9 +1,11 @@
 /**
  * The chat room served to a browser: Actor.serve under /api, the page at
  * /rooms/<id>?user=<name>, and the same room with @durable-actors/react at
- * /react/rooms/<id>, and the room with a persisted offline queue at
+ * /react/rooms/<id>. Presence and live cursors are at /cursors/<doc> and
+ * /react/cursors/<doc>, and the room with a persisted offline queue is at
  * /offline/rooms/<id>. PGlite in memory unless DATABASE_URL names Postgres.
  *   bun run web            # http://localhost:3003/rooms/lobby?user=alice
+ *                          # http://localhost:3003/cursors/notes?user=alice
  */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Actor } from "@durable-actors/core"
@@ -11,24 +13,26 @@ import { Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer, Option, Redacted } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { actors } from "../app.ts"
+import { Cursor } from "../cursor/contract.ts"
+import { CursorLive } from "../cursor/layer.ts"
 import { Room } from "../room/contract.ts"
 import { demoAuth } from "../server.ts"
 
-const api = Actor.serve({ actors: [Room], auth: demoAuth, basePath: "/api" })
+const api = Actor.serve({ actors: [Room, Cursor], auth: demoAuth, basePath: "/api" })
+
+const served = CursorLive.pipe(Layer.provideMerge(actors))
 
 /**
- * The pages' scripts, bundled for browsers from app.ts, react.tsx and offline.ts
- * once at startup.
+ * The pages' scripts, bundled for browsers from their entry files once at
+ * startup.
  */
 const pages = HttpRouter.use(
   Effect.fnUntraced(function* (router) {
     const built = yield* Effect.promise(() =>
       Bun.build({
-        entrypoints: [
-          `${import.meta.dir}/app.ts`,
-          `${import.meta.dir}/react.tsx`,
-          `${import.meta.dir}/offline.ts`,
-        ],
+        entrypoints: ["app.ts", "react.tsx", "cursors.ts", "cursors-react.tsx", "offline.ts"].map(
+          (file) => `${import.meta.dir}/${file}`,
+        ),
         target: "browser",
         minify: true,
       }),
@@ -63,6 +67,8 @@ const pages = HttpRouter.use(
     yield* router.add("GET", "/rooms/*", Effect.succeed(yield* page("index.html")))
     yield* router.add("GET", "/react/rooms/*", Effect.succeed(yield* page("react.html")))
     yield* router.add("GET", "/offline/rooms/*", Effect.succeed(yield* page("offline.html")))
+    yield* router.add("GET", "/cursors/*", Effect.succeed(yield* page("cursors.html")))
+    yield* router.add("GET", "/react/cursors/*", Effect.succeed(yield* page("cursors-react.html")))
     yield* router.add("GET", "/health", Effect.succeed(HttpServerResponse.text("ok")))
   }),
 )
@@ -83,7 +89,7 @@ const port = Layer.unwrap(
 )
 
 HttpRouter.serve(Layer.mergeAll(api, pages)).pipe(
-  Layer.provide(actors),
+  Layer.provide(served),
   Layer.provide(database),
   Layer.provide(BunCrypto.layer),
   Layer.provide(port),

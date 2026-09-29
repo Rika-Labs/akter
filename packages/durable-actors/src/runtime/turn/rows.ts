@@ -126,7 +126,8 @@ const checkColumn = (info: Ownership, key: string) => {
  * Copies an application value into fresh primitives, dates, bytes, arrays, and
  * plain records. Drizzle renders anything with `getSQL` as SQL, so a function,
  * class instance, or SQL wrapper anywhere inside is rejected, and the copy
- * means a getter cannot change the value after it was checked.
+ * means a getter cannot change the value after it was checked. Dates are
+ * structured-cloned so own properties such as `getSQL` are dropped.
  */
 const copyOperand = (info: Ownership, value: Operand): Operand => {
   if (value === null || value === undefined) return value
@@ -141,7 +142,6 @@ const copyOperand = (info: Ownership, value: Operand): Operand => {
 
   const prototype = Object.getPrototypeOf(value)
 
-  // A structured clone keeps only the time, dropping any own properties such as getSQL.
   if (prototype === Date.prototype) return structuredClone(value as Date)
 
   if (value instanceof Uint8Array && (prototype === Uint8Array.prototype || Buffer.isBuffer(value)))
@@ -171,6 +171,11 @@ const copyValues = (info: Ownership, values: OperandRecord): OperandRecord => {
   return copyOperand(info, values) as OperandRecord
 }
 
+/**
+ * Copies a filter, rejecting `RAW` and reserved columns. A bare date or byte
+ * string as a column's value is refused because Drizzle reads any object there
+ * as an operator map and would match every row instead of one.
+ */
 const copyFilter = (info: Ownership, filter: Operand): OperandRecord => {
   if (!isRecord(filter)) return reject(`Filters on ${info.name} are plain objects`)
 
@@ -189,8 +194,6 @@ const copyFilter = (info: Ownership, filter: Operand): OperandRecord => {
       checkColumn(info, key)
       const operand = copyOperand(info, value)
 
-      // Drizzle reads any object here as an operator map, so a bare date or
-      // byte string would match every row instead of one.
       if (operand instanceof Date || operand instanceof Uint8Array)
         reject(`Compare ${key} of ${info.name} with { eq: value }`)
 
@@ -210,9 +213,11 @@ const checkOrder = (info: Ownership, order: Order<AnyOwnedTable>) => {
   }
 }
 
-// Drizzle's comparison, boolean, pattern, and aggregate operators emit only
-// these words; anything else in a group query's SQL text is rejected so raw
-// fragments cannot name other tables, subqueries, or comments.
+/**
+ * The words Drizzle's comparison, boolean, pattern, and aggregate operators
+ * emit; any other SQL text in a group query is rejected so raw fragments
+ * cannot name other tables, subqueries, or comments.
+ */
 const OPERATOR_TEXT =
   /^(?:\s+|[(),*=<>!~@&|]+|and|or|not|in|is|null|like|ilike|between|asc|desc|nulls|first|last|distinct|true|false|count|sum|avg|min|max|lower|upper|coalesce)*$/i
 
@@ -225,16 +230,18 @@ const GROUP: Ownership = {
   owner: undefined,
 }
 
+type Decoded = SQL & { decoder: DriverValueDecoder<unknown, unknown> }
+
 /**
  * Rebuilds a group query's expressions from values read once, so what was
  * checked is exactly what renders: getters, proxies, and hidden `getSQL`
  * members on the caller's objects never reach Drizzle. Columns resolve to the
  * real columns of the query's owned tables, text must be operator words with
  * balanced parentheses (the scope predicate is parenthesized beside it), and
- * parameters carry copied plain data.
+ * parameters carry copied plain data. A decoder only maps result values in
+ * JavaScript, so it is rebound rather than trusted; a column decoder resolves
+ * like any other column.
  */
-type Decoded = SQL & { decoder: DriverValueDecoder<unknown, unknown> }
-
 const groupRebuilder = (tables: ReadonlyArray<AnyOwnedTable>) => {
   const column = (node: Column): PgColumn => {
     const table = (node as PgColumn & { readonly table: AnyOwnedTable }).table
@@ -285,7 +292,6 @@ const groupRebuilder = (tables: ReadonlyArray<AnyOwnedTable>) => {
         const decoder = (node as Decoded).decoder
         const rebuilt = new SQL(walk([...node.queryChunks]) as Array<SQLChunk>) as Decoded
 
-        // A decoder only maps result values in JavaScript; a column decoder is resolved.
         rebuilt.decoder = is(decoder, Column)
           ? column(decoder)
           : { mapFromDriverValue: decoder.mapFromDriverValue.bind(decoder) }
@@ -337,6 +343,16 @@ const groupRebuilder = (tables: ReadonlyArray<AnyOwnedTable>) => {
   return { expression, selection }
 }
 
+/**
+ * Binds owned-table reads and, when `write` is set, mutations to one turn's
+ * actor. Writes join the turn's transaction or fail; reads outside a
+ * transaction, as in a stream handler, run in their own tenant transaction.
+ * Drizzle wraps driver failures, so the inner `SqlError` is surfaced to let it
+ * decide between a retried turn and a deterministic defect. Off-turn contexts
+ * get no mutation methods at all, whatever their static type. A group query is
+ * read once per part and re-built from the framework's own client, so the
+ * caller's select object never runs.
+ */
 export const bindTables = Effect.fnUntraced(function* (
   database: Option.Option<Database>,
   scope: TableScope,
@@ -347,7 +363,6 @@ export const bindTables = Effect.fnUntraced(function* (
   const connection = yield* Effect.serviceOption(sql.transactionService)
   const { role } = yield* TenantScope
 
-  // Writes join the turn's transaction or do not run at all.
   if (write && Option.isNone(connection))
     return yield* Effect.die(new Error("Owned rows need the turn transaction"))
 
@@ -358,13 +373,10 @@ export const bindTables = Effect.fnUntraced(function* (
       Option.isNone(database)
         ? Effect.die(new Error("Owned tables need a PgClient or PgliteClient database"))
         : Effect.suspend(build).pipe(
-            // Reads outside a transaction, as in a stream handler, take their own tenant transaction.
             (effect) =>
               Option.isSome(connection)
                 ? Effect.provideService(effect, sql.transactionService, connection.value)
                 : inTenant({ sql, role, tenant: scope.ref.tenant })(effect),
-            // Drizzle wraps the driver's failure; the SqlError inside decides
-            // whether the turn is retried or is a deterministic defect.
             Effect.catch((error) => {
               const wrapped = Predicate.hasProperty(error, "cause") ? error.cause : undefined
               const cause = Cause.isCause(wrapped) ? Cause.squash(wrapped) : wrapped
@@ -460,7 +472,6 @@ export const bindTables = Effect.fnUntraced(function* (
         ),
     } satisfies ScopedRead<AnyOwnedTable>
 
-    // Off-turn contexts get no mutation methods at all, whatever their static type.
     if (!write) return read
 
     return {
@@ -524,8 +535,6 @@ export const bindTables = Effect.fnUntraced(function* (
     return value
   }
 
-  // The caller's select is only read, once per part; the query that runs is
-  // built fresh from the framework's own client.
   const group: Group = <A>(build: Parameters<Group>[0]) =>
     run((): Effect.Effect<A, EffectDrizzleQueryError> => {
       const query = build({
