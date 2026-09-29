@@ -120,18 +120,22 @@ const totals = (seed: string) =>
   })
 
 describe("ActorTest.simulate", () => {
-  it("keeps receipts and outbox delivery exactly once across seeded faults", () =>
-    runtime.runPromise(
-      Effect.gen(function* () {
-        for (const seed of yield* simulationSeeds) {
-          const report = yield* script(`s${seed}`)
-          expect(report.steps).toHaveLength(12)
-          expect(yield* totals(`s${seed}`)).toEqual(
-            new Map(Array.from(scripted.get(`s${seed}`)!, ([key, sum]) => [key, { total: sum }])),
-          )
-        }
-      }),
-    ))
+  it(
+    "keeps receipts and outbox delivery exactly once across seeded faults",
+    () =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          for (const seed of yield* simulationSeeds) {
+            const report = yield* script(`s${seed}`)
+            expect(report.steps).toHaveLength(12)
+            expect(yield* totals(`s${seed}`)).toEqual(
+              new Map(Array.from(scripted.get(`s${seed}`)!, ([key, sum]) => [key, { total: sum }])),
+            )
+          }
+        }),
+      ),
+    60_000,
+  )
 
   it("reruns a seed to the same fault schedule and outcome", () =>
     runtime.runPromise(

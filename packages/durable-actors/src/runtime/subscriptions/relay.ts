@@ -31,6 +31,7 @@ export interface LocalSubscription {
   readonly subscription: RegisteredSubscription
 }
 
+/** Tuning for subscription work: concurrency, lease, and backoff bounds. */
 export interface SubscriptionSettings {
   /** Feed expansions, control registrations, and subscription deliveries each run this many at once. */
   readonly concurrency: number
@@ -74,6 +75,7 @@ interface SubscriptionRow {
   readonly claimed_until: string
 }
 
+/** A unit of relay work: an outbox row to expand or a subscription row to deliver. */
 export type SubscriptionWork = OutboxWork | SubscriptionRow
 
 /**
@@ -183,6 +185,38 @@ const hookRequest = (ref: ActorRef, command: string, commandId: string) =>
  * registering dynamic subscriptions at their sources, and delivering due
  * subscription rows of the subscriber types this runner registers. A runner
  * that registers none claims none of it.
+ *
+ * Delivery: rows this runner can deliver that an expansion makes due are leased at
+ * once, up to its free delivery slots, and delivered without a claim pass; the
+ * rest become due for any runner. Updates bound their rows by the page's key
+ * range, read from the key index, rather than joining the page, so a planner on
+ * stale row counts cannot rescan the page for every stored row. A renewal never
+ * shortens a claim, so it cannot undo a lease a test clock moved. Shutdown
+ * releases a claim at once; the receipt and cursor make redelivery safe.
+ *
+ * Subscribing: a source that has never been created can be subscribed to. Only a
+ * refused subscribe leaves a tombstone at its own epoch. A subscription is due at
+ * once when history after its start already matches, so one to a quiet source
+ * still delivers it. Widening only adds this declaration's classes to the row's
+ * list, and each added class enters the tag summary; removing a row's tags locks
+ * each summary row first so concurrent removals never lose a decrement, and a
+ * count reaching 0 is deleted.
+ *
+ * Gaps: pruning removes a prefix, so history after `delivered` is missing when the
+ * oldest retained event is past its successor or nothing is retained. An
+ * operator's skip plants the position it skips through as the gap's end. The
+ * detection time fixes the gap's id and its range is kept, so a redelivery reports
+ * the same gap even after pruning advances. An id route needs the pruned event to
+ * name a subscriber. A short batch scanned every matching event through the head
+ * it read, and after a gap older than the pruning it stops at the gap to find the
+ * next one.
+ *
+ * Delivery outcomes: the subscriber reads the current shape, and a value its chain
+ * cannot read backs the row off at this event rather than skipping it. A failure
+ * backs the row off, and a stale or unsubscribed acknowledgement removes this
+ * epoch's row. The marked position is read before the settle in its own snapshot:
+ * a commit after it raised `marked` through its expansion, which the settle reads
+ * from the row.
  */
 export const subscriptionRelay = Effect.fnUntraced(function* (options: {
   readonly deliver: (request: Request) => Effect.Effect<Outcome, ActorError>
@@ -195,7 +229,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
   const { settings } = options
-  // The outbox clock of the statement it appears in.
   const now = () => outboxNow({ sql, offsetMillis: clock.offsetMillis() })
 
   const sourceWhere = (alias: string, key: bigint, tenant: string, type: string, id: string) =>
@@ -238,7 +271,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       )`
   }
 
-  // The subscriptions this runner delivers, with the event tags each knows.
   const subscribedValues = (local: ReadonlyArray<LocalSubscription>) =>
     sql.csv(
       local.map(
@@ -250,7 +282,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       ),
     )
 
-  // A claimed subscription row as the relay decodes it, from alias `s` after its update.
   const claimedRow = sql`jsonb_build_object('kind', 'subscription', 'routing_key', s.routing_key::text,
     'tenant_id', s.tenant_id, 'source_type', s.source_type, 'source_id', s.source_id,
     'subscriber_type', s.subscriber_type, 'subscription', s.subscription,
@@ -348,7 +379,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     return routingKey({ ref, placement })
   })
 
-  // Adds each tag of an active row to the source's tag summary.
   const addTags = (key: bigint, source: ActorRef, tags: ReadonlyArray<string>) =>
     tags.length === 0
       ? Effect.void
@@ -358,8 +388,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           ON CONFLICT (routing_key, tenant_id, source_type, source_id, event)
           DO UPDATE SET rows = actor_subscription_tags.rows + 1`.pipe(Effect.asVoid)
 
-  // Removes one row's tags; each summary row is locked first, so concurrent
-  // removals never lose a decrement, and a count reaching 0 is deleted.
   const removeTags = Effect.fnUntraced(function* (
     key: bigint,
     source: ActorRef,
@@ -419,9 +447,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       const free = local.length === 0 ? 0 : Math.max(0, yield* handoff.free)
       const lease = settings.claimLeaseMs()
 
-      // Rows this runner can deliver that the expansion makes due are leased
-      // at once, up to its free delivery slots, and delivered without a
-      // claim pass; the rest become due for any runner.
       const leasable =
         free === 0
           ? sql`leasable AS MATERIALIZED (
@@ -444,9 +469,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
                     AND e.event = ANY(p.events) OFFSET 0)
               LIMIT ${free})`
 
-      // The page's key range, read from the key index. The updates below bound
-      // their rows by it rather than joining the page, so a planner working
-      // from stale row counts can't rescan the page for every stored row.
       const inPage = sql`(s.subscriber_type, s.subscription, s.subscriber_id) > (${after[0]!}, ${after[1]!}, ${after[2]!})
         AND (s.subscriber_type, s.subscription, s.subscriber_id)
           <= (SELECT subscriber_type, subscription, subscriber_id FROM last)`
@@ -573,7 +595,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     const rejected = yield* sql.withTransaction(
       Effect.gen(function* () {
-        // A source that has never been created can be subscribed to.
         yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
           VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}) ON CONFLICT DO NOTHING`
 
@@ -598,7 +619,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           BigInt(change.start) > head
 
         if (existing !== undefined && BigInt(existing.epoch) >= epoch)
-          // Only a refused subscribe leaves a tombstone at its own epoch.
           return refused && BigInt(existing.epoch) === epoch && !existing.active
 
         if (existing?.active === true)
@@ -623,8 +643,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           Match.orElse((cursor) => BigInt(cursor)),
         )
 
-        // Due at once when history after the start already matches, so a
-        // subscription to a quiet source still delivers it.
         yield* sql`INSERT INTO actor_subscriptions (routing_key, tenant_id, source_type, source_id,
             subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket,
             due_at_ms)
@@ -776,12 +794,9 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     const oldest = batch[0]!.oldest
     const events = batch.filter((event) => event.sequence !== null)
     let progress = BigInt(row.delivered)
-    // Whether the batch's events follow on from `progress` with nothing pruned between.
     let continuous = true
     let uncountedGaps = 0
 
-    // Answers whether delivery goes on: a failure backs the row off, and a
-    // stale or unsubscribed acknowledgement removes this epoch's row.
     const settleOutcome = Effect.fnUntraced(function* (
       outcome: Result.Result<Outcome, ActorError>,
       position: bigint,
@@ -818,7 +833,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       return yield* renew
     })
 
-    // Never shortens the claim, so a renewal can't undo a lease a test clock moved.
     const renew = Effect.gen(function* () {
       const renewed = yield* sql<{ due_at_ms: string }>`UPDATE actor_subscriptions s
           SET due_at_ms = greatest(s.due_at_ms, ${(yield* databaseTime) + settings.claimLeaseMs()})
@@ -837,9 +851,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       return true
     })
 
-    // Pruning removes a prefix, so history after `delivered` is missing when
-    // the oldest retained event is past its successor, or nothing is retained.
-    // An operator's skip plants the position it skips through as the gap's end.
     const planted = row.gap_through === null ? undefined : BigInt(row.gap_through)
 
     if (
@@ -855,8 +866,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             ? head
             : BigInt(oldest) - 1n
 
-      // The detection time fixes the gap's id and its range is kept, so a
-      // redelivery reports the same gap even after pruning advances.
       const [gap] = yield* sql<{ at: string; through: string }>`UPDATE actor_subscriptions s
           SET gap_at_ms = coalesce(s.gap_at_ms, ${yield* databaseTime}),
             gap_through = coalesce(s.gap_through, ${resumeAfter})
@@ -872,7 +881,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       continuous = through === resumeAfter
 
       if (subscription.routed === "id") {
-        // An id route needs the pruned event to name a subscriber.
         yield* Effect.logWarning("Subscription gap without a recipient").pipe(
           Effect.annotateLogs({
             subscription: `${row.subscriber_type}.${row.subscription}`,
@@ -914,8 +922,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     }
 
     for (const event of continuous ? events.filter((e) => BigInt(e.sequence!) > progress) : []) {
-      // The subscriber reads the current shape; a value its chain can't read
-      // backs the row off at this event rather than skipping it.
       const upcast = yield* subscription
         .upcast(event.event!, event.payload_version!, decompress(event.value!))
         .pipe(Effect.result)
@@ -967,15 +973,11 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       if (!(yield* settleOutcome(outcome, BigInt(event.sequence!)))) return
     }
 
-    // A short batch scanned every matching event through the head it read;
-    // after a gap older than the pruning now, it stops at the gap to find the next one.
     const delivered =
       continuous && events.length < settings.batch ? (head > progress ? head : progress) : progress
 
     yield* hooks.at("beforeSettle", hookRequest(source, row.subscription, row.subscriber_id))
 
-    // Read before the settle, in its own snapshot: a commit after it raised
-    // `marked` through its expansion, which the settle reads from the row.
     const [pending] = yield* sql<{ due: boolean }>`SELECT EXISTS (
         SELECT 1 FROM actor_events e
         WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
@@ -984,8 +986,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     yield* hooks.at("afterSettleSnapshot", hookRequest(source, row.subscription, row.subscriber_id))
 
-    // Widening only ever adds this declaration's classes to the row's list,
-    // and each added class enters the tag summary.
     const settle = sql<{ added: string }>`
       WITH old AS (SELECT s.events FROM actor_subscriptions s WHERE ${held()}),
       settled AS (
@@ -1023,8 +1023,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     )
   })
 
-  // Shutdown releases a claim at once instead of leaving it until its lease
-  // ends; the receipt and the cursor make the redelivery safe.
   const release = (work: SubscriptionWork, claim: { lease: bigint }) =>
     Effect.gen(function* () {
       const at = yield* databaseTime

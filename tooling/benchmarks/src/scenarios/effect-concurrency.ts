@@ -75,7 +75,6 @@ const maxInFlight = (actors?: (actor: string) => boolean) => {
   for (const list of edges.values()) {
     let running = 0
 
-    // An attempt that ends exactly when another starts does not overlap it.
     for (const [, step] of list.sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
       running += step
       most = Math.max(most, running)
@@ -143,6 +142,10 @@ const memoryMb = () => round(process.memoryUsage().rss / 1_048_576)
 const labelsFor = (actor: string, count: number) =>
   Array.from({ length: count }, (_, index) => `${actor}/${index}`)
 
+/**
+ * Effect executor concurrency across runners; see its description. An attempt
+ * that ends exactly when another starts does not overlap it.
+ */
 export const effectConcurrency: Scenario = {
   name: "effect-concurrency",
   description: `Three in-process runners on one Postgres, a ${PROVIDER_MS} ms fake provider: effect throughput uncapped and at concurrency.perActor 2, a hot actor at perActor 1 beside cold actors, and cancel-to-interrupt latency of running effects cancelled from turns on a runner that executes none of them, at the default and a 1 second executors.cancelCheck. The runners share one process and its CPU.`,

@@ -3,9 +3,11 @@ import type { ClearResult, PayloadProblem } from "@durable-actors/core/runtime"
 import { Effect } from "effect"
 import { UsageError } from "../workflows/check.ts"
 
+/** Usage text for `durable payloads`. */
 export const USAGE =
   "Usage: durable payloads check|clear --entry <module> --database-url <url> [--json]"
 
+/** Parsed arguments of `payloads check|clear`. */
 export interface PayloadsOptions {
   readonly command: "check" | "clear"
   readonly entry: string

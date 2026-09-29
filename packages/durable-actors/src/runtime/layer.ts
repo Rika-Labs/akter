@@ -101,7 +101,7 @@ import {
 } from "./payloads/versions.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
 import { decodeResult, RECOVERY_MS } from "./workflows/engine.ts"
-import { INTERRUPT, RESUME, Target } from "../handles/workflow.ts"
+import { ExecutionTarget, INTERRUPT, RESUME } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
 import { directMessages } from "./topology/messages.ts"
@@ -242,7 +242,7 @@ const Millis = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_48
 const millis = (duration: Duration.Input) =>
   Millis.make(Math.floor(Duration.toMillis(Duration.fromInputUnsafe(duration))))
 
-const decodeTarget = Schema.decodeEffect(Target)
+const decodeTarget = Schema.decodeEffect(ExecutionTarget)
 
 /** Added to the longest turn a claimed intent's receiver may take. */
 const CLAIM_MARGIN_MS = 5000

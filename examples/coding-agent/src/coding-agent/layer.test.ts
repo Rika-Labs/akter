@@ -22,7 +22,10 @@ import { fakeLayer, fakeSandboxes } from "./sandbox.ts"
 
 const fake = fakeSandboxes()
 
-// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/**
+ * The same cases run on PGlite (`test`) and on a fresh Postgres database
+ * (`test:integration`).
+ */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("CODING_AGENT_BACKEND")) === "pglite") return undefined
 
@@ -84,11 +87,9 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
     Effect.gen(function* () {
       const test = yield* ActorTest
       const agent = yield* started("g1")
-      // Pieces a moment apart, so each leaves the executor before the reply commits.
       fake.paceMs = 100
       const turnId = yield* agent.Prompt({ text: "hello" })
 
-      // A client following this turn's reply live, subscribed before the executor runs.
       const streamed = yield* agent.Streaming({ turnId }).pipe(Stream.runCollect, Effect.forkChild)
 
       yield* Effect.sleep("200 millis")
@@ -103,7 +104,6 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
         state: { sandboxId: expect.any(String) },
       })
 
-      // The reply's deltas left the executor as progress frames; none are stored.
       const frames = (yield* test.progress).flatMap((record) =>
         Predicate.isTagged(record, "Progress") && record.ref.id === "g1" && !record.dropped
           ? [new TextDecoder().decode(record.frame)]
@@ -113,7 +113,6 @@ it("runs a prompt in the sandbox, streams progress, and records the reply", () =
       expect(frames.length).toBeGreaterThan(0)
       expect(frames.every((frame) => frame.includes(turnId))).toBe(true)
 
-      // Deltas while the reply is written, then its committed end, and the stream completes.
       const elements = [...(yield* Fiber.join(streamed).pipe(Effect.timeout("10 seconds")))]
       const deltas = elements.filter((element) => Schema.is(Delta)(element))
       expect(deltas.length).toBeGreaterThan(0)
@@ -172,7 +171,6 @@ it("refuses a second prompt while a turn runs, and drops the reply of an aborted
       yield* agent.Abort()
       expect(yield* agent.Abort().pipe(Effect.flip)).toEqual(NoActiveTurn.make({}))
 
-      // The sandbox answers after the abort; the late reply finds no running turn.
       yield* Deferred.succeed(gate, undefined)
       yield* test.advance(0)
       expect(yield* test.receiptsFor(agent.ref, "Replied")).toBe(1)
@@ -192,13 +190,10 @@ it("records a reply once when the executor's result is lost and the prompt runs 
       yield* test.crashNext("afterExecute")
       yield* agent.Prompt({ text: "retry me" })
 
-      // Waits, without moving the clock, until the first attempt has run and crashed after the
-      // provider answered. Advancing while it still ran would move its lease with the clock.
       yield* test.advance(0)
       expect([...fake.prompts].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([1])
       expect(yield* test.receiptsFor(agent.ref, "Replied")).toBe(0)
 
-      // The crashed attempt keeps its lease; the relay runs it again once the lease has passed.
       yield* test.advance("2 minutes")
 
       expect([...fake.prompts].flatMap(([key, n]) => (before.has(key) ? [] : [n]))).toEqual([2])

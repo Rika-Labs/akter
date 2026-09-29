@@ -19,4 +19,5 @@ export const actors = RoomLive.pipe(
   ),
 )
 
+/** The chat routes served over `actors`. */
 export const app = routes.pipe(Layer.provide(actors))

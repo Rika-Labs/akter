@@ -16,9 +16,6 @@ describe("owned rows across process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  // Each handler inserts a row, emits an event, and sends an intent.
-  // `AppendThenRefuse` then fails with a declared error, so only its terminal
-  // receipt may commit and nothing is ever delivered.
   for (const [handler, point] of (["Append", "AppendThenRefuse"] as const).flatMap((handler) =>
     (["beforeCommit", "afterCommit"] as const).map((point) => [handler, point] as const),
   )) {
@@ -91,8 +88,6 @@ describe("owned rows across process death with Postgres", () => {
             const committed = point === "afterCommit"
             const staged = committed && !refused ? 1 : 0
 
-            // A separate pool sees only what the killed process committed. Its
-            // relay never ran the receiver, so a committed intent is still pending.
             const before = (yield* Effect.promise(() => pool.query(counts))).rows
             expect(before).toEqual([
               {
@@ -117,8 +112,6 @@ describe("owned rows across process death with Postgres", () => {
               `{"reply":"${refused ? "Refused" : "1"}","handled":${committed ? 0 : 1},"noted":${refused ? 0 : 1},"receipts":1,"rows":${refused ? 0 : 1},"events":${refused ? 0 : 1}}`,
             ])
 
-            // The receiver committed the intent once, under the id the killed
-            // process staged when it had committed one.
             const after = (yield* Effect.promise(() => pool.query(counts))).rows
             expect(after).toEqual([
               {

@@ -17,6 +17,7 @@ export const customers = pgTable("customers", {
   email: text("email").notNull(),
 })
 
+/** Products for sale, with the price in whole cents and the package each ships in. */
 export const products = pgTable("products", {
   sku: text("sku").primaryKey(),
   name: text("name").notNull(),

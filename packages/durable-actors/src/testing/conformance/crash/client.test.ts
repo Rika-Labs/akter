@@ -75,7 +75,6 @@ describe("Promise client across a served process death with Postgres", () => {
               timeoutInMs: 30_000,
             }).get("crashed")
 
-            // Waits until the first server answers its routes, then starts the one logical command.
             yield* Effect.tryPromise(() => baseFetch(`http://127.0.0.1:${port}/protocol`)).pipe(
               Effect.filterOrFail((response) => response.ok),
               Effect.retry({ times: 100, schedule: Schedule.spaced("100 millis") }),
@@ -83,7 +82,6 @@ describe("Promise client across a served process death with Postgres", () => {
             )
 
             const call = counter.Increment(47)
-            // Observed below; a rejection must not surface as unhandled first.
             call.catch(() => undefined)
 
             yield* child.stdout.pipe(

@@ -25,8 +25,10 @@ export class Hang extends Actor.effect<Hang>()("Hang", {
   success: Schema.String,
 }) {}
 
+/** Names of the effects `ControlProbe` can perform. */
 export const ControlEffect = Schema.Literals(["Work", "PairWork", "SingleWork", "Hang"])
 
+/** Name of one effect `ControlProbe` can perform. */
 export type ControlEffect = typeof ControlEffect.Type
 
 const PerformAll = Actor.command("PerformAll", {
@@ -65,6 +67,7 @@ export interface ControlAttempt {
   endedAt: number | undefined
 }
 
+/** Attempts the fake provider has seen, by label. */
 export const controlAttempts = new Map<string, ControlAttempt>()
 
 /** Resolved when every attempt a case waits on has ended. */
@@ -85,6 +88,7 @@ const ended = (label: string) =>
     if (waiter !== undefined) yield* Deferred.succeed(waiter, undefined)
   })
 
+/** Handlers for `ControlProbe`. */
 export const ControlProbeCommands = ControlProbe.toLayer(
   Effect.succeed({
     PerformAll: Effect.fnUntraced(function* ({ effect, labels }) {

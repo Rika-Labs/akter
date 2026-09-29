@@ -9,6 +9,7 @@ export interface ConnectionSource<Params, Server, Client> {
   ) => Promise<ClientConnection<Server, Client>>
 }
 
+/** Options for `useConnection`. */
 export interface UseConnectionOptions {
   /** Resynchronizes after an owner loss; see the Promise client's `onResync`. */
   readonly onResync?: ConnectOptions["onResync"]
@@ -16,6 +17,7 @@ export interface UseConnectionOptions {
   readonly keep?: number
 }
 
+/** A connection's status and received frames. */
 export interface Connected<Server, Client> {
   readonly status: "connecting" | "open" | "closed"
   /** The most recent frames, oldest first. */
@@ -36,7 +38,10 @@ export const keepLast = <Frame>(frames: ReadonlyArray<Frame>, frame: Frame, keep
  * Holds one connection open while the component is mounted with the same
  * `params` key: the latest frames, `send`, and how it ended. A new key, or
  * unmounting, closes it; a connection is not reopened by itself, because a new
- * one is a new session. Nothing connects during rendering, so it is safe under SSR.
+ * one is a new session. `params` is compared by its JSON key, so a new object
+ * with the same content keeps the connection. Nothing connects during
+ * rendering, so it is safe under SSR. `error` is the Promise client's: a
+ * declared error or an `ActorError`.
  */
 export const useConnection = <Params, Server, Client>(
   member: ConnectionSource<Params, Server, Client>,
@@ -79,7 +84,6 @@ export const useConnection = <Params, Server, Client>(
       } catch (thrown) {
         if (controller.signal.aborted) return
 
-        // The Promise client rejects only with declared errors and `ActorError`s.
         setError(thrown as Failure)
         setStatus("closed")
       }
@@ -92,7 +96,6 @@ export const useConnection = <Params, Server, Client>(
       connection.current = undefined
       void open?.close()
     }
-    // `params` is compared by its JSON key, so a new object with the same content keeps the connection.
   }, [member, key, keep])
 
   const send = useCallback(async (frame: Client) => {

@@ -40,6 +40,7 @@ export const summarize = (samples: ReadonlyArray<number>): Summary => {
   }
 }
 
+/** Monotonic milliseconds from `performance.now()`. */
 export const now = Effect.sync(() => performance.now())
 
 const Tagged = Schema.Struct({
@@ -59,6 +60,10 @@ export const errorKind = <E>(cause: Cause.Cause<E>) => {
   return reason === undefined ? _tag : `${_tag}/${reason._tag}`
 }
 
+/**
+ * Samples and failures of one `load`; `samples` holds only successful
+ * operations' latency in milliseconds.
+ */
 export interface LoadResult {
   readonly samples: ReadonlyArray<number>
   readonly elapsedMs: number
@@ -67,16 +72,16 @@ export interface LoadResult {
   readonly errorKinds: Readonly<Record<string, number>>
 }
 
-/**
- * Runs `workers` concurrent loops. Each loop claims the next operation index
- * until `operations` are claimed or `durationMs` passes, and times every
- * operation. Failures are counted, not retried, so they stay visible.
- */
 /** A load stops after a count of operations, a duration, or whichever comes first. */
 export type Limit =
   | { readonly operations: number; readonly durationMs?: number }
   | { readonly operations?: number; readonly durationMs: number }
 
+/**
+ * Runs `workers` concurrent loops. Each loop claims the next operation index
+ * until `operations` are claimed or `durationMs` passes, and times every
+ * operation. Failures are counted, not retried, so they stay visible.
+ */
 export const load = <E, R>(
   options: Limit & {
     readonly workers: number

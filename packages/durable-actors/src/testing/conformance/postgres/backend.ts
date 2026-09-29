@@ -21,8 +21,7 @@ const harness = ManagedRuntime.make(BunCrypto.layer)
 
 afterAll(() => harness.dispose())
 
-// A copy is refused while a session is still open on its source, and the
-// server ends a closed pool's sessions a moment after the client has.
+/** Postgres refuses to copy a database while a session is open on its source, and the server ends a closed pool's sessions a moment after the client has, so template copies retry. */
 const copyDatabase = (admin: Pool, name: string, template: string) =>
   Effect.tryPromise(() => admin.query(`CREATE DATABASE "${name}" TEMPLATE "${template}"`)).pipe(
     Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }),
@@ -45,11 +44,9 @@ const createDatabase = Effect.fnUntraced(function* (
   return { name, url: database.href }
 })
 
-// A physical streaming replica of TEST_DATABASE_URL's server, when one is configured.
 const { replicaUrl, ci } = Effect.runSync(
   Effect.gen(function* () {
     return {
-      // check:ci passes an empty value when it started no replica.
       replicaUrl: Option.getOrUndefined(
         Option.filter(
           yield* Config.option(Config.String("TEST_REPLICA_DATABASE_URL")),
@@ -61,7 +58,6 @@ const { replicaUrl, ci } = Effect.runSync(
   }),
 )
 
-// CI always provides one, so its read-your-writes evidence can't be skipped unnoticed.
 if (ci && replicaUrl === undefined)
   throw new Error("TEST_REPLICA_DATABASE_URL must name a streaming replica in CI")
 
@@ -108,7 +104,6 @@ const backend: ConformanceBackend = {
           })),
         )
 
-        // Databases created on the primary replicate, so the replica serves each under the same name.
         const onReplica = (database: Redacted.Redacted<string>) => {
           const url = new URL(replicaUrl!)
           url.pathname = new URL(Redacted.value(database)).pathname
@@ -136,9 +131,6 @@ const backend: ConformanceBackend = {
                 ),
               }
 
-        // A template copy is a whole-database snapshot of a stopped deployment.
-        // A disposed runtime's server sessions can outlive its pool briefly, and
-        // Postgres refuses to copy a database with sessions.
         const copy = Effect.fnUntraced(function* (database: Redacted.Redacted<string>) {
           const source = new URL(Redacted.value(database)).pathname.slice(1)
           const name = `restored_${(yield* crypto.randomUUIDv4).replaceAll("-", "")}`

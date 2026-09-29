@@ -14,7 +14,6 @@ const TallyState = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
-// Counts `reduce` calls in this process, so recovery can show a replay did not reduce again.
 let reductions = 0
 
 const Add = Actor.reducer("Add", {
@@ -55,7 +54,6 @@ const live = Layer.unwrap(
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
 
-// The caller's retry with its saved command id is the only recovery path.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
   const commandId = yield* Config.String("CRASH_COMMAND_ID")
@@ -69,7 +67,6 @@ const program = Effect.gen(function* () {
     return yield* Effect.die(new Error("Crash point was not reached"))
   }
 
-  // The caller sees either the committed state or the declared failure.
   const reply = yield* call.pipe(
     Effect.map(({ count }) => String(count)),
     Effect.catchTag("Overflow", (error) => Effect.succeed(error._tag)),
@@ -100,7 +97,6 @@ const program = Effect.gen(function* () {
     state: rows!.state_bytes === null ? null : decompress(rows!.state_bytes),
   })
 
-  // Tagged so the parent ignores runtime logs that share stdout.
   yield* Console.log(`RESULT ${result}`)
 }).pipe(Effect.timeout("10 seconds"))
 

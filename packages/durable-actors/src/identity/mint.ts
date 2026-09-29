@@ -2,11 +2,14 @@ import { Crypto, Effect, Schema } from "effect"
 import { type ActorRef, type Caller, System } from "./caller.ts"
 import { parseChildId } from "./child.ts"
 
+/** What a minted id is derived from: the minting parent, the command and position in its turn, and the child's actor type. */
 export interface MintInput {
   /** The minting parent; a singleton parent's id is the empty string. */
   readonly parent: ActorRef
   readonly commandId: string
+  /** How many mints the turn made before this one. */
   readonly ordinal: number
+  /** The child's actor type. */
   readonly child: string
 }
 
@@ -64,7 +67,10 @@ export const deriveMintId = Effect.fnUntraced(function* (input: MintInput) {
 /**
  * True when `caller` is the framework's creating intent for the minted actor
  * `target`. A parent-placed target, whose parent type is `parent`, is minted
- * only by the parent its id names, and only its local part is derived.
+ * only by the parent its id names, and only its local part is derived. A
+ * singleton parent digests an empty id, and its ref alone cannot tell it from
+ * a keyed parent whose id is `singleton`, so both digests are accepted; one
+ * actor type is never both.
  */
 export const provesMint = Effect.fnUntraced(function* (
   caller: Caller,
@@ -99,7 +105,5 @@ export const provesMint = Effect.fnUntraced(function* (
 
   if ((yield* derives(ref)) === id) return true
 
-  // A singleton parent digests an empty id; its ref alone cannot tell it from
-  // a keyed parent whose id is `singleton`, and one actor type is never both.
   return ref.id === SINGLETON_ID && (yield* derives({ ...ref, id: "" })) === id
 })

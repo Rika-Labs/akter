@@ -72,7 +72,7 @@ import {
   emptyOutbox,
   InTurn,
   openOutbox,
-  stage,
+  stageIntent,
 } from "../handles/intents.ts"
 
 import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
@@ -81,14 +81,14 @@ import {
   CurrentConnectionCommands,
   connectionCommandId,
 } from "../identity/command.ts"
-import { checkKey, decodeExecutionId, encodeExecutionId } from "../identity/execution.ts"
+import { checkExecutionKey, decodeExecutionId, encodeExecutionId } from "../identity/execution.ts"
 import { type AnyWorkflow, exitCodec, isWorkflow } from "../members/workflow.ts"
 import {
   ExecutionIdOutput,
   INTERRUPT,
   START,
   StartPayload,
-  Target,
+  ExecutionTarget,
   workflowRun,
   type WorkflowRun,
 } from "../handles/workflow.ts"
@@ -149,8 +149,6 @@ import {
 
 type StateFields = Readonly<Record<string, ValueSchema>>
 
-// Encoders and decoders are built once: building one per call recompiles its
-// schema, which costs more than the value it encodes.
 const decodeStoredVersion = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
 )
@@ -168,7 +166,11 @@ const decodeJsonObject = Schema.decodeEffect(Schema.fromJsonString(Schema.JsonOb
 const valueCodec = (schema: ValueSchema): Schema.Codec<{ readonly value: unknown }, string> =>
   Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: schema })))
 
-/** A member's payload, result, and declared-error codecs. */
+/**
+ * A member's payload, result, and declared-error codecs. Codecs here and at
+ * module level are built once, because building one per call recompiles its
+ * schema, which costs more than the value it encodes.
+ */
 const memberCodecs = (member: AnyMember) => {
   const input = valueCodec(member.input)
   const output = valueCodec(member.output)
@@ -206,14 +208,17 @@ const SingletonKeySchema = Schema.TaggedStruct("Singleton", {})
 /** Marker for a singleton actor's `key`: one instance per tenant, resolved with `X.get()`. */
 export const singleton = SingletonKeySchema.make({})
 
-export type SingletonKey = typeof singleton
+/** The type of `Actor.singleton`, the `key` of a singleton actor. */
+type SingletonKey = typeof singleton
 
 type KeySchema = Schema.Codec<string, string>
 
 type Key = KeySchema | SingletonKey | undefined
 
-// Actors a turn may mint, with the command that alone creates each and, for
-// a parent-placed actor, the parent type whose turns alone mint it.
+/**
+ * Actors a turn may mint, with the command that alone creates each and, for
+ * a parent-placed actor, the parent type whose turns alone mint it.
+ */
 const mintables = new WeakMap<
   object,
   { readonly name: string; readonly createdBy: string; readonly parent: string | undefined }
@@ -222,7 +227,7 @@ const mintables = new WeakMap<
 /** How many levels below its actor-placed root a parent-placed actor may sit. */
 const MAX_PLACEMENT_DEPTH = 4
 
-// What a parent-placed child needs of each definition it may be placed on.
+/** What a parent-placed child needs of each definition it may be placed on. */
 const placedDefinitions = new WeakMap<
   object,
   {
@@ -234,6 +239,7 @@ const placedDefinitions = new WeakMap<
   }
 >()
 
+/** Type-only key of `Placed`; no value exists at runtime. */
 export declare const PlacedType: unique symbol
 
 /** Type-level record of how a definition is placed and what its ids are. */
@@ -242,7 +248,7 @@ export interface Placed<Kind extends "tenant" | "actor" | "parent", Id> {
 }
 
 /** A definition children may be placed on: placed by `"actor"` or on a parent of its own. */
-export interface ParentDefinition extends Placed<"actor" | "parent", string> {
+interface ParentDefinition extends Placed<"actor" | "parent", string> {
   readonly name: string
 }
 
@@ -250,11 +256,11 @@ export interface ParentDefinition extends Placed<"actor" | "parent", string> {
  * Which rows share a shard: the tenant's, each actor's own, or the parent
  * actor's, whose id every child id carries.
  */
-export type PlacementOption = "tenant" | "actor" | { readonly parent: ParentDefinition }
+type PlacementOption = "tenant" | "actor" | { readonly parent: ParentDefinition }
 
 type PlacementKind<Pl> = Pl extends "tenant" ? "tenant" : Pl extends "actor" ? "actor" : "parent"
 
-// What a subscriber needs of each definition it may subscribe to.
+/** What a subscriber needs of each definition it may subscribe to. */
 const sources = new WeakMap<
   SourceDefinition,
   {
@@ -266,13 +272,23 @@ const sources = new WeakMap<
 
 const isUUIDv7 = Schema.is(Schema.String.check(Schema.isUUID(7)))
 
+/** Type-only key of `DefinitionWithInternal`; no value exists at runtime. */
 export declare const InternalHandleType: unique symbol
 
+/**
+ * Type-level record of a definition's internal handle, which reaches `internal`
+ * commands as well as `api` members; `ActorTest` reads it to type its calls.
+ */
 export interface DefinitionWithInternal<H> {
   readonly [InternalHandleType]?: H
 }
 
+/** Runtime access to a definition's internal handle, for test harnesses. */
 export interface InternalDefinition<H extends { readonly ref: ActorRef }> {
+  /**
+   * A handle to actor `id` of `tenant` that calls as `caller` and reaches
+   * `internal` commands; an `id` that fails the key schema is a defect.
+   */
   readonly handle: (
     id: string,
     tenant: string,
@@ -284,6 +300,7 @@ interface InternalDefinitionOwner {
   readonly get: unknown
 }
 
+/** Each `Actor.make` definition's internal handle, keyed by the definition. */
 export const internalDefinitions = new WeakMap<
   InternalDefinitionOwner,
   InternalDefinition<{ readonly ref: ActorRef }>
@@ -329,8 +346,11 @@ type ConnectionsOf<Members extends MemberRecord> = Extract<
 
 /** A connection member's entry in `X.toLayer`: short handlers, not one long-lived stream. */
 export type ConnectionHandlers<C extends AnyConnection, R> = {
+  /** Runs when a client opens the connection; a declared failure refuses it. */
   readonly open: (params: C["input"]["Type"]) => Effect.Effect<void, C["errors"][number]["Type"], R>
+  /** Runs once per client frame, in frame order, at least once per frame. */
   readonly frame: (frame: C["client"]["Type"]) => Effect.Effect<void, never, R>
+  /** Runs when the connection ends, with the reason it ended. */
   readonly close?: (reason: SessionEnded["cause"]) => Effect.Effect<void, never, R>
   /** Replays what the client missed after `after` when its owner died; it cannot change the session. */
   readonly resync?: (input: { readonly after: string | undefined }) => Effect.Effect<void, never, R>
@@ -363,7 +383,9 @@ type Reasons<
 
 /**
  * Durable intents to one actor, staged in the current command turn and
- * delivered after it commits. Every command, public or internal, is reachable.
+ * delivered after it commits: one method per command of `Members`, and per
+ * workflow a method that stages its start. `X.intents` leaves out an `internal`
+ * command named as a subscription `handler`, which only deliveries reach.
  */
 export type Intents<Members extends MemberRecord> = {
   readonly [K in CommandKeys<Members>]: (
@@ -376,6 +398,21 @@ export type Intents<Members extends MemberRecord> = {
   ) => Effect.Effect<string, never, InTurn>
 } & { readonly ref: ActorRef }
 
+/**
+ * A request/reply handle to one actor, from `X.get`: one method per public
+ * command, reducer, query, workflow, and stream. Handles cannot be used inside
+ * a turn; use `X.intents` there.
+ *
+ * Running the Effect a command method returns mints its command id once and
+ * reuses it on every rerun, so a retry is deduplicated by the receipt. A query
+ * uses no command id and reads a state at least as new as every commit this
+ * runtime's commands returned. A workflow method starts the execution and
+ * returns its `WorkflowRun`.
+ *
+ * @example
+ * const counter = yield* Counter.get(id)
+ * const value = yield* counter.Increment(1)
+ */
 export type Handle<
   Members extends MemberRecord,
   Creating extends string = never,
@@ -422,8 +459,11 @@ export type StreamHandler<S extends AnyStream, R> = (
   input: S["input"]["Type"],
 ) => Stream.Stream<S["output"]["Type"], S["errors"][number]["Type"], R>
 
-/** One handler per command in `api` and `internal`; a reducer has no handler. */
-export type Handlers<Members extends MemberRecord, R, RC = R, RS = R> = HandlerMap<
+/**
+ * `X.toLayer`'s handlers: one per command in `api` and `internal`, one entry
+ * per connection and stream; a reducer has no handler.
+ */
+type Handlers<Members extends MemberRecord, R, RC = R, RS = R> = HandlerMap<
   Members,
   CommandKeys<Members>,
   R
@@ -437,7 +477,10 @@ export type Handlers<Members extends MemberRecord, R, RC = R, RS = R> = HandlerM
 
 /**
  * One body per workflow in `api`. Bodies run outside turns and may use
- * request/reply handles, but only inside a step's `execute`.
+ * request/reply handles, but only inside a step's `execute`. Calls from a step
+ * carry the execution's recorded caller and skip the external access and
+ * command-id expiry checks, as relay deliveries do, so accepted work continues
+ * after the principal that started it loses access.
  */
 export type WorkflowHandlers<Members extends MemberRecord, R> = HandlerMap<
   Members,
@@ -446,13 +489,22 @@ export type WorkflowHandlers<Members extends MemberRecord, R> = HandlerMap<
 >
 
 /** One handler per query in `api`. */
-export type QueryHandlers<Members extends MemberRecord, R> = HandlerMap<
-  Members,
-  QueryKeys<Members>,
-  R
->
+type QueryHandlers<Members extends MemberRecord, R> = HandlerMap<Members, QueryKeys<Members>, R>
 
-/** One executor per declared effect, returning the effect's `success` type. */
+/**
+ * One executor per declared effect, returning the effect's `success` type,
+ * which is routed to the effect's `onSuccess` command. An attempt is abandoned
+ * after `policy.effects[Tag].timeout` (default 30 seconds) and retried up to
+ * `retry.times` more times (default 3).
+ *
+ * Only a typed failure proves the provider did not apply the call; a defect,
+ * a timeout, or an interruption leaves the attempt's outcome unknown. A result
+ * `onSuccess` cannot accept is dead-lettered rather than executed again, since
+ * the provider already applied it, and a cancelled effect's result goes to
+ * `onCancelled`, as an unknown outcome when that route cannot accept it. A
+ * stored payload that no longer decodes never reaches the executor and is
+ * still dead-lettered, without its route.
+ */
 export type Executors<Effects extends AnyEffect, R> = {
   readonly [Tag in Effects["tag"]]: (
     effect: Extract<Effects, { readonly tag: Tag }>["Type"],
@@ -588,7 +640,11 @@ interface Definition<
   Subs extends ReadonlyArray<AnySubscription>,
   Pl extends PlacementOption,
 > {
-  /** A parent-placed actor's key validates the local part of its id. */
+  /**
+   * How instances are named: an id schema (`X.get(id)`), `Actor.singleton`
+   * (`X.get()`), or omitted for minted ids (`X.create()` or `turn.mint`). A
+   * parent-placed actor's key validates only the local part of its id.
+   */
   readonly key?: Key
   /**
    * Which rows share a shard: the tenant (default), each actor on its own, or
@@ -597,6 +653,7 @@ interface Definition<
    * below an actor-placed root.
    */
   readonly placement?: Pl
+  /** `Actor.state` fields and migrations; an actor without it has no state. */
   readonly state?: ActorState<Fields>
   /** Event classes this actor may emit in a turn and replay in a query. */
   readonly events?: Events
@@ -605,14 +662,23 @@ interface Definition<
    * unless listed, and `authorize` still decides who reads each.
    */
   readonly feeds?: ReadonlyArray<Events[number]>
-  /** `Actor.table` tables whose rows this actor type owns. */
+  /**
+   * `Actor.table` tables whose rows this actor type owns. A table belongs to
+   * one actor type, so equal ids of two actor types never share rows.
+   */
   readonly tables?: Tables
   /** `Actor.blob` binary storage and `Actor.content` references: turns write them, queries read them. */
   readonly blobs?: Blobs
+  /** Public members, each keyed by its tag. */
   readonly api: Api & TagsMatch<Api> & ReducerStates<Api, NoInfer<Fields>>
+  /**
+   * Commands that `X.get` handles and `Actor.serve` never expose, reached by
+   * intents, cron, effect routes, and subscriptions; each keyed by its tag.
+   */
   readonly internal?: Internal & TagsMatch<Internal>
   /** `Actor.effect` classes this actor's turns may `perform`. */
   readonly effects?: Effects
+  /** Limits, retention, creation, cron, subscriber, and per-effect settings. */
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>, Effects[number]>
   /**
    * `Actor.subscription` members: other actors' committed events this actor
@@ -621,13 +687,47 @@ interface Definition<
   readonly subscriptions?: Subs
 }
 
-const encodeTarget = Schema.encodeEffect(Target)
+const encodeTarget = Schema.encodeEffect(ExecutionTarget)
 
 const encodeStartPayload = Schema.encodeEffect(StartPayload)
 
-// Workflow starts staged so far in each turn, numbering keyless starts.
+/** Workflow starts staged so far in each turn's staging, numbering keyless starts. */
 const startCounts = new WeakMap<object, number>()
 
+/**
+ * Validates a definition, throwing on any invalid declaration, and returns the
+ * actor type's handles, layers, and client. Invariants its turns, queries, and
+ * streams keep:
+ *
+ * - Stored state rows are upcast through the migration chain when read. An
+ *   actor with no rows starts at the current version, and a turn that upcast
+ *   rewrites every key at the current version; otherwise only changed keys are
+ *   written.
+ * - A turn's or query's capabilities die once its handler returns and when
+ *   used from a fiber other than the one that runs the handler, because its
+ *   one connection takes no concurrent statements. Forked fibers inherit
+ *   `InsideTurn`, so the owning fiber is compared as well, and a turn records
+ *   that misuse so a swallowed defect still fails it.
+ * - Queries and streams run with their own `InsideTurn` marker, so a command or
+ *   query call from their handlers is a defect instead of a write.
+ * - A reducer's `reduce` receives its own decoded copy of state, so mutating it
+ *   in place cannot hide a change, and its result round-trips through the state
+ *   schema to validate it. A commutative reducer declares no errors, so a merged
+ *   turn fails only by defect.
+ * - A turn's services are provided as one merged context: each nested provide
+ *   copies the whole fiber context.
+ * - Workflow bodies receive the layer's context without its `Scope`: a body's
+ *   scope is its run's.
+ * - A subscriber registers its sources' event chains beside its own, because it
+ *   reads their events. The relay upcasts an event before routing it, so a
+ *   route decodes the current version.
+ * - A connection frame that is an event entry carries its cursor, which the
+ *   client deduplicates on.
+ * - Handles never deliver subscriptions, so an acknowledged outcome on a handle
+ *   is a defect.
+ * - `toLayer`'s requirement parameters default to `never`, so an actor with no
+ *   handler to infer them from, such as one of reducers only, needs nothing.
+ */
 const make = <
   const Name extends string,
   const Api extends MemberRecord,
@@ -723,7 +823,6 @@ const make = <
     ),
   )
 
-  // Effects some member receives executor progress of; each must be declared with a progress schema.
   const progressEffects = new Set<string>()
 
   for (const member of [...connectionMembers, ...streamMembers])
@@ -742,8 +841,6 @@ const make = <
 
   const unrouted = new Set<string>()
 
-  // A keyed effect is one a later turn may cancel; with no route to report
-  // that to, an ambiguous cancellation reaches operators only.
   const warnUnrouted = (tag: string) =>
     Effect.suspend(() => {
       const routes = effectPolicies[tag]
@@ -829,7 +926,6 @@ const make = <
       ? declaredPlacement
       : { parent: parent!.name, placement: parent!.placement }
 
-  // One actor type owns a table, so equal actor ids of two types never share rows.
   for (const table of tables) {
     const info = ownership(table)
 
@@ -868,7 +964,6 @@ const make = <
     [...eventCodecs].map(([event, codec]) => [event.identifier, codec] as const),
   )
 
-  // A stored event the current class cannot read fails the read that met it.
   const upcastEvent = (tag: string, version: number, value: string) => {
     const codec = eventCodecsByTag.get(tag)
 
@@ -908,12 +1003,10 @@ const make = <
   ActorStates.validateChain(fields, migrations)
   const version = migrations.length
 
-  // Decodes stored rows written at any earlier version into the current shape.
   const decodeStored = Effect.fnUntraced(function* (
     rows: ReadonlyArray<readonly [string, string]>,
   ) {
     const stored: Record<string, Schema.Json> = {}
-    // An actor with no rows has nothing to upcast: it starts at the current shape.
     let storedVersion = rows.length === 0 ? version : 0
 
     for (const [key, value] of rows)
@@ -949,8 +1042,6 @@ const make = <
 
   const mintable = key === undefined && policy.createdBy !== undefined
 
-  // A parent-placed actor's own key, or its parent's mint, decides only the
-  // local part; the parent part must be an id of the parent type.
   const isLocalId = Schema.isSchema(key) ? Schema.is(key) : isMintedId
 
   const idSchema: KeySchema =
@@ -981,7 +1072,6 @@ const make = <
 
   const subscriptions: ReadonlyArray<AnySubscription> = definition.subscriptions ?? []
   const subscriptionTags = new Set<string>()
-  // Commands only subscription deliveries reach.
   const handlerTags = new Set<string>()
 
   for (const declared of subscriptions) {
@@ -1061,7 +1151,6 @@ const make = <
                 message: `Subscription ${declared.tag} names no ${tag}`,
               })
 
-            // The relay upcasts before it routes, so the value is current.
             const event = yield* codec.decode(value, codec.chain.current)
 
             const id = yield* Effect.try({
@@ -1121,7 +1210,6 @@ const make = <
     ]),
   )
 
-  // Handles for one execution: poll reads like a query; interrupt is a receipted command.
   const runOf = (
     member: AnyWorkflow,
     ref: ActorRef,
@@ -1184,7 +1272,6 @@ const make = <
       }),
     )
 
-  // `read.events`: one page of committed events of a declared class.
   const replayWith = (readEvents: EventReader) =>
     Effect.fnUntraced(function* <E extends Event>(
       event: E,
@@ -1239,16 +1326,11 @@ const make = <
       id: isSingleton ? "singleton" : yield* decodeId(id).pipe(Effect.orDie),
     })
 
-    // A workflow body sends only from inside a step, whose attempt derives each call's id.
     const callable = Effect.gen(function* () {
       if (CallPhase.$is("Body")(yield* CurrentCallPhase))
         return yield* Effect.die(new Error("Actor call in a workflow body outside a step"))
     })
 
-    // An activity's calls carry the execution's recorded attribution and were
-    // admitted when it started, so, like relay delivery, they skip the
-    // external access and expiry checks: accepted work continues after its
-    // starting caller loses access.
     const send = (request: Request) =>
       Effect.gen(function* () {
         if (CallPhase.$is("Activity")(yield* CurrentCallPhase))
@@ -1272,6 +1354,19 @@ const make = <
           ? yield* actors.mintCommandId
           : yield* connectionCommands(`${ref.tenant}\u0000${ref.actor}\u0000${ref.id}`, command)
       })
+
+    const callIdOnce = (command: string) => {
+      const lock = Semaphore.makeUnsafe(1)
+      let identity: string | undefined
+
+      return lock.withPermit(
+        Effect.gen(function* () {
+          if (identity === undefined) identity = yield* callId(command)
+
+          return identity
+        }),
+      )
+    }
 
     const methods = Object.fromEntries(
       (includeInternal ? all : Object.values(api))
@@ -1315,22 +1410,13 @@ const make = <
             return [
               member.tag,
               (input: typeof member.input.Type) => {
-                const lock = Semaphore.makeUnsafe(1)
-                let identity: string | undefined
-
-                const identify = lock.withPermit(
-                  Effect.gen(function* () {
-                    if (identity === undefined) identity = yield* callId(member.tag)
-
-                    return identity
-                  }),
-                )
+                const identify = callIdOnce(member.tag)
 
                 return Effect.gen(function* () {
                   yield* outsideTurn
                   yield* callable
 
-                  if (member.key !== undefined) yield* checkKey(member.key(input))
+                  if (member.key !== undefined) yield* checkExecutionKey(member.key(input))
                   const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
                   const outcome = yield* send(
@@ -1371,16 +1457,7 @@ const make = <
           return [
             member.tag,
             (input: typeof member.input.Type) => {
-              const lock = Semaphore.makeUnsafe(1)
-              let identity: string | undefined
-
-              const identify = lock.withPermit(
-                Effect.gen(function* () {
-                  if (identity === undefined) identity = yield* callId(member.tag)
-
-                  return identity
-                }),
-              )
+              const identify = callIdOnce(member.tag)
 
               return Effect.gen(function* () {
                 yield* outsideTurn
@@ -1389,8 +1466,6 @@ const make = <
 
                 const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-                // Queries are reads: no command id, receipt, or retry identity.
-                // They wait for every commit this runtime's commands returned.
                 const outcome =
                   member.kind === "query"
                     ? yield* internalActors.query(
@@ -1413,7 +1488,6 @@ const make = <
                   return yield* yield* decodeError(outcome.value).pipe(Effect.orDie)
                 }
 
-                // Handles never deliver subscriptions, so nothing acknowledges them.
                 if (Outcome.guards.Acknowledged(outcome))
                   return yield* Effect.die(
                     new Error(`Unexpected ${outcome.reason} acknowledgement`),
@@ -1429,7 +1503,6 @@ const make = <
     return { ...methods, ref } as Handle<All, Creating, BoundedMailbox>
   })
 
-  // Encodes a turn's final state within the size limit and lists the rows to write for `dirty` keys.
   const stateWrites = Effect.fnUntraced(function* (
     current: typeof stateSchema.Type,
     dirty: ReadonlySet<string>,
@@ -1450,7 +1523,6 @@ const make = <
     return writes
   })
 
-  // A declared failure commits only its receipt: no state rows.
   const declaredFailure = Effect.fnUntraced(function* (
     { isError, encodeError }: MemberCodecs,
     error: DeclaredError["Type"],
@@ -1479,7 +1551,6 @@ const make = <
     }),
   )
 
-  // Encodes a server frame; an event entry carries its own cursor for the client to deduplicate on.
   const encodeFrame = (member: string, frame: FrameOf<ServerFrame>) =>
     Effect.gen(function* () {
       const codec = connectionCodecs.get(member)
@@ -1520,8 +1591,6 @@ const make = <
 
   type SessionOf = Exclude<Connections["session"], undefined>["Type"]
 
-  // Builds one connection member's handlers: each phase is a short call that
-  // reads committed state and returns the frames and session it produced.
   const connectionHandler = <R>(
     member: AnyConnection,
     entry: ConnectionHandlers<AnyConnection, R>,
@@ -1720,8 +1789,6 @@ const make = <
     }
   }
 
-  // Builds one stream member's handler: it runs on the activation for one
-  // subscriber, reading the committed view the subscription started from.
   const streamHandler = <R>(
     member: AnyStream,
     handle: StreamHandler<AnyStream, R | Read | InStream>,
@@ -1830,7 +1897,6 @@ const make = <
               Stream.provideContext(services),
               Stream.provideService(CurrentCaller, input.caller),
               Stream.provideService(Tenant, input.ref.tenant),
-              // A stream is read-only: a command or query call from it is a defect.
               Stream.provideService(InsideTurn, stream),
             )
           }),
@@ -1915,7 +1981,6 @@ const make = <
             const loaded = yield* decodeStored(rows)
             let current = loaded.state
 
-            // An upcast turn rewrites every key at the current version.
             if (loaded.upcast) for (const key of Object.keys(fields)) dirty.add(key)
 
             const set = Effect.fnUntraced(function* (patch: Partial<State>) {
@@ -1947,7 +2012,7 @@ const make = <
                 .encode(event)
                 .pipe(Effect.orDie)
 
-              emittedBytes += new TextEncoder().encode(value).byteLength
+              emittedBytes += utf8.encode(value).byteLength
 
               if (emittedBytes > MAX_EMIT_BYTES)
                 return yield* Effect.die(
@@ -1959,9 +2024,7 @@ const make = <
 
             const view = { set }
 
-            // A forked fiber inherits InsideTurn, so the turn's own fiber is checked too.
             const owner = Fiber.getCurrent()
-            // Set on a use from another fiber of this turn, so a swallowed defect still fails the turn.
             let misused: string | undefined
 
             const escaped = (capability: string) =>
@@ -1969,7 +2032,6 @@ const make = <
                 if (!open || (yield* InsideTurn) !== turn)
                   return yield* Effect.die(new Error(`${capability} capability escaped its turn`))
 
-                // The turn's one connection takes no concurrent statements.
                 if (Fiber.getCurrent() !== owner) {
                   misused = `${capability} capability used from a fiber other than its turn's; timeout, race, and concurrent combinators run on other fibers`
 
@@ -2197,8 +2259,6 @@ const make = <
                   outbox.close()
                 }),
               ),
-              // One merged context instead of four nested provides, each of
-              // which copies the whole fiber context.
               Effect.provideContext(
                 Context.merge(Context.make(InsideTurn, turn), services).pipe(
                   Context.add(InTurn, outbox.marker),
@@ -2213,15 +2273,12 @@ const make = <
       for (const reducer of reducers) {
         const reducerCodec = codecs.get(reducer.tag)!
 
-        // One `reduce` over stored rows: the turn of one call, or of a merged
-        // run of commutative calls whose inputs were combined first.
         const reduceOnce = Effect.fnUntraced(function* (
           rows: ReadonlyArray<readonly [string, string]>,
           input: (typeof reducer.input)["Type"],
         ) {
           const loaded = yield* decodeStored(rows)
 
-          // `reduce` gets its own copy, so mutating it in place cannot hide a change.
           const given = yield* decodeState(
             yield* encodeState(loaded.state).pipe(Effect.orDie),
           ).pipe(Effect.orDie)
@@ -2231,12 +2288,10 @@ const make = <
           if (Result.isFailure(reduced))
             return yield* declaredFailure(reducerCodec, reduced.failure)
 
-          // Round-tripping validates the returned state against the actor's schema.
           const next = yield* decodeState(
             yield* encodeState(reduced.success).pipe(Effect.orDie),
           ).pipe(Effect.orDie)
 
-          // Only changed keys are written, unless an upcast rewrites every key.
           const dirty = new Set(
             Object.keys(fields).filter(
               (key) => loaded.upcast || !fieldEquivalences[key]!(loaded.state[key], next[key]),
@@ -2279,8 +2334,6 @@ const make = <
 
         commands.set(reducer.tag, {
           ...single,
-          // A commutative reducer declares no errors, so a merged turn cannot
-          // fail short of a defect.
           merge: Effect.fnUntraced(function* (requests, rows) {
             const inputs = yield* Effect.forEach(requests, decodeInput)
 
@@ -2334,7 +2387,7 @@ const make = <
               const input = yield* memberCodec.decodeInput(payload)
               const key = member.key(input.value)
 
-              yield* checkKey(key)
+              yield* checkExecutionKey(key)
 
               return key
             }).pipe(Effect.orDie),
@@ -2364,14 +2417,6 @@ const make = <
       return registeredWorkflows as ReadonlyMap<string, RegisteredWorkflow>
     })
 
-  /**
-   * Implements every `api` and `internal` command; handlers read their turn
-   * with `yield* X.Turn`. The build Effect runs once when the layer is built,
-   * except on a singleton, where it runs once per activation in the
-   * activation's scope, so a fiber it forks with `Effect.forkScoped` lives
-   * exactly as long as the one cluster-wide activation.
-   */
-  // Defaults keep R `never` when there is no handler to infer it from, as for an actor of reducers only.
   const toLayer = <R = never, RB = never, RC = never, RW = never, RS = never>(
     build: Effect.Effect<Handlers<All, R, RC, RS> & WorkflowHandlers<All, RW>, never, RB> &
       NoRequestReply<R>,
@@ -2401,7 +2446,6 @@ const make = <
           cron,
           subscriptions: registeredSubscriptions,
           subscribers: policy.subscribers,
-          // A subscriber reads its sources' events, so it checks their chains too.
           payloads: [
             ...payloadDeclarations(true),
             ...subscriptions.flatMap((declared) =>
@@ -2424,7 +2468,6 @@ const make = <
             Exclude<R, Turn | InTurn> | Exclude<RC, Connection> | Exclude<RS, Read | InStream>
           >()
 
-          // Without the layer's scope: a body's own scope is its run's.
           const workflowServices = Context.omit(Scope.Scope)(
             yield* Effect.context<
               Exclude<RW, Workflow | WorkflowEngine.WorkflowInstance | Scope.Scope>
@@ -2523,7 +2566,6 @@ const make = <
 
             const replay = replayWith(readEvents)
 
-            // A forked fiber inherits InsideTurn, so the query's own fiber is checked too.
             const owner = Fiber.getCurrent()
 
             const escaped = (capability: string) =>
@@ -2531,7 +2573,6 @@ const make = <
                 if (!open || (yield* InsideTurn) !== query)
                   return yield* Effect.die(new Error(`${capability} capability escaped its query`))
 
-                // The query's one connection takes no concurrent statements.
                 if (Fiber.getCurrent() !== owner)
                   return yield* Effect.die(
                     new Error(
@@ -2601,8 +2642,6 @@ const make = <
               ),
               Effect.provideService(Read, context),
               Effect.provideContext(services),
-              // A query is read-only: marking it as a turn makes any command or
-              // query call from its handler a defect instead of a write.
               Effect.provideService(InsideTurn, query),
             )
           }),
@@ -2620,10 +2659,6 @@ const make = <
       })
     })
 
-  /**
-   * Implements every query in `api`. Queries run on the caller's node against
-   * committed rows and read their context with `yield* X.Read`.
-   */
   const toQueryLayer = <R, RB>(
     build: Effect.Effect<QueryHandlers<Api, R>, never, RB>,
   ): Layer.Layer<never, never, Exclude<R, Read> | Exclude<RB, Scope.Scope> | InternalActors> =>
@@ -2635,7 +2670,6 @@ const make = <
       }),
     ) as Layer.Layer<never, never, Exclude<R, Read> | Exclude<RB, Scope.Scope> | InternalActors>
 
-  // A route's payload is its command's input, encoded the way intents encode it.
   const routeCodec = (command: AnyCommand) => {
     const codec = Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.input })))
 
@@ -2707,8 +2741,6 @@ const make = <
           perActor: routes?.concurrency?.perActor,
           routesCancelled: onCancelled !== undefined,
           execute: Effect.fnUntraced(function* (payload, version, attempt) {
-            // A payload the chain cannot read never reaches the executor, so
-            // this attempt applied nothing and earlier attempts decide ambiguity.
             const effect = yield* decode(payload, version).pipe(
               Effect.mapError((error) => ({
                 cause: error.message,
@@ -2719,8 +2751,6 @@ const make = <
 
             const { report, reporting, ...identity } = attempt
 
-            // Progress is cosmetic: a bad frame is dropped with a warning,
-            // never a defect that would make the outcome unknown.
             const progress = (
               target: AnyEffect,
               frame: ProgressOf<ProgressEffect>,
@@ -2730,7 +2760,7 @@ const make = <
                 : target !== declared || encodeProgress === undefined
                   ? Effect.logWarning("Progress frame does not match the running effect")
                   : encodeProgress(frame).pipe(
-                      Effect.map((json) => new TextEncoder().encode(json)),
+                      Effect.map((json) => utf8.encode(json)),
                       Effect.matchEffect({
                         onFailure: (error) =>
                           Effect.logWarning("Progress frame did not encode", String(error)),
@@ -2757,8 +2787,6 @@ const make = <
             )
 
             if (Exit.isFailure(exit))
-              // Only a typed failure says the provider did not apply the call;
-              // a defect, timeout, or interruption leaves the outcome unknown.
               return yield* Effect.fail({
                 cause: Cause.pretty(exit.cause),
                 ambiguous:
@@ -2767,8 +2795,6 @@ const make = <
                   Cause.hasInterrupts(exit.cause),
               })
 
-            // A cancelled effect reports its result to onCancelled; one the
-            // route cannot accept is reported as unknown there.
             const cancelled =
               onCancelled === undefined
                 ? undefined
@@ -2794,9 +2820,6 @@ const make = <
             if (onSuccess === undefined)
               return { success: undefined, cancelled, rejected: undefined }
 
-            // The provider already applied the call, so a result the route
-            // cannot accept is dead-lettered instead of executed again, unless
-            // the effect was cancelled and onCancelled takes the result.
             const success = yield* onSuccess(exit.value).pipe(Effect.result)
 
             if (Result.isFailure(success))
@@ -2819,8 +2842,6 @@ const make = <
 
             return yield* cancelledRoute(effect.value, letter)
           }, Effect.orDie),
-          // A payload that no longer decodes is still dead-lettered for
-          // operators; only its route, which needs the decoded effect, is skipped.
           deadLetter: Effect.fnUntraced(function* (payload, version, letter) {
             const effect = yield* decode(payload, version).pipe(Effect.option)
 
@@ -2840,11 +2861,6 @@ const make = <
       })
     })
 
-  /**
-   * Implements every declared effect's executor. Executors run after the
-   * turn that performed the effect commits, read `yield* X.Executor`, and have
-   * no database capability; the return value is routed to `onSuccess`.
-   */
   const toEffectLayer = <R, RB>(
     build: Effect.Effect<Executors<Effects[number], R>, never, RB> & NoDatabase<R | RB>,
   ): Layer.Layer<never, never, Exclude<R, Executor> | Exclude<RB, Scope.Scope> | InternalActors> =>
@@ -2878,12 +2894,10 @@ const make = <
 
     const target = ActorRef.make({
       actor: name,
-      // Intents stay within the sending turn's tenant.
       tenant: staging.sender.tenant,
       id: isSingleton ? "singleton" : yield* decodeId(id).pipe(Effect.orDie),
     })
 
-    // A subscription handler is reachable only through its subscriber's cursor.
     const methods = Object.fromEntries(
       members.flatMap((member) => {
         if (handlerTags.has(member.tag)) return []
@@ -2897,7 +2911,7 @@ const make = <
               Effect.gen(function* () {
                 const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-                yield* stage(marker, { target, command: member.tag, payload })
+                yield* stageIntent(marker, { target, command: member.tag, payload })
               }),
           ] as const,
         ]
@@ -2918,7 +2932,6 @@ const make = <
 
               startCounts.set(current, ordinal)
 
-              // A retried turn repeats its command id, so it restages the same executions.
               const key =
                 member.key === undefined ? `${current.commandId}:${ordinal}` : member.key(input)
 
@@ -2932,7 +2945,7 @@ const make = <
 
               const own = current.sender.actor === target.actor && current.sender.id === target.id
 
-              yield* stage(marker, {
+              yield* stageIntent(marker, {
                 target,
                 command: START,
                 payload: yield* encodeStartPayload({
@@ -2952,7 +2965,6 @@ const make = <
     return { ...methods, ...starts, ref: target } as Intents<Delivered>
   })
 
-  /** Reattaches to an execution by id, without contacting its owner. */
   const run = Effect.fnUntraced(function* <W extends Extract<Values<Api>, AnyWorkflow>>(
     member: W,
     executionId: string,
@@ -3004,7 +3016,6 @@ const make = <
 
   type LocalKey = K extends KeySchema ? K["Type"] : never
 
-  // A parent-placed actor is reached by its full id, never created by a caller.
   type ServedKey = K extends SingletonKey
     ? "singleton"
     : K extends undefined
@@ -3041,41 +3052,101 @@ const make = <
     streams: Object.values(api)
       .filter((member) => member.kind === "stream")
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
-    deliveryMs: policy.deliveryMs,
   }
 
   const actor = {
+    /** The actor type's name: a letter followed by up to 79 letters or digits. */
     name,
+    /** The schema of the actor's decoded state. */
     state: stateSchema,
+    /** The declared public members. */
     api: definition.api as Api,
     /** Event classes this actor emits, which subscriptions to it may name. */
     events: (definition.events ?? []) as Events,
+    /** The context of a command turn, read with `yield* X.Turn` in `X.toLayer` handlers. */
     Turn,
+    /** The read-only context of a query or stream handler, read with `yield* X.Read`. */
     Read,
+    /** The context of a connection handler, read with `yield* X.Connection`. */
     Connection,
+    /** The context of one effect executor attempt, read with `yield* X.Executor`. */
     Executor,
+    /** The context of a workflow body, read with `yield* X.Workflow`. */
     Workflow,
+    /**
+     * Reattaches to a workflow execution by id without contacting its owner. An
+     * id of another tenant, actor type, or workflow fails `InvalidExecutionId`.
+     */
     run: run as <W extends Extract<Values<Api>, AnyWorkflow>>(
       member: W,
       executionId: string,
     ) => Effect.Effect<WorkflowRun<W>, InvalidExecutionId, Actors>,
+    /**
+     * Implements every `api` and `internal` command, connection, stream, and
+     * workflow; reducers have no entry. Command handlers read their turn with
+     * `yield* X.Turn`, and one that acquires a handle with `X.get` does not
+     * compile. The build Effect runs once when the layer is built,
+     * except on a singleton, where it runs once per activation in the
+     * activation's scope, so a fiber it forks with `Effect.forkScoped` lives
+     * exactly as long as the one cluster-wide activation.
+     *
+     * @example
+     * const CounterLive = Counter.toLayer(
+     *   Effect.succeed({
+     *     Increment: (by) =>
+     *       Effect.gen(function* () {
+     *         const turn = yield* Counter.Turn
+     *         yield* turn.state.set({ count: turn.state.count + by })
+     *         return turn.state.count
+     *       }),
+     *   }),
+     * )
+     */
     toLayer,
+    /**
+     * Implements every query in `api`. Queries run on the caller's node against
+     * committed rows and read their context with `yield* X.Read`.
+     */
     toQueryLayer,
+    /**
+     * Implements every declared effect's executor. Executors run after the
+     * turn that performed the effect commits, read `yield* X.Executor`, and have
+     * no database capability; the return value is routed to `onSuccess`.
+     */
     toEffectLayer,
+    /**
+     * A request/reply handle to the actor with `id`, or to the singleton. It
+     * never contacts the actor; a call does. An `id` that fails the key schema
+     * is a defect, and acquiring a handle inside a turn is a defect.
+     */
     get: get as K extends SingletonKey
       ? () => Effect.Effect<PublicHandle, never, Actors>
       : (id: Id) => Effect.Effect<PublicHandle, never, Actors>,
+    /**
+     * Mints a new UUIDv7 id and returns its handle. Only an unkeyed actor that
+     * is not parent-placed has `create`; calling it inside a turn is a defect.
+     */
     create: create as K extends undefined
       ? PlacementKind<Pl> extends "parent"
         ? never
         : () => Effect.Effect<PublicHandle, never, Actors>
       : never,
-    /** A parent-placed actor's id: `c1.<byte length of parent>.<parent>.<local>`. */
+    /**
+     * Builds a parent-placed actor's full id from its parent's id and its own
+     * key, as `c1.<byte length of parent>.<parent>.<local>`.
+     */
     idOf: idOf as PlacementKind<Pl> extends "parent" ? typeof idOf : never,
     /**
      * Durable intents to this actor; only command turns provide `InTurn`. The
      * id is a plain string so `X.intents(turn.id)` works for every key kind;
-     * an id that fails the key schema is a deterministic defect.
+     * an id that fails the key schema is a deterministic defect. The target
+     * shares the sending turn's tenant. A keyless workflow start is keyed by the
+     * turn's command id and its order among the turn's starts, so a retried
+     * turn restages the same executions.
+     *
+     * @example
+     * const later = yield* Counter.intents(turn.id)
+     * yield* later.Increment(1).pipe(Intent.after("1 minute"))
      */
     intents: (isSingleton ? () => getIntents("singleton") : getIntents) as K extends SingletonKey
       ? () => Effect.Effect<Intents<Delivered>, never, InTurn>
@@ -3083,6 +3154,8 @@ const make = <
     /**
      * A Promise client of this actor's public members over `Actor.serve`'s
      * HTTP protocol, for browsers and other code that doesn't run Effect.
+     * Workflows are not served; a parent-placed actor is reached by its full
+     * id and never created by a client.
      */
     client: (options: ClientOptions) =>
       clientOf<
@@ -3133,6 +3206,7 @@ export interface Make extends MakeFunction {}
 
 type MakeFunction = typeof make
 
+/** `Actor.make` and `Actor.singleton`, which the package entry re-exports on `Actor`. */
 export const Definition = { make: make as Make, singleton }
 
 /**

@@ -14,7 +14,10 @@ const fake = fakeSandboxes()
 
 const HOUR = 3_600_000
 
-// The same cases run on PGlite (`test`) and on a fresh Postgres database (`test:integration`).
+/**
+ * The same cases run on PGlite (`test`) and on a fresh Postgres database
+ * (`test:integration`).
+ */
 const database = Effect.gen(function* () {
   if ((yield* Config.String("CODING_AGENT_BACKEND")) === "pglite") return undefined
 
@@ -57,7 +60,6 @@ it("sweeps on the hour, kills old sandboxes no agent uses, keeps the ones in use
       const now = DateTime.toEpochMillis(yield* DateTime.now)
       const hours = (n: number) => now - n * 3_600_000
 
-      // A live agent whose sandbox is more than a day old.
       const agent = yield* CodingAgent.get(AgentId.make("owner"))
       yield* agent.Start({ repo: "r" })
       yield* test.advance(0)
@@ -73,18 +75,16 @@ it("sweeps on the hour, kills old sandboxes no agent uses, keeps the ones in use
           paused: false,
         })
 
-      sandbox("replaced", "owner", hours(26)) // its agent moved on to another sandbox
-      sandbox("never-ready", "ghost", hours(25)) // its agent never recorded it
+      sandbox("replaced", "owner", hours(26))
+      sandbox("never-ready", "ghost", hours(25))
       sandbox("fresh", "ghost", hours(1))
 
-      // The hourly tick's sweep kills the orphans, then loses its result, so the relay runs it again.
       yield* test.crashNext("afterExecute")
       const reaper = yield* SandboxReaper.get()
       const at = (yield* test.now).epochMilliseconds
       yield* test.advance(Math.ceil((at + 1) / HOUR) * HOUR - at)
       expect(yield* test.receiptsFor(reaper.ref, "Sweep")).toBe(1)
 
-      // The advance waited for the attempt, so it has crashed and its lease has not moved.
       expect(fake.sandboxes.has("never-ready")).toBe(false)
       expect(yield* test.receiptsFor(reaper.ref, "Swept")).toBe(0)
       yield* test.advance("2 minutes")
