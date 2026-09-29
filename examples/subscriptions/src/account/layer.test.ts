@@ -96,9 +96,24 @@ const collection = Effect.fnUntraced(function* (invoiceId: string) {
 const poll = <A, E, R>(effect: Effect.Effect<A, E, R>, until: (value: A) => boolean) =>
   effect.pipe(Effect.repeat({ schedule: Schedule.spaced("20 millis"), until }))
 
-/** Waits until the collection has parked on a durable wait. */
-const suspended = (invoiceId: string) =>
-  poll(collection(invoiceId), (row) => row?.status === "suspended")
+/**
+ * Waits until the collection is parked on its wait `step` with a deadline.
+ * The execution's status alone is no signal: it stays `suspended` from the
+ * first wait until the run finishes, so after a retry it would pass before
+ * the next wait registered, and advancing then would set that wait's deadline
+ * past the advanced clock.
+ */
+const parked = Effect.fnUntraced(function* (invoiceId: string, step: string) {
+  const sql = yield* SqlClient.SqlClient
+  const { execution_id } = (yield* collection(invoiceId))!
+
+  yield* poll(
+    sql<{ pending: boolean }>`SELECT EXISTS (
+      SELECT 1 FROM actor_workflow_step WHERE execution_id = ${execution_id} AND step = ${step}
+        AND kind = 'wait' AND exit IS NULL AND due_at_ms IS NOT NULL) AS pending`,
+    (rows) => rows[0]?.pending === true,
+  )
+})
 
 /** Waits until an invoice is paid or failed, and returns it. */
 const settled = Effect.fnUntraced(function* (id: string, period: number) {
@@ -156,7 +171,7 @@ it("retries a declined charge as soon as the customer adds a newer card", () =>
       const account = yield* subscribe("a2", "tok_declined")
 
       // The first charge declined and the collection waits for a card or three days.
-      yield* suspended("a2-1")
+      yield* parked("a2-1", "card-1")
       expect(yield* charges("a2-1")).toEqual({ calls: 1, approved: 0 })
 
       yield* account.UpdateCard("tok_visa")
@@ -175,9 +190,8 @@ it("marks the account past due after the last retry declines", () =>
       const account = yield* subscribe("a3", "tok_declined")
 
       // Each declined charge parks the collection for three days before the next one.
-      for (const declines of [1, 2]) {
-        yield* poll(charges("a3-1"), ({ calls }) => calls >= declines)
-        yield* suspended("a3-1")
+      for (const wait of ["card-1", "card-2"]) {
+        yield* parked("a3-1", wait)
         yield* test.advance("3 days")
       }
 
