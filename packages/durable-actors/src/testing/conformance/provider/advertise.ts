@@ -1,5 +1,10 @@
 import { connect } from "node:net"
-import { Duration, Effect } from "effect"
+import { Duration, Effect, Schema } from "effect"
+
+/** An advertised-address list that cannot be read. */
+export class BadAdvertised extends Schema.TaggedError<BadAdvertised>()("BadAdvertised", {
+  reason: Schema.String,
+}) {}
 
 /** A runner's advertised address, as `host:port`. */
 export interface AdvertisedAddress {
@@ -14,7 +19,7 @@ export interface AdvertisedAddress {
  */
 export const parseAdvertised = (
   list: string,
-): Effect.Effect<ReadonlyArray<AdvertisedAddress>, Error> =>
+): Effect.Effect<ReadonlyArray<AdvertisedAddress>, BadAdvertised> =>
   Effect.forEach(
     list
       .split(",")
@@ -25,13 +30,13 @@ export const parseAdvertised = (
       const port = Number(match?.[2])
 
       return match === null || port < 1 || port > 65_535
-        ? Effect.fail(new Error(`"${entry}" is not host:port`))
+        ? Effect.fail(BadAdvertised.make({ reason: `"${entry}" is not host:port` }))
         : Effect.succeed({ host: match[1]!.replace(/^\[|\]$/g, ""), port })
     },
   ).pipe(
     Effect.filterOrFail(
       (addresses) => addresses.length > 0,
-      () => new Error("No advertised address given"),
+      () => BadAdvertised.make({ reason: "No advertised address given" }),
     ),
   )
 
@@ -40,9 +45,10 @@ export const parseAdvertised = (
  * within `timeout`. It proves the address routes to a listener from where this
  * process runs; it says nothing about what listens there.
  */
-export const canConnect = (address: AdvertisedAddress, timeout: Duration.Input) =>
+const canConnect = (address: AdvertisedAddress, timeout: Duration.Input) =>
   Effect.callback<boolean>((resume) => {
     const socket = connect({ host: address.host, port: address.port })
+
     const finish = (reached: boolean) => {
       socket.destroy()
       resume(Effect.succeed(reached))
@@ -57,12 +63,18 @@ export const canConnect = (address: AdvertisedAddress, timeout: Duration.Input) 
   })
 
 /** The `host:port` of every address this process cannot connect to. */
-export const unreachable = (addresses: ReadonlyArray<AdvertisedAddress>, timeout: Duration.Input) =>
-  Effect.forEach(
+export const unreachable = Effect.fnUntraced(function* (
+  addresses: ReadonlyArray<AdvertisedAddress>,
+  timeout: Duration.Input,
+) {
+  const missed = yield* Effect.forEach(
     addresses,
     (address) =>
       Effect.map(canConnect(address, timeout), (reached) =>
         reached ? [] : [`${address.host}:${address.port}`],
       ),
     { concurrency: 8 },
-  ).pipe(Effect.map((missed) => missed.flat()))
+  )
+
+  return missed.flat()
+})

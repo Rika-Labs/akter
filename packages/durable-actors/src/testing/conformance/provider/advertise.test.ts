@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:net"
 import { Config, Effect, Option } from "effect"
 import { describe, expect, it } from "vitest"
-import { parseAdvertised, unreachable } from "./advertise.ts"
+import { BadAdvertised, parseAdvertised, unreachable } from "./advertise.ts"
 
 const listening = () =>
   Effect.acquireRelease(
@@ -32,7 +32,7 @@ describe("advertised address parsing", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         for (const bad of ["runner-1", "runner-1:0", "runner-1:70000", "runner-1:x", "", " , "])
-          expect(yield* Effect.flip(parseAdvertised(bad))).toBeInstanceOf(Error)
+          expect(yield* Effect.flip(parseAdvertised(bad))).toBeInstanceOf(BadAdvertised)
       }),
     ))
 })
