@@ -597,7 +597,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
-      withProbe(environment, {}, (probe) =>
+      withProbe(environment, { prepare: false }, (probe) =>
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
           const meter = yield* Plain.get("delayed")
@@ -617,6 +617,14 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(Number(row!.due) >= before + 400 + 3_600_000).toBe(true)
           expect(row!.scheduled).toBe(row!.due)
+
+          // clock_timestamp() moves while a statement runs; a shift read per
+          // column would leave the row's due and scheduled times apart
+          // whenever the statement crossed a millisecond.
+          const commit = wire(deferred.sent[1]!)
+          const moved = commit.slice(commit.indexOf("UPDATE actor_outbox"))
+          const shift = moved.slice(0, moved.indexOf("WHERE"))
+          expect(shift.split("clock_timestamp()").length - 1).toBe(1)
         }),
       ),
   },
