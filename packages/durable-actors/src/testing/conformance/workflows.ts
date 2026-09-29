@@ -387,6 +387,13 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
 
               return "clocks"
 
+            case "phases":
+              yield* WatchNapA("5 seconds")
+              yield* gated(WatchHold, "hold")
+              yield* WatchNapB("5 seconds")
+
+              return "phases"
+
             case "long":
               yield* WatchLong("10 seconds")
 
@@ -779,6 +786,47 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* run.result).toBe("r-sleep:v2")
           expect(fixture.workflows.runs.get("reserve:o3")).toBe(1)
         }),
+      ),
+  },
+  {
+    name: "workflows: status is running while a resumed run executes and suspended only while parked",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const gate = yield* Deferred.make<void>()
+          fixture.workflows.gates.set("phases", gate)
+          const shipper = yield* Shipper.get("phases")
+          const run = yield* shipper.Watch({ mode: "phases", orderId: "phases" })
+
+          const status = () =>
+            sql<{ status: string }>`SELECT status FROM durable.workflows
+              WHERE execution_id = ${run.executionId}`.pipe(Effect.map((rows) => rows[0]?.status))
+
+          // Parked on the first clock.
+          yield* suspendedRow(run.executionId)
+          expect(yield* status()).toBe("suspended")
+
+          // Resumed: the activity after the clock is running.
+          yield* test.advance("6 seconds")
+
+          yield* eventually(
+            Effect.sync(() => fixture.workflows.runs.get("hold:phases") === 1),
+            "the resumed run to reach its activity",
+          )
+
+          expect(yield* status()).toBe("running")
+
+          // Parked again on the second clock.
+          yield* Deferred.succeed(gate, undefined)
+          yield* suspendedRow(run.executionId)
+          expect(yield* status()).toBe("suspended")
+          yield* test.advance("6 seconds")
+          expect(yield* run.result).toBe("phases")
+          expect(yield* status()).toBe("finished")
+        }).pipe(Effect.ensuring(Effect.sync(() => fixture.workflows.gates.delete("phases")))),
       ),
   },
   {
