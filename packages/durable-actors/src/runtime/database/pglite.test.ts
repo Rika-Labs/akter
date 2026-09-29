@@ -8,6 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { Actor, NotCreated } from "../../index.ts"
 import { migrate, migrations, migrator } from "./migrations.ts"
 import { Database } from "../index.ts"
+import { orderCapped } from "../turn/outbox.ts"
+import { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
 import type { InternalActors } from "../../handles/actors.ts"
 import { describeConformance, type ConformanceBackend } from "../../testing/conformance.ts"
@@ -546,6 +548,130 @@ describe("PGlite migrations", () => {
             { receipts: 0 },
           ])
           expect(yield* migrate).toEqual([])
+        }),
+      )
+      .finally(() => runtime.dispose())
+  })
+})
+
+// Effect rows written by older migrations and runners, as capped performs see them.
+const sender = ActorRef.make({ tenant: "t", actor: "Sender", id: "s" })
+
+interface Row {
+  readonly id: string
+  readonly command?: string
+  readonly due: number
+  readonly scheduled: number | null
+  readonly ready: number | null
+  readonly running?: boolean
+}
+
+const insert = (rows: ReadonlyArray<Row>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`INSERT INTO actor_outbox ${sql.insert(
+      rows.map((row) => ({
+        routing_key: 1,
+        intent_id: row.id,
+        kind: "effect",
+        bucket: 0,
+        due_at_ms: row.due,
+        scheduled_at_ms: row.scheduled,
+        ready_at_ms: row.ready,
+        running: row.running ?? false,
+        tenant_id: "t",
+        actor_type: "Sender",
+        actor_id: "s",
+        target_type: "Sender",
+        target_id: "s",
+        command: row.command ?? "Capped",
+        payload: "{}",
+        caller: "{}",
+      })),
+    )}`
+  })
+
+const ready = (ids: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    const rows = yield* sql<{ id: string; ready: number }>`SELECT intent_id AS id,
+        ready_at_ms::int AS ready FROM actor_outbox WHERE intent_id IN ${sql.in(ids)}`
+
+    return Object.fromEntries(rows.map(({ id, ready }) => [id, ready]))
+  })
+
+describe("capped effect order after upgrades", () => {
+  it("places a turn's capped effects after its type's earlier rows due no later, in perform order, legacy rows included", () => {
+    const runtime = ManagedRuntime.make(Database.pglite())
+
+    return runtime
+      .runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* migrate
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+          VALUES (1, 't', 'Sender', 's')`
+
+          // Written before `0011_relay`: no scheduled time; `0015` backfilled `ready_at_ms`.
+          yield* insert([
+            { id: "relay-era", due: 1000, scheduled: null, ready: 1000 },
+            { id: "running", due: 61_000, scheduled: 1000, ready: 999, running: true },
+            { id: "reminder", due: 9000, scheduled: 9000, ready: 9000 },
+            { id: "other-type", command: "Other", due: 1000, scheduled: 1000, ready: 1500 },
+          ])
+
+          // One turn at 1000: three due now, one delayed to 5000.
+          yield* insert([
+            { id: "a", due: 1000, scheduled: 1000, ready: 1000 },
+            { id: "later", due: 5000, scheduled: 5000, ready: 5000 },
+            { id: "b", due: 1000, scheduled: 1000, ready: 1000 },
+            { id: "c", due: 1000, scheduled: 1000, ready: 1000 },
+          ])
+          yield* orderCapped({
+            sql,
+            routingKey: 1n,
+            sender,
+            capped: [
+              { id: "a", effect: "Capped", dueAt: 1000 },
+              { id: "later", effect: "Capped", dueAt: 5000 },
+              { id: "b", effect: "Capped", dueAt: 1000 },
+              { id: "c", effect: "Capped", dueAt: 1000 },
+            ],
+          })
+
+          // Behind the relay-era row, in perform order; neither the later reminder nor another
+          // type's row pushes them back.
+          expect(yield* ready(["a", "b", "c", "later"])).toEqual({
+            a: 1001,
+            b: 1002,
+            c: 1003,
+            later: 5000,
+          })
+
+          // A later turn in the same millisecond still goes after them.
+          yield* insert([{ id: "d", due: 1000, scheduled: 1000, ready: 1000 }])
+          yield* orderCapped({
+            sql,
+            routingKey: 1n,
+            sender,
+            capped: [{ id: "d", effect: "Capped", dueAt: 1000 }],
+          })
+          expect(yield* ready(["d"])).toEqual({ d: 1004 })
+
+          // Written by a runner older than `0015`: no `ready_at_ms`, so it counts at `due_at_ms`.
+          yield* insert([
+            { id: "pre-control", command: "Serial", due: 2000, scheduled: 2000, ready: null },
+            { id: "e", command: "Serial", due: 2000, scheduled: 2000, ready: 2000 },
+          ])
+          yield* orderCapped({
+            sql,
+            routingKey: 1n,
+            sender,
+            capped: [{ id: "e", effect: "Serial", dueAt: 2000 }],
+          })
+          expect(yield* ready(["e"])).toEqual({ e: 2001 })
         }),
       )
       .finally(() => runtime.dispose())
