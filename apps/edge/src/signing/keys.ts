@@ -54,10 +54,22 @@ export const keyRing = Effect.fnUntraced(function* (options: EdgeOptions) {
   const keys = yield* Effect.forEach(options.signingKeys, importKey)
   const kids = keys.map((key) => key.kid)
 
-  for (const key of options.signingKeys)
-    yield* sql`INSERT INTO edge_key (kid, x) VALUES (${key.kid}, ${key.x}) ON CONFLICT (kid) DO NOTHING`.pipe(
-      Effect.orDie,
-    )
+  // A kid names one key for good: runners already trust its published half, so a
+  // different key under the same kid would sign assertions no runner can verify.
+  for (const key of options.signingKeys) {
+    const [row] = yield* sql<{ readonly x: string }>`
+      INSERT INTO edge_key (kid, x) VALUES (${key.kid}, ${key.x})
+      ON CONFLICT (kid) DO UPDATE SET kid = edge_key.kid
+      RETURNING x
+    `.pipe(Effect.orDie)
+
+    if (row?.x !== key.x)
+      return yield* Effect.die(
+        new Error(
+          `Edge key ${key.kid} is published with a different public key; give the new key a new kid`,
+        ),
+      )
+  }
 
   const published = yield* Ref.make(new Map<string, Published>())
 
