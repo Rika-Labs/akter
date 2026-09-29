@@ -53,9 +53,13 @@ export interface ServedConnection {
   readonly progress: ReadonlyMap<string, ValueSchema>
 }
 
+/** What `Actor.serve` and `X.client` need of one actor definition. */
 export interface ServedDefinition {
+  /** The actor type's name, its path segment in served routes. */
   readonly name: string
+  /** How a client addresses instances: by id, as the singleton, or by an id it mints. */
   readonly key: "keyed" | "singleton" | "minted"
+  /** Decodes an id path segment into the runtime's id; fails when it breaks the key schema. */
   readonly decodeId: (id: string) => Effect.Effect<string, Schema.SchemaError>
   /** The path segment a client sends for a typed id. */
   readonly encodeId: (id: string) => Effect.Effect<string, Schema.SchemaError>
@@ -69,13 +73,13 @@ export interface ServedDefinition {
   readonly contents: ReadonlyArray<string>
   /** `Actor.stream` members, served over SSE; each element is one encoded `output`. */
   readonly streams: ReadonlyArray<ServedMember>
-  readonly deliveryMs: number
 }
 
 interface ServedOwner {
   readonly name: string
 }
 
+/** Each `Actor.make` definition's served view, keyed by the definition. */
 export const servedDefinitions = new WeakMap<ServedOwner, ServedDefinition>()
 
 /** Statuses the served protocol assigns to framework outcomes; a declared failure can't claim one. */
@@ -83,10 +87,13 @@ const RESERVED_STATUSES: ReadonlySet<number> = new Set([
   400, 401, 403, 404, 409, 410, 413, 415, 429,
 ])
 
+/** Error tags the served protocol uses for framework outcomes; a declared error can't claim one. */
 const RESERVED_TAGS: ReadonlySet<string> = new Set(["ActorError", "Defect"])
 
-export const DECLARED_FAILURE_STATUS = 422
+/** The HTTP status of a declared failure whose error sets no `httpApiStatus`. */
+const DECLARED_FAILURE_STATUS = 422
 
+/** The HTTP status a served response uses for `error`: its `httpApiStatus`, or 422. */
 export const declaredStatus = (error: DeclaredError): number =>
   SchemaAST.resolveAt<number>("httpApiStatus")(error.ast) ?? DECLARED_FAILURE_STATUS
 
@@ -108,7 +115,8 @@ export const checkDeclaredErrors = (member: {
   }
 }
 
-export interface ServedMemberSource {
+/** A member and the codecs `servedMember` builds its served view from. */
+interface ServedMemberSource {
   readonly member: {
     readonly kind: MemberKind
     readonly tag: string
@@ -116,7 +124,7 @@ export interface ServedMemberSource {
     readonly output: ValueSchema
     readonly errors: ReadonlyArray<DeclaredError>
     readonly state?: { readonly fields: Readonly<Record<string, ValueSchema>> }
-    // Method syntax keeps the parameters bivariant so every reducer's `reduce` fits.
+    /** Method syntax keeps the parameters bivariant, so every reducer's `reduce` fits. */
     reduce?(state: StateValue, input: ValueSchema["Type"]): Result.Result<StateValue, unknown>
     readonly commutative?: unknown
   }
@@ -130,6 +138,7 @@ export interface ServedMemberSource {
   }
 }
 
+/** A public member's served view: its wire schemas, body decoder, and failure statuses. */
 export const servedMember = ({ member, codecs }: ServedMemberSource): ServedMember => {
   const decodeBody = Schema.decodeUnknownEffect(Schema.toCodecJson(member.input))
   const statuses = member.errors.map((error) => [Schema.is(error), declaredStatus(error)] as const)
@@ -165,6 +174,7 @@ const decodeValueJson = Schema.decodeUnknownEffect(ValueJson)
 
 const decodeJsonString = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
+/** A connection member's served view: its WebSocket frame codecs and progress schemas. */
 export const servedConnection = (member: {
   readonly tag: string
   readonly input: ValueSchema

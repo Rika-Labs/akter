@@ -3041,7 +3041,6 @@ const make = <
     streams: Object.values(api)
       .filter((member) => member.kind === "stream")
       .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
-    deliveryMs: policy.deliveryMs,
   }
 
   const actor = {
