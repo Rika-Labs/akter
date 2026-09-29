@@ -11,6 +11,8 @@ import {
  * A TCP proxy in front of the chat server that the test can cut, the way a
  * lost network would: `cut` destroys every open connection and refuses new
  * ones until `restore`. Chromium's offline mode alone leaves an open stream up.
+ *
+ * The page may still hold a feed or a connection open; closing waits for none.
  */
 export const proxy = async () => {
   const sockets = new Set<Socket>()
@@ -48,7 +50,6 @@ export const proxy = async () => {
     restore: () => {
       down = false
     },
-    // The page may still hold a feed or a connection open; closing waits for none.
     close: async () => {
       server.close()
 

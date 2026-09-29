@@ -20,6 +20,10 @@ const runnerKey = (runner: Runner) => `${runner.deployment}\n${runner.url}\n${ru
  * every poll, until it accepts the push or stops being ready. Revocations
  * already in place at startup were pushed by the edge that saw them, and
  * runners' polling covers any it missed.
+ *
+ * `Actor.serve` ignores trailing slashes on its base path, so `/` is the root.
+ * Every ready runner is owed a push after a new revocation; one that stopped
+ * being ready is not.
  */
 export const revocationPush = Effect.fnUntraced(function* (
   options: EdgeOptions,
@@ -50,7 +54,6 @@ export const revocationPush = Effect.fnUntraced(function* (
       return false
     }
 
-    // `Actor.serve` ignores trailing slashes on its base path, so `/` is the root.
     const basePath = runner.basePath.replace(/\/+$/, "")
 
     const request = HttpClientRequest.post(`${runner.url}${basePath}${KEY_REFRESH_PATH}`, {
@@ -73,7 +76,6 @@ export const revocationPush = Effect.fnUntraced(function* (
     const newlyRevoked = [...revoked].some((kid) => !previous.has(kid))
     const waiting = yield* Ref.get(pending)
 
-    // Every ready runner is owed a push after a new revocation; one that stopped being ready is not.
     const owed = runners.filter((runner) => newlyRevoked || waiting.has(runnerKey(runner)))
 
     yield* Ref.set(seen, revoked)
