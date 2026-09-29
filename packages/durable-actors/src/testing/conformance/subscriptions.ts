@@ -1663,7 +1663,7 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
 
           const page = { tenant: test.tenant, minAttempts: 1, limit: 100 }
 
-          // Other cases in this file leave their own rows behind in the tenant.
+          /** Other cases in this file leave their own rows behind in the tenant. */
           const lagging = (input: typeof page) =>
             Effect.map(operators.lagging(input), (rows) =>
               rows.filter((row) => row.sourceId.startsWith("lag-")),
@@ -1671,7 +1671,6 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
 
           const failing = yield* lagging(page)
 
-          // Every subscription of lag-a fails on the same event, and lag-b's rows are healthy.
           expect(new Set(failing.map((entry) => entry.sourceId))).toEqual(new Set(["lag-a"]))
 
           const row = failing.find((entry) => entry.subscriberType === "SubFollower")!
