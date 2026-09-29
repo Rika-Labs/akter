@@ -1,5 +1,5 @@
 import { Context, Crypto, Effect, Match, Schema } from "effect"
-import { SqlClient, type SqlError } from "effect/unstable/sql"
+import { SqlClient, type SqlError, type Statement } from "effect/unstable/sql"
 import type { RegisteredSubscription } from "../../handles/actors.ts"
 import {
   Due,
@@ -224,14 +224,19 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
 
   // An effect row names its effect in `command` and targets its own actor,
   // where its routes deliver; the relay runs its executor when it is due.
+  const capped: Array<{ readonly id: string; readonly effect: string; readonly dueAt: number }> = []
+
   for (const effect of outbox.effects) {
     const dueAt = dueOf(effect.due)
+    const intentId = yield* rowIdOf(effect.due, dueAt)
 
     replies.wake ||= dueAt <= now
 
+    if (effect.capped) capped.push({ id: intentId, effect: effect.effect, dueAt })
+
     rows.push({
       routing_key: routingKey,
-      intent_id: yield* rowIdOf(effect.due, dueAt),
+      intent_id: intentId,
       kind: "effect",
       bucket: bucketOf(routingKey),
       due_at_ms: dueAt,
@@ -307,8 +312,76 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     )
   }
 
+  if (capped.length > 0) statements.push(orderCapped({ sql, routingKey, sender, capped }))
+
   return { statements, replies }
 })
+
+/**
+ * Orders a turn's capped effects behind every earlier effect of their type on
+ * this actor that became due no later. Claims take capped rows by
+ * `(ready_at_ms, intent_id)`, but the turn's clock has only millisecond
+ * resolution and is read before the actor's lock is taken, and effect ids
+ * end in a random UUID: effects performed in one turn, or in turns that read
+ * the same millisecond, would otherwise run in any order. The actor's lock
+ * serializes its turns, so the rows this statement reads are every earlier
+ * perform. It runs after any delay shift, so `scheduled_at_ms` is final.
+ */
+export const orderCapped = ({
+  sql,
+  routingKey,
+  sender,
+  capped,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly routingKey: bigint
+  readonly sender: ActorRef
+  readonly capped: ReadonlyArray<{
+    readonly id: string
+    readonly effect: string
+    readonly dueAt: number
+  }>
+}) => {
+  // An earlier row of this turn, of one type, due at the same time (`tied`)
+  // or no later (`before`), always ends ahead of the rows after it.
+  const ranked = capped.map((row, index) => {
+    const earlier = capped.slice(0, index).filter(({ effect }) => effect === row.effect)
+
+    return {
+      id: row.id,
+      tied: earlier.filter(({ dueAt }) => dueAt === row.dueAt).length,
+      before: earlier.filter(({ dueAt }) => dueAt <= row.dueAt).length,
+    }
+  })
+
+  const ids = ranked.map(({ id }) => id)
+
+  // Rows written before `0011_relay` have no `scheduled_at_ms`, and rows a
+  // runner older than `0015_effect_control` wrote have no `ready_at_ms`; each
+  // falls back as the claim does. Each probe reads one partial index.
+  const latestOf = (rows: Statement.Fragment, due: Statement.Fragment) => sql`(SELECT max(${due})
+    FROM actor_outbox e
+    WHERE e.routing_key = o.routing_key AND e.tenant_id = o.tenant_id
+      AND e.actor_type = o.actor_type AND e.actor_id = o.actor_id AND e.command = o.command
+      AND e.kind = 'effect' AND ${rows}
+      AND coalesce(e.scheduled_at_ms, e.ready_at_ms, e.due_at_ms) <= o.scheduled_at_ms
+      AND e.intent_id NOT IN ${sql.in(ids)})`
+
+  const latest = sql`greatest(
+    ${latestOf(sql`NOT e.running AND e.ready_at_ms IS NOT NULL`, sql`e.ready_at_ms`)},
+    ${latestOf(sql`NOT e.running AND e.ready_at_ms IS NULL`, sql`e.due_at_ms`)},
+    ${latestOf(sql`e.running`, sql`coalesce(e.ready_at_ms, e.due_at_ms)`)})`
+
+  return Effect.asVoid(sql`UPDATE actor_outbox o
+    SET ready_at_ms = greatest(o.scheduled_at_ms + v.tied,
+      coalesce(${latest}, o.scheduled_at_ms - 1) + 1 + v.before)
+    FROM (VALUES ${sql.csv(
+      ranked.map(({ id, tied, before }) => sql`(${id}::text, ${tied}::int, ${before}::int)`),
+    )}) AS v(intent_id, tied, before)
+    WHERE o.routing_key = ${routingKey} AND o.tenant_id = ${sender.tenant}
+      AND o.actor_type = ${sender.actor} AND o.actor_id = ${sender.id}
+      AND o.intent_id = v.intent_id`)
+}
 
 /**
  * Writes one turn's intents and effects now, reading the database time when it

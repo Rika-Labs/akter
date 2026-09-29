@@ -169,6 +169,24 @@ export const withRuntime =
 const percent = (seconds: number, elapsedMs: number) =>
   Math.round((seconds / (elapsedMs / 1000)) * 1000) / 10
 
+const listed = (
+  list: boolean | { readonly including: string } | undefined,
+  statements:
+    | { readonly top: ReadonlyArray<StatementCount>; readonly all: ReadonlyArray<StatementCount> }
+    | undefined,
+) => {
+  if (list === undefined || list === false || statements === undefined) return null
+
+  if (list === true) return statements.top
+
+  return [
+    ...statements.top,
+    ...statements.all
+      .slice(statements.top.length)
+      .filter((statement) => statement.query.includes(list.including)),
+  ]
+}
+
 /**
  * Measures one case: resets statement counters, samples connection activity,
  * runs the load, and reports latency, throughput, statements per operation,
@@ -181,7 +199,8 @@ export const measure = Effect.fnUntraced(function* <E, R>(
     readonly instruments: Instruments | undefined
     readonly workers: number
     readonly operation: (index: number) => Effect.Effect<unknown, E, R>
-    readonly listStatements?: boolean
+    /** Lists the 16 most-called statements, plus every statement containing `including`. */
+    readonly listStatements?: boolean | { readonly including: string }
     readonly extra?: Readonly<Record<string, number | string>>
   },
 ) {
@@ -235,7 +254,7 @@ export const measure = Effect.fnUntraced(function* <E, R>(
       flights === undefined || attempted === 0
         ? null
         : Math.round((flights / attempted) * 100) / 100,
-    statements: options.listStatements === true ? (statements?.top ?? null) : null,
+    statements: listed(options.listStatements, statements),
     activity: activity ?? null,
     cpu: {
       client: percent(clientSeconds, wallMs),

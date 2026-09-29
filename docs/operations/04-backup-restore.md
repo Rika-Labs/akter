@@ -22,3 +22,11 @@ Do not delete receipts or outbox rows to make a restore start. Restoring an olde
 Before reopening ingress, validate the command-expiry policy and its enforcement data against the restored snapshot and current clock. Restore must not make an expired external command identity admissible again. Preserve deduplication evidence for accepted internal work even when its external retry horizon has elapsed. This expiry check does not replace reconciliation for outcomes lost beyond the snapshot; see [retention](retention.md).
 
 Document encryption, RPO, RTO, snapshot timestamp, migration version, blob consistency, and the retained receipt/effect horizons. Any future tenant-only recovery procedure must preserve every related row within the deployment database; no such export/import capability is currently implemented or verified. Optional RLS is not a backup boundary.
+
+## Embedded PGlite
+
+Target, built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). The only supported backup is a stopped copy: stop the process, which releases the `dataDir` lock, copy the directory, and start again. Restore copies it back while the process is stopped. A copy taken while the process runs is not a backup. An in-process `pg_dump` waits for a `pgDump` build compatible with the pinned PGlite. The command-expiry check and effect reconciliation above still apply, and there is no point-in-time recovery.
+
+## Cold tier
+
+Target, built by L.2 ([ADR 0036](../decisions/0036-cold-tier.md)). The object store is inside the backup boundary: it must be versioned or replicated with at least the database's durability, objects are kept past the backup retention, and a restore checks that every `cold_ref` in the snapshot exists.

@@ -153,9 +153,12 @@ export const feedStream = <E extends EventClass>({
           buffer = parsed.rest
 
           for (const message of parsed.messages) {
-            if (message.event === "end") return yield* failureOf(message.data, 0)
+            // Every event carries its cursor as `id`; the feed's own `end` carries none, so an event named `end` is still an event.
+            if (message.id === undefined) {
+              if (message.event === "end") return yield* failureOf(message.data, 0)
 
-            if (message.id === undefined) continue
+              continue
+            }
 
             const data = yield* decodeData(message.data).pipe(Effect.mapError(undecodable))
             const decoded = yield* decodeEvent(data.event).pipe(Effect.mapError(undecodable))
