@@ -9,7 +9,7 @@ import {
   type ConformanceDatabase,
   describeConformance,
 } from "../../../conformance.ts"
-import { restoreConformance, Vault, vaultOf } from "../../restore.ts"
+import { restoreConformance, vaults } from "../../restore.ts"
 import { archivingPostgres } from "./online-restore.ts"
 
 type Server = Effect.Success<ReturnType<typeof archivingPostgres>>
@@ -123,11 +123,7 @@ const consistentWhileCommitting = (backup: Backup): ConformanceCase => ({
 
     const tenant = await environment.run(
       Effect.gen(function* () {
-        yield* Effect.forEach(ids, (id) =>
-          Vault.get(id).pipe(
-            Effect.flatMap((vault) => vault.Transfer({ to: `${id}-to`, amount: 3 })),
-          ),
-        )
+        yield* Effect.forEach(ids, (id) => vaults.transfer(id, `${id}-to`, 3))
 
         return (yield* ActorTest).tenant
       }),
@@ -138,12 +134,11 @@ const consistentWhileCommitting = (backup: Backup): ConformanceCase => ({
         ids,
         (id) =>
           Effect.gen(function* () {
-            const vault = yield* Vault.get(id)
             const actors = yield* Actors
 
             while (!stopped) {
               const commandId = yield* actors.mintCommandId
-              const reached = yield* vault.Deposit(1).pipe(Actor.commandId(commandId))
+              const reached = yield* vaults.deposit(id, 1, { commandId })
               acknowledged.push({ vault: id, id: commandId, total: reached })
             }
           }),
@@ -173,7 +168,7 @@ const consistentWhileCommitting = (backup: Backup): ConformanceCase => ({
             let deposits = 0
 
             for (const id of ids) {
-              const inspected = yield* test.inspect((yield* vaultOf(tenant, id)).ref)
+              const inspected = yield* test.inspect(yield* vaults.ref(tenant, id))
               expect(total(inspected.state)).toBe(inspected.receipts - 1)
               deposits += total(inspected.state)
             }
@@ -184,16 +179,14 @@ const consistentWhileCommitting = (backup: Backup): ConformanceCase => ({
             const ran = fixture.restore.deposits
 
             for (const { vault, id, total: reached } of before.slice(0, 40))
-              expect(
-                yield* (yield* vaultOf(tenant, vault)).Deposit(1).pipe(Actor.commandId(id)),
-              ).toBe(reached)
+              expect(yield* vaults.deposit(vault, 1, { tenant, commandId: id })).toBe(reached)
 
             expect(fixture.restore.deposits).toBe(ran)
 
             yield* test.advance("2 minutes")
 
             for (const id of ids)
-              expect(yield* test.inspect((yield* vaultOf(tenant, `${id}-to`)).ref)).toMatchObject({
+              expect(yield* test.inspect(yield* vaults.ref(tenant, `${id}-to`))).toMatchObject({
                 state: { total: 3 },
                 receipts: 1,
               })
@@ -217,19 +210,12 @@ const recoversToEachRestorePoint: ConformanceCase = {
   run: async ({ expect, environment }) => {
     const ids = Array.from({ length: 3 }, (_, index) => `pitr-${index}`)
 
-    const deposit = (amount: number) =>
-      Effect.forEach(ids, (id) =>
-        Vault.get(id).pipe(Effect.flatMap((vault) => vault.Deposit(amount))),
-      )
+    const deposit = (amount: number) => Effect.forEach(ids, (id) => vaults.deposit(id, amount))
 
     const tenant = await environment.run(
       Effect.gen(function* () {
         yield* Effect.forEach(ids, (id) =>
-          Vault.get(id).pipe(
-            Effect.flatMap((vault) =>
-              vault.Deposit(5).pipe(Effect.andThen(vault.Transfer({ to: `${id}-to`, amount: 2 }))),
-            ),
-          ),
+          vaults.deposit(id, 5).pipe(Effect.andThen(vaults.transfer(id, `${id}-to`, 2))),
         )
 
         return (yield* ActorTest).tenant
@@ -252,34 +238,33 @@ const recoversToEachRestorePoint: ConformanceCase = {
               const test = yield* ActorTest
 
               for (const id of ids) {
-                const vault = yield* vaultOf(tenant, id)
-                expect(yield* test.inspect(vault.ref)).toMatchObject({
+                expect(yield* test.inspect(yield* vaults.ref(tenant, id))).toMatchObject({
                   state: { total: expected },
                   receipts,
                 })
               }
 
               if (pending) {
-                const vault = yield* vaultOf(tenant, ids[0]!)
-                expect(yield* test.inspect(vault.ref)).toMatchObject({ outbox: 1 })
+                const vault = yield* vaults.ref(tenant, ids[0]!)
+                expect(yield* test.inspect(vault)).toMatchObject({ outbox: 1 })
 
-                const targets = yield* Effect.forEach(ids, (id) => vaultOf(tenant, `${id}-to`))
+                const targets = yield* Effect.forEach(ids, (id) => vaults.ref(tenant, `${id}-to`))
 
                 for (const target of targets)
-                  expect(yield* test.inspect(target.ref)).toMatchObject({ receipts: 0 })
+                  expect(yield* test.inspect(target)).toMatchObject({ receipts: 0 })
 
                 yield* test.advance("2 minutes")
 
                 for (const target of targets)
-                  expect(yield* test.inspect(target.ref)).toMatchObject({
+                  expect(yield* test.inspect(target)).toMatchObject({
                     state: { total: 2 },
                     receipts: 1,
                   })
 
-                expect(yield* test.inspect(vault.ref)).toMatchObject({ outbox: 0 })
+                expect(yield* test.inspect(vault)).toMatchObject({ outbox: 0 })
               }
 
-              expect(yield* (yield* vaultOf(tenant, ids[0]!)).Deposit(1)).toBe(expected + 1)
+              expect(yield* vaults.deposit(ids[0]!, 1, { tenant })).toBe(expected + 1)
             }),
           ),
         )
