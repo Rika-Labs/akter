@@ -175,6 +175,7 @@ const program = Effect.gen(function* () {
   if (group === "workflows" && command === "check") return yield* workflowsCheck(args)
 
   if (group === "defects" && command === "list") return yield* defectsList(args)
+
   if (group === "payloads") return yield* payloadsCommand(process.argv.slice(3))
 
   if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
