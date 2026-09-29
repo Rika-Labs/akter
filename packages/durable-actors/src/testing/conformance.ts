@@ -95,6 +95,7 @@ import {
 } from "./conformance/connections.ts"
 import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
+import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
 import {
@@ -474,6 +475,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...multiRunnerConformance,
   ...drainConformance,
   ...pipelineConformance,
+  ...batchesConformance,
   ...relayConformance,
   ...relayClusterConformance,
   ...effectControlConformance,
@@ -1522,6 +1524,7 @@ export const describeConformance = (options: {
     eventsLayer(fixture.events),
     eventsQueryLayer(fixture.events),
     reducerLayer,
+    batchesLayer,
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),

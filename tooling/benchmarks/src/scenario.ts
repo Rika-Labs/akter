@@ -5,6 +5,7 @@ import { Context, Effect, Layer, Redacted } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"
 import { type Limit, load, now, type Summary, summarize, throughput } from "./measure.ts"
+import { queued } from "./probe/turns/batches.ts"
 import { afterCommit } from "./probe/effects.ts"
 import { ProbeLive } from "./probe/layer.ts"
 import { SubscriptionProbeLive, subscriptionCommitted } from "./probe/subscriptions.ts"
@@ -55,15 +56,21 @@ export interface CaseResult {
 export type ActorServices = Layer.Success<ReturnType<typeof runtimeLayer>> | SqlClient.SqlClient
 
 // The effect round trip ends when its route's turn commits, which only the
-// runtime's post-commit hook observes; every other point stays a no-op.
+// runtime's post-commit hook observes, and a turn batch forms once commands
+// are in the mailbox, which only the queued point observes; every other
+// point stays a no-op.
 // Retention sweeps run only when a scenario asks, so a timed sweep never
 // lands inside another case's measurement.
 const hooks = Layer.mergeAll(
   Layer.succeed(TurnHooks, {
-    at: (point, request) =>
-      point === "afterCommit"
-        ? Effect.andThen(afterCommit(request), subscriptionCommitted(request))
-        : Effect.void,
+    at: (point, request) => {
+      if (point === "afterCommit")
+        return Effect.andThen(afterCommit(request), subscriptionCommitted(request))
+
+      if (point === "queued") return queued(request)
+
+      return Effect.void
+    },
   }),
   Layer.succeed(CleanupHooks, { batchSize: 1000, afterBatch: Effect.void, periodic: false }),
 )

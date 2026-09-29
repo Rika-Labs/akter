@@ -24,6 +24,7 @@ import { events } from "./scenarios/events.ts"
 import { eventsReplay } from "./scenarios/events-replay.ts"
 import { retention } from "./scenarios/retention.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
+import { turnBatches } from "./scenarios/turn-batches.ts"
 import { http } from "./scenarios/http.ts"
 import { inspectionViews } from "./scenarios/inspection-views.ts"
 import { ownedRows } from "./scenarios/storage/owned-rows.ts"
@@ -50,6 +51,7 @@ import { orders } from "./scenarios/orders.ts"
 /** Every scenario, in run order. A new slice adds its scenario here. */
 const SCENARIOS: ReadonlyArray<Scenario> = [
   hotActor,
+  turnBatches,
   coldActivation,
   queryLatency,
   receiptReplay,
@@ -91,6 +93,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
  */
 const STATEMENT_GATE: ReadonlyArray<string> = [
   "hot-actor",
+  "turn-batches",
   "cold-activation",
   "query-latency",
   "receipt-replay",

@@ -395,9 +395,11 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(runs.count).toBe(before)
           expect(yield* receipts(tenant, "HttpRoom", "lifetime")).toBe(0)
 
-          // Within the 5-second skew, an assertion just past its expiry or just ahead of its issue is admitted.
+          // Within the 5-second skew, an assertion just past its expiry or just ahead of its issue is
+          // admitted. `iat` is floored to the second and the request takes time to arrive, so the
+          // expired one keeps at least 3 seconds of room for a case slowed by load.
           const skewed: ReadonlyArray<Change> = [
-            (claims) => ({ ...claims, iat: claims.iat - 10, exp: claims.iat - 4 }),
+            (claims) => ({ ...claims, iat: claims.iat - 10, exp: claims.iat - 1 }),
             (claims) => ({ ...claims, iat: claims.iat + 4, exp: claims.iat + 14 }),
           ]
 
