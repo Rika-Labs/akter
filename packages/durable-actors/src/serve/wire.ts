@@ -23,7 +23,6 @@ const reasonSchemas = {
     code: InvalidCommandId.fields.code,
   }),
   Unauthorized: Schema.TaggedStruct("Unauthorized", Unauthorized.fields),
-  // `cause` holds internal errors and never crosses the wire.
   ActorUnavailable: Schema.TaggedStruct("ActorUnavailable", {}),
   Timeout: Schema.TaggedStruct("Timeout", Timeout.fields),
   NotCreated: Schema.TaggedStruct("NotCreated", {}),
@@ -33,9 +32,14 @@ const reasonSchemas = {
   SessionEnded: Schema.TaggedStruct("SessionEnded", SessionEnded.fields),
 } as const
 
+/** The tag of a reason a served route can answer. */
 export type WireTag = keyof typeof reasonSchemas
 
-/** An `ActorError` as a served response carries it: public reason fields plus the computed getters. */
+/**
+ * An `ActorError` as a served response carries it: public reason fields plus
+ * the computed getters. `ActorUnavailable` carries no fields because its
+ * `cause` holds internal errors and never crosses the wire.
+ */
 export const envelope = (route: {
   readonly tags: ReadonlyArray<WireTag>
   readonly identifier: string
@@ -50,6 +54,7 @@ const WireReason = Schema.Union(Object.values(reasonSchemas))
 
 const encodeReason = Schema.encodeUnknownEffect(Schema.toCodecJson(WireReason))
 
+/** The body of a `500`: a defect reported by trace id only, never its message. */
 export const Defect = Schema.TaggedStruct("Defect", { traceId: Schema.String }).annotate({
   identifier: "Defect",
 })
@@ -77,6 +82,10 @@ const inputStatus = (code: InvalidInput["code"]) => {
   }
 }
 
+/**
+ * The HTTP status a reason is served with. `SessionEnded` maps to `410` but
+ * only connection sessions end this way; no served command or query returns it.
+ */
 export const statusOf = (reason: Reason): number =>
   Match.value(reason).pipe(
     Match.tagsExhaustive({
@@ -91,7 +100,6 @@ export const statusOf = (reason: Reason): number =>
       MailboxFull: () => 429,
       InvalidInput: (input) => inputStatus(input.code),
       TransportError: () => 502,
-      // Only connection sessions end this way; no served command or query returns it.
       SessionEnded: () => 410,
     }),
   )
@@ -146,6 +154,11 @@ export const actorErrorBody = Effect.fnUntraced(function* (error: ActorError) {
   })
 })
 
+/**
+ * The HTTP response an `ActorError` is served as: its status, the JSON body,
+ * `retry-after` in whole seconds when the error has a retry delay, and
+ * `www-authenticate: Bearer` for credential failures.
+ */
 export const actorErrorResponse = Effect.fnUntraced(function* (error: ActorError) {
   const retryAfter = error.retryAfter
   const body = yield* actorErrorBody(error)
@@ -168,16 +181,19 @@ const LEAF_MESSAGES: Record<SchemaIssue.Leaf["_tag"], string> = {
   OneOf: "Expected exactly one member to match",
 }
 
-// Fixed messages, so a response never echoes the value that failed.
 const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1({
   leafHook: (issue) => LEAF_MESSAGES[issue._tag],
   checkHook: () => "Failed check",
 })
 
+/** An `ActorError` wrapping `InvalidInput` with the given code. */
 export const invalidInput = (code: InvalidInput["code"]) =>
   ActorError.make({ reason: InvalidInput.make({ code }) })
 
-/** A body, id, or payload that failed its schema, with value-free issues. */
+/**
+ * A body, id, or payload that failed its schema. Issues carry a path and a
+ * fixed message, so a response never echoes the value that failed.
+ */
 export const undecodable = (error: Schema.SchemaError) =>
   ActorError.make({
     reason: InvalidInput.make({

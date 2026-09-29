@@ -14,6 +14,7 @@ import { ActorUnavailable } from "../errors/actor.ts"
 import { User } from "../identity/caller.ts"
 import { type AuthProvider, bearerToken, Credential, unauthorized } from "./auth.ts"
 
+/** A JWS algorithm `Actor.auth.jwt` can verify. */
 export type Algorithm =
   | "RS256"
   | "RS384"
@@ -25,6 +26,7 @@ export type Algorithm =
   | "ES384"
   | "EdDSA"
 
+/** A JSON Web Key as `Actor.auth.jwt` reads it; unrecognized members are dropped. */
 export const Jwk = Schema.Struct({
   kty: Schema.String,
   kid: Schema.optionalKey(Schema.String),
@@ -37,8 +39,10 @@ export const Jwk = Schema.Struct({
   y: Schema.optionalKey(Schema.String),
 })
 
+/** A JSON Web Key as `Actor.auth.jwt` reads it. */
 export type Jwk = typeof Jwk.Type
 
+/** A static JSON Web Key Set. */
 export interface Jwks {
   readonly keys: ReadonlyArray<Jwk>
 }
@@ -47,10 +51,14 @@ const JwksJson = Schema.Struct({ keys: Schema.Array(Schema.Unknown) })
 
 const decodeJwk = Schema.decodeUnknownOption(Jwk)
 
+/** The verified payload of a JWT, handed to the `tenant` and `subject` callbacks. */
 export type Claims = Readonly<Record<string, Schema.Json>>
 
+/** Options of `Actor.auth.jwt`. */
 export interface JwtOptions<Keys extends URL | Jwks> {
+  /** The required `iss` claim. */
   readonly issuer: string
+  /** The token's `aud` must include at least one of these. */
   readonly audience: string | ReadonlyArray<string>
   /** A JWKS URL, fetched when first needed and refetched for an unknown `kid` at most once a minute, or static keys. */
   readonly jwks: Keys
@@ -163,7 +171,24 @@ const verifySignature = Effect.fnUntraced(function* (
 
 /**
  * Verifies `authorization: Bearer` JWTs signed with an asymmetric key. `exp`
- * is required; `iss` must equal `issuer` and `aud` must name an `audience`.
+ * is required; `iss` must equal `issuer` and `aud` must name an `audience`;
+ * `nbf` and `exp` are checked within `clockTolerance`. Tokens with `crit`
+ * headers or an algorithm outside `algorithms` are refused. A missing
+ * `authorization` header fails `missing_credentials`, an expired token
+ * `expired`, and every other failure `invalid_credentials`. With a JWKS URL
+ * the provider needs an `HttpClient`, and an unreachable key set fails
+ * `ActorUnavailable`.
+ * The credential's `exp` becomes the session's `expiresAt`.
+ *
+ * @example
+ * ```ts
+ * Actor.auth.jwt({
+ *   issuer: "https://issuer.example.com",
+ *   audience: "my-api",
+ *   jwks: new URL("https://issuer.example.com/.well-known/jwks.json"),
+ *   tenant: () => "default",
+ * })
+ * ```
  */
 export const jwt = <Keys extends URL | Jwks>(
   options: JwtOptions<Keys>,
@@ -205,7 +230,6 @@ export const jwt = <Keys extends URL | Jwks>(
       ),
     )
 
-  // Static keys never refresh; a URL is fetched once, then again for an unknown kid at most once a minute.
   const keysFor = (refresh: boolean) =>
     lock.withPermit(
       Effect.gen(function* () {
