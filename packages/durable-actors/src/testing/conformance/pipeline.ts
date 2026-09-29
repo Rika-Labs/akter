@@ -19,6 +19,7 @@ import { Actor, ActorError, ActorUnavailable, Actors, Intent, User } from "../..
 import { Database } from "../../runtime/layer.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest, ClusterMember } from "../actor-test.ts"
+import { enqueue, holding } from "./batches.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 const marks = Actor.table(pgTable("pipeline_marks", { id: text("id").primaryKey() }))
@@ -665,6 +666,66 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "pipeline: a batch of waiting commands takes two round trips, and its savepoints add none",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { prepare: false }, (probe) =>
+        Effect.gen(function* () {
+          const meter = yield* Meter.get("batched")
+          yield* meter.Tap()
+
+          // Eight waiting commands whose handlers issue no statements: the
+          // held turn's commit, then one admission and one commit for all.
+          const taps = yield* flightsOf(
+            probe,
+            Effect.gen(function* () {
+              const first = yield* holding(meter.Tap())
+
+              const waiting = yield* enqueue(
+                Array.from({ length: 8 }, () => Effect.orDie(meter.Tap())),
+              )
+
+              const before = probe.flights
+              yield* first.release
+              yield* Fiber.join(first.fiber)
+
+              return { before, replies: yield* Effect.forEach(waiting, Fiber.join) }
+            }),
+          )
+
+          expect(probe.flights - taps.value.before).toBe(3)
+          const batch = probe.sent.slice(-2).map(wire)
+          expect(batch[0]).toContain("FOR UPDATE OF g")
+          expect(batch[1]).toContain("COMMIT")
+          // Only the first handler's savepoint went out; the rest had no
+          // statement to protect and were never sent.
+          expect(batch.join("").split("SAVEPOINT durable_handler").length - 1).toBe(2)
+
+          // Handlers that insert and count: each awaited statement is one
+          // round trip, and each savepoint rides with its handler's first
+          // statement or the commit group.
+          const first = yield* holding(meter.Tap())
+
+          const waiting = yield* enqueue(
+            ["m1", "m2", "m3", "m4"].map((id) => Effect.orDie(meter.Mark(id))),
+          )
+
+          const before = probe.flights
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+          expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual([1, 2, 3, 4])
+          expect(probe.flights - before).toBe(1 + 1 + 4 * 2 + 1)
+          expect(
+            probe.sent
+              .slice(-10)
+              .map(wire)
+              .every((flight) => /insert|select|commit/i.test(flight)),
+          ).toBe(true)
+        }),
+      ),
+  },
+  {
     name: "pipeline: a keyed delayed effect, its replacement, and its cancellation each keep two round trips",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
@@ -780,6 +841,72 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(meter.ref)).toMatchObject({
             state: { count: 3 },
             receipts: 2,
+          })
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a batch that loses the database mid-commit answers every command in it, and each caller's retry commits once",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { everyPool: true }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const actors = yield* Actors
+          const meter = yield* Plain.get("batch-lost-mid-commit")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          const amounts = [2, 3, 4]
+          const ids = yield* Effect.forEach(amounts, () => actors.mintCommandId)
+          const handled = probe.handled
+
+          // Three commands wait behind a held turn and take the next batch,
+          // whose one commit loses its connection; the database stays gone
+          // for a second, so every attempt on the restarted activation fails
+          // at once until then. Each caller must be answered and retry its id.
+          const first = yield* holding(meter.Add(10))
+
+          const calls = yield* enqueue(
+            amounts.map((amount, index) =>
+              meter.Add(amount).pipe(
+                Actor.commandId(ids[index]!),
+                Effect.retry({
+                  while: (error) => error.isRetryable,
+                  schedule: Schedule.spaced("100 millis"),
+                  times: 50,
+                }),
+                Effect.timeoutOption("10 seconds"),
+                Effect.orDie,
+              ),
+            ),
+          )
+
+          const inBatch = yield* test.pauseNext("beforeCommit")
+          const thenInBatch = yield* test.pauseNext("beforeCommit")
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+          yield* inBatch.reached
+          yield* inBatch.release
+          yield* thenInBatch.reached
+
+          // The held turn and two of the batch's handlers have run; the batch
+          // is open with more than one command when the database goes.
+          expect(probe.handled - handled).toBe(1 + 2)
+          relayed.cut()
+          yield* thenInBatch.release
+          yield* Effect.sleep("1 second")
+          relayed.restore()
+
+          const replies = yield* Effect.forEach(calls, Fiber.join)
+          expect(replies.every(Option.isSome)).toBe(true)
+
+          // The held turn ran once, the aborted batch ran its three handlers,
+          // and each of the three retries ran once more and committed.
+          expect(probe.handled - handled).toBe(1 + amounts.length * 2)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 20 },
+            receipts: 5,
           })
         }),
       ),

@@ -13,6 +13,8 @@ export const SpanNames = {
   admission: "durable-actors.admission",
   /** One command turn on the actor's owner. */
   turn: (actor: string, command: string) => `durable-actors.${actor}/${command}`,
+  /** One turn batch on the actor's owner: the commands that were waiting, run in one transaction. */
+  batch: (actor: string) => `durable-actors.${actor}/batch`,
   /** The turn's commit group, from the first staged write to the `COMMIT` reply. */
   commit: "durable-actors.commit",
   /** One relay delivery of an intent, timer, or cron tick. */

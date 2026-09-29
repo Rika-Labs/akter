@@ -494,6 +494,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             expect(yield* migrate).toEqual([
               [21, "payload_versions"],
               [22, "parent_placement"],
+              [23, "operator_audit"],
             ])
           }).pipe(Effect.provideContext(client))
         }),

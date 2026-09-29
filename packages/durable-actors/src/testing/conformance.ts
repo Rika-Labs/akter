@@ -56,6 +56,8 @@ import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
+import { OperatorRuntime } from "../runtime/operators/repair.ts"
+import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
@@ -93,6 +95,7 @@ import {
 } from "./conformance/connections.ts"
 import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
 import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
+import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
 import {
@@ -206,6 +209,7 @@ export type ConformanceServices =
   | SqlClient.SqlClient
   | Crypto.Crypto
   | ContentStore
+  | OperatorRuntime
 
 export type ConformanceRuntime = ManagedRuntime.ManagedRuntime<ConformanceServices, never>
 
@@ -455,6 +459,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...multiRunnerConformance,
   ...drainConformance,
   ...pipelineConformance,
+  ...batchesConformance,
   ...relayConformance,
   ...relayClusterConformance,
   ...effectControlConformance,
@@ -1466,6 +1471,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...propertiesConformance,
   ...mintConformance,
   ...observabilityConformance,
+  ...operatorConformance,
   ...placementConformance,
 ]
 
@@ -1501,6 +1507,7 @@ export const describeConformance = (options: {
     eventsLayer(fixture.events),
     eventsQueryLayer(fixture.events),
     reducerLayer,
+    batchesLayer,
     outboxLayer(fixture.outbox),
     tablesLayer(fixture.tables),
     effectsLayer(fixture.effects),
