@@ -14,7 +14,7 @@ export interface GrantKey {
 
 const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/
 
-// `g1.<key id>.<expires ms>.<mac>`, the MAC as unpadded base64url of 32 bytes.
+/** A grant is `g1.<key id>.<expires ms>.<mac>`, the MAC as unpadded base64url of 32 bytes. */
 const GRANT = /^g1\.([A-Za-z0-9_-]{1,32})\.([1-9][0-9]{0,15})\.([A-Za-z0-9_-]{43})$/
 
 const utf8 = new TextEncoder()
@@ -27,7 +27,7 @@ export interface Granted {
   readonly expiresAt: number
 }
 
-// Length-prefixed parts, so no two bindings encode to the same message.
+/** The signed message: length-prefixed parts, so no two bindings encode to the same message. */
 const message = (deployment: string, granted: Granted) =>
   utf8.encode(
     [
@@ -42,6 +42,7 @@ const message = (deployment: string, granted: Granted) =>
       .join(""),
   )
 
+/** Signs and verifies content grants. Verification compares MACs in constant time (WebCrypto). */
 export interface Grants {
   /** Signs with the first key. */
   readonly sign: (granted: Granted) => Effect.Effect<string>
@@ -123,7 +124,6 @@ export const grantKeys = Effect.fnUntraced(function* (
 
         if (key === undefined) return Result.fail("invalid" as const)
 
-        // WebCrypto's verify compares in constant time.
         const valid = yield* Effect.promise(() =>
           globalThis.crypto.subtle.verify(
             "HMAC",
