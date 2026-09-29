@@ -23,14 +23,25 @@ const moduleOf = (group: ConformanceGroup) =>
     .replace(/(Cluster|Retention|Delivery)$/, "")
     .replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}.ts`
 
+/**
+ * Whether a group's module, or a `-harness` module it imports, opens a fresh
+ * database or a snapshot; a shared harness can hold the call.
+ */
 const needsFreshDatabase = Effect.fnUntraced(function* (group: ConformanceGroup) {
   const fs = yield* FileSystem.FileSystem
+  const file = new URL(`../${moduleOf(group)}`, import.meta.url)
+  const source = yield* fs.readFileString(file.pathname)
 
-  const source = yield* fs.readFileString(
-    new URL(`../${moduleOf(group)}`, import.meta.url).pathname,
+  const beside = Array.from(
+    source.matchAll(/from "(\.\/[\w-]+-harness\.ts)"/g),
+    ([, name]) => name!,
   )
 
-  return /environment\.(freshDatabase|snapshot)/.test(source)
+  const sources = yield* Effect.forEach(beside, (name) =>
+    fs.readFileString(new URL(name, file).pathname),
+  )
+
+  return [source, ...sources].some((text) => /environment\.(freshDatabase|snapshot)/.test(text))
 })
 
 describe("Neki conformance groups", () => {
