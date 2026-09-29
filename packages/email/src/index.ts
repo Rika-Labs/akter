@@ -3,6 +3,7 @@ import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { createEmail } from "@distilled.cloud/resend"
 import { Credentials, fromApiKey } from "@distilled.cloud/resend/Credentials"
 
+/** A plain-text email. */
 export interface Message {
   readonly to: string
   readonly subject: string
@@ -13,15 +14,22 @@ const MessageJson = Schema.fromJsonString(
   Schema.Struct({ to: Schema.String, subject: Schema.String, text: Schema.String }),
 )
 
+/** Sending failed; `cause` is the provider or filesystem error. */
 export class EmailError extends Schema.TaggedError<EmailError>()("EmailError", {
   cause: Schema.Defect(),
 }) {}
 
+/** Sends email; fails with `EmailError`. */
 export class Email extends Context.Service<
   Email,
   { send(message: Message): Effect.Effect<void, EmailError> }
 >()("@durable-actors/email/Email") {}
 
+/**
+ * `Email` that writes each message as `<uuid>.json` in `directory` (created
+ * with mode 0700, files 0600) instead of sending it, for development and
+ * tests.
+ */
 export const captureLayer = (directory: string) =>
   Layer.effect(
     Email,
@@ -47,11 +55,13 @@ export const captureLayer = (directory: string) =>
     }),
   )
 
+/** Resend API key and the sender address. */
 export interface ResendConfig {
   readonly apiKey: string
   readonly from: string
 }
 
+/** `Email` that sends through Resend. */
 export const resendLayer = (config: ResendConfig) =>
   Layer.effect(
     Email,

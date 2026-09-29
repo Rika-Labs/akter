@@ -5,7 +5,10 @@ import { FetchHttpClient } from "effect/unstable/http"
 import { loadOptions } from "./config.ts"
 import { EdgeLive } from "./server.ts"
 
-// Hosted ingress: deployment hosts to runners, credentials to signed assertions, proxied sockets.
+/**
+ * Hosted ingress: deployment hosts to runners, credentials to signed
+ * assertions, proxied sockets.
+ */
 const program = Effect.gen(function* () {
   const options = yield* loadOptions
 

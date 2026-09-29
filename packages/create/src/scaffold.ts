@@ -1,10 +1,13 @@
 import { parseArgs } from "node:util"
 import { Effect, FileSystem, Path, Schema } from "effect"
 
+/** Names of the templates `bun create @durable-actors` can scaffold. */
 export const templates = ["counter", "chat"] as const
 
+/** A template name. */
 export const Template = Schema.Literals(templates)
 
+/** A template name. */
 export type Template = typeof Template.Type
 
 /** Exact versions a generated app installs; they match what `@durable-actors/core` is built against. */
@@ -20,6 +23,7 @@ export const versions = {
   typescript: "7.0.2",
 } as const
 
+/** The requested template is not one of `templates`. */
 export class UnknownTemplate extends Schema.TaggedError<UnknownTemplate>()("UnknownTemplate", {
   template: Schema.String,
 }) {
@@ -28,6 +32,7 @@ export class UnknownTemplate extends Schema.TaggedError<UnknownTemplate>()("Unkn
   }
 }
 
+/** The target directory exists and already has files; nothing is written. */
 export class TargetNotEmpty extends Schema.TaggedError<TargetNotEmpty>()("TargetNotEmpty", {
   directory: Schema.String,
 }) {
@@ -36,8 +41,10 @@ export class TargetNotEmpty extends Schema.TaggedError<TargetNotEmpty>()("Target
   }
 }
 
+/** Command-line usage text. */
 export const usage = `Usage: bun create @durable-actors [directory] [--template ${templates.join("|")}]`
 
+/** The command line could not be parsed; the message includes `usage`. */
 export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
   reason: Schema.String,
 }) {
@@ -74,9 +81,12 @@ export const parseArguments = Effect.fn("parseArguments")(function* (args: Reado
   return { help: false, template, directory: positionals[0] ?? "durable-actors-app" } as const
 })
 
-// `@effect/platform-node-shared` is listed although nothing imports it: `@effect/platform-bun`
-// depends on it with a caret range, which admits later release candidates built against a
-// newer `effect`, so the app pins it to the same candidate.
+/**
+ * `@effect/platform-node-shared` is listed although nothing imports it:
+ * `@effect/platform-bun` depends on it with a caret range, which admits later
+ * release candidates built against a newer `effect`, so the app pins it to the
+ * same candidate.
+ */
 const runtimeDependencies = [
   "@durable-actors/core",
   "@effect/platform-bun",
@@ -89,6 +99,10 @@ const runtimeDependencies = [
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))
 
+/**
+ * The generated app's `package.json` content, with the runtime dependencies
+ * pinned to `versions`.
+ */
 export const manifest = (name: string) => ({
   name,
   private: true,

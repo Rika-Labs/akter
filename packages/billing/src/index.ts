@@ -3,10 +3,15 @@ import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { checkoutsCreate, customerSessionsCreate } from "@distilled.cloud/polar"
 import { Credentials, fromApiKey } from "@distilled.cloud/polar/Credentials"
 
+/** Billing operation failed; the message is safe to show a user. */
 export class BillingError extends Schema.TaggedError<BillingError>()("BillingError", {
   message: Schema.String,
 }) {}
 
+/**
+ * Creates hosted checkout and customer-portal sessions for an organization;
+ * each returns the URL to redirect to.
+ */
 export class Billing extends Context.Service<
   Billing,
   {
@@ -15,11 +20,16 @@ export class Billing extends Context.Service<
   }
 >()("@durable-actors/billing/Billing") {}
 
+/** `Billing` for deployments without a provider; every operation fails with `BillingError`. */
 export const disabledLayer = Layer.succeed(Billing, {
   checkout: () => Effect.fail(BillingError.make({ message: "Billing is not configured" })),
   portal: () => Effect.fail(BillingError.make({ message: "Billing is not configured" })),
 })
 
+/**
+ * Polar settings: API `accessToken`, the `productId` sold at checkout, the app
+ * `origin` Polar returns to, and whether to use the sandbox API.
+ */
 export interface PolarConfig {
   readonly accessToken: string
   readonly productId: string
@@ -27,6 +37,7 @@ export interface PolarConfig {
   readonly sandbox: boolean
 }
 
+/** `Billing` backed by Polar, with the organization id as the external customer id. */
 export const polarLayer = (config: PolarConfig) => {
   const provider = Layer.merge(
     fromApiKey({

@@ -2,6 +2,7 @@ import { Effect, Option, Schema } from "effect"
 import { UsageError } from "../workflows/check.ts"
 import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
 
+/** Usage text for `durable inspect`. */
 export const USAGE =
   "Usage: durable inspect <Type>/<id> --url <runner> --tenant <tenant> [--receipts <n>] [--token-env <name>] [--json]"
 

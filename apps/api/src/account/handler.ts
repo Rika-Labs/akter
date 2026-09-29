@@ -19,6 +19,10 @@ const mutation = Effect.fn("Api.mutation")(function* (origin: string) {
     return yield* Forbidden.make({ message: "Invalid request origin" })
 })
 
+/**
+ * Handlers of the `account` group; every state-changing one requires the
+ * request `Origin` to equal the configured origin.
+ */
 export const accountLive = (config: Config) =>
   HttpApiBuilder.group(Api, "account", (handlers) =>
     handlers
@@ -74,6 +78,7 @@ export const accountLive = (config: Config) =>
       ),
   )
 
+/** Serves the auth library under `/auth/*`. */
 export const authRoute = HttpRouter.add(
   "*",
   "/auth/*",

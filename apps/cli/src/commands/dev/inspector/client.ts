@@ -20,8 +20,6 @@ import {
   workflowsView,
 } from "./view.ts"
 
-// The browser entry of the inspector page, bundled by `durable dev`.
-
 const element = (id: string) => document.getElementById(id)!
 
 const root = element("app")
@@ -196,7 +194,6 @@ window.addEventListener("hashchange", refresh)
 
 element("refresh").addEventListener("click", refresh)
 
-// A receipt's event chips scroll to the event in the timeline; the hash is the route.
 root.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target.closest("[data-scroll]") : null
   const id = target?.getAttribute("data-scroll")
@@ -213,7 +210,6 @@ root.addEventListener("click", (event) => {
   )
 })
 
-// "live" re-reads the page every two seconds while the tab is visible.
 runtime.runFork(
   Effect.sync(() => {
     if (live instanceof HTMLInputElement && live.checked && document.visibilityState === "visible")
