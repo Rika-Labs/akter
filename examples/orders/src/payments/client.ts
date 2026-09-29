@@ -6,8 +6,10 @@ export class PaymentDeclined extends Schema.TaggedError<PaymentDeclined>()("Paym
   reason: Schema.String,
 }) {}
 
+/** A charge for a customer, in cents. */
 export const ChargeRequest = Schema.Struct({ customerId: Schema.String, amount: Schema.Int })
 
+/** The provider's id of an applied charge. */
 export const ChargeReceipt = Schema.Struct({ chargeId: Schema.String })
 
 const Declined = Schema.Struct({ reason: Schema.String })

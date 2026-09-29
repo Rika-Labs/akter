@@ -30,9 +30,16 @@ export const databaseTime = Effect.gen(function* () {
 
 const decodeCommandId = Schema.decodeEffect(CommandId)
 
-// A versioned id this runner can't read: `v<n>.` for any n other than 1.
+/** Matches a versioned command id this runner cannot read: `v<n>.` for any n other than 1. */
 const OTHER_VERSION = /^v(?!1\.)\d{1,9}\./
 
+/**
+ * Validates a command id against the admission clock. Fails with `ActorError`:
+ * `InvalidCommandId` when the id is not a version-1 id (`version` for another
+ * version, `malformed` otherwise), its window differs from `windowMs`
+ * (`window`), or it is issued after `now` (`future`); `CommandExpired` once
+ * `now` reaches its expiry. All times are epoch milliseconds.
+ */
 export const checkIdentity = Effect.fnUntraced(function* (
   id: string,
   windowMs: number,

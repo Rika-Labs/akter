@@ -1,8 +1,11 @@
-// The chat room served to a browser: Actor.serve under /api, the page at
-// /rooms/<id>?user=<name>, and the same room with @durable-actors/react at
-// /react/rooms/<id>. Presence and live cursors are at /cursors/<doc> and /react/cursors/<doc>. PGlite in memory unless DATABASE_URL names Postgres.
-//   bun run web            # http://localhost:3003/rooms/lobby?user=alice
-//                          # http://localhost:3003/cursors/notes?user=alice
+/**
+ * The chat room served to a browser: Actor.serve under /api, the page at
+ * /rooms/<id>?user=<name>, and the same room with @durable-actors/react at
+ * /react/rooms/<id>. Presence and live cursors are at /cursors/<doc> and
+ * /react/cursors/<doc>. PGlite in memory unless DATABASE_URL names Postgres.
+ *   bun run web            # http://localhost:3003/rooms/lobby?user=alice
+ *                          # http://localhost:3003/cursors/notes?user=alice
+ */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Actor } from "@durable-actors/core"
 import { Database } from "@durable-actors/core/runtime"
@@ -18,7 +21,10 @@ const api = Actor.serve({ actors: [Room, Cursor], auth: demoAuth, basePath: "/ap
 
 const served = CursorLive.pipe(Layer.provideMerge(actors))
 
-// The pages' scripts, bundled for browsers from their entry files once at startup.
+/**
+ * The pages' scripts, bundled for browsers from their entry files once at
+ * startup.
+ */
 const pages = HttpRouter.use(
   Effect.fnUntraced(function* (router) {
     const built = yield* Effect.promise(() =>

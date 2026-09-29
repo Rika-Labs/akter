@@ -1,6 +1,10 @@
 import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
+/**
+ * Workflow with up to four activity steps and an optional durable sleep, keyed
+ * by its `key` input.
+ */
 export const Flow = Actor.workflow("Flow", {
   input: { key: Schema.String, steps: Schema.Int, sleepMs: Schema.Int },
   output: Schema.Int,
@@ -19,6 +23,7 @@ export const WorkflowProbe = Actor.make("WorkflowProbe", {
   api: { Flow },
 })
 
+/** Handler for `WorkflowProbe`. */
 export const WorkflowProbeLive = WorkflowProbe.toLayer(
   Effect.succeed({
     Flow: Effect.fnUntraced(function* (input: {

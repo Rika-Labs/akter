@@ -2,6 +2,7 @@ import { Actor } from "@durable-actors/core"
 import { integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Effect, Schema } from "effect"
 
+/** An order's key: 1 to 64 letters, digits, `_` or `-`. */
 export const OrderId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,64}$/)).pipe(
   Schema.brand("OrderId"),
 )
@@ -28,6 +29,7 @@ export const orderLinesDdl = `CREATE TABLE IF NOT EXISTS order_lines (
   unit_price integer NOT NULL, package text NOT NULL,
   PRIMARY KEY (routing_key, tenant_id, actor_id, sku))`
 
+/** One order line with its price and package, as read when the order was placed. */
 export const Line = Schema.Struct({
   sku: Schema.NonEmptyString,
   name: Schema.String,
@@ -36,22 +38,26 @@ export const Line = Schema.Struct({
   package: Schema.NonEmptyString,
 })
 
+/** The customer an order is placed for. */
 export const Customer = Schema.Struct({
   id: Schema.NonEmptyString,
   name: Schema.String,
   email: Schema.String,
 })
 
+/** An order was placed, with its total in cents and its shipment ids. */
 export class OrderPlaced extends Actor.Event<OrderPlaced>()("OrderPlaced", {
   customerId: Schema.String,
   total: Schema.Int,
   shipments: Schema.Array(Schema.String),
 }) {}
 
+/** The charge succeeded. */
 export class PaymentCaptured extends Actor.Event<PaymentCaptured>()("PaymentCaptured", {
   chargeId: Schema.String,
 }) {}
 
+/** The charge failed for good; `ambiguous` says whether it may have been applied. */
 export class PaymentFailed extends Actor.Event<PaymentFailed>()("PaymentFailed", {
   /** The provider may have applied the charge; an operator must check before anything else. */
   ambiguous: Schema.Boolean,
@@ -67,11 +73,13 @@ export class Charge extends Actor.effect<Charge>()("Charge", {
   success: Schema.Struct({ chargeId: Schema.String }),
 }) {}
 
+/** Declared failure of `Place` for an order that already exists. */
 export class OrderAlreadyPlaced extends Schema.TaggedError<OrderAlreadyPlaced>()(
   "OrderAlreadyPlaced",
   {},
 ) {}
 
+/** Where an order stands in its payment. */
 export const OrderStatus = Schema.Literals([
   "new",
   "awaiting_payment",
@@ -80,6 +88,7 @@ export const OrderStatus = Schema.Literals([
   "payment_unknown",
 ])
 
+/** Order state: status, customer, total in cents, shipment ids and the charge id once paid. */
 export const OrderState = Actor.state({
   status: OrderStatus.pipe(Schema.withDecodingDefault(Effect.succeed("new" as const))),
   customerId: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -108,6 +117,7 @@ export const Place = Actor.command("Place", {
   errors: [OrderAlreadyPlaced],
 })
 
+/** The order's status, total, charge, shipments and lines. */
 export const Summary = Actor.query("Summary", {
   output: Schema.Struct({
     status: OrderStatus,
@@ -119,13 +129,21 @@ export const Summary = Actor.query("Summary", {
   }),
 })
 
-// Internal: the relay delivers these as the Charge effect's routes.
+/**
+ * Marks the order paid and releases its shipments. Internal: the relay delivers
+ * `Charged` and `ChargeFailed` as the `Charge` effect's routes.
+ */
 export const Charged = Actor.command("Charged", {
   input: Schema.Struct({ chargeId: Schema.String }),
 })
 
+/**
+ * The charge exhausted its retries or was declined; cancels the shipments only
+ * when the provider applied nothing.
+ */
 export const ChargeFailed = Actor.command("ChargeFailed", { input: Actor.DeadLetter(Charge) })
 
+/** One customer order: its lines, payment and shipments. */
 export const Order = Actor.make("Order", {
   key: OrderId,
   state: OrderState,

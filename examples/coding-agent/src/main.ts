@@ -1,7 +1,9 @@
-// A coding agent is an ordinary actor: effects run the sandbox, a workflow ships a task in two
-// turns, and a singleton reaps orphaned sandboxes. Uses Postgres when DATABASE_URL is set,
-// otherwise an in-memory PGlite, and a stand-in sandbox provider:
-//   bun run start "add a --dry-run flag"
+/**
+ * A coding agent is an ordinary actor: effects run the sandbox, a workflow ships a task in two
+ * turns, and a singleton reaps orphaned sandboxes. Uses Postgres when DATABASE_URL is set,
+ * otherwise an in-memory PGlite, and a stand-in sandbox provider:
+ *   bun run start "add a --dry-run flag"
+ */
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
@@ -22,11 +24,15 @@ const DatabaseLive = Layer.unwrap(
   }),
 )
 
+/**
+ * Runs the agent and reaper with a fake sandbox provider. Only the `demo` user
+ * may call them; relay deliveries and workflow step commands skip the
+ * authorize hook.
+ */
 const live = Layer.mergeAll(CodingAgentLive, SandboxReaperLive).pipe(
   Layer.provide(fakeLayer(fakeSandboxes())),
   Layer.provideMerge(
     Actors.layer({
-      // The demo user; relay deliveries and workflow step commands skip this hook.
       authorize: ({ caller, ref, kind }) =>
         Effect.succeed(
           (kind === "command" || kind === "query") &&

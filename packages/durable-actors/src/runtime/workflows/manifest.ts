@@ -2,6 +2,7 @@ import { Crypto, Effect, Schema } from "effect"
 
 import type { AnyWorkflow } from "../../members/workflow.ts"
 
+/** Serializes a manifest or manifest part; its key order is what the manifest hash covers. */
 export const toJson = <T extends object>(value: T) => JSON.stringify(value)
 
 /** What an open execution depends on: its steps, the schemas they record, and marker ranges. */

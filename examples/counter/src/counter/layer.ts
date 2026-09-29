@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect"
 import { Compute, Counter, Incremented, Pause, Snapshot } from "./contract.ts"
 
+/** Handlers for `Counter` and `Snapshot`. */
 export const CounterLive = Layer.mergeAll(
   Counter.toLayer(
     Effect.succeed({

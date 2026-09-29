@@ -146,6 +146,7 @@ export interface HeldActorType {
   readonly routingKey: (ref: ActorRef) => bigint
 }
 
+/** What a holder needs from its runner: the transport to owners, the actor types it serves, and the authorization hook. */
 export interface HolderOptions {
   readonly transport: () => Transport
   readonly actorType: (name: string) => HeldActorType | undefined
@@ -242,6 +243,45 @@ const ended = (cause: SessionEnded["cause"], resync: boolean, retryAfterMs?: num
  * buffers, caller, and authorization clock, orders inbound frames, applies the
  * owner's ordered messages, and resyncs its connections in place when their
  * owner dies. Actor activations never hold a socket.
+ *
+ * Authorization: nothing reaches a client or an owner past the connection's
+ * authorization bound. A session past its credential's expiry reports that;
+ * otherwise its last check is too old. A credential's expiry caps the session and
+ * its buffered frames go with it. An answer that arrives past the bound never
+ * extends it, and a credential that expired while `authorize` ran opens nothing.
+ * A holder that cannot confirm its rows for a whole bound stops serving them; a
+ * connection opened since the checks began failing counts from its open. A
+ * revoked client receives nothing more, including frames already queued.
+ *
+ * Buffering: a member frame evicts buffered progress oldest first before the
+ * connection counts as a slow consumer. A newer progress frame that would not fit
+ * is dropped and the waiting one stays. A progress marker delivers the newest
+ * frame of its effect, or nothing if it was discarded.
+ *
+ * Owner ordering: an owner acknowledges each message before sending the next, so
+ * the first message a record sees follows everything its connections could have
+ * missed. Redelivered messages were already applied, and late messages from a
+ * dead or superseded generation are dropped. A gap makes every connection replay
+ * from its cursor. A newer generation over an unsealed older one means the older
+ * owner died, and every connection resyncs in place; a loss during a resync
+ * restarts it from the same cursor and keeps the frames it deferred. An older
+ * owner's progress never reaches a client after a newer owner's messages, and a
+ * ping answered after a newer owner was observed says nothing about that owner.
+ * Live frames wait until a resync's replay is acknowledged, and inbound frames are
+ * delivered one at a time after any pending resync. Acknowledgments before the new
+ * owner answered, or before the member's replay finished, are ignored. Until the
+ * new owner answers, the resync deadline bounds the takeover; then the client's
+ * acknowledgment does.
+ *
+ * Opening and closing: a connection registers before the owner commits so frames
+ * flushed after that commit find it. The owner may still commit an open the holder
+ * gave up on; such a late row is closed again. A lost owner's opening frames and
+ * unflushed broadcasts may be gone. An open handler that closed the connection
+ * leaves it ended with `ServerClosed`. On close the owner deletes the row, and the
+ * holder deletes its own if the owner cannot. Rows an unreachable owner dropped
+ * end their connections so clients reconnect. A graceful shutdown ends every
+ * connection with a resync hint and deletes its rows. A feed connection is
+ * authorized as each event tag it reads, all of which must pass.
  */
 export const connectionHolder = Effect.fnUntraced(function* (options: HolderOptions) {
   const sql = yield* SqlClient.SqlClient
@@ -312,7 +352,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     if (actor !== undefined && actor.connections.size === 0) actors.delete(connection.key)
   }
 
-  // Ends one connection once: its buffers are dropped and its client sees `error`.
   const end = (connection: Held, error: ActorError, deleteOwnRow: boolean) =>
     Effect.gen(function* () {
       if (connection.ended) return
@@ -320,7 +359,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       connection.open = false
       release(connection)
 
-      // A revoked client gets nothing more from the actor, including frames already queued.
       if (Predicate.isTagged(error.reason, "Unauthorized"))
         yield* Effect.ignore(Queue.clear(connection.outbound))
       yield* Queue.fail(connection.outbound, error)
@@ -330,7 +368,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       if (deleteOwnRow) yield* deleteRow(connection)
     })
 
-  // Removes one undelivered progress frame; its marker in `outbound` then delivers nothing.
   const discardProgress = (connection: Held, effectId: string) => {
     const pending = connection.progress.get(effectId)
 
@@ -358,7 +395,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const waiting = connection.progress.get(message.effectId)
 
       if (waiting !== undefined) {
-        // A newer frame that would not fit is dropped; the waiting one stays.
         if (
           connection.outBytes - waiting.bytes + bytes > MAX_OUTBOUND_BYTES ||
           heldBytes - waiting.bytes + bytes > MAX_HELD_BYTES
@@ -385,7 +421,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       if (connection.ended) return
       const bytes = ClientMessage.guards.Frame(message) ? utf8.encode(message.frame).byteLength : 0
 
-      // A member frame evicts buffered progress, oldest first, before it counts as a slow consumer.
       if (!control)
         for (const effectId of connection.progress.keys()) {
           if (fits(connection, bytes)) break
@@ -406,7 +441,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       yield* Queue.offer(connection.outbound, message)
     })
 
-  // A progress marker delivers the newest frame of its effect, or nothing if it was discarded.
   const takenProgress = (connection: Held, marker: ProgressMessage) =>
     Effect.sync((): Option.Option<ClientMessage> => {
       const pending = connection.progress.get(marker.effectId)
@@ -426,7 +460,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       heldBytes -= bytes
     })
 
-  // The owner of `actor` died without sealing: every connection resyncs in place.
   const ownerLost = (actor: HeldActor) =>
     Effect.gen(function* () {
       if (actor.sealed) return
@@ -438,7 +471,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       }
     })
 
-  // Asks one connection's client to resync in place from its last proven cursor.
   const resync = (actor: HeldActor, connection: Held, at: number, from?: string) =>
     Effect.gen(function* () {
       connection.resyncs = connection.resyncs.filter((time) => at - time < RESYNC_WINDOW_MS)
@@ -451,7 +483,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         return
       }
 
-      // A loss during a resync starts it again from the same cursor, keeping the frames it deferred.
       const previous = connection.resync
 
       const after =
@@ -466,7 +497,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         replayed: false,
         sent: false,
         answered: false,
-        // Until the new owner answers, this bounds the takeover; then the client's acknowledgment.
         deadline: at + connection.type.takeoverMs,
         deferred: previous?.deferred ?? [],
         deferredBytes: previous?.deferredBytes ?? 0,
@@ -484,7 +514,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       yield* Queue.offer(connection.wake, undefined)
     })
 
-  // Records the answering owner; a newer generation over an unsealed older one means the old owner died.
   const observe = (actor: HeldActor, owner: Owner) =>
     Effect.gen(function* () {
       const generation = BigInt(owner.generation)
@@ -492,7 +521,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       if (generation < actor.generation) return false
 
       if (generation > actor.generation) {
-        // An older owner's progress never reaches a client after a newer owner's messages.
         for (const connection of actor.connections.values())
           for (const effectId of connection.progress.keys()) discardProgress(connection, effectId)
 
@@ -520,21 +548,16 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         return { wrongEpoch: false, unknown }
       }
 
-      // Late messages from a dead or superseded generation are dropped.
       if (!(yield* observe(actor, message))) return { wrongEpoch: false, unknown }
 
-      // An owner acknowledges each message before sending the next, so the first one
-      // this record sees follows everything its connections could have missed.
       if (actor.fresh) {
         actor.fresh = false
         actor.seq = message.seq - 1
       }
 
-      // A redelivered message was already applied.
       if (message.seq <= actor.seq) return { wrongEpoch: false, unknown }
 
       if (message.seq !== actor.seq + 1) {
-        // A gap means frames were lost: every connection must replay from its cursor.
         for (const connection of actor.connections.values())
           yield* end(connection, ended("SlowConsumer", true), true)
         actor.seq = message.seq
@@ -559,7 +582,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
                   return Effect.void
                 }
 
-                // Nothing reaches a client past its authorization bound.
                 if (at >= authorizedUntil(connection))
                   return end(connection, lapsed(connection, at), true)
 
@@ -571,7 +593,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
                 const pending = connection.resync
 
-                // Live frames wait until the resync's replay is acknowledged, so replay always comes first.
                 if (pending !== undefined && frame.replay !== true) {
                   const bytes = utf8.encode(out.frame).byteLength
 
@@ -622,7 +643,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
                   return Effect.void
                 }
 
-                // Nothing reaches a client past its authorization bound.
                 if (at >= authorizedUntil(connection))
                   return end(connection, lapsed(connection, at), true)
 
@@ -684,13 +704,11 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
   const credentialExpired = ActorError.make({ reason: Unauthorized.make({ code: "expired" }) })
 
-  // A session past its credential's expiry says so; otherwise its last check is too old.
   const lapsed = (connection: Held, at: number) =>
     connection.expiresAt !== undefined && at >= connection.expiresAt
       ? credentialExpired
       : unauthorized
 
-  // Nothing reaches the owner once the connection's authorization has lapsed.
   const expired = (connection: Held) =>
     Effect.gen(function* () {
       const at = yield* now
@@ -708,7 +726,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     expiresAt: issuedAt + connection.type.retryWindowMs,
   })
 
-  // Delivers a connection's inbound frames one at a time, after any pending resync.
   const inboundLoop = (connection: Held) =>
     Effect.gen(function* () {
       while (!connection.ended) {
@@ -730,7 +747,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
           if (connection.ended) return
 
-          // An owner that answers past the bound closes the session; the client learns the bound lapsed.
           if (yield* expired(connection)) return
 
           if (Exit.isFailure(answer)) {
@@ -808,7 +824,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       }
     })
 
-  // A connection is checked as its member; a feed as each event tag it reads, all of which must pass.
   const check = (
     session: { readonly caller: Caller; readonly ref: ActorRef; readonly member: string },
     feed: ReadonlyArray<string> | undefined,
@@ -844,7 +859,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
       const answered = yield* now
 
-      // An answer that arrives past the bound cannot extend it; the session already lapsed.
       if (Exit.isSuccess(allowed) && allowed.value && answered >= authorizedUntil(connection))
         yield* end(connection, lapsed(connection, answered), true)
       else if (Exit.isSuccess(allowed) && allowed.value) connection.lastAuthorized = at
@@ -856,8 +870,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         )
     })
 
-  // An owner that could not reach this holder dropped the rows of the
-  // connections it held; each such connection ends so its client reconnects.
   const liveness = (at: number) =>
     Effect.gen(function* () {
       const transport = options.transport()
@@ -887,7 +899,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       ),
     )
 
-  // Reauthorization, resync deadlines, and owner liveness, checked on one clock.
   const tick = Effect.gen(function* () {
     const at = yield* now
 
@@ -895,8 +906,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       if (!connection.open) continue
       const every = connection.type.reauthorizeMs
 
-      // A holder that cannot confirm its rows for a whole bound stops serving them;
-      // a connection opened since the checks began failing counts from its open.
       if (
         livenessFailedSince !== undefined &&
         at - Math.max(livenessFailedSince, connection.openedAt) >= every
@@ -906,7 +915,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         continue
       }
 
-      // The credential's expiry caps the session; buffered frames go with it.
       if (connection.expiresAt !== undefined && at >= connection.expiresAt) {
         yield* end(connection, credentialExpired, true)
 
@@ -952,7 +960,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
       const { owner, ownerEpoch, generation } = actor
 
-      // A ping answered after a newer owner was observed says nothing about that owner.
       yield* transport.ping(owner, ownerEpoch).pipe(
         Effect.flatMap((alive) =>
           alive ||
@@ -1007,7 +1014,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     if (!allowed)
       return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
 
-    // The credential may have expired while `authorize` ran; nothing opens on it then.
     if (request.expiresAt !== undefined && (yield* now) >= request.expiresAt)
       return yield* credentialExpired
 
@@ -1040,7 +1046,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       progress: new Map(),
     }
 
-    // Registered before the owner commits, so frames flushed after that commit find it.
     const actor = actorOf(request.ref)
     actor.connections.set(connection.id, connection)
     held.set(connection.id, connection)
@@ -1060,7 +1065,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       },
     })
 
-    // The owner may still commit an open this holder gave up on; such a late row is closed again.
     const attempt = yield* retried(connection, openCall).pipe(Effect.forkIn(scope))
 
     const abandon = Effect.gen(function* () {
@@ -1103,12 +1107,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
     if (BigInt(answer.baseline) > BigInt(actor.through)) actor.through = answer.baseline
 
-    // An open handler that closed the connection leaves it already ended with `ServerClosed`.
     if (!connection.ended) {
       connection.openedAt = yield* now
       connection.open = true
 
-      // Its opening frames and any broadcasts the lost owner never flushed may be gone.
       if (answer.recovered === true) yield* resync(actor, connection, yield* now, answer.baseline)
       connection.loop = yield* inboundLoop(connection).pipe(Effect.forkIn(scope))
     }
@@ -1144,7 +1146,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       resyncDone: Effect.gen(function* () {
         const pending = connection.resync
 
-        // An acknowledgment before the new owner answered, or before the member's replay finished, is ignored.
         if (
           pending === undefined ||
           !pending.answered ||
@@ -1183,7 +1184,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           if (connection.ended) return yield* ended("ClientClosed", false)
           const answered = yield* now
 
-          // A renewal that lands past the bound can't revive a lapsed session.
           if (answered >= authorizedUntil(connection))
             return yield* fail(lapsed(connection, answered))
 
@@ -1192,7 +1192,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
               ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
             )
 
-          // The fresh credential itself may have expired while the check ran.
           if (expiresAt !== undefined && answered >= expiresAt)
             return yield* fail(credentialExpired)
 
@@ -1203,7 +1202,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
         if (connection.ended) return
         const cause = SessionEnded.make({ cause: "ClientClosed", resync: false })
         yield* end(connection, ActorError.make({ reason: cause }), false)
-        // The owner runs `close` and deletes the row; if it cannot, the holder deletes its own row.
         yield* retrying(
           connection,
           type.channel.close({ ...address(connection), cause }),
@@ -1215,7 +1213,6 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     return held_
   })
 
-  // A graceful shutdown ends every connection with a resync hint and deletes its rows.
   yield* Effect.addFinalizer(() =>
     Effect.forEach(
       [...held.values()],
@@ -1235,6 +1232,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
   }
 })
 
+/** The holder service `connectionHolder` builds. */
 export type Holder = Effect.Success<ReturnType<typeof connectionHolder>>
 
 export type { Scope }
