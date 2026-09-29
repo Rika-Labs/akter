@@ -1,10 +1,26 @@
 import { PGlite } from "@electric-sql/pglite"
-import { Cause, Crypto, Data, Effect, Exit, Layer, Redacted, Schema, Scope } from "effect"
+import {
+  Cause,
+  Context,
+  Crypto,
+  Data,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Redacted,
+  Schedule,
+  Schema,
+  Scope,
+  Stream,
+} from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent, User } from "../../index.ts"
 import { migrate } from "../../runtime/database/migrations.ts"
 import { Database } from "../../runtime/layer.ts"
+import { InternalActors } from "../../handles/actors.ts"
 import { ActorTest } from "../actor-test.ts"
+import { ActorCluster } from "../cluster.ts"
 import type {
   ConformanceCase,
   ConformanceDatabase,
@@ -25,6 +41,14 @@ const Tick = Actor.command("Tick")
 
 const Shipped = Actor.command("Shipped", { input: Schema.String })
 
+// Read outside any turn by a stream handler: the attachment and the events so far.
+const Snapshot = Actor.stream("Snapshot", { output: Schema.String })
+
+// Polled through `pollWorkflow` until it finishes.
+const Settle = Actor.workflow("Settle", { output: Schema.String })
+
+const attachments = Actor.blob("attachments")
+
 const Read = Actor.query("Read", {
   output: Schema.Struct({
     entries: Schema.Array(Schema.String),
@@ -43,7 +67,8 @@ const Ledger = Actor.make("Ledger", {
   }),
   events: [Recorded],
   effects: [Ship],
-  api: { Record, Read },
+  blobs: [attachments],
+  api: { Record, Read, Snapshot, Settle },
   internal: { Tick, Shipped },
   policy: { effects: { Ship: { onSuccess: Shipped } } },
 })
@@ -57,6 +82,7 @@ const ledgerLayer = Layer.mergeAll(
         const turn = yield* Ledger.Turn
         yield* turn.state.set({ entries: [...turn.state.entries, body] })
         yield* turn.emit(Recorded.make({ body }))
+        yield* turn.blob(attachments).set("latest", new TextEncoder().encode(body))
         const self = yield* Ledger.intents(turn.id)
         yield* self.Tick().pipe(Intent.after("1 second"), Intent.key("tick"))
         yield* turn.perform(Ship.make({ body }))
@@ -69,6 +95,19 @@ const ledgerLayer = Layer.mergeAll(
         const turn = yield* Ledger.Turn
         yield* turn.state.set({ shipped: [...turn.state.shipped, body] })
       }),
+      Snapshot: () =>
+        Stream.unwrap(
+          Effect.gen(function* () {
+            const read = yield* Ledger.Read
+            const latest = yield* read.blob(attachments).get("latest")
+            const events = yield* read.events(Recorded).pipe(Effect.orDie)
+
+            return Stream.make(
+              `${Option.match(latest, { onNone: () => "", onSome: (bytes) => new TextDecoder().decode(bytes) })}/${events.length}`,
+            )
+          }),
+        ),
+      Settle: () => Effect.succeed("settled"),
     }),
   ),
   Ledger.toEffectLayer(Effect.succeed({ Ship: ({ body }) => Effect.succeed(body) })),
@@ -104,27 +143,34 @@ const VIEWS = [
   "workflow_steps",
 ] as const
 
-/**
- * The operator script of the row-level security guide: a role the runtime
- * takes for tenant-scoped transactions, which also owns every inspection view
- * so the views filter by the reader's tenant.
- */
-const grants = (role: string) => [
-  `CREATE ROLE ${role} NOLOGIN`,
-  `GRANT USAGE ON SCHEMA public TO ${role}`,
-  `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
-  `GRANT ${role} TO CURRENT_USER`,
-  `GRANT CREATE ON SCHEMA durable TO ${role}`,
-  `DO $$
+/** Hands every inspection view to `owner`, as the guide's script does. */
+const viewsTo = (owner: string) => `DO $$
     DECLARE view record;
     BEGIN
       FOR view IN SELECT relname FROM pg_class
         WHERE relnamespace = 'durable'::regnamespace AND relkind = 'v'
       LOOP
-        EXECUTE format('ALTER VIEW durable.%I OWNER TO %I', view.relname, '${role}');
+        EXECUTE format('ALTER VIEW durable.%I OWNER TO %I', view.relname, '${owner}');
       END LOOP;
-    END $$`,
-  `REVOKE CREATE ON SCHEMA durable FROM ${role}`,
+    END $$`
+
+/**
+ * The operator script of the row-level security guide: a tenant role the
+ * runtime takes for tenant-scoped transactions, and a separate view-owner role
+ * the policies bind, which the tenant role can't act as.
+ */
+const grants = ({ role, viewOwner }: { readonly role: string; readonly viewOwner: string }) => [
+  `CREATE ROLE ${role} NOLOGIN`,
+  `GRANT USAGE ON SCHEMA public TO ${role}`,
+  `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
+  `GRANT ${role} TO CURRENT_USER`,
+  `CREATE ROLE ${viewOwner} NOLOGIN`,
+  `GRANT USAGE ON SCHEMA public TO ${viewOwner}`,
+  `GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${viewOwner}`,
+  `GRANT ${viewOwner} TO CURRENT_USER`,
+  `GRANT CREATE ON SCHEMA durable TO ${viewOwner}`,
+  viewsTo(viewOwner),
+  `REVOKE CREATE ON SCHEMA durable FROM ${viewOwner}`,
 ]
 
 type Target = Redacted.Redacted<string> | { readonly liveClient: PGlite }
@@ -156,6 +202,7 @@ const prepared = (
     const crypto = yield* Crypto.Crypto
     const uuid = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")
     const role = `durable_tenant_${uuid}`
+    const viewOwner = `durable_views_${uuid}`
     const fresh: ConformanceDatabase = yield* environment.freshDatabase
 
     const target: Target = Redacted.isRedacted(fresh)
@@ -180,7 +227,10 @@ const prepared = (
         const sql = yield* SqlClient.SqlClient
         yield* migrate
 
-        for (const statement of [...tablesDdl, ...(options.grant ? grants(role) : [])])
+        for (const statement of [
+          ...tablesDdl,
+          ...(options.grant ? grants({ role, viewOwner }) : []),
+        ])
           yield* sql.unsafe(statement)
       }),
     )
@@ -192,14 +242,17 @@ const prepared = (
           target,
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
-            yield* sql.unsafe(`REASSIGN OWNED BY ${role} TO CURRENT_USER`)
-            yield* sql.unsafe(`DROP OWNED BY ${role}`)
-            yield* sql.unsafe(`DROP ROLE ${role}`)
+
+            for (const owner of [role, viewOwner]) {
+              yield* sql.unsafe(`REASSIGN OWNED BY ${owner} TO CURRENT_USER`)
+              yield* sql.unsafe(`DROP OWNED BY ${owner}`)
+              yield* sql.unsafe(`DROP ROLE ${owner}`)
+            }
           }),
         ),
       )
 
-    return { target, role }
+    return { target, role, viewOwner }
   })
 
 const runtimeOn = (target: Target, role: string) =>
@@ -229,7 +282,11 @@ const withRowLevelSecurity = <A, E>(
   body: (setup: {
     readonly role: string
     readonly target: Target
-  }) => Effect.Effect<A, E, Actors | ActorTest | SqlClient.SqlClient | Crypto.Crypto | Scope.Scope>,
+  }) => Effect.Effect<
+    A,
+    E,
+    Actors | InternalActors | ActorTest | SqlClient.SqlClient | Crypto.Crypto | Scope.Scope
+  >,
 ) =>
   environment.run(
     Effect.gen(function* () {
@@ -287,6 +344,91 @@ const populate = (tenant: string) =>
   })
 
 export const rlsConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "row-level security on: three runners serve two tenants' turns, timers, effects, and reads, each seeing only its own",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { target, role } = yield* prepared(environment)
+
+          if (!Redacted.isRedacted(target))
+            return yield* Effect.die(new Error("The three-runner case needs Postgres"))
+
+          const crypto = yield* Crypto.Crypto
+
+          const context = yield* Layer.build(
+            ActorTest.cluster({
+              database: target,
+              runners: 3,
+              shardLockExpiration: "3 seconds",
+              actors: live,
+              as: User.make({ subject: "alice" }),
+              rowLevelSecurity: { role },
+            }).pipe(Layer.provide(Layer.succeed(Crypto.Crypto, crypto))),
+          )
+
+          const cluster = Context.get(context, ActorCluster)
+          const tenant = yield* cluster.on(0)(ActorTest.use((test) => Effect.succeed(test.tenant)))
+          const tenants = [tenant, `${tenant}-b`]
+          const ids = Array.from({ length: 6 }, (_, index) => `ledger-${index}`)
+          const owners = new Set<number | undefined>()
+
+          // Each write goes through a different runner than the next, so most dispatch remotely.
+          for (const [index, id] of ids.entries())
+            for (const scoped of tenants)
+              yield* cluster.on(index % 3)(
+                Effect.gen(function* () {
+                  const ledger = yield* Ledger.get(id).pipe(Actor.tenant(scoped))
+                  yield* ledger.Record(`${scoped}/${id}`)
+                  const notebook = yield* Notebook.get(id).pipe(Actor.tenant(scoped))
+                  yield* notebook.Write({ id: "note", body: scoped })
+                  owners.add(yield* cluster.owner(ledger.ref))
+                }),
+              )
+
+          // Any runner's relay and executors deliver the timers and effect routes.
+          for (const [index, id] of ids.entries())
+            for (const scoped of tenants) {
+              const reader = (index + 1) % 3
+
+              const read = cluster.on(reader)(
+                Ledger.get(id).pipe(
+                  Actor.tenant(scoped),
+                  Effect.flatMap((ledger) => ledger.Read()),
+                ),
+              )
+
+              const settled = yield* read.pipe(
+                Effect.repeat({
+                  schedule: Schedule.spaced("200 millis"),
+                  until: (state) => state.ticks === 1 && state.shipped.length === 1,
+                }),
+                Effect.timeout("30 seconds"),
+              )
+
+              expect(settled).toEqual({
+                entries: [`${scoped}/${id}`],
+                ticks: 1,
+                shipped: [`${scoped}/${id}`],
+                events: [`${scoped}/${id}`],
+              })
+
+              const notes = yield* cluster.on(reader)(
+                Notebook.get(id).pipe(
+                  Actor.tenant(scoped),
+                  Effect.flatMap((notebook) => notebook.List()),
+                ),
+              )
+
+              expect(notes.map(({ body }) => body)).toEqual([scoped])
+            }
+
+          expect(owners.size > 1).toBe(true)
+        }),
+      ),
+  },
   {
     name: "row-level security on: every framework table and owned table carries the tenant policy",
     run: ({ expect, environment }) =>
@@ -420,31 +562,67 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "row-level security on: turns and queries run as the tenant role",
-    timeoutMs: 30_000,
+    name: "row-level security on: turns, queries, and every caller-facing read outside a turn run as the tenant role",
+    timeoutMs: 60_000,
     run: ({ expect, environment }) =>
       withRowLevelSecurity(environment, ({ role }) =>
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
+          const internal = yield* InternalActors
           const ledger = yield* Ledger.get("revoked")
           yield* ledger.Record("first")
+          const run = yield* ledger.Settle({})
+          expect(yield* run.result).toBe("settled")
+
+          const snapshot = ledger.Snapshot().pipe(
+            Stream.runCollect,
+            Effect.map((chunk) => [...chunk]),
+          )
+
+          const reads = {
+            turn: ledger.Record("refused"),
+            query: ledger.Read(),
+            exists: internal.exists(ledger.ref),
+            feed: internal.readFeed(ledger.ref, ["Recorded"], undefined, 10),
+            poll: run.poll,
+            stream: snapshot,
+          }
+
+          // Every read succeeds while the role holds its grants.
+          expect(yield* internal.exists(ledger.ref)).toBe(true)
+          expect((yield* internal.readFeed(ledger.ref, ["Recorded"], undefined, 10)).length).toBe(1)
+          expect(Option.isSome(yield* run.poll)).toBe(true)
+          expect(yield* snapshot).toEqual(["first/1"])
 
           // Only the role loses access, so a failure proves the role ran the statement.
-          yield* sql.unsafe(`REVOKE INSERT ON actor_receipts FROM ${role}`)
-          const turn = rejection(yield* ledger.Record("refused").pipe(Effect.exit))
-          yield* sql.unsafe(`GRANT INSERT ON actor_receipts TO ${role}`)
+          const revoked = [
+            ["turn", "INSERT", "actor_receipts"],
+            ["query", "SELECT", "actor_state"],
+            ["exists", "SELECT", "actor_generations"],
+            ["feed", "SELECT", "actor_events"],
+            ["poll", "SELECT", "actor_workflow_executions"],
+            ["stream", "SELECT", "actor_blobs"],
+          ] as const
 
-          yield* sql.unsafe(`REVOKE SELECT ON actor_state FROM ${role}`)
-          const query = rejection(yield* ledger.Read().pipe(Effect.exit))
-          yield* sql.unsafe(`GRANT SELECT ON actor_state TO ${role}`)
+          const outcomes: Record<string, string> = {}
 
-          expect(turn).not.toBe("succeeded")
-          expect(query).not.toBe("succeeded")
+          for (const [read, privilege, table] of revoked) {
+            yield* sql.unsafe(`REVOKE ${privilege} ON ${table} FROM ${role}`)
+            outcomes[read] = rejection(
+              yield* reads[read].pipe(Effect.timeout("20 seconds"), Effect.exit),
+            )
+            yield* sql.unsafe(`GRANT ${privilege} ON ${table} TO ${role}`)
+          }
+
+          expect(
+            Object.fromEntries(revoked.map(([read]) => [read, outcomes[read] !== "succeeded"])),
+          ).toEqual({ turn: true, query: true, exists: true, feed: true, poll: true, stream: true })
 
           yield* ledger.Record("second")
           expect((yield* ledger.Read()).entries).toEqual(["first", "second"])
           expect(yield* test.receiptsFor(ledger.ref, "Record")).toBe(2)
+          expect(yield* snapshot).toEqual(["second/2"])
         }),
       ),
   },
@@ -522,7 +700,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "row-level security on: the runtime refuses to start when the role is missing, does not own the views, or owns an owned table",
+    name: "row-level security on: the runtime refuses to start when the role is missing or owns an owned table, or a view belongs to an exempt role or one the tenant role can act as",
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
       environment.run(
@@ -545,6 +723,22 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
 
           const unowned = rejection(yield* runtimeOn(target, role).pipe(Effect.scoped, Effect.exit))
 
+          // The tenant role runs user turns, so it must not be able to alter or drop a view.
+          const shared = yield* prepared(environment)
+
+          yield* onDatabase(
+            shared.target,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql.unsafe(`GRANT CREATE ON SCHEMA durable TO ${shared.role}`)
+              yield* sql.unsafe(viewsTo(shared.role))
+            }),
+          )
+
+          const actable = rejection(
+            yield* runtimeOn(shared.target, shared.role).pipe(Effect.scoped, Effect.exit),
+          )
+
           // A table's owner bypasses its policies, so the role must not own an owned table.
           const owner = yield* prepared(environment)
 
@@ -561,7 +755,9 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(absent).toContain(`role ${missing.role} does not exist`)
-          expect(unowned).toContain(`durable.receipts is not owned by ${role}`)
+          expect(unowned).toContain("durable.receipts belongs to")
+          expect(unowned).toContain("which the policies exempt")
+          expect(actable).toContain(`which ${shared.role} can act as`)
           expect(owning).toContain(`role ${owner.role} owns public.conformance_notes`)
         }),
       ),

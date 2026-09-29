@@ -538,20 +538,21 @@ The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault
 - **A woken actor's tick write is one statement.** Its first turn re-inserts its pending tick, and the unique index rejects it: 121,158 calls for about 122,000 deliveries in the one-runner round, at 0.066 ms.
 - **The claim mean is read from `statements`.** At `094b4a3`, the scenario's `relayClaimMeanMs` is -1 because it searched for `SKIP LOCKED`, which falls past the 160 characters of query text the harness stores. The claim mean above is read from the listed `WITH intent_candidates …` statement, and the scenario now matches that prefix.
 
-### Row-level security (M4.5, #232)
+### Row-level security (M4.5, #232, #256)
 
-`2026-09-29-b54c241-m4.5-rls-postgres.json` runs `bun run bench --backend postgres --scenario rls` (full profile) on branch `feat/232-row-level-security` at `b54c241` (clean tree). Postgres 18 ran as a local server with `pg_stat_statements` preloaded and default durability, through `BENCH_DATABASE_URL`, so server CPU isn't recorded. Bun 1.4.2 and Effect 4.0.0-rc.116 ran on one Amp orb (E2B cloud VM, 16 vCPUs of an Intel Xeon at 2.60 GHz, 31 GiB), shared by the client, the runtime, and Postgres. Each case is one warm actor with 1,000 owned rows and one caller, first with the runtime as the exempt table owner, then with `rowLevelSecurity` on ([ADR 0051](../decisions/0051-row-level-security.md)).
+`2026-09-29-630e421-m4.5-rls-view-owner-postgres.json` runs `bun run bench --backend postgres --scenario rls` (full profile) on branch `feat/256-rls-follow-ups` at `630e421` (clean tree). Postgres 18.6 ran in the harness's container with `pg_stat_statements` and default durability. Bun 1.3.14 and Effect 4.0.0-rc.116 ran on a 4-vCPU cloud VM (15 GiB) shared by the client, the runtime, and Postgres. Each case is one warm actor with 1,000 owned rows and one caller, first with the runtime as the exempt table owner, then with `rowLevelSecurity` on ([ADR 0051](../decisions/0051-row-level-security.md)). The scenario's role script now hands the views to a separate view-owner role, as the startup check requires; before that change the scenario refused to start with RLS on.
 
 | Case                  | Off: p50 / p99 ms | On: p50 / p99 ms | Statements off → on | Round trips off → on |
 | --------------------- | ----------------- | ---------------- | ------------------- | -------------------- |
-| Command turn          | 2.39 / 6.40       | 2.70 / 6.56      | 7 → 7               | 2 → 2                |
-| State query           | 0.19 / 0.46       | 0.51 / 0.91      | 1 → 2               | 0 → 0                |
-| Owned-row insert turn | 2.73 / 6.63       | 3.09 / 7.86      | 7 → 7               | 3 → 3                |
-| Owned-row point query | 0.49 / 1.05       | 0.80 / 1.76      | 2 → 3               | 0 → 0                |
+| Command turn          | 6.01 / 15.12      | 5.80 / 14.59     | 7 → 7               | 2 → 2                |
+| State query           | 0.32 / 5.90       | 0.62 / 3.75      | 1 → 2               | 0 → 0                |
+| Owned-row insert turn | 9.13 / 15.83      | 5.30 / 13.79     | 7 → 7               | 3 → 3                |
+| Owned-row point query | 0.77 / 7.46       | 0.91 / 3.99      | 2 → 3               | 0 → 0                |
 
-- **Turns pay no statement or round trip.** The role and tenant settings ride on the `set_config` statement a turn already opens with. The latency difference is within run-to-run noise: an earlier run on the same commit measured the turn at 3.34 ms off and 3.07 ms on.
+- **Turns pay no statement or round trip.** The role and tenant settings ride on the `set_config` statement a turn already opens with. The turn latencies are noise on this VM: a first run of the same scenario measured the turn at 5.54 ms off and 6.44 ms on, and the insert turn at 9.17 ms off and 6.70 ms on.
 - **Queries pay their transaction.** With RLS on, a query runs as `BEGIN`, one `set_config` statement, its reads, and `COMMIT`. That adds about 0.3 ms at p50 here. `pg_stat_statements` counts transaction control once per distinct text, so the statement column shows only the `set_config` statement.
 - **The policy predicate costs nothing measurable here.** Each scoped statement already filters on `tenant_id`.
+- **Feed pages and workflow polls** open the same tenant transaction with RLS on and are unchanged with it off. The scenario doesn't time them; the conformance case proves they run as the tenant role.
 
 ### Content blobs (M4.13, #222)
 
