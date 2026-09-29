@@ -692,7 +692,12 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
           fixture.provider = (attempt) => Effect.sleep("20 millis").pipe(Effect.as(attempt.label))
           const labels = Array.from({ length: 6 }, (_, index) => `hot-${index}`)
 
-          for (const label of labels) yield* perform("hot", "Serial", [label])
+          // One turn's performs share its clock millisecond, so only a
+          // tie-break in perform order keeps them in order; the rest arrive
+          // one turn at a time while those wait.
+          yield* perform("hot", "Serial", labels.slice(0, 3))
+
+          for (const label of labels.slice(3)) yield* perform("hot", "Serial", [label])
 
           yield* perform("cold", "Serial", ["cold-0"])
           yield* eventually(
@@ -1361,12 +1366,11 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* on(survivor, stateOf("orphan"))).cancelled).toMatchObject([
             { outcome: "Unknown", ambiguous: true },
           ])
-          // The relay deletes the report's intent row only after its receipt
-          // commits, so the report can be visible a moment before the row is gone.
+          // The relay deletes the delivered route's row after its receiver commits.
           yield* eventually(
             query(survivor, effectRows).pipe(Effect.map((rows) => rows.length === 0)),
             "20 seconds",
-            "the report's outbox row to be deleted",
+            "the delivered route's row to be deleted",
           )
         }),
       ),
