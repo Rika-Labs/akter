@@ -497,7 +497,11 @@ export class InternalActors extends Context.Service<
 export class Actors extends Context.Service<
   Actors,
   {
-    /** Mints a command id for `Actor.commandId`, so a caller can retry one operation across processes. */
-    readonly mintCommandId: Effect.Effect<string>
+    /**
+     * Mints a command id for `Actor.commandId`, so a caller can retry one
+     * operation across processes. It reads the database clock, so it fails
+     * `ActorUnavailable` while the database is unreachable.
+     */
+    readonly mintCommandId: Effect.Effect<string, ActorError>
   }
 >()("@durable-actors/core/handles/actors") {}

@@ -1086,7 +1086,7 @@ const make = <
     executionId: string,
     execute: (request: Request) => Effect.Effect<Outcome, ActorError>,
     poll: (request: Request) => Effect.Effect<WorkflowStatus | undefined, ActorError>,
-    mint: Effect.Effect<string>,
+    mint: Effect.Effect<string, ActorError>,
   ) =>
     workflowRun({
       executionId,

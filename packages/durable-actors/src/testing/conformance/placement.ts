@@ -726,6 +726,7 @@ export const placementConformance: ReadonlyArray<ConformanceCase> = [
             parent: "o-served",
             local: parseChildId(parcelId)!.local.replace(/^./, (c) => (c === "0" ? "1" : "0")),
           })
+
           const refused = yield* send(
             `/actors/PlacementParcel/${encodeURIComponent(forged)}/Open`,
             "forged",
