@@ -4,9 +4,12 @@ import { SqlClient } from "effect/unstable/sql"
 import {
   AgentId,
   CodingAgent,
+  Delta,
+  Ended,
   Implement,
   Implemented,
   NoActiveTurn,
+  Outcome,
   PauseSandbox,
   Prompted,
   RunPrompt,
@@ -22,6 +25,8 @@ import {
   Verify,
 } from "./contract.ts"
 import { Sandboxes } from "./sandbox.ts"
+
+const decodeOutcome = Schema.decodeUnknownOption(Outcome)
 
 /** An agent with no turn for this long pauses its sandbox. */
 const IDLE_AFTER = "15 minutes"
@@ -64,10 +69,34 @@ export const CodingAgentCommands = CodingAgent.toLayer(
         Effect.gen(function* () {
           const read = yield* CodingAgent.Read
 
-          return read.progress(RunPrompt).pipe(
+          const deltas = read.progress(RunPrompt).pipe(
             Stream.filter((entry) => entry.effect.turnId === turnId),
-            Stream.map((entry) => entry.frame.delta),
+            Stream.map(({ frame }) => Delta.make({ text: frame.delta })),
           )
+
+          // A turn that already ended answers from its row. Otherwise its end is
+          // an event after the cursor this read started from, which follow sees.
+          const row = yield* read.rows(turns).one({ where: { turnId } })
+
+          // "running" is not an outcome, so only an ended turn decodes.
+          const ended = Option.match(
+            Option.flatMap(row, ({ status, reply }) =>
+              Option.map(decodeOutcome(status), (outcome) => Ended.make({ outcome, text: reply })),
+            ),
+            {
+              onSome: (end) => Stream.make(end),
+              onNone: () =>
+                read.follow(TurnEnded, { after: read.cursor }).pipe(
+                  Stream.filter(({ event }) => event.turnId === turnId),
+                  Stream.take(1),
+                  Stream.map(({ event }) =>
+                    Ended.make({ outcome: event.outcome, text: event.text }),
+                  ),
+                ),
+            },
+          )
+
+          return Stream.merge(deltas, ended, { haltStrategy: "right" })
         }),
       ),
 
