@@ -126,7 +126,7 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
             const reply = yield* count(server, token, "malformed", malformed)
             expect(reply.status).toBe(400)
             expect(reply.body).toEqual(
-              actorErrorBody(
+              yield* actorErrorBody(
                 ActorError.make({
                   reason: InvalidInput.make({
                     code: "decode",
