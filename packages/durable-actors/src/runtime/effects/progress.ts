@@ -15,6 +15,7 @@ export interface ProgressMessage {
   readonly ref: ActorRef
   readonly effectId: string
   readonly effect: string
+  /** The attempt number of the effect, from 1. */
   readonly attempt: number
   /** Per attempt, from 1; counts the attempt's accepted `progress` calls. */
   readonly seq: number
@@ -60,6 +61,7 @@ export const ProgressTap = Context.Reference<{
 export interface ProgressSlot {
   /** False once nothing more will be sent, so a caller can skip encoding frames. */
   readonly active: () => boolean
+  /** Replaces the pending frame; ignored once closed. */
   readonly offer: (frame: Uint8Array) => Effect.Effect<void>
   /**
    * Ignores every later offer, then sends the pending frame, borrowing a
@@ -79,7 +81,14 @@ const closedSlot: ProgressSlot = {
  * A runner's progress pool. It holds one slot per running attempt and a
  * runner-wide token bucket; a frame that finds no token stays in its slot,
  * where newer frames replace it, until one is free. A closing slot's last
- * frame borrows a token instead of waiting.
+ * frame borrows a token instead of waiting, so the debt delays later sends and
+ * the runner still averages `perSecond`. The bucket refills at `perSecond` up
+ * to a burst of one second's worth. Closing waits on the sink at most
+ * `PROGRESS_CLOSE_WAIT_MS`; a final frame still sending then finishes on its
+ * own. Closing sends the last frame even if a send was interrupted, and the
+ * closed message follows that attempt's last flush. Only effects that could
+ * have opened a slot are closed, and an attempt that ends without a terminal
+ * settle keeps no flush (`forget`).
  */
 export const progressPool = Effect.fnUntraced(function* (options?: {
   readonly perSecond?: number
@@ -95,7 +104,6 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     refilledAt = now
   })
 
-  // Takes a token if one is free, refilling at `perSecond` up to a burst of one second's worth.
   const tryToken = Effect.map(refill, () => {
     if (tokens < 1) return false
     tokens -= 1
@@ -103,7 +111,6 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     return true
   })
 
-  // Runs `effect` off the caller's fiber, waiting for it only a bounded time.
   const detached = (effect: Effect.Effect<void>) =>
     effect.pipe(
       Effect.ignoreCause,
@@ -113,11 +120,8 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
       ),
     )
 
-  // Each effect's last flush, so its close is sent after that attempt's final frame.
   const flushes = new Map<string, Fiber.Fiber<void>>()
 
-  // An attempt's last frame is sent even when the bucket is empty; the debt
-  // delays later sends, so the runner still averages `perSecond`.
   const borrow = Effect.map(refill, () => {
     tokens -= 1
   })
@@ -142,7 +146,6 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     let seq = 0
     let closed = false
     let pending: { readonly seq: number; readonly frame: Uint8Array } | undefined
-    // The frame the sink is accepting, resent on close if that send is interrupted.
     let inflight: { readonly seq: number; readonly frame: Uint8Array } | undefined
     let sentAt: number | undefined
 
@@ -169,7 +172,6 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
           if (wait > 0) yield* Effect.sleep(wait)
         }
 
-        // A signal left by a frame already sent must not spend a token.
         if (pending === undefined) continue
         yield* token
         const next = pending
@@ -218,7 +220,6 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     } satisfies ProgressSlot
   })
 
-  // Only effects that could have opened a slot are closed.
   const closed = (
     message: ProgressClosed & { readonly effect: string; readonly everyMs: number | undefined },
   ) =>
@@ -233,7 +234,6 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
       )
         return Effect.void
 
-      // A final frame still sending after the bound is left to finish on its own.
       const last =
         flush === undefined
           ? Effect.void
@@ -248,7 +248,6 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
       )
     })
 
-  // An attempt that ends without a terminal settle keeps no flush.
   const forget = (effectId: string) => Effect.sync(() => flushes.delete(effectId))
 
   return { open, closed, forget }

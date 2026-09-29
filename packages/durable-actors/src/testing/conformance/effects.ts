@@ -21,6 +21,7 @@ export interface EffectsFixture {
   escaped: Effect.Effect<void>
 }
 
+/** Creates the state effect cases observe; each case starts from a fresh one. */
 export const effectsFixture = (): EffectsFixture => ({
   calls: new Map(),
   attempts: [],
@@ -40,13 +41,11 @@ class Moderate extends Actor.effect<Moderate>()("Moderate", {
   success: Verdict,
 }) {}
 
-// Its success type is wider than its route's input, which accepts only integers.
 class Measure extends Actor.effect<Measure>()("Measure", {
   input: { value: Schema.Finite },
   success: Schema.Finite,
 }) {}
 
-// No routes: its outcome and any dead letter are for operators only.
 class Notify extends Actor.effect<Notify>()("Notify", { input: { body: Schema.String } }) {}
 
 const Routed = Schema.Struct({
@@ -108,6 +107,7 @@ const AuthorState = Schema.Struct({
   dead: Schema.optional(Schema.Array(Dead)),
 })
 
+/** Handlers for the effect actors; `fixture` supplies the fake provider and the counters cases assert on. */
 export const effectsLayer = (fixture: EffectsFixture) =>
   Layer.mergeAll(
     Author.toLayer(
@@ -228,6 +228,7 @@ const deadLetters = Effect.fnUntraced(function* (actorId: string) {
 const attemptsOf = (fixture: EffectsFixture, id: string) =>
   fixture.attempts.filter((attempt) => attempt.ref.id === id)
 
+/** Effect cases: executors run only after the turn commits, results route to `onSuccess` once under the effect id, and declared failures, defects, and rolled-back commits discard performed effects. */
 export const effectsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "routes an executor's result to onSuccess once with the effect id as its command id",
@@ -308,7 +309,6 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.crashNext("beforeCommit")
           yield* author.Post("retried")
           yield* test.advance(0)
-          // Only the retried turn committed an effect, so the executor ran once.
           expect(attemptsOf(fixture.effects, "rollback").length).toBe(1)
           expect((yield* authorState("rollback")).routed.length).toBe(1)
           expect(yield* test.inspect(author.ref)).toMatchObject({
@@ -326,7 +326,6 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const author = yield* Author.get("twice")
-          // The first attempt succeeds, then dies before its result is recorded.
           yield* test.crashNext("afterExecute")
           yield* author.Post("twice")
           yield* test.advance(0)
@@ -340,7 +339,6 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
             [1, effectId],
             [2, effectId],
           ])
-          // Both attempts reached the provider under one idempotency key.
           expect(fixture.effects.calls.get(effectId)).toBe(2)
           expect((yield* authorState("twice")).routed.map(({ commandId }) => commandId)).toEqual([
             effectId,
@@ -361,7 +359,6 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           yield* author.Post("once")
           const draining = yield* test.advance(0).pipe(Effect.forkChild)
           yield* pause.reached
-          // The route's receiver turn commits and crashes, then the relay dies before deleting it.
           yield* test.crashNext("afterCommit")
           yield* test.crashNext("beforeOutboxDelete")
           yield* pause.release
@@ -388,7 +385,6 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           expect(attemptsOf(fixture.effects, "before-execute")).toEqual([])
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 1 })
           yield* test.advance("1 minute")
-          // The crashed claim counts as an attempt whose outcome is unknown.
           expect(
             attemptsOf(fixture.effects, "before-execute").map(({ attempt }) => attempt),
           ).toEqual([2])
@@ -439,9 +435,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const author = yield* Author.get("ambiguous")
-          // Attempt 1 fails cleanly; attempt 2 reaches the provider and dies before recording.
           fixture.effects.plan = ["fail"]
-          // Only a successful attempt reaches afterExecute, so this crash hits attempt 2.
           yield* test.crashNext("afterExecute")
           yield* author.Post("unknown")
           yield* test.advance(0)
@@ -455,7 +449,6 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           expect(dead).toMatchObject([{ attempts: 2, ambiguous: true }])
           expect(dead[0]?.cause).toContain("without reporting an outcome")
 
-          // An executor defect is also an unknown outcome; with no route it stays for operators.
           fixture.effects.plan = ["die"]
           yield* author.Ping("notify")
           yield* test.advance(0)
@@ -495,13 +488,10 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const author = yield* Author.get("unroutable-retry")
-          // Retries remain, so only a durable record of the final outcome keeps
-          // the next claim from calling the provider again.
           yield* test.crashNext("beforeDeadLetterCommit")
           yield* author.Gauge(1.5)
           yield* test.advance(0)
           expect(yield* deadLetters("unroutable-retry")).toEqual([])
-          // `final_failure` marks the row exhausted after the one attempt made.
           expect(
             yield* (yield* SqlClient.SqlClient)<{ attempts: number; final_failure: boolean }>`
               SELECT attempts, final_failure FROM actor_outbox

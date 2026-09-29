@@ -4,6 +4,7 @@ import { databaseTime } from "../turn/admission.ts"
 import { CleanupHooks } from "../turn/hooks.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"
 
+/** One actor type's retention horizons, in milliseconds on the framework clock, and whether it has workflows to sweep. */
 export interface RetentionPolicy {
   readonly actorType: string
   readonly keepReceiptsMs: number
@@ -29,6 +30,7 @@ export const receiptMarginMs = (horizon: {
   readonly retryWindowMs: number
 }) => Math.max(horizon.keepReceiptsMs - horizon.retryWindowMs, horizon.deliveryMs)
 
+/** Rows deleted by a sweep, by kind. */
 export interface Swept {
   readonly receipts: number
   readonly events: number
@@ -61,6 +63,12 @@ export interface Swept {
  * the most recently accepted one for its workflow nor the start manifest of
  * an open execution.
  *
+ * Sweeps of one actor type take turns on an advisory lock, so two runners, or
+ * a sweep and `ActorTest.cleanup`, never lock overlapping event prefixes in
+ * opposite orders. Each batch starts at the newest age the previous one took,
+ * so it never walks index entries of rows earlier batches deleted and vacuum
+ * has not yet removed.
+ *
  * The sweep yields after each batch, so a turn waiting for PGlite's one
  * connection runs between batches instead of after the whole sweep.
  */
@@ -80,8 +88,6 @@ export const sweep = Effect.fnUntraced(function* (
     const eventCutoff = now - policy.keepEventsMs
     const holdCutoff = eventCutoff - policy.holdEventsMs
 
-    // Sweeps of one actor type take turns, so two runners, or a sweep and
-    // `ActorTest.cleanup`, never lock overlapping event prefixes in opposite orders.
     const batch = <A>(statement: Effect.Effect<A, SqlError.SqlError>) =>
       sql.withTransaction(
         sql`SELECT pg_advisory_xact_lock(hashtext(${`durable-actors/retention/${policy.actorType}`}))`.pipe(
@@ -89,8 +95,6 @@ export const sweep = Effect.fnUntraced(function* (
         ),
       )
 
-    // Each batch starts at the newest age the last one took, so it never walks
-    // the index entries of rows earlier batches deleted and vacuum hasn't removed.
     let from = "0"
 
     for (;;) {

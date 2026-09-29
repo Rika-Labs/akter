@@ -1,19 +1,22 @@
 import { Duration, Effect, Option, Queue, Random, Schema, Stream } from "effect"
-import { ActorError, TransportError, Unauthorized } from "../../errors/actor.ts"
+import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import type { EventClass } from "../../members/event.ts"
-import { decodeFailure, type Failure, transport } from "../transport.ts"
+import { decodeFailure, type Failure, networkFailure, undecodableFailure } from "../transport.ts"
 
 /** One committed event a feed delivered, with the cursor to resume after it. */
 export interface FeedEntry<E> {
   /** Exclusive resume point: pass it as `after` to read the events that follow. */
   readonly cursor: string
+  /** The decoded event. */
   readonly event: E
+  /** The id of the command that committed the event. */
   readonly commandId: string
   /** When the event committed, in milliseconds since the epoch. */
   readonly timestamp: number
 }
 
+/** Options of one event feed iteration. */
 export interface FeedOptions {
   /** Resume after this cursor; omitted, the feed starts at the actor's first retained event. */
   readonly after?: string
@@ -36,16 +39,12 @@ const cursorError: (body: Schema.Json) => Option.Option<Failure> = Schema.decode
   Schema.toCodecJson(Schema.Union([UnknownCursor, RetentionGap])),
 )
 
-const network = () => TransportError.make({ code: "network", retryable: true }).pipe(transport)
-
-const undecodable = () => TransportError.make({ code: "decode", retryable: false }).pipe(transport)
-
-/** A body a feed was refused or ended with, as the failure it names. */
 /** A refusal's body, with its response's headers so a `Retry-After` is kept; an `end` message has none. */
 const failureOf = (text: string, status: number, headers = new Headers()) =>
   decodeFailure(cursorError)({ status, headers, text, sentAt: 0 })
 
-export interface Message {
+/** One SSE message: its `id` and `event` fields when it has them, and its joined `data` lines. */
+interface Message {
   readonly id: string | undefined
   readonly event: string | undefined
   readonly data: string
@@ -88,12 +87,13 @@ const isExpired = (failure: Failure) =>
 const reopens = (failure: Failure, authRetried: boolean) =>
   Schema.is(ActorError)(failure) && (failure.isRetryable || (!authRetried && isExpired(failure)))
 
-export interface FeedSource<E extends EventClass> {
+interface FeedSource<E extends EventClass> {
   /** Fetches the feed after `cursor`, sent as `Last-Event-ID`, with fresh headers each time. */
   readonly open: (
     cursor: string | undefined,
     signal: AbortSignal,
   ) => Effect.Effect<Response, ActorError>
+  /** The event class the feed delivers; its identifier is the tag asked for. */
   readonly event: E
   readonly options: FeedOptions
 }
@@ -104,7 +104,10 @@ export interface FeedSource<E extends EventClass> {
  * whenever the connection drops, the server restarts, or the credential
  * expires and is refreshed. It fails with `RetentionGap` if events after the
  * cursor were pruned, and with `UnknownCursor` for a cursor the actor never
- * issued.
+ * issued. A dropped or refused feed reopens after the server's `retryAfter`,
+ * never sooner, or after a jittered, growing delay. Every event carries its
+ * cursor as `id`; the feed's own `end` carries none, so an event named `end` is
+ * still an event.
  */
 export const feedStream = <E extends EventClass>({
   open,
@@ -120,17 +123,19 @@ export const feedStream = <E extends EventClass>({
       let failures = 0
       let authRetried = false
 
-      // One request: succeeds when the stream ends or goes idle, fails with how it ended.
       const once = Effect.gen(function* () {
         const response = yield* open(last, yield* Effect.abortSignal)
 
         if (response.status !== 200) {
-          const text = yield* Effect.tryPromise({ try: () => response.text(), catch: network })
+          const text = yield* Effect.tryPromise({
+            try: () => response.text(),
+            catch: networkFailure,
+          })
 
           return yield* failureOf(text, response.status, response.headers)
         }
 
-        if (response.body === null) return yield* undecodable()
+        if (response.body === null) return yield* undecodableFailure()
 
         const reader = response.body.getReader()
 
@@ -142,9 +147,10 @@ export const feedStream = <E extends EventClass>({
         let buffer = ""
 
         while (true) {
-          const chunk = yield* Effect.tryPromise({ try: () => reader.read(), catch: network }).pipe(
-            Effect.timeoutOption(IDLE_MS),
-          )
+          const chunk = yield* Effect.tryPromise({
+            try: () => reader.read(),
+            catch: networkFailure,
+          }).pipe(Effect.timeoutOption(IDLE_MS))
 
           if (Option.isNone(chunk) || chunk.value.done) return
 
@@ -153,15 +159,14 @@ export const feedStream = <E extends EventClass>({
           buffer = parsed.rest
 
           for (const message of parsed.messages) {
-            // Every event carries its cursor as `id`; the feed's own `end` carries none, so an event named `end` is still an event.
             if (message.id === undefined) {
               if (message.event === "end") return yield* failureOf(message.data, 0)
 
               continue
             }
 
-            const data = yield* decodeData(message.data).pipe(Effect.mapError(undecodable))
-            const decoded = yield* decodeEvent(data.event).pipe(Effect.mapError(undecodable))
+            const data = yield* decodeData(message.data).pipe(Effect.mapError(undecodableFailure))
+            const decoded = yield* decodeEvent(data.event).pipe(Effect.mapError(undecodableFailure))
             last = message.id
             failures = 0
             authRetried = false
@@ -189,7 +194,6 @@ export const feedStream = <E extends EventClass>({
             hinted = Option.getOrUndefined(ended.value.retryAfter)
         }
 
-        // A dropped or refused feed reopens after `retryAfter`, never sooner, or after a jittered, growing delay.
         const backoff = Math.min(MAX_BACKOFF_MS, 100 * 2 ** failures)
         failures += 1
         const jitter = yield* Random.nextBetween(0.5, 1.5)

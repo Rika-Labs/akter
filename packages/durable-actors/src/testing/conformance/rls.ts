@@ -42,10 +42,8 @@ const Tick = Actor.command("Tick")
 
 const Shipped = Actor.command("Shipped", { input: Schema.String })
 
-// Read outside any turn by a stream handler: the attachment and the events so far.
 const Snapshot = Actor.stream("Snapshot", { output: Schema.String })
 
-// Polled through `pollWorkflow` until it finishes.
 const Settle = Actor.workflow("Settle", { output: Schema.String })
 
 const attachments = Actor.blob("attachments")
@@ -74,8 +72,6 @@ const Ledger = Actor.make("Ledger", {
   policy: { effects: { Ship: { onSuccess: Shipped } } },
 })
 
-// One turn writes state, an event, a keyed timer, and an effect, so the
-// relay, the executor, and the route turn all cross the tenant boundary.
 const ledgerLayer = Layer.mergeAll(
   Ledger.toLayer(
     Effect.succeed({
@@ -244,8 +240,6 @@ const prepared = (
             Effect.sync(() => new PGlite()).pipe(
               Effect.tap((client) => Effect.promise(() => client.waitReady)),
             ),
-            // PGlite runs one query at a time, so this one waits out any a
-            // failed runtime interrupted; closing during one deadlocks.
             (client) =>
               Effect.promise(() => client.query("SELECT 1")).pipe(
                 Effect.andThen(Effect.promise(() => client.close())),
@@ -267,7 +261,6 @@ const prepared = (
       }),
     )
 
-    // Registered before any runtime, so it runs after every runtime closed its connections.
     if (options.grant && Redacted.isRedacted(target))
       yield* Effect.addFinalizer(() =>
         onDatabase(
@@ -295,7 +288,6 @@ const runtimeOn = (target: Target, role: string, replica?: Redacted.Redacted<str
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
 
-    // Fresh, or Cluster's Sharding layer is shared with the suite's runtime through the memo map.
     return yield* Layer.build(
       Layer.fresh(
         live.pipe(
@@ -384,6 +376,7 @@ const decodeEntries = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Struct({ value: Schema.Array(Schema.String) })),
 )
 
+/** Row-level-security cases: every framework and owned table carries the tenant policy, and runners serving two tenants each see only their own rows. */
 export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "row-level security on: three runners serve two tenants' turns, timers, effects, and reads, each seeing only its own",
@@ -416,7 +409,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
           const ids = Array.from({ length: 6 }, (_, index) => `ledger-${index}`)
           const owners = new Set<number | undefined>()
 
-          // Each write goes through a different runner than the next, so most dispatch remotely.
           for (const [index, id] of ids.entries())
             for (const scoped of tenants)
               yield* cluster.on(index % 3)(
@@ -429,7 +421,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
                 }),
               )
 
-          // Any runner's relay and executors deliver the timers and effect routes.
           for (const [index, id] of ids.entries())
             for (const scoped of tenants) {
               const reader = (index + 1) % 3
@@ -477,8 +468,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
 
-          // Every table with a tenant column, so a later migration that
-          // forgets its policy fails here as well as at startup.
           const tenantTables = yield* sql<{ table: string }>`
             SELECT c.relname AS table FROM pg_class c
             WHERE c.relnamespace = current_schema()::regnamespace AND c.relkind = 'r'
@@ -503,7 +492,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const tenant of tenants) yield* populate(tenant)
 
-          // The relay, the executor, and retention span tenants as the connecting role.
           yield* test.advance("2 seconds")
 
           for (const tenant of tenants) {
@@ -540,7 +528,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
           const stored = yield* sql<{ rows: number }>`
             SELECT count(*)::int AS rows FROM actor_generations WHERE tenant_id = ${abroad}`
 
-          // The connecting role is exempt, so the other tenant's rows exist.
           expect(stored).toEqual([{ rows: 2 }])
 
           const probe = yield* rolledBack(
@@ -589,7 +576,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
           expect(probe.inserted).toContain("row-level security")
           expect(probe.moved).toContain("row-level security")
 
-          // Unnamed, a transaction as the role sees no tenant at all.
           const unnamed = yield* rolledBack(
             Effect.gen(function* () {
               yield* sql`SELECT set_config('role', ${role}, true)`
@@ -630,13 +616,11 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
             stream: snapshot,
           }
 
-          // Every read succeeds while the role holds its grants.
           expect(yield* internal.exists(ledger.ref)).toBe(true)
           expect((yield* internal.readFeed(ledger.ref, ["Recorded"], undefined, 10)).length).toBe(1)
           expect(Option.isSome(yield* run.poll)).toBe(true)
           expect(yield* snapshot).toEqual(["first/1"])
 
-          // Only the role loses access, so a failure proves the role ran the statement.
           const revoked = [
             ["turn", "INSERT", "actor_receipts"],
             ["query", "SELECT", "actor_state"],
@@ -701,7 +685,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
               return { seen, counted: counted! }
             })
 
-          // The role is cluster-wide, so the probe rolls back and never outlives it.
           const probe = yield* rolledBack(
             Effect.gen(function* () {
               yield* sql.unsafe(`CREATE ROLE ${inspector} NOLOGIN`)
@@ -727,7 +710,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
             expect(probe.nowhere.seen[view]).toEqual([])
           }
 
-          // Each tenant has one ledger, with its one event, and one notebook.
           expect(probe.atHome.counted).toEqual({ actors: 2, events: 1 })
           expect(probe.atAbroad.counted).toEqual({ actors: 2, events: 1 })
           expect(probe.nowhere.counted).toEqual({ actors: 0, events: 0 })
@@ -764,7 +746,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
 
           const unowned = rejection(yield* runtimeOn(target, role).pipe(Effect.scoped, Effect.exit))
 
-          // The tenant role runs user turns, so it must not be able to alter or drop a view.
           const shared = yield* prepared(environment)
 
           yield* onDatabase(
@@ -780,7 +761,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
             yield* runtimeOn(shared.target, shared.role).pipe(Effect.scoped, Effect.exit),
           )
 
-          // A table's owner bypasses its policies, so the role must not own an owned table.
           const owner = yield* prepared(environment)
 
           yield* onDatabase(
@@ -815,7 +795,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
 
           if (!Redacted.isRedacted(target)) return yield* Effect.die("A replica needs Postgres")
 
-          // The fresh database replicates under its own name.
           const onReplica = new URL(Redacted.value(replica.database))
           onReplica.pathname = new URL(Redacted.value(target)).pathname
 
@@ -836,7 +815,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
               (rows) => rows[0]!.version,
             ).pipe(Effect.orDie)
 
-            // A read with no version, so the replica answers whenever it can.
             const entries = internal
               .query(
                 Request.make({
@@ -867,7 +845,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
                 yield* sql.unsafe(`GRANT SELECT ON actor_state TO ${role}`)
                 yield* ledger.Put("second")
 
-                // The role cannot read state on the replica, so the primary answers.
                 expect(yield* entries).toEqual(["first", "second"])
               }),
             )
@@ -879,7 +856,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
                 yield* pauseReplay(control)
                 yield* ledger.Put("third")
 
-                // The stale replica answers for the tenant; unbound, the policy would hide every row.
                 expect(yield* entries).toEqual(["first", "second"])
               }),
             )

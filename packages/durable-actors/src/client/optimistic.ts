@@ -75,6 +75,8 @@ const own = (reducer: OptimisticReducer | undefined, state: StateValue): StateVa
 /**
  * One actor's state as a client sees it: the committed state it last learned
  * and the reducer inputs still waiting for receipts, applied in call order.
+ * A listener that throws goes to `reportError`, as a DOM event listener's
+ * would, and the rest still run.
  */
 export class Optimistic {
   private committed: Option.Option<StateValue> = Option.none()
@@ -87,10 +89,12 @@ export class Optimistic {
   /** `reducer` is any of the actor's reducers; its state schema copies what goes in and out. */
   constructor(private readonly reducer: OptimisticReducer | undefined) {}
 
+  /** Committed state with pending inputs applied; undefined until committed state is known. */
   get state(): StateValue | undefined {
     return this.view
   }
 
+  /** Copies of the inputs still waiting for receipts, in call order. */
   get pending(): ReadonlyArray<PendingInput> {
     return this.entries.map(({ member, input }) => ({ member, input: structuredClone(input) }))
   }
@@ -100,6 +104,7 @@ export class Optimistic {
     return this.entries.length === 0 && this.listeners.size === 0
   }
 
+  /** Calls `listener` with the view after each change; returns the unsubscribe. */
   subscribe(listener: (state: StateValue | undefined) => void): () => void {
     this.listeners.add(listener)
 
@@ -108,11 +113,13 @@ export class Optimistic {
     }
   }
 
+  /** Replaces the committed state and reapplies pending inputs. */
   reconcile(committed: StateValue): void {
     this.committed = Option.some(own(this.reducer, committed))
     this.publish()
   }
 
+  /** Applies `entry` to the view ahead of its receipt. */
   add(entry: Entry): void {
     this.entries = [...this.entries, entry]
     this.publish()
@@ -144,7 +151,6 @@ export class Optimistic {
       ),
     )
 
-    // A throwing listener goes to `reportError`, as a DOM event listener's would; the rest still run.
     for (const listener of this.listeners)
       try {
         listener(this.view)

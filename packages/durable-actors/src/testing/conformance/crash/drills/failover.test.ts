@@ -1,8 +1,11 @@
-import { BunServices } from "@effect/platform-bun"
-import { Clock, Console, Effect, ManagedRuntime, Option, Stream } from "effect"
+import { BunCrypto, BunServices } from "@effect/platform-bun"
+import { Clock, Console, Effect, Layer, ManagedRuntime, Option, Redacted, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { afterAll, describe, expect, it } from "vitest"
 import { decompress } from "../../../../runtime/storage/codec.ts"
+import { ActorTest } from "../../../actor-test.ts"
+import { failoverSimulationSeeds } from "../../../simulate-cluster.ts"
+import { clusterScript, simulationActors, sums } from "../../simulation.ts"
 import { endpoint, freePort, open, query, synchronousPair, until } from "./failover.ts"
 
 const OPERATIONS = 120
@@ -232,5 +235,58 @@ describe("Postgres primary failover under load with separate runner processes", 
         }).pipe(Effect.scoped, Effect.timeout("5 minutes")),
       ),
     330_000,
+  )
+
+  it(
+    "keeps receipts and outbox delivery exactly once when seeded commands meet a real primary failover on three runners",
+    () =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          for (const seed of yield* failoverSimulationSeeds) {
+            yield* Effect.gen(function* () {
+              const pair = yield* synchronousPair("simulation")
+              const endpointPort = yield* freePort
+              const database = yield* endpoint(endpointPort, pair.primaryPort)
+
+              const cluster = yield* Layer.build(
+                ActorTest.cluster({
+                  database: Redacted.make(
+                    `postgres://project@127.0.0.1:${endpointPort}/simulation`,
+                  ),
+                  runners: 3,
+                  shardLockExpiration: "3 seconds",
+                  actors: simulationActors,
+                  relay: { poll: "100 millis" },
+                }).pipe(Layer.provide(BunCrypto.layer)),
+              )
+
+              const { report, expected, held } = yield* clusterScript({
+                expect,
+                options: {
+                  seed: `f${seed}`,
+                  faults: ["primaryFailover", "crashAfterCommit", "dropReply"],
+                  primary: Effect.gen(function* () {
+                    yield* pair.kill
+                    yield* database.sever
+                    expect(yield* pair.promote).toBe(true)
+                    yield* database.route(pair.standbyPort)
+                  }).pipe(Effect.orDie),
+                },
+                commands: 8,
+              }).pipe(Effect.provideContext(cluster))
+
+              yield* Console.error(
+                `FAILOVER_SIMULATION seed=${seed} ${report.steps
+                  .map(({ fault, landed }) => `${fault}${landed ? "+landed" : ""}`)
+                  .join(" ")}`,
+              )
+
+              expect(report.steps.filter(({ fault }) => fault === "primaryFailover").length).toBe(1)
+              expect(held).toEqual(sums(expected))
+            }).pipe(Effect.scoped)
+          }
+        }).pipe(Effect.timeout("10 minutes")),
+      ),
+    660_000,
   )
 })
