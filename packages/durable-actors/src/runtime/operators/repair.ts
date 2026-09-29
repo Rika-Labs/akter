@@ -5,11 +5,13 @@ import { emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { decodeText, readOnly } from "../inspector/queries.ts"
 import * as Queries from "../inspector/queries.ts"
-import { withTenant } from "../database/tenancy.ts"
+import { TenantScope, withTenant } from "../database/tenancy.ts"
 import { type Placement, routingKey } from "../storage/codec.ts"
 import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { OutboxRuntime, outboxStatements } from "../turn/outbox.ts"
+import { exportActor, type ExportRefused } from "./export.ts"
+import type { Seed } from "./seed.ts"
 import {
   type AuditEntry,
   type AuditRecord,
@@ -73,6 +75,11 @@ export class OperatorRuntime extends Context.Service<
     readonly receipt: (
       target: ActorTarget & { readonly commandId: string },
     ) => Effect.Effect<Option.Option<ReceiptView>>
+    /**
+     * One actor's seed, read in a single read-only snapshot; `None` when the
+     * tenant has no such actor.
+     */
+    readonly exportSeed: (target: ActorTarget) => Effect.Effect<Option.Option<Seed>, ExportRefused>
     readonly retry: (request: {
       readonly target: ActorTarget
       readonly effectId: string
@@ -158,6 +165,7 @@ export const operatorRuntime = (deps: {
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
   readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
   readonly wake: Effect.Effect<void>
+  readonly role: string | undefined
 }) => {
   const placement = (actorType: string) =>
     Effect.gen(function* () {
@@ -185,6 +193,7 @@ export const operatorRuntime = (deps: {
       Effect.catchIf(SqlError.isSqlError, Effect.die),
       Effect.provideService(FrameworkClock, deps.clock),
       Effect.provideService(OutboxRuntime, deps.outbox),
+      Effect.provideService(TenantScope, { role: deps.role }),
       Effect.provideContext(deps.services),
     )
 
@@ -262,6 +271,8 @@ export const operatorRuntime = (deps: {
         Effect.catchTag("OperatorNotFound", () => Effect.succeedNone),
         provided,
       ),
+    exportSeed: (target) =>
+      exportActor(target).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), provided),
     retry: ({ target, effectId, providerChecked, audit }) =>
       Effect.gen(function* () {
         const key = yield* keyOf(target)
