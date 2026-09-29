@@ -28,7 +28,6 @@ const Room = Actor.make("ReactRoom", {
   api: { Post, Count, Presence },
 })
 
-// A fetch that fails the test if anything reaches the network while rendering.
 const refuse = () => Promise.reject(new Error("rendering must not fetch"))
 
 const rooms = Room.client({ baseUrl: "http://server.invalid", fetch: refuse })

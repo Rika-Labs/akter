@@ -1,8 +1,10 @@
 /** The site's sections, in sidebar and `llms.txt` order. */
 export const sections = ["Start", "Guides", "API reference", "Compare"] as const
 
+/** A site section. */
 export type Section = (typeof sections)[number]
 
+/** A published Markdown page and its section. */
 export interface Page {
   /** Path of the Markdown source, relative to `docs/`. */
   readonly source: string

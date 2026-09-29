@@ -14,6 +14,7 @@ interface LoadedKey {
   readonly privateKey: CryptoKey
 }
 
+/** Signs assertions and key-set refresh pushes with the edge's keys. */
 export interface KeyRing {
   /** Signs `claims` with the newest usable key, if there is one. */
   readonly sign: (claims: AssertionClaims) => Effect.Effect<string | undefined>
@@ -48,14 +49,15 @@ const importKey = (key: SigningKey) =>
  * only with a key published for at least `publicationLead`, so every runner
  * has had time to reread its key set. A key the control plane revoked or
  * expired stops signing within one poll.
+ *
+ * A kid names one key for good: runners already trust its published half, so a
+ * different key under the same kid would sign assertions no runner can verify.
  */
 export const keyRing = Effect.fnUntraced(function* (options: EdgeOptions) {
   const sql = yield* SqlClient.SqlClient
   const keys = yield* Effect.forEach(options.signingKeys, importKey)
   const kids = keys.map((key) => key.kid)
 
-  // A kid names one key for good: runners already trust its published half, so a
-  // different key under the same kid would sign assertions no runner can verify.
   for (const key of options.signingKeys) {
     const [row] = yield* sql<{ readonly x: string }>`
       INSERT INTO edge_key (kid, x) VALUES (${key.kid}, ${key.x})

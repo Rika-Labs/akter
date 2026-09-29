@@ -10,7 +10,10 @@ import { join } from "node:path"
 import { Counter } from "./contract.ts"
 import { CounterLive } from "./layer.ts"
 
-// Postgres when DATABASE_URL is set, as in the app; otherwise a throwaway PGlite directory.
+/**
+ * Postgres when DATABASE_URL is set, as in the app; otherwise a throwaway
+ * PGlite directory.
+ */
 const url = Effect.runSync(
   Effect.gen(function* () {
     return yield* Config.option(Config.Redacted("DATABASE_URL"))
@@ -31,6 +34,11 @@ const harness = () =>
   )
 
 /** The same wiring as `src/main.ts`, built fresh to model a process restart. */
+/**
+ * Opening a new PGlite directory runs initdb inside WebAssembly (about 2 s on a
+ * laptop, over 5 s on a busy CI runner) and applies the framework's migrations,
+ * so `beforeAll` opens it once and no test's own timeout pays for it.
+ */
 const app = () =>
   ManagedRuntime.make(
     CounterLive.pipe(
@@ -47,9 +55,6 @@ const app = () =>
 
 const key = crypto.randomUUID()
 
-// Opening a new PGlite directory runs initdb inside WebAssembly (about 2 s on a
-// laptop, over 5 s on a busy CI runner), and a new database then applies the
-// framework's migrations. Do that once here, so no test's own timeout pays for it.
 beforeAll(async () => {
   const runtime = app()
   await runtime.runPromise(Effect.void)

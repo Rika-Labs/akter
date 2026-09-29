@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { Counter } from "./contract.ts"
 
+/** Handlers for `Counter`. */
 export const CounterLive = Counter.toLayer(
   Effect.succeed({
     Increment: Effect.fnUntraced(function* (amount: number) {

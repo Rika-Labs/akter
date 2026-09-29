@@ -3,6 +3,11 @@ import { InvalidWebhook, Subscription, verifyWebhook } from "@durable-actors/bil
 import type { Config } from "../config.ts"
 import { applySubscription } from "./repository.ts"
 
+/**
+ * Verifies a Polar webhook and applies a `subscription.*` event for the
+ * configured product: `active` and `trialing` are the pro plan, any other
+ * status free.
+ */
 export const processWebhook = Effect.fn("Billing.processWebhook")(function* (
   body: string,
   headers: Headers,

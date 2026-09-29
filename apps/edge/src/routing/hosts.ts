@@ -2,6 +2,7 @@ import { Clock, Duration, Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { EdgeOptions } from "../config.ts"
 
+/** A deployment reached by host, and its primary region. */
 export interface Deployment {
   readonly id: string
   readonly primaryRegion: string

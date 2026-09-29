@@ -1,5 +1,6 @@
 import { pgTable, text, timestamp, boolean, index, uniqueIndex } from "drizzle-orm/pg-core"
 
+/** Auth users. */
 export const user = pgTable("user", {
   id: text().primaryKey(),
   name: text().notNull(),
@@ -10,6 +11,7 @@ export const user = pgTable("user", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
+/** Organizations. */
 export const organization = pgTable("organization", {
   id: text().primaryKey(),
   name: text().notNull(),
@@ -19,6 +21,7 @@ export const organization = pgTable("organization", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
+/** Sign-in sessions. */
 export const session = pgTable(
   "session",
   {
@@ -37,6 +40,7 @@ export const session = pgTable(
   (t) => [index("session_user_idx").on(t.userId)],
 )
 
+/** Credentials and provider links of users. */
 export const account = pgTable(
   "account",
   {
@@ -59,6 +63,7 @@ export const account = pgTable(
   (t) => [index("account_user_idx").on(t.userId)],
 )
 
+/** Pending email and password-reset verifications. */
 export const verification = pgTable(
   "verification",
   {
@@ -72,6 +77,7 @@ export const verification = pgTable(
   (t) => [index("verification_identifier_idx").on(t.identifier)],
 )
 
+/** Organization memberships and roles. */
 export const member = pgTable(
   "member",
   {
@@ -91,6 +97,7 @@ export const member = pgTable(
   ],
 )
 
+/** Pending invitations to an organization. */
 export const invitation = pgTable(
   "invitation",
   {
