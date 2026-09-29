@@ -417,12 +417,12 @@ export const migrations = {
       WHERE kind = 'effect' AND NOT running`
   }),
   // An attempt can end an effect before its retries run out, as when its
-  // route rejects the result. `final_attempt` records which attempt did, with
-  // the outcome, so a dead letter that fails to commit is retried without
-  // another provider call.
+  // route rejects the result. `final_failure` records that, with the outcome,
+  // so a dead letter that fails to commit is retried without another
+  // provider call.
   "0016_final_effect_failures": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    yield* sql`ALTER TABLE actor_outbox ADD COLUMN final_attempt integer`
+    yield* sql`ALTER TABLE actor_outbox ADD COLUMN final_failure boolean NOT NULL DEFAULT false`
   }),
   // Subscriptions fan out on the source's shard after commit: one row per
   // (source, subscription, subscriber), routed rows with subscriber_id = ''.
