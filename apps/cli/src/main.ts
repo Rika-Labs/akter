@@ -1,7 +1,18 @@
 #!/usr/bin/env bun
 import { Database } from "@durable-actors/core/runtime"
-import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { BunCrypto, BunFileSystem, BunHttpServer, BunRuntime } from "@effect/platform-bun"
+import {
+  Clock,
+  Config,
+  Console,
+  Effect,
+  type FileSystem,
+  Layer,
+  Option,
+  type PlatformError,
+  Redacted,
+  Schema,
+} from "effect"
 import { FetchHttpClient, type HttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
 
 import {
@@ -18,6 +29,12 @@ import {
   parseList,
 } from "./commands/defects/list.ts"
 import { USAGE as REPAIR_USAGE, parseRepair, repair } from "./commands/dead-letters/repair.ts"
+import {
+  USAGE as EXPORT_USAGE,
+  exportSeed,
+  formatExport,
+  parseExport,
+} from "./commands/export/run.ts"
 import {
   USAGE as INSPECT_USAGE,
   formatInspection,
@@ -182,7 +199,12 @@ const operatorToken = (name: string) =>
     Option.match(token, { onNone: () => undefined, onSome: (value) => Redacted.value(value) }),
   )
 
-type OperatorFailure = UsageError | RunnerUnreachable | OperatorRefused | Schema.SchemaError
+type OperatorFailure =
+  | UsageError
+  | RunnerUnreachable
+  | OperatorRefused
+  | Schema.SchemaError
+  | PlatformError.PlatformError
 
 /**
  * Runs one operator request and prints its answer: formatted, or JSON with
@@ -194,13 +216,13 @@ const operatorCommand = <O extends { readonly tokenEnv: string; readonly json: b
   run: (request: {
     readonly options: O
     readonly token: string | undefined
-  }) => Effect.Effect<Schema.Json, OperatorFailure, HttpClient.HttpClient>,
+  }) => Effect.Effect<Schema.Json, OperatorFailure, HttpClient.HttpClient | FileSystem.FileSystem>,
   format: (answer: Schema.Json) => Effect.Effect<string, OperatorFailure>,
 ) =>
   Effect.gen(function* () {
     const options = yield* parse
     const token = yield* operatorToken(options.tokenEnv)
-    const services = yield* Layer.build(FetchHttpClient.layer)
+    const services = yield* Layer.build(Layer.mergeAll(FetchHttpClient.layer, BunFileSystem.layer))
     const answer = yield* run({ options, token }).pipe(Effect.provideContext(services))
 
     yield* Console.log(options.json ? yield* encodeJson(answer) : yield* format(answer))
@@ -219,6 +241,7 @@ const operatorCommand = <O extends { readonly tokenEnv: string; readonly json: b
         ),
       ConfigError: (error) => fail(`Cannot read the operator token: ${error.message}`),
       SchemaError: (error) => fail(`Unexpected answer: ${error.message}`),
+      PlatformError: (error) => fail(`Cannot write the file: ${error.message}`),
     }),
   )
 
@@ -260,6 +283,14 @@ const program = Effect.gen(function* () {
       formatInspection,
     )
 
+  if (group === "export")
+    return yield* operatorCommand(
+      EXPORT_USAGE,
+      parseExport(process.argv.slice(3)),
+      exportSeed,
+      formatExport,
+    )
+
   if (group === "receipts" && command === "show")
     return yield* operatorCommand(RECEIPTS_USAGE, parseShow(args), showReceipt, encodeJson)
 
@@ -285,6 +316,7 @@ const program = Effect.gen(function* () {
       DEFECTS_USAGE,
       PAYLOADS_USAGE,
       INSPECT_USAGE,
+      EXPORT_USAGE,
       RECEIPTS_USAGE,
       REPAIR_USAGE,
       SKIP_USAGE,

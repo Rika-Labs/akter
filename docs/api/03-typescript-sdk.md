@@ -7,7 +7,7 @@
 
 `@durable-actors/core/client` is the browser-safe Promise client. It is derived from the same actor definitions, runtime schemas, errors, and OpenAPI surface as the Effect API; it is not a second runtime.
 
-`X.client({ baseUrl, headers, timeoutInMs, fetch })` creates a client. Its `get` and `create` accessors follow the actor's `key`. Commands and queries return Promises, event feeds and server streams are `AsyncIterable`, and connections combine an async frame stream with typed `send` and `close` operations. A connection's frames arrive as `{ frame, cursor?, event? }` envelopes; after an ungraceful owner death the client receives `Resync { after }`, resynchronizes, and acknowledges with `ResyncDone` ([ADR 0023](../decisions/0023-connections-parking-and-streams.md); M3.5). A member that opts into executor progress ([ADR 0030](../decisions/0030-executor-progress-frames.md)) also yields `Progress { effect, effectId, attempt, seq, frame }` messages, whose `frame` is decoded by that effect's `progress` schema. Over WebSocket they arrive as the server message `t: "progress"` with `effect`, `effectId`, `attempt`, `seq`, and `frame` and no `cursor` or `event`, never inside a `frame` message; this amends ADR 0027, and clients ignore a `t` they don't know. Progress is best-effort and display-only: it may be coalesced or dropped, a loss followed by a later frame of the same attempt shows as a `seq` gap, and it is never replayed after `Resync` or a reconnect. SSE event feeds carry no progress.
+`X.client({ baseUrl, headers, timeoutInMs, fetch, offline })` creates a client. Its `get` and `create` accessors follow the actor's `key`. Commands and queries return Promises, event feeds and server streams are `AsyncIterable`, and connections combine an async frame stream with typed `send` and `close` operations. A connection's frames arrive as `{ frame, cursor?, event? }` envelopes; after an ungraceful owner death the client receives `Resync { after }`, resynchronizes, and acknowledges with `ResyncDone` ([ADR 0023](../decisions/0023-connections-parking-and-streams.md); M3.5). A member that opts into executor progress ([ADR 0030](../decisions/0030-executor-progress-frames.md)) also yields `Progress { effect, effectId, attempt, seq, frame }` messages, whose `frame` is decoded by that effect's `progress` schema. Over WebSocket they arrive as the server message `t: "progress"` with `effect`, `effectId`, `attempt`, `seq`, and `frame` and no `cursor` or `event`, never inside a `frame` message; this amends ADR 0027, and clients ignore a `t` they don't know. Progress is best-effort and display-only: it may be coalesced or dropped, a loss followed by a later frame of the same attempt shows as a `seq` gap, and it is never replayed after `Resync` or a reconnect. SSE event feeds carry no progress.
 
 Reducers run optimistically: calling one applies its `reduce` to the client's copy of committed state immediately, re-applies pending inputs over each committed state the server pushes, and drops the input when its receipt arrives, rolling it back if the receipt is a failure. Every handle exposes `state` as committed state plus pending inputs. Queries carry the handle's last-seen commit version, so the nearest caught-up replica can answer with read-your-writes consistency. See [ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md).
 
@@ -99,3 +99,27 @@ Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or bra
 - `useActorState(handle)` is the handle's `state`: committed state with pending optimistic reducer inputs applied, through `useSyncExternalStore`.
 
 The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
+
+## Offline queue (M6.5)
+
+`X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Name the database per signed-in user: commands saved under one name are delivered by any client that opens it.
+
+```ts
+const rooms = Room.client({ baseUrl: "/api", offline: Offline.indexedDb(`chat:${user}`) })
+const queue = rooms.offline! // undefined without `offline`
+
+queue.subscribe((pending) => render(pending)) // { commandId, target, member, input, status, failure }
+await rooms.get("lobby").Post({ body: "on a plane" }) // resolves once the server answers
+await queue.discard(commandId) // the only way to resolve an `expired` or `failed` command
+```
+
+- **Calls stay Promises.** A command resolves with its output once the server answers. `timeoutInMs` or `signal` stops the wait with `Timeout` carrying the command id, as always, but the command stays queued and is still delivered. A call aborted before its command was saved queues nothing.
+- **Order.** Commands of one actor are sent one at a time in call order; different actors are independent. A command that expired or was rejected for good does not hold back later ones. Tabs sharing a store deliver what they read, and a duplicate is a retry the receipt answers.
+- **Retries.** Retryable failures wait as online retries do, until the id's retry deadline; the browser's `online` event and `queue.flush()` skip the wait. A rejected credential stops that actor's queue, keeping its commands, until `flush()` or another command for the actor.
+- **Expiry.** A command whose id passed its retry window is never sent and is never given a new id. Its caller is rejected with `CommandExpired`, and it stays in `pending` as `expired` until `discard`. A declared or other final failure stays as `failed` with the server's answer, decoded again after a reload. A repeated id with the same input joins the queued command; with other input it fails `CommandConflict`.
+- **Failures of the store.** A command that could not be saved rejects with `OfflineStoreError` (`operation` `save`) and was never sent. An unreadable store rejects `queue.ready` and every later call with `OfflineStoreError`. A failed removal after a commit is reported through `reportError` and the receipt answers the replay.
+- **Minting.** With a store, a mint that cannot reach the server within three seconds uses the retry window and clock offset this page last learned; a page that never reached the server rejects with the network error.
+- **React.** `useCommand` needs nothing more: `run` mints its id through `client.commandId()`, which works offline, the queued command keeps that id, and `retry` joins it or replays its receipt. Show the queue with `useSyncExternalStore` over `client.offline.subscribe` and `pending`, as the chat example's React page does with `?offline=1`.
+- **Reducers.** An optimistic reducer stays applied while its command waits and follows the command's delivery, not the call's timeout. After a reload `handle.state` shows committed state until the queue's commands land.
+
+Queued commands hold their input as JSON on the device. The queue never stores headers or credentials.
