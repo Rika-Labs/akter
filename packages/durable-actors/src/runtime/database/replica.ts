@@ -13,15 +13,24 @@ import type { SqlClient } from "effect/unstable/sql"
 export const COMMIT_VERSION = "SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version"
 
 /**
- * This runner's streaming replica. A query that carries a version reads here
- * only once the replica has replayed past it, and otherwise reads the primary.
+ * This runner's streaming replica, if it has one. A query that carries a
+ * version reads there only once the replica has replayed past it, and
+ * otherwise reads the primary.
  */
-export class ReadReplica extends Context.Service<ReadReplica, SqlClient.SqlClient>()(
+export const ReadReplica = Context.Reference<SqlClient.SqlClient | undefined>(
   "@durable-actors/core/runtime/database/replica/ReadReplica",
-) {}
+  { defaultValue: () => undefined },
+)
 
-export const replicaLayer = (options: PgClient.PgPoolConfig) =>
-  Layer.effect(ReadReplica, PgClient.make(options)).pipe(Layer.provide(Reactivity.layer))
+export const replicaLayer = (options: PgClient.PgPoolConfig | undefined) =>
+  Layer.effect(
+    ReadReplica,
+    Effect.gen(function* () {
+      if (options === undefined) return undefined
+
+      return yield* PgClient.make(options)
+    }),
+  ).pipe(Layer.provide(Reactivity.layer))
 
 /**
  * Whether the replica has replayed WAL through `version`. A server not in

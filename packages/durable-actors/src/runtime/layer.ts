@@ -276,7 +276,7 @@ export const layer = (options: Options) => {
 
       const database = yield* rowsDatabase
       const primary = Context.get(services, SqlClient.SqlClient)
-      const replica = Option.getOrUndefined(yield* Effect.serviceOption(ReadReplica))
+      const replica = yield* ReadReplica
 
       // The highest commit version a command sent through this runtime has
       // returned; in-process queries wait for it, as a served client's do.
@@ -1497,7 +1497,7 @@ export const Database = {
     return Layer.mergeAll(
       PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
-      replica === undefined ? Layer.empty : replicaLayer({ ...replica, types }),
+      replicaLayer(replica === undefined ? undefined : { ...replica, types }),
     )
   },
   pglite,
