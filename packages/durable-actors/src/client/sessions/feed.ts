@@ -1,8 +1,8 @@
 import { Duration, Effect, Option, Queue, Random, Schema, Stream } from "effect"
-import { ActorError, TransportError, Unauthorized } from "../errors/actor.ts"
-import { RetentionGap, UnknownCursor } from "../errors/events.ts"
-import type { EventClass } from "../members/event.ts"
-import { decodeFailure, type Failure, transport } from "./transport.ts"
+import { ActorError, TransportError, Unauthorized } from "../../errors/actor.ts"
+import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
+import type { EventClass } from "../../members/event.ts"
+import { decodeFailure, type Failure, transport } from "../transport.ts"
 
 /** One committed event a feed delivered, with the cursor to resume after it. */
 export interface FeedEntry<E> {
@@ -45,14 +45,14 @@ const undecodable = () => TransportError.make({ code: "decode", retryable: false
 const failureOf = (text: string, status: number, headers = new Headers()) =>
   decodeFailure(cursorError)({ status, headers, text, sentAt: 0 })
 
-interface Message {
+export interface Message {
   readonly id: string | undefined
   readonly event: string | undefined
   readonly data: string
 }
 
 /** Splits SSE text into complete messages, keeping a partial one for the next chunk. */
-const parse = (buffer: string) => {
+export const parse = (buffer: string) => {
   const blocks = buffer.replace(/\r\n?/g, "\n").split("\n\n")
   const rest = blocks.pop() ?? ""
   const messages: Array<Message> = []

@@ -1,9 +1,9 @@
 import { Effect, Schedule, Schema } from "effect"
 import { afterEach, describe, expect, it } from "vitest"
-import { ActorError, RunnerAtCapacity, TransportError } from "../errors/actor.ts"
-import { Actor } from "../index.ts"
-import { SUBPROTOCOL, type ServerWireMessage } from "../serve/frames.ts"
-import { socketUrl } from "./make.ts"
+import { ActorError, RunnerAtCapacity, TransportError } from "../../errors/actor.ts"
+import { Actor } from "../../index.ts"
+import { SUBPROTOCOL, type ServerWireMessage } from "../../serve/frames.ts"
+import { socketUrl } from "../make.ts"
 
 const Live = Actor.connection("Live", { client: Schema.String, server: Schema.String })
 

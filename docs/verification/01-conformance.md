@@ -513,6 +513,15 @@ Not covered by an executable case yet:
 - The 15-second keepalive comment.
 - The extra statement a cold activation of an actor type with feeds pays. The feed rows load with the connection rows; the `sse` benchmark is not written yet.
 
+### Served streams (M3.3)
+
+The cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) and run on PGlite and Postgres, with `FeedRoom`'s stream members `Count` (numbers, then its own end, or a declared `Refused` after the first element) and `Heard` (`read.follow` over `Said`):
+
+- `serves a stream over SSE: element messages, then end, with a declared failure in its end message` — the exact wire text. `Count(3)` is three `element` messages, then `end` with `null`. `Count(101)` is one element, then `end` with `{"_tag":"Refused","at":1}`.
+- `client subscribes to a stream as an AsyncIterable, and gets its declared failure as its class` — `[1, 2, 3]`, then `Refused` thrown as its class, then a live `Heard` subscription that yields the committed text and one committed while subscribed.
+
+`Actor.stream`'s own semantics (activation residency, `ActivationEnded`, `SlowConsumer`, revocation) are M2.10's cases in `conformance/streams.ts`. Here they only reach the wire as `end` messages, and no served case repeats them. The `sse` benchmark is not written yet.
+
 ### Client feeds and connections, and the browser (M3.5)
 
 The client cases live in [`conformance/transports.ts`](../../packages/durable-actors/src/testing/conformance/transports.ts) and use the same served fixtures as the transport cases, through `FeedRoom.client` and `SocketRoom.client`:
@@ -520,10 +529,11 @@ The client cases live in [`conformance/transports.ts`](../../packages/durable-ac
 - `client reads an event feed as an AsyncIterable and resumes from its cursor after the response drops` — a `fetch` that cuts the first feed response after one event. The client reopens with `Last-Event-ID: 1` and delivers `1:one`, `2:two`, `3:three` with no repeat.
 - `client feed reopens with fresh headers when its credential expires, and loses nothing` — each request's credential expires 1.5 s later. The feed ends with `Unauthorized expired`, and the client reopens with a fresh credential from `headers` and delivers the event committed meanwhile. The feed opens twice.
 - `client feed fails with RetentionGap for a pruned cursor and UnknownCursor for one never issued` — both are thrown as their classes.
+- `client subscribes to a stream as an AsyncIterable, and gets its declared failure as its class` is listed under served streams above.
 - `client opens a connection with typed frames both ways, rejects a declared open failure or a failing headers provider, and ends on close` — `Banned` is rejected as its class, and `cursor` is the baseline. The greeting, a sent frame's echo, and a normal end all arrive in order. A `headers` provider that rejects fails `connect` with its own error, read before the socket opens, instead of leaving it pending.
 - `client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates` (Postgres, two runners) — `Resync { after: "1" }`, `onResync` with `"1"` (which throws, and the resync is still acknowledged), then `ResyncReplayed`, then the next live frame.
 
-[`client/connection.test.ts`](../../packages/durable-actors/src/client/connection.test.ts) runs the client against a stand-in WebSocket server that sends what it likes:
+[`client/sessions/connection.test.ts`](../../packages/durable-actors/src/client/sessions/connection.test.ts) runs the client against a stand-in WebSocket server that sends what it likes:
 
 - `ends with a decode failure on a frame whose event cursor is not a position` — the frames iterator rejects with `TransportError` `decode` instead of hanging.
 - `ignores a message whose t it doesn't know, and ends with a decode failure on one that isn't a message` — an unknown `t` is skipped and the next frame arrives; invalid JSON ends the frames iterator with `TransportError` `decode`, and the client closes its socket, which the server sees.
