@@ -31,4 +31,15 @@ These are design requirements for future runtime operations, not runnable proced
 | Content sweep lag or grant-key rotation | inspect `durable.contents` and sweep lag; rotate grant keys with one grant lifetime of overlap ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md))                                                                                                                                                                                                                                                                                                          | unreferenced content older than grant plus grace is gone; no referenced content is                                                                                                                  |
 | `DataDirLocked` or `DataDirVersion`     | find the process holding the `dataDir` lock, or dump and reload with the previous core version ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md))                                                                                                                                                                                                                                                                                                             | one process opens the `dataDir`; the next start after a SIGKILL recovers the last commit                                                                                                            |
 
+## Drain a runner
+
+A drain does not hand the runner's shards to the others; its process exit does. Follow this sequence for a rolling deploy, a scale-down, or a runner you suspect:
+
+1. Call `RuntimeControl.drain({ deadline })` with a deadline you choose; there is no default. `GET /ready` answers `503 draining` at once, so the load balancer stops routing to the runner.
+2. Wait for the report. On `deadline-expired`, record `interruptedTurns` and `interruptedEffects` from the report or the `Drain deadline expired` warning (see the table above).
+3. Exit the process gracefully right away, by closing its layer. The exit ends the runner's activations and releases its shard locks, so the other runners take its actors at once. Until then the drained runner keeps its shards and refuses their commands, which callers retry.
+4. Confirm that `GET /ready` answers `200` on the remaining runners and that commands for the drained runner's actors succeed.
+
+Do not leave a drained runner running, and do not restart it because it answers `503`. If the process is killed instead of exiting, the other runners take its shards only after its locks expire. A drain of one runner is not the deployment-wide quiescence that [restore](04-backup-restore.md) needs.
+
 Never delete receipts, generation rows, messages, outbox rows, or dead letters as a first-line fix. Escalate with trace ids, command ids, SQL evidence, deployed versions, and the exact recovery test.

@@ -124,27 +124,6 @@ export const proxySocket = Effect.fnUntraced(function* (
 
   if (Result.isFailure(chosen)) return yield* end(chosen.failure)
   const routed = chosen.success
-  let greeting = first.data
-
-  // The runner authenticates the session from `hello` alone: its credential
-  // becomes an assertion bound to the upgrade, carrying this session's id.
-  if (hello !== undefined && principal !== undefined) {
-    const opening = yield* requestDigest({
-      method: "GET",
-      target,
-      idempotencyKey: undefined,
-      body: noBody,
-    })
-
-    const signed = yield* assertion(principal, routed.region, opening)
-
-    if (signed === undefined) return yield* end(unavailable("No signing key is usable"))
-
-    greeting = yield* encodeClient({ ...hello, authorization: `Bearer ${signed}` }).pipe(
-      Effect.orDie,
-    )
-  }
-
   // Like HTTP forwarding, try each ready runner of the region in turn until one accepts.
   const connect = (url: string) =>
     Effect.gen(function* () {
@@ -184,6 +163,28 @@ export const proxySocket = Effect.fnUntraced(function* (
   open.onclose = (event: CloseEvent) => {
     Queue.offerUnsafe(inbox, Inbound.Closed())
     ws.close(sendable(event.code), event.reason)
+  }
+
+  let greeting = first.data
+
+  // The runner authenticates the session from `hello` alone: its credential
+  // becomes an assertion bound to the upgrade, carrying this session's id. It is
+  // signed once a runner has accepted the socket, so failing over first can't age it.
+  if (hello !== undefined && principal !== undefined) {
+    const opening = yield* requestDigest({
+      method: "GET",
+      target,
+      idempotencyKey: undefined,
+      body: noBody,
+    })
+
+    const signed = yield* assertion(principal, routed.region, opening)
+
+    if (signed === undefined) return yield* end(unavailable("No signing key is usable"))
+
+    greeting = yield* encodeClient({ ...hello, authorization: `Bearer ${signed}` }).pipe(
+      Effect.orDie,
+    )
   }
 
   upstream.send(greeting)

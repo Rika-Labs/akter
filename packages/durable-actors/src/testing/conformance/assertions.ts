@@ -15,6 +15,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effe
 import { Actor, Unauthorized, User } from "../../index.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { InternalActors } from "../../handles/actors.ts"
+import type { RuntimeControl } from "../../runtime/drain.ts"
 import type { AssertionClaims, AssertionKey } from "../../serve/assertion/verify.ts"
 import type { AuthProvider } from "../../serve/auth.ts"
 import {
@@ -175,10 +176,14 @@ const sendTo = (client: HttpClient.HttpClient, url: string) => (request: Sent) =
 /** Serves `HttpRoom` with `auth` from a real listening Bun server for the rest of the scope. */
 const serveAsserted = Effect.fnUntraced(function* (
   auth: AuthProvider<HttpClient.HttpClient> | AuthProvider,
-): Effect.fn.Return<AssertedServer, never, InternalActors | Crypto.Crypto | Scope.Scope> {
+): Effect.fn.Return<
+  AssertedServer,
+  never,
+  InternalActors | RuntimeControl | Crypto.Crypto | Scope.Scope
+> {
   const actors = yield* InternalActors
   const random = yield* Crypto.Crypto
-  const context = yield* Effect.context<InternalActors>()
+  const context = yield* Effect.context<InternalActors | RuntimeControl>()
   const fetchLayer = yield* Layer.build(FetchHttpClient.layer)
   const client = Context.get(fetchLayer, HttpClient.HttpClient)
 
@@ -1118,6 +1123,59 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           expect(through).toMatchObject({ status: 200, body: `${tenant}/alice` })
+        }),
+      ),
+  },
+  {
+    name: "fails a WebSocket over to the next runner with an assertion signed after it accepts",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          // A 2-second assertion outlives no attempt on a runner that never answers.
+          const edge = yield* (yield* edgeOf(environment.edge)).start({
+            primaryRegion: REGION,
+            assertionSeconds: 2,
+          })
+
+          const host = yield* serveSockets(environment, {
+            auth: Actor.auth.assertion({
+              issuer: edge.issuer,
+              audience: edge.deployment,
+              region: REGION,
+              keys: edge.keys,
+              refreshEvery: "1 second",
+            }),
+          })
+
+          // Accepts the connection and never answers the upgrade.
+          const hole = Bun.listen({
+            hostname: "127.0.0.1",
+            port: 0,
+            socket: { data: () => undefined },
+          })
+
+          yield* Effect.addFinalizer(() => Effect.sync(() => hole.stop(true)))
+          yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api" })
+          yield* edge.addRunner({ region: REGION, url: `http://127.0.0.1:${hole.port}` })
+
+          const tenant = yield* tenantOf
+          const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          // The edge rotates its runner order per socket, so one of two opens starts at the hole.
+          for (let index = 0; index < 2; index++) {
+            const ws = yield* socket(new URL(edge.url).host, "fail-over")
+
+            yield* ws.send({
+              t: "hello",
+              authorization: `Bearer ${key}`,
+              params: { name: "alice" },
+            })
+
+            expect((yield* ws.next(10_000)).t).toBe("open")
+            yield* ws.close
+          }
         }),
       ),
   },
