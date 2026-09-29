@@ -13,6 +13,7 @@ import {
   type ServedMember,
 } from "../actor/served.ts"
 import { type AuthProvider, Credential } from "./auth.ts"
+import { ASSERTION_HEADER } from "./assertion/binding.ts"
 import { SUBPROTOCOL } from "./frames.ts"
 import { Defect, envelope, type WireTag } from "./wire.ts"
 
@@ -322,12 +323,14 @@ export const schemeName = Credential.$match({
   Bearer: () => "bearer",
   Jwt: () => "bearer",
   Cookie: () => "cookie",
+  Assertion: () => "assertion",
 })
 
 const securityScheme = Credential.$match({
   Bearer: () => ({ type: "http", scheme: "bearer" }),
   Jwt: () => ({ type: "http", scheme: "bearer", bearerFormat: "JWT" }),
   Cookie: ({ name }) => ({ type: "apiKey", in: "cookie", name }),
+  Assertion: () => ({ type: "apiKey", in: "header", name: ASSERTION_HEADER }),
 })
 
 /**
