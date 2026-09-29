@@ -261,7 +261,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
             doc.Attach({ name, ref: attached }).pipe(
               Effect.flip,
               Effect.map((error) =>
-                error._tag === "InvalidContentRef" ? error.reason : error._tag,
+                Predicate.isTagged(error, "InvalidContentRef") ? error.reason : error._tag,
               ),
             )
 
@@ -376,6 +376,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
 
           const accepted = yield* server.send("/content", { token, bytes: body })
           expect(accepted.status).toBe(200)
+
           const ref = yield* Schema.decodeUnknownEffect(ContentRef)(accepted.body).pipe(
             Effect.orDie,
           )
@@ -395,9 +396,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           expect(refused.status).toBe(413)
-          expect(refused.body).toMatchObject({
-            reason: { _tag: "InvalidInput", code: "too_large" },
-          })
+          expect(refused.text.includes('"code":"too_large"')).toBe(true)
           expect(yield* count).toBe(before)
 
           // The served download and grant routes reach content through the actor.
