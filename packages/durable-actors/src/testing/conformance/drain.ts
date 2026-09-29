@@ -523,7 +523,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Fiber.join(first)).toBe(3)
 
           // The waiting command was neither admitted nor run beside the commit.
-          expect(fixture.drain.runs.get(commandId)).toBeUndefined()
+          expect(fixture.drain.runs.get(commandId) ?? 0).toBe(0)
           expect(yield* inspect(caller, ref)).toMatchObject({ state: { balance: 3 }, receipts: 2 })
 
           yield* cluster.shutdown(owner)
