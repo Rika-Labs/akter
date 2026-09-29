@@ -9,6 +9,7 @@ import type { OperatorAuth } from "./auth.ts"
 import { authorizing, type OperatorAction, type OperatorGrant, type Resource } from "./grants.ts"
 import { OperatorRuntime, type RepairError } from "./repair.ts"
 
+/** Options for serving the operator routes. */
 export interface OperatorsOptions<R> {
   /** Authenticates every operator request to a grant; an `Actor.auth` provider is not accepted. */
   readonly auth: OperatorAuth<R>
@@ -143,7 +144,6 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
             )
         })
 
-      // A grant that lacks the capability is refused, and the refusal is recorded.
       const authorize = (
         grant: OperatorGrant,
         action: OperatorAction,
@@ -362,4 +362,5 @@ const target = (resource: {
   readonly actorId: string
 }) => ({ tenant: resource.tenant, actorType: resource.actorType, actorId: resource.actorId })
 
+/** Operator route constructors; `serve` mounts the routes. */
 export const Operators = { serve }

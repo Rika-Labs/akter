@@ -18,6 +18,7 @@ export const FeedFrame = Schema.Struct({
   timestampMs: Schema.Finite,
 })
 
+/** A committed feed event as a holder receives it. */
 export type FeedFrame = typeof FeedFrame.Type
 
 /** What an owner sends a holder over its ordered channel. */
@@ -47,6 +48,7 @@ export const HolderItem = Schema.TaggedUnion({
   ProgressEnd: { effectId: Schema.String },
 })
 
+/** One item of an ordered owner-to-holder message. */
 export type HolderItem = typeof HolderItem.Type
 
 /** What a client of an open connection receives. */
@@ -71,8 +73,10 @@ export const ClientMessage = Schema.TaggedUnion({
   },
 })
 
+/** A message a client of an open connection receives. */
 export type ClientMessage = typeof ClientMessage.Type
 
+/** One ordered owner message to a holder: `seq` numbers it within its generation and `through` is the owner position it covers. */
 export const Deliver = Schema.Struct({
   epoch: Schema.String,
   owner: Schema.String,
@@ -84,13 +88,16 @@ export const Deliver = Schema.Struct({
   items: Schema.Array(HolderItem),
 })
 
+/** A decoded `Deliver`. */
 export type Deliver = typeof Deliver.Type
 
+/** A holder's acknowledgment: `wrongEpoch` when it is not the holder the owner addressed, and the ids of addressed connections it does not hold. */
 export const Delivered = Schema.Struct({
   wrongEpoch: Schema.Boolean,
   unknown: Schema.Array(Schema.String),
 })
 
+/** A decoded `Delivered`. */
 export type Delivered = typeof Delivered.Type
 
 const HOLDER_SEPARATOR = "|"
@@ -102,6 +109,7 @@ const HOLDER_SEPARATOR = "|"
 export const holderGroup = (address: { readonly host: string; readonly port: number }) =>
   `h${BigInt.asUintN(64, Bun.hash.xxHash3(`${address.host}:${address.port}`)).toString(36)}`
 
+/** The entity id addressing one holder incarnation, from its runner identity and epoch. */
 export const holderEntityId = (address: { readonly holder: string; readonly epoch: string }) =>
   `${address.holder}${HOLDER_SEPARATOR}${address.epoch}`
 
@@ -114,6 +122,7 @@ export const HolderEntity = Entity.make("durable-actors/Holder", [
   (entityId: EntityId.EntityId) => entityId.split(HOLDER_SEPARATOR)[0]!,
 )
 
+/** The fields that locate one connection: its actor, id, holder, and holder epoch. */
 export const ConnectionAddress = {
   ref: ActorRef,
   connectionId: Schema.String,
@@ -135,16 +144,19 @@ const OwnerIdentity = {
   ownerEpoch: Schema.String,
 }
 
+/** The owner's answer to an open: the baseline it fixed, or the handler's declared failure. */
 export const Opened = Schema.TaggedUnion({
   Opened: { ...OwnerIdentity, baseline: Schema.String, recovered: Schema.optional(Schema.Boolean) },
   Failed: { value: Schema.String },
 })
 
+/** The owner's answer to an acknowledgment: accepted, or the session ended. */
 export const Acked = Schema.TaggedUnion({
   Acked: OwnerIdentity,
   Closed: { ended: SessionEnded },
 })
 
+/** The owner's answer to a finished resync replay: accepted, or the session ended. */
 export const Replayed = Schema.TaggedUnion({
   Replayed: OwnerIdentity,
   Closed: { ended: SessionEnded },
@@ -159,6 +171,7 @@ export const StreamItem = Schema.TaggedUnion({
   Done: {},
 })
 
+/** A decoded `StreamItem`. */
 export type StreamItem = typeof StreamItem.Type
 
 /** A stream handler's declared failure, encoded. */
