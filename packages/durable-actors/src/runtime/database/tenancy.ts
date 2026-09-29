@@ -14,7 +14,9 @@ export const TenantScope = Context.Reference<{
 
 /**
  * The writer role a runtime takes for turns of actor types that own an
- * enforced adopted table, and the types that do. `enforced` fills as each
+ * enforced adopted table, and the types that do. The turn binds the role and
+ * its tenant together, as row-level security does, because the framework
+ * tables' `durable_tenant` policies bind every role that does not bypass them. `enforced` fills as each
  * type registers, before any turn runs.
  */
 export interface AdoptionScope {
@@ -37,29 +39,6 @@ export const tenantSettings = ({
   readonly role: string
   readonly tenant: string
 }) => sql`set_config('role', ${role}, true), set_config('durable.tenant', ${tenant}, true)`
-
-/**
- * The role settings a turn's first statement adds: the tenant role with
- * row-level security, else the adoption writer role when the actor type owns
- * an enforced adopted table, else none.
- */
-export const turnRoleSettings = ({
-  sql,
-  role,
-  writer,
-  tenant,
-}: {
-  readonly sql: SqlClient.SqlClient
-  readonly role: string | undefined
-  readonly writer: string | undefined
-  readonly tenant: string
-}) => {
-  if (role !== undefined) return sql`, ${tenantSettings({ sql, role, tenant })}`
-
-  if (writer !== undefined) return sql`, set_config('role', ${writer}, true)`
-
-  return sql.literal("")
-}
 
 /**
  * Runs `effect` in a transaction bound to `tenant` as `role`, or unchanged

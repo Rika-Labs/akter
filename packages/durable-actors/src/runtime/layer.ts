@@ -1797,9 +1797,6 @@ export const layer = (options: Options) => {
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
 
-      if (options.rowLevelSecurity !== undefined)
-        yield* checkRowLevelSecurity(options.rowLevelSecurity.role)
-
       if (
         options.rowLevelSecurity !== undefined &&
         options.adoption !== undefined &&
@@ -1810,6 +1807,9 @@ export const layer = (options: Options) => {
             `rowLevelSecurity.role ${options.rowLevelSecurity.role} and adoption.role ${options.adoption.role} must name the same role: a turn takes one role`,
           ),
         )
+
+      if (options.rowLevelSecurity !== undefined)
+        yield* checkRowLevelSecurity(options.rowLevelSecurity.role)
 
       yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${retryWindowMs}) ON CONFLICT DO NOTHING`
 

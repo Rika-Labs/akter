@@ -327,7 +327,7 @@ export const enforceAdoption = Effect.fnUntraced(function* (
         const recorded = yield* encodeRevoked(revoked).pipe(Effect.orDie)
 
         yield* sql`UPDATE actor_adoptions SET mode = 'enforce', writer_role = ${options.writerRole},
-            allowed_roles = ${allowedRoles}::text[], revoked = ${recorded}::jsonb,
+            allowed_roles = coalesce(string_to_array(nullif(${allowedRoles.join(",")}, ''), ','), '{}'), revoked = ${recorded}::jsonb,
             changed_at_ms = floor(extract(epoch FROM clock_timestamp()) * 1000), changed_by = session_user
           WHERE table_schema = ${target.schema} AND table_name = ${target.table}`
 

@@ -23,7 +23,7 @@ import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
-import { turnRoleSettings, TenantScope } from "../database/tenancy.ts"
+import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
@@ -435,11 +435,10 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
   const scope = yield* TenantScope
-  const { role } = scope
   const { ref } = run.first[0]!.request
   const { tenant, actor, id } = ref
-
-  const writer = scope.adoption?.enforced.has(actor) === true ? scope.adoption.role : undefined
+  const role =
+    scope.role ?? (scope.adoption?.enforced.has(actor) === true ? scope.adoption.role : undefined)
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
@@ -471,7 +470,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
       set_config('statement_timeout', ${`${policy.executionMs}ms`}, true),
       set_config('durable.turn', 'on', true)
-      ${turnRoleSettings({ sql, role, writer, tenant })}`
+      ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
     const readsState = cold || view.state === undefined
     let admissions: ReadonlyArray<Admission> = []
