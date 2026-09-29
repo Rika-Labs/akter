@@ -453,56 +453,8 @@ const makeFixture = (): ConformanceFixture => ({
   revoked: new Set(),
 })
 
-/**
- * The shared durable-turn conformance cases. Cases flagged
- * `requiresIndependentConnections` need real Postgres: a second database
- * connection to read committed state while a turn holds its transaction open
- * or to take a competing row lock, or a database outside the JavaScript heap
- * they measure. They never run on single-connection backends such as PGlite.
- */
-export const conformance: ReadonlyArray<ConformanceCase> = [
-  ...foundationConformance,
-  ...admissionConformance,
-  ...httpConformance,
-  ...assertionsConformance,
-  ...edgeConformance,
-  ...clientConformance,
-  ...capacityConformance,
-  ...heapConformance,
-  ...eventsConformance,
-  ...reducerConformance,
-  ...outboxConformance,
-  ...tablesConformance,
-  ...effectsConformance,
-  ...progressConformance,
-  ...multiRunnerConformance,
-  ...drainConformance,
-  ...pipelineConformance,
-  ...batchesConformance,
-  ...relayConformance,
-  ...relayClusterConformance,
-  ...effectControlConformance,
-  ...effectControlClusterConformance,
-  ...singletonConformance,
-  ...cronConformance,
-  ...cronClusterConformance,
-  ...blobsConformance,
-  ...inspectionViewsConformance,
-  ...inspectorConformance,
-  ...rlsConformance,
-  ...retentionConformance,
-  ...restoreConformance,
-  ...workflowsConformance,
-  ...connectionsConformance,
-  ...streamsConformance,
-  ...progressDeliveryConformance,
-  ...transportsConformance,
-  ...workflowVersionsConformance,
-  ...payloadMigrationsConformance,
-  ...subscriptionsConformance,
-  ...subscriptionsRetentionConformance,
-  ...subscriptionsClusterConformance,
-  ...contentConformance,
+/** Cases written against the Counter actor defined in this file. */
+const counterConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1487,13 +1439,75 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
         }).pipe(Effect.scoped),
       ),
   },
-  ...propertiesConformance,
-  ...mintConformance,
-  ...readYourWritesConformance,
-  ...observabilityConformance,
-  ...operatorConformance,
-  ...placementConformance,
 ]
+
+/**
+ * Every conformance case, grouped by the file that owns it. `describeConformance`
+ * runs a subset through `cases`, so a group can run in its own Vitest file and
+ * worker; `conformance` is their union and the order within a group is kept.
+ */
+export const conformanceGroups = {
+  foundation: foundationConformance,
+  admission: admissionConformance,
+  http: httpConformance,
+  assertions: assertionsConformance,
+  edge: edgeConformance,
+  client: clientConformance,
+  capacity: capacityConformance,
+  heap: heapConformance,
+  events: eventsConformance,
+  reducer: reducerConformance,
+  outbox: outboxConformance,
+  tables: tablesConformance,
+  effects: effectsConformance,
+  progress: progressConformance,
+  multiRunner: multiRunnerConformance,
+  drain: drainConformance,
+  pipeline: pipelineConformance,
+  batches: batchesConformance,
+  relay: relayConformance,
+  relayCluster: relayClusterConformance,
+  effectControl: effectControlConformance,
+  effectControlCluster: effectControlClusterConformance,
+  singleton: singletonConformance,
+  cron: cronConformance,
+  cronCluster: cronClusterConformance,
+  blobs: blobsConformance,
+  inspectionViews: inspectionViewsConformance,
+  inspector: inspectorConformance,
+  rls: rlsConformance,
+  retention: retentionConformance,
+  restore: restoreConformance,
+  workflows: workflowsConformance,
+  connections: connectionsConformance,
+  streams: streamsConformance,
+  progressDelivery: progressDeliveryConformance,
+  transports: transportsConformance,
+  workflowVersions: workflowVersionsConformance,
+  payloadMigrations: payloadMigrationsConformance,
+  subscriptions: subscriptionsConformance,
+  subscriptionsRetention: subscriptionsRetentionConformance,
+  subscriptionsCluster: subscriptionsClusterConformance,
+  content: contentConformance,
+  counter: counterConformance,
+  properties: propertiesConformance,
+  mint: mintConformance,
+  readYourWrites: readYourWritesConformance,
+  observability: observabilityConformance,
+  operator: operatorConformance,
+  placement: placementConformance,
+} satisfies Record<string, ReadonlyArray<ConformanceCase>>
+
+export type ConformanceGroup = keyof typeof conformanceGroups
+
+/**
+ * The shared durable-turn conformance cases. Cases flagged
+ * `requiresIndependentConnections` need real Postgres: a second database
+ * connection to read committed state while a turn holds its transaction open
+ * or to take a competing row lock, or a database outside the JavaScript heap
+ * they measure. They never run on single-connection backends such as PGlite.
+ */
+export const conformance: ReadonlyArray<ConformanceCase> = Object.values(conformanceGroups).flat()
 
 interface ConformanceStore {
   readonly database: ConformanceDatabase
