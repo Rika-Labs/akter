@@ -10,15 +10,6 @@ import { bearerToken } from "../../serve/auth.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceEnvironment } from "../conformance.ts"
 
-/** One capability of `action` over `scope`. */
-export const capability = (
-  action: Capability["action"],
-  scope: Omit<Capability, "action">,
-): Capability => ({
-  action,
-  ...scope,
-})
-
 /** An operator answer: its HTTP status and decoded JSON body. */
 export interface Answer {
   readonly status: number
@@ -182,6 +173,6 @@ const requestHeaders = (token: string | undefined, body: string | undefined) => 
   return headers
 }
 
-export const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
 
-export const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))

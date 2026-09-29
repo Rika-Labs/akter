@@ -4,13 +4,7 @@ import { Actor, Actors } from "../../index.ts"
 import type { Capability } from "../../runtime/operators/grants.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
-import {
-  type Answer,
-  capability,
-  encodeJson,
-  type Harness,
-  operatorHarness,
-} from "./operator-harness.ts"
+import { type Answer, type Harness, operatorHarness } from "./operator-harness.ts"
 
 class Declined extends Schema.TaggedError<Declined>()("OpDeclined", { reason: Schema.String }) {}
 
@@ -88,6 +82,17 @@ const live = Layer.mergeAll(
     }),
   ),
 )
+
+/** One capability of `action` over `scope`. */
+const capability = (
+  action: Capability["action"],
+  scope: Omit<Capability, "action">,
+): Capability => ({
+  action,
+  ...scope,
+})
+
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
 
 const withOperators = <A, E>(
   environment: ConformanceEnvironment,

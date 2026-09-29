@@ -16,7 +16,7 @@ import { Seed } from "../../runtime/operators/seed.ts"
 import type { Capability } from "../../runtime/operators/grants.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
-import { capability, encodeJson, type Harness, operatorHarness } from "./operator-harness.ts"
+import { type Harness, operatorHarness } from "./operator-harness.ts"
 
 const LedgerV0 = { total: Schema.Int }
 
@@ -121,11 +121,12 @@ const replayRuntime = (environment: ConformanceEnvironment, as: Caller) =>
   })
 
 /** A file system holding these seed files, each given as the value its JSON is written from. */
-const seedFiles = Effect.fnUntraced(function* (files: Readonly<Record<string, unknown>>) {
+const seedFiles = Effect.fnUntraced(function* (
+  files: ReadonlyArray<readonly [path: string, contents: unknown]>,
+) {
   const texts = new Map<string, string>()
 
-  for (const [path, value] of Object.entries(files))
-    texts.set(path, yield* encodeJson(value).pipe(Effect.orDie))
+  for (const [path, value] of files) texts.set(path, yield* encodeJson(value).pipe(Effect.orDie))
 
   return FileSystem.makeNoop({ readFileString: (path) => Effect.succeed(texts.get(path) ?? "") })
 })
@@ -135,7 +136,11 @@ const paths = (tenant: string, id = "l1") => ({
   export: `/operator/actors/ExpLedger/${id}/export?tenant=${tenant}`,
 })
 
-const exporter = { "export-token": [capability("export", { tenant: "*", actorType: "ExpLedger" })] }
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
+
+const exporter = {
+  "export-token": [{ action: "export", tenant: "*", actorType: "ExpLedger" }],
+} satisfies Record<string, ReadonlyArray<Capability>>
 
 /** Deposits into `l1` from an old-shape state, so it holds state at version 1, a timer, and an effect. */
 const fundedLedger = Effect.gen(function* () {
@@ -250,13 +255,13 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
         environment,
         {
           "look-token": [
-            capability("inspect", { tenant: "*" }),
-            capability("receipts.read", { tenant: "*" }),
+            { action: "inspect", tenant: "*" },
+            { action: "receipts.read", tenant: "*" },
           ],
           "narrow-token": [
-            capability("export", { tenant: "*", actorType: "ExpLedger", actorId: "l2" }),
-            capability("export", { tenant: "another-tenant", actorType: "ExpLedger" }),
-            capability("export", { tenant: "*", actorType: "ExpOther" }),
+            { action: "export", tenant: "*", actorType: "ExpLedger", actorId: "l2" },
+            { action: "export", tenant: "another-tenant", actorType: "ExpLedger" },
+            { action: "export", tenant: "*", actorType: "ExpOther" },
           ],
         },
         ({ tenant, send, audit }) =>
@@ -290,6 +295,29 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "answers no seed when the audit row cannot be written",
+    run: ({ expect, environment }) =>
+      withOperators(environment, exporter, ({ tenant, send, audit }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* fundedLedger
+
+          yield* sql`CREATE FUNCTION exp_audit_refuse() RETURNS trigger LANGUAGE plpgsql AS $$
+              BEGIN RAISE EXCEPTION 'audit unavailable'; END $$`.pipe(Effect.orDie)
+          yield* sql`CREATE TRIGGER exp_audit_refuse BEFORE INSERT ON actor_operator_audit
+              FOR EACH ROW EXECUTE FUNCTION exp_audit_refuse()`.pipe(Effect.orDie)
+
+          const failed = yield* send("GET", paths(tenant).export, "export-token")
+
+          expect(failed.status).toBe(500)
+          expect((yield* encodeJson(failed.body).pipe(Effect.orDie)).includes("balance")).toBe(
+            false,
+          )
+          expect(yield* audit).toEqual([])
+        }),
+      ),
+  },
+  {
     name: "answers not found for an actor of another tenant, however broad the grant",
     run: ({ expect, environment }) =>
       withOperators(environment, exporter, ({ send }) =>
@@ -313,7 +341,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           yield* fundedLedger
 
-          yield* sql`UPDATE actor_state SET value = ${Buffer.from("secret-not-zstd")} WHERE key = 'balance'`
+          yield* sql`UPDATE actor_state SET value = ${new TextEncoder().encode("secret-not-zstd")} WHERE key = 'balance'`
 
           const answer = yield* send("GET", paths(tenant).export, "export-token")
 
@@ -353,7 +381,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
           yield* fundedLedger
 
           const exported = yield* send("GET", paths(tenant).export, "export-token")
-          const files = yield* seedFiles({ "l1.seed": exported.body })
+          const files = yield* seedFiles([["l1.seed", exported.body]])
           const replay = yield* replayRuntime(environment, User.make({ subject: "bob" }))
 
           yield* Effect.gen(function* () {
@@ -405,16 +433,19 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const replay = yield* replayRuntime(environment, User.make({ subject: "bob" }))
 
-          const files = yield* seedFiles({
-            "wrong-format.seed": { ...literalSeed, format: 2 },
-            "wrong-type.seed": { ...literalSeed, actor: { type: "ExpOther", id: "l1" } },
-            "unregistered.seed": {
-              ...literalSeed,
-              effects: [{ effect: "ExpMissing", payload: null, payloadVersion: 0, dueInMs: 0 }],
-            },
-            "literal.seed": literalSeed,
-            "changed.seed": { ...literalSeed, state: { balance: 99, memo: "new" } },
-          })
+          const files = yield* seedFiles([
+            ["wrong-format.seed", { ...literalSeed, format: 2 }],
+            ["wrong-type.seed", { ...literalSeed, actor: { type: "ExpOther", id: "l1" } }],
+            [
+              "unregistered.seed",
+              {
+                ...literalSeed,
+                effects: [{ effect: "ExpMissing", payload: null, payloadVersion: 0, dueInMs: 0 }],
+              },
+            ],
+            ["literal.seed", literalSeed],
+            ["changed.seed", { ...literalSeed, state: { balance: 99, memo: "new" } }],
+          ])
 
           yield* Effect.gen(function* () {
             const test = yield* ActorTest
@@ -457,9 +488,9 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
             dueInMs: 0,
           }
 
-          const files = yield* seedFiles({
-            "clash.seed": { ...literalSeed, intents: [intent, intent] },
-          })
+          const files = yield* seedFiles([
+            ["clash.seed", { ...literalSeed, intents: [intent, intent] }],
+          ])
 
           yield* Effect.gen(function* () {
             const test = yield* ActorTest
