@@ -1,4 +1,4 @@
-import { DateTime, Effect, Layer, Option, Schedule, Schema } from "effect"
+import { Cause, DateTime, Effect, Exit, Layer, Option, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, User } from "../../index.ts"
 import { InternalActors } from "../../handles/actors.ts"
@@ -39,7 +39,7 @@ interface Loop {
   closed: boolean
   attempts: number
   /** Why each refused tick failed, so a failure names its cause. */
-  readonly refused: Array<string>
+  readonly refused: Array<unknown>
 }
 
 /** Every loop each cluster's singleton started, keyed by the cluster's tenant. */
@@ -49,6 +49,8 @@ const loops = new Map<string, Array<Loop>>()
 const peaks = new Map<string, number>()
 
 const peakOf = (tenant: string) => peaks.get(tenant) ?? 0
+
+const startedLoops = () => [...loops.values()].reduce((total, started) => total + started.length, 0)
 
 const liveOf = (tenant: string) => loopsOf(tenant).filter(({ live }) => live)
 
@@ -89,7 +91,7 @@ const BeaconLive = Layer.mergeAll(
           yield* beacon.Tick(loop.id).pipe(
             Effect.catch((error) =>
               Effect.sync(() => {
-                loop.refused.push(String(error))
+                loop.refused.push(error.reason)
               }),
             ),
           )
@@ -139,6 +141,18 @@ const BeaconLive = Layer.mergeAll(
 
 const EXPIRATION_SECONDS = 3
 
+const singletonCluster = (
+  database: Effect.Success<ConformanceEnvironment["freshDatabase"]>,
+  runners: number,
+) =>
+  ActorTest.cluster({
+    database,
+    runners,
+    shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
+    actors: BeaconLive,
+    as: User.make({ subject: "alice" }),
+  })
+
 /** Builds a fresh database and a cluster of `runners` serving the singleton. */
 const withSingletonCluster = <A, E>(
   environment: ConformanceEnvironment,
@@ -148,16 +162,7 @@ const withSingletonCluster = <A, E>(
   environment.run(
     Effect.gen(function* () {
       const database = yield* environment.freshDatabase
-
-      const context = yield* Layer.build(
-        ActorTest.cluster({
-          database,
-          runners,
-          shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
-          actors: BeaconLive,
-          as: User.make({ subject: "alice" }),
-        }),
-      )
+      const context = yield* Layer.build(singletonCluster(database, runners))
 
       return yield* body.pipe(Effect.provideContext(context))
     }),
@@ -321,6 +326,45 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           expect(inspection.receipts).toBe(inspection.events)
           expect(inspection.receipts >= log.length).toBe(true)
           expect((yield* cluster.owner(ref)) === undefined).toBe(false)
+        }),
+      ),
+  },
+  {
+    name: "registers a singleton's type before its entity can activate",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          // A subscriber type that routes from Beacon and is never registered
+          // holds the source's registration back for the subscribers' wait.
+          yield* Effect.gen(function* () {
+            const context = yield* Layer.build(singletonCluster(database, 1))
+
+            yield* on(0)(
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                yield* sql`INSERT INTO actor_routed_subscriptions (source_type, subscriber_type, subscription)
+                  VALUES ('Beacon', 'Absent', 'Watch')`.pipe(Effect.orDie)
+              }),
+            ).pipe(Effect.provideContext(context))
+          }).pipe(Effect.scoped)
+          const before = startedLoops()
+
+          const exit = yield* Layer.build(singletonCluster(database, 1)).pipe(
+            Effect.scoped,
+            Effect.exit,
+          )
+
+          expect(
+            Exit.isFailure(exit) &&
+              Cause.pretty(exit.cause).includes(
+                "Actor Beacon is registered without the subscriber types that route from it",
+              ),
+          ).toBe(true)
+          expect(startedLoops()).toBe(before)
         }),
       ),
   },

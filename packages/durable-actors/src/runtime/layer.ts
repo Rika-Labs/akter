@@ -1160,14 +1160,6 @@ export const layer = (options: Options) => {
             if (declared.writes) writerDeclarations.push(declared)
           yield* refreshPayloadWriters.pipe(Effect.orDie)
 
-          const { isResident, owner } = yield* registerActor(
-            registration,
-            transport,
-            options.authorize,
-            gate,
-            writable,
-          ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
-
           yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
           yield* requireRoutedSubscribers(registration.name).pipe(
             Effect.provideContext(services),
@@ -1182,9 +1174,9 @@ export const layer = (options: Options) => {
                 .widen(registration.name, declared)
                 .pipe(Effect.provideContext(services), Effect.orDie)
 
+          // Registered before the entity starts serving: a singleton's first
+          // activation may call itself at once, and must find its type.
           registrations.set(registration.name, registration)
-          residency.set(registration.name, isResident)
-          owners.set(registration.name, owner)
 
           if (registration.connections.size > 0 || registration.feeds.size > 0)
             heldTypes.set(registration.name, heldType(registration))
@@ -1200,6 +1192,17 @@ export const layer = (options: Options) => {
               sweepsWorkflows.delete(registration.name)
             }),
           )
+
+          const { isResident, owner } = yield* registerActor(
+            registration,
+            transport,
+            options.authorize,
+            gate,
+            writable,
+          ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
+
+          residency.set(registration.name, isResident)
+          owners.set(registration.name, owner)
         }),
         registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
           if (queryRegistrations.has(registration.name))
