@@ -175,7 +175,7 @@ const literalSeed = {
   state: { balance: 5, memo: "literal" },
   intents: [],
   effects: [],
-  omitted: { receipts: 0, events: 0, workflows: 0, deadLetters: 0 },
+  omitted: { receipts: 0, events: 0, workflows: 0, deadLetters: 0, tableRows: 0, blobs: 0 },
 }
 
 const died = (exit: Exit.Exit<unknown, unknown>, message: string) =>
@@ -208,7 +208,14 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
                 key: "announce",
               },
             ],
-            omitted: { receipts: 1, events: 0, workflows: 0, deadLetters: 0 },
+            omitted: {
+              receipts: 1,
+              events: 0,
+              workflows: 0,
+              deadLetters: 0,
+              tableRows: 0,
+              blobs: 0,
+            },
           })
 
           const [intent] = seed.intents

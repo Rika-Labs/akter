@@ -5,7 +5,7 @@ import { emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { decodeText, readOnly } from "../inspector/queries.ts"
 import * as Queries from "../inspector/queries.ts"
-import { withTenant } from "../database/tenancy.ts"
+import { TenantScope, withTenant } from "../database/tenancy.ts"
 import { type Placement, routingKey } from "../storage/codec.ts"
 import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
@@ -141,6 +141,7 @@ export const operatorRuntime = (deps: {
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
   readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
   readonly wake: Effect.Effect<void>
+  readonly role: string | undefined
 }) => {
   const placement = (actorType: string) =>
     Effect.gen(function* () {
@@ -168,6 +169,7 @@ export const operatorRuntime = (deps: {
       Effect.catchIf(SqlError.isSqlError, Effect.die),
       Effect.provideService(FrameworkClock, deps.clock),
       Effect.provideService(OutboxRuntime, deps.outbox),
+      Effect.provideService(TenantScope, { role: deps.role }),
       Effect.provideContext(deps.services),
     )
 
@@ -246,10 +248,7 @@ export const operatorRuntime = (deps: {
         provided,
       ),
     exportSeed: (target) =>
-      Queries.readOnly(target.tenant)(exportActor(target)).pipe(
-        Effect.catchIf(SqlError.isSqlError, Effect.die),
-        provided,
-      ),
+      exportActor(target).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), provided),
     retry: ({ target, effectId, providerChecked, audit }) =>
       Effect.gen(function* () {
         const key = yield* keyOf(target)

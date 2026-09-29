@@ -19,6 +19,7 @@ import { Actor, Actors, Intent, User } from "../../index.ts"
 import { InternalActors, Outcome, Request } from "../../handles/actors.ts"
 import { migrate } from "../../runtime/database/migrations.ts"
 import { Database } from "../../runtime/layer.ts"
+import { OperatorRuntime } from "../../runtime/operators/repair.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type {
@@ -318,7 +319,13 @@ const withRowLevelSecurity = <A, E>(
   }) => Effect.Effect<
     A,
     E,
-    Actors | InternalActors | ActorTest | SqlClient.SqlClient | Crypto.Crypto | Scope.Scope
+    | Actors
+    | InternalActors
+    | ActorTest
+    | OperatorRuntime
+    | SqlClient.SqlClient
+    | Crypto.Crypto
+    | Scope.Scope
   >,
 ) =>
   environment.run(
@@ -595,6 +602,43 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(unnamed).toEqual([{ rows: 0 }])
+        }),
+      ),
+  },
+  {
+    name: "row-level security on: an export runs as the tenant role and carries only its tenant's actors",
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      withRowLevelSecurity(environment, ({ role }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const operators = yield* OperatorRuntime
+          const tenants = [test.tenant, `${test.tenant}-b`]
+
+          for (const tenant of tenants) yield* populate(tenant)
+
+          const exported = (tenant: string, actorType: string) =>
+            operators.exportSeed({ tenant, actorType, actorId: "shared-id" })
+
+          for (const tenant of tenants) {
+            const ledger = Option.getOrThrow(yield* exported(tenant, "Ledger"))
+            const notebook = Option.getOrThrow(yield* exported(tenant, "Notebook"))
+
+            expect(ledger.state.entries).toEqual([tenant])
+            expect(ledger.omitted).toMatchObject({ events: 1, tableRows: 0, blobs: 1 })
+            expect(notebook.omitted).toMatchObject({ receipts: 1, tableRows: 1, blobs: 0 })
+          }
+
+          yield* sql.unsafe(`REVOKE SELECT ON actor_outbox FROM ${role}`)
+
+          const refused = yield* exported(test.tenant, "Ledger").pipe(Effect.exit)
+
+          yield* sql.unsafe(`GRANT SELECT ON actor_outbox TO ${role}`)
+
+          expect(Exit.isFailure(refused)).toBe(true)
+          expect(Option.isSome(yield* exported(test.tenant, "Ledger"))).toBe(true)
+          expect(Option.isNone(yield* exported(`${test.tenant}-c`, "Ledger"))).toBe(true)
         }),
       ),
   },

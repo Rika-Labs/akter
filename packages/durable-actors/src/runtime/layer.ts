@@ -1147,6 +1147,7 @@ export const layer = (options: Options) => {
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
         wake: relay.wake,
+        role: (yield* TenantScope).role,
       })
 
       const seeding = seedRuntime({
@@ -1155,6 +1156,7 @@ export const layer = (options: Options) => {
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
         wake: relay.wake,
+        role: (yield* TenantScope).role,
       })
 
       const internalActors = InternalActors.of({

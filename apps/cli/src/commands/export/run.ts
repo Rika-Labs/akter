@@ -37,6 +37,8 @@ const ExportAnswer = Schema.Struct({
     events: Schema.Finite,
     workflows: Schema.Finite,
     deadLetters: Schema.Finite,
+    tableRows: Schema.Finite,
+    blobs: Schema.Finite,
   }),
 })
 
@@ -84,6 +86,6 @@ export const formatExport = (answer: Schema.Json) =>
     [
       `Exported ${exported.actor} to ${exported.output}`,
       `carries ${exported.state} state keys, ${exported.intents} pending intents, ${exported.effects} pending effects`,
-      `omits ${exported.omitted.receipts} receipts, ${exported.omitted.events} events, ${exported.omitted.workflows} workflows, ${exported.omitted.deadLetters} dead letters`,
+      `omits ${exported.omitted.receipts} receipts, ${exported.omitted.events} events, ${exported.omitted.workflows} workflows, ${exported.omitted.deadLetters} dead letters, ${exported.omitted.tableRows} owned-table rows, ${exported.omitted.blobs} blob entries`,
     ].join("\n"),
   )

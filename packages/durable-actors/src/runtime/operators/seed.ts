@@ -4,7 +4,7 @@ import type { RegisteredEffect } from "../../handles/actors.ts"
 import { Due, emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, type Caller } from "../../identity/caller.ts"
 import { VERSION_KEY } from "../../state/migration.ts"
-import { withTenant } from "../database/tenancy.ts"
+import { TenantScope, withTenant } from "../database/tenancy.ts"
 import { compress, routingKey } from "../storage/codec.ts"
 import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
@@ -20,8 +20,9 @@ const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
  * identifies its tenant, caller, or credentials: a seed is replayed under the
  * tenant and caller of the test that reads it. `dueInMs` is measured from the
  * moment of export, so a replay follows the test's own clock. `omitted` counts
- * what the seed does not carry (history, receipts, workflow executions, dead
- * letters), so a reader can see what a replay starts without.
+ * what the seed does not carry: receipts, events, workflow executions, dead
+ * letters, rows of the actor's owned tables, and its blob entries, so a reader
+ * can see what a replay starts without.
  */
 export const Seed = Schema.Struct({
   format: Schema.Literal(SEED_FORMAT),
@@ -52,6 +53,8 @@ export const Seed = Schema.Struct({
     events: Count,
     workflows: Count,
     deadLetters: Count,
+    tableRows: Count,
+    blobs: Count,
   }),
 })
 
@@ -81,6 +84,7 @@ export const seedRuntime = (deps: {
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
   readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
   readonly wake: Effect.Effect<void>
+  readonly role: string | undefined
 }) =>
   Effect.fnUntraced(
     function* ({
@@ -179,6 +183,7 @@ export const seedRuntime = (deps: {
         Effect.catchIf(SqlError.isSqlError, Effect.die),
         Effect.provideService(FrameworkClock, deps.clock),
         Effect.provideService(OutboxRuntime, deps.outbox),
+        Effect.provideService(TenantScope, { role: deps.role }),
         Effect.provideContext(deps.services),
       ),
   )

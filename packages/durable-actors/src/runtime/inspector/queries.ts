@@ -163,12 +163,7 @@ export const actors = (page: ActorsPage) =>
     }
   })
 
-/** The tenant's one actor row with its routing key, or `None` when it has no such actor. */
-export const findActor = ({
-  tenant,
-  actorType,
-  actorId,
-}: Pick<ActorPage, "tenant" | "actorType" | "actorId">) =>
+const findActor = ({ tenant, actorType, actorId }: ActorPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 

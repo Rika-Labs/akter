@@ -142,7 +142,7 @@ describe("durable export", () => {
       expect((yield* formatExport(answer)).split("\n")).toEqual([
         `Exported CliVault/v1 to ${output}`,
         "carries 1 state keys, 1 pending intents, 0 pending effects",
-        "omits 2 receipts, 0 events, 0 workflows, 0 dead letters",
+        "omits 2 receipts, 0 events, 0 workflows, 0 dead letters, 0 owned-table rows, 0 blob entries",
       ])
       expect(((yield* fs.stat(output)).mode & 0o777).toString(8)).toBe("600")
 
