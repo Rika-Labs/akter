@@ -42,7 +42,12 @@ import {
   readsCookies,
   withinLimits,
 } from "./auth.ts"
-import { ASSERTION_HEADER, reauthenticationDigest, requestDigest } from "./assertion/binding.ts"
+import {
+  ASSERTION_HEADER,
+  KEY_REFRESH_PATH,
+  reauthenticationDigest,
+  requestDigest,
+} from "./assertion/binding.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
 import { feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
@@ -234,6 +239,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       if (
         openapiPath !== undefined &&
         (PROTOCOL_PATHS.has(openapiPath) ||
+          openapiPath === KEY_REFRESH_PATH ||
           openapiPath === "/actors" ||
           openapiPath.startsWith("/actors/"))
       )
@@ -823,6 +829,22 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           }),
         ),
       )
+
+      // The edge's push after it revokes a signing key: reread the key set now.
+      const refreshKeys = options.auth.refreshKeys
+
+      if (refreshKeys !== undefined)
+        yield* router.add(
+          "POST",
+          `${basePath}${KEY_REFRESH_PATH}` as HttpRouter.PathInput,
+          respond((request) =>
+            refreshKeys({ headers: request.headers, cookies: {} }).pipe(
+              Effect.provideContext(context),
+              Effect.mapError((reason) => ActorError.make({ reason })),
+              Effect.as(HttpServerResponse.empty({ status: 204 })),
+            ),
+          ),
+        )
 
       const preflight = HttpServerResponse.empty({
         status: 204,

@@ -95,6 +95,25 @@ durable tenants create acme --deployment dep-1 --region us-east \
 
 It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `durable tenants move` arrives with L.1.
 
+## The hosted edge
+
+Implemented (M4.8, [ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)): `apps/edge` is the only hosted ingress. For every request it does the following:
+
+1. It maps the `Host` (lowercase, without a port) to a deployment through `deployment_host`. An unknown host is `404` before anything is authenticated.
+2. It authenticates `authorization: Bearer` as a hosted API key (`hosted_api_key`, stored as its SHA-256, and read on every request so a revocation applies from the moment it commits) or as a JWT under the deployment's `deployment_jwt` settings. For a JWT, the tenant is a claim path or a fixed value.
+3. It looks up the tenant's home region in the cached tenant directory.
+4. It signs a 10-second assertion bound to the request and forwards it to a ready runner of that region from `deployment_runner`.
+
+The edge removes `authorization` and any client `durable-assertion` before forwarding. A request without a credential is forwarded without an assertion, and the runner refuses it unless the route is public (`/protocol`, preflight).
+
+WebSockets are proxied, and holders stay in runners. The edge verifies the `hello` and `reauthenticate` credentials. It replaces each with an assertion carrying the session's random `sid`, and its `cexp` is the credential's expiry. An API key has no expiry, so it gets `EDGE_API_KEY_SESSION` (default 5 minutes): that is the revocation bound of a session opened with an API key.
+
+Configuration: `EDGE_ISSUER`, `CONTROL_PLANE_DATABASE_URL`, `EDGE_SIGNING_KEYS` (a secret JSON array of Ed25519 private JWKs `{ kid, x, d }`), `PORT`, `EDGE_ASSERTION_LIFETIME` (at most 60 seconds), and `EDGE_API_KEY_SESSION`.
+
+At startup the edge publishes each key's public half to `edge_key`, and refuses to start if a `kid` is already published with a different public key, because a `kid` names one key for good. It signs only with a key that has been published for 5 minutes and is neither revoked nor expiring within an assertion's lifetime. Runners serve with `Actor.auth.assertion({ issuer, audience: <deployment id>, region, keys: new URL("<api>/edge/keys") })`; `apps/api` serves that key set. When an operator revokes a key (`edge_key.revoked_at`), every edge pushes a key-set refresh to each ready runner at `deployment_runner.url` (an origin such as `http://10.0.0.7:8080`, with no path) plus `base_path` (the runner's `Actor.serve` base path). A runner that doesn't accept the push is pushed again on every edge poll until it does or stops being ready, so runners refuse the key within seconds.
+
+Hosts, runners, hosted API keys, and JWT settings have no writer yet. The `Deployment` and `Runners` actors and the accounts API keys will own them, so until then an operator writes the rows. Rate limits are not built.
+
 ## Embedded PGlite in production
 
 Target, built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). One process embeds `Actors.layer`, and optionally `Actor.serve`, with `Database.pglite({ dataDir })` on a local Linux or macOS filesystem. The layer locks the `dataDir`, so a second process fails with `DataDirLocked`. It recovers from a process crash to the last commit, but power-loss durability is not claimed. It runs one turn or query at a time on one connection, with no replicas, failover, or multi-runner support. Back it up by stopping the process and copying the `dataDir`. Move to Postgres with `DATABASE_URL` when those limits bind.

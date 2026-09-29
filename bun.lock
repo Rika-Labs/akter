@@ -24,6 +24,7 @@
         "@durable-actors/accounts": "workspace:*",
         "@durable-actors/billing": "workspace:*",
         "@durable-actors/contracts": "workspace:*",
+        "@durable-actors/deployments": "workspace:*",
         "@durable-actors/email": "workspace:*",
         "@durable-actors/observability": "workspace:*",
         "@durable-actors/postgres": "workspace:*",
@@ -97,7 +98,17 @@
     "apps/edge": {
       "name": "@durable-actors/edge",
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@durable-actors/deployments": "workspace:*",
+        "@durable-actors/postgres": "workspace:*",
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
       },
     },
     "examples/chat": {
