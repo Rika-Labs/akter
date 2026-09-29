@@ -192,12 +192,21 @@ export const STATEMENT_TOLERANCE = 0.2
  */
 export const CONCURRENT_TOLERANCE = 0.05
 
-const CONCURRENT_TOLERANCES: Readonly<Record<string, number>> = { "hot-actor/concurrent-8": 0.12 }
+const CONCURRENT_TOLERANCES = new Map([["hot-actor/concurrent-8", 0.12]])
 
 /** How far `key`'s count may drift from `baseline`: exact except for concurrent cases. */
-export const toleranceOf = (key: string, baseline: number) =>
+export const toleranceOf = ({
+  key,
+  baseline,
+}: {
+  readonly key: string
+  readonly baseline: number
+}) =>
   key.includes("concurrent")
-    ? Math.max(STATEMENT_TOLERANCE, baseline * (CONCURRENT_TOLERANCES[key] ?? CONCURRENT_TOLERANCE))
+    ? Math.max(
+        STATEMENT_TOLERANCE,
+        baseline * (CONCURRENT_TOLERANCES.get(key) ?? CONCURRENT_TOLERANCE),
+      )
     : STATEMENT_TOLERANCE
 
 /**
@@ -250,7 +259,9 @@ const drift = (
             metric,
             before,
             after,
-            changed: Math.round(Math.abs(after - before) * 100) / 100 > toleranceOf(key, before),
+            changed:
+              Math.round(Math.abs(after - before) * 100) / 100 >
+              toleranceOf({ key, baseline: before }),
           },
         ]
   })

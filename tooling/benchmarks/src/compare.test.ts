@@ -159,12 +159,20 @@ describe("compareStatements", () => {
   })
 
   it("gives concurrent cases a share of the baseline and keeps the rest exact", () => {
-    expect(toleranceOf("hot-actor/sequential", 8)).toBe(STATEMENT_TOLERANCE)
-    expect(toleranceOf("cold-activation/new-actor", 10)).toBe(STATEMENT_TOLERANCE)
-    expect(toleranceOf("hot-actor/concurrent-64", 3.37)).toBe(STATEMENT_TOLERANCE)
-    expect(toleranceOf("outbox/delivery-concurrent-16", 14.58)).toBeCloseTo(0.729)
-    expect(toleranceOf("effect-round-trip/concurrent-64", 17.35)).toBeCloseTo(0.8675)
-    expect(toleranceOf("hot-actor/concurrent-8", 4.79)).toBeCloseTo(0.5748)
+    expect(toleranceOf({ key: "hot-actor/sequential", baseline: 8 })).toBe(STATEMENT_TOLERANCE)
+    expect(toleranceOf({ key: "cold-activation/new-actor", baseline: 10 })).toBe(
+      STATEMENT_TOLERANCE,
+    )
+    expect(toleranceOf({ key: "hot-actor/concurrent-64", baseline: 3.37 })).toBe(
+      STATEMENT_TOLERANCE,
+    )
+    expect(toleranceOf({ key: "outbox/delivery-concurrent-16", baseline: 14.58 })).toBeCloseTo(
+      0.729,
+    )
+    expect(toleranceOf({ key: "effect-round-trip/concurrent-64", baseline: 17.35 })).toBeCloseTo(
+      0.8675,
+    )
+    expect(toleranceOf({ key: "hot-actor/concurrent-8", baseline: 4.79 })).toBeCloseTo(0.5748)
   })
 
   it("passes a concurrent case's scheduling noise and fails a deterministic case's one statement", () => {
