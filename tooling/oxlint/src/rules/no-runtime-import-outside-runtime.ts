@@ -16,6 +16,10 @@ interface WithSource {
   readonly source?: { readonly value?: unknown } | null
 }
 
+/**
+ * Forbids SQL and cluster imports in the framework outside `src/runtime/` and
+ * `src/testing/`, keeping the root and client browser-safe.
+ */
 export const noRuntimeImportOutsideRuntimeRule = defineRule({
   meta: {
     type: "suggestion",

@@ -60,6 +60,7 @@ export const afterCommit = ({
     if (done !== undefined) yield* Deferred.succeed(done, undefined)
   })
 
+/** Handlers for `EffectProbe`, including its effect executors. */
 export const EffectProbeLive = Layer.mergeAll(
   EffectProbe.toLayer(
     Effect.succeed({

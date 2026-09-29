@@ -48,6 +48,13 @@ const scanMeanMs = (result: CaseResult) =>
  * The outbox relay: delivery latency of one intent from the sender's call to
  * the receiver's handler, drain throughput of a backlog that falls due at
  * once, and delivery latency with many sleeping timers that are not due.
+ *
+ * Far enough ahead that every row is staged before any falls due, even on a
+ * shared CI runner where the first turn waits for shard assignment.
+ *
+ * Each drain operation waits for one delivery, and its window runs from the
+ * due time to the last delivery, so throughput is deliveries per second. The
+ * quick profile's counts are the ones the statement gate checks.
  */
 export const outbox: Scenario = {
   name: "outbox",
@@ -60,7 +67,6 @@ export const outbox: Scenario = {
       const results: Array<CaseResult> = []
       let next = 0
 
-      // Sends one intent and waits until the relay has delivered it to its sink.
       const send = (sender: Effect.Success<ReturnType<typeof Sender.get>>) =>
         Effect.gen(function* () {
           const id = `intent-${next++}`
@@ -106,8 +112,6 @@ export const outbox: Scenario = {
             const waits = yield* Effect.forEach(ids, expect)
             const sender = yield* Sender.get("backlog")
             const started = yield* databaseNow
-            // Far enough ahead that every row is staged before any falls due, even
-            // on a shared CI runner where the first turn waits for shard assignment.
             const dueAt = started + (quick ? 15_000 : 30_000)
 
             yield* Effect.forEach(
@@ -127,8 +131,6 @@ export const outbox: Scenario = {
 
             yield* Effect.sleep(dueAt - (yield* databaseNow))
 
-            // Each operation waits for one delivery; the window runs from the due time
-            // until the last row is delivered, so throughput is deliveries per second.
             return yield* measure({
               name: `drain-${backlog}`,
               parameters: { intents: backlog, sinks: 64, stagedPerTurn: batch, workers: 64 },
@@ -143,7 +145,6 @@ export const outbox: Scenario = {
         ),
       )
 
-      // The quick counts are the ones the statement gate checks.
       for (const sleepers of quick ? [10_000, 100_000] : [10_000, 100_000, 1_000_000])
         results.push(
           yield* context.withRuntime({}, (instruments) =>

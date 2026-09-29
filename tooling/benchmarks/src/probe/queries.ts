@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { EventProbe, Probe, SleepyProbe, Ticked } from "./contract.ts"
 
+/** Query handlers for `Probe`. */
 export const ProbeReads = Probe.toQueryLayer(
   Effect.succeed({
     Peek: Effect.fnUntraced(function* () {
@@ -9,6 +10,7 @@ export const ProbeReads = Probe.toQueryLayer(
   }),
 )
 
+/** Query handlers for `SleepyProbe`. */
 export const SleepyProbeReads = SleepyProbe.toQueryLayer(
   Effect.succeed({
     Peek: Effect.fnUntraced(function* () {
@@ -17,9 +19,9 @@ export const SleepyProbeReads = SleepyProbe.toQueryLayer(
   }),
 )
 
+/** Query handlers for `EventProbe`. */
 export const EventProbeReads = EventProbe.toQueryLayer(
   Effect.succeed({
-    // Replay is paged, so a whole stream is read page by page, as a reader resynchronizing does.
     Replay: Effect.fnUntraced(function* (after: string | undefined) {
       const read = yield* EventProbe.Read
       let events = 0

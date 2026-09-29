@@ -2,6 +2,7 @@ import { defineRule } from "@oxlint/plugins"
 
 import { repoSourceSegments } from "../repo-paths.ts"
 
+/** Forbids filenames that repeat their folder's name, such as `order/order-total.ts`. */
 export const noParentEchoInFilenameRule = defineRule({
   meta: {
     type: "suggestion",

@@ -30,7 +30,9 @@ interface Loop {
   readonly startedAt: number
 }
 
-// One cluster runs at a time, so its loops are the only ones recorded.
+/**
+ * One cluster runs at a time, so its loops are the only ones recorded.
+ */
 const loops: Array<Loop> = []
 
 const BeaconLive = Layer.mergeAll(
@@ -80,6 +82,9 @@ const poll = <A, E, R>(effect: Effect.Effect<A, E, R>, until: (value: A) => bool
 /**
  * One drill on a fresh database and cluster: waits for the singleton's loop to
  * commit, kills its owner, and times each failover phase from the kill.
+ *
+ * Rebalancing while runners join can move the singleton; wait until the newest
+ * loop is the one committing.
  */
 const drill = (context: ScenarioContext) =>
   Effect.scoped(
@@ -101,8 +106,6 @@ const drill = (context: ScenarioContext) =>
         yield* cluster.ready
         const ref = (yield* cluster.on(0)(Beacon.get())).ref
 
-        // Rebalancing while runners join can move the singleton; wait until the
-        // newest loop is the one committing.
         yield* poll(lastOn(0), (by) => by !== "" && by === loops.at(-1)?.id)
         yield* Effect.sleep("1 second")
         const before = loops.length
@@ -151,13 +154,15 @@ const digest = (name: string, samples: ReadonlyArray<number>) => {
   }
 }
 
+/**
+ * The harness refuses PGlite: several runners need independent connections.
+ */
 export const singletonFailover: Scenario = {
   name: "singleton-failover",
   description:
     "An Actor.singleton with a forked background loop on three in-process runners over one Postgres (ActorTest.cluster): the owner is killed and the first observation of its expired lock, survivor takeover, loop restart, and first committed tick of the new loop are each timed from the kill, over repeated drills on fresh clusters.",
   run: (context) =>
     Effect.gen(function* () {
-      // The harness refuses PGlite: several runners need independent connections.
       if (context.backend.name !== "postgres") return []
 
       const repeats = context.profile === "quick" ? 3 : 20
