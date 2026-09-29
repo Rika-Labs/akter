@@ -737,6 +737,107 @@ export const migrations = {
         ('operator_audit', 1)
       ) AS v(view_name, version)`
   }),
+  "0024_adoption": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    const schema = (yield* sql<{
+      schema: string
+    }>`SELECT quote_ident(current_schema()) AS schema`)[0]!.schema
+
+    yield* sql`CREATE TABLE actor_adoptions (
+        table_schema text NOT NULL,
+        table_name text NOT NULL,
+        actor_type text NOT NULL,
+        tenant_column text NOT NULL,
+        actor_column text NOT NULL,
+        mode text NOT NULL CHECK (mode IN ('observe', 'enforce')),
+        writer_role text,
+        allowed_roles text[] NOT NULL DEFAULT '{}',
+        revoked jsonb NOT NULL DEFAULT '[]',
+        changed_at_ms bigint NOT NULL,
+        changed_by text NOT NULL,
+        PRIMARY KEY (table_schema, table_name),
+        CHECK ((mode = 'enforce') = (writer_role IS NOT NULL)),
+        CHECK (mode = 'enforce' OR cardinality(allowed_roles) = 0)
+      )`
+    yield* sql`CREATE TABLE actor_adoption_writes (
+        observed_at_ms bigint NOT NULL,
+        table_schema text NOT NULL,
+        table_name text NOT NULL,
+        operation text NOT NULL,
+        session_user_name text NOT NULL,
+        application_name text NOT NULL,
+        in_turn boolean NOT NULL,
+        allowed boolean NOT NULL,
+        rows bigint NOT NULL
+      )`
+    yield* sql`CREATE INDEX actor_adoption_writes_table
+        ON actor_adoption_writes (table_schema, table_name, observed_at_ms)`
+    yield* sql.unsafe(`CREATE FUNCTION actor_adoption_observe() RETURNS trigger
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+      DECLARE
+        caller text := CASE WHEN current_setting('role') = 'none'
+          THEN session_user::text ELSE current_setting('role') END;
+        changed bigint := 0;
+      BEGIN
+        IF TG_NARGS > 0 AND caller = TG_ARGV[0] THEN
+          RETURN NULL;
+        END IF;
+        IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+          SELECT count(*) INTO changed FROM new_rows;
+        ELSIF TG_OP = 'DELETE' THEN
+          SELECT count(*) INTO changed FROM old_rows;
+        END IF;
+        INSERT INTO ${schema}.actor_adoption_writes (observed_at_ms, table_schema, table_name,
+            operation, session_user_name, application_name, in_turn, allowed, rows)
+          VALUES (floor(extract(epoch FROM clock_timestamp()) * 1000), TG_TABLE_SCHEMA, TG_TABLE_NAME,
+            TG_OP, session_user, current_setting('application_name'),
+            coalesce(current_setting('durable.turn', true), '') = 'on',
+            TG_NARGS > 1 AND caller = ANY(TG_ARGV[1:TG_NARGS - 1]), changed);
+        RETURN NULL;
+      END
+      $$`)
+    yield* sql.unsafe(`CREATE FUNCTION actor_adoption_guard() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      DECLARE
+        writer text := TG_ARGV[0];
+        allowed text[] := string_to_array(TG_ARGV[1], ',');
+        tenant_column text := TG_ARGV[2];
+        actor_column text := TG_ARGV[3];
+        owner text := TG_ARGV[4];
+        incoming jsonb;
+      BEGIN
+        IF TG_OP = 'TRUNCATE' THEN
+          IF current_user = ANY(allowed) THEN
+            RETURN NULL;
+          END IF;
+        ELSE
+          IF TG_OP = 'UPDATE' THEN
+            IF to_jsonb(OLD) -> tenant_column IS DISTINCT FROM to_jsonb(NEW) -> tenant_column
+              OR to_jsonb(OLD) -> actor_column IS DISTINCT FROM to_jsonb(NEW) -> actor_column THEN
+              RAISE EXCEPTION 'a row of %.% cannot move to another tenant or actor', TG_TABLE_SCHEMA, TG_TABLE_NAME
+                USING ERRCODE = '42501';
+            END IF;
+          END IF;
+          IF current_user = writer OR current_user = ANY(allowed) THEN
+            IF TG_OP = 'DELETE' THEN
+              RETURN OLD;
+            END IF;
+            incoming := to_jsonb(NEW);
+            IF incoming -> 'routing_key' = 'null'::jsonb
+              OR incoming -> tenant_column = 'null'::jsonb
+              OR incoming -> actor_column = 'null'::jsonb THEN
+              RAISE EXCEPTION 'a row of %.% needs routing_key, %, and %', TG_TABLE_SCHEMA, TG_TABLE_NAME,
+                tenant_column, actor_column USING ERRCODE = '23514';
+            END IF;
+            RETURN NEW;
+          END IF;
+        END IF;
+        RAISE EXCEPTION '%.% belongs to actor %; % by % is rejected', TG_TABLE_SCHEMA, TG_TABLE_NAME, owner, TG_OP,
+          current_user USING ERRCODE = '42501';
+      END
+      $$`)
+  }),
 }
 
 /**

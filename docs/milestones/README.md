@@ -64,7 +64,7 @@ From the plan to compete with Rivet. Each slice lives in the milestone of its wa
 
 Decided on 2026-09-26: Apache-2.0; the package is `@durable-actors/core` with `/runtime`, `/testing` and `/client` subpaths, because the unscoped npm name belongs to another publisher; an alpha at M1 close; HTTP serving and the client ahead of the rest of M2; and a public comparison with Rivet after P4 and P5, over a real network, with published methods. The publish waits on the delivery lead creating the `@durable-actors` npm org.
 
-Still waiting on the delivery lead, and not scheduled: **CR.9**, pulling the adoption ADR ([0054](../decisions/0054-existing-schema-adoption.md), accepted) forward to read existing tables inside a turn.
+**CR.9** is built with M6.1: `Actor.table(existing, { owner, access: "read" })` ([0054](../decisions/0054-existing-schema-adoption.md)) reads existing tables inside a turn and a query.
 
 ## Testing and performance programmes
 

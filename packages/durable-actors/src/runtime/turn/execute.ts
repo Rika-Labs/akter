@@ -466,7 +466,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     const cold = view.generation === undefined
 
     const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
-      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)
+      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true),
+      set_config('durable.turn', 'on', true)
       ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
     const readsState = cold || view.state === undefined

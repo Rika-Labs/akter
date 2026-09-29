@@ -198,3 +198,30 @@ export const checkOwnedTable = Effect.fnUntraced(function* (
   if (!found.writable)
     return yield* refuse(`role ${role} cannot read and write ${schema}.${table}; grant it`)
 })
+
+/**
+ * Refuses an adopted table `role` cannot use. An adopted table carries no
+ * `durable_tenant` policy unless the application added one, so only the
+ * privileges are checked: `role` reads it, and writes it when the runtime does.
+ */
+export const checkAdoptedTable = Effect.fnUntraced(function* (
+  schema: string,
+  table: string,
+  role: string,
+  writable: boolean,
+) {
+  const sql = yield* SqlClient.SqlClient
+
+  const [found] = yield* sql<{ readable: boolean; writable: boolean }>`
+    SELECT has_table_privilege(${role}, c.oid, 'SELECT') AS readable,
+      has_table_privilege(${role}, c.oid, 'INSERT') AND has_table_privilege(${role}, c.oid, 'UPDATE')
+        AND has_table_privilege(${role}, c.oid, 'DELETE') AS writable
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ${schema} AND c.relname = ${table}`
+
+  if (found?.readable !== true)
+    return yield* refuse(`role ${role} cannot read ${schema}.${table}; grant it`)
+
+  if (writable && !found.writable)
+    return yield* refuse(`role ${role} cannot read and write ${schema}.${table}; grant it`)
+})

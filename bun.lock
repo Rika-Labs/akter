@@ -55,6 +55,7 @@
       "devDependencies": {
         "@durable-actors/postgres": "workspace:*",
         "@types/pg": "8.23.1",
+        "drizzle-orm": "catalog:",
         "pg": "8.23.0",
         "vitest": "catalog:",
       },
