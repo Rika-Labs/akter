@@ -143,6 +143,24 @@ Actors.layer({
 - Cron expressions are parsed with `Cron.parse` (five or six fields) and evaluated in UTC against the database clock unless they name a zone ([below](#cron-time-zones-and-intervals)); the timer key names the zone and spells the parsed schedule canonically (sorted value lists, `*` for a full field, seconds only when not `0`), so `"0  8 * * 1-5"` and `"0 8 * * 1,2,3,4,5"` are one key, `$cron:UTC 0 8 * * 1,2,3,4,5`, and a deployment that respells a schedule keeps its row. `Actor.make` rejects an unparsable expression, two equivalent schedules (such as `1-5` and `1,2,3,4,5`), a target that is not a command of the actor or takes input, and an invalid `cronSkipIfOlderThan`. A cron tick's caller is `System({ source: "cron", ref })`, so a target may be an `internal` command that handles, HTTP, and the Promise client cannot call. On a singleton, cron runs in the default tenant only.
 - **Changed from M1:** `Intent.key` values starting with `$`, `$cron:` among them, are reserved: `Intent.key` throws and `Intent.cancel` dies with `Intent.key values starting with $ are reserved`. A pending intent staged earlier under a key an entry now uses loses its key when the entry's tick is written, then fires once as an ordinary intent.
 
+### Runtime control: readiness and drain
+
+Implemented in M4.2 ([ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md)). `Actors.layer` also provides `RuntimeControl`:
+
+```ts
+import { RuntimeControl } from "@durable-actors/core/runtime"
+
+const ready = RuntimeControl.use((control) => control.readiness)
+// { ready: true } | { ready: false, reason: "draining" | "drained" | "storage" | "routing" | "unregistered" }
+
+const report = RuntimeControl.use((control) => control.drain({ deadline: "30 seconds" }))
+// { outcome: "clean" | "deadline-expired", interruptedTurns, interruptedEffects }
+```
+
+- **Readiness** is true once the database answers a `SELECT 1` within 2 seconds, the layer has built (so migrations and the deployment check passed), at least one actor, query, or effect layer is registered, sharding is up, and the runner is not draining. It never waits for actors to wake or workflows to finish.
+- **`drain({ deadline })`** makes the runner unready and refuses new external commands through its handles with `ActorUnavailable`. Its actors refuse new turns the same way, so callers on other runners retry until the actors move. The relay stops claiming intents, timers, effects, and subscription deliveries, and releases deliveries it had claimed, which are due again at once. In-flight turns and effect attempts then get until `deadline`. Past it, turns are interrupted: each rolls back, or, if its `COMMIT` was already sent, its receipt answers the caller's retry. Effect attempts are interrupted too; each keeps its claim and `ambiguous = true` and is taken over after its lease. `deadline-expired` reports the counts and logs a warning. Live workflow runs are not turns and are not waited for: they end unrecorded when the layer closes and replay on another runner. There is no default deadline. A second `drain` waits for the first and returns its report.
+- The runner keeps its shard locks until its layer closes. Close it once `drain` returns, and a graceful exit releases them at once.
+
 ### Cron time zones and intervals
 
 From [ADR 0042](../decisions/0042-cron-time-zones-intervals-and-daylight-saving.md), implemented (M2.5).
