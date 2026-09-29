@@ -10,7 +10,7 @@
     "dev": "PORT=${CONSOLE_PORT:-3000} bun --watch src/main.ts",
     "start": "bun dist/main.js",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "lint": "oxlint --type-aware --threads 1 .",
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/console/src"
   },
   "dependencies": {

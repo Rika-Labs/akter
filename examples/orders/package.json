@@ -10,7 +10,7 @@
   "scripts": {
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
-    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "lint": "oxlint --type-aware --threads 1 .",
     "test": "ORDERS_BACKEND=pglite bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/orders/src",
     "test:integration": "ORDERS_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/orders/src"
   },

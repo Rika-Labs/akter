@@ -1,10 +1,12 @@
 import { defineRule } from "@oxlint/plugins"
 
-// Paraphrased citations ("per the v4 pick") are left to the Jev rule
-// .amp/rules/quality/47-no-decision-references-in-code.md; this rule catches
-// the literal forms without judgment so CI fails even when Jev is not running.
 const CITATION = /\bADRs?\b|\bdocs\/decisions\b|\bdecisions?\s+#?\d/i
 
+/**
+ * Catches the literal citation forms without judgment so CI fails even when
+ * the reviewer rule .amp/rules/quality/47-no-decision-references-in-code.md is
+ * not running; paraphrased citations ("per the v4 pick") are left to it.
+ */
 export const noDecisionReferencesRule = defineRule({
   meta: {
     type: "suggestion",

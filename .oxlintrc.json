@@ -59,6 +59,12 @@
   },
   "overrides": [
     {
+      "files": ["packages/**", "apps/**", "examples/**", "tooling/**"],
+      "rules": {
+        "durable-actors/no-inline-comments": "warn"
+      }
+    },
+    {
       "files": ["infra/alchemy.run.ts"],
       "rules": {
         "effecttsgo/any-unknown-in-error-context": "off"
