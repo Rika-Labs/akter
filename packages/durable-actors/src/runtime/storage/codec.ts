@@ -25,7 +25,9 @@ export const placementKind = (placement: Placement) =>
  * The 64-bit shard key shared by every row an actor owns. Tenant
  * placement colocates a tenant's actors; actor placement spreads them; a
  * parent-placed actor takes its root's key, read from the parent id its own
- * id carries, so a family shares one shard.
+ * id carries, so a family shares one shard. A parent-placed id without a
+ * parent id throws: ids are decoded against their actor's key before any
+ * routing, so that is a defect, not an input error.
  */
 export const routingKey = ({
   ref,
@@ -37,7 +39,6 @@ export const routingKey = ({
   if (placement !== "tenant" && placement !== "actor") {
     const parent = parseChildId(ref.id)?.parent
 
-    // Ids are decoded against their actor's key before any routing, so this is a defect.
     if (parent === undefined)
       throw new Error(`Actor ${ref.actor} id ${ref.id} carries no ${placement.parent} parent id`)
 
@@ -65,5 +66,6 @@ export const tenantRoutingKey = (tenant: string): bigint =>
 export const compress = (json: string): Uint8Array =>
   Bun.zstdCompressSync(new TextEncoder().encode(json))
 
+/** Inverse of `compress`; throws on bytes that are not zstd-compressed UTF-8. */
 export const decompress = (bytes: Uint8Array): string =>
   new TextDecoder().decode(Bun.zstdDecompressSync(bytes))
