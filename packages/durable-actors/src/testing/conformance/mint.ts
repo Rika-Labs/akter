@@ -14,6 +14,7 @@ import type { ActorRef, Caller } from "../../identity/caller.ts"
 import { deriveMintId } from "../../identity/mint.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
+import { enqueue, holding, transactions } from "./batches.ts"
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
@@ -47,6 +48,10 @@ const PlanLater = Actor.command("PlanLater", { output: Schema.String })
 
 const PlanThenRefuse = Actor.command("PlanThenRefuse", { errors: [Refused] })
 
+const PlanDelayed = Actor.command("PlanDelayed", { output: Ids })
+
+const PlanDelayedThenRefuse = Actor.command("PlanDelayedThenRefuse", { errors: [Refused] })
+
 const PlanThenDie = Actor.command("PlanThenDie")
 
 const PlanRefusedChild = Actor.command("PlanRefusedChild", { output: Schema.String })
@@ -73,6 +78,8 @@ const Planner = Actor.make("MintPlanner", {
     PlanMixed,
     PlanLater,
     PlanThenRefuse,
+    PlanDelayed,
+    PlanDelayedThenRefuse,
     PlanThenDie,
     PlanRefusedChild,
     MintOnly,
@@ -164,6 +171,20 @@ export const mintLayer = Layer.mergeAll(
 
         return yield* Refused.make({})
       }),
+      PlanDelayed: Effect.fnUntraced(function* () {
+        const id = yield* (yield* Planner.Turn).mint(Task)
+        yield* (yield* Task.intents(id)).Open("delayed").pipe(Intent.after("1 hour"))
+        runs.push([id])
+
+        return [id]
+      }),
+      PlanDelayedThenRefuse: Effect.fnUntraced(function* () {
+        const id = yield* (yield* Planner.Turn).mint(Task)
+        yield* (yield* Task.intents(id)).Open("delayed").pipe(Intent.after("1 hour"))
+        runs.push([id])
+
+        return yield* Refused.make({})
+      }),
       PlanThenDie: Effect.fnUntraced(function* () {
         runs.push([yield* openTask("died")])
 
@@ -251,6 +272,13 @@ const created = Effect.fnUntraced(function* (actor: string, id: string) {
 
   return yield* test.receiptsFor({ tenant: test.tenant, actor, id }, "Open")
 })
+
+/**
+ * Gives the last command enqueued behind a held turn time to finish its
+ * `queued` hook, which the batch waits for, so every waiting command is in
+ * the next batch.
+ */
+const settle = Effect.sleep("500 millis")
 
 /** Plans one task whose creating intent is due in an hour, and returns the task's id. */
 export const planLaterTask = (parent: string) =>
@@ -391,6 +419,155 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Fiber.join(second)).toEqual([
             yield* expected(planner.ref, commandIds[1]!, 0),
           ])
+        }),
+      ),
+  },
+  {
+    name: "turn batch: commands that mint share one transaction, mint the ids each would mint alone, and a declared failure in the batch creates no child",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const actors = yield* Actors
+          const planner = yield* Planner.get("batch-shared")
+
+          const [lone, one, refused, two] = yield* Effect.forEach(
+            Array.from({ length: 4 }),
+            () => actors.mintCommandId,
+          )
+
+          const [loneChild, oneChild, rolledBack, twoChild] = yield* Effect.forEach(
+            [lone!, one!, refused!, two!],
+            (id) => expected(planner.ref, id, 0),
+          )
+
+          yield* test.advance(0)
+          const before = runs.length
+          const first = yield* holding(planner.PlanDelayed().pipe(Actor.commandId(lone!)))
+
+          const [a, r, b] = yield* enqueue<
+            Exit.Exit<ReadonlyArray<string>, Refused>,
+            ActorTest | Actors
+          >([
+            planner.PlanDelayed().pipe(Actor.commandId(one!), Effect.exit),
+            planner.PlanDelayedThenRefuse().pipe(Actor.commandId(refused!), Effect.exit),
+            planner.PlanDelayed().pipe(Actor.commandId(two!), Effect.exit),
+          ])
+
+          yield* settle
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+
+          expect(yield* Fiber.join(a!)).toEqual(Exit.succeed([oneChild]))
+          expect(yield* Fiber.join(r!)).toEqual(Exit.fail(Refused.make({})))
+          expect(yield* Fiber.join(b!)).toEqual(Exit.succeed([twoChild]))
+
+          const committed = yield* transactions(planner.ref)
+          expect(new Set([one, refused, two].map((id) => committed.get(id!))).size).toBe(1)
+          expect(committed.get(one!)).not.toBe(committed.get(lone!))
+
+          expect(new Set([loneChild, oneChild, twoChild, rolledBack]).size).toBe(4)
+          expect(new Set(runs.slice(before).flat())).toEqual(
+            new Set([loneChild, oneChild, twoChild, rolledBack]),
+          )
+          expect(yield* test.inspect(planner.ref)).toMatchObject({ receipts: 4, outbox: 3 })
+
+          const settled = runs.length
+          expect(yield* planner.PlanDelayed().pipe(Actor.commandId(two!))).toEqual([twoChild])
+          expect(runs.length).toBe(settled)
+
+          yield* test.advance("1 hour")
+
+          for (const id of [loneChild, oneChild, twoChild])
+            expect(yield* created("MintTask", id!)).toBe(1)
+
+          expect(yield* created("MintTask", rolledBack!)).toBe(0)
+          expect(
+            yield* openAs(rolledBack!, "rolled back", proven(planner.ref, refused!)),
+          ).toMatchObject({ reason: Unauthorized.make({ code: "access_denied" }) })
+          expect(yield* test.inspect(planner.ref)).toMatchObject({ outbox: 0 })
+        }),
+      ),
+  },
+  {
+    name: "turn batch: a crash before the shared commit reruns each minting command alone with the same ids, and a crash after it replays them, each child created once",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const actors = yield* Actors
+          const planner = yield* Planner.get("batch-crash")
+
+          const [lone, between, ...ids] = yield* Effect.forEach(
+            Array.from({ length: 8 }),
+            () => actors.mintCommandId,
+          )
+
+          const derived = yield* Effect.forEach([lone!, between!, ...ids], (id) =>
+            expected(planner.ref, id, 0),
+          )
+
+          const [loneChild, betweenChild] = derived
+          const early = derived.slice(2, 5)
+          const late = derived.slice(5)
+
+          yield* test.advance(0)
+          const before = runs.length
+          const first = yield* holding(planner.PlanDelayed().pipe(Actor.commandId(lone!)))
+
+          const beforeCrash = yield* enqueue(
+            ids
+              .slice(0, 3)
+              .map((id) => planner.PlanDelayed().pipe(Actor.commandId(id), Effect.orDie)),
+          )
+
+          yield* settle
+          yield* test.crashNext("beforeCommit")
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+
+          expect(yield* Effect.forEach(beforeCrash, Fiber.join)).toEqual(early.map((id) => [id]))
+
+          const executions = (id: string) =>
+            runs.slice(before).filter(([only]) => only === id).length
+
+          expect(early.map(executions).some((count) => count > 1)).toBe(true)
+
+          let committed = yield* transactions(planner.ref)
+          expect(new Set(ids.slice(0, 3).map((id) => committed.get(id))).size).toBe(3)
+
+          const second = yield* holding(planner.PlanDelayed().pipe(Actor.commandId(between!)))
+
+          const afterCrash = yield* enqueue(
+            ids.slice(3).map((id) => planner.PlanDelayed().pipe(Actor.commandId(id), Effect.orDie)),
+          )
+
+          yield* settle
+          const shared = yield* test.pauseNext("beforeCommit")
+          yield* second.release
+          yield* Fiber.join(second.fiber)
+          yield* shared.reached
+          yield* test.crashNext("afterCommit")
+          yield* shared.release
+
+          expect(yield* Effect.forEach(afterCrash, Fiber.join)).toEqual(late.map((id) => [id]))
+          expect(late.map(executions)).toEqual([1, 1, 1])
+
+          committed = yield* transactions(planner.ref)
+          expect(new Set(ids.slice(3).map((id) => committed.get(id))).size).toBe(1)
+
+          const children = new Set([loneChild!, betweenChild!, ...early, ...late])
+          expect(children.size).toBe(8)
+          expect(new Set(runs.slice(before).flat())).toEqual(children)
+
+          yield* test.advance("1 hour")
+
+          for (const id of children) expect(yield* created("MintTask", id)).toBe(1)
+          expect(yield* test.inspect(planner.ref)).toMatchObject({ receipts: 8, outbox: 0 })
         }),
       ),
   },
