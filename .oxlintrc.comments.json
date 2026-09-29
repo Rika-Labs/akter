@@ -1,7 +1,0 @@
-{
-  "extends": ["./.oxlintrc.json"],
-  "rules": {
-    "durable-actors/no-inline-comments": "warn"
-  },
-  "ignorePatterns": ["**/dist/**", ".local/**", "tooling/oxlint/anti-slop/**", "**/templates/**"]
-}

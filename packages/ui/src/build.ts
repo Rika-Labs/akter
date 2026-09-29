@@ -7,6 +7,7 @@ const root = new URL("../", import.meta.url).pathname
 
 const runtime = ManagedRuntime.make(BunServices.layer)
 
+/** The transform installs the pinned StyleX plugin, whose documented `metadata.stylex` is `Rule[]`; Babel's generic metadata type omits plugin fields, so results are asserted to this shape. */
 interface StylexMetadata {
   stylex?: Rule[]
 }
@@ -38,7 +39,6 @@ const build = Effect.fnUntraced(function* () {
 
     if (result === null || result.code === null || result.code === undefined || result.code === "")
       return yield* Effect.die(`Compilation failed: ${file}`)
-    // SAFETY: This transform installs the pinned StyleX plugin, whose documented metadata.stylex value is Rule[]. Babel's generic metadata type omits plugin fields.
     rules.push(...((result.metadata as StylexMetadata).stylex ?? []))
     yield* fs.writeFileString(`${root}dist/${file}.js`, result.code)
   }

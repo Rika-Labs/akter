@@ -99,7 +99,6 @@ describe("durable subscriptions list --lagging", () => {
         "Order/o1 -> Follower.FollowedOrders/f1  delivered 1 of 3  lag 2  attempts 9\n  Error: bad payload",
       )
 
-      // An actor-scoped grant does not cover a tenant-wide listing, and neither does another action.
       expect(Exit.isFailure(yield* read("actor-token").pipe(Effect.exit))).toBe(true)
       expect(Exit.isFailure(yield* read("skip-token").pipe(Effect.exit))).toBe(true)
       expect(Exit.isFailure(yield* read("nobody").pipe(Effect.exit))).toBe(true)
