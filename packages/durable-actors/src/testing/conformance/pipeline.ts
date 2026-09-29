@@ -730,4 +730,50 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
+  {
+    name: "pipeline: a turn that loses the database mid-commit is answered, and its caller's retry commits it once",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { everyPool: true }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("lost-mid-commit")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          // The turn loses its connection before its commit group, and each
+          // later attempt fails to connect at once until the database is
+          // back: a failover caught mid-turn. Every attempt must be answered,
+          // however fast it fails, so the caller retries its id long before
+          // its 30-second delivery timeout.
+          const id = yield* (yield* Actors).mintCommandId
+          const committing = yield* test.pauseNext("beforeCommit")
+          const handled = probe.handled
+
+          const call = yield* meter.Add(2).pipe(
+            Actor.commandId(id),
+            Effect.retry({
+              while: (error) => error.isRetryable,
+              schedule: Schedule.spaced("100 millis"),
+              times: 50,
+            }),
+            Effect.timeoutOption("10 seconds"),
+            Effect.forkChild,
+          )
+
+          yield* committing.reached
+          relayed.cut()
+          yield* committing.release
+          yield* Effect.sleep("1 second")
+          relayed.restore()
+
+          expect(yield* Fiber.join(call)).toEqual(Option.some(3))
+          expect(probe.handled - handled).toBe(2)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 3 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
 ]

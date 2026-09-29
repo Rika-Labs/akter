@@ -582,21 +582,23 @@ Recovery runs from the kill to the commit of the slowest command the first runne
 
 Failure detection, which a failover manager adds before promoting, is not in these numbers.
 
-| Metric                                                      | Min    | p50     | Max (≈p95 of 10) |
-| ----------------------------------------------------------- | ------ | ------- | ---------------- |
-| Commit-unknown commands per run (resolved through receipts) | 1      | 2       | 3                |
-| Promotion: kill to `pg_promote()` returning                 | 0.20 s | 0.25 s  | 0.31 s           |
-| Recovery: kill to every runner committing again             | 0.37 s | 30.10 s | 30.13 s          |
-| Slowest single operation                                    | 1.05 s | 30.12 s | 30.14 s          |
-| Committed operations per run                                | 360    | 360     | 360              |
-| Lost / duplicated operations                                | 0 / 0  | 0 / 0   | 0 / 0            |
+Two sets of 10 runs: the first on `main` at `7fef2da` with [#244](https://github.com/Rika-Labs/durable-actors/pull/244), and the second on branch `fix/243-retryable-turn-unavailable` (`main` at `4c2e477` plus the fix for [#243](https://github.com/Rika-Labs/durable-actors/issues/243)), on the same machine.
 
-- **No lost or duplicated work.** Every run committed all 360 operations once. Every command a runner heard acknowledged, and every receipt the old primary showed while replies were held, is on the promoted primary. The counter and receiver totals equal their receipt counts.
-- **Commit-unknown resolves through receipts.** 18 commands, over the 10 runs, had committed on the primary with their replies still in flight when it died. Each caller's retry under the same id was answered from the receipt the standby had received, without a second transition.
-- **Recovery is bimodal: about 0.4 s, or the whole 30 s `deliveryTimeout`.** 2 runs recovered in 0.37 s and 0.42 s. In the other 8, one command caught by the failover waited out its caller's `deliveryTimeout` (30 s by default), and its retry then committed at once.
-  - The cause is in Effect Cluster ([#243](https://github.com/Rika-Labs/durable-actors/issues/243)). A turn that fails with a retryable SQL error restarts its entity, and Cluster re-sends the command to the rebuilt handler. If that re-sent turn fails again before the rebuild completes, because the database is still unreachable, Cluster drops the second defect: the command is never run again or answered.
-  - The longer the database is out of reach, the likelier this is. It hit 8 of 10 runs here, where promotion takes about 250 ms. A failover manager that spends seconds detecting the failure widens that window; that case is untested.
-  - Until #243 is fixed, a failover costs some callers `deliveryTimeout`.
+| Metric                                                      | Before #243's fix: min / p50 / max | After: min / p50 / max |
+| ----------------------------------------------------------- | ---------------------------------- | ---------------------- |
+| Commit-unknown commands per run (resolved through receipts) | 1 / 2 / 3                          | 1 / 2 / 3              |
+| Promotion: kill to `pg_promote()` returning                 | 0.20 / 0.25 / 0.31 s               | 0.21 / 0.26 / 0.33 s   |
+| Recovery: kill to every runner committing again             | 0.37 / 30.10 / 30.13 s             | 0.37 / 0.84 / 1.08 s   |
+| Slowest single operation                                    | 1.05 / 30.12 / 30.14 s             | 0.99 / 1.05 / 1.11 s   |
+| Committed operations per run                                | 360 / 360 / 360                    | 360 / 360 / 360        |
+| Lost / duplicated operations                                | 0 / 0 in every run                 | 0 / 0 in every run     |
+
+- **No lost or duplicated work.** Every run of both sets committed all 360 operations once. Every command a runner heard acknowledged, and every receipt the old primary showed while replies were held, is on the promoted primary. The counter and receiver totals equal their receipt counts.
+- **Commit-unknown resolves through receipts.** 18 and then 20 commands had committed on the primary with their replies still in flight when it died. Each caller's retry under the same id was answered from the receipt the standby had received, without a second transition.
+- **Before the fix, recovery was bimodal: about 0.4 s, or the whole 30 s `deliveryTimeout`.** 2 runs recovered in 0.37 s and 0.42 s. In the other 8, one command caught by the failover waited out its caller's `deliveryTimeout` (30 s by default), and its retry then committed at once.
+  - The cause was in Effect Cluster ([#243](https://github.com/Rika-Labs/durable-actors/issues/243)). A turn that failed with a retryable SQL error died, so Cluster restarted its entity and re-sent the command to the rebuilt handler. When the re-sent turn failed again before the rebuild completed, which a refused connection does within a millisecond, Cluster ignored the second defect: the command was never run again or answered.
+- **After the fix, every run recovers within about a second.** A retryable turn failure is now answered to its caller as `ActorUnavailable`, after the activation's own backoff, instead of dying; the caller retries under the same id, and the receipt keeps the retry exactly-once. Recovery is the promotion, the activation's backoff (50 ms, doubling per failure), and the caller's retry delay (250 ms ±50%, then 500 ms).
+
 - **A mint during the outage used to kill its caller.** Before [#244](https://github.com/Rika-Labs/durable-actors/pull/244), a command-id mint that reached the database while it was unreachable died instead of failing `ActorUnavailable`. That took down a whole runner process that minted 16 ms before the kill. The drill's runner retries its mint like any command.
 
 Not covered:

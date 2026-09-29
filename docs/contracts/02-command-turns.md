@@ -29,7 +29,7 @@ The foundation labels retain their meaning from the agreed design:
 - **F1:** one relational database per deployment region, not per actor or tenant; a single-region deployment has exactly one ([ADR 0005](../decisions/0005-turn-latency-batching-and-regional-placement.md)).
 - **F2:** Effect Cluster provides one entity per actor type with serialized command handling (`concurrency: 1`).
 - **F3:** commands are direct: routed to the owner as volatile Cluster messages, admitted by the receipt inside the turn transaction, and retried by the caller with the same command id. Durable intents and timers use the actor-shard outbox ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md); this replaced persisted Cluster command messages).
-- **F4:** stale generations, lock timeouts, commit-unknown outcomes, and command execution timeouts follow the retryable-defect path; the activation restarts and the caller's handle retries the same command id.
+- **F4:** stale generations, lock timeouts, commit-unknown outcomes, lost database connections, and command execution timeouts are retryable turn failures: the activation drops its cached state and answers `ActorUnavailable`, and the caller's handle retries the same command id.
 
 A successful output or declared failure MUST become observable only with its committed receipt. Off-turn contexts MUST NOT directly mutate durable actor data. `actor_connections` is session data, not actor data: its writers are listed and fenced in [ADR 0023](../decisions/0023-connections-parking-and-streams.md), and the one written outside a turn is the connection-session update after a connection handler ([realtime](07-realtime.md)).
 

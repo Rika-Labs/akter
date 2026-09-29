@@ -20,7 +20,7 @@ import {
 } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { ActorError } from "../../errors/actor.ts"
+import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
 import { Outcome, type Registration, Request } from "../../handles/actors.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
@@ -50,10 +50,10 @@ const EntityId = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.Strin
 
 const encodeEntityIdOf = Schema.encodeEffect(EntityId)
 
-// A handler rebuilt after a retryable death waits `RESTART_BASE × 2^n`, capped
-// at `RESTART_CAP`, where `n` counts the activation's rebuilds since its last
-// settled turn: prompt after a one-off death, bounded for a handler that dies
-// on every attempt.
+// A retryable turn failure, and a handler rebuilt after a death, wait
+// `RESTART_BASE × 2^n`, capped at `RESTART_CAP`, where `n` counts the
+// activation's failures and rebuilds since its last settled turn: prompt after
+// a one-off failure, bounded for an actor whose turn fails on every attempt.
 const RESTART_BASE = Duration.millis(50)
 
 const RESTART_CAP = Duration.seconds(5)
@@ -305,11 +305,23 @@ export const registerActor = Effect.fnUntraced(function* (
             }).pipe(
               Effect.catchDefect(
                 Effect.fnUntraced(function* (cause) {
+                  // A retryable failure committed nothing and the turn already
+                  // dropped what it cached, so the caller retries the same
+                  // command id. Answering it here, instead of dying so Cluster
+                  // restarts the entity and re-sends the command, keeps the
+                  // caller from waiting out its delivery timeout when Cluster
+                  // drops a re-sent command whose turn fails again mid-restart.
                   if (
                     Schema.is(RetryTurn)(cause) ||
                     (SqlError.isSqlError(cause) && cause.isRetryable)
-                  )
-                    return yield* Effect.die(cause)
+                  ) {
+                    const failures = restarts.get(activation) ?? 0
+
+                    restarts.set(activation, failures + 1)
+                    yield* Effect.sleep(restartDelay(failures))
+
+                    return yield* ActorError.make({ reason: ActorUnavailable.make({ cause }) })
+                  }
 
                   // Deterministic defects run no user code, because a defect hook
                   // can loop on corrupt state; the turn span and this log carry
