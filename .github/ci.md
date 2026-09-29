@@ -54,7 +54,14 @@ File-scoped type-aware lint exceptions are limited to platform boundaries:
 `effecttsgo/any-unknown-in-error-context` for `infra/alchemy.run.ts`, and
 `effecttsgo/async-function` plus `effecttsgo/process-env` for the imperative
 Playwright project in `apps/e2e`. Playwright's test functions return promises
-and its configuration reads `CI` directly. Alchemy's
+and its configuration reads `CI` directly. `examples/chat/src/web/app.ts` is
+browser code written against the Promise client, the way an application without
+Effect uses it, so `async-function`, `global-fetch`, `global-timers`, and
+`instance-of-schema` are off there, as `instance-of-schema` is for the chat
+example's Promise-client script. `packages/react/src` holds React hooks, whose
+effects and event handlers are Promise code and whose exports are React APIs,
+not pipeable Effect functions, so `async-function` and
+`missing-pipeable-signature` are off there. Alchemy's
 `Railway.Service` type reports an `any` requirements channel even
 when its providers are supplied by the stack. All other rules still run on
 these files; remove the infra exception when the upstream type no longer widens.

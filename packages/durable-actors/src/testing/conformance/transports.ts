@@ -1,6 +1,7 @@
 import {
   type Cause,
   Context,
+  flow,
   DateTime,
   Deferred,
   Effect,
@@ -23,11 +24,12 @@ import {
 import { Socket } from "effect/unstable/socket"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, User } from "../../index.ts"
-import { Unauthorized } from "../../errors/actor.ts"
+import { ActorError, TransportError, Unauthorized } from "../../errors/actor.ts"
+import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import { InternalActors } from "../../handles/actors.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { servedDefinitions } from "../../actor/served.ts"
-import { socketSession } from "../../serve/socket.ts"
+import { socketSession } from "../../serve/sessions/socket.ts"
 import { type Authenticated, bearerToken } from "../../serve/auth.ts"
 import { ClientWireMessage, SUBPROTOCOL, ServerWireMessage } from "../../serve/frames.ts"
 import type { ServeOptions } from "../../serve/layer.ts"
@@ -61,12 +63,32 @@ const Blind = Actor.connection("Blind", { server: Said, stampCursor: false })
 
 const Post = Actor.command("Post", { input: Schema.String })
 
+const Percent = Schema.Struct({ percent: Schema.Finite })
+
+/** An effect whose executor reports how far it got, one step at a time. */
+class Render extends Actor.effect<Render>()("Render", {
+  input: { steps: Schema.Int },
+  progress: Percent,
+}) {}
+
+const Start = Actor.command("Start", { input: Schema.Int })
+
+/** Receives Render's progress on every open connection, and no member frames. */
+const Watch = Actor.connection("Watch", {
+  server: Said,
+  progress: { effects: [Render], to: "all" },
+})
+
 /** The actor served over WebSocket; its short revocation bound keeps revocation cases fast. */
 const SocketRoom = Actor.make("SocketRoom", {
   key: Schema.String,
   events: [Said],
-  api: { Chat, Blind, Post },
-  policy: { reauthorizeEvery: "2 seconds" },
+  effects: [Render],
+  api: { Chat, Blind, Post, Start, Watch },
+  policy: {
+    reauthorizeEvery: "2 seconds",
+    effects: { Render: { retry: { times: 0 }, progressEvery: "50 millis" } },
+  },
 })
 
 const socketLayer = SocketRoom.toLayer(
@@ -110,6 +132,24 @@ const socketLayer = SocketRoom.toLayer(
       }),
     },
     Blind: { open: () => Effect.void, frame: () => Effect.void },
+    Start: Effect.fnUntraced(function* (steps: number) {
+      yield* (yield* SocketRoom.Turn).perform(Render.make({ steps }))
+    }),
+    Watch: { open: () => Effect.void, frame: () => Effect.void },
+  }),
+)
+
+// Each step reports its percentage and pauses, so reports keep coming while a client watches.
+const renderLayer = SocketRoom.toEffectLayer(
+  Effect.succeed({
+    Render: Effect.fnUntraced(function* ({ steps }) {
+      const exec = yield* SocketRoom.Executor
+
+      for (let step = 1; step <= steps; step++) {
+        yield* exec.progress(Render, { percent: (100 * step) / steps })
+        yield* Effect.sleep("50 millis")
+      }
+    }),
   }),
 )
 
@@ -121,12 +161,27 @@ const Note = Actor.command("Note", { input: Schema.String })
 
 const Burst = Actor.command("Burst", { input: Schema.Int })
 
+class Refused extends Schema.TaggedError<Refused>()("Refused", { at: Schema.Finite }) {}
+
+/** `count` numbers, then its own end; a count over 100 is refused after the first element. */
+const Count = Actor.stream("Count", {
+  input: Schema.Finite,
+  output: Schema.Finite,
+  errors: [Refused],
+})
+
+/** Committed `Said` texts after `after`, then each new one as it commits. */
+const Heard = Actor.stream("Heard", {
+  input: Schema.Struct({ after: Schema.optional(Schema.String) }),
+  output: Schema.String,
+})
+
 /** The actor served as an event feed: `Said` is served, `Noted` is declared but not a feed. */
 const FeedRoom = Actor.make("FeedRoom", {
   key: Schema.String,
   events: [Said, Noted],
   feeds: [Said],
-  api: { Tell, Note, Burst },
+  api: { Tell, Note, Burst, Count, Heard },
   policy: { reauthorizeEvery: "2 seconds" },
 })
 
@@ -138,6 +193,16 @@ const feedLayer = FeedRoom.toLayer(
     Note: Effect.fnUntraced(function* (text: string) {
       yield* (yield* FeedRoom.Turn).emit(Noted.make({ text }))
     }),
+    Count: (count: number) =>
+      count > 100
+        ? Stream.concat(Stream.make(1), Stream.fail(Refused.make({ at: 1 })))
+        : Stream.range(1, count),
+    Heard: ({ after }: { readonly after?: string | undefined }) =>
+      Stream.unwrap(
+        Effect.map(FeedRoom.Read, (read) =>
+          read.follow(Said, { after }).pipe(Stream.map((entry) => entry.event.text)),
+        ),
+      ).pipe(Stream.orDie),
     Burst: Effect.fnUntraced(function* (count: number) {
       const turn = yield* FeedRoom.Turn
 
@@ -173,7 +238,7 @@ const tokens = Actor.auth.make((request) =>
   }),
 )
 
-export const transportsLayer = Layer.mergeAll(socketLayer, feedLayer)
+export const transportsLayer = Layer.mergeAll(socketLayer, renderLayer, feedLayer)
 
 /**
  * Serves `SocketRoom` and `FeedRoom` from a fresh listening server for the
@@ -227,6 +292,16 @@ const WireReason = Schema.Struct({
 })
 
 const decodeReason = Schema.decodeUnknownEffect(WireReason)
+
+const ClientFailure = Schema.Union([ActorError, RetentionGap, UnknownCursor, Banned, Refused])
+
+/** What a Promise client call or iteration rejected with, typed; anything else is a test defect. */
+const asFailure = flow(
+  Schema.decodeUnknownOption(ClientFailure),
+  Option.getOrElse(() =>
+    ActorError.make({ reason: TransportError.make({ code: "defect", retryable: false }) }),
+  ),
+)
 
 /** A client frame saying `text`, as the socket carries it. */
 const say = (text: string) =>
@@ -1441,6 +1516,354 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "client reads an event feed as an AsyncIterable and resumes from its cursor after the response drops",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("client-feed")
+          yield* room.Tell("one")
+          yield* room.Tell("two")
+          const requests: Array<string | null> = []
+          const send = yield* FetchHttpClient.Fetch
+          let dropped = false
+
+          // The first feed response is cut after its first event, as a lost connection would be.
+          const flaky = (input: RequestInfo | URL, init?: RequestInit) =>
+            send(input, init).then((response) => {
+              requests.push(new Headers(init?.headers).get("last-event-id"))
+
+              if (dropped || response.body === null) return response
+
+              dropped = true
+              const reader = response.body.getReader()
+
+              const cut = new ReadableStream<Uint8Array>({
+                pull: (controller) =>
+                  reader.read().then((chunk) => {
+                    if (chunk.done) return controller.close()
+
+                    const text = new TextDecoder().decode(chunk.value)
+                    const end = text.indexOf("\n\n")
+
+                    if (end === -1) return controller.enqueue(chunk.value)
+
+                    // Only the first complete message gets through.
+                    controller.enqueue(new TextEncoder().encode(text.slice(0, end + 2)))
+                    void reader.cancel()
+                    controller.error(new Error("connection lost"))
+                  }),
+              })
+
+              return new Response(cut, { status: response.status, headers: response.headers })
+            })
+
+          const handle = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () => ({ authorization: token() }),
+            fetch: flaky,
+          }).get("client-feed")
+
+          const iterated = Stream.fromAsyncIterable(handle.events(Said), asFailure).pipe(
+            Stream.map((entry) => `${entry.cursor}:${entry.event.text}`),
+          )
+
+          const [first, second] = yield* iterated.pipe(Stream.take(2), Stream.runCollect)
+
+          // A later event reaches a new iteration from the cursor it resumes after.
+          const resumed = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: { authorization: token() },
+          })
+            .get("client-feed")
+            .events(Said, { after: "2" })
+
+          yield* room.Tell("three")
+
+          const [third] = yield* Stream.fromAsyncIterable(resumed, asFailure).pipe(
+            Stream.map((entry) => `${entry.cursor}:${entry.event.text}`),
+            Stream.take(1),
+            Stream.runCollect,
+          )
+
+          const received = [first, second, third]
+          expect(received).toEqual(["1:one", "2:two", "3:three"])
+          // The reopened request resumed after the one event it had delivered.
+          expect(requests.slice(0, 2)).toEqual([null, "1"])
+        }),
+      ),
+  },
+  {
+    name: "client feed reopens with fresh headers when its credential expires, and loses nothing",
+    timeoutMs: 40_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, host } = yield* setup(environment)
+          const holder = (yield* InternalActors).holder
+          const room = yield* FeedRoom.get("client-expiry")
+          yield* room.Tell("before")
+          const send = yield* FetchHttpClient.Fetch
+          const services = yield* Effect.context<never>()
+          let opened = 0
+
+          // Each request carries a fresh credential that expires 1.5 seconds later.
+          const handle = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () =>
+              Effect.runPromiseWith(services)(
+                Effect.map(holder.now, (now) => ({
+                  authorization: `Bearer ${test.tenant}:alice:${now + 1_500}`,
+                })),
+              ),
+            fetch: (input, init) =>
+              send(input, init).then((response) => {
+                if (response.ok) opened += 1
+
+                return response
+              }),
+          }).get("client-expiry")
+
+          const entries = Stream.fromAsyncIterable(handle.events(Said), asFailure).pipe(
+            Stream.map((entry) => entry.event.text),
+          )
+
+          const received = yield* entries.pipe(
+            Stream.tap((text) =>
+              text === "before"
+                ? Effect.sleep("2500 millis").pipe(Effect.andThen(room.Tell("after expiry")))
+                : Effect.void,
+            ),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.timeout("20 seconds"),
+            Effect.orDie,
+          )
+
+          expect([...received]).toEqual(["before", "after expiry"])
+          expect(opened).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "client feed fails with RetentionGap for a pruned cursor and UnknownCursor for one never issued",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("client-gap")
+          yield* room.Tell("a")
+          yield* room.Tell("b")
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`DELETE FROM actor_events WHERE tenant_id = ${room.ref.tenant}
+            AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id} AND sequence = 1`.pipe(
+            Effect.orDie,
+          )
+
+          const handle = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: { authorization: token() },
+          }).get("client-gap")
+
+          const first = (after: string) =>
+            Stream.fromAsyncIterable(handle.events(Said, { after }), asFailure).pipe(
+              Stream.runHead,
+              Effect.flip,
+            )
+
+          expect(yield* first("0")).toBeInstanceOf(RetentionGap)
+          expect(yield* first("99")).toBeInstanceOf(UnknownCursor)
+        }),
+      ),
+  },
+  {
+    name: "client opens a connection with typed frames both ways, rejects a declared open failure or a failing headers provider, and ends on close",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+
+          const handle = SocketRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () => ({ authorization: token() }),
+          }).get("client-socket")
+
+          const refused = yield* Effect.tryPromise({
+            try: () => handle.Chat.connect({ name: "mallory" }),
+            catch: asFailure,
+          }).pipe(Effect.flip)
+
+          expect(refused).toBeInstanceOf(Banned)
+
+          const connection = yield* Effect.promise(() => handle.Chat.connect({ name: "alice" }))
+          expect(connection.cursor).toBe("0")
+          const iterator = connection.frames[Symbol.asyncIterator]()
+          const next = Effect.promise(() => iterator.next())
+
+          expect((yield* next).value).toEqual(Hello.make({ name: "alice", resumed: false }))
+          yield* Effect.promise(() => connection.send(Say.make({ text: "hi" })))
+          expect((yield* next).value).toEqual(Said.make({ text: "hi" }))
+          yield* Effect.promise(() => connection.close())
+          expect((yield* next).done).toBe(true)
+
+          // A provider that rejects, such as a failed token refresh, fails `connect` with its own error.
+          const refresh = new Error("token refresh failed")
+
+          const failing = SocketRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () => Promise.reject(refresh),
+          }).get("client-socket")
+
+          const unsent = yield* Effect.promise(() =>
+            failing.Chat.connect({ name: "alice" }).then(
+              () => "opened",
+              (thrown: Error) => thrown,
+            ),
+          )
+
+          expect(unsent).toBe(refresh)
+        }),
+      ),
+  },
+  {
+    name: "carries executor progress over WebSocket as its own progress message, and the client yields it decoded apart from frames",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* SocketRoom.get("ws-progress")
+          const ws = yield* socket(host, "ws-progress", { member: "Watch" })
+          yield* ws.send({ t: "hello", authorization: token() })
+          yield* ws.until("open")
+
+          const client = SocketRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () => ({ authorization: token() }),
+          }).get("ws-progress")
+
+          const connection = yield* Effect.promise(() => client.Watch.connect())
+          const iterator = connection.messages[Symbol.asyncIterator]()
+          yield* room.Start(10)
+
+          // Progress is not a member frame: its own `t`, and no cursor or event to resume from.
+          const [wire] = (yield* ws.until("progress")).filter((message) => message.t === "progress")
+          expect(wire).toMatchObject({ t: "progress", effect: "Render", attempt: 1 })
+          expect(
+            Predicate.hasProperty(wire, "cursor") || Predicate.hasProperty(wire, "event"),
+          ).toBe(false)
+          expect(wire?.t === "progress" && wire.seq >= 1).toBe(true)
+          expect(Schema.is(Percent)(wire?.t === "progress" ? wire.frame : undefined)).toBe(true)
+
+          // The client decodes the frame with Render's progress schema.
+          const received = yield* Effect.promise(() => iterator.next())
+          const progress = received.value?._tag === "Progress" ? received.value : undefined
+          expect([progress?.effect, progress?.attempt]).toEqual(["Render", 1])
+          expect(Schema.is(Percent)(progress?.frame)).toBe(true)
+
+          yield* Effect.promise(() => connection.close())
+        }),
+      ),
+  },
+  {
+    name: "client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          const context = yield* Layer.build(
+            ActorTest.cluster({
+              database,
+              runners: 2,
+              shardLockExpiration: "3 seconds",
+              actors: transportsLayer,
+              as: User.make({ subject: "alice" }),
+            }),
+          )
+
+          yield* Effect.gen(function* () {
+            const cluster = yield* ActorCluster
+            yield* cluster.ready
+            let target: ActorRef | undefined
+
+            for (let index = 0; target === undefined && index < 200; index++) {
+              const candidate = (yield* cluster.on(0)(SocketRoom.get(`client-crash-${index}`))).ref
+
+              if ((yield* cluster.owner(candidate)) === 1) target = candidate
+            }
+
+            if (target === undefined)
+              return yield* Effect.die(new Error("Runner 1 owns no probed actor"))
+
+            const ref = target
+
+            const post = (text: string) =>
+              cluster.on(0)(SocketRoom.get(ref.id).pipe(Effect.flatMap((room) => room.Post(text))))
+
+            const host = yield* cluster.on(0)(serveSockets(environment))
+            const resyncs: Array<string | undefined> = []
+
+            const handle = SocketRoom.client({
+              baseUrl: `http://${host}/api`,
+              headers: { authorization: `Bearer ${ref.tenant}:alice` },
+            }).get(ref.id)
+
+            const connection = yield* Effect.promise(() =>
+              handle.Chat.connect(
+                { name: "alice" },
+                {
+                  // A callback that throws still lets the resync be acknowledged.
+                  onResync: ({ after }) => {
+                    resyncs.push(after)
+                    throw new Error("the page failed to reload")
+                  },
+                },
+              ),
+            )
+
+            const iterator = connection.messages[Symbol.asyncIterator]()
+
+            const next = Effect.promise(() => iterator.next()).pipe(
+              Effect.map((result) => (result.done === true ? undefined : result.value)),
+              Effect.timeoutOrElse({
+                duration: "60 seconds",
+                orElse: () => Effect.die(new Error("No connection message arrived")),
+              }),
+            )
+
+            // Each message as its tag and what it carries, for comparison.
+            const seen = next.pipe(
+              Effect.map((message) =>
+                message === undefined
+                  ? undefined
+                  : Predicate.isTagged(message, "Frame")
+                    ? { tag: message._tag, frame: message.frame }
+                    : Predicate.isTagged(message, "Resync")
+                      ? { tag: message._tag, after: message.after, reason: message.reason }
+                      : { tag: message._tag },
+              ),
+            )
+
+            expect((yield* seen)?.tag).toBe("Frame")
+            yield* post("before")
+            expect(yield* seen).toEqual({ tag: "Frame", frame: Said.make({ text: "before" }) })
+
+            yield* cluster.kill(1)
+            expect(yield* seen).toEqual({ tag: "Resync", after: "1", reason: "OwnerLost" })
+
+            // The member's resync handler replays nothing new; the replay is reported, and the client acknowledged it.
+            expect(yield* seen).toEqual({ tag: "ResyncReplayed" })
+            yield* post("after")
+            expect(yield* seen).toEqual({ tag: "Frame", frame: Said.make({ text: "after" }) })
+            expect(resyncs).toEqual(["1"])
+            yield* Effect.promise(() => connection.close())
+          }).pipe(Effect.provideContext(context))
+        }),
+      ),
+  },
+  {
     name: "ends a WebSocket session whose socket can no longer be written, and deletes its row",
     run: ({ expect, environment }) =>
       environment.run(
@@ -1505,6 +1928,80 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.gen(function* () {
             while ((yield* rows(ref)).connections > 0) yield* Effect.sleep("20 millis")
           }).pipe(Effect.timeout("10 seconds"), Effect.orDie)
+        }),
+      ),
+  },
+  {
+    name: "serves a stream over SSE: element messages, then end, with a declared failure in its end message",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          yield* (yield* FeedRoom.get("sse-stream")).Tell("x")
+
+          const client = Context.get(
+            yield* Layer.build(FetchHttpClient.layer),
+            HttpClient.HttpClient,
+          )
+
+          const subscribe = (body: string) =>
+            client
+              .execute(
+                HttpClientRequest.post(`http://${host}/api/actors/FeedRoom/sse-stream/Count`, {
+                  headers: { authorization: token(), accept: "text/event-stream" },
+                }).pipe(HttpClientRequest.bodyText(body, "application/json")),
+              )
+              .pipe(
+                Effect.flatMap((response) => response.text),
+                Effect.orDie,
+              )
+
+          expect(yield* subscribe("3")).toBe(
+            "event: element\ndata: 1\n\nevent: element\ndata: 2\n\nevent: element\ndata: 3\n\nevent: end\ndata: null\n\n",
+          )
+          expect(yield* subscribe("101")).toBe(
+            'event: element\ndata: 1\n\nevent: end\ndata: {"_tag":"Refused","at":1}\n\n',
+          )
+        }),
+      ),
+  },
+  {
+    name: "client subscribes to a stream as an AsyncIterable, and gets its declared failure as its class",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* FeedRoom.get("client-stream")
+          yield* room.Tell("one")
+
+          const handle = FeedRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: { authorization: token() },
+          }).get("client-stream")
+
+          const counted = yield* Stream.fromAsyncIterable(handle.Count(3), asFailure).pipe(
+            Stream.runCollect,
+          )
+
+          expect([...counted]).toEqual([1, 2, 3])
+
+          const refused = yield* Stream.fromAsyncIterable(handle.Count(101), asFailure).pipe(
+            Stream.runDrain,
+            Effect.flip,
+          )
+
+          expect(refused).toBeInstanceOf(Refused)
+
+          // A live stream: the committed text, then one committed while subscribed.
+          const heard = yield* Stream.fromAsyncIterable(handle.Heard({}), asFailure).pipe(
+            Stream.tap((text) => (text === "one" ? room.Tell("two") : Effect.void)),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.timeout("20 seconds"),
+            Effect.orDie,
+          )
+
+          expect([...heard]).toEqual(["one", "two"])
         }),
       ),
   },
