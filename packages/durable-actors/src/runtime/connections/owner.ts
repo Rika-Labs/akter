@@ -1079,16 +1079,23 @@ export const activationOwner = ({
 
         if (row === undefined) return
 
-        const result = yield* run(
-          activation,
-          row,
-          ConnectionPhase.cases.Close.make({ reason: request.cause.cause }),
-        ).pipe(
-          Effect.catchDefect((cause) =>
-            Effect.as(Effect.logError("Connection close defect", Cause.die(cause)), undefined),
-          ),
-          Effect.orElseSucceed(() => undefined),
-        )
+        // A feed has no handler to run on close; its row just goes.
+        const result =
+          row.member === FEED_MEMBER
+            ? undefined
+            : yield* run(
+                activation,
+                row,
+                ConnectionPhase.cases.Close.make({ reason: request.cause.cause }),
+              ).pipe(
+                Effect.catchDefect((cause) =>
+                  Effect.as(
+                    Effect.logError("Connection close defect", Cause.die(cause)),
+                    undefined,
+                  ),
+                ),
+                Effect.orElseSucceed(() => undefined),
+              )
 
         yield* dropRows(activation, [request.connectionId])
         activation.opened.delete(request.connectionId)

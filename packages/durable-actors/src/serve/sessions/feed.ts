@@ -1,11 +1,11 @@
 import { Effect, Match, Option, Predicate, Queue, Schema, Stream } from "effect"
-import type { ActorError } from "../errors/actor.ts"
-import { RetentionGap, UnknownCursor } from "../errors/events.ts"
-import type { InternalActors } from "../handles/actors.ts"
-import type { ActorRef, Caller } from "../identity/caller.ts"
-import type { HeldConnection } from "../runtime/connections/holder.ts"
-import { FEED_MEMBER, FeedFrame } from "../runtime/connections/protocol.ts"
-import { actorErrorBody } from "./wire.ts"
+import type { ActorError } from "../../errors/actor.ts"
+import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
+import type { InternalActors } from "../../handles/actors.ts"
+import type { ActorRef, Caller } from "../../identity/caller.ts"
+import type { HeldConnection } from "../../runtime/connections/holder.ts"
+import { FEED_MEMBER, FeedFrame } from "../../runtime/connections/protocol.ts"
+import { actorErrorBody } from "../wire.ts"
 
 /** Events a feed reads from `actor_events` per statement. */
 export const FEED_PAGE = 256
