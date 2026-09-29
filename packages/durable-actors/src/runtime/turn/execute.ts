@@ -20,6 +20,7 @@ import { COMMIT_VERSION } from "../database/replica.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
+import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
@@ -203,6 +204,7 @@ export const executeTurn = Effect.fnUntraced(function* (
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
+  const { role } = yield* TenantScope
   const { tenant, actor, id } = request.ref
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
@@ -246,8 +248,12 @@ export const executeTurn = Effect.fnUntraced(function* (
   const turn = Effect.fnUntraced(function* (session: Session, begin: ReadonlyArray<Statement>) {
     const cold = cache.generation === undefined
 
+    // With row-level security the same statement takes the tenant role, so
+    // every later statement of the turn, the handler's included, is bound
+    // to this actor's tenant at no extra round trip.
     const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
-      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)`
+      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)
+      ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
     const readsState = cold || cache.state === undefined
     let admission: Admission | undefined

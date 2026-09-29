@@ -37,17 +37,20 @@ const withReplica = <A>(
   )
 
 /** Replay on the replica stays paused for the rest of the scope. */
-const pauseReplay = (control: ConformanceConnection) =>
+export const pauseReplay = (control: ConformanceConnection) =>
   Effect.acquireRelease(control.query("SELECT pg_wal_replay_pause()"), () =>
     Effect.asVoid(control.query("SELECT pg_wal_replay_resume()")),
   )
 
-const resumeReplay = (control: ConformanceConnection) =>
+export const resumeReplay = (control: ConformanceConnection) =>
   Effect.asVoid(control.query("SELECT pg_wal_replay_resume()"))
 
 /** Waits until the replica has replayed through `version`. */
-const replayedThrough = (control: ConformanceConnection, version: string) =>
-  control
+export const replayedThrough = Effect.fnUntraced(function* (
+  control: ConformanceConnection,
+  version: string,
+) {
+  yield* control
     .query("SELECT coalesce(pg_last_wal_replay_lsn() - '0/0' >= $1::numeric, false) AS ready", [
       version,
     ])
@@ -58,8 +61,8 @@ const replayedThrough = (control: ConformanceConnection, version: string) =>
         duration: "10 seconds",
         orElse: () => Effect.die(`The replica did not replay through ${version}`),
       }),
-      Effect.asVoid,
     )
+})
 
 const post = (server: Server, token: string, key: string) =>
   Effect.gen(function* () {

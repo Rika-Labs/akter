@@ -224,6 +224,19 @@ The cases live in [`conformance/inspector.ts`](../../packages/durable-actors/src
 
 `durable dev`, in `apps/cli/src/commands/dev/run.test.ts` on PGlite: option parsing and its usage errors, the entry's `app` export check, and one router serving a command through `Actor.serve` and the inspector reading its receipt and decoded state, with an actor in another tenant `404`. The page, in `apps/cli/src/commands/dev/inspector/page.test.ts`: the HTML shell names its API and bundled client, the client bundles from source at startup, and paths written into the shell are escaped.
 
+### M4.5 row-level security
+
+The cases live in [`conformance/rls.ts`](../../packages/durable-actors/src/testing/conformance/rls.ts) and check [ADR 0051](../decisions/0051-row-level-security.md). Each case migrates a fresh database, applies the owned tables' drizzle-kit DDL, runs the operator script for a new tenant role (on Postgres the role is dropped afterwards), and starts a runtime with `rowLevelSecurity: { role }`. The fixture actor `Ledger` writes state, emits an event, schedules a keyed self-timer, and performs an effect whose `onSuccess` route writes state again; `Notebook` from the owned-table cases writes an owned row. Shared (PGlite and Postgres):
+
+- `row-level security on: every framework table and owned table carries the tenant policy` — the tables with a `durable_tenant` policy and RLS on are exactly the tables with a `tenant_id` column, including `conformance_notes`.
+- `row-level security on: turns, timers, effects, queries, and owned rows serve two tenants, each seeing only its own` — equal actor ids in two tenants each record, tick once, route their effect's result, read their own state and events through a query, list only their own owned row, and survive a retention sweep.
+- `row-level security on: a transaction naming one tenant reads, changes, and inserts no other tenant's rows in any protected table` — as the role with `durable.tenant` set to one tenant, every protected table shows no other tenant's row and an `UPDATE` of the other tenant's rows changes none; inserting a row for the other tenant or moving a row to it fails with a row-level security violation; with no tenant named, `actor_state` shows nothing, while the connecting role still sees both tenants.
+- `row-level security on: turns and queries run as the tenant role` — revoking `INSERT` on `actor_receipts` from the role fails the next command, and revoking `SELECT` on `actor_state` fails the next query; after the grants return, the actor holds exactly the two committed entries and receipts. Removing the role from the turn's opening statement, or the query's tenant transaction, fails this case.
+- `row-level security on: a role granted only the durable schema reads its transaction's tenant through the views and no runtime table` — inside a rolled-back transaction, a fresh role granted only `durable` sees in every view only the tenant its transaction names (each tenant's two actors and one event) and nothing when it names none, and gets `permission denied` on every protected table.
+- `row-level security on: the runtime refuses to start when the role is missing, does not own the views, or owns an owned table` — startup fails naming the missing role; naming `durable.receipts` once that view is handed back to the table owner; and naming `public.conformance_notes` once the role owns it, since an owner bypasses the table's policy.
+
+The owned tables' drizzle-kit output, including `ENABLE ROW LEVEL SECURITY` and the `durable_tenant` policy, is checked in `tables/owned.test.ts`.
+
 ### Backend-specific cases
 
 - PGlite, in `pglite.test.ts`: `owns a fresh database per layer build and closes both instances` and `leaves a borrowed client open and does not replace its query method` — isolate builds and verify owned versus borrowed resource lifetimes.
@@ -907,6 +920,7 @@ Evidence MUST record the revision, test name and command, backend/runtime versio
 - `reads the replica once it has replayed the caller's version, falls through to the primary while it lags, and serves tokenless reads there`: with replay paused after the caller's write and a second, unseen write committed, the caller's version reads the replica's older state (which has the caller's write), the unseen write's version reads the primary, and a tokenless query reads the stale replica;
 - `falls through to the primary when the replica cannot be reached`;
 - `the Promise client reads its own writes while the replica lags, sending the greatest version it was issued`;
-- `an in-process handle's query reads the commands its runtime sent while the replica lags`.
+- `an in-process handle's query reads the commands its runtime sent while the replica lags`;
+- `row-level security on: a replica read runs as the tenant role and binds the tenant, falling through to the primary when the role is refused there` (in `conformance/rls.ts`): with the role's `SELECT` on `actor_state` revoked on the paused replica and granted again on the primary, a tokenless read returns the primary's newer entries; after replay, a stale replica read returns the tenant's entries rather than none. Binding the tenant on the primary alone makes the first step return the replica's stale entries.
 
 Making the replica check always pass fails the three lag cases. Not covered: a hot-standby recovery conflict mid-read (it takes the same fall-through path as an unreachable replica), and failover.
