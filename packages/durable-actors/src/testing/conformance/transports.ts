@@ -63,12 +63,32 @@ const Blind = Actor.connection("Blind", { server: Said, stampCursor: false })
 
 const Post = Actor.command("Post", { input: Schema.String })
 
+const Percent = Schema.Struct({ percent: Schema.Finite })
+
+/** An effect whose executor reports how far it got, one step at a time. */
+class Render extends Actor.effect<Render>()("Render", {
+  input: { steps: Schema.Int },
+  progress: Percent,
+}) {}
+
+const Start = Actor.command("Start", { input: Schema.Int })
+
+/** Receives Render's progress on every open connection, and no member frames. */
+const Watch = Actor.connection("Watch", {
+  server: Said,
+  progress: { effects: [Render], to: "all" },
+})
+
 /** The actor served over WebSocket; its short revocation bound keeps revocation cases fast. */
 const SocketRoom = Actor.make("SocketRoom", {
   key: Schema.String,
   events: [Said],
-  api: { Chat, Blind, Post },
-  policy: { reauthorizeEvery: "2 seconds" },
+  effects: [Render],
+  api: { Chat, Blind, Post, Start, Watch },
+  policy: {
+    reauthorizeEvery: "2 seconds",
+    effects: { Render: { retry: { times: 0 }, progressEvery: "50 millis" } },
+  },
 })
 
 const socketLayer = SocketRoom.toLayer(
@@ -112,6 +132,24 @@ const socketLayer = SocketRoom.toLayer(
       }),
     },
     Blind: { open: () => Effect.void, frame: () => Effect.void },
+    Start: Effect.fnUntraced(function* (steps: number) {
+      yield* (yield* SocketRoom.Turn).perform(Render.make({ steps }))
+    }),
+    Watch: { open: () => Effect.void, frame: () => Effect.void },
+  }),
+)
+
+// Each step reports its percentage and pauses, so reports keep coming while a client watches.
+const renderLayer = SocketRoom.toEffectLayer(
+  Effect.succeed({
+    Render: Effect.fnUntraced(function* ({ steps }) {
+      const exec = yield* SocketRoom.Executor
+
+      for (let step = 1; step <= steps; step++) {
+        yield* exec.progress(Render, { percent: (100 * step) / steps })
+        yield* Effect.sleep("50 millis")
+      }
+    }),
   }),
 )
 
@@ -201,7 +239,7 @@ const tokens = Actor.auth.make((request) =>
 )
 
 /** Serves `SocketRoom` from a fresh listening server for the rest of the scope; returns its host. */
-export const transportsLayer = Layer.mergeAll(socketLayer, feedLayer)
+export const transportsLayer = Layer.mergeAll(socketLayer, renderLayer, feedLayer)
 
 export const serveSockets = Effect.fnUntraced(function* (
   environment: ConformanceEnvironment,
@@ -1681,6 +1719,45 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(unsent).toBe(refresh)
+        }),
+      ),
+  },
+  {
+    name: "carries executor progress over WebSocket as its own progress message, and the client yields it decoded apart from frames",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* SocketRoom.get("ws-progress")
+          const ws = yield* socket(host, "ws-progress", { member: "Watch" })
+          yield* ws.send({ t: "hello", authorization: token() })
+          yield* ws.until("open")
+
+          const client = SocketRoom.client({
+            baseUrl: `http://${host}/api`,
+            headers: () => ({ authorization: token() }),
+          }).get("ws-progress")
+
+          const connection = yield* Effect.promise(() => client.Watch.connect())
+          const iterator = connection.messages[Symbol.asyncIterator]()
+          yield* room.Start(10)
+
+          // Progress is not a member frame: its own `t`, and no cursor or event to resume from.
+          const [wire] = (yield* ws.until("progress")).filter((message) => message.t === "progress")
+          expect(wire).toMatchObject({ t: "progress", effect: "Render", attempt: 1 })
+          expect(
+            Predicate.hasProperty(wire, "cursor") || Predicate.hasProperty(wire, "event"),
+          ).toBe(false)
+          expect(wire?.t === "progress" && wire.seq >= 1).toBe(true)
+          expect(Schema.is(Percent)(wire?.t === "progress" ? wire.frame : undefined)).toBe(true)
+
+          // The client decodes the frame with Render's progress schema.
+          const received = yield* Effect.promise(() => iterator.next())
+          const progress = received.value?._tag === "Progress" ? received.value : undefined
+          expect([progress?.effect, progress?.attempt]).toEqual(["Render", 1])
+          expect(Schema.is(Percent)(progress?.frame)).toBe(true)
+
+          yield* Effect.promise(() => connection.close())
         }),
       ),
   },

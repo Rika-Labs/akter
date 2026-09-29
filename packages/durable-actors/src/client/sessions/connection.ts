@@ -5,7 +5,10 @@ import type { ValueSchema } from "../../members/command.ts"
 import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../../serve/frames.ts"
 import { decodeFailure, type Failure, transport } from "../transport.ts"
 
-/** What a connection's client receives, in order: member frames and the holder's resync notices. */
+/**
+ * What a connection's client receives, in order: member frames, the holder's
+ * resync notices, and executor progress for a member that lists effects.
+ */
 export type ConnectionMessage<Frame> = Data.TaggedEnum<{
   Frame: {
     readonly frame: Frame
@@ -22,6 +25,18 @@ export type ConnectionMessage<Frame> = Data.TaggedEnum<{
     readonly deadline: number
   }
   ResyncReplayed: {}
+  /**
+   * An executor's progress on an effect the member lists: display-only, lossy,
+   * and never replayed after a resync. `frame` is decoded by that effect's
+   * `progress` schema; `seq` counts the attempt's reports, so a gap is a dropped one.
+   */
+  Progress: {
+    readonly effect: string
+    readonly effectId: string
+    readonly attempt: number
+    readonly seq: number
+    readonly frame: unknown
+  }
 }>
 
 interface ConnectionMessageDefinition extends Data.TaggedEnum.WithGenerics<1> {
@@ -55,7 +70,7 @@ export interface ClientConnection<Server, Client> {
    * `resync: true` for a dropped socket. Consume either this or `frames`, not both.
    */
   readonly messages: AsyncIterable<ConnectionMessage<Server>>
-  /** The member frames of `messages`, without the resync notices. */
+  /** The member frames of `messages`, without the resync notices or progress. */
   readonly frames: AsyncIterable<Server>
   readonly send: (frame: Client) => Promise<void>
   readonly close: () => Promise<void>
@@ -123,6 +138,13 @@ export const connect = <Server, Client>({
       const encodeParams = Schema.encodeUnknownEffect(Schema.toCodecJson(member.params))
       const encodeFrame = Schema.encodeUnknownEffect(Schema.toCodecJson(member.client))
       const decodeFrame = Schema.decodeUnknownEffect(Schema.toCodecJson(member.server))
+
+      const progressDecoders = new Map(
+        [...member.progress].map(([tag, schema]) => [
+          tag,
+          Schema.decodeUnknownEffect(Schema.toCodecJson(schema)),
+        ]),
+      )
 
       const declared: (body: Schema.Json) => Option.Option<Failure> =
         member.errors.length === 0
@@ -211,6 +233,29 @@ export const connect = <Server, Client>({
           Effect.asVoid,
         )
 
+      // Progress is lossy by design: one this client can't read is dropped, and the session goes on.
+      const progress = (message: Extract<ServerWireMessage, { readonly t: "progress" }>) =>
+        Option.match(Option.fromNullishOr(progressDecoders.get(message.effect)), {
+          onNone: () => Effect.void,
+          onSome: (decode) =>
+            decode(message.frame).pipe(
+              Effect.flatMap((frame) =>
+                Queue.offer(
+                  messages,
+                  ConnectionMessage.Progress<Server>({
+                    effect: message.effect,
+                    effectId: message.effectId,
+                    attempt: message.attempt,
+                    seq: message.seq,
+                    frame,
+                  }),
+                ),
+              ),
+              Effect.catch(() => Effect.void),
+              Effect.asVoid,
+            ),
+        })
+
       const resyncing = (message: Extract<ServerWireMessage, { readonly t: "resync" }>) => {
         const state = { settled: false }
         resync = state
@@ -252,6 +297,7 @@ export const connect = <Server, Client>({
             Queue.offer(messages, ConnectionMessage.ResyncReplayed<Server>()).pipe(
               Effect.andThen(acknowledge),
             ),
+          progress,
           // A provider that fails leaves the old credential to expire, and the server ends the session then.
           reauthenticate: () =>
             authorization.pipe(
