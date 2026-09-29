@@ -50,7 +50,9 @@ Every request is authenticated per request by the `auth` provider before any JSO
 
 ### 6. The Python client is generated from the OpenAPI document by `packages/python-client`
 
-`@durable-actors/python-client` reads an OpenAPI document (a file or `GET /openapi.json`) and writes a self-contained Python package with the standard library only: dataclass models for the document's schemas, one method per operation named by its operation id, and a runtime that holds what OpenAPI cannot say and the [generating clients](../api/05-generated-clients.md) guide already requires: minting ids from `GET /protocol`, the same id and body on every retry, the retry table, and decoding error bodies into exceptions that carry the declared tag and fields. Stdlib only means the client runs wherever Python does; the package is exempt from nothing in the structure rules, since the checker reads TypeScript and `package.json`, and its Python tests run under `uv run pytest`. The runtime is not generated, and is copied verbatim into each generated package. M6.6 ships it in a second pull request after the endpoint.
+`@durable-actors/python-client` reads an OpenAPI document (a file or `GET /openapi.json`) and writes a self-contained Python package with the standard library only: dataclass models for the document's schemas, one method per operation named by its operation id, and a runtime that holds what OpenAPI cannot say and the [generating clients](../api/05-generated-clients.md) guide already requires: minting ids from `GET /protocol`, the same id and body on every retry, the retry table, and decoding error bodies into exceptions that carry the declared tag and fields. Stdlib only means the client runs wherever Python 3.9 or later does. The runtime is not generated: `python/runtime.py` is copied verbatim into each generated package as `_runtime.py`, and its tests, `python/test_runtime.py`, run against a real local HTTP server. The generator is TypeScript (`bun packages/python-client/src/main.ts <openapi.json or URL> --out <dir> --name <package>`); the package needs no structure exemption, since the checker reads TypeScript and `package.json`, and the Python files sit beside their tests. The Python tests use `unittest`, run by `python3 -m unittest` (Verify's runners have Python but not uv), and also run under `uv run --no-project --with pytest python -m pytest` through the package's `pyproject.toml`.
+
+Behavior of the runtime, from the [generating clients](../api/05-generated-clients.md) guide: it reads `GET /protocol` once and mints `v1` ids from the corrected server clock, a second behind it; it sends one id and one body on every attempt; it retries 503, 429, 504, lost replies, `InvalidCommandId` `future`, and, once with a fresh credential from a callable `token`, `401 expired`, with the table's waits and jitter, and stops when the id expires within a second; and it raises `CommandExpired`, `CommandConflict`, and every other framework reason as its own exception, a declared failure as `DeclaredError` with its `tag` and body, and a defect as `Defect`. Read-your-writes tokens (`durable-min-version`) and streams, feeds, connections, and content are not part of the Python client.
 
 ## Alternatives
 
@@ -84,7 +86,16 @@ Every request is authenticated per request by the `auth` provider before any JSO
 - `answers queries, void commands, singletons, and minted actors like their routes, and refuses arguments a tool does not take`
 - `fails Actor.serve at startup when mcp.path collides with a protocol route or the OpenAPI path`
 
-The Python client's cases, added by its pull request, run a generated client against the same served application.
+The Python client's cases run in `packages/python-client`, whose dependency on the framework is one-way (a dev dependency), so they are not in `conformance/protocols.ts`; the ledger names them as part of the same check. `src/generate.test.ts` generates a client from a real `Actor.serve` document (with `basePath`) and runs it in Python against a real Bun listener:
+
+- `names one method per public member by its OpenAPI operation id, and none for an internal member`
+- `compiles and types every schema the public members use`
+- `runs a command once per command id against a real server, replays it, and refuses reuse with other input` (replay, `CommandConflict`, `CommandExpired`, a declared error, and missing and invalid credentials)
+- `answers queries, void commands, singletons, and per-token principals like the routes`
+- `retries a command whose reply was lost with the same id, and the server runs it once`
+- `refuses a package name that is not a Python module name, and a document without protocol routes`
+
+`python/test_runtime.py` covers the runtime against a scripted server: id format and clock, one id and body across `503`, `429`, `504`, lost replies, and `future`; the fresh credential once; never retrying `410`, `409`, or missing credentials; stopping before the id expires without minting another; a caller-supplied id used verbatim; queries without an id; and declared, defect, and unknown bodies.
 
 ## Revisit conditions
 

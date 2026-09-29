@@ -61,3 +61,29 @@ A server under `Actor.auth.none` declares no schemes. Never put a credential in 
 - A command's `commandId` is the same id `Idempotency-Key` carries. Mint it once with `durable.commandIds`, keep it with the pending call, and send it with the same `input` on every retry. The JSON-RPC `id` is not a command id and may change on each attempt. A call retried over HTTP with the same id replays the same receipt.
 - A result is `isError: false` with the output as JSON text (and as `structuredContent` when the tool has an `outputSchema`), or `isError: true` with the text holding exactly the error body of the HTTP route: a declared error, `{ _tag: "ActorError", reason, isRetryable, retryAfter? }`, or `{ _tag: "Defect", traceId }`. The retry table above applies to `isRetryable` and `retryAfter`. Failed authentication is an HTTP `401` with the `Unauthorized` body, not a JSON-RPC error.
 - Internal commands, connections, streams, feeds, and content have no tool, and a call to one is `-32602 Unknown tool`.
+
+## Python
+
+`packages/python-client` generates a Python 3.9+ package, using only the standard library, from an OpenAPI document ([ADR 0058](../decisions/0058-generated-protocols-mcp-and-python-client.md)):
+
+```sh
+bun packages/python-client/src/main.ts http://localhost:8080/openapi.json --out ./clients --name chat_client
+```
+
+The package has `models.py` (a `TypedDict` for every schema the public members use), `client.py` (one class per actor, one method per public command, reducer, and query, in snake case), and `_runtime.py`, the fixed runtime that holds the command-id rules above.
+
+```python
+from chat_client import Client, CommandExpired, DeclaredError
+
+client = Client("http://localhost:8080", token=lambda: current_token())
+key = client.mint_command_id()
+client.room.post("room-1", {"body": "hi"}, command_id=key)
+client.room.post("room-1", {"body": "hi"}, command_id=key)  # replays the stored result
+client.room.recent("room-1", {"limit": 20})
+```
+
+- `base_url` is the origin: each method carries its full path, `basePath` included. A method takes the actor id (unless the actor is a singleton), the input (unless the member has none), and, for commands, a keyword-only `command_id`. Without one, the runtime mints an id and keeps it across every retry of that call. Keep an id you mint yourself with the pending operation.
+- `token` is a bearer string or a function called before every attempt; a command refused with `401 expired` is retried once, with a fresh call to it and the same id.
+- Failures are exceptions: framework reasons are `ActorError` subclasses (`CommandExpired`, `CommandConflict`, `Unauthorized`, ...) with `tag`, `code`, `status`, `is_retryable`, and `retry_after_ms`; a declared failure is `DeclaredError` with `tag` and `body` (`DECLARED_ERRORS` maps each operation to its tags); a defect is `Defect` with `trace_id`; no reply after every attempt is `TransportError`. `CommandExpired` is raised, never replaced.
+- `OPERATIONS` maps each operation id to its attribute and method, so the names agree with OpenAPI and the other clients. Internal commands, streams, feeds, connections, and content have no method.
+- Not included: `durable-min-version` read-your-writes tokens.
