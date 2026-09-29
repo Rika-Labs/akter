@@ -79,6 +79,7 @@
     "drizzle-kit": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
+    "fake-indexeddb": "6.2.5",
     "pg": "8.23.0",
     "vitest": "catalog:"
   },
