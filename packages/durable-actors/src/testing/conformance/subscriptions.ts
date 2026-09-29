@@ -1669,6 +1669,76 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "lists a failing row with its lag and last error for an operator, and drops it once skipped",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const operators = yield* OperatorRuntime
+          const follower = yield* SubFollower.get("lag-follower")
+          yield* follower.Follow({ source: "lag-a" })
+          yield* follower.Follow({ source: "lag-b" })
+          yield* drain
+          fixture.behave = (entry) => (entry.includes("/lag-a#2:") ? "defect" : "apply")
+          yield* (yield* SubOrder.get("lag-a")).PlaceMany({ customerId: "l", count: 3 })
+          yield* (yield* SubOrder.get("lag-b")).PlaceMany({ customerId: "l", count: 3 })
+          yield* drain
+
+          const page = { tenant: test.tenant, minAttempts: 1, limit: 100 }
+
+          // Other cases in this file leave their own rows behind in the tenant.
+          const lagging = (input: typeof page) =>
+            Effect.map(operators.lagging(input), (rows) =>
+              rows.filter((row) => row.sourceId.startsWith("lag-")),
+            )
+
+          const failing = yield* lagging(page)
+
+          // Every subscription of lag-a fails on the same event, and lag-b's rows are healthy.
+          expect(new Set(failing.map((entry) => entry.sourceId))).toEqual(new Set(["lag-a"]))
+
+          const row = failing.find((entry) => entry.subscriberType === "SubFollower")!
+
+          expect(row).toMatchObject({
+            sourceType: "SubOrder",
+            sourceId: "lag-a",
+            subscriberId: "lag-follower",
+            delivered: "1",
+            head: "3",
+            lag: "2",
+            attempts: 1,
+          })
+          expect(row.lastError).toContain("lag-a#2")
+          expect(yield* lagging({ ...page, minAttempts: 8 })).toEqual([])
+          expect(yield* lagging({ ...page, tenant: `${test.tenant}-other` })).toEqual([])
+
+          yield* operators.skip({
+            target: { tenant: test.tenant, actorType: "SubOrder", actorId: "lag-a" },
+            subscriberType: "SubFollower",
+            subscription: "FollowedOrders",
+            subscriberId: "lag-follower",
+            through: "2",
+            audit: {
+              operator: "oncall",
+              action: "subscriptions.skip",
+              tenant: test.tenant,
+              capability: Option.none(),
+              reason: "bad payload",
+            },
+          })
+          fixture.behave = () => "apply"
+          yield* drain
+
+          const remaining = (yield* lagging(page)).map((entry) => entry.subscriberType)
+
+          expect(remaining.length).toBe(failing.length - 1)
+          expect(remaining).not.toContain("SubFollower")
+        }),
+      ),
+  },
+  {
     name: "holds later events behind a failing one on the same row only, and interleaves two sources",
     run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
       run(

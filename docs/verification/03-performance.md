@@ -669,6 +669,14 @@ Not covered:
 
 With 10 samples, p99 is not meaningful.
 
+### M2 close: statements per operation against the baseline
+
+The M2 exit criterion "statements per operation match T2's baseline" was checked on 2026-09-30 against the `Statements` workflow's artifacts from 20 runs on 2026-09-29 (pull requests and pushes to `main`, each a `ci` profile run on Postgres 18.6 on a 4-vCPU CI runner), and against the latest run on `main`, which passed. The baseline is `benchmarks/baselines/statements.json` at `29d7397`; the gate fails a case that moves by more than 0.2 in either direction.
+
+- **`outbox/delivery-concurrent-16`.** The baseline is 14.58. Thirteen runs from `d64912d` on, where `outbox/delivery-sequential` also stepped from about 14.3 to 16.3, gave 14.51 to 14.76, so the largest distance from the baseline is +0.18 (`20056e1`) and the smallest margin to the threshold is 0.02. The seven earlier runs (12.46 to 12.73) predate that step and are the previous level, not noise. The spread within one code version is 0.25 wide, wider than the 0.13 the gate's comment names, but no run failed on it, so no tolerance is set and the baseline is unchanged. A run past +0.2 would be the signal to give this case its own tolerance.
+- **`hot-actor/concurrent-8`.** This one does not hold: its runs gave 4.01, 4.02, 4.27 to 4.43, and 4.71 to 4.91, depending on how many concurrent commands share a batch. Two pull requests failed on it (+0.51 and +0.23, runs 36621870947 and 36625248743) and the baseline was moved to 4.79 in `79bfb108`. The four runs after that stayed within 0.12 of it, but a run in the lower group would fail. This is open in [#305](https://github.com/Rika-Labs/durable-actors/issues/305).
+- **Every other case** matched its baseline within 0.2 in the latest run on `main`.
+
 ### Recommendations (not applied)
 
 These are runtime changes, so each belongs in its own pull request:
