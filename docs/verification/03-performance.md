@@ -41,7 +41,10 @@ These run on dedicated hardware in [#66](https://github.com/Rika-Labs/durable-ac
 - **72-hour soak:** vacuum progress, transaction-ID age, WAL bytes per turn, full-page-image ratio, replica lag, and relay lag.
 - **Workflows** (ADR 0022; M2.7's `workflow` scenario): statements and milliseconds per recorded activity step, resume latency after a runner kill, sleep lateness against the due time, and recovery resume turns per running execution. The emit-path wait lookup must not change the statement count for actor types without waits.
 - **Failure drills:** runner kill, shard primary failover, and relay crash, with recovery time and duplicate/lost-work checks.
-- **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region.
+- **Remote users:** p50/p99 for a tenant served from its home region versus from a remote single region. Deferred to L.1 ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)).
+- **Content blobs** (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)): deduplication ratio and bytes stored for a skewed upload set, upload and attach latency, read latency, and sweep cost per thousand candidates.
+- **File-backed PGlite** (M4.14, [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)): turn and wake latency and throughput at several `dataDir` sizes; the largest measured size bounds the claim.
+- **Cold wakes** (L.2, [ADR 0036](../decisions/0036-cold-tier.md)): latency of a cold wake against the wake-latency target plus one object GET.
 
 ## M1 close (cloud VM)
 
