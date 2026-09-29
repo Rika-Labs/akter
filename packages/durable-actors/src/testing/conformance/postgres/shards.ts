@@ -21,6 +21,7 @@ export const shards = {
   progress: ["progress", "progressDelivery"],
   properties: ["properties"],
   relay: ["relay", "relayCluster"],
+  "single-shard": ["singleShard"],
   singleton: ["singleton"],
   streams: ["streams"],
   subscriptions: ["subscriptions", "subscriptionsRetention", "subscriptionsCluster"],

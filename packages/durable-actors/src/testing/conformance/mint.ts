@@ -261,6 +261,11 @@ export const planLaterTask = (parent: string) =>
 /** The title of a created minted task. */
 export const mintedTitle = (id: string) => task(id).pipe(Effect.flatMap((child) => child.Title()))
 
+/** Mints one child from a tenant-placed planner, for the single-shard statement check. */
+export const mintWorkload: Effect.Effect<void, never, Actors> = Effect.gen(function* () {
+  yield* (yield* Planner.get("p-shard")).Plan(1)
+}).pipe(Effect.orDie)
+
 export const mintConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "mints ids from the command id and ordinal and creates each child once from its intent",

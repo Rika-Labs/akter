@@ -146,11 +146,15 @@ const acknowledgement = (
 /**
  * True when `request` is a minted actor's creating intent: its caller carries
  * the parent's mint proof for the actor's id, and the parent's committed
- * outbox still holds that exact intent with the same payload.
+ * outbox still holds that exact intent with the same payload. A parent-placed
+ * actor shares its parent's routing key, so the read names it and stays on
+ * the actor's own shard; any other parent may live on another shard, which
+ * the read cannot name without the parent's placement.
  */
 const committedMintIntent = Effect.fnUntraced(function* (
   request: Request,
   parent: string | undefined,
+  routingKey: bigint,
 ) {
   const { caller, ref } = request
 
@@ -163,7 +167,8 @@ const committedMintIntent = Effect.fnUntraced(function* (
     WHERE intent_id = ${request.commandId} AND kind = 'intent' AND tenant_id = ${ref.tenant}
       AND actor_type = ${caller.ref.actor} AND actor_id = ${caller.ref.id}
       AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}
-      AND payload::jsonb = ${request.payload}::jsonb`
+      AND payload::jsonb = ${request.payload}::jsonb
+      ${parent === undefined ? sql.literal("") : sql`AND routing_key = ${routingKey}`}`
 
   if (rows.length === 0) return false
 
@@ -673,7 +678,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           policy.createdBy === request.command &&
           !created &&
           isMintedId(parent === undefined ? id : (parseChildId(id)?.local ?? "")) &&
-          (request.external === true || !(yield* committedMintIntent(request, parent)))
+          (request.external === true || !(yield* committedMintIntent(request, parent, routingKey)))
         ) {
           settled[index] = Result.fail(
             ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
