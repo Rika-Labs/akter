@@ -13,8 +13,8 @@ export interface PayloadsOptions {
   readonly json: boolean
 }
 
-/** Parses the arguments after `payloads`. */
-export const parsePayloads = (command: string | undefined, args: ReadonlyArray<string>) =>
+/** Parses the arguments after `payloads`: the command, then its flags. */
+export const parsePayloads = ([command, ...args]: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     if (command !== "check" && command !== "clear")
       return yield* UsageError.make({ message: `Unknown payloads command: ${command ?? ""}` })

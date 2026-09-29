@@ -12,7 +12,7 @@ import {
   parseDev,
 } from "./commands/dev/run.ts"
 import { USAGE, actorsOf, check, loadEntry, parseCheck } from "./commands/workflows/check.ts"
-import { USAGE as PAYLOADS_USAGE, parsePayloads, payloads } from "./commands/payloads/payloads.ts"
+import { USAGE as PAYLOADS_USAGE, parsePayloads, payloads } from "./commands/payloads/run.ts"
 
 const fail = (message: string) =>
   Console.error(message).pipe(
@@ -51,9 +51,9 @@ const workflowsCheck = (args: ReadonlyArray<string>) =>
     }),
   )
 
-const payloadsCommand = (command: string | undefined, args: ReadonlyArray<string>) =>
+const payloadsCommand = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    const options = yield* parsePayloads(command, args)
+    const options = yield* parsePayloads(args)
     const module = yield* loadEntry(options.entry)
     const actors = yield* actorsOf({ module, entry: options.entry })
 
@@ -127,7 +127,7 @@ const program = Effect.gen(function* () {
 
   if (group === "workflows" && command === "check") return yield* workflowsCheck(args)
 
-  if (group === "payloads") return yield* payloadsCommand(command, args)
+  if (group === "payloads") return yield* payloadsCommand(process.argv.slice(3))
 
   return yield* fail(
     `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${PAYLOADS_USAGE}`,

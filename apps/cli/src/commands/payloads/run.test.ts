@@ -5,7 +5,7 @@ import { Effect, Exit, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
 import { UsageError } from "../workflows/check.ts"
-import { parsePayloads, payloads } from "./payloads.ts"
+import { parsePayloads, payloads } from "./run.ts"
 
 const V0 = { body: Schema.String }
 
@@ -42,6 +42,11 @@ const renamed = (migrations: PayloadMigrations) => {
   })
 }
 
+const live = Old.layer.pipe(
+  Layer.provideMerge(ActorTest.layer({ as: User.make({ subject: "alice" }) })),
+  Layer.provideMerge(BunCrypto.layer),
+)
+
 const Current = renamed([Actor.migration(V0, V1, (v0) => ({ text: v0.body }))])
 
 const Shortened = renamed({ from: 1, steps: [] })
@@ -63,25 +68,22 @@ describe("durable payloads", () => {
         "1 problem; deploy refused (exit 1)",
       ])
 
-      const cleared = yield* payloads({ command: "clear", actors: [Current], json: true })
-      expect(JSON.parse(cleared.output)).toEqual({ results: [] })
+      const cleared = yield* payloads({ command: "clear", actors: [Current], json: false })
+      expect(cleared.output).toBe("No superseded event version is past its retention horizon")
       expect(cleared.exitCode).toBe(0)
     }).pipe(
-      Effect.provide(
-        Old.layer.pipe(
-          Layer.provideMerge(ActorTest.layer({ as: User.make({ subject: "alice" }) })),
-          Layer.provideMerge(BunCrypto.layer),
-        ),
-      ),
+      (body) =>
+        Layer.build(live).pipe(Effect.flatMap((context) => Effect.provideContext(body, context))),
+      Effect.scoped,
       Effect.runPromise,
     ))
 
   it("rejects an unknown payloads command and missing flags", () =>
     Effect.gen(function* () {
-      const unknown = yield* Effect.exit(parsePayloads("migrate", []))
+      const unknown = yield* Effect.exit(parsePayloads(["migrate"]))
       expect(Exit.isFailure(unknown)).toBe(true)
 
-      const missing = yield* Effect.flip(parsePayloads("check", ["--entry", "x.ts"]))
+      const missing = yield* Effect.flip(parsePayloads(["check", "--entry", "x.ts"]))
       expect(missing).toBeInstanceOf(UsageError)
       expect(missing.message).toBe("--database-url is required")
     }).pipe(Effect.runPromise))
