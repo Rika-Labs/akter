@@ -8,6 +8,10 @@ export { DataDirLocked, DataDirVersion } from "../errors/database.ts"
 
 export type { Options } from "./layer.ts"
 
+export { RuntimeControl } from "./drain.ts"
+
+export type { DrainReport, Readiness } from "./drain.ts"
+
 export { checkWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
 
 export type { Incompatibility } from "./workflows/compatibility.ts"
