@@ -62,6 +62,7 @@ import {
   retentionLayer,
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
+import { assertionsConformance } from "./conformance/assertions.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import { pipelineConformance } from "./conformance/pipeline.ts"
 import {
@@ -386,6 +387,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...foundationConformance,
   ...admissionConformance,
   ...httpConformance,
+  ...assertionsConformance,
   ...clientConformance,
   ...capacityConformance,
   ...heapConformance,
