@@ -1,7 +1,9 @@
-// The chat room served to a browser: Actor.serve under /api, the page at
-// /rooms/<id>?user=<name>, and the same room with @durable-actors/react at
-// /react/rooms/<id>. PGlite in memory unless DATABASE_URL names Postgres.
-//   bun run web            # http://localhost:3003/rooms/lobby?user=alice
+/**
+ * The chat room served to a browser: Actor.serve under /api, the page at
+ * /rooms/<id>?user=<name>, and the same room with @durable-actors/react at
+ * /react/rooms/<id>. PGlite in memory unless DATABASE_URL names Postgres.
+ *   bun run web            # http://localhost:3003/rooms/lobby?user=alice
+ */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Actor } from "@durable-actors/core"
 import { Database } from "@durable-actors/core/runtime"
@@ -13,7 +15,10 @@ import { demoAuth } from "../server.ts"
 
 const api = Actor.serve({ actors: [Room], auth: demoAuth, basePath: "/api" })
 
-// The pages' scripts, bundled for browsers from app.ts and react.tsx once at startup.
+/**
+ * The pages' scripts, bundled for browsers from app.ts and react.tsx once at
+ * startup.
+ */
 const pages = HttpRouter.use(
   Effect.fnUntraced(function* (router) {
     const built = yield* Effect.promise(() =>

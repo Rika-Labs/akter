@@ -12,6 +12,9 @@ const STALLED = 128
  * A command that performs an effect, the relay running its executor after
  * commit, and the executor's result committed by the `onSuccess` turn. The
  * executor does no I/O, so the time is the framework's.
+ *
+ * Full profile only: renewals of the stalled attempts land in its window a
+ * varying number of times, so its statement count can't be gated.
  */
 export const effectRoundTrip: Scenario = {
   name: "effect-round-trip",
@@ -49,8 +52,6 @@ export const effectRoundTrip: Scenario = {
           ),
         )
 
-      // Full profile only: renewals of the stalled attempts land in its window a varying number
-      // of times, so its statement count can't be gated.
       if (quick) return results
 
       const window = 10_000
@@ -75,7 +76,6 @@ export const effectRoundTrip: Scenario = {
             const sender = yield* Sender.get("beside-slow")
             yield* send(sender).pipe(Effect.orDie)
 
-            // Each stall outlasts the window, so executors stay blocked while intents are timed.
             yield* Effect.forEach(
               Array.from({ length: STALLED }, (_, index) => index),
               (index) =>

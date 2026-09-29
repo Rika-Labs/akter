@@ -50,6 +50,18 @@ const issue = Effect.gen(function* () {
   yield* (yield* Account.intents(turn.id)).Collect({ invoiceId, amountCents })
 })
 
+/**
+ * Account command handlers.
+ *
+ * The cron tick checks state, because a cancelled account keeps its schedule;
+ * an account whose card never reached the provider has not started billing
+ * yet, and billing starts when the first card is on file.
+ *
+ * `Collect` runs outside any turn. Its steps record their results, so a
+ * resumed run replays them instead of charging again, and each step uses one
+ * key so a step rerun after a crash repeats the same charge. A card newer than
+ * the declined one ends the wait early.
+ */
 export const AccountCommands = Account.toLayer(
   Effect.gen(function* () {
     const gateway = yield* PaymentGateway
@@ -69,15 +81,12 @@ export const AccountCommands = Account.toLayer(
         yield* (yield* Account.Turn).state.set({ status: "cancelled" })
       }),
 
-      // The cron tick. A cancelled account keeps its schedule, so the tick checks state;
-      // an account whose card never reached the provider has not started billing yet.
       Renew: Effect.fnUntraced(function* () {
         const { status, period } = (yield* Account.Turn).state
 
         if (status !== "cancelled" && period > 0) yield* issue
       }),
 
-      // Billing starts when the first card is on file.
       CardAttached: Effect.fnUntraced(function* () {
         const turn = yield* Account.Turn
         const version = turn.state.cardVersion + 1
@@ -104,8 +113,6 @@ export const AccountCommands = Account.toLayer(
           yield* turn.state.set({ status: paid ? "active" : "past_due" })
       }),
 
-      // Runs outside any turn. Steps record their results, so a resumed run
-      // replays them instead of charging again.
       Collect: Effect.fnUntraced(function* (request) {
         const wf = yield* Account.Workflow
 
@@ -117,7 +124,6 @@ export const AccountCommands = Account.toLayer(
               const account = yield* Account.get(AccountId.make(wf.id))
               const { cardVersion } = yield* account.Summary().pipe(Effect.orDie)
 
-              // One key per step: a step rerun after a crash repeats the same charge.
               const result = yield* gateway.charge({
                 customer: wf.id,
                 amountCents,
@@ -141,7 +147,6 @@ export const AccountCommands = Account.toLayer(
           if (isApproved(outcome)) break
           const declined = outcome.cardVersion
 
-          // A card newer than the declined one ends the wait early.
           yield* card({ where: ({ version }) => version > declined, timeout: RETRY_AFTER })
           outcome = yield* charge(retry)
           attempts += 1
@@ -162,6 +167,7 @@ export const AccountCommands = Account.toLayer(
   }),
 )
 
+/** Query handlers for `Account`. */
 export const AccountReads = Account.toQueryLayer(
   Effect.succeed({
     Summary: Effect.fnUntraced(function* () {

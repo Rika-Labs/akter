@@ -77,7 +77,9 @@ const onCluster = <A, E>(body: Effect.Effect<A, E, ActorCluster>, cluster: Clust
     }).pipe(Effect.scoped, Effect.orDie),
   )
 
-// Three runners need independent connections, so these cases skip on PGlite.
+/**
+ * Three runners need independent connections, so these cases skip on PGlite.
+ */
 const pglite = runtime.runSync(Config.String("CHAT_BACKEND")) === "pglite"
 
 const clusterCase = <A, E>(
@@ -112,7 +114,9 @@ const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: string) =>
     Effect.asVoid,
   )
 
-// Command outputs carry ids as plain strings; handles take the branded id.
+/**
+ * Command outputs carry ids as plain strings; handles take the branded id.
+ */
 const thread = (id: string) => Thread.get(id as Parameters<typeof Thread.get>[0])
 
 clusterCase(
@@ -190,7 +194,6 @@ clusterCase(
 
         const child = yield* thread(id)
 
-        // The killed runner's relay may hold a claim on the creating intent until it lapses.
         yield* test.advance("40 seconds")
 
         yield* eventually(
@@ -208,7 +211,6 @@ clusterCase(
       }),
     )
 
-    // A retry with another payload under the same id is a conflict, never a second thread.
     expect(Schema.is(ActorError)(replies.again)).toBe(true)
     expect(replies).toMatchObject({ count: 2, opened: 1, state: { room: "threads" } })
   }),
@@ -259,7 +261,6 @@ clusterCase(
       "the second digest",
     )
 
-    // One per day, never two: a short settle would reveal a duplicate tick.
     yield* Effect.sleep("1 second")
     expect(yield* sent(survivors[1]!)).toBe(2)
     expect(
@@ -294,8 +295,11 @@ const mostInFlight = (calls: ReadonlyArray<ModerationCall>) =>
     ),
   )
 
-// Each runner gets its own provider, so a call records which runner made it. The
-// first call for "capped 0" never returns: it holds a slot until its runner dies.
+/**
+ * Each runner gets its own provider, so a call records which runner made it.
+ * The first call for "capped 0" never returns: it holds a slot until its
+ * runner dies.
+ */
 const cappedProvider = (runner: number) =>
   Layer.succeed(ModerationApi, {
     check: (body, { idempotencyKey }) =>
@@ -324,7 +328,10 @@ const cappedProvider = (runner: number) =>
       }),
   })
 
-// Long enough that a loaded machine's late renewal cannot lose the lease before the kill.
+/**
+ * Long enough that a loaded machine's late renewal cannot lose the lease
+ * before the kill.
+ */
 const CAP_LEASE_MS = 9_000
 
 clusterCase(
@@ -346,7 +353,6 @@ clusterCase(
         }),
       )
 
-    // Receipts, not provider returns: a call whose runner dies before its settle commits reruns.
     const moderated = (runner: number, count: number) =>
       on(
         runner,
@@ -359,7 +365,6 @@ clusterCase(
         ),
       )
 
-    // "capped 0" holds one slot; the other three share the other slot.
     yield* post(0, bodies(0, 4))
     yield* eventually(moderated(0, 3), "the first posts' moderation")
 
@@ -377,12 +382,9 @@ clusterCase(
     const afterKill = moderationCalls.filter((call) => call.startedAt >= killedAt)
 
     expect(mostInFlight(moderationCalls)).toBe(2)
-    // Every post was moderated once, except the hung call's retry under its own effect id.
     expect(new Set(moderationCalls.map(({ effectId }) => effectId)).size).toBe(8)
     expect(moderationCalls).toHaveLength(9)
     expect(retried.map(({ runner }) => runner === hung.runner)).toEqual([true, false])
-    // The dead runner's lease kept counting, so later posts ran one at a time until it ended:
-    // it was renewed at most a third of a lease before the kill.
     expect(mostInFlight(afterKill)).toBe(1)
     expect(retried[1]!.startedAt - killedAt).toBeGreaterThanOrEqual((CAP_LEASE_MS * 2) / 3)
   }),
@@ -412,7 +414,6 @@ clusterCase(
         ActorTest.use((test) => test.connect(ref, Presence, undefined)),
       )
 
-    // Neither member is held by the room's owner, and each by a different runner.
     const typist = yield* connect((owner + 1) % cluster.runners)
     const watcher = yield* connect((owner + 2) % cluster.runners)
 
@@ -430,7 +431,6 @@ clusterCase(
       Effect.orDie,
     )
 
-    // The name comes from the session stored at open, so the woken room read it back.
     expect(seen).toEqual({ user: "ada", typing: true })
     expect(Number((yield* inspect).generation)).toBeGreaterThan(parked)
     expect(yield* cluster.owner(ref)).toBe(owner)

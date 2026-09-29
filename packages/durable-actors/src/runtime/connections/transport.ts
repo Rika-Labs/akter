@@ -13,6 +13,7 @@ const LOCAL = "local"
 /** How long an owner waits for a holder to acknowledge one message, before one retry. */
 const ACK_TIMEOUT = "1 second"
 
+/** A holder could not be reached: the owner treats its connections as lost. */
 export class HolderUnreachable extends Schema.TaggedError<HolderUnreachable>()(
   "HolderUnreachable",
   { message: Schema.String },
@@ -35,16 +36,23 @@ export interface Transport {
   readonly ping: (holder: string, epoch: string) => Effect.Effect<boolean>
 }
 
+/**
+ * A runner that hosts no actors still hosts its own holder, so its group is
+ * assigned regardless of the configured ones.
+ */
 export const holderShardGroups = (config: Partial<ShardingConfig.ShardingConfig["Service"]>) =>
   Option.match(config.runnerAddress ?? Option.none(), {
     onNone: () => ({}),
     onSome: (address) => ({
       availableShardGroups: ["default", holderGroup(address)],
-      // A runner that hosts no actors still hosts its own holder.
       assignedShardGroups: [...(config.assignedShardGroups ?? ["default"]), holderGroup(address)],
     }),
   })
 
+/**
+ * Shard placement for the holder's own group can lag a moment behind registration,
+ * so an unassigned entity is retried.
+ */
 export const holderTransport = Effect.fnUntraced(function* (
   local: (message: Deliver) => Effect.Effect<Delivered>,
 ) {
@@ -89,7 +97,6 @@ export const holderTransport = Effect.fnUntraced(function* (
     return client(EntityId.make(holderEntityId({ holder: target, epoch: targetEpoch })))
       .Deliver(message)
       .pipe(
-        // Shard placement for the holder's own group can lag a moment behind registration.
         Effect.retry({
           while: (error) =>
             ClusterError.EntityNotAssignedToRunner.is(error) ||

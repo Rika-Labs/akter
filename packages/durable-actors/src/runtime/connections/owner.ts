@@ -174,6 +174,7 @@ interface Subscription {
   readonly end: (error: ActorError, discard: boolean) => Effect.Effect<void>
 }
 
+/** Decides whether a caller may open a stream or renew a session for a command; `false` refuses. */
 export type Authorize = (request: {
   readonly caller: Caller
   readonly ref: ActorRef
@@ -255,6 +256,42 @@ type Address = {
  * The owner side of connections for one actor type: the activation registry
  * shared with commands, the fenced `actor_connections` writes, and ordered,
  * post-commit delivery of frames to every holder.
+ *
+ * Ordering and safety: every holder learns this owner before any of its
+ * broadcasts, so it can resync if the owner dies, and a holder that cannot be
+ * reached is excluded, its rows dropped, so it ends those connections itself.
+ * Dropping a generation's state means whatever runs next acquires a new one,
+ * reloads the rows, and numbers each holder's messages from 1 again, which a
+ * holder requires of every new generation; a clean end tells holders not to
+ * resync. A flush that read an older head than a concurrent one never moves the
+ * cursor back. Ends run on their own fibers so one slow handler never holds up the
+ * rest. A handler defect closes only its connection.
+ *
+ * Connections: feeds are framework connections, so an actor type with feeds loads
+ * its rows like one with members, and a feed has no handler, so its open only
+ * inserts the row and fixes its baseline and its close only deletes the row. A
+ * feed's holder rereads events itself once the new owner answers, and a feed
+ * serves the current shape even under a `writeVersion`. A connection's lock lives
+ * only as long as its row. A retried open cannot know whether its opening frames
+ * reached the holder. The owner runs frames only from the connection's stored
+ * holder, and a frame or subscription that reaches it past its authorization bound
+ * never runs.
+ *
+ * Subscriptions: followers wait on `advanced`, and a new head wakes every one. A
+ * replay reads pages from where the previous stopped up to the head, which only
+ * moves after a commit, so nothing is skipped or read twice. The subscription
+ * limit is checked and taken in one step so concurrent subscriptions cannot all
+ * pass it. A hook that hangs is retried at the next tick while the bound still
+ * ends the session, and an answer past the bound never extends it. A stream
+ * subscriber's live progress is a sliding buffer, so a slow reader loses the
+ * oldest.
+ *
+ * Progress frames: a route or settle that committed while the effect check read
+ * keeps the effect closed. A row that has not counted an attempt yet does not
+ * prove a frame open. Every frame of an effect shares one activation record so its
+ * order and holders stay whole, and a record decides after a permit wait, never a
+ * copy taken before it. A record nothing touched for a while goes, and a late
+ * frame runs the effect check again.
  */
 export const activationOwner = ({
   registration,
@@ -271,12 +308,10 @@ export const activationOwner = ({
   readonly role: string | undefined
 }) => {
   const activations = new Map<string, Activation>()
-  // Feeds are framework connections, so an actor type with feeds loads its rows like one with members.
   const hasConnections = registration.connections.size > 0 || registration.feeds.size > 0
 
   const hasStreams = registration.streams.size > 0
 
-  // Effect tags some member of this actor type receives progress of.
   const wanted = new Set([
     ...[...registration.connections.values()].flatMap((member) => [
       ...(member.progress?.effects ?? []),
@@ -288,7 +323,6 @@ export const activationOwner = ({
 
   const now = Effect.map(Clock.currentTimeMillis, (millis) => millis + clock.offsetMillis())
 
-  // Followers wait on `advanced`; a new head wakes every one of them.
   const advance = (activation: Activation, head: string) => {
     if (BigInt(head) <= BigInt(activation.head)) return
     activation.head = head
@@ -308,7 +342,6 @@ export const activationOwner = ({
           : [],
       ),
       ({ event, cursor }) =>
-        // Under a writeVersion the stored value is older; a feed serves the current shape.
         registration.upcastEvent(event.tag, event.version, event.value).pipe(
           Effect.flatMap((value) =>
             encodeFeedFrame({
@@ -377,7 +410,6 @@ export const activationOwner = ({
 
           if (activation.presence > 0) return
           activations.delete(entityId)
-          // Holders learn the generation ended cleanly, so they do not resync.
           yield* seal(activation)
         }),
     )
@@ -436,7 +468,6 @@ export const activationOwner = ({
         .pipe(Effect.exit)
 
       if (Exit.isFailure(answer)) {
-        // An unreachable holder is excluded: its rows go, and it ends those connections itself.
         if (Option.isSome(Cause.findErrorOption(answer.cause)))
           return yield* dropRows(activation, held)
 
@@ -468,9 +499,6 @@ export const activationOwner = ({
       )
       .pipe(Effect.timeout("2 seconds"), Effect.ignore)
 
-  // Drops what belongs to a generation: whatever runs next acquires a new one,
-  // reloads the rows, and numbers each holder's messages from 1 again, which a
-  // holder requires of every new generation.
   const forget = (activation: Activation) => {
     activation.cache.generation = undefined
     activation.cache.state = undefined
@@ -571,7 +599,6 @@ export const activationOwner = ({
       activation.rows = rows
       yield* setKeepAwake(activation)
 
-      // Every holder learns this owner before any of its broadcasts, so it can resync if this owner dies.
       yield* activation.flush.withPermit(
         Effect.forEach(
           new Set([...rows.values()].map((row) => `${row.holder}|${row.holderEpoch}`)),
@@ -691,7 +718,6 @@ export const activationOwner = ({
                 )
         }
 
-        // A flush that read an older head than a concurrent one never moves the cursor back.
         const advanced = BigInt(head) > BigInt(activation.through)
 
         for (const [channel, items] of perChannel)
@@ -717,7 +743,6 @@ export const activationOwner = ({
     return created
   }
 
-  // A connection's lock lives only as long as its row.
   const withLock = <A, E, R>(
     activation: Activation,
     connectionId: string,
@@ -802,7 +827,6 @@ export const activationOwner = ({
       yield* Entity.keepAlive(false).pipe(Effect.provideContext(holder))
     })
 
-  // A defect in a handler closes only its connection; the activation stays resident.
   const closeOnDefect = (activation: Activation, connectionId: string) => (cause: unknown) =>
     Effect.gen(function* () {
       yield* Effect.logError("Connection handler defect", Cause.die(cause))
@@ -839,7 +863,6 @@ export const activationOwner = ({
         yield* load(activation)
         const existing = activation.rows!.get(request.connectionId)
 
-        // A retried open cannot know whether its opening frames reached the holder.
         if (existing !== undefined && existing.holderEpoch === request.holderEpoch)
           return {
             _tag: "Opened" as const,
@@ -881,7 +904,6 @@ export const activationOwner = ({
 
         activation.rows!.set(request.connectionId, { ...row, frameSeq: 0, buffered: [] })
 
-        // A feed has no handler: its open only inserts the row and fixes its baseline.
         const result = yield* (
           feed
             ? Effect.succeed<ConnectionResult>(emptyResult)
@@ -956,7 +978,6 @@ export const activationOwner = ({
       ),
     )
 
-  // Deletes a connection's row and tells its holder, after any frames already sent.
   const closeRow = (activation: Activation, connectionId: string, cause: SessionEnded) =>
     Effect.gen(function* () {
       const row = activation.rows?.get(connectionId)
@@ -998,7 +1019,6 @@ export const activationOwner = ({
       Effect.gen(function* () {
         yield* acquire(activation)
         yield* load(activation)
-        // The owner runs frames only from the connection's stored holder.
         const row = owned(activation, request)
 
         if (row === undefined)
@@ -1006,7 +1026,6 @@ export const activationOwner = ({
 
         if (request.seq <= row.frameSeq) return { _tag: "Acked" as const, ...identity(activation) }
 
-        // A frame that reaches the owner past its session's authorization bound never runs.
         const clock = yield* FrameworkClock
 
         if ((yield* Clock.currentTimeMillis) + clock.offsetMillis() >= request.authorizedUntil) {
@@ -1087,7 +1106,6 @@ export const activationOwner = ({
 
         if (row === undefined) return
 
-        // A feed has no handler to run on close; its row just goes.
         const result =
           row.member === FEED_MEMBER
             ? undefined
@@ -1141,7 +1159,6 @@ export const activationOwner = ({
           return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
         }
 
-        // A feed's holder rereads the events itself once the new owner answers.
         if (row.member === FEED_MEMBER || !registration.connections.get(row.member)!.hasResync)
           return { _tag: "Replayed" as const, ...identity(activation) }
 
@@ -1175,9 +1192,6 @@ export const activationOwner = ({
       ),
     )
 
-  // Replays after `after` up to the head, then waits for each commit that
-  // advances it. The head only moves after a commit, and each page starts
-  // where the previous one stopped, so nothing is skipped or read twice.
   const follow =
     (activation: Activation, sql: SqlClient.SqlClient) =>
     (tag: string, after: string | undefined) =>
@@ -1236,7 +1250,6 @@ export const activationOwner = ({
         if (stream === undefined)
           return yield* Effect.die(new Error(`Unregistered stream ${request.member}`))
 
-        // A subscription that reaches the owner past its bound never runs.
         if ((yield* now) >= request.authorizedUntil)
           return yield* unauthorized("reauthorization_unavailable")
 
@@ -1276,7 +1289,6 @@ export const activationOwner = ({
             }),
         }
 
-        // Checked and taken in one step: concurrent subscriptions cannot all pass the limit.
         const admitted = yield* Effect.sync(() => {
           if (activation.streams.size >= MAX_ACTOR_STREAMS) return false
           activation.streams.add(subscription)
@@ -1363,7 +1375,6 @@ export const activationOwner = ({
 
       const every = registration.policy.reauthorizeMs
 
-      // A hook that hangs is retried at the next tick; the bound still ends the session.
       const allowed = yield* authorize({
         caller: subscription.caller,
         ref: activation.ref,
@@ -1375,7 +1386,6 @@ export const activationOwner = ({
       subscription.checking = false
       const bound = subscription.lastAuthorized + every
 
-      // An answer that arrives past the bound cannot extend it.
       if (Exit.isSuccess(allowed) && allowed.value && (yield* now) >= bound)
         yield* subscription.end(unauthorized("reauthorization_unavailable"), true)
       else if (Exit.isSuccess(allowed) && allowed.value) subscription.lastAuthorized = at
@@ -1391,7 +1401,6 @@ export const activationOwner = ({
     const at = yield* now
     const every = registration.policy.reauthorizeMs
 
-    // Ends run on their own fibers, so one slow handler never holds up the rest.
     for (const activation of activations.values())
       for (const subscription of activation.streams) {
         if (at >= subscription.lastAuthorized + every) {
@@ -1421,7 +1430,6 @@ export const activationOwner = ({
       }
   }).pipe(Effect.repeat(Schedule.spaced(STREAM_TICK)), Effect.asVoid)
 
-  // A stream subscriber's live progress: a sliding buffer, so a slow reader loses the oldest.
   const progressFeed = (activation: Activation, tag: string, effectId: string | undefined) =>
     Stream.unwrap(
       Effect.gen(function* () {
@@ -1491,7 +1499,6 @@ export const activationOwner = ({
       }
 
       activation.checkFailed.delete(message.effectId)
-      // A route or settle that committed while the check read keeps the effect closed.
       const closedMeanwhile = activation.progress.get(message.effectId)
 
       if (closedMeanwhile !== undefined && !closedMeanwhile.open) return closedMeanwhile
@@ -1505,11 +1512,8 @@ export const activationOwner = ({
         return closed
       }
 
-      // The row has not counted this attempt yet; this frame is not proven open.
       if (row.attempts < message.attempt) return undefined
 
-      // A concurrent check may have stored the effect meanwhile: every frame shares one record,
-      // so its order and holders stay whole.
       const stored = activation.progress.get(message.effectId)
 
       if (stored !== undefined && stored.open) {
@@ -1559,7 +1563,6 @@ export const activationOwner = ({
 
       const at = yield* now
 
-      // A record nothing touched for a while goes; a late frame for it runs the effect check again.
       if (at - activation.progressSweptAt >= PROGRESS_RECORD_MS) {
         activation.progressSweptAt = at
 
@@ -1582,8 +1585,6 @@ export const activationOwner = ({
 
       yield* activation.flush.withPermit(
         Effect.gen(function* () {
-          // The route may have closed the effect, or a later frame arrived, while this one waited;
-          // the activation's shared record decides, never a copy taken before the permit.
           if (activation.progress.get(message.effectId) !== effect) return
 
           if (!effect.open || !after(message, effect)) return
@@ -1687,8 +1688,6 @@ export const activationOwner = ({
       : closeProgress(activation, message.effectId)
   }
 
-  // Ends an activation as idle expiry would: holders get a seal, and whatever
-  // runs next re-acquires the generation and sees `resumed === true`.
   const hibernate = (entityId: string) =>
     Effect.gen(function* () {
       const activation = activations.get(entityId)
@@ -1728,4 +1727,5 @@ export const activationOwner = ({
   }
 }
 
+/** The owner service `activationOwner` builds. */
 export type Owner = ReturnType<typeof activationOwner>

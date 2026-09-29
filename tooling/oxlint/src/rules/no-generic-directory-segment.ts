@@ -2,6 +2,7 @@ import { defineRule } from "@oxlint/plugins"
 
 import { FORBIDDEN_SEGMENTS, repoSourceSegments } from "../repo-paths.ts"
 
+/** Forbids generic folder names such as `utils` or `shared` under the governed roots. */
 export const noGenericDirectorySegmentRule = defineRule({
   meta: {
     type: "suggestion",

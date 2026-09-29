@@ -4,6 +4,7 @@ import { repoSourceSegments } from "../repo-paths.ts"
 
 const KEBAB_FILE = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+)*\.[cm]?[jt]sx?$/
 
+/** Requires source filenames under the governed roots to be kebab-case. */
 export const filenameKebabCaseRule = defineRule({
   meta: {
     type: "suggestion",

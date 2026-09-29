@@ -7,6 +7,7 @@ const OutcomeJson = Schema.fromJsonString(Outcome)
 
 const encodeOutcomeJson = Schema.encodeEffect(OutcomeJson)
 
+/** Encodes an outcome to the JSON text a receipt stores. */
 export const encodeOutcome = (outcome: Outcome) => encodeOutcomeJson(outcome)
 
 const decodeOutcome = Schema.decodeEffect(OutcomeJson)
@@ -22,6 +23,7 @@ export const hashCanonical = Effect.fnUntraced(function* (canonical: string) {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("hex")
 })
 
+/** A retained `actor_receipts` row as read back: the admission facts a replay checks and the encoded outcome it returns. */
 export interface StoredReceipt {
   readonly caller_key: string
   readonly command: string
@@ -29,7 +31,12 @@ export interface StoredReceipt {
   readonly outcome: string
 }
 
-/** Access and conflict rules for a retained receipt, shared by admission and replay. */
+/**
+ * Access and conflict rules for a retained receipt, shared by admission and
+ * replay. Fails with `ActorError` `Unauthorized` when the caller differs and
+ * `CommandConflict` when the command or payload hash differs; otherwise it
+ * returns the stored outcome. A stored outcome that cannot be decoded is a defect.
+ */
 export const checkReceipt = Effect.fnUntraced(function* (
   request: Request,
   hash: string,

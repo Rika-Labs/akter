@@ -39,6 +39,7 @@ export class EffectNotServed extends Schema.TaggedError<EffectNotServed>()("Effe
   effect: Schema.String,
 }) {}
 
+/** Why a repair or operator read was refused. */
 export type RepairError = OperatorNotFound | ProviderOutcomeUnknown | EffectNotServed
 
 /** What an actor-scoped operator request names. */
@@ -144,6 +145,12 @@ interface DeadLetterRow {
 /**
  * Builds the service over the runtime's SQL, crypto, clock, and outbox, and
  * its effect registrations, which say whether a retried effect is capped.
+ *
+ * Repairs lock the dead letter they act on, so two repairs of it serialize and the
+ * second finds nothing. Without `receipts.read` an operator sees that a command
+ * ran, not what it returned. A retry is the operator's act and carries no end
+ * user's principal. The payload may hold customer data, so a discard's record
+ * keeps what failed, not what was sent.
  */
 export const operatorRuntime = (deps: {
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>
@@ -186,8 +193,6 @@ export const operatorRuntime = (deps: {
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(SqlClient.SqlClient, (sql) => withTenant(tenant)(sql.withTransaction(effect)))
 
-  // Locks the dead letter the repair acts on, so two repairs of it serialize
-  // and the second finds nothing.
   const lockLetter = (key: bigint, target: ActorTarget, effectId: string) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
@@ -223,7 +228,6 @@ export const operatorRuntime = (deps: {
               ? page
               : {
                   ...page,
-                  // Without receipts.read an operator sees that a command ran, not what it returned.
                   receipts: page.receipts.map(({ outcome: _outcome, ...receipt }) => receipt),
                 },
           ),
@@ -280,7 +284,6 @@ export const operatorRuntime = (deps: {
             if (registered === undefined)
               return yield* EffectNotServed.make({ effect: letter.effect })
 
-            // The retry is the operator's act, so it carries no end user's principal.
             const staged = yield* outboxStatements(
               key,
               ref,
@@ -334,7 +337,6 @@ export const operatorRuntime = (deps: {
           Effect.gen(function* () {
             const letter = yield* lockLetter(key, target, effectId)
 
-            // The payload may hold customer data, so the record keeps what failed, not what was sent.
             yield* writeAudit({
               entry: audit,
               key,

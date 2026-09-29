@@ -1,6 +1,9 @@
 import * as stylex from "@stylexjs/stylex"
 
-// Owned semantic tokens. Components consume roles, never theme-specific colors.
+/**
+ * Owned semantic tokens. Components consume roles, never theme-specific
+ * colors.
+ */
 export const tokens = stylex.defineVars({
   background: "#f7f8fa",
   foreground: "#16232c",
@@ -17,6 +20,7 @@ export const tokens = stylex.defineVars({
   radius: "12px",
 })
 
+/** Overrides `tokens` with the dark palette. */
 export const darkTheme = stylex.createTheme(tokens, {
   background: "#101819",
   foreground: "#e7efec",

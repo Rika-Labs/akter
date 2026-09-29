@@ -25,6 +25,10 @@ const authenticate = (headers: Headers.Headers) =>
     },
   })
 
+/**
+ * Authenticates `Authorization: Bearer <customer>` as that customer; a stand-
+ * in for a real identity provider.
+ */
 export const demoAuth = Actor.auth.make((request) => authenticate(request.headers))
 
 /**

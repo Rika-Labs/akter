@@ -31,7 +31,13 @@ const decodeOutcome = Schema.decodeUnknownOption(Outcome)
 /** An agent with no turn for this long pauses its sandbox. */
 const IDLE_AFTER = "15 minutes"
 
-/** Ends the active turn: the row, the event, and the idle timer that follows it. */
+/**
+ * Ends the active turn: the row, the event, and the idle timer that follows
+ * it.
+ *
+ * The same key replaces a pending timer, so only the latest turn's timer is
+ * live.
+ */
 const endTurn = Effect.fnUntraced(function* (
   turnId: string,
   outcome: typeof TurnEnded.Type.outcome,
@@ -43,7 +49,6 @@ const endTurn = Effect.fnUntraced(function* (
   yield* turn.emit(TurnEnded.make({ turnId, outcome, text }))
   yield* turn.state.set({ activeTurn: undefined, idleToken: turn.commandId })
 
-  // The same key replaces a pending timer, so only the latest turn's timer is live.
   yield* (yield* CodingAgent.intents(turn.id))
     .Idle({ token: turn.commandId })
     .pipe(Intent.after(IDLE_AFTER), Intent.key("idle"))
@@ -61,9 +66,26 @@ type Ask = Step<
   readonly [typeof TurnInProgress]
 >
 
+/**
+ * Agent command handlers.
+ *
+ * `Streaming` yields the reply's deltas for one turn from the moment of
+ * subscribing. A turn that already ended answers from its row; otherwise its
+ * end is an event after the cursor the read started from, which the stream
+ * follows. Only an ended turn decodes, because `running` is not an outcome.
+ *
+ * `Start` is a no-op when repeated, so it never boots a second sandbox. The
+ * command id names a turn, so a retried prompt is the same turn; before the
+ * sandbox is ready, `SandboxReady` runs the pending turn. `Abort` leaves the
+ * running prompt to finish: its reply finds the turn inactive and is dropped.
+ * A timer that was already claimed still fires once after a new prompt, so
+ * `Idle` reads state instead of trusting the cancel.
+ *
+ * `Ship` runs outside any turn: each prompt is a recorded step and each reply
+ * is an owner-event wait.
+ */
 export const CodingAgentCommands = CodingAgent.toLayer(
   Effect.succeed({
-    // The reply's deltas for one turn, from the moment of subscribing.
     Streaming: ({ turnId }) =>
       Stream.unwrap(
         Effect.gen(function* () {
@@ -74,11 +96,8 @@ export const CodingAgentCommands = CodingAgent.toLayer(
             Stream.map(({ frame }) => Delta.make({ text: frame.delta })),
           )
 
-          // A turn that already ended answers from its row. Otherwise its end is
-          // an event after the cursor this read started from, which follow sees.
           const row = yield* read.rows(turns).one({ where: { turnId } })
 
-          // "running" is not an outcome, so only an ended turn decodes.
           const ended = Option.match(
             Option.flatMap(row, ({ status, reply }) =>
               Option.map(decodeOutcome(status), (outcome) => Ended.make({ outcome, text: reply })),
@@ -100,7 +119,6 @@ export const CodingAgentCommands = CodingAgent.toLayer(
         }),
       ),
 
-    // Starting again is a no-op, so a repeated Start never boots a second sandbox.
     Start: Effect.fnUntraced(function* ({ repo }) {
       const turn = yield* CodingAgent.Turn
 
@@ -115,7 +133,6 @@ export const CodingAgentCommands = CodingAgent.toLayer(
 
       if (active !== undefined) return yield* TurnInProgress.make({ turnId: active.turnId })
 
-      // The command id names the turn, so a retried prompt is the same turn.
       const turnId = turn.commandId
 
       yield* turn.rows(turns).insert({
@@ -129,14 +146,12 @@ export const CodingAgentCommands = CodingAgent.toLayer(
       yield* turn.emit(Prompted.make({ turnId, text }))
       yield* Intent.cancel("idle")
 
-      // Before the sandbox is ready, SandboxReady runs the pending turn.
       if (turn.state.sandboxId !== undefined)
         yield* turn.perform(RunPrompt.make({ turnId, text, sandboxId: turn.state.sandboxId }))
 
       return turnId
     }),
 
-    // The running prompt finishes anyway; its reply finds the turn inactive and is dropped.
     Abort: Effect.fnUntraced(function* () {
       const turn = yield* CodingAgent.Turn
       const active = turn.state.activeTurn
@@ -162,8 +177,6 @@ export const CodingAgentCommands = CodingAgent.toLayer(
       if (yield* isActive(effect.turnId)) yield* endTurn(effect.turnId, "failed", "")
     }),
 
-    // A timer that was already claimed still fires once after a new prompt,
-    // so the check reads state instead of trusting the cancel.
     Idle: Effect.fnUntraced(function* ({ token }) {
       const turn = yield* CodingAgent.Turn
       const { activeTurn, idleToken, sandboxId } = turn.state
@@ -174,7 +187,6 @@ export const CodingAgentCommands = CodingAgent.toLayer(
       yield* turn.emit(SandboxPaused.make({ sandboxId }))
     }),
 
-    // Runs outside any turn. Each prompt is a recorded step; each reply is an owner-event wait.
     Ship: Effect.fnUntraced(function* ({ task }) {
       const wf = yield* CodingAgent.Workflow
 
@@ -223,6 +235,7 @@ export const CodingAgentCommands = CodingAgent.toLayer(
   }),
 )
 
+/** Query handlers for `CodingAgent`. */
 export const CodingAgentReads = CodingAgent.toQueryLayer(
   Effect.succeed({
     Sandbox: Effect.fnUntraced(function* () {

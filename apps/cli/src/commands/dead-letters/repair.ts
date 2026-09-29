@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { UsageError } from "../workflows/check.ts"
 import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
 
+/** Usage text for `durable dead-letters`. */
 export const USAGE = [
   'Usage: durable dead-letters retry <effectId> --actor <Type>/<id> --url <runner> --tenant <tenant> --reason "<why>" [--provider-checked] [--token-env <name>] [--json]',
   '       durable dead-letters discard <effectId> --actor <Type>/<id> --url <runner> --tenant <tenant> --reason "<why>" [--token-env <name>] [--json]',

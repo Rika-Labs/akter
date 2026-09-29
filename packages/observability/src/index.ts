@@ -2,8 +2,11 @@ import { Layer } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
 import { OtlpTracer, OtlpLogger, OtlpSerialization } from "effect/unstable/observability"
 
-// Dataset/token are provisioned by the Alchemy Axiom resources in infra.
-// OTLP is a standard transport, not a second provider SDK or ingestion client.
+/**
+ * Exports traces and logs to Axiom over OTLP when a token and dataset are
+ * given; without a config it adds nothing. The dataset and token come from the
+ * Axiom resources in `infra`.
+ */
 export const observabilityLayer = (config?: { token: string; dataset: string }) =>
   config !== undefined
     ? Layer.mergeAll(

@@ -116,7 +116,11 @@ const payloadsCommand = (args: ReadonlyArray<string>) =>
     }),
   )
 
-// Runs until interrupted: the entry's app and the inspector on one server.
+/**
+ * Runs until interrupted: the entry's app and the inspector on one server. The
+ * banner prints once the server listens, so `--port 0` reports the port the
+ * server was given.
+ */
 const dev = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const options = yield* parseDev(args)
@@ -128,7 +132,6 @@ const dev = (args: ReadonlyArray<string>) =>
         ? Database.pglite(options.dataDir === undefined ? {} : { dataDir: options.dataDir })
         : Database.postgres({ url: Redacted.make(options.databaseUrl) })
 
-    // Printed once the server listens, so `--port 0` reports the port it was given.
     const banner = Layer.effectDiscard(
       HttpServer.addressFormattedWith((origin) =>
         Console.log(
@@ -171,15 +174,20 @@ const defectsList = (args: ReadonlyArray<string>) =>
     }),
   )
 
-// The operator token, read from the named environment variable when it is set.
+/**
+ * The operator token, read from the named environment variable when it is set.
+ */
 const operatorToken = (name: string) =>
   Effect.map(Config.option(Config.Redacted(name)), (token) =>
     Option.match(token, { onNone: () => undefined, onSome: (value) => Redacted.value(value) }),
   )
 
-// Runs one operator request and prints its answer: formatted, or JSON with `--json`.
 type OperatorFailure = UsageError | RunnerUnreachable | OperatorRefused | Schema.SchemaError
 
+/**
+ * Runs one operator request and prints its answer: formatted, or JSON with
+ * `--json`.
+ */
 const operatorCommand = <O extends { readonly tokenEnv: string; readonly json: boolean }>(
   usage: string,
   parse: Effect.Effect<O, UsageError>,
@@ -231,7 +239,6 @@ const tenantsCreate = (args: ReadonlyArray<string>) =>
     }),
   )
 
-// `durable login` and `durable deploy` join these under commands/.
 const program = Effect.gen(function* () {
   const [group, command, ...args] = process.argv.slice(2)
 
