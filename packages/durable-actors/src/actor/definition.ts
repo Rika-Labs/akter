@@ -2970,13 +2970,7 @@ const make = <
      */
     client: (options: ClientOptions) =>
       clientOf<
-        ActorClient<
-          Omit<Api, WorkflowKeys<Api>>,
-          ServedKey,
-          Id,
-          StateOf<Fields>,
-          F[number]
-        >
+        ActorClient<Omit<Api, WorkflowKeys<Api>>, ServedKey, Id, StateOf<Fields>, F[number]>
       >(served)(options),
   }
 
