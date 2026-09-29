@@ -1,5 +1,6 @@
 import type { Dashboard } from "./http.js"
 
+/** Fixed dashboard data for the isolated preview. */
 export const dashboard: Dashboard = {
   user: { name: "Alex Morgan", email: "alex@example.test" },
   organization: { id: "org-1", name: "Northstar Studio", slug: "northstar", role: "owner" },

@@ -2,6 +2,10 @@ import { defineConfig, devices } from "@playwright/test"
 
 const inCI = process.env.CI === "true"
 
+/**
+ * Browser test configuration. It starts the chat example on in-memory PGlite
+ * and serves it to the tests in `chat.e2e.ts` and `react.e2e.ts`.
+ */
 export default defineConfig({
   testDir: ".",
   testMatch: "**/*.e2e.ts",
@@ -29,7 +33,6 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      // The chat example on in-memory PGlite, served to the browser tests in chat.e2e.ts.
       command: "PORT=3003 bun examples/chat/src/web/serve.ts",
       cwd: "../..",
       url: "http://127.0.0.1:3003/health",

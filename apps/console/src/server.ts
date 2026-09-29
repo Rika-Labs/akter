@@ -103,6 +103,10 @@ function cookieHeaders(source: Headers, target: Headers) {
   for (const cookie of source.getSetCookie()) target.append("set-cookie", cookie)
 }
 
+/**
+ * Assign the pathname separately: //host and encoded slashes never choose a
+ * new origin.
+ */
 export function createHandler(config: Config) {
   const api = new URL(config.apiOrigin)
 
@@ -206,7 +210,6 @@ export function createHandler(config: Config) {
           }
 
           const target = new URL(api)
-          // Assign the pathname separately: //host and encoded slashes never choose a new origin.
           const incoming = new URL(path, "http://internal.invalid")
           target.pathname = incoming.pathname
           target.search = incoming.search
