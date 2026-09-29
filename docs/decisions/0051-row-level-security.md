@@ -66,7 +66,7 @@ With `rowLevelSecurity` set, startup fails before serving when any of these is f
 - this login can take the role, which the check proves by taking it in a transaction;
 - every table in the runtime's schema that is named `actor_*` and has a `tenant_id` has RLS on and a `durable_tenant` policy, and the role can select, insert, update, and delete in it, and doesn't own it;
 - every view in `durable` is owned by the role (§4);
-- every registered owned table has RLS on, a `durable_tenant` policy, and the same grants.
+- every registered owned table has RLS on, a `durable_tenant` policy, and the same grants, and isn't owned by the role, because Postgres exempts a table's owner from its policies.
 
 Each refusal names the object and the fix.
 
@@ -134,7 +134,7 @@ These are the recommended answers. Dallen decides them when accepting this recor
   - a transaction as the role naming one tenant reads, updates, and inserts no other tenant's rows in any protected table, and naming none sees nothing;
   - revoking the role's grants fails turns and queries, which proves they run as it;
   - a role granted only `durable` reads its transaction's tenant through every view and is denied every protected table;
-  - startup refuses a missing role and a view the role doesn't own.
+  - startup refuses a missing role, a view the role doesn't own, and an owned table the role owns.
 - Drizzle-kit output for owned tables in `tables/owned.test.ts`.
 - Benchmark `rls` (see [performance](../verification/03-performance.md)).
 

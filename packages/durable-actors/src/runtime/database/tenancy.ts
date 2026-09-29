@@ -116,7 +116,8 @@ export const checkRowLevelSecurity = Effect.fnUntraced(function* (role: string) 
 /**
  * Refuses an owned table that would let a tenant-scoped transaction see other
  * tenants' rows, or that `role` cannot use: row-level security must be on with
- * the `durable_tenant` policy its drizzle-kit migration creates.
+ * the `durable_tenant` policy its drizzle-kit migration creates, and `role`
+ * must not own it, since Postgres exempts a table's owner from its policies.
  */
 export const checkOwnedTable = Effect.fnUntraced(function* (
   schema: string,
@@ -125,8 +126,9 @@ export const checkOwnedTable = Effect.fnUntraced(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
 
-  const [found] = yield* sql<{ protected: boolean; writable: boolean }>`
-    SELECT c.relrowsecurity AND EXISTS (
+  const [found] = yield* sql<{ owned: boolean; protected: boolean; writable: boolean }>`
+    SELECT pg_has_role(${role}, c.relowner, 'USAGE') AS owned,
+      c.relrowsecurity AND EXISTS (
         SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid AND p.polname = 'durable_tenant'
       ) AS protected,
       has_table_privilege(${role}, c.oid, 'SELECT, INSERT, UPDATE, DELETE') AS writable
@@ -137,6 +139,9 @@ export const checkOwnedTable = Effect.fnUntraced(function* (
     return yield* refuse(
       `owned table ${schema}.${table} has no durable_tenant policy; apply its drizzle-kit migration`,
     )
+
+  if (found.owned)
+    return yield* refuse(`role ${role} owns ${schema}.${table}, so no policy binds it`)
 
   if (!found.writable)
     return yield* refuse(`role ${role} cannot read and write ${schema}.${table}; grant it`)

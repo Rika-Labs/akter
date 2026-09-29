@@ -165,7 +165,12 @@ const prepared = (
             Effect.sync(() => new PGlite()).pipe(
               Effect.tap((client) => Effect.promise(() => client.waitReady)),
             ),
-            (client) => Effect.promise(() => client.close()),
+            // PGlite runs one query at a time, so this one waits out any a
+            // failed runtime interrupted; closing during one deadlocks.
+            (client) =>
+              Effect.promise(() => client.query("SELECT 1")).pipe(
+                Effect.andThen(Effect.promise(() => client.close())),
+              ),
           ),
         }
 
@@ -517,7 +522,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "row-level security on: the runtime refuses to start when the role is missing or does not own the views",
+    name: "row-level security on: the runtime refuses to start when the role is missing, does not own the views, or owns an owned table",
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
       environment.run(
@@ -540,8 +545,24 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
 
           const unowned = rejection(yield* runtimeOn(target, role).pipe(Effect.scoped, Effect.exit))
 
+          // A table's owner bypasses its policies, so the role must not own an owned table.
+          const owner = yield* prepared(environment)
+
+          yield* onDatabase(
+            owner.target,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql.unsafe(`ALTER TABLE conformance_notes OWNER TO ${owner.role}`)
+            }),
+          )
+
+          const owning = rejection(
+            yield* runtimeOn(owner.target, owner.role).pipe(Effect.scoped, Effect.exit),
+          )
+
           expect(absent).toContain(`role ${missing.role} does not exist`)
           expect(unowned).toContain(`durable.receipts is not owned by ${role}`)
+          expect(owning).toContain(`role ${owner.role} owns public.conformance_notes`)
         }),
       ),
   },
