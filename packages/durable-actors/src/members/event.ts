@@ -11,12 +11,6 @@ export type EventClass = ValueSchema & {
   readonly Type: { readonly _tag: string }
 }
 
-/**
- * Declares a durable event: `class Posted extends Actor.Event<Posted>()("Posted", fields) {}`.
- * The identifier is fixed to the tag so a stored event names its class.
- * `migrations` upcasts events stored at older versions when they are read;
- * stored events are never rewritten.
- */
 const make =
   <Self = never>() =>
   <const Tag extends string, const Fields extends Schema.Struct.Fields>(
@@ -35,6 +29,16 @@ const make =
     return declared
   }
 
+/**
+ * `Event.make` is `Actor.Event`: declares a durable event class. Its schema
+ * identifier is fixed to the tag, so a stored event names its class.
+ * `migrations` upcasts events stored at older versions when they are read;
+ * stored events are never rewritten. An invalid migration chain throws when
+ * the class is built.
+ *
+ * @example
+ * class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+ */
 export const Event = { make }
 
 /** Entries one `read.events` call returns when the reader names no `limit`. */

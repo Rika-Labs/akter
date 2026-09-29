@@ -64,7 +64,7 @@ From the plan to compete with Rivet. Each slice lives in the milestone of its wa
 
 Decided on 2026-09-26: Apache-2.0; the package is `@durable-actors/core` with `/runtime`, `/testing` and `/client` subpaths, because the unscoped npm name belongs to another publisher; an alpha at M1 close; HTTP serving and the client ahead of the rest of M2; and a public comparison with Rivet after P4 and P5, over a real network, with published methods. The publish waits on the delivery lead creating the `@durable-actors` npm org.
 
-Still waiting on the delivery lead, and not scheduled: **CR.9**, pulling the adoption ADR (0054) forward to read existing tables inside a turn.
+Still waiting on the delivery lead, and not scheduled: **CR.9**, pulling the adoption ADR ([0054](../decisions/0054-existing-schema-adoption.md), proposed) forward to read existing tables inside a turn.
 
 ## Testing and performance programmes
 
@@ -108,35 +108,36 @@ Within a wave, migrations merge in number order. If a higher number is ready fir
 | `0021_payload_versions`      | M4.7 event and effect payload evolution           | 7    |
 | `0022_parent_placement`      | M4.11 parent-actor placement                      | 7    |
 | `0023_operator_audit`        | M4.6 operator authority and audited repair        | 7    |
-| `0024_adoption`              | M6.1 existing-schema adoption                     | 9    |
+| `0024_adoption`              | M6.1 existing-schema adoption (ADR 0054)          | 9    |
+| `0025_fleet`                 | M6.3 fleet views (ADR 0056)                       | 9    |
 
 M2.5 (cron) needs no migration ([ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md)). M2.15 (`turn.mint`) needed none. M4.7 and M4.11 took `0021_payload_versions` and `0022_parent_placement` when ADRs 0032 and 0033 were accepted, and M4.14 needs none ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)).
 
 ADRs 0018 and 0019 belong to the benchmark harness (#38) and runner capacity (#44). The ADRs below are reserved, and unplanned ADRs take 0040 and up.
 
-| ADR  | Subject                                              | Slice |
-| ---- | ---------------------------------------------------- | ----- |
-| 0020 | Two-round-trip turn pipeline                         | P1    |
-| 0021 | Multi-runner relay, singleton, and cron              | M2.3  |
-| 0022 | Workflow engine storage and version markers          | M2.6  |
-| 0023 | Connections, parking, and streams                    | M2.9  |
-| 0024 | Effect cancellation and per-actor effect concurrency | M2.12 |
-| 0025 | `turn.mint`                                          | M2.14 |
-| 0026 | Cross-actor event subscriptions                      | M2.16 |
-| 0027 | Served protocol                                      | M3.1  |
-| 0028 | SQL inspection views over runtime tables             | CR.4  |
-| 0029 | Licence, package name, and release policy            | CR.1a |
-| 0030 | Executor progress frames                             | M2.17 |
-| 0031 | Hosted ingress, tenant directory, and region design  | M4.1  |
-| 0032 | Event and effect payload evolution                   | M4.7  |
-| 0033 | Parent-actor placement                               | M4.11 |
-| 0034 | Tenant-scoped content-addressed blobs                | M4.13 |
-| 0035 | PGlite as an embedded production backend             | M4.14 |
-| 0036 | Cold tier                                            | M4.12 |
-| 0051 | Optional row-level security                          | M4.5  |
-| 0049 | Observability                                        | M4.3  |
-| 0050 | Operator authority and audited repair                | M4.6  |
-| 0052 | Read-your-writes from replicas                       | M4.9  |
-| 0054 | Existing-schema adoption                             | M6.1  |
-| 0055 | Query observation                                    | M6.2  |
-| 0056 | Fleet views                                          | M6.3  |
+| ADR                                                   | Subject                                              | Slice |
+| ----------------------------------------------------- | ---------------------------------------------------- | ----- |
+| 0020                                                  | Two-round-trip turn pipeline                         | P1    |
+| 0021                                                  | Multi-runner relay, singleton, and cron              | M2.3  |
+| 0022                                                  | Workflow engine storage and version markers          | M2.6  |
+| 0023                                                  | Connections, parking, and streams                    | M2.9  |
+| 0024                                                  | Effect cancellation and per-actor effect concurrency | M2.12 |
+| 0025                                                  | `turn.mint`                                          | M2.14 |
+| 0026                                                  | Cross-actor event subscriptions                      | M2.16 |
+| 0027                                                  | Served protocol                                      | M3.1  |
+| 0028                                                  | SQL inspection views over runtime tables             | CR.4  |
+| 0029                                                  | Licence, package name, and release policy            | CR.1a |
+| 0030                                                  | Executor progress frames                             | M2.17 |
+| 0031                                                  | Hosted ingress, tenant directory, and region design  | M4.1  |
+| 0032                                                  | Event and effect payload evolution                   | M4.7  |
+| 0033                                                  | Parent-actor placement                               | M4.11 |
+| 0034                                                  | Tenant-scoped content-addressed blobs                | M4.13 |
+| 0035                                                  | PGlite as an embedded production backend             | M4.14 |
+| 0036                                                  | Cold tier                                            | M4.12 |
+| 0051                                                  | Optional row-level security                          | M4.5  |
+| 0049                                                  | Observability                                        | M4.3  |
+| 0050                                                  | Operator authority and audited repair                | M4.6  |
+| 0052                                                  | Read-your-writes from replicas                       | M4.9  |
+| [0054](../decisions/0054-existing-schema-adoption.md) | Existing-schema adoption                             | M6.1  |
+| [0055](../decisions/0055-query-observation.md)        | Query observation                                    | M6.2  |
+| [0056](../decisions/0056-fleet-views.md)              | Fleet views                                          | M6.3  |

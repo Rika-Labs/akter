@@ -9,11 +9,12 @@ type Fields = Readonly<Record<string, ValueSchema>>
  * shape, so a stored value upcasts through every later step in order.
  * `downcast` converts back; an event or effect needs it only for the steps
  * above its `writeVersion`, while a rolling deploy still writes the old shape.
+ * `upcast` and `downcast` are declared as methods so their parameters stay
+ * bivariant and any migration fits a chain.
  */
 export interface StateMigration<From extends Fields = Fields, To extends Fields = Fields> {
   readonly from: From
   readonly to: To
-  // Method syntax keeps the parameters bivariant so any migration fits a chain.
   upcast(previous: Schema.Struct<From>["Type"]): Schema.Struct<To>["Type"]
   downcast?(next: Schema.Struct<To>["Type"]): Schema.Struct<From>["Type"]
 }
@@ -59,4 +60,15 @@ const state = <const F extends Fields>(
   options?: { readonly migrations?: ReadonlyArray<StateMigration> },
 ): ActorState<F> => ({ fields, migrations: options?.migrations ?? [] })
 
+/**
+ * `ActorStates` carries `Actor.state`, which declares an actor's keyed state
+ * fields and their migrations, `Actor.migration`, which builds one step of a
+ * chain, and `validateChain`, which `Actor.make` uses to reject a chain whose
+ * steps do not join or whose last `to` is not the declared state.
+ *
+ * @example
+ * const Counter = Actor.state({
+ *   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+ * })
+ */
 export const ActorStates = { make: state, migration, validateChain }

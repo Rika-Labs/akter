@@ -2,10 +2,10 @@ import { Effect, Encoding, Result, Schema } from "effect"
 import { InvalidExecutionId, InvalidExecutionKey } from "../errors/workflow.ts"
 
 /** Longest workflow key, in UTF-8 bytes. */
-export const MAX_KEY_BYTES = 256
+const MAX_KEY_BYTES = 256
 
 /** Longest execution id, in bytes. */
-export const MAX_EXECUTION_ID_BYTES = 1024
+const MAX_EXECUTION_ID_BYTES = 1024
 
 const utf8 = new TextEncoder()
 
@@ -32,7 +32,8 @@ export interface Execution {
   readonly key: string
 }
 
-export const checkKey = (key: string) => {
+/** Fails `InvalidExecutionKey` unless `key` is 1 to `MAX_KEY_BYTES` UTF-8 bytes. */
+export const checkExecutionKey = (key: string) => {
   const bytes = utf8.encode(key).byteLength
 
   return bytes === 0 || bytes > MAX_KEY_BYTES
@@ -43,23 +44,27 @@ export const checkKey = (key: string) => {
 /**
  * The stable id of one execution: every part that identifies it, so an id
  * routes to its owner without a lookup. The deployment is the database, so
- * it is not encoded.
+ * it is not encoded. Every other part is bounded by its own schema, so only a
+ * key that overflows `MAX_EXECUTION_ID_BYTES` fails `InvalidExecutionKey`.
  */
 export const encodeExecutionId = (execution: Execution) =>
   Effect.gen(function* () {
-    yield* checkKey(execution.key)
+    yield* checkExecutionKey(execution.key)
     const { tenant, actor, id, workflow, key } = execution
 
     const executionId = `w1.${Encoding.encodeBase64Url(encodeParts([tenant, actor, id, workflow, key]))}`
 
-    // Every other part is bounded by its own schema, so only a long key overflows the id.
     if (utf8.encode(executionId).byteLength > MAX_EXECUTION_ID_BYTES)
       return yield* InvalidExecutionKey.make({ bytes: utf8.encode(key).byteLength })
 
     return executionId
   })
 
-/** Decodes an execution id; a malformed or non-`w1.` id fails `InvalidExecutionId`. */
+/**
+ * Decodes an execution id; a malformed or non-`w1.` id fails
+ * `InvalidExecutionId`. Only the canonical encoding is an id, so two strings
+ * never name one execution.
+ */
 export const decodeExecutionId = (executionId: string) =>
   Effect.gen(function* () {
     const invalid = InvalidExecutionId.make({ executionId })
@@ -82,7 +87,6 @@ export const decodeExecutionId = (executionId: string) =>
 
     if (utf8.encode(key).byteLength > MAX_KEY_BYTES) return yield* invalid
 
-    // Only the canonical encoding is an id, so two strings never name one execution.
     const canonical = `w1.${Encoding.encodeBase64Url(encodeParts(parts.success))}`
 
     if (canonical !== executionId) return yield* invalid
