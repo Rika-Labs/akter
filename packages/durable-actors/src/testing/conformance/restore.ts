@@ -48,7 +48,8 @@ const Receive = Actor.command("Receive", { input: Schema.Int })
 
 const Charged = Actor.command("Charged", { input: Schema.Int })
 
-const Vault = Actor.make("Vault", {
+/** The account actor the restore cases and the online-backup drills back up. */
+export const Vault = Actor.make("Vault", {
   key: Schema.String,
   state: Actor.state({
     total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -131,7 +132,8 @@ const session = <A, E>(
     (runtime) => Effect.promise(() => runtime.dispose()),
   )
 
-const vaultOf = (tenant: string, id: string) => Vault.get(id).pipe(Actor.tenant(tenant))
+/** The vault `id` of `tenant`, for a runtime restored on another database. */
+export const vaultOf = (tenant: string, id: string) => Vault.get(id).pipe(Actor.tenant(tenant))
 
 const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
 
