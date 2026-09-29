@@ -10,7 +10,7 @@ export const CommandId = Schema.String.check(
   ),
 )
 
-/** The command id the next command call reuses; `Actor.commandId(id)` sets it so a retry keeps one identity. */
+/** The explicit command id for the command calls it is provided to, set by `Actor.commandId(id)`; undefined lets each call mint its own. */
 export const CurrentCommandId = Context.Reference<string | undefined>(
   "durable-actors/CurrentCommandId",
   {
