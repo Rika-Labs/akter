@@ -97,7 +97,6 @@ const Job = Actor.make("MintNamedJob", {
   policy: { createdBy: Open },
 })
 
-// Ids each handler run minted, including runs whose turn later rolled back.
 const runs: Array<ReadonlyArray<string>> = []
 
 let escaped: Effect.Effect<string> = Effect.succeed("")
@@ -228,7 +227,6 @@ export const mintLayer = Layer.mergeAll(
   ),
 )
 
-// Command outputs carry ids as plain strings; handles take the branded id.
 const task = (id: string) => Task.get(id as Parameters<typeof Task.get>[0])
 
 const note = (id: string) => Note.get(id as Parameters<typeof Note.get>[0])
@@ -527,10 +525,6 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
             denied,
           )
 
-          // Presents the parent's committed row under an id an outside caller
-          // may use, already due by schedule but with its claim clock an hour
-          // out so the relay leaves it: Actor.as with the parent's exact proof,
-          // command id, and payload is still not the relay's delivery.
           const sql = yield* SqlClient.SqlClient
 
           const [row] = yield* sql<{ intent_id: string; scheduled: string }>`

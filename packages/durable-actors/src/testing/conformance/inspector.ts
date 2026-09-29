@@ -19,7 +19,6 @@ class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {}) {}
 
 class Undeliverable extends Schema.TaggedError<Undeliverable>()("Undeliverable", {}) {}
 
-// One attempt, always failing, so every performed effect ends in a dead letter.
 class Notify extends Actor.effect<Notify>()("Notify", { input: { body: Schema.String } }) {}
 
 const Write = Actor.command("Write", { input: Schema.String })
@@ -55,7 +54,6 @@ const Inspected = Actor.make("Inspected", {
   policy: { effects: { Notify: { retry: { times: 0 } } } },
 })
 
-// Writes state, an event, a keyed timer, and an effect in one turn.
 const write = Effect.fnUntraced(function* (body: string) {
   const turn = yield* Inspected.Turn
   yield* turn.state.set({ notes: [...turn.state.notes, body] })
@@ -97,7 +95,6 @@ export const inspectorLayer = Layer.mergeAll(
   ),
 )
 
-// `Bearer <tenant>`: the credential alone decides which tenant a request reads.
 const operators = Actor.auth.make((request) =>
   Option.match(Headers.get(request.headers, "authorization"), {
     onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
@@ -198,7 +195,6 @@ const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: string) =>
     Effect.asVoid,
   )
 
-// One statement, so every count reads the same snapshot.
 const tenantCounts = Effect.fnUntraced(function* (tenant: string) {
   const sql = yield* SqlClient.SqlClient
 
@@ -229,8 +225,6 @@ const RUNTIME_TABLES = [
   "actor_workflow_step",
 ] as const
 
-// Row count and content hash of every runtime row this suite's actor type owns, so a changed
-// row shows up, not only a new one; other cases' actors may still be settling in the background.
 const fingerprint = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
@@ -267,7 +261,6 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           yield* inspected.Write("first")
           yield* inspected.WriteThenReject("second").pipe(Effect.exit)
           yield* inspected.WriteThenDie("third").pipe(Effect.exit)
-          // The relay runs the failing effect once, leaving a dead letter.
           yield* test.advance(0)
 
           const detail = yield* get("/actor?type=Inspected&id=flow", test.tenant)
@@ -306,7 +299,6 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             },
           ])
 
-          // The declared failure keeps only its receipt; the defect leaves nothing.
           const receipts = list(detail.body, "receipts").toSorted((left, right) =>
             text(field(left, "command")).localeCompare(text(field(right, "command"))),
           )
@@ -469,7 +461,6 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           expect(field(shared.body, "state")).toMatchObject([{ value: { json: ["home"] } }])
           expect(field(shared.body, "totals", "receipts")).toBe(1)
 
-          // A tenant named in the query is ignored; only the credential picks the tenant.
           expect(yield* get(`/actor?type=Inspected&id=shared&tenant=${abroad}`, home)).toEqual(
             shared,
           )
@@ -506,7 +497,6 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             expect(field(anonymous.body, "reason", "code")).toBe("missing_credentials")
           }
 
-          // Another browser origin is refused before its credentials are read; the page's own is served.
           const foreign = yield* get(
             "/actor?type=Inspected&id=shared",
             home,
@@ -518,7 +508,6 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           expect(field(foreign.body, "state")).toBe(null)
           expect(yield* get("/actor?type=Inspected&id=shared", home, "self")).toEqual(shared)
 
-          // Following `next` one actor at a time visits every actor once, in the listed order.
           const everyone = list((yield* get("/actors?type=Inspected", abroad)).body, "actors")
           const paged: Array<Schema.Json> = []
           let cursor = ""
@@ -563,7 +552,6 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* fingerprint).toEqual(before)
 
-          // Every inspector read succeeds as a role that may read the views and nothing else.
           const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
           const role = `inspector_${uuid.replaceAll("-", "")}`
 
@@ -608,7 +596,6 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           expect(probe.listed > 0).toBe(true)
           expect(/permission denied/.test(probe.denied)).toBe(true)
 
-          // The transaction every inspector read runs in refuses writes.
           const write = rejection(
             yield* Queries.readOnly(test.tenant)(sql`DELETE FROM actor_receipts`).pipe(Effect.exit),
           )

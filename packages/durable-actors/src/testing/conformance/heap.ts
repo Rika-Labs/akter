@@ -106,7 +106,6 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
               { concurrency: 32, discard: true },
             )
 
-          // Nothing is released before the reaper's first sweep, 5 seconds in.
           const hibernate = Effect.andThen(Effect.sleep("6 seconds"), settled)
 
           const { growth, generations } = yield* Effect.promise(() =>
@@ -133,8 +132,6 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(generations).toEqual(["2", "2", "2", "2", "2"])
-          // Under 10 objects and 1 KiB per touched actor; a retained Cluster
-          // client per command was about 95 objects and 11 KiB.
           expect({ ...growth, bounded: growth.objects < 10 && growth.bytes < 1024 }).toMatchObject({
             bounded: true,
           })
@@ -143,9 +140,6 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "retains bounded heap per command once Cluster forgets processed request ids",
-    // PGlite's heap shrinks by about one object per command from one round to
-    // the next for several rounds, as much as the leak this case detects; on
-    // Postgres the rounds agree to within a twentieth of an object.
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) =>
@@ -171,15 +165,12 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
           const touch = (id: string) =>
             Sleeper.get(id).pipe(Effect.flatMap((sleeper) => sleeper.Touch()))
 
-          // The same few actors every time, so only per-command memory can grow.
           const touchMany = Effect.forEach(
             Array.from({ length: COMMANDS }, (_, index) => `hot-${index % HOT_ACTORS}`),
             touch,
             { concurrency: HOT_ACTORS, discard: true },
           )
 
-          // Cluster forgets processed request ids on its 10-second message
-          // poll; waiting past one poll leaves only what is retained for good.
           const forget = Effect.andThen(Effect.sleep("11 seconds"), retained)
 
           const { growth, first, replayed, count } = yield* Effect.promise(() =>
@@ -192,16 +183,12 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
                 )
 
                 const first = yield* saved
-                // A first round warms caches and compiled code, which the heap
-                // keeps whatever the fix; only the next two rounds compare.
                 yield* touchMany
                 yield* forget
                 yield* touchMany
                 const before = yield* forget
                 yield* touchMany
                 const after = yield* forget
-                // Cluster no longer remembers any request; the receipt still
-                // answers the saved command id without running it again.
                 const replayed = yield* saved
                 const count = yield* touch("hot-0")
 
@@ -220,8 +207,6 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
 
           expect({ first, replayed }).toEqual({ first: 1, replayed: 1 })
           expect(count).toBe((3 * COMMANDS) / HOT_ACTORS + 2)
-          // A processed request id held forever costs one object and about
-          // 94 bytes per command.
           expect({ ...growth, bounded: growth.objects < 0.5 && growth.bytes < 64 }).toMatchObject({
             bounded: true,
           })

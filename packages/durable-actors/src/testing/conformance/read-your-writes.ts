@@ -166,14 +166,11 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
           yield* replayedThrough(control, own)
           yield* pauseReplay(control)
 
-          // Another writer commits without the caller seeing its version.
           const other = (yield* post(server, token, "lag")).headers.get("durable-version")!
 
-          // The replica has the caller's write, so it answers, without the other one.
           expect(yield* count(server, token, "lag", own)).toMatchObject({ status: 200, body: 1 })
           expect(yield* count(server, token, "lag")).toMatchObject({ status: 200, body: 1 })
 
-          // It is behind the other write's version, so the primary answers.
           expect(yield* count(server, token, "lag", other)).toMatchObject({ status: 200, body: 2 })
 
           yield* resumeReplay(control)
@@ -189,7 +186,6 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
     requiresReplica: true,
     run: ({ expect, environment }) => {
       const url = new URL(Redacted.value(environment.replica!.database))
-      // Nothing listens on port 1, so every replica connection is refused.
       url.port = "1"
 
       return withReplica(
@@ -251,7 +247,6 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.promise(() => room.Post({ text: "b" }))
           const latest = issued.at(-1)!
 
-          // The paused replica holds only the first write; the client's query falls through.
           expect(yield* count(server, `${tenant}:alice`, "client")).toMatchObject({ body: 1 })
           expect(yield* Effect.promise(() => room.Count())).toBe(2)
           expect(sent.at(-1)!.get("durable-min-version")).toBe(latest)

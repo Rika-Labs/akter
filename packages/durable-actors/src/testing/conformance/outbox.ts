@@ -35,7 +35,6 @@ const Inbox = Actor.make("Inbox", {
     log: Schema.Array(Delivery).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   api: { Touch },
-  // Only System callers reach Receive, so every delivery proves the relay's caller.
   internal: { Receive },
 })
 
@@ -81,7 +80,6 @@ const Archive = Actor.command("Archive")
 
 const IdleCheck = Actor.command("IdleCheck")
 
-// The chat room's idle timer from the M1 plan, reduced to its outbox behavior.
 const Room = Actor.make("Room", {
   key: Schema.String,
   state: Actor.state({
@@ -231,15 +229,11 @@ export const planNodes = (node: PlanNode): ReadonlyArray<PlanNode> => [
   ...(node.Plans ?? []).flatMap(planNodes),
 ]
 
-// Sleeping actors spread over every bucket, each with a timer due in a day.
 const seedSleepers = Effect.fnUntraced(function* (from: number, to: number, dueAt: number) {
   const sql = yield* SqlClient.SqlClient
   yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
     SELECT ((i % 256) - 128)::bigint << 56 | i, 'scan', 'Sleeper', i::text
     FROM generate_series(${from}::int, ${to}::int) AS i`
-  // A pooled connection caches its foreign key check plan. One planned while
-  // actor_generations looked tiny scans the whole table for every outbox row, which
-  // makes this insert quadratic. Fresh statistics invalidate that plan.
   yield* sql`ANALYZE actor_generations`
   yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
       scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command, payload,
@@ -262,19 +256,15 @@ const measureScan = Effect.fnUntraced(function* (now: number) {
     seqScans: outbox.filter((node) => node["Node Type"] === "Seq Scan").length,
     indexes: [...new Set(outbox.flatMap((node) => node["Index Name"] ?? []))],
     rows: root["Actual Rows"],
-    // Index entries the due index returned: sleeping timers must never be among them.
     indexRows: outbox
       .filter((node) => node["Index Name"] === "actor_outbox_due_kind")
       .reduce((total, node) => total + node["Actual Rows"], 0),
-    // A plan node's buffer counts include its children, so the root is the query total.
     blocks: root["Shared Hit Blocks"] + root["Shared Read Blocks"],
   }
 })
 
 type Scan = Effect.Success<ReturnType<typeof measureScan>>
 
-// Fails the seeding transaction on purpose so it rolls back. Deleting the sleepers instead
-// runs every foreign key into actor_generations once per row, which dominates the case.
 class Measured extends Data.TaggedError("Measured")<{
   readonly small: Scan
   readonly large: Scan
@@ -373,7 +363,6 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 2 })
           yield* test.advance("59 minutes")
           expect(yield* receivedBodies("timers-inbox")).toEqual([])
-          // A committed obligation outlives its caller's access and the external retry window.
           fixture.allowed = false
           yield* test
             .advance("1 minute")
@@ -428,7 +417,6 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance("23 hours")
           expect(yield* test.inspect(room.ref)).toMatchObject({ receipts: 2, outbox: 1 })
           expect((yield* test.inspect(room.ref)).state).toEqual({})
-          // The timer's receiver turn crashes after committing, then the relay dies before deleting its row.
           yield* test.crashNext("afterCommit")
           yield* test.crashNext("beforeOutboxDelete")
           yield* test.advance("1 hour")
@@ -452,15 +440,12 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const before = fixture.outbox.receives
           yield* sender.Schedule({ to: "relay-crash-inbox", body: "once", afterMs: 60_000 })
 
-          // The first delivery crashes before deleting the row, whose claim then holds it
-          // until the lease ends; the redelivery after that pauses there.
           yield* test.crashNext("beforeOutboxDelete")
           const pause = yield* test.pauseNext("beforeOutboxDelete")
           yield* test.advance("1 minute")
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
           const draining = yield* test.advance(CLAIM_LEASE).pipe(Effect.forkChild)
           yield* pause.reached
-          // The receiver committed once; the crashed pass left the sender's row pending.
           expect(fixture.outbox.receives - before).toBe(1)
           expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
@@ -486,7 +471,6 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           yield* sender.Schedule({ to: "receiver-crash-inbox", body: "once", afterMs: 60_000 })
           yield* test.crashNext("beforeCommit")
           yield* test.advance("1 minute")
-          // The crashed attempt ran the handler and rolled back; the retry committed once.
           expect(fixture.outbox.receives - before).toBe(2)
           expect(yield* receivedBodies("receiver-crash-inbox")).toEqual(["once"])
           expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(1)
@@ -506,7 +490,6 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const pause = yield* test.pauseNext("beforeDelivery")
           const draining = yield* test.advance("1 minute").pipe(Effect.forkChild)
           yield* pause.reached
-          // The timer is firing, so it is no longer pending: the cancel finds nothing.
           yield* sender.Cancel("k")
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
           yield* pause.release
@@ -579,8 +562,6 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const now = DateTime.toEpochMillis(yield* test.now)
           const tomorrow = now + 86_400_000
 
-          // Every sleeper stays inside one transaction that rolls back, so the relay never
-          // sees them and no other case inherits them.
           const { small, large } = yield* Effect.gen(function* () {
             yield* seedSleepers(1, 5_000, tomorrow)
             const small = yield* measureScan(now)
@@ -591,7 +572,6 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const scan of [small, large]) {
             expect(scan).toMatchObject({ seqScans: 0, rows: 0, indexRows: 0 })
-            // The primary key or intent id index only locates claimed rows, and there are none.
             expect(
               scan.indexes.filter(
                 (index) => index !== "actor_outbox_pkey" && index !== "actor_outbox_intent",
@@ -599,8 +579,6 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
             ).toEqual(["actor_outbox_due_kind"])
           }
 
-          // The planner may skip the per-bucket probe when no intent is due at all, so the
-          // bound is absolute: at most three index levels for each of the 256 bucket probes.
           expect(large.blocks <= 3 * 256).toBe(true)
           expect(
             yield* sql`SELECT count(*)::int AS sleepers FROM actor_generations

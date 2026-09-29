@@ -130,8 +130,6 @@ const actorsLive = (probe: Probe) =>
 
               return turn.state.count
             }),
-            // Stages a one-hour reminder after a real-time pause, so a due
-            // time measured from admission would land short of commit + 1 h.
             Defer: Effect.fnUntraced(function* (pauseMs: number) {
               probe.handled += 1
               yield* Effect.sleep(pauseMs)
@@ -142,8 +140,6 @@ const actorsLive = (probe: Probe) =>
               return turn.state.count
             }),
             Remind: () => Effect.void,
-            // Performs the keyed ping an hour out after a real-time pause, so
-            // its due time too must be measured from commit.
             PingLater: Effect.fnUntraced(function* (pauseMs: number) {
               probe.handled += 1
               yield* Effect.sleep(pauseMs)
@@ -270,7 +266,6 @@ const withProbe = <A, E>(
   environment.run(Effect.service(Crypto.Crypto)).then((crypto) =>
     Effect.runPromise(
       Effect.gen(function* () {
-        // The case's runner stands in for the suite's, which stops meanwhile.
         yield* Effect.acquireRelease(environment.stop, () => environment.restart)
         const database = yield* environment.freshDatabase
 
@@ -360,8 +355,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const wake = yield* flightsOf(probe, (yield* Plain.get("woken")).Add(1))
           expect(wake).toMatchObject({ value: 1, flights: 2 })
 
-          // A generation bumped behind the activation costs the stale turn's
-          // two round trips, then the reload's two.
           yield* test.invalidate(meter.ref)
           const reloaded = yield* flightsOf(probe, meter.Add(1))
           expect(reloaded).toMatchObject({ value: 4, flights: 4 })
@@ -370,9 +363,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* meter.Add(5).pipe(Actor.commandId(id))).toBe(9)
           const handled = probe.handled
           const replay = yield* flightsOf(probe, meter.Add(5).pipe(Actor.commandId(id)))
-          // The cluster may answer a duplicate from its own reply record
-          // before any turn; a turn that resolves it from the receipt sends
-          // only the admission group and a rollback.
           expect(replay.value).toBe(9)
           expect(replay.flights <= 2).toBe(true)
           expect(
@@ -396,7 +386,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const tap = yield* flightsOf(probe, meter.Tap())
           const mark = yield* flightsOf(probe, meter.Mark("b"))
           expect(mark.value).toBe(2)
-          // The insert and the count are awaited one after the other.
           expect(mark.flights).toBe(tap.flights + 2)
           expect(tap.flights).toBe(2)
         }),
@@ -408,7 +397,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       withProbe(environment, { prepare: false }, (probe) =>
         Effect.gen(function* () {
-          // Opens the turn session so the measured turns carry no startup.
           yield* (yield* Plain.get("warmup")).Add(1)
           const meter = yield* Plain.get("order")
           const cold = yield* flightsOf(probe, meter.Add(1))
@@ -471,8 +459,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* meter.Add(1)).toBe(2)
           const before = Number((yield* test.inspect(meter.ref)).generation)
 
-          // Another runner takes the actor over and commits: a new generation
-          // and state the cache has never seen.
           const context = yield* rival(database)
           yield* Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
@@ -487,8 +473,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
 
           const handled = probe.handled
           const stale = yield* flightsOf(probe, meter.Add(10))
-          // The stale activation's handler never ran on count 2: the retry
-          // reloaded state the rival left, so the result is 0 + 10.
           expect(stale.value).toBe(10)
           expect(probe.handled).toBe(handled + 1)
           const [staleAdmission, staleEnd] = stale.sent
@@ -523,9 +507,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const add = meter.Add(10)
           let turn: Fiber.Fiber<Effect.Success<typeof add>, Effect.Error<typeof add>> | undefined
 
-          // The rival holds the generation row while it takes over, so the
-          // turn's fenced read waits for the rival to commit and then sees
-          // the new generation.
           yield* Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
             yield* sql.withTransaction(
@@ -571,8 +552,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* meter.Add(1)).toBe(1)
           const handled = probe.handled
 
-          // The receipt insert fails once, after the state upsert queued
-          // before it; the sequence is not transactional, so later turns pass.
           yield* sql.unsafe(`CREATE SEQUENCE pipeline_poison`)
           yield* sql.unsafe(`CREATE FUNCTION pipeline_poison() RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN
@@ -586,9 +565,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const failed = yield* Effect.exit(meter.Add(2))
           expect(failed._tag).toBe("Failure")
 
-          // The commit group carried the staged count and COMMIT, which the
-          // server answered with ROLLBACK: nothing persisted, and the next
-          // turn reads count 1 rather than the 3 the failed turn staged.
           const flights = probe.sent.slice(sent).map(wire)
           expect(
             flights.some(
@@ -676,9 +652,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(Number(row!.due) >= before + 400 + 3_600_000).toBe(true)
           expect(row!.scheduled).toBe(row!.due)
 
-          // clock_timestamp() moves while a statement runs; a shift read per
-          // column would leave the row's due and scheduled times apart
-          // whenever the statement crossed a millisecond.
           const commit = wire(deferred.sent[1]!)
           const moved = commit.slice(commit.indexOf("UPDATE actor_outbox"))
           const shift = moved.slice(0, moved.indexOf("WHERE"))
@@ -696,9 +669,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const meter = yield* Meter.get("batched")
           yield* meter.Tap()
 
-          // Eight waiting commands whose handlers issue no statements: their
-          // admission rides with the held turn's commit, then one commit for
-          // all.
           const taps = yield* flightsOf(
             probe,
             Effect.gen(function* () {
@@ -720,14 +690,8 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const batch = probe.sent.slice(-2).map(wire)
           expect(batch[0]!.indexOf("COMMIT") < batch[0]!.indexOf("FOR UPDATE OF g")).toBe(true)
           expect(batch[1]).toContain("COMMIT")
-          // Besides the held turn's release, only the batch's first savepoint
-          // and its release went out; the rest had no statement to protect
-          // and were never sent.
           expect(batch.join("").split("SAVEPOINT durable_handler").length - 1).toBe(3)
 
-          // Handlers that insert and count: each awaited statement is one
-          // round trip, and each savepoint rides with its handler's first
-          // statement or the commit group.
           const first = yield* holding(meter.Tap())
 
           const waiting = yield* enqueue(
@@ -776,9 +740,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
               if (!found(pids)) return yield* Effect.fail("not yet")
             }).pipe(Effect.retry(Schedule.spaced("20 millis")), Effect.orDie)
 
-          // A rival asks for the generation row while the held turn owns it,
-          // so it is first in line when that turn commits, and then advances
-          // the generation.
           const takeover = yield* Effect.forkDetach(
             Effect.gen(function* () {
               const rivalSql = yield* SqlClient.SqlClient
@@ -802,9 +763,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           yield* first.release
           expect(yield* Fiber.join(first.fiber)).toBe(2)
 
-          // The held turn's caller has its reply. The batch's admission went
-          // out behind that COMMIT, its fence now waits behind the rival, and
-          // none of its handlers has run.
           yield* waitFor((pids) => pids.some((waiter) => waiter !== pid))
           expect(probe.handled).toBe(handled)
 
@@ -816,8 +774,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(riding === undefined).toBe(false)
           expect(riding!.indexOf("COMMIT") < riding!.indexOf("FOR UPDATE OF g")).toBe(true)
 
-          // The rival advanced the generation, so the batch failed its fence
-          // and its commands ran after the reload, each exactly once.
           yield* Deferred.succeed(gate, undefined)
           yield* Fiber.join(takeover)
           expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual([12, 112])
@@ -844,8 +800,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Fiber.join(first.fiber)).toBe(2)
           yield* paused.reached
 
-          // While the first batch is in its transaction, two more commands
-          // queue, and its receipt insert is set to fail once.
           const next = yield* enqueue([meter.Add(1000), meter.Add(10000)].map(Effect.orDie))
           yield* sql.unsafe(`CREATE SEQUENCE pipeline_batch_poison`)
           yield* sql.unsafe(`CREATE FUNCTION pipeline_batch_poison() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -861,9 +815,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Effect.forEach(failing, Fiber.join)).toEqual([12, 112])
           expect(yield* Effect.forEach(next, Fiber.join)).toEqual([1112, 11112])
 
-          // The failing commit carried the next batch's admission, which
-          // rolled back with it: the first batch's handlers ran twice, the
-          // next batch's once, after the first batch committed.
           expect(
             probe.sent
               .slice(sent)
@@ -903,8 +854,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const reminders = sql<{ count: number }>`SELECT count(*)::integer AS count
             FROM actor_outbox WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id}`
 
-          // The later batch's admission rode with the first commit and its
-          // handlers ran, but nothing of it is visible before its commit.
           expect(later.map((fiber) => fiber.pollUnsafe())).toEqual([undefined, undefined])
           expect((yield* reminders)[0]!.count).toBe(0)
           yield* paused.release
@@ -918,8 +867,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) => {
-      // Fails the afterCommit point once for each listed amount, with a defect
-      // that is not retryable, as a failing broadcast flush would.
       const failing = new Set([2, 20])
 
       const hooks: TestHooks = {
@@ -942,13 +889,10 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const meter = yield* Plain.get("after-commit-defect")
           expect(yield* meter.Add(1)).toBe(1)
 
-          // A lone command: committed, then the defect; its caller still
-          // gets the committed count, not `Defect`, and the handler ran once.
           const handled = probe.handled
           expect(yield* meter.Add(2)).toBe(3)
           expect(probe.handled).toBe(handled + 1)
 
-          // A batch whose first caller's answer fails after the shared commit.
           const first = yield* holding(meter.Add(4))
           const waiting = yield* enqueue([meter.Add(20), meter.Add(40)].map(Effect.orDie))
           yield* first.release
@@ -991,8 +935,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           yield* Fiber.join(first.fiber)
           yield* Effect.forEach(waiting, Fiber.join)
 
-          // The held command committed alone and the waiting two rode its
-          // commit flight as one batch; each batch has its own turn span.
           const turns = spans
             .slice(before)
             .filter((span) => span.name.startsWith("durable-actors.Plain/"))
@@ -1035,7 +977,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(Number(first!.due) >= before + 400 + 3_600_000).toBe(true)
           expect(first!.ready).toBe(first!.due)
 
-          // Performing again under the key drops the unstarted row in the same group.
           expect((yield* flightsOf(probe, plain.PingLater(0))).flights).toBe(2)
           expect((yield* pings).length).toBe(1)
 
@@ -1065,7 +1006,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           }
 
           relayed.cut()
-          // Explicitly, and implicitly by a handle call without an id.
           const minted = yield* Effect.exit((yield* Actors).mintCommandId)
           const called = yield* Effect.exit(meter.Add(1))
           relayed.restore()
@@ -1073,7 +1013,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(unavailable(minted)).toBe(true)
           expect(unavailable(called)).toBe(true)
 
-          // Nothing committed while the database was out of reach.
           const retried = yield* meter
             .Add(1)
             .pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }))
@@ -1093,11 +1032,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const meter = yield* Plain.get("lost-mid-commit")
           expect(yield* meter.Add(1)).toBe(1)
 
-          // The turn loses its connection before its commit group, and each
-          // later attempt fails to connect at once until the database is
-          // back: a failover caught mid-turn. Every attempt must be answered,
-          // however fast it fails, so the caller retries its id long before
-          // its 30-second delivery timeout.
           const id = yield* (yield* Actors).mintCommandId
           const committing = yield* test.pauseNext("beforeCommit")
           const handled = probe.handled
@@ -1144,10 +1078,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const ids = yield* Effect.forEach(amounts, () => actors.mintCommandId)
           const handled = probe.handled
 
-          // Three commands wait behind a held turn and take the next batch,
-          // whose one commit loses its connection; the database stays gone
-          // for a second, so every attempt on the restarted activation fails
-          // at once until then. Each caller must be answered and retry its id.
           const first = yield* holding(meter.Add(10))
 
           const calls = yield* enqueue(
@@ -1173,8 +1103,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           yield* inBatch.release
           yield* thenInBatch.reached
 
-          // The held turn and two of the batch's handlers have run; the batch
-          // is open with more than one command when the database goes.
           expect(probe.handled - handled).toBe(1 + 2)
           relayed.cut()
           yield* thenInBatch.release
@@ -1184,8 +1112,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const replies = yield* Effect.forEach(calls, Fiber.join)
           expect(replies.every(Option.isSome)).toBe(true)
 
-          // The held turn ran once, the aborted batch ran its three handlers,
-          // and each of the three retries ran once more and committed.
           expect(probe.handled - handled).toBe(1 + amounts.length * 2)
           expect(yield* test.inspect(meter.ref)).toMatchObject({
             state: { count: 20 },
