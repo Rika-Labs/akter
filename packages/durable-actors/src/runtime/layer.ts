@@ -234,6 +234,18 @@ export interface Options {
   readonly rowLevelSecurity?: {
     readonly role: string
   }
+  /**
+   * The writer role of enforced adopted tables. A turn of an actor type that
+   * owns one runs as `role`, which the table's guard trigger admits and every
+   * other login is refused, so it needs read and write on every framework and
+   * owned table and must own none of them. This login must be able to `SET
+   * ROLE` to it. Set together with `rowLevelSecurity`, both must name the same
+   * role, because a turn takes one role. The runtime refuses to start an
+   * enforced table without it.
+   */
+  readonly adoption?: {
+    readonly role: string
+  }
 }
 
 const Count = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000 }))
@@ -354,6 +366,8 @@ const READINESS_CACHE = "1 second"
  *   retry like any delivery failure; it is not a defect.
  */
 export const layer = (options: Options) => {
+  const enforcedTypes = new Set<string>()
+
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
   ).make(options.retryWindowMs ?? 86_400_000)
@@ -1184,11 +1198,14 @@ export const layer = (options: Options) => {
             )
           }
 
-          yield* checkTables(
+          const enforces = yield* checkTables(
             registration.name,
             registration.tables,
             options.rowLevelSecurity?.role,
+            { role: options.adoption?.role, writes: true },
           ).pipe(Effect.provideContext(services), Effect.orDie)
+
+          if (enforces) enforcedTypes.add(registration.name)
 
           for (const table of registration.tables) checked.add(table)
 
@@ -1297,6 +1314,7 @@ export const layer = (options: Options) => {
             registration.name,
             registration.tables,
             options.rowLevelSecurity?.role,
+            { role: options.adoption?.role, writes: false },
           ).pipe(Effect.provideContext(services), Effect.orDie)
 
           for (const table of registration.tables) checked.add(table)
@@ -1782,6 +1800,17 @@ export const layer = (options: Options) => {
       if (options.rowLevelSecurity !== undefined)
         yield* checkRowLevelSecurity(options.rowLevelSecurity.role)
 
+      if (
+        options.rowLevelSecurity !== undefined &&
+        options.adoption !== undefined &&
+        options.rowLevelSecurity.role !== options.adoption.role
+      )
+        return yield* Effect.die(
+          new Error(
+            `rowLevelSecurity.role ${options.rowLevelSecurity.role} and adoption.role ${options.adoption.role} must name the same role: a turn takes one role`,
+          ),
+        )
+
       yield* sql`INSERT INTO actor_deployment (protocol, retry_window_ms) VALUES (1, ${retryWindowMs}) ON CONFLICT DO NOTHING`
 
       const rows = yield* sql<{
@@ -1856,7 +1885,15 @@ export const layer = (options: Options) => {
       return runtime.pipe(
         Layer.provide(sharding),
         Layer.provide(lease),
-        Layer.provide(Layer.succeed(TenantScope, { role: options.rowLevelSecurity?.role })),
+        Layer.provide(
+          Layer.succeed(TenantScope, {
+            role: options.rowLevelSecurity?.role,
+            adoption:
+              options.adoption === undefined
+                ? undefined
+                : { role: options.adoption.role, enforced: enforcedTypes },
+          }),
+        ),
       )
     }),
   )

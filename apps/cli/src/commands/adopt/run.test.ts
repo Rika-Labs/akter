@@ -37,6 +37,10 @@ const options = (
   clear: false,
   sinceMs: undefined,
   batch: undefined,
+  writerRole: undefined,
+  allow: [],
+  quietMs: undefined,
+  to: undefined,
   ...rest,
 })
 

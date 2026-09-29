@@ -141,8 +141,11 @@ export const observeAdoption = Effect.fnUntraced(function* (
         VALUES (${target.schema}, ${target.table}, ${target.actor}, ${target.tenantColumn},
           ${target.actorColumn}, 'observe', floor(extract(epoch FROM clock_timestamp()) * 1000),
           session_user)
-        ON CONFLICT (table_schema, table_name) DO UPDATE SET tenant_column = EXCLUDED.tenant_column,
-          actor_column = EXCLUDED.actor_column, changed_at_ms = EXCLUDED.changed_at_ms,
+        ON CONFLICT (table_schema, table_name) DO UPDATE SET
+          changed_at_ms = CASE WHEN actor_adoptions.tenant_column = EXCLUDED.tenant_column
+            AND actor_adoptions.actor_column = EXCLUDED.actor_column
+            THEN actor_adoptions.changed_at_ms ELSE EXCLUDED.changed_at_ms END,
+          tenant_column = EXCLUDED.tenant_column, actor_column = EXCLUDED.actor_column,
           changed_by = EXCLUDED.changed_by`
 
       yield* installObserveTriggers(target)
