@@ -356,21 +356,16 @@ export const orderCapped = ({
 
   const ids = ranked.map(({ id }) => id)
 
-  // Rows written before `0011_relay` have no `scheduled_at_ms`, and rows a
-  // runner older than `0015_effect_control` wrote have no `ready_at_ms`; each
-  // falls back as the claim does. Each probe reads one partial index.
-  const latestOf = (rows: Statement.Fragment, due: Statement.Fragment) => sql`(SELECT max(${due})
+  // Each probe reads one partial index: rows not running, then running ones.
+  const latestOf = (rows: Statement.Fragment) => sql`(SELECT max(e.ready_at_ms)
     FROM actor_outbox e
     WHERE e.routing_key = o.routing_key AND e.tenant_id = o.tenant_id
       AND e.actor_type = o.actor_type AND e.actor_id = o.actor_id AND e.command = o.command
       AND e.kind = 'effect' AND ${rows}
-      AND coalesce(e.scheduled_at_ms, e.ready_at_ms, e.due_at_ms) <= o.scheduled_at_ms
+      AND e.scheduled_at_ms <= o.scheduled_at_ms
       AND e.intent_id NOT IN ${sql.in(ids)})`
 
-  const latest = sql`greatest(
-    ${latestOf(sql`NOT e.running AND e.ready_at_ms IS NOT NULL`, sql`e.ready_at_ms`)},
-    ${latestOf(sql`NOT e.running AND e.ready_at_ms IS NULL`, sql`e.due_at_ms`)},
-    ${latestOf(sql`e.running`, sql`coalesce(e.ready_at_ms, e.due_at_ms)`)})`
+  const latest = sql`greatest(${latestOf(sql`NOT e.running`)}, ${latestOf(sql`e.running`)})`
 
   return Effect.asVoid(sql`UPDATE actor_outbox o
     SET ready_at_ms = greatest(o.scheduled_at_ms + v.tied,
