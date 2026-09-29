@@ -28,6 +28,7 @@ import { Rpc } from "effect/unstable/rpc"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError } from "../../errors/actor.ts"
 import {
+  Executed,
   Outcome,
   type RegisteredCommand,
   type Registration,
@@ -57,7 +58,7 @@ import { activationEngine, kickedExecution, workflowCommands } from "../workflow
 // `Wake` builds the activation without running a turn.
 const makeCommandEntity = (name: string) =>
   Entity.make(name, [
-    Rpc.make("Execute", { payload: Request, success: Outcome, error: ActorError }),
+    Rpc.make("Execute", { payload: Request, success: Executed, error: ActorError }),
     Rpc.make("Wake"),
   ]).annotateRpcs(ClusterSchema.Uninterruptible, true)
 
@@ -125,7 +126,7 @@ const aloneAfterFailure = new WeakMap<Scope.Scope, Set<string>>()
 interface Waiting {
   readonly request: Request
   readonly command: RegisteredCommand
-  readonly reply: Deferred.Deferred<Outcome, ActorError>
+  readonly reply: Deferred.Deferred<Executed, ActorError>
   /**
    * The request's own context, under the runtime's services, as the turn ran
    * in before batching: its span is the turn span's parent.
@@ -404,7 +405,9 @@ export const registerActor = Effect.fnUntraced(function* (
             yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat()], done.head)
           }
 
-          return done.settled
+          return done.settled.map((settled) =>
+            Result.map(settled, (outcome): Executed => ({ outcome, version: done.version })),
+          )
         }).pipe(
           Effect.onExit((exit) =>
             Effect.gen(function* () {
@@ -499,7 +502,9 @@ export const registerActor = Effect.fnUntraced(function* (
               { captureStackTrace: false },
             ),
             Effect.catchIf(Schema.is(TurnDefect), (defect) =>
-              Effect.succeed(Outcome.cases.Defect.make({ cause: defect.defect })),
+              Effect.succeed<Executed>({
+                outcome: Outcome.cases.Defect.make({ cause: defect.defect }),
+              }),
             ),
             Effect.exit,
           ),
@@ -510,18 +515,18 @@ export const registerActor = Effect.fnUntraced(function* (
       // only after the batch that ran it committed.
       const settle = Effect.fnUntraced(function* (
         entry: Waiting,
-        exit: Exit.Exit<Outcome, ActorError>,
+        exit: Exit.Exit<Executed, ActorError>,
       ) {
         const { request } = entry
 
         // The turn settled, so the next retryable death waits the base delay again.
         if (Exit.isSuccess(exit)) restarts.set(activation, 0)
 
-        if (Exit.isSuccess(exit) && !Outcome.guards.Defect(exit.value)) {
+        if (Exit.isSuccess(exit) && !Outcome.guards.Defect(exit.value.outcome)) {
           yield* (yield* TurnHooks).at("afterCommit", request)
 
           if (workflowRoutes.has(request.command)) {
-            const kicked = yield* kickedExecution({ request, outcome: exit.value })
+            const kicked = yield* kickedExecution({ request, outcome: exit.value.outcome })
 
             if (kicked !== undefined) {
               engine ??= yield* activationEngine({
@@ -552,7 +557,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
       // A defect that reaches here, including one from the afterCommit hook
       // after a commit, restarts the activation.
-      const deliver = (entry: Waiting, exit: Exit.Exit<Outcome, ActorError>) =>
+      const deliver = (entry: Waiting, exit: Exit.Exit<Executed, ActorError>) =>
         Exit.isFailure(exit) && Cause.hasDies(exit.cause)
           ? Effect.failCause(exit.cause)
           : settle(entry, exit)
@@ -648,9 +653,9 @@ export const registerActor = Effect.fnUntraced(function* (
           if (lost) return leaseLost
 
           if (Exit.isFailure(activated))
-            return Effect.succeed(
-              Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) }),
-            )
+            return Effect.succeed<Executed>({
+              outcome: Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) }),
+            })
 
           const command =
             activated.value.get(payload.command) ?? workflowRoutes.get(payload.command)
@@ -661,7 +666,7 @@ export const registerActor = Effect.fnUntraced(function* (
           const entry: Waiting = {
             request: payload,
             command,
-            reply: Deferred.makeUnsafe<Outcome, ActorError>(),
+            reply: Deferred.makeUnsafe<Executed, ActorError>(),
             context: Context.empty(),
             queued: false,
           }

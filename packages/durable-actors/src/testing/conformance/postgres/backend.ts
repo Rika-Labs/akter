@@ -1,5 +1,5 @@
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schedule } from "effect"
+import { Config, Crypto, Effect, Layer, ManagedRuntime, Option, Redacted, Schedule } from "effect"
 import { Pool } from "pg"
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest"
 import {
@@ -45,8 +45,29 @@ const createDatabase = Effect.fnUntraced(function* (
   return { name, url: database.href }
 })
 
+// A physical streaming replica of TEST_DATABASE_URL's server, when one is configured.
+const { replicaUrl, ci } = Effect.runSync(
+  Effect.gen(function* () {
+    return {
+      // check:ci passes an empty value when it started no replica.
+      replicaUrl: Option.getOrUndefined(
+        Option.filter(
+          yield* Config.option(Config.String("TEST_REPLICA_DATABASE_URL")),
+          (url) => url !== "",
+        ),
+      ),
+      ci: Option.isSome(yield* Config.option(Config.String("CI"))),
+    }
+  }),
+)
+
+// CI always provides one, so its read-your-writes evidence can't be skipped unnoticed.
+if (ci && replicaUrl === undefined)
+  throw new Error("TEST_REPLICA_DATABASE_URL must name a streaming replica in CI")
+
 const backend: ConformanceBackend = {
   independentConnections: true,
+  hasReplica: replicaUrl !== undefined,
   services: BunCrypto.layer,
   httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>
@@ -87,6 +108,34 @@ const backend: ConformanceBackend = {
           })),
         )
 
+        // Databases created on the primary replicate, so the replica serves each under the same name.
+        const onReplica = (database: Redacted.Redacted<string>) => {
+          const url = new URL(replicaUrl!)
+          url.pathname = new URL(Redacted.value(database)).pathname
+
+          return Redacted.make(url.href)
+        }
+
+        const replica =
+          replicaUrl === undefined
+            ? undefined
+            : {
+                database: onReplica(main),
+                connect: Effect.acquireRelease(
+                  Effect.sync(
+                    () => new Pool({ connectionString: Redacted.value(onReplica(main)) }),
+                  ),
+                  (pool) => Effect.promise(() => pool.end()),
+                ).pipe(
+                  Effect.map((pool) => ({
+                    query: (statement: string, parameters?: ReadonlyArray<unknown>) =>
+                      Effect.promise(() =>
+                        pool.query(statement, parameters as Array<unknown> | undefined),
+                      ).pipe(Effect.map((result) => result.rows as ReadonlyArray<unknown>)),
+                  })),
+                ),
+              }
+
         // A template copy is a whole-database snapshot of a stopped deployment.
         // A disposed runtime's server sessions can outlive its pool briefly, and
         // Postgres refuses to copy a database with sessions.
@@ -110,6 +159,7 @@ const backend: ConformanceBackend = {
               ? copy(database)
               : Effect.die(new Error("The Postgres backend copies only Postgres databases")),
           connect,
+          replica,
           close: Effect.gen(function* () {
             for (const name of created)
               yield* Effect.promise(() =>

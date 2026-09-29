@@ -17,6 +17,7 @@ import { parseChildId } from "../../identity/child.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
+import { COMMIT_VERSION } from "../database/replica.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -819,6 +820,12 @@ export const executeBatch = Effect.fnUntraced(function* (
             (error) => error instanceof RolledBack,
             (rolled) => Effect.succeed(rolled.plan),
           ),
+          Effect.flatMap((plan) =>
+            Effect.map(sql.unsafe<{ version: string }>(COMMIT_VERSION), (rows) => ({
+              ...plan,
+              version: rows[0]!.version,
+            })),
+          ),
         )
 
   const done = yield* transaction.pipe(
@@ -865,6 +872,8 @@ export const executeBatch = Effect.fnUntraced(function* (
     replays: done.replays,
     /** A plan without writes rolled back, so it added nothing. */
     written: done.writes === undefined ? nothingWritten : done.written,
+    /** The commit version each caller's later queries wait for. */
+    version: done.version,
   }
 })
 
@@ -941,10 +950,18 @@ const pipelined = <E, R>(
 
         const ending = decided.writes === undefined ? "ROLLBACK" : "COMMIT"
 
+        let version = ""
+
+        // The version is read on this session after the transaction ends, in
+        // the same flight, so it covers the batch's commit record and any
+        // receipt it replayed.
         const group = pipeline([
           ...(decided.writes === undefined ? [] : [...flush(), ...decided.writes]),
           Effect.map(end(ending), (command) => {
             tag = command
+          }),
+          Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
+            version = (result.rows[0] as { version: string }).version
           }),
         ])
 
@@ -953,7 +970,7 @@ const pipelined = <E, R>(
         if (ending === "COMMIT" && tag !== "COMMIT")
           return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
 
-        return decided
+        return { ...decided, version }
       }).pipe(
         Effect.provideService(sql.transactionService, [asSqlConnection({ connection, send }), 0]),
         Effect.onExit((exit) => {
