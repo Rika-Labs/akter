@@ -493,6 +493,42 @@ export const migrations = {
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),
+  // Every authorized operator action, and every authenticated one refused by
+  // scope. A repair writes its row in its own transaction, on the target
+  // actor's routing key, so the two commit together on one shard; a
+  // tenant-wide action uses the tenant's routing key. Rows are never pruned.
+  "0023_operator_audit": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE actor_operator_audit (
+        routing_key bigint NOT NULL,
+        audit_id text NOT NULL,
+        at_ms bigint NOT NULL,
+        operator text NOT NULL,
+        action text NOT NULL,
+        tenant_id text NOT NULL,
+        actor_type text,
+        actor_id text,
+        target text,
+        capability text,
+        reason text,
+        outcome text NOT NULL,
+        PRIMARY KEY (routing_key, audit_id)
+      )`
+    yield* sql`CREATE INDEX actor_operator_audit_tenant ON actor_operator_audit (tenant_id, at_ms)`
+    // The join keeps the view read-only, as every other `durable` view is.
+    yield* sql`CREATE VIEW durable.operator_audit AS
+      SELECT a.tenant_id, a.actor_type, a.actor_id, a.routing_key, p.placement, a.audit_id,
+        a.operator, a.action, a.target, a.capability, a.reason, a.outcome,
+        a.at_ms, to_timestamp(a.at_ms::float8 / 1000) AS at
+      FROM actor_operator_audit a
+      LEFT JOIN actor_placements p ON p.actor_type = a.actor_type`
+    yield* sql`CREATE OR REPLACE VIEW durable.views AS
+      SELECT view_name, version FROM (VALUES
+        ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
+        ('timers', 1), ('effects', 1), ('dead_letters', 1), ('workflows', 1),
+        ('workflow_steps', 1), ('views', 1), ('operator_audit', 1)
+      ) AS v(view_name, version)`
+  }),
 }
 
 /**

@@ -87,6 +87,7 @@ const VIEWS = [
   "workflows",
   "workflow_steps",
   "views",
+  "operator_audit",
 ] as const
 
 type Row = Record<string, string | number | boolean | null>
@@ -106,9 +107,13 @@ const rowsOf = Effect.fnUntraced(function* (
   )
 })
 
-// `Specimen` runs no workflow; the workflow cases cover those views.
+// `Specimen` runs no workflow, and turns write no operator audit; other cases cover those views.
 const COUNTED = VIEWS.filter(
-  (name) => name !== "views" && name !== "workflows" && name !== "workflow_steps",
+  (name) =>
+    name !== "views" &&
+    name !== "workflows" &&
+    name !== "workflow_steps" &&
+    name !== "operator_audit",
 )
 
 // One statement, so every count reads the same snapshot.

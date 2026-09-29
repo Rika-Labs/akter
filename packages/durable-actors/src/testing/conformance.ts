@@ -55,6 +55,7 @@ import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
+import { operatorConformance } from "./conformance/operator.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import {
   retentionConformance,
@@ -1405,6 +1406,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...propertiesConformance,
   ...mintConformance,
   ...observabilityConformance,
+  ...operatorConformance,
 ]
 
 interface ConformanceStore {

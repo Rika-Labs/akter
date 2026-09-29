@@ -158,7 +158,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     outbox.effects.length === 0 &&
     outbox.subscriptions.length === 0
   )
-    return { statements, replies }
+    return { statements, replies, effectIds: [] }
 
   const crypto = yield* Crypto.Crypto
   const { retryWindowMs } = yield* OutboxRuntime
@@ -225,6 +225,8 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   // An effect row names its effect in `command` and targets its own actor,
   // where its routes deliver; the relay runs its executor when it is due.
   const capped: Array<{ readonly id: string; readonly effect: string; readonly dueAt: number }> = []
+  // The new rows' effect ids, in `outbox.effects` order.
+  const effectIds: Array<string> = []
 
   for (const effect of outbox.effects) {
     const dueAt = dueOf(effect.due)
@@ -233,6 +235,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     replies.wake ||= dueAt <= now
 
     if (effect.capped) capped.push({ id: intentId, effect: effect.effect, dueAt })
+    effectIds.push(intentId)
 
     rows.push({
       routing_key: routingKey,
@@ -314,7 +317,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
 
   if (capped.length > 0) statements.push(orderCapped({ sql, routingKey, sender, capped }))
 
-  return { statements, replies }
+  return { statements, replies, effectIds }
 })
 
 /**

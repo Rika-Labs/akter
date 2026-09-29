@@ -1,9 +1,9 @@
-import { Actor, Unauthorized, User } from "@durable-actors/core"
-import { Telemetry } from "@durable-actors/core/runtime"
+import { Actor, User } from "@durable-actors/core"
+import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Option, Schema } from "effect"
-import { FetchHttpClient, Headers, HttpRouter } from "effect/unstable/http"
+import { Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
 import { formatDefects, listDefects, parseList } from "./list.ts"
@@ -26,19 +26,17 @@ const live = BoilerLive.pipe(
   Layer.provideMerge(BunCrypto.layer),
 )
 
-// `Bearer <tenant>`: the operator token names the tenant it reads.
-const operators = Actor.auth.make((request) =>
-  Option.match(Headers.get(request.headers, "authorization"), {
-    onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
-    onSome: (header) => {
-      const match = /^Bearer ([A-Za-z0-9._:-]+)$/.exec(header)
+const grant = (tenant: string) => ({
+  operator: `ops-${tenant}`,
+  capabilities: [{ action: "defects.read" as const, tenant }],
+})
 
-      return match === null
-        ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
-        : Effect.succeed({ tenant: match[1]!, caller: User.make({ subject: "operator" }) })
-    },
-  }),
-)
+// Each token reads its own tenant's defects; "reader" reads every tenant's.
+const operators = OperatorAuth.tokens([
+  { token: Redacted.make("plant-token"), grant: grant("plant") },
+  { token: Redacted.make("other-token"), grant: grant("other") },
+  { token: Redacted.make("reader-token"), grant: grant("*") },
+])
 
 describe("durable defects list", () => {
   it("parses runners, filters, and compact durations", () =>
@@ -50,10 +48,11 @@ describe("durable defects list", () => {
 
       expect(options).toEqual({
         urls: ["http://a", "http://b"],
+        tenant: "*",
         actor: "Room",
         sinceMs: 10_000_000 - 3_600_000,
         limit: undefined,
-        tokenEnv: "DURABLE_TOKEN",
+        tokenEnv: "DURABLE_OPERATOR_TOKEN",
         json: false,
       })
 
@@ -77,7 +76,7 @@ describe("durable defects list", () => {
       }).pipe(Effect.provideContext(context))
 
       const web = HttpRouter.toWebHandler(
-        Telemetry.serve({ auth: operators }).pipe(Layer.provide(Layer.succeedContext(context))),
+        Operators.serve({ auth: operators }).pipe(Layer.provide(Layer.succeedContext(context))),
         { disableLogger: true },
       )
 
@@ -88,13 +87,13 @@ describe("durable defects list", () => {
 
       const services = yield* Layer.build(FetchHttpClient.layer.pipe(Layer.provide(client)))
 
-      const read = (token: string | undefined, actor?: string) =>
+      const read = (token: string | undefined, tenant: string, actor?: string) =>
         listDefects(
-          { urls: ["http://runner"], actor, sinceMs: undefined, limit: undefined },
+          { urls: ["http://runner"], tenant, actor, sinceMs: undefined, limit: undefined },
           token,
         ).pipe(Effect.provideContext(services))
 
-      const defects = yield* read("plant")
+      const defects = yield* read("plant-token", "plant")
 
       expect(
         defects.map(({ actorType, actorId, command, tenant }) => ({
@@ -112,9 +111,17 @@ describe("durable defects list", () => {
       expect(defects[0]!.cause).toContain("boiler broke: pressure")
       expect(defects[1]!.cause).toContain("boiler broke: heat")
 
-      expect((yield* read("other")).map(({ actorId }) => actorId)).toEqual(["b2"])
-      expect(yield* read("plant", "Kettle")).toEqual([])
-      expect(Exit.isFailure(yield* read(undefined).pipe(Effect.exit))).toBe(true)
+      expect((yield* read("other-token", "other")).map(({ actorId }) => actorId)).toEqual(["b2"])
+      expect((yield* read("reader-token", "*")).map(({ actorId }) => actorId)).toEqual([
+        "b1",
+        "b1",
+        "b2",
+      ])
+      // A grant for one tenant reads neither another tenant nor every tenant.
+      expect(Exit.isFailure(yield* read("plant-token", "other").pipe(Effect.exit))).toBe(true)
+      expect(Exit.isFailure(yield* read("plant-token", "*").pipe(Effect.exit))).toBe(true)
+      expect(yield* read("plant-token", "plant", "Kettle")).toEqual([])
+      expect(Exit.isFailure(yield* read(undefined, "plant").pipe(Effect.exit))).toBe(true)
 
       const text = formatDefects({ defects, json: false }).split("\n")
       expect(text).toHaveLength(2)
