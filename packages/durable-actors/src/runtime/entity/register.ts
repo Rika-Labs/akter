@@ -34,6 +34,7 @@ import { FrameworkClock } from "../turn/admission.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
+import type { TurnGate } from "../drain.ts"
 import { DefectLog } from "../telemetry/defects.ts"
 import { count, Metrics, record } from "../telemetry/metrics.ts"
 import { requestAttributes, SpanNames, triggerOf } from "../telemetry/spans.ts"
@@ -137,6 +138,7 @@ export const registerActor = Effect.fnUntraced(function* (
   registration: Registration,
   transport: Transport,
   authorize: Authorize,
+  gate: TurnGate,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -280,183 +282,187 @@ export const registerActor = Effect.fnUntraced(function* (
 
       return entity.of({
         Wake: () => Effect.suspend(() => (lost ? leaseLost : Effect.void)),
-        Execute: Effect.fnUntraced(function* ({ payload }) {
-          if (lost) return yield* leaseLost
+        Execute: Effect.fnUntraced(
+          function* ({ payload }) {
+            if (lost) return yield* leaseLost
 
-          if (Exit.isFailure(activated))
-            return Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) })
+            if (Exit.isFailure(activated))
+              return Outcome.cases.Defect.make({ cause: Cause.squash(activated.cause) })
 
-          const command =
-            activated.value.get(payload.command) ?? workflowRoutes.get(payload.command)
+            const command =
+              activated.value.get(payload.command) ?? workflowRoutes.get(payload.command)
 
-          if (command === undefined)
-            return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
+            if (command === undefined)
+              return yield* Effect.die(new Error(`Unregistered command ${payload.command}`))
 
-          const started = yield* Clock.currentTimeMillis
-          let label: string | undefined
+            const started = yield* Clock.currentTimeMillis
+            let label: string | undefined
 
-          if (payload.queuedAtMs !== undefined)
-            yield* record(
-              Metrics.mailboxAge,
-              typeAttributes,
-              Math.max(0, started - payload.queuedAtMs),
-            )
-
-          const outcome = yield* Effect.gen(function* () {
-            yield* owner.prepare(owned)
-
-            const done = yield* executeTurn(
-              payload,
-              command,
-              owned.cache,
-              owned.key,
-              registration.policy,
-              registration.mintable,
-              registration.tables.length > 0 || registration.blobs.length > 0,
-              waited,
-              owner.hasConnections ? owner.list(owned) : undefined,
-              registration.cron,
-            )
-
-            label = outcomeOf(done.outcome, done.replayed)
-            yield* Effect.annotateCurrentSpan({
-              "actor.generation": done.generation,
-              "turn.replayed": done.replayed,
-              "turn.outcome": label,
-            })
-            yield* count(Metrics.receiptsReplayed, typeAttributes, done.replayed ? 1 : 0)
-            yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
-            yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
-            yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
-            yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
-
-            // A route turn's command id is its effect id: its progress stops before the route's broadcasts.
-            if (owner.hasProgress && !Outcome.guards.Defect(done.outcome)) {
-              yield* owner.closeProgress(owned, payload.commandId)
-
-              // A turn that cancelled a running effect stops its progress before its own broadcasts.
-              for (const effectId of done.cancelledEffects)
-                yield* owner.closeProgress(owned, effectId)
-            }
-
-            // Stream followers wake when a commit advances the activation's head.
-            if (owner.hasConnections || owner.hasStreams) {
-              yield* (yield* TurnHooks).at("beforeFlush", payload)
-              yield* owner.flush(
-                owned,
-                [...done.broadcasts, ...(yield* owner.feedBroadcasts(done.committed))],
-                done.head,
+            if (payload.queuedAtMs !== undefined)
+              yield* record(
+                Metrics.mailboxAge,
+                typeAttributes,
+                Math.max(0, started - payload.queuedAtMs),
               )
-            }
 
-            return done.outcome
-          }).pipe(
-            Effect.catchDefect(
-              Effect.fnUntraced(function* (cause) {
-                if (
-                  Schema.is(RetryTurn)(cause) ||
-                  (SqlError.isSqlError(cause) && cause.isRetryable)
-                )
-                  return yield* Effect.die(cause)
+            const outcome = yield* Effect.gen(function* () {
+              yield* owner.prepare(owned)
 
-                // Deterministic defects run no user code, because a defect hook
-                // can loop on corrupt state; the turn span, the defect log, and
-                // this log carry the cause for operators.
-                yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
+              const done = yield* executeTurn(
+                payload,
+                command,
+                owned.cache,
+                owned.key,
+                registration.policy,
+                registration.mintable,
+                registration.tables.length > 0 || registration.blobs.length > 0,
+                waited,
+                owner.hasConnections ? owner.list(owned) : undefined,
+                registration.cron,
+              )
 
-                const span = yield* Effect.currentSpan.pipe(Effect.option)
-
-                yield* defects.record({
-                  span: SpanNames.turn(payload.ref.actor, payload.command),
-                  traceId: Option.isSome(span) ? span.value.traceId : "",
-                  spanId: Option.isSome(span) ? span.value.spanId : "",
-                  atMs: yield* Clock.currentTimeMillis,
-                  tenant: payload.ref.tenant,
-                  actorType: payload.ref.actor,
-                  actorId: payload.ref.id,
-                  command: payload.command,
-                  commandId: payload.commandId,
-                  trigger: triggerOf(payload),
-                  cause: Cause.pretty(Cause.die(cause)),
-                })
-                label = "defect"
-                yield* Effect.annotateCurrentSpan({ "turn.outcome": label })
-
-                // Failing inside the span marks it as a defect for the exporter.
-                return yield* TurnDefect.make({
-                  defect: cause,
-                  message: cause instanceof Error ? cause.message : String(cause),
-                })
-              }),
-            ),
-            Effect.annotateLogs({
-              actor: payload.ref.actor,
-              id: payload.ref.id,
-              tenant: payload.ref.tenant,
-              command: payload.command,
-              commandId: payload.commandId,
-            }),
-            // The span's call site is always this file, so a captured stack
-            // trace would cost an Error per turn and name nothing useful.
-            Effect.withSpan(
-              SpanNames.turn(payload.ref.actor, payload.command),
-              { kind: "server", attributes: requestAttributes(payload) },
-              { captureStackTrace: false },
-            ),
-            Effect.catchIf(Schema.is(TurnDefect), (defect) =>
-              Effect.succeed(Outcome.cases.Defect.make({ cause: defect.defect })),
-            ),
-            Effect.onExit((exit) =>
-              Effect.gen(function* () {
-                yield* count(
-                  Metrics.turns,
-                  {
-                    ...typeAttributes,
-                    // A declared ActorError rejects the command; a retryable death reruns it.
-                    outcome:
-                      label ??
-                      (Exit.isSuccess(exit)
-                        ? outcomeOf(exit.value)
-                        : Cause.hasFails(exit.cause)
-                          ? "rejected"
-                          : "retried"),
-                  },
-                  1,
-                )
-                yield* record(
-                  Metrics.turnDuration,
-                  typeAttributes,
-                  (yield* Clock.currentTimeMillis) - started,
-                )
-              }),
-            ),
-          )
-
-          // The turn settled, so the next retryable death waits the base delay again.
-          restarts.set(activation, 0)
-
-          const hooks = yield* TurnHooks
-
-          if (!Outcome.guards.Defect(outcome)) yield* hooks.at("afterCommit", payload)
-
-          if (workflowRoutes.has(payload.command)) {
-            const kicked = yield* kickedExecution({ request: payload, outcome })
-
-            if (kicked !== undefined) {
-              engine ??= yield* activationEngine({
-                registration,
-                ref: payload.ref,
-                routingKey: routingKeyOf(payload.ref),
-                cache: owned.cache,
-                scope,
-                deliveryMs: registration.policy.deliveryMs,
+              label = outcomeOf(done.outcome, done.replayed)
+              yield* Effect.annotateCurrentSpan({
+                "actor.generation": done.generation,
+                "turn.replayed": done.replayed,
+                "turn.outcome": label,
               })
-              yield* engine.kick(kicked.executionId, kicked.interrupt)
-            }
-          }
+              yield* count(Metrics.receiptsReplayed, typeAttributes, done.replayed ? 1 : 0)
+              yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
+              yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
+              yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
+              yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
 
-          return outcome
-        }, Effect.provideContext(services)),
+              // A route turn's command id is its effect id: its progress stops before the route's broadcasts.
+              if (owner.hasProgress && !Outcome.guards.Defect(done.outcome)) {
+                yield* owner.closeProgress(owned, payload.commandId)
+
+                // A turn that cancelled a running effect stops its progress before its own broadcasts.
+                for (const effectId of done.cancelledEffects)
+                  yield* owner.closeProgress(owned, effectId)
+              }
+
+              // Stream followers wake when a commit advances the activation's head.
+              if (owner.hasConnections || owner.hasStreams) {
+                yield* (yield* TurnHooks).at("beforeFlush", payload)
+                yield* owner.flush(
+                  owned,
+                  [...done.broadcasts, ...(yield* owner.feedBroadcasts(done.committed))],
+                  done.head,
+                )
+              }
+
+              return done.outcome
+            }).pipe(
+              Effect.catchDefect(
+                Effect.fnUntraced(function* (cause) {
+                  if (
+                    Schema.is(RetryTurn)(cause) ||
+                    (SqlError.isSqlError(cause) && cause.isRetryable)
+                  )
+                    return yield* Effect.die(cause)
+
+                  // Deterministic defects run no user code, because a defect hook
+                  // can loop on corrupt state; the turn span, the defect log, and
+                  // this log carry the cause for operators.
+                  yield* Effect.logError("Deterministic actor defect", Cause.die(cause))
+
+                  const span = yield* Effect.currentSpan.pipe(Effect.option)
+
+                  yield* defects.record({
+                    span: SpanNames.turn(payload.ref.actor, payload.command),
+                    traceId: Option.isSome(span) ? span.value.traceId : "",
+                    spanId: Option.isSome(span) ? span.value.spanId : "",
+                    atMs: yield* Clock.currentTimeMillis,
+                    tenant: payload.ref.tenant,
+                    actorType: payload.ref.actor,
+                    actorId: payload.ref.id,
+                    command: payload.command,
+                    commandId: payload.commandId,
+                    trigger: triggerOf(payload),
+                    cause: Cause.pretty(Cause.die(cause)),
+                  })
+                  label = "defect"
+                  yield* Effect.annotateCurrentSpan({ "turn.outcome": label })
+
+                  // Failing inside the span marks it as a defect for the exporter.
+                  return yield* TurnDefect.make({
+                    defect: cause,
+                    message: cause instanceof Error ? cause.message : String(cause),
+                  })
+                }),
+              ),
+              Effect.annotateLogs({
+                actor: payload.ref.actor,
+                id: payload.ref.id,
+                tenant: payload.ref.tenant,
+                command: payload.command,
+                commandId: payload.commandId,
+              }),
+              // The span's call site is always this file, so a captured stack
+              // trace would cost an Error per turn and name nothing useful.
+              Effect.withSpan(
+                SpanNames.turn(payload.ref.actor, payload.command),
+                { kind: "server", attributes: requestAttributes(payload) },
+                { captureStackTrace: false },
+              ),
+              Effect.catchIf(Schema.is(TurnDefect), (defect) =>
+                Effect.succeed(Outcome.cases.Defect.make({ cause: defect.defect })),
+              ),
+              Effect.onExit((exit) =>
+                Effect.gen(function* () {
+                  yield* count(
+                    Metrics.turns,
+                    {
+                      ...typeAttributes,
+                      // A declared ActorError rejects the command; a retryable death reruns it.
+                      outcome:
+                        label ??
+                        (Exit.isSuccess(exit)
+                          ? outcomeOf(exit.value)
+                          : Cause.hasFails(exit.cause)
+                            ? "rejected"
+                            : "retried"),
+                    },
+                    1,
+                  )
+                  yield* record(
+                    Metrics.turnDuration,
+                    typeAttributes,
+                    (yield* Clock.currentTimeMillis) - started,
+                  )
+                }),
+              ),
+            )
+
+            // The turn settled, so the next retryable death waits the base delay again.
+            restarts.set(activation, 0)
+
+            const hooks = yield* TurnHooks
+
+            if (!Outcome.guards.Defect(outcome)) yield* hooks.at("afterCommit", payload)
+
+            if (workflowRoutes.has(payload.command)) {
+              const kicked = yield* kickedExecution({ request: payload, outcome })
+
+              if (kicked !== undefined) {
+                engine ??= yield* activationEngine({
+                  registration,
+                  ref: payload.ref,
+                  routingKey: routingKeyOf(payload.ref),
+                  cache: owned.cache,
+                  scope,
+                  deliveryMs: registration.policy.deliveryMs,
+                })
+                yield* engine.kick(kicked.executionId, kicked.interrupt)
+              }
+            }
+
+            return outcome
+          },
+          Effect.provideContext(services),
+          gate.run,
+        ),
       })
     }),
     {
