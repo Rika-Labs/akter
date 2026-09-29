@@ -10,6 +10,7 @@ import { disabledLayer, polarLayer } from "@durable-actors/billing"
 import { observabilityLayer } from "@durable-actors/observability"
 import { accountLive, authRoute } from "./account/handler.ts"
 import { webhookRoute } from "./billing/handler.ts"
+import { edgeKeysRoute } from "./edge/keys.ts"
 import type { Config } from "./config.ts"
 import { HealthLive } from "./health.ts"
 
@@ -32,7 +33,7 @@ export const applicationLayer = (config: Config) => {
     Layer.provide(Layer.merge(HealthLive, accountLive(config))),
   )
 
-  return Layer.mergeAll(api, authRoute, webhookRoute(config)).pipe(
+  return Layer.mergeAll(api, authRoute, webhookRoute(config), edgeKeysRoute).pipe(
     HttpRouter.provideRequest(services),
     Layer.provide(services),
     Layer.provide(observabilityLayer(config.axiom)),

@@ -1,4 +1,4 @@
-export { ActorTest, cleanup } from "./actor-test.ts"
+export { ActorTest, cleanup, sweepContent } from "./actor-test.ts"
 
 export type { TestConnection, TestMessage } from "./actor-test.ts"
 
@@ -32,6 +32,10 @@ export type {
   ConformanceRuntime,
   ConformanceServices,
 } from "./conformance.ts"
+
+export { edgeConformance, edgeKey } from "./conformance/assertions.ts"
+
+export type { ConformanceEdge, EdgeKey, EdgeRunner, HostedEdge } from "./conformance/assertions.ts"
 
 export {
   describeWorkflowEngine,

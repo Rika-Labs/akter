@@ -57,7 +57,9 @@ import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
+import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
+import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
 import {
   retentionConformance,
   retentionFixture,
@@ -65,7 +67,11 @@ import {
   retentionLayer,
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
-import { assertionsConformance } from "./conformance/assertions.ts"
+import {
+  assertionsConformance,
+  type ConformanceEdge,
+  edgeConformance,
+} from "./conformance/assertions.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
 import {
   drainConformance,
@@ -132,7 +138,15 @@ import {
   subscriptionsLayer,
   type SubscriptionsFixture,
 } from "./conformance/subscriptions.ts"
-import { TurnHooks } from "../runtime/turn/hooks.ts"
+import { ContentHooks, TurnHooks } from "../runtime/turn/hooks.ts"
+import type { ContentStore } from "../handles/content.ts"
+import type { Options } from "../runtime/layer.ts"
+import {
+  contentConformance,
+  contentFixture,
+  contentLayer,
+  type ContentFixture,
+} from "./conformance/content-blobs.ts"
 import {
   workflowsConformance,
   workflowsFixture,
@@ -186,6 +200,7 @@ export type ConformanceServices =
   | ActorTest
   | SqlClient.SqlClient
   | Crypto.Crypto
+  | ContentStore
 
 export type ConformanceRuntime = ManagedRuntime.ManagedRuntime<ConformanceServices, never>
 
@@ -198,6 +213,7 @@ export interface ConformanceEnvironment {
     readonly database?: ConformanceDatabase
     /** Queries read this streaming replica of `database` once it has caught up. */
     readonly replica?: Redacted.Redacted<string> | undefined
+    readonly content?: Options["content"]
   }) => ConformanceRuntime
   /** Stops the current runtime; the retained database survives. */
   readonly stop: Effect.Effect<void>
@@ -214,6 +230,8 @@ export interface ConformanceEnvironment {
   readonly replica?: ConformanceReplica | undefined
   /** A fresh listening HTTP server that supports WebSocket upgrades; each build listens anew. */
   readonly httpServer: Layer.Layer<HttpServer.HttpServer>
+  /** The hosted edge under test, when the backend supplies one. */
+  readonly edge?: ConformanceEdge
 }
 
 /** A physical streaming replica of the backend's Postgres primary. */
@@ -237,6 +255,11 @@ export interface ConformanceBackend {
    * served-transport cases build one per case.
    */
   readonly httpServer: Layer.Layer<HttpServer.HttpServer>
+  /**
+   * A hosted edge to run the edge half of the assertion cases against; a
+   * backend without one reports those cases through `registrar.skip`.
+   */
+  readonly edge?: ConformanceEdge
   readonly open: () => Promise<{
     readonly database: ConformanceDatabase
     readonly freshDatabase: Effect.Effect<ConformanceDatabase>
@@ -261,6 +284,7 @@ export interface ConformanceFixture {
   readonly workflows: WorkflowsFixture
   readonly subscriptions: SubscriptionsFixture
   readonly connections: ConnectionsFixture
+  readonly content: ContentFixture
   readonly drain: DrainFixture
   executions: number
   queries: number
@@ -290,6 +314,8 @@ export interface ConformanceCase {
   readonly requiresIndependentConnections?: boolean
   /** Requires a streaming replica; backends without one skip the case. */
   readonly requiresReplica?: boolean
+  /** Requires `backend.edge`; backends without one register the case through `registrar.skip`. */
+  readonly requiresEdge?: boolean
   readonly run: (ctx: ConformanceContext) => Promise<void>
   readonly timeoutMs?: number
 }
@@ -394,6 +420,7 @@ const makeFixture = (): ConformanceFixture => ({
   workflows: workflowsFixture(),
   subscriptions: subscriptionsFixture(),
   connections: connectionsFixture(),
+  content: contentFixture(),
   drain: drainFixture(),
   executions: 0,
   queries: 0,
@@ -418,6 +445,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...admissionConformance,
   ...httpConformance,
   ...assertionsConformance,
+  ...edgeConformance,
   ...clientConformance,
   ...capacityConformance,
   ...heapConformance,
@@ -448,9 +476,11 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...progressDeliveryConformance,
   ...transportsConformance,
   ...workflowVersionsConformance,
+  ...payloadMigrationsConformance,
   ...subscriptionsConformance,
   ...subscriptionsRetentionConformance,
   ...subscriptionsClusterConformance,
+  ...contentConformance,
   {
     name: "commits state and receipt, replays an identical command effect, and keeps its generation",
     run: ({ expect, environment }) =>
@@ -1438,6 +1468,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...propertiesConformance,
   ...mintConformance,
   ...readYourWritesConformance,
+  ...placementConformance,
 ]
 
 interface ConformanceStore {
@@ -1449,14 +1480,16 @@ interface ConformanceStore {
 }
 
 /**
- * Registers every named conformance case against `backend`. The same case
- * names run on every backend; cases that need independent SQL connections are
- * reported through `registrar.skip` when the backend cannot provide them.
+ * Registers every named conformance case against `backend`, or only
+ * `cases` when given. The same case names run on every backend; cases that
+ * need independent SQL connections or an edge are reported through
+ * `registrar.skip` when the backend cannot provide them.
  */
 export const describeConformance = (options: {
   readonly name: string
   readonly backend: ConformanceBackend
   readonly registrar: ConformanceRegistrar
+  readonly cases?: ReadonlyArray<ConformanceCase>
 }): void => {
   const { name, backend, registrar } = options
   const fixture = makeFixture()
@@ -1489,7 +1522,9 @@ export const describeConformance = (options: {
     studioLayer,
     transportsLayer,
     mintLayer,
+    placementLayer,
     subscriptionsLayer(fixture.subscriptions),
+    contentLayer(fixture.content),
     drainLayer(fixture.drain),
   )
 
@@ -1527,13 +1562,20 @@ export const describeConformance = (options: {
                     }),
                 ),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
+              content: overrides?.content,
             }).pipe(
               // Subscription cases fault particular deliveries by command.
               Layer.provide(
-                Layer.succeed(TurnHooks, {
-                  at: (point, request) =>
-                    Effect.suspend(() => fixture.subscriptions.hook(point, request)),
-                }),
+                Layer.mergeAll(
+                  Layer.succeed(TurnHooks, {
+                    at: (point, request) =>
+                      Effect.suspend(() => fixture.subscriptions.hook(point, request)),
+                  }),
+                  // Content cases pause particular operations between their statements.
+                  Layer.succeed(ContentHooks, {
+                    at: (point) => Effect.suspend(() => fixture.content.hook(point)),
+                  }),
+                ),
               ),
             ),
           ),
@@ -1570,6 +1612,9 @@ export const describeConformance = (options: {
       return store?.replica
     },
     httpServer: backend.httpServer,
+    get edge() {
+      return backend.edge
+    },
   }
 
   registrar.describe(name, () => {
@@ -1596,11 +1641,12 @@ export const describeConformance = (options: {
       ),
     )
 
-    for (const conformanceCase of conformance) {
+    for (const conformanceCase of options.cases ?? conformance) {
       if (
         (conformanceCase.requiresIndependentConnections === true &&
           backend.independentConnections === false) ||
-        (conformanceCase.requiresReplica === true && backend.hasReplica !== true)
+        (conformanceCase.requiresReplica === true && backend.hasReplica !== true) ||
+        (conformanceCase.requiresEdge === true && backend.edge === undefined)
       ) {
         registrar.skip(conformanceCase.name)
         continue

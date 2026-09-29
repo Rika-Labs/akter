@@ -1,0 +1,231 @@
+{
+  "schema": 2,
+  "label": "m4.11-placement",
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-29T01:15:27.188Z",
+  "finishedAt": "2026-09-29T01:16:06.988Z",
+  "git": {
+    "sha": "d757d16d6ca0efd14e2852a692f7d9b3af6276ff",
+    "shortSha": "d757d16",
+    "branch": "feat/228-parent-placement",
+    "mainBase": "6f27f1acfd6609d293576a2512a3c320813ca08e",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": true
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+    "logicalCpus": 16,
+    "memoryGiB": 31.4,
+    "os": "Linux 6.1.158+",
+    "hostname": "e2b.local",
+    "topology": "benchmark client and actor runtime on this machine; Postgres at BENCH_DATABASE_URL"
+  },
+  "scenarios": [
+    {
+      "name": "placement",
+      "description": "Parent placement against actor placement: parent-to-child intent latency, and reading a 10-item family in one group select against one query per item.",
+      "cases": [
+        {
+          "name": "intent-parent",
+          "parameters": {
+            "placement": "parent",
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 14250,
+          "throughput": 140.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 7.122,
+            "min": 5.74,
+            "p50": 6.902,
+            "p90": 7.971,
+            "p95": 8.733,
+            "p99": 13.076,
+            "max": 18.528
+          },
+          "statementsPerOperation": 14,
+          "roundTripsPerOperation": 5,
+          "statements": null,
+          "activity": {
+            "samples": 555,
+            "connections": {
+              "idle:Client/ClientRead": 9.12,
+              "active": 0.44,
+              "idle in transaction:Client/ClientRead": 0.2,
+              "active:IO/WalSync": 0.14,
+              "idle": 0.02,
+              "idle in transaction": 0.02,
+              "active:Client/ClientRead": 0.01,
+              "idle in transaction:IO/WalSync": 0,
+              "active:IO/WalWrite": 0
+            },
+            "peakConnections": 12
+          },
+          "cpu": {
+            "client": 88,
+            "server": null,
+            "clientMsPerOperation": 6.269,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "family-read-parent-10",
+          "parameters": {
+            "placement": "parent",
+            "items": 10,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 912,
+          "throughput": 2192.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 0.454,
+            "min": 0.313,
+            "p50": 0.386,
+            "p90": 0.567,
+            "p95": 0.688,
+            "p99": 0.979,
+            "max": 15.163
+          },
+          "statementsPerOperation": 2,
+          "roundTripsPerOperation": 0,
+          "statements": null,
+          "activity": {
+            "samples": 36,
+            "connections": {
+              "idle:Client/ClientRead": 11.78,
+              "idle": 0.19,
+              "active": 0.03
+            },
+            "peakConnections": 12
+          },
+          "cpu": {
+            "client": 132.4,
+            "server": null,
+            "clientMsPerOperation": 0.604,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "intent-actor",
+          "parameters": {
+            "placement": "actor",
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 15514,
+          "throughput": 128.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 7.754,
+            "min": 5.737,
+            "p50": 7.559,
+            "p90": 8.546,
+            "p95": 9.305,
+            "p99": 13.579,
+            "max": 27.222
+          },
+          "statementsPerOperation": 14,
+          "roundTripsPerOperation": 5,
+          "statements": null,
+          "activity": {
+            "samples": 604,
+            "connections": {
+              "idle:Client/ClientRead": 8.5,
+              "active": 0.45,
+              "active:IO/WalSync": 0.19,
+              "idle in transaction:Client/ClientRead": 0.17,
+              "active:Client/ClientRead": 0.02,
+              "idle": 0.02,
+              "idle in transaction": 0.01,
+              "active:IO/WalWrite": 0
+            },
+            "peakConnections": 12
+          },
+          "cpu": {
+            "client": 80.8,
+            "server": null,
+            "clientMsPerOperation": 6.268,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        },
+        {
+          "name": "family-read-actor-10",
+          "parameters": {
+            "placement": "actor",
+            "items": 10,
+            "workers": 1
+          },
+          "operations": 2000,
+          "elapsedMs": 7466,
+          "throughput": 267.9,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 3.73,
+            "min": 2.774,
+            "p50": 3.466,
+            "p90": 4.167,
+            "p95": 4.86,
+            "p99": 9.146,
+            "max": 20.899
+          },
+          "statementsPerOperation": 20,
+          "roundTripsPerOperation": 0,
+          "statements": null,
+          "activity": {
+            "samples": 292,
+            "connections": {
+              "idle:Client/ClientRead": 11.55,
+              "idle": 0.24,
+              "active": 0.13,
+              "active:Client/ClientRead": 0.08
+            },
+            "peakConnections": 12
+          },
+          "cpu": {
+            "client": 106.6,
+            "server": null,
+            "clientMsPerOperation": 3.979,
+            "serverMsPerOperation": null
+          },
+          "extra": null
+        }
+      ]
+    }
+  ]
+}

@@ -53,7 +53,8 @@ export interface WorkflowSteps {
   readonly wait: (
     step: StepIdentity,
     event: string,
-    matches: (value: string) => Effect.Effect<boolean>,
+    /** The stored value upcast to the event's current version when it matches; none otherwise. */
+    matches: (value: string, version: number) => Effect.Effect<Option.Option<string>>,
     timeoutMs: number | undefined,
   ) => Effect.Effect<Option.Option<string>>
   readonly race: <R>(

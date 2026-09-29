@@ -1,6 +1,6 @@
 # ADR 0052: Read-your-writes commit versions and replica reads
 
-**Status:** proposed (2026-09-29, issue #229); the review of its pull request decides it. It fills in what [ADR 0027](0027-served-protocol.md) section 5 left to M4.9 ("M4.9 decides what it counts"), and records that the reserved migration `0019_commit_version` is not needed.
+**Status:** accepted (2026-09-30, issue #229). It fills in what [ADR 0027](0027-served-protocol.md) section 5 left to M4.9 ("M4.9 decides what it counts"), and records that the reserved migration `0019_commit_version` is not needed.
 
 **Responsibility:** decide what a `durable-version` token counts, how a runner reads a replica, and when a query falls through to the primary.
 

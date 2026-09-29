@@ -47,7 +47,7 @@ export const eventsStatement = Effect.fnUntraced(function* (
   const values = sql.csv(
     events.map(
       (event, index) =>
-        sql`(${index + 1}::bigint, ${event.tag}::text, ${compress(event.value)}::bytea)`,
+        sql`(${index + 1}::bigint, ${event.tag}::text, ${compress(event.value)}::bytea, ${event.version}::int)`,
     ),
   )
 
@@ -104,10 +104,10 @@ export const eventsStatement = Effect.fnUntraced(function* (
         floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint + ${clock.offsetMillis()} AS now
     ),
     appended AS (
-      INSERT INTO actor_events (routing_key, tenant_id, actor_type, actor_id, sequence, event, command_id, value, emitted_at_ms)
+      INSERT INTO actor_events (routing_key, tenant_id, actor_type, actor_id, sequence, event, command_id, value, emitted_at_ms, payload_version)
       SELECT ${routingKey}, ${tenant}, ${actor}, ${id}, reserved.base + staged.ordinal, staged.event,
-        ${request.commandId}, staged.value, reserved.now
-      FROM reserved, (VALUES ${values}) AS staged (ordinal, event, value)
+        ${request.commandId}, staged.value, reserved.now, staged.version
+      FROM reserved, (VALUES ${values}) AS staged (ordinal, event, value, version)
       RETURNING 1)
     ${routedRows},
     feed AS (

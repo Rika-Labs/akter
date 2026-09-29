@@ -85,7 +85,7 @@ export const checkRowLevelSecurity = Effect.fnUntraced(function* (role: string) 
       has_table_privilege(${role}, c.oid, 'SELECT, INSERT, UPDATE, DELETE') AS writable
     FROM pg_class c
     WHERE c.relnamespace = current_schema()::regnamespace AND c.relkind = 'r'
-      AND c.relname LIKE 'actor\\_%'
+      AND (c.relname LIKE 'actor\\_%' OR c.relname LIKE 'tenant\\_content%')
       AND EXISTS (
         SELECT 1 FROM pg_attribute a
         WHERE a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
