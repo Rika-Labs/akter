@@ -1,6 +1,6 @@
 # ADR 0035: PGlite as an embedded production backend
 
-**Status:** proposed (2026-09-28).
+**Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.14 builds it; it needs no migration.
 
 **Responsibility:** decide when file-backed PGlite is a supported production backend, what the framework enforces for it, and which limits it states.
 
@@ -85,6 +85,8 @@ A core release that upgrades PGlite to a different embedded Postgres major versi
 
 ## Amendments on acceptance
 
+These landed with the acceptance, as labelled targets until the slice builds them.
+
 **Vision and earlier ADRs.** [Vision 06](../vision/06-developer-experience.md): "PGlite there is for development only" becomes "for development, and for one-process production within the limits of ADR 0035". ADR 0041's "Promise" bullet is superseded in the same way, and its revisit condition fires.
 
 **Contracts.** [09 recovery](../contracts/09-recovery.md) gains process-crash recovery on file-backed PGlite, and the refusal of a second process.
@@ -107,13 +109,15 @@ A core release that upgrades PGlite to a different embedded Postgres major versi
 
 None. The lock is a file outside the database, and the checks read `PG_VERSION` before PGlite opens.
 
-## Open questions for Dallen, with recommended defaults
+## Decided questions
 
-1. **Power-loss durability.** Recommended default: not claimed in M4.14; record it as unverified. Alternative: add a test with a failing block device (for example `dm-flakey` in a VM) and claim it if the test passes.
-2. **Platforms.** Recommended default: Linux and macOS, with `flock` through `bun:ffi`. Alternative: add Windows with `LockFileEx`, which needs its own CI runner.
-3. **Online backup.** Recommended default: support only the stopped copy until a `pgDump` build compatible with the pinned PGlite is verified. Alternative: find or build that `pgDump` now, and document that it blocks turns while it runs.
-4. **Upgrades across a Postgres major.** Recommended default: refuse with `DataDirVersion`, and document dump-and-reload using the previous core version. Alternative: ship a `durable pglite upgrade` command that runs both PGlite versions.
-5. **Serving from the same process.** Recommended default: allowed, because it's still one process. Alternative: embedded-only, with no `Actor.serve` on PGlite.
+Dallen accepted every recommended default on 2026-09-28.
+
+1. **Power-loss durability.** Decided: not claimed in M4.14; record it as unverified. Rejected alternative: add a test with a failing block device (for example `dm-flakey` in a VM) and claim it if the test passes.
+2. **Platforms.** Decided: Linux and macOS, with `flock` through `bun:ffi`. Rejected alternative: add Windows with `LockFileEx`, which needs its own CI runner.
+3. **Online backup.** Decided: support only the stopped copy until a `pgDump` build compatible with the pinned PGlite is verified. Rejected alternative: find or build that `pgDump` now, and document that it blocks turns while it runs.
+4. **Upgrades across a Postgres major.** Decided: refuse with `DataDirVersion`, and document dump-and-reload using the previous core version. Rejected alternative: ship a `durable pglite upgrade` command that runs both PGlite versions.
+5. **Serving from the same process.** Decided: allowed, because it's still one process. Rejected alternative: embedded-only, with no `Actor.serve` on PGlite.
 
 ## Evidence required
 
