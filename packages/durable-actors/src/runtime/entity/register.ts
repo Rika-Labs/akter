@@ -549,8 +549,9 @@ export const registerActor = Effect.fnUntraced(function* (
           for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
 
           const feeds = yield* Effect.forEach(done.committed, owner.feedBroadcasts)
+          const watches = yield* owner.watchBroadcasts(owned, done.wrote, done.version)
 
-          yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat()], done.head)
+          yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat(), ...watches], done.head)
         }
 
         for (const [index, settled] of done.settled.entries())

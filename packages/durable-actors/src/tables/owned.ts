@@ -207,6 +207,8 @@ export interface TableScope {
   readonly tables: ReadonlyArray<AnyOwnedTable>
   /** Dies once the capability is used outside the turn or query that received it. */
   readonly guard: Effect.Effect<void>
+  /** Told the name of each table or blob a mutation of this turn changed, once it succeeds. */
+  readonly wrote?: ((name: string) => void) | undefined
 }
 
 /** The table capabilities of one turn or query. */

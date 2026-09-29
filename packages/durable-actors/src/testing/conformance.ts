@@ -61,6 +61,12 @@ import { observabilityConformance } from "./conformance/observability.ts"
 import { OperatorRuntime } from "../runtime/operators/repair.ts"
 import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
+import {
+  type WatchFixture,
+  watchConformance,
+  watchFixture,
+  watchLayer,
+} from "./conformance/watch.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
 import {
@@ -305,6 +311,7 @@ export interface ConformanceFixture {
   readonly connections: ConnectionsFixture
   readonly content: ContentFixture
   readonly drain: DrainFixture
+  readonly watch: WatchFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -442,6 +449,7 @@ const makeFixture = (): ConformanceFixture => ({
   connections: connectionsFixture(),
   content: contentFixture(),
   drain: drainFixture(),
+  watch: watchFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -1489,6 +1497,7 @@ export const conformanceGroups = {
   observability: observabilityConformance,
   operator: operatorConformance,
   placement: placementConformance,
+  watch: watchConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
 
 export type ConformanceGroup = keyof typeof conformanceGroups
@@ -1560,6 +1569,7 @@ export const describeConformance = (options: {
     subscriptionsLayer(fixture.subscriptions),
     contentLayer(fixture.content),
     drainLayer(fixture.drain),
+    watchLayer(fixture.watch),
   )
 
   let store: ConformanceStore | undefined

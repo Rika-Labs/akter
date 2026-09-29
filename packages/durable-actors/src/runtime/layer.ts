@@ -32,6 +32,7 @@ import { SqlClient, SqlError } from "effect/unstable/sql"
 import {
   ActorError,
   ActorUnavailable,
+  InvalidInput,
   NotCreated,
   Unauthorized,
   Timeout,
@@ -69,7 +70,9 @@ import { holderShardGroups, holderTransport, type Transport } from "./connection
 import { StreamFailed, StreamItem } from "./connections/protocol.ts"
 import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
 import type { Owner } from "./connections/owner.ts"
-import { FEED_MEMBER } from "./connections/protocol.ts"
+import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
+import type { ReadSet } from "./connections/reads.ts"
+import { watchStream } from "./connections/watch.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { decompress, routingKey } from "./storage/codec.ts"
@@ -124,14 +127,23 @@ export interface Options {
     /**
      * What is being authorized: `command` for commands and reducers, `query`
      * for queries, `open` for a connection, `feed` for an event feed (with
-     * `command` set to the event tag), `reauthorize` for a live session's
+     * `command` set to the event tag), `watch` for a query watch (with
+     * `command` set to the query tag), `reauthorize` for a live session's
      * periodic check, and `content` for a content operation on the actor, with
      * `command` set to `<blob>.grant` or `<blob>.get`; hooks should deny kinds
      * they do not know.
      */
-    readonly kind: "command" | "query" | "open" | "stream" | "feed" | "reauthorize" | "content"
-    /** On `reauthorize`, what the session is: an `open` connection, a `stream`, or a `feed`. */
-    readonly of?: "open" | "stream" | "feed"
+    readonly kind:
+      | "command"
+      | "query"
+      | "open"
+      | "stream"
+      | "feed"
+      | "watch"
+      | "reauthorize"
+      | "content"
+    /** On `reauthorize`, what the session is: an `open` connection, a `stream`, a `feed`, or a `watch`. */
+    readonly of?: "open" | "stream" | "feed" | "watch"
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
@@ -283,6 +295,9 @@ const OWNER_CHECK_INTERVAL = "1 second"
 
 const activationEnded = () =>
   ActorError.make({ reason: SessionEnded.make({ cause: "ActivationEnded", resync: false }) })
+
+/** Watch reruns one runner runs at once; another waits for a place. */
+const WATCH_RERUNS = 64
 
 /** How long a progress send may take before it is given up as a lost frame. */
 const PROGRESS_SEND_TIMEOUT = "5 seconds"
@@ -493,11 +508,15 @@ export const layer = (options: Options) => {
           routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
           // A feed's holder rereads its events after an owner loss, so it waits for the new owner's answer.
           hasResync: (member) =>
-            member === FEED_MEMBER || (registration.connections.get(member)?.hasResync ?? false),
+            member === FEED_MEMBER ||
+            isWatchMember(member) ||
+            (registration.connections.get(member)?.hasResync ?? false),
           hasMember: (member) =>
             member === FEED_MEMBER
               ? registration.feeds.size > 0
-              : registration.connections.has(member),
+              : isWatchMember(member)
+                ? registration.watches.has(watchedQuery(member))
+                : registration.connections.has(member),
           channel: {
             open: (request) =>
               connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
@@ -1165,6 +1184,154 @@ export const layer = (options: Options) => {
         wake: relay.wake,
       })
 
+      const reruns = Semaphore.makeUnsafe(WATCH_RERUNS)
+
+      const actorExists = Effect.fnUntraced(
+        function* (ref: ActorRef) {
+          const registration = registrations.get(ref.actor)
+
+          if (registration === undefined)
+            return yield* ActorError.make({
+              reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+            })
+
+          const sql = yield* SqlClient.SqlClient
+
+          const rows = yield* sql`
+            SELECT 1 FROM actor_generations
+            WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
+              AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`.pipe(
+            withTenant(ref.tenant),
+          )
+
+          return rows.length > 0
+        },
+        Effect.provideContext(services),
+        Effect.catchIf(SqlError.isSqlError, (cause) =>
+          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+        ),
+      )
+
+      /**
+       * Reads committed rows on the caller's node: no activation, no generation
+       * fence, no receipt, and no command id. No statement timeout bounds the
+       * reads, whether they run on the pool or, with row-level security, in a
+       * transaction bound to the tenant on the server that answers; a read past
+       * `commandTimeout` is interrupted, which cancels its statement on the
+       * server. The event head is read with state in one statement and every
+       * replay stops at it, so state and events describe one moment; state counts
+       * only alongside its generation row, which carries the head, and a failed
+       * replay read is unavailability, not a deterministic query defect. Owned
+       * tables and blobs are read through the primary's pools, so a type that
+       * declares them reads its state there too. A replica answers only once it
+       * has replayed `minVersion`; one that is behind or failing hands the read
+       * to the primary. A query result is released only to a caller still
+       * allowed once the handler returned. A watch's rerun passes `reads` and
+       * skips both checks, because its session was authorized at open and is
+       * reauthorized on its bound, and the recorder fills `reads`.
+       */
+      const readQuery = Effect.fnUntraced(
+        function* (request: Request, minVersion?: string, reads?: ReadSet) {
+          const registration = queryRegistrations.get(request.ref.actor)
+          const query = registration?.queries.get(request.command)
+
+          if (registration === undefined || query === undefined)
+            return yield* ActorError.make({
+              reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
+            })
+
+          if (reads === undefined) yield* allow(request, "query")
+          const key = routingKey({ ref: request.ref, placement: registration.placement })
+
+          const read = (client: SqlClient.SqlClient) =>
+            Effect.gen(function* () {
+              const rows = yield* client<{
+                head: string | null
+                key: string | null
+                value: Uint8Array | null
+              }>`
+                SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
+                FROM actor_generations
+                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
+                UNION ALL
+                SELECT NULL, key, value
+                FROM actor_state
+                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+
+              let head: string | undefined
+              const state: Array<readonly [string, string]> = []
+
+              for (const row of rows)
+                if (row.head !== null) head = row.head
+                else state.push([row.key!, decompress(row.value!)])
+
+              if (head === undefined) state.length = 0
+
+              const cursor = head ?? "0"
+
+              const outcome = yield* query.run(
+                request,
+                state,
+                cursor,
+                (tag, after, limit) =>
+                  replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
+                    Effect.catchIf(SqlError.isSqlError, Effect.die),
+                    Effect.provideService(SqlClient.SqlClient, client),
+                    Effect.provideContext(services),
+                  ),
+                reads,
+              )
+
+              if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
+                return yield* outcome.cause
+
+              return outcome
+            }).pipe(
+              withTenant(request.ref.tenant),
+              Effect.provideService(SqlClient.SqlClient, client),
+            )
+
+          const replicated =
+            replica !== undefined &&
+            registration.tables.length === 0 &&
+            registration.blobs.length === 0
+
+          const outcome = yield* Effect.gen(function* () {
+            if (!replicated) return yield* read(primary)
+
+            if (minVersion !== undefined) {
+              const ready = yield* caughtUp(replica, minVersion).pipe(
+                Effect.catchIf(SqlError.isSqlError, () => Effect.succeed(false)),
+              )
+
+              if (!ready) return yield* read(primary)
+            }
+
+            return yield* read(replica).pipe(
+              Effect.catchIf(SqlError.isSqlError, () => read(primary)),
+            )
+          }).pipe(
+            Effect.timeoutOrElse({
+              duration: registration.timeoutMs,
+              orElse: () =>
+                Effect.fail(
+                  ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
+                ),
+            }),
+          )
+
+          if (reads === undefined) yield* allow(request, "query")
+
+          return outcome
+        },
+        Effect.provideContext(services),
+        Effect.catchIf(SqlError.isSqlError, (cause) =>
+          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+        ),
+      )
+
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintChildId: (input) =>
@@ -1282,7 +1449,11 @@ export const layer = (options: Options) => {
           // activation may call itself at once, and must find its type.
           registrations.set(registration.name, registration)
 
-          if (registration.connections.size > 0 || registration.feeds.size > 0)
+          if (
+            registration.connections.size > 0 ||
+            registration.feeds.size > 0 ||
+            registration.watches.size > 0
+          )
             heldTypes.set(registration.name, heldType(registration))
 
           if (retained) sweepsWorkflows.add(registration.name)
@@ -1348,31 +1519,7 @@ export const layer = (options: Options) => {
             }),
           )
         }),
-        exists: Effect.fnUntraced(
-          function* (ref: ActorRef) {
-            const registration = registrations.get(ref.actor)
-
-            if (registration === undefined)
-              return yield* ActorError.make({
-                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-              })
-
-            const sql = yield* SqlClient.SqlClient
-
-            const rows = yield* sql`
-              SELECT 1 FROM actor_generations
-              WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
-                AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`.pipe(
-              withTenant(ref.tenant),
-            )
-
-            return rows.length > 0
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        ),
+        exists: actorExists,
         // Feeds read committed events on the serving node, like queries: no activation.
         readFeed: Effect.fnUntraced(
           function* (
@@ -1421,118 +1568,36 @@ export const layer = (options: Options) => {
             Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
           ),
         ),
-        // Queries read committed rows on the caller's node: no activation, no
-        // generation fence, no receipt, and no command id.
-        query: Effect.fnUntraced(
-          function* (request: Request, minVersion?: string) {
-            const registration = queryRegistrations.get(request.ref.actor)
-            const query = registration?.queries.get(request.command)
+        query: (request, minVersion) => readQuery(request, minVersion),
+        watch: (request, { minVersion, expiresAt }) =>
+          Effect.gen(function* () {
+            const registration = registrations.get(request.ref.actor)
+            const query = queryRegistrations.get(request.ref.actor)?.queries.get(request.command)
 
             if (registration === undefined || query === undefined)
               return yield* ActorError.make({
                 reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
               })
 
-            yield* allow(request, "query")
-            const key = routingKey({ ref: request.ref, placement: registration.placement })
+            if (!query.watch)
+              return yield* ActorError.make({
+                reason: InvalidInput.make({ code: "not_watchable" }),
+              })
 
-            // No statement_timeout bounds query reads, whether they run on
-            // the pool or, with row-level security, in a transaction bound to
-            // the tenant on the server that answers; interrupting a read past
-            // commandTimeout cancels its statement on the server instead.
-            const read = (client: SqlClient.SqlClient) =>
-              Effect.gen(function* () {
-                // The event head is read with state in one statement, and every replay
-                // in this query stops at it, so state and events describe one moment.
-                const rows = yield* client<{
-                  head: string | null
-                  key: string | null
-                  value: Uint8Array | null
-                }>`
-                  SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
-                  FROM actor_generations
-                  WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                    AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-                  UNION ALL
-                  SELECT NULL, key, value
-                  FROM actor_state
-                  WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                    AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+            if (!(yield* actorExists(request.ref)))
+              return yield* ActorError.make({ reason: NotCreated.make({}) })
 
-                let head: string | undefined
-                const state: Array<readonly [string, string]> = []
-
-                for (const row of rows)
-                  if (row.head !== null) head = row.head
-                  else state.push([row.key!, decompress(row.value!)])
-
-                // State counts only alongside its generation row, which carries the head.
-                if (head === undefined) state.length = 0
-
-                const cursor = head ?? "0"
-
-                const outcome = yield* query.run(request, state, cursor, (tag, after, limit) =>
-                  replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
-                    Effect.catchIf(SqlError.isSqlError, Effect.die),
-                    Effect.provideService(SqlClient.SqlClient, client),
-                    Effect.provideContext(services),
-                  ),
-                )
-
-                // A failed replay read is unavailability, not a deterministic query defect.
-                if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
-                  return yield* outcome.cause
-
-                return outcome
-              }).pipe(
-                withTenant(request.ref.tenant),
-                Effect.provideService(SqlClient.SqlClient, client),
-              )
-
-            // Owned tables and blobs are read through the primary's pools, so a
-            // type that declares them reads its state there too: one server per query.
-            const replicated =
-              replica !== undefined &&
-              registration.tables.length === 0 &&
-              registration.blobs.length === 0
-
-            // A replica answers only once it has replayed the caller's version;
-            // one that is behind or failing hands the read to the primary.
-            const outcome = yield* Effect.gen(function* () {
-              if (!replicated) return yield* read(primary)
-
-              if (minVersion !== undefined) {
-                const ready = yield* caughtUp(replica, minVersion).pipe(
-                  Effect.catchIf(SqlError.isSqlError, () => Effect.succeed(false)),
-                )
-
-                if (!ready) return yield* read(primary)
-              }
-
-              return yield* read(replica).pipe(
-                Effect.catchIf(SqlError.isSqlError, () => read(primary)),
-              )
-            }).pipe(
-              Effect.timeoutOrElse({
-                duration: registration.timeoutMs,
-                orElse: () =>
-                  Effect.fail(
-                    ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
-                  ),
-              }),
-            )
-
-            // Access can be revoked while the handler runs; like a command's
-            // outcome, a query result is released only to a caller still allowed.
-            yield* allow(request, "query")
-
-            return outcome
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        ),
+            return yield* watchStream({
+              holder,
+              request,
+              minIntervalMs: registration.policy.watch.minIntervalMs,
+              reconcileMs: registration.policy.watch.reconcileMs,
+              minVersion,
+              expiresAt,
+              rerun: (version, reads) =>
+                reruns.withPermit(Effect.suspend(() => readQuery(request, version(), reads))),
+            })
+          }),
         subscribe: (request) =>
           Stream.unwrap(
             Effect.gen(function* () {

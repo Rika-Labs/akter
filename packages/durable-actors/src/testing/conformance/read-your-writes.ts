@@ -1,4 +1,5 @@
 import { Effect, Redacted, Schedule, type Scope } from "effect"
+import { dual } from "effect/Function"
 import { ActorError, InvalidInput } from "../../errors/actor.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
 import { HttpRoom, serveHttp, tenantOf, type Server } from "./http.ts"
@@ -18,23 +19,36 @@ const baseFetch = globalThis.fetch.bind(globalThis)
  * suite's runtime, which is restarted afterwards. Two runtimes never serve one
  * database at once, since both would claim its shards.
  */
-const withReplica = <A>(
-  environment: ConformanceEnvironment,
-  replica: Redacted.Redacted<string>,
-  body: Effect.Effect<A, never, ConformanceServices | Scope.Scope>,
-) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      yield* environment.stop
-      const runtime = environment.build({ replica })
+export const withReplica: {
+  <A>(
+    replica: Redacted.Redacted<string>,
+    body: Effect.Effect<A, never, ConformanceServices | Scope.Scope>,
+  ): (environment: ConformanceEnvironment) => Promise<A>
+  <A>(
+    environment: ConformanceEnvironment,
+    replica: Redacted.Redacted<string>,
+    body: Effect.Effect<A, never, ConformanceServices | Scope.Scope>,
+  ): Promise<A>
+} = dual(
+  3,
+  <A>(
+    environment: ConformanceEnvironment,
+    replica: Redacted.Redacted<string>,
+    body: Effect.Effect<A, never, ConformanceServices | Scope.Scope>,
+  ) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        yield* environment.stop
+        const runtime = environment.build({ replica })
 
-      return yield* Effect.promise(() => runtime.runPromise(Effect.scoped(body))).pipe(
-        Effect.ensuring(
-          Effect.promise(() => runtime.dispose()).pipe(Effect.andThen(environment.restart)),
-        ),
-      )
-    }),
-  )
+        return yield* Effect.promise(() => runtime.runPromise(Effect.scoped(body))).pipe(
+          Effect.ensuring(
+            Effect.promise(() => runtime.dispose()).pipe(Effect.andThen(environment.restart)),
+          ),
+        )
+      }),
+    ),
+)
 
 /** Replay on the replica stays paused for the rest of the scope. */
 export const pauseReplay = (control: ConformanceConnection) =>

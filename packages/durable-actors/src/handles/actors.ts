@@ -1,5 +1,6 @@
 import type { Transport } from "../runtime/connections/transport.ts"
 import type { Holder } from "../runtime/connections/holder.ts"
+import type { ReadSet } from "../runtime/connections/reads.ts"
 import type { ProgressMessage } from "../runtime/effects/progress.ts"
 import { Context, Effect, type Exit, Schema, Scope, type Stream } from "effect"
 import type { ActorError } from "../errors/actor.ts"
@@ -113,6 +114,11 @@ export interface BusinessResult {
   readonly outbox: StagedOutbox
   /** Frames to send to open connections once the turn commits; a declared failure sends none. */
   readonly broadcasts?: ReadonlyArray<Broadcast>
+  /** The declared tables and blobs the turn wrote; a declared failure wrote none. */
+  readonly writes?: {
+    readonly tables: ReadonlyArray<string>
+    readonly blobs: ReadonlyArray<string>
+  }
 }
 
 /** One encoded frame for a connection member's open connections. */
@@ -371,13 +377,23 @@ export interface EffectRegistration {
   readonly payloads: ReadonlyArray<PayloadDeclaration>
 }
 
+/** One result of a watch: the query's encoded output, and the commit version its rerun waited for when there was one. */
+export interface WatchResult {
+  readonly version: string | undefined
+  readonly value: string
+}
+
 /** A query reads committed state; it never activates, fences, or receipts. */
 export interface RegisteredQuery {
+  /** Whether the member is declared `watch: true`, so its handler needs nothing but `X.Read`. */
+  readonly watch: boolean
+  /** With `reads`, the handler runs on a recording `X.Read` and fills `reads`, and no service but `X.Read` is provided. */
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
     cursor: string,
     events: EventReader,
+    reads?: ReadSet,
   ) => Effect.Effect<Outcome>
 }
 
@@ -417,6 +433,8 @@ export interface Registration {
   readonly streams: ReadonlyMap<string, RegisteredStream>
   /** Tags of the events this actor type serves as event feeds. */
   readonly feeds: ReadonlySet<string>
+  /** Tags of the queries declared `watch: true`. */
+  readonly watches: ReadonlySet<string>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
   /** `policy.cron` entries; each is one keyed tick row per actor. */
@@ -558,6 +576,25 @@ export class InternalActors extends Context.Service<
     readonly subscribe: (
       request: Request,
     ) => Stream.Stream<string, ActorError | { readonly failure: string }>
+    /**
+     * Watches a query declared `watch: true`: `request.command` is the query
+     * and `request.payload` its encoded input. The effect opens the watch at
+     * this runner's holder, which authorizes it with `kind: "watch"`, and
+     * fails `NotCreated` for an actor no command has created. The stream
+     * starts with the current result, then sends the newest result after each
+     * commit that wrote something the last run read, skipping intermediate
+     * results and results equal to the last one. A declared failure fails it
+     * with its encoding. `minVersion` is a commit version the first result
+     * reflects at least, and `expiresAt` the credential's expiry in epoch
+     * milliseconds, which ends the watch with `Unauthorized`.
+     */
+    readonly watch: (
+      request: Request,
+      options: { readonly minVersion: string | undefined; readonly expiresAt: number | undefined },
+    ) => Effect.Effect<
+      Stream.Stream<WatchResult, ActorError | { readonly failure: string }>,
+      ActorError
+    >
     /**
      * Reads one execution's status like a query: `request.command` is the
      * workflow member, `request.payload` the execution id.

@@ -13,6 +13,7 @@ import { Cause, Effect, Exit } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, type Insert, type Row } from "../index.ts"
 import { labels, notes, tablesDdl } from "../testing/conformance/tables.ts"
+import { watchDdl, watchRows } from "../testing/conformance/watch.ts"
 
 const migration = (schema: Parameters<typeof generateDrizzleJson>[0]) =>
   Effect.gen(function* () {
@@ -27,6 +28,13 @@ describe("owned table declarations", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         expect(yield* migration({ notes, labels })).toEqual(tablesDdl)
+      }),
+    ))
+
+  it("generates the DDL the watch conformance table is created with", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        expect(yield* migration({ watchRows })).toEqual(watchDdl)
       }),
     ))
 
