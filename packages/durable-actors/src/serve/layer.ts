@@ -62,6 +62,7 @@ import { SUBPROTOCOL } from "./frames.ts"
 import { cursorErrorBody, feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
 import { MAX_AWAITING_HELLO, socketSession } from "./sessions/socket.ts"
 import { streamResponse } from "./sessions/stream.ts"
+import { watchResponse } from "./sessions/watch.ts"
 import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
 
 /** Options of `Actor.serve`; `R` is what `auth` needs from the environment. */
@@ -707,6 +708,50 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           })
         })
 
+      const watchHandler = (definition: ServedDefinition, member: ServedMember) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const authenticated = yield* authenticate(request)
+
+          if (!member.watch) return yield* invalidInput("not_watchable")
+
+          const type = Headers.get(request.headers, "content-type")
+
+          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
+            return yield* invalidInput("unsupported_media_type")
+
+          const bytes = yield* readBytes(request)
+
+          yield* checkBinding(authenticated, request, bytes)
+          const body = yield* decodeJsonBody(request, bytes)
+
+          const payload = yield* member
+            .payload(body)
+            .pipe(Effect.mapError((error) => undecodable(error)))
+
+          const results = yield* actors.watch(
+            Request.make({
+              ref: ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id }),
+              caller: authenticated.caller,
+              command: member.tag,
+              commandId: "",
+              payload,
+            }),
+            {
+              minVersion: yield* minVersion(request),
+              expiresAt:
+                authenticated.expiresAt === undefined
+                  ? undefined
+                  : DateTime.toEpochMillis(authenticated.expiresAt),
+            },
+          )
+
+          return HttpServerResponse.stream(watchResponse(results), {
+            contentType: "text/event-stream",
+            headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
+          })
+        })
+
       const awaiting = awaitingHello.get(actors) ?? { count: 0 }
       awaitingHello.set(actors, awaiting)
 
@@ -901,6 +946,15 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
             respond(memberHandler(definition, member), requestId(member)),
           )
+
+      for (const definition of definitions)
+        for (const member of definition.members)
+          if (member.kind === "query")
+            yield* router.add(
+              "POST",
+              `${basePath}${memberPath({ definition, member })}/watch` as HttpRouter.PathInput,
+              respond(watchHandler(definition, member)),
+            )
 
       for (const definition of definitions)
         for (const member of definition.streams)
