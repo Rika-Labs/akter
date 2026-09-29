@@ -109,22 +109,51 @@ const runtime = Layer.unwrap(
   }),
 ).pipe(Layer.provideMerge(BunCrypto.layer))
 
-// The parent starts every runner's load together, so none has finished its
-// operations before another is killed.
-const started = Effect.callback<void>((resume) => {
-  stdin.once("data", () => resume(Effect.void))
-  stdin.once("end", () => resume(Effect.void))
+// The parent paces each runner with named lines on stdin: GO starts its
+// load, RESUME releases a runner held mid-load. A closed stdin releases every
+// wait, so a runner whose parent died never hangs.
+const received = new Set<string>()
+
+const waiting = new Map<string, () => void>()
+
+let ended = false
+
+let pending = ""
+
+stdin.on("data", (chunk: Buffer) => {
+  const lines = (pending + chunk.toString()).split("\n")
+  pending = lines.pop()!
+
+  for (const line of lines) {
+    received.add(line)
+    waiting.get(line)?.()
+  }
 })
+
+stdin.once("end", () => {
+  ended = true
+
+  for (const release of waiting.values()) release()
+})
+
+const signal = (line: string) =>
+  Effect.callback<void>((resume) => {
+    if (ended || received.has(line)) resume(Effect.void)
+    else waiting.set(line, () => resume(Effect.void))
+  })
 
 // Each runner is also a caller: it retries a command under its minted id until
 // it commits, as a client would, and reports each commit and its latency.
 const program = Effect.gen(function* () {
   const actors = yield* ActorClient
   const operations = yield* Config.Int("DRILL_OPERATIONS")
+  const holdAt = yield* Config.Int("DRILL_HOLD_AT").pipe(Config.withDefault(operations))
   yield* Console.log("READY")
-  yield* started
+  yield* signal("GO")
 
   for (let index = 0; index < operations; index++) {
+    if (index === holdAt) yield* signal("RESUME")
+
     const started = yield* Clock.currentTimeMillis
     const incrementId = yield* actors.mintCommandId
     const sendId = yield* actors.mintCommandId

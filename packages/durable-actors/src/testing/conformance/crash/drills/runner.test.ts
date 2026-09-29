@@ -87,7 +87,10 @@ describe("runner and relay process death with Postgres", () => {
 
           const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
-          const spawn = Effect.fnUntraced(function* (operations: number, blockRelay: boolean) {
+          const spawn = Effect.fnUntraced(function* (
+            operations: number,
+            options: { readonly blockRelay?: boolean; readonly holdAt?: number } = {},
+          ) {
             const process: Process = {
               done: [],
               ready: false,
@@ -101,9 +104,12 @@ describe("runner and relay process death with Postgres", () => {
                   DRILL_DATABASE_URL: database.href,
                   DRILL_PORT: String(yield* freePort),
                   DRILL_OPERATIONS: String(operations),
-                  DRILL_BLOCK_RELAY: String(blockRelay),
+                  DRILL_BLOCK_RELAY: String(options.blockRelay ?? false),
+                  DRILL_HOLD_AT: String(options.holdAt ?? operations),
                 },
                 extendEnv: true,
+                // Kept open so the parent can send more than one signal.
+                stdin: { stream: "pipe", endOnDone: false },
                 stderr: "inherit",
               }),
             )
@@ -133,9 +139,10 @@ describe("runner and relay process death with Postgres", () => {
               Effect.forkScoped,
             )
 
-            const start = Stream.run(Stream.make(new TextEncoder().encode("GO\n")), child.stdin)
+            const send = (line: string) =>
+              Stream.run(Stream.make(new TextEncoder().encode(`${line}\n`)), child.stdin)
 
-            return { child, process, start }
+            return { child, process, start: send("GO"), resume: send("RESUME") }
           })
 
           const until = (condition: () => boolean, what: string, within: Duration.Input) =>
@@ -156,10 +163,12 @@ describe("runner and relay process death with Postgres", () => {
           })
 
           // Concurrent first migrations race on a fresh database, so one runner migrates first.
-          const first = yield* spawn(OPERATIONS, false)
+          // The first runner holds halfway until the kill, so it is always
+          // still under load when a peer dies, however fast it runs.
+          const first = yield* spawn(OPERATIONS, { holdAt: OPERATIONS / 2 })
           yield* until(() => first.process.ready, "the migrating runner", "30 seconds")
-          const second = yield* spawn(OPERATIONS, false)
-          const third = yield* spawn(OPERATIONS, true)
+          const second = yield* spawn(OPERATIONS)
+          const third = yield* spawn(OPERATIONS, { blockRelay: true })
           yield* until(
             () => [first, second, third].every(({ process }) => process.ready),
             "three runners",
@@ -172,11 +181,12 @@ describe("runner and relay process death with Postgres", () => {
           // The kill lands under load only while the first runner still has work.
           expect(first.process.finished).toBe(false)
           yield* killed(second.child)
+          yield* first.resume
           yield* until(() => third.process.claimed, "r2's relay claim", "60 seconds")
           yield* killed(third.child)
 
-          const fourth = yield* spawn(REPLACEMENT_OPERATIONS, false)
-          const fifth = yield* spawn(REPLACEMENT_OPERATIONS, false)
+          const fourth = yield* spawn(REPLACEMENT_OPERATIONS)
+          const fifth = yield* spawn(REPLACEMENT_OPERATIONS)
           yield* Effect.forEach([fourth, fifth], ({ start }) => start, { discard: true })
           const survivors = [first, fourth, fifth]
           yield* until(
