@@ -195,6 +195,14 @@ M4.8's tenant directory (`packages/postgres/migrations/0002_tenant_directory.sql
 - **The primary-region check.** `TenantHome` reads the deployment's `primary_region` through the `Deployments` service, outside the turn's transaction, because a turn reads only its own rows. A deployment's primary region never changes, so the read can't race the write.
 - **The CLI.** `durable tenants create` runs `TenantHome` embedded against the control-plane database, like `durable workflows check`, and takes `--deployment`, `--database-url`, and `--operator` (the attributed caller) until the control-plane API and operator credentials (M4.6) exist.
 
+M4.8's runner half (`Actor.auth.assertion`, `serve/assertion/binding.ts`) settles details §2 to §4 leave open:
+
+- **`cexp`.** An assertion lives 10 seconds, so its `exp` can't cap a WebSocket session or an SSE feed. The edge adds `cexp`, the external credential's own expiry in epoch seconds, and the runner uses it as the session's `expiresAt`. An assertion without `cexp` gives the session no expiry, so the edge sets it on every streaming assertion.
+- **Canonical path.** Besides uppercasing percent-encoding hex, both sides decode escapes of RFC 3986 unreserved characters (`%41` is `A`), so an intermediary that normalizes them can't break the binding.
+- **`refreshEvery`.** The 5-minute key-set poll is the default of a runner option, so a deployment can choose ADR question 2's 1-minute alternative. The runner rereads the set lazily, on the first request after the interval, rather than on a timer.
+- **Fail closed.** A runner whose key set is older than `refreshEvery` and can't be reread answers `503 ActorUnavailable` instead of trusting keys that may have been revoked.
+- **No push yet.** Runners have no endpoint for the control plane's revocation push, so `refreshEvery` is the whole revocation bound.
+
 ## Revisit when
 
 - An application needs one tenant's actor to call another tenant's actor.
