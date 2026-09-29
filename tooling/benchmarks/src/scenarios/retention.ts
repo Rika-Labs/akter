@@ -54,6 +54,9 @@ const seed = Effect.fnUntraced(function* (rows: number) {
  * Cleanup throughput over a backlog of old receipts and events, the warm-turn
  * tail while a sweep runs against the same idle-run tail, and the latency of
  * one replay page.
+ *
+ * The warm-turn comparison holds only if the sweep outlasts the measurement
+ * window.
  */
 export const retention: Scenario = {
   name: "retention",

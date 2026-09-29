@@ -61,6 +61,10 @@ const rate = (result: CaseResult, events: number): CaseResult => ({
  * One source's backlog to 63 healthy followers, beside a 64th whose handler
  * always dies, against the same backlog without it: the poison row backs off
  * on its own and must not hold the others back.
+ *
+ * Sleeping subscribers are woken past their 100 ms `hibernateAfter` so none is
+ * active, and every registration reaches the source before its backlog is
+ * emitted.
  */
 export const subscriptions: Scenario = {
   name: "subscriptions",

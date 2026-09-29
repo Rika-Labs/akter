@@ -71,6 +71,9 @@ const spread = (runners: number) => (index: number) =>
 
 /**
  * The harness refuses PGlite: several runners need independent connections.
+ *
+ * After the kill, callers use the surviving runners only: calls through the
+ * killed runner would just fail.
  */
 export const multiRunner: Scenario = {
   name: "multi-runner",

@@ -25,6 +25,9 @@ const APPEND_WARMUP = 20
  *
  * An entry holds at most 8 MiB, so the growing entry moves to a fresh actor
  * when it is full; each of those is warmed before the case.
+ *
+ * Each compaction operation gets its own entry of 16 chunks, so none is
+ * already compact.
  */
 export const blobs: Scenario = {
   name: "blobs",

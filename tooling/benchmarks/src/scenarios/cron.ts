@@ -100,6 +100,11 @@ const scanMeanMs = (result: CaseResult) =>
  *
  * The claim filter and multi-runner uniqueness are Postgres properties; PGlite
  * would only time one connection draining 100k turns.
+ *
+ * A short settle after the drain catches a tick whose handler ran twice. Each
+ * round measures one drain, so statements are counted per tick, and throughput
+ * is ticks per second of drain, as other scenarios divide operations by
+ * elapsed time.
  */
 export const cron: Scenario = {
   name: "cron",

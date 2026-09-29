@@ -51,6 +51,10 @@ const scanMeanMs = (result: CaseResult) =>
  *
  * Far enough ahead that every row is staged before any falls due, even on a
  * shared CI runner where the first turn waits for shard assignment.
+ *
+ * Each drain operation waits for one delivery, and its window runs from the
+ * due time to the last delivery, so throughput is deliveries per second. The
+ * quick profile's counts are the ones the statement gate checks.
  */
 export const outbox: Scenario = {
   name: "outbox",
