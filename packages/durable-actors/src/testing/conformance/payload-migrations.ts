@@ -491,7 +491,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
 
             // Nothing was applied, so an emptied database migrates.
             yield* sql`DELETE FROM actor_outbox`
-            expect(yield* migrate).toEqual([[21, "payload_versions"]])
+            expect(yield* migrate).toEqual([
+              [21, "payload_versions"],
+              [22, "parent_placement"],
+            ])
           }).pipe(Effect.provideContext(client))
         }),
       ),
