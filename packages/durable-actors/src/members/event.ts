@@ -25,7 +25,12 @@ const make =
     options?: PayloadOptions,
   ) => {
     const declared = Schema.TaggedClass<Self>()(tag, fields)
-    declareChain(declared as object, `Event ${tag}`, fields as never, options)
+    declareChain({
+      schema: declared as Schema.Top,
+      label: `Event ${tag}`,
+      fields: fields as never,
+      options,
+    })
 
     return declared
   }

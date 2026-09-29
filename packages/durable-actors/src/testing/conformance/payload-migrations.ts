@@ -9,20 +9,24 @@ import {
   Fiber,
   Layer,
   ManagedRuntime,
+  Match,
+  Predicate,
   Redacted,
   Schedule,
   Schema,
+  type Scope,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, RetentionGap, UnknownCursor, User } from "../../index.ts"
 import { InternalActors } from "../../handles/actors.ts"
-import { definitionPayloads, type PayloadMigrations } from "../../members/payload.ts"
+import type { PayloadMigrations } from "../../members/payload.ts"
 import {
   checkPayloads,
   clearPayloads,
   formatPayloadProblem,
-  recordPayloadVersions,
 } from "../../runtime/payloads/versions.ts"
+import { migrate, migrations, migrator } from "../../runtime/database/migrations.ts"
+import { Database } from "../../runtime/layer.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type {
@@ -50,6 +54,8 @@ const reset = Effect.sync(() => {
   seen.accepting = true
 })
 
+class Declined extends Schema.TaggedError<Declined>()("Declined", {}) {}
+
 const Money = Schema.Struct({ amount: Schema.Finite, currency: Schema.String })
 
 /** `Placed` and `Charge` before the currency change: an amount in US cents. */
@@ -72,18 +78,16 @@ const toV1 = Actor.migration(
 interface Variant {
   /** Chain shape: v0 alone, v1 with the step, v1 with the step dropped, or v1 writing v0. */
   readonly chain: "v0" | "v1" | "v1-from1" | "v1-write0"
-  /** Declares the `Placed` class; false removes it, keeping `Noted`. */
-  readonly placed?: boolean
   /** Registers the `Audit` subscriber. */
   readonly audit?: boolean
 }
 
 const migrationsOf = (variant: Variant): PayloadMigrations | undefined =>
-  variant.chain === "v0"
-    ? undefined
-    : variant.chain === "v1-from1"
-      ? { from: 1, steps: [] }
-      : [toV1]
+  Match.value(variant.chain).pipe(
+    Match.when("v0", () => undefined),
+    Match.when("v1-from1", () => ({ from: 1, steps: [] })),
+    Match.orElse(() => [toV1]),
+  )
 
 /**
  * One deployment of `Ledger`: `Place` emits `Placed` and performs `Charge`,
@@ -92,6 +96,7 @@ const migrationsOf = (variant: Variant): PayloadMigrations | undefined =>
 const deployment = (variant: Variant) => {
   // Typed as the new shape; `valueOf` builds the shape the variant really declares.
   const current = (variant.chain === "v0" ? V0 : V1) as typeof V1
+
   const options = {
     migrations: migrationsOf(variant),
     writeVersion: variant.chain === "v1-write0" ? 0 : undefined,
@@ -120,13 +125,19 @@ const deployment = (variant: Variant) => {
 
   const Lost = Actor.command("Lost", { input: Actor.DeadLetter(Charge) })
 
-  const placed = variant.placed !== false
+  const Watch = Actor.workflow("Watch", {
+    input: { id: Schema.String },
+    output: Schema.String,
+    key: ({ id }) => id,
+  })
+
+  const AwaitPlaced = Watch.wait("placed", Placed)
 
   const Ledger = Actor.make("Ledger", {
     key: Schema.String,
-    events: placed ? [Placed, Noted] : [Noted],
+    events: [Placed, Noted],
     effects: [Charge],
-    api: { Place, Note, History },
+    api: { Place, Note, History, Watch },
     internal: { Lost },
     policy: {
       // Short, so a caller refused by a stale runtime gives up within a case.
@@ -141,8 +152,11 @@ const deployment = (variant: Variant) => {
     },
   })
 
-  const encodePlaced = Schema.encodeUnknownSync(Schema.toCodecJson(Placed))
-  const encodeCharge = Schema.encodeUnknownSync(Schema.toCodecJson(Charge))
+  const encodePlaced = (event: Placed) =>
+    Schema.encodeUnknownEffect(Schema.toCodecJson(Placed))(event).pipe(Effect.orDie)
+
+  const encodeCharge = (charge: Charge) =>
+    Schema.encodeUnknownEffect(Schema.toCodecJson(Charge))(charge).pipe(Effect.orDie)
 
   const valueOf = (orderId: string, amount: number) =>
     variant.chain === "v0" ? { orderId, amount } : { orderId, total: { amount, currency: "USD" } }
@@ -152,23 +166,23 @@ const deployment = (variant: Variant) => {
       Place: Effect.fnUntraced(function* ({ orderId, amount, after }) {
         const turn = yield* Ledger.Turn
 
-        if (placed) yield* turn.emit(new Placed(valueOf(orderId, amount) as never))
+        yield* turn.emit(Placed.make(valueOf(orderId, amount) as never))
 
         yield* turn.perform(
-          new Charge(valueOf(orderId, amount) as never),
+          Charge.make(valueOf(orderId, amount) as never),
           after === undefined ? undefined : { after: `${after} millis` },
         )
       }),
       Note: Effect.fnUntraced(function* (text: string) {
         yield* (yield* Ledger.Turn).emit(Noted.make({ text }))
       }),
+      Watch: () => AwaitPlaced().pipe(Effect.as("placed")),
       Lost: (letter) =>
-        Effect.sync(() => {
-          seen.deadLetters.push({
-            effect: encodeCharge(letter.effect),
-            ambiguous: letter.ambiguous,
-          })
-        }),
+        encodeCharge(letter.effect).pipe(
+          Effect.map((effect) => {
+            seen.deadLetters.push({ effect, ambiguous: letter.ambiguous })
+          }),
+        ),
     }),
   )
 
@@ -177,7 +191,7 @@ const deployment = (variant: Variant) => {
       History: Effect.fnUntraced(function* () {
         const read = yield* Ledger.Read
 
-        return placed ? (yield* read.events(Placed)).map(({ event }) => encodePlaced(event)) : []
+        return yield* Effect.forEach(yield* read.events(Placed), ({ event }) => encodePlaced(event))
       }),
     }),
   )
@@ -185,15 +199,17 @@ const deployment = (variant: Variant) => {
   const executors = Ledger.toEffectLayer(
     Effect.succeed({
       Charge: (charge: Charge) =>
-        Effect.suspend(() => {
-          seen.executed.push(encodeCharge(charge))
+        encodeCharge(charge).pipe(
+          Effect.flatMap((encoded) => {
+            seen.executed.push(encoded)
 
-          return seen.executor === "succeed"
-            ? Effect.void
-            : seen.executor === "fail"
-              ? Effect.fail(new Error("declined"))
-              : Effect.die(new Error("provider connection reset"))
-        }),
+            return Match.value(seen.executor).pipe(
+              Match.when("succeed", () => Effect.void),
+              Match.when("fail", () => Effect.fail(Declined.make({}))),
+              Match.orElse(() => Effect.die(new Error("provider connection reset"))),
+            )
+          }),
+        ),
     }),
   )
 
@@ -223,9 +239,13 @@ const deployment = (variant: Variant) => {
           Effect.suspend(() => {
             if (!seen.accepting) return Effect.die(new Error("not accepting yet"))
 
-            if (delivery._tag === "Event") seen.delivered.push(encodePlaced(delivery.event))
-
-            return Effect.void
+            return Predicate.isTagged(delivery, "Event")
+              ? encodePlaced(delivery.event).pipe(
+                  Effect.map((event) => {
+                    seen.delivered.push(event)
+                  }),
+                )
+              : Effect.void
           }),
       }),
     )
@@ -237,7 +257,7 @@ const deployment = (variant: Variant) => {
     ledger,
     queries,
     executors,
-    variant.audit === true && placed ? auditLayer() : Layer.empty,
+    variant.audit === true ? auditLayer() : Layer.empty,
   )
 
   return {
@@ -249,16 +269,51 @@ const deployment = (variant: Variant) => {
       ),
     history: (orderId: string) =>
       Ledger.get(orderId).pipe(Effect.flatMap((ledger) => ledger.History())),
+    /** A `Placed` of the order as this deployment encodes it. */
+    placed: (orderId: string, amount: number) =>
+      encodePlaced(Placed.make(valueOf(orderId, amount) as never)),
+    /** A `Charge` of the order as this deployment encodes it. */
+    charge: (orderId: string, amount: number) =>
+      encodeCharge(Charge.make(valueOf(orderId, amount) as never)),
+    /** Starts a `Watch` execution and returns its id once it waits. */
+    watch: (id: string) =>
+      Ledger.get(id).pipe(
+        Effect.flatMap((ledger) => ledger.Watch({ id })),
+        Effect.map((run) => run.executionId),
+      ),
   }
 }
 
 const Base = deployment({ chain: "v0" })
+
 const Audited = deployment({ chain: "v0", audit: true })
+
 const Next = deployment({ chain: "v1" })
+
 const NextAudited = deployment({ chain: "v1", audit: true })
+
 const Shortened = deployment({ chain: "v1-from1" })
+
 const FirstPhase = deployment({ chain: "v1-write0" })
-const Unplaced = deployment({ chain: "v0", placed: false })
+
+/** `Ledger` after its `Placed` class, and the workflow waiting on it, were removed. */
+const Unplaced = (() => {
+  class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
+
+  const Note = Actor.command("Note", { input: Schema.String })
+
+  const Ledger = Actor.make("Ledger", { key: Schema.String, events: [Noted], api: { Note } })
+
+  const layer = Ledger.toLayer(
+    Effect.succeed({
+      Note: Effect.fnUntraced(function* (text: string) {
+        yield* (yield* Ledger.Turn).emit(Noted.make({ text }))
+      }),
+    }),
+  )
+
+  return { Ledger, layer: layer as Layer.Layer<never, never, RunnerServices> }
+})()
 
 const TENANT = "0b7f3a52-1c4d-4e6f-8a9b-3c5d7e9f1a2b"
 
@@ -275,12 +330,9 @@ const caseDatabase = (environment: ConformanceEnvironment) =>
     if (Redacted.isRedacted(fresh)) return fresh
 
     const pglite = yield* Effect.acquireRelease(
-      Effect.promise(async () => {
-        const instance = new PGlite()
-        await instance.waitReady
-
-        return instance
-      }),
+      Effect.sync(() => new PGlite()).pipe(
+        Effect.tap((instance) => Effect.promise(() => instance.waitReady)),
+      ),
       (instance) => Effect.promise(() => instance.close()),
     )
 
@@ -300,7 +352,7 @@ const deploy = <A, E>(
     const runtime = yield* Effect.acquireRelease(
       Effect.sync(() =>
         ManagedRuntime.make(
-          (actors as unknown as Layer.Layer<never, never, Deployed>).pipe(
+          actors.pipe(
             Layer.provideMerge(
               ActorTest.layer({
                 database,
@@ -335,7 +387,7 @@ const refusal = (
     ),
   )
 
-const query = <A>(statement: (sql: SqlClient.SqlClient) => Effect.Effect<A, unknown>) =>
+const query = <A>(statement: (sql: SqlClient.SqlClient) => Effect.Effect<A, SqlError.SqlError>) =>
   Effect.gen(function* () {
     return yield* statement(yield* SqlClient.SqlClient)
   }).pipe(Effect.orDie)
@@ -362,11 +414,19 @@ const recordedVersions = query(
     ORDER BY kind, version`,
 )
 
+const status = (executionId: string) =>
+  query(
+    (sql) => sql<{ status: string }>`SELECT status FROM actor_workflow_executions
+      WHERE execution_id = ${executionId}`,
+  ).pipe(Effect.map((rows) => rows[0]?.status))
+
 /** Waits until `check` holds, driving the relay; dies after 30 seconds. */
-const eventually = <R>(check: Effect.Effect<boolean, never, R>) =>
+const eventually = <R>(
+  check: Effect.Effect<boolean, never, R>,
+  options?: { readonly drive?: boolean },
+) =>
   Effect.gen(function* () {
-    const test = yield* ActorTest
-    yield* test.advance("0 millis")
+    if (options?.drive !== false) yield* (yield* ActorTest).advance("0 millis")
 
     return yield* check
   }).pipe(
@@ -386,19 +446,11 @@ const pastHorizon = query(
     WHERE actor_type = 'Ledger' AND superseded_at_ms IS NOT NULL`,
 )
 
-const v1 = (orderId: string, amount: number) => ({
-  _tag: "Placed",
-  orderId,
-  total: { amount, currency: "USD" },
-})
-
-const charge = (orderId: string, amount: number) => ({ ...v1(orderId, amount), _tag: "Charge" })
-
 const HOUR = 3_600_000
 
-const withCase = (
+const withCase = <E>(
   environment: ConformanceEnvironment,
-  body: (database: ConformanceDatabase) => Effect.Effect<void, unknown, Crypto.Crypto>,
+  body: (database: ConformanceDatabase) => Effect.Effect<void, E, Crypto.Crypto | Scope.Scope>,
 ) =>
   environment.run(
     Effect.gen(function* () {
@@ -408,6 +460,41 @@ const withCase = (
   )
 
 export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "payload migrations: refuses 0021_payload_versions on a database that already holds events, outbox rows, or dead letters",
+    run: ({ expect, environment }) =>
+      withCase(environment, (database) =>
+        Effect.gen(function* () {
+          const client = yield* Layer.build(
+            Redacted.isRedacted(database)
+              ? Database.postgres({ url: database, maxConnections: 2 })
+              : Database.pglite(database),
+          ).pipe(Effect.orDie)
+
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* migrator(
+              Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0021")),
+            )
+            yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+              VALUES (1, 't', 'Ledger', 'o1')`
+            yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
+                actor_type, actor_id, target_type, target_id, command, payload, caller)
+              VALUES (1, 'pending', 0, 42, 't', 'Ledger', 'o1', 'Ledger', 'o1', 'Note', '{}', '{}')`
+
+            const refused = yield* Effect.exit(migrate)
+            expect(Exit.isFailure(refused)).toBe(true)
+            expect(Cause.pretty((refused as Exit.Failure<unknown, unknown>).cause)).toContain(
+              "Migration 0021_payload_versions needs a database without events, outbox rows, or dead letters",
+            )
+
+            // Nothing was applied, so an emptied database migrates.
+            yield* sql`DELETE FROM actor_outbox`
+            expect(yield* migrate).toEqual([[21, "payload_versions"]])
+          }).pipe(Effect.provideContext(client))
+        }),
+      ),
+  },
   {
     name: "payload migrations: stores the current payload version with each emitted event and performed effect",
     run: ({ expect, environment }) =>
@@ -431,13 +518,14 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
                 WHERE actor_type = 'Ledger' UNION ALL
                 SELECT payload_version FROM durable.effects WHERE actor_type = 'Ledger'`,
             )
+
             expect(views).toEqual([{ version: 1 }, { version: 1 }])
           }),
         ),
       ),
   },
   {
-    name: "payload migrations: upcasts version-0 events through the chain in read.events, feeds, and subscription deliveries",
+    name: "payload migrations: upcasts version-0 events written before a chain step was added through the chain in read.events, feeds, and subscription deliveries",
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -450,12 +538,14 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             NextAudited.layer,
             Effect.gen(function* () {
               expect(yield* eventVersions).toEqual([0])
-              expect(yield* NextAudited.history("o1")).toEqual([v1("o1", 500)])
+              expect(yield* NextAudited.history("o1")).toEqual([yield* Next.placed("o1", 500)])
 
               const internal = yield* InternalActors
               const ledger = yield* NextAudited.Ledger.get("o1")
               const feed = yield* internal.readFeed(ledger.ref, ["Placed"], undefined, 10)
-              expect(feed.map(({ value }) => JSON.parse(value))).toEqual([v1("o1", 500)])
+              expect(feed.map(({ value }) => JSON.parse(value))).toEqual([
+                yield* Next.placed("o1", 500),
+              ])
 
               seen.accepting = true
               yield* query(
@@ -463,7 +553,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
                   WHERE source_type = 'Ledger'`,
               )
               yield* eventually(Effect.sync(() => seen.delivered.length > 0))
-              expect(seen.delivered).toEqual([v1("o1", 500)])
+              expect(seen.delivered).toEqual([yield* Next.placed("o1", 500)])
             }),
           )
         }),
@@ -483,7 +573,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               expect(yield* effectVersions).toEqual([0])
               yield* (yield* ActorTest).advance("61 minutes")
               yield* eventually(Effect.sync(() => seen.executed.length > 0))
-              expect(seen.executed).toEqual([charge("o1", 700)])
+              expect(seen.executed).toEqual([yield* Next.charge("o1", 700)])
             }),
           )
         }),
@@ -503,7 +593,9 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             Effect.gen(function* () {
               yield* (yield* ActorTest).advance("61 minutes")
               yield* eventually(Effect.sync(() => seen.deadLetters.length > 0))
-              expect(seen.deadLetters).toEqual([{ effect: charge("o1", 900), ambiguous: false }])
+              expect(seen.deadLetters).toEqual([
+                { effect: yield* Next.charge("o1", 900), ambiguous: false },
+              ])
 
               expect(
                 yield* query(
@@ -631,6 +723,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
                 SELECT ambiguous, payload_version, cause FROM actor_dead_letters
                 WHERE actor_type = 'Ledger'`,
             )
+
             expect(
               letters.map(({ ambiguous, payload_version }) => ({ ambiguous, payload_version })),
             ).toEqual([{ ambiguous: true, payload_version: 9 }])
@@ -653,6 +746,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             Layer.empty,
             checkPayloads([Shortened.Ledger]).pipe(Effect.orDie),
           )
+
           expect(shortened.map(formatPayloadProblem)).toEqual([
             "Ledger/Placed (event)  version 0 may still be stored below this chain's first version 1; run durable payloads clear once its events are gone",
             "Ledger/Charge (effect)  version 0 stored in 1 pending effect or dead letter row below this chain's first version 1",
@@ -670,6 +764,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             Layer.empty,
             checkPayloads([Base.Ledger, Next.Ledger]).pipe(Effect.orDie),
           )
+
           expect(checked.map(({ actorType, tag }) => `${actorType}/${tag}`)).toEqual([
             "Ledger/Placed",
             "Ledger/Charge",
@@ -749,82 +844,96 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     requiresIndependentConnections: true,
-    timeoutMs: 60_000,
+    timeoutMs: 120_000,
     name: "payload migrations: refuses durable payloads clear while a runtime writing that version refreshed within the window, and a runtime past its window refuses new turns until it refreshes",
     run: ({ expect, environment }) =>
-      withCase(environment, (database) =>
+      environment.run(
         Effect.gen(function* () {
-          yield* deploy(
-            database,
-            Base.layer,
-            Effect.gen(function* () {
-              yield* Base.place("o1", 100)
+          yield* reset
+          const database = yield* environment.freshDatabase
 
-              // The next deployment registers while this runtime still writes version 0.
-              yield* recordPayloadVersions(definitionPayloads.get(Next.Ledger)!.declarations).pipe(
-                Effect.orDie,
-              )
-              yield* pastHorizon
-              yield* query(
-                (sql) =>
-                  sql`DELETE FROM actor_events WHERE actor_type = 'Ledger' AND payload_version = 0`,
-              )
-              expect(yield* clearPayloads([Next.Ledger])).toEqual([
-                { actorType: "Ledger", tag: "Placed", version: 0, outcome: "writer" },
-              ])
-
-              // Another session holds this runtime's writer rows, so its refreshes stall.
-              const sql = yield* SqlClient.SqlClient
-              const locked = yield* Deferred.make<void>()
-              const release = yield* Deferred.make<void>()
-
-              const holder = yield* sql
-                .withTransaction(
-                  Effect.gen(function* () {
-                    yield* sql`SELECT 1 FROM actor_payload_writers FOR UPDATE`
-                    yield* Deferred.succeed(locked, undefined)
-                    yield* Deferred.await(release)
-                  }),
-                )
-                .pipe(Effect.orDie, Effect.forkScoped)
-
-              yield* Deferred.await(locked)
-              yield* Effect.sleep("2500 millis")
-
-              // The caller retries an unavailable actor until its delivery
-              // timeout; every attempt is refused while the rows are stale.
-              const refused = yield* Base.place("o2", 100).pipe(Effect.flip)
-              expect(refused.reason._tag).toBe("Timeout")
-              expect(
-                yield* query(
-                  (sql) => sql<{ n: number }>`SELECT count(*)::int AS n FROM actor_events
-                    WHERE actor_type = 'Ledger' AND actor_id = 'o2'`,
-                ),
-              ).toEqual([{ n: 0 }])
-
-              yield* Deferred.succeed(release, undefined)
-              yield* Fiber.join(holder)
-              yield* Base.place("o2", 100).pipe(
-                Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
-              )
-            }).pipe(Effect.scoped),
-            { payloadWriterWindow: "2 seconds" },
+          // Runner 1 serves the next chain and starts once runner 0 writes
+          // version 0, as a deploy reaches a database an older runner serves.
+          const afterRunner0 = Layer.effectDiscard(
+            eventually(
+              query(
+                (sql) => sql`SELECT 1 FROM actor_payload_writers
+                  WHERE actor_type = 'Ledger' AND tag = 'Placed' AND version = 0`,
+              ).pipe(Effect.map((rows) => rows.length > 0)),
+              { drive: false },
+            ),
           )
 
-          // Once the writer stopped, the scan decides.
-          yield* deploy(
-            database,
-            Layer.empty,
-            Effect.gen(function* () {
-              yield* query(
-                (sql) =>
-                  sql`DELETE FROM actor_events WHERE actor_type = 'Ledger' AND payload_version = 0`,
-              )
-              expect(yield* clearPayloads([Next.Ledger])).toEqual([
-                { actorType: "Ledger", tag: "Placed", version: 0, outcome: "cleared" },
-              ])
+          const context = yield* Layer.build(
+            ActorTest.cluster({
+              database,
+              runners: 2,
+              shardLockExpiration: "3 seconds",
+              actors: Layer.empty,
+              runnerActors: (runner) =>
+                runner === 0 ? Base.layer : Next.layer.pipe(Layer.provide(afterRunner0)),
+              as: User.make({ subject: "alice" }),
+              payloadWriterWindow: "2 seconds",
             }),
           )
+
+          yield* Effect.gen(function* () {
+            const cluster = yield* ActorCluster
+            yield* cluster.ready
+            const on1 = cluster.on(1)
+
+            expect(yield* on1(recordedVersions)).toEqual([
+              { kind: "effect", version: 0, superseded: true, cleared: false },
+              { kind: "effect", version: 1, superseded: false, cleared: false },
+              { kind: "event", version: 0, superseded: true, cleared: false },
+              { kind: "event", version: 1, superseded: false, cleared: false },
+            ])
+            yield* on1(pastHorizon)
+
+            // Runner 0 still writes the superseded version, so no scan starts.
+            expect(yield* on1(clearPayloads([Next.Ledger]))).toEqual([
+              { actorType: "Ledger", tag: "Placed", version: 0, outcome: "writer" },
+            ])
+
+            // Another session holds every writer row, so both runners' refreshes stall.
+            yield* on1(
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                const locked = yield* Deferred.make<void>()
+                const release = yield* Deferred.make<void>()
+
+                const holder = yield* sql
+                  .withTransaction(
+                    Effect.gen(function* () {
+                      yield* sql`SELECT 1 FROM actor_payload_writers FOR UPDATE`
+                      yield* Deferred.succeed(locked, undefined)
+                      yield* Deferred.await(release)
+                    }),
+                  )
+                  .pipe(Effect.orDie, Effect.forkScoped)
+
+                yield* Deferred.await(locked)
+                yield* Effect.sleep("2500 millis")
+
+                // The caller retries an unavailable actor until its delivery
+                // timeout; every attempt is refused while the rows are stale.
+                const refused = yield* Next.place("o2", 100).pipe(Effect.flip)
+                expect(refused.reason._tag).toBe("Timeout")
+                expect(
+                  yield* query(
+                    (sql) => sql<{ n: number }>`SELECT count(*)::int AS n FROM actor_events
+                      WHERE actor_type = 'Ledger' AND actor_id = 'o2'`,
+                  ),
+                ).toEqual([{ n: 0 }])
+
+                yield* Deferred.succeed(release, undefined)
+                yield* Fiber.join(holder)
+                yield* Next.place("o2", 100).pipe(
+                  Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
+                )
+              }).pipe(Effect.scoped),
+            )
+          }).pipe(Effect.provideContext(context))
         }),
       ),
   },
@@ -869,9 +978,12 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             Effect.gen(function* () {
               yield* FirstPhase.place("o1", 200)
               expect(yield* eventVersions).toEqual([1, 0])
-              expect(yield* FirstPhase.history("o1")).toEqual([v1("o1", 100), v1("o1", 200)])
+              expect(yield* FirstPhase.history("o1")).toEqual([
+                yield* Next.placed("o1", 100),
+                yield* Next.placed("o1", 200),
+              ])
               yield* eventually(Effect.sync(() => seen.executed.length > 0))
-              expect(seen.executed).toEqual([charge("o1", 200)])
+              expect(seen.executed).toEqual([yield* Next.charge("o1", 200)])
             }),
           )
 
@@ -882,7 +994,8 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "payload migrations: refuses removing an event class while a subscription has undelivered events of that tag",
+    timeoutMs: 60_000,
+    name: "payload migrations: refuses removing an event class while a subscription has undelivered events of that tag or an open workflow waits on it",
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -923,6 +1036,34 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               checkPayloads([Unplaced.Ledger]).pipe(Effect.orDie),
             ),
           ).toEqual([])
+
+          // A workflow waiting on the class holds it the same way, through its manifest.
+          const waiting = yield* caseDatabase(environment)
+
+          const executionId = yield* deploy(
+            waiting,
+            Base.layer,
+            Effect.gen(function* () {
+              const id = yield* Base.watch("w")
+              yield* eventually(status(id).pipe(Effect.map((held) => held === "suspended")))
+
+              return id
+            }),
+          )
+
+          const refused = yield* refusal(waiting, Unplaced.layer)
+          expect(refused).toContain("deploy refused")
+          expect(refused).toContain("Ledger/Watch  workflow removed  1 open execution")
+
+          yield* deploy(
+            waiting,
+            Base.layer,
+            Effect.gen(function* () {
+              yield* Base.place("w", 100)
+              yield* eventually(status(executionId).pipe(Effect.map((held) => held === "finished")))
+            }),
+          )
+          yield* deploy(waiting, Unplaced.layer, Effect.void)
         }),
       ),
   },
@@ -1004,10 +1145,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             expect(new Set(yield* cluster.on(0)(eventVersions))).toEqual(new Set([0]))
 
             for (const id of ["a0", "b1"]) {
-              expect(yield* cluster.on(0)(FirstPhase.history(id))).toEqual([v1(id, 100)])
-              expect(yield* cluster.on(1)(Base.history(id))).toEqual([
-                { _tag: "Placed", orderId: id, amount: 100 },
+              expect(yield* cluster.on(0)(FirstPhase.history(id))).toEqual([
+                yield* Next.placed(id, 100),
               ])
+              expect(yield* cluster.on(1)(Base.history(id))).toEqual([yield* Base.placed(id, 100)])
             }
           }).pipe(Effect.provideContext(context))
         }),

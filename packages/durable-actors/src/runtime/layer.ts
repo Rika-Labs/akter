@@ -865,7 +865,8 @@ export const layer = (options: Options) => {
 
       // A sweep refreshes the writer rows too, as the loop below does.
       const cleanup = Effect.suspend(() =>
-        refreshPayloadWriters.pipe(Effect.orDie).pipe(
+        refreshPayloadWriters.pipe(
+          Effect.orDie,
           Effect.andThen(
             sweep(
               Array.from(registrations.values(), ({ name, policy }) => ({

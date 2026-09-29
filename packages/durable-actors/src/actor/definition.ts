@@ -669,7 +669,7 @@ const make = <
 
   const effectCodecs = new Map(
     [...effects.values()].map(
-      (declared) => [declared.tag, payloadCodec(declared, declared.tag)] as const,
+      (declared) => [declared.tag, payloadCodec({ schema: declared, tag: declared.tag })] as const,
     ),
   )
 
@@ -782,7 +782,9 @@ const make = <
   }
 
   const eventCodecs = new Map(
-    [...events.values()].map((event) => [event, payloadCodec(event, event.identifier)] as const),
+    [...events.values()].map(
+      (event) => [event, payloadCodec({ schema: event, tag: event.identifier })] as const,
+    ),
   )
 
   const eventCodecsByTag = new Map(
@@ -926,7 +928,8 @@ const make = <
     (declared) => {
       const decoders = new Map(
         declared.events.map(
-          (event) => [event.identifier, payloadCodec(event, event.identifier)] as const,
+          (event) =>
+            [event.identifier, payloadCodec({ schema: event, tag: event.identifier })] as const,
         ),
       )
 

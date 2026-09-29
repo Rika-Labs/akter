@@ -62,7 +62,12 @@ export const effect =
     : EffectClass<Self, Tag, Fields, Success, Progress> => {
     if (tag.length === 0) throw new Error("Actor.effect needs a non-empty tag")
     const base = Schema.TaggedClass<unknown>()(tag, options?.input ?? {})
-    declareChain(base, `Effect ${tag}`, (options?.input ?? {}) as never, options)
+    declareChain({
+      schema: base,
+      label: `Effect ${tag}`,
+      fields: (options?.input ?? {}) as never,
+      options,
+    })
 
     return Object.assign(class extends base {}, {
       tag,

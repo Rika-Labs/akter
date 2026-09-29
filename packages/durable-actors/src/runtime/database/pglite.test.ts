@@ -472,33 +472,6 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
-  it("refuses 0021_payload_versions on a database that already holds events, outbox rows, or dead letters", () => {
-    const runtime = ManagedRuntime.make(Database.pglite())
-
-    return runtime
-      .runPromise(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* beforePayloadVersions
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            VALUES (1, 't', 'Sender', 's')`
-          yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-              actor_type, actor_id, target_type, target_id, command, payload, caller)
-            VALUES (1, 'pending', 0, 42, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', '{}')`
-
-          const refused = yield* Effect.exit(migrate)
-          expect(Exit.isFailure(refused)).toBe(true)
-          expect(Cause.pretty((refused as Exit.Failure<unknown, unknown>).cause)).toContain(
-            "recreate this development database",
-          )
-
-          yield* sql`DELETE FROM actor_outbox`
-          expect(yield* migrate).toEqual([[21, "payload_versions"]])
-        }),
-      )
-      .finally(() => runtime.dispose())
-  })
-
   it("applies 0017_subscriptions to a database that already ran 0016_final_effect_failures", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 

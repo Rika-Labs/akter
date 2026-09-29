@@ -39,8 +39,9 @@ interface RecordedVersion {
  * version recorded above a chain's current version is a rollback past a
  * schema change. A chain that starts above version `v` can't read values of
  * `v`: an event version counts as stored until `durable payloads clear` marks
- * it cleared, and a tag with no recorded version counts as version 0, so the
- * check never passes for lack of a row; effect versions are read from the
+ * it cleared. Every stored event has a recorded version, because a runtime
+ * records what it writes before it takes a shard and the migration refused
+ * databases that held rows before it. Effect versions are read from the
  * outbox and dead letters directly. `writers` names the actor types whose
  * turns this deployment runs: an event tag one of them no longer declares is
  * refused while a subscription still has undelivered events of it.
@@ -54,6 +55,7 @@ export const findPayloadProblems = Effect.fnUntraced(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
   const problems: Array<PayloadProblem> = []
+
   const actorTypes = [
     ...new Set([...declarations.map((d) => d.actorType), ...writers.map((w) => w.actorType)]),
   ]
@@ -80,6 +82,7 @@ export const findPayloadProblems = Effect.fnUntraced(function* (
     seen.add(key)
     const { first, current } = declared.chain
     const versions = byTag.get(keyOf(declared)) ?? []
+
     const problem = (text: string) =>
       problems.push({
         actorType: declared.actorType,
@@ -98,11 +101,6 @@ export const findPayloadProblems = Effect.fnUntraced(function* (
     if (first === 0) continue
 
     if (declared.kind === "event") {
-      if (versions.length === 0)
-        problem(
-          `no version recorded, so version 0 may be stored below this chain's first version ${first}`,
-        )
-
       for (const row of versions)
         if (row.version < first && !row.cleared)
           problem(

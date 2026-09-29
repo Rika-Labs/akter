@@ -285,7 +285,7 @@ const make = <
   ): Wait<Name, Ev> => {
     register({ name, kind: "wait", schemas: [event], event: event.identifier })
     const self = identity(name, "wait")
-    const codec = payloadCodec(event, event.identifier)
+    const codec = payloadCodec({ schema: event, tag: event.identifier })
 
     const call = (waitOptions?: {
       readonly where?: (event: Ev["Type"]) => boolean
@@ -310,8 +310,8 @@ const make = <
             codec.decode(value, version).pipe(
               Effect.flatMap((decoded) =>
                 where === undefined || where(decoded as Ev["Type"])
-                  ? Effect.map(codec.upcast(value, version), Option.some)
-                  : Effect.succeed(Option.none()),
+                  ? Effect.asSome(codec.upcast(value, version))
+                  : Effect.succeedNone,
               ),
               Effect.orDie,
             ),

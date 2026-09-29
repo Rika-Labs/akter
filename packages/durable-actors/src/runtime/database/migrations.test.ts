@@ -114,4 +114,56 @@ describe("migrations with Postgres", () => {
         }),
       ),
     ))
+
+  it("applies 0021_payload_versions to a database that ran the previous one, and its views and tables take the new columns", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
+          const name = `migrations_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+
+          const admin = yield* Effect.acquireRelease(
+            Effect.sync(() => new Pool({ connectionString: database.href })),
+            (pool) => Effect.promise(() => pool.end()),
+          )
+
+          yield* Effect.acquireRelease(
+            Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
+            () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
+          )
+          database.pathname = `/${name}`
+
+          const client = yield* Layer.build(
+            Database.postgres({ url: Redacted.make(database.href) }),
+          )
+
+          const migrate = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+            Effect.provide(effect, client)
+
+          yield* migrate(
+            migrator(Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0021"))),
+          )
+          expect(yield* migrate(migrator(migrations))).toEqual([[21, "payload_versions"]])
+
+          const columns = yield* migrate(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+
+              return yield* sql<{ table_name: string }>`SELECT table_name
+                FROM information_schema.columns
+                WHERE column_name = 'payload_version' ORDER BY table_schema, table_name`
+            }),
+          )
+          // The `durable` inspection views sort before the `public` tables.
+          expect(columns.map(({ table_name }) => table_name)).toEqual([
+            "dead_letters",
+            "effects",
+            "events",
+            "actor_dead_letters",
+            "actor_events",
+            "actor_outbox",
+          ])
+        }),
+      ),
+    ))
 })
