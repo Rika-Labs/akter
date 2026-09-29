@@ -8,6 +8,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  FileSystem,
   Layer,
   Redacted,
   Schema,
@@ -35,6 +36,7 @@ import type { AnyConnection } from "../members/connection.ts"
 import { OpenRejected } from "../runtime/connections/holder.ts"
 import { ClientMessage } from "../runtime/connections/protocol.ts"
 import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
+import { SeedJson } from "../runtime/operators/seed.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
 import { compress, decompress, routingKey } from "../runtime/storage/codec.ts"
 import { recordedPlacement } from "../runtime/storage/placements.ts"
@@ -209,20 +211,33 @@ export type ProgressRecord = Data.TaggedEnum<{
 
 export const ProgressRecord = Data.taggedEnum<ProgressRecord>()
 
+/** Options of `ActorTest.actor`. */
+export interface TestActorOptions {
+  /**
+   * Path of a seed file `durable export` wrote. The actor starts from its
+   * state and pending work, staged as the caller the test runs as; the seed
+   * carries no tenant, caller, or credential. Reading it needs a `FileSystem`.
+   * An actor that already exists, a seed of another actor type, and a seed
+   * naming an effect the actor does not register each die.
+   */
+  readonly seed?: string
+}
+
 export class ActorTest extends Context.Service<
   ActorTest,
   {
     readonly tenant: string
-    readonly actor: <D extends TestDefinition>(
+    readonly actor: <D extends TestDefinition, O extends TestActorOptions = {}>(
       definition: D,
       id?: string,
+      options?: O,
     ) => Effect.Effect<
       {
         readonly system: InternalHandleOf<D>
         readonly inspect: Effect.Effect<Inspection>
       },
       never,
-      Actors
+      Actors | (O extends { readonly seed: string } ? FileSystem.FileSystem : never)
     >
     readonly inspect: (ref: ActorRef) => Effect.Effect<Inspection>
     /**
@@ -414,6 +429,7 @@ export class ActorTest extends Context.Service<
               actor: Effect.fnUntraced(function* <D extends TestDefinition>(
                 definition: D,
                 id = "singleton",
+                actorOptions?: TestActorOptions,
               ) {
                 const { as } = options
 
@@ -439,6 +455,16 @@ export class ActorTest extends Context.Service<
                 const system = yield* internal
                   .handle(id, tenant, caller)
                   .pipe(Effect.provideService(InternalActors, internalActors))
+
+                if (actorOptions?.seed !== undefined) {
+                  const fs = yield* FileSystem.FileSystem
+
+                  const seed = yield* fs
+                    .readFileString(actorOptions.seed)
+                    .pipe(Effect.flatMap(Schema.decodeEffect(SeedJson)), Effect.orDie)
+
+                  yield* internalActors.seed({ ref: system.ref, caller, seed })
+                }
 
                 return { system, inspect: service.inspect(system.ref) }
               }) as ActorTest["Service"]["actor"],

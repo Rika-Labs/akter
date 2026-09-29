@@ -6,6 +6,7 @@ import type { ActorError } from "../errors/actor.ts"
 import type { SubscriptionFailure } from "../errors/subscription.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import type { Seed } from "../runtime/operators/seed.ts"
 import type { Placement } from "../runtime/storage/codec.ts"
 import type { ConnectionCommands } from "../identity/command.ts"
 import type { MintInput } from "../identity/mint.ts"
@@ -595,6 +596,17 @@ export class InternalActors extends Context.Service<
     }
     /** The blob names a registered actor type declares, for test inspection. */
     readonly declaredBlobs: (actor: string) => ReadonlyArray<string>
+    /**
+     * Starts the actor `ref` from `seed` in one transaction, staging its
+     * pending work as `caller`; dies, writing nothing, when the seed is of
+     * another type, names an effect the actor does not register, or the
+     * actor already exists.
+     */
+    readonly seed: (request: {
+      readonly ref: ActorRef
+      readonly caller: Caller
+      readonly seed: Seed
+    }) => Effect.Effect<void>
   }
 >()("@durable-actors/core/handles/actors/InternalActors") {}
 
