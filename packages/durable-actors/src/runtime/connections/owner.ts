@@ -13,6 +13,7 @@ import {
   Semaphore,
   Stream,
 } from "effect"
+import { inTenant } from "../database/tenancy.ts"
 import { Entity, type Sharding } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import {
@@ -260,11 +261,14 @@ export const activationOwner = ({
   transport,
   authorize,
   clock,
+  role,
 }: {
   readonly registration: Registration
   readonly transport: Transport
   readonly authorize: Authorize
   readonly clock: { readonly offsetMillis: () => number }
+  /** The tenant role handlers' event reads run as when row-level security is on. */
+  readonly role: string | undefined
 }) => {
   const activations = new Map<string, Activation>()
   // Feeds are framework connections, so an actor type with feeds loads its rows like one with members.
@@ -740,6 +744,7 @@ export const activationOwner = ({
         BigInt(activation.head),
         limit,
       ).pipe(
+        inTenant({ sql, role, tenant: activation.ref.tenant }),
         Effect.catchIf(SqlError.isSqlError, Effect.die),
         Effect.provideService(SqlClient.SqlClient, sql),
       )
@@ -1195,6 +1200,7 @@ export const activationOwner = ({
             BigInt(head),
             FOLLOW_PAGE,
           ).pipe(
+            inTenant({ sql, role, tenant: activation.ref.tenant }),
             Effect.catchIf(SqlError.isSqlError, Effect.die),
             Effect.provideService(SqlClient.SqlClient, sql),
           )

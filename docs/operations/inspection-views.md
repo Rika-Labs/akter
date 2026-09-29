@@ -71,7 +71,7 @@ That role reads every view and gets `permission denied` on every `actor_*` table
 
 A role also holds every privilege granted to `PUBLIC`, and these grants are not limited to `durable`: `EXECUTE` on functions by default, `USAGE` on schema `public`, and any table grant made to `PUBLIC`. To keep the role view-only, audit and revoke those grants, for example `REVOKE ALL ON SCHEMA public FROM PUBLIC` and `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`, or point the tool at a database where `PUBLIC` holds nothing else.
 
-Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows. Without row-level security nothing enforces the filter, so treat view access as operator access to every tenant in the database. With [row-level security](01-deployment.md#row-level-security) on, the views belong to the runtime's tenant role. They keep their owner's rights, so the base-table policies apply through them, and a reader sees only the tenant its transaction names:
+Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows. Without row-level security nothing enforces the filter, so treat view access as operator access to every tenant in the database. With [row-level security](01-deployment.md#row-level-security) on, the views belong to a dedicated view-owner role (`durable_views` in the guide's script), which the policies bind and the runtime's tenant role can't act as. They keep their owner's rights, so the base-table policies apply through them, and a reader sees only the tenant its transaction names:
 
 ```sql
 BEGIN;
