@@ -807,6 +807,9 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
             ]),
           ).toEqual([["INSERT", 1, false]])
           expect(writers.every((writer) => !writer.allowed)).toBe(true)
+          expect(writers.filter((writer) => !writer.inTurn && writer.sessionUser !== role)).toEqual(
+            [],
+          )
 
           const cleared = yield* adoptionWriters(adopting, {
             only: "conformance_invoices",
