@@ -405,6 +405,19 @@ The cases live in [`conformance/placement.ts`](../../packages/durable-actors/src
 
 `runtime/storage/codec.test.ts` (`gives a parent-placed child and grandchild their root's routing key`) holds the golden vector: the order `o-17` under actor placement, its shipment `c1.4.o-17.pkg-1`, and that shipment's label `c1.15.c1.4.o-17.pkg-1.label-1` all hash to `-7799243039352196172`. `identity/child.test.ts` checks the id form and a round-trip property; `identity/mint.test.ts` checks that a parent-placed child's proof holds only for the parent type and id its id names. On Postgres, `migrations.test.ts` (`records a parent type exactly for parent placement`) checks that `0022_parent_placement` accepts `parent` and requires `parent_type` exactly for it. Not covered: Neki's `EXPLAIN (NEKI_PLAN)` single-shard check for families, which is M5.
 
+### Cross-shard outbox delivery (M5.2)
+
+[#297](https://github.com/Rika-Labs/durable-actors/issues/297). The cross-region half of **Outbox delivery** is not built ([M4](../milestones/M4.md#later-when-hosted-usage-asks)); this covers a sender and receiver on different shards of one region.
+
+[`conformance/outbox-cross-shard.ts`](../../packages/durable-actors/src/testing/conformance/outbox-cross-shard.ts) places `ShardPoster` and `ShardMailbox` by `actor` and picks a sender whose routing key is below zero and a receiver whose key is not, so a range split of the 64-bit key space puts them on different shards. Each case names its own actors. They run on PGlite and Postgres (single runner, in-process crash faults), where they show the protocol across two routing keys, not across two shards:
+
+- `cross-shard outbox: delivers an intent from the sender's routing key to a receiver under another one`: the pending row is under the sender's key, the receiver's receipt under the receiver's (different) key, and the row is gone after delivery.
+- `cross-shard outbox: a crash before delivery leaves the row and the receiver untouched, and the redelivery lands once`.
+- `cross-shard outbox: a crash after the receiver commits redelivers to a receipt replay, with one handler run`.
+- `cross-shard outbox: a crash between the receiver's commit and the row's deletion keeps the row until the redelivery replays the receipt`: the receiver has committed once while the sender's row is still pending.
+
+**Neki: written, not run.** The cases are in the shared list, so the Neki suite ([M5.1](#neki-suite-m51)) picks them up; nothing has run against Neki, and the run needs a topology that splits the key range at zero or finer. Cross-shard delivery there also needs the relay's claims to stay per shard (the ADR 0057 finding). Kill-a-runner variants across shards are the multi-runner relay cases above, which use one tenant's routing key; a Neki run adds them in #66.
+
 ### Multi-runner harness (M2.1)
 
 The cases live in [`conformance/multi-runner.ts`](../../packages/durable-actors/src/testing/conformance/multi-runner.ts) and are registered with `describeConformance`. They need independent connections, so they run on Postgres and are reported skipped on PGlite. Each case builds `ActorTest.cluster` ([testing API](../api/01-server-api.md)) on a fresh database with a `shardLockExpiration` of 3 seconds. The runners are separate Cluster runners in one process, each with its own connection pool, SQL shard locks (not advisory locks), and address; they call each other over an in-process transport that serializes every message. The fixture `Tally` actor adds to a count and emits one `Tallied` event per turn. `cluster.test.ts` checks that `ActorTest.cluster` refuses PGlite.

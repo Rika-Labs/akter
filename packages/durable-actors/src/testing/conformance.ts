@@ -61,6 +61,7 @@ import { observabilityConformance } from "./conformance/observability.ts"
 import { OperatorRuntime } from "../runtime/operators/repair.ts"
 import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
+import { crossShardLayer, crossShardOutboxConformance } from "./conformance/outbox-cross-shard.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
 import {
@@ -1489,6 +1490,7 @@ export const conformanceGroups = {
   observability: observabilityConformance,
   operator: operatorConformance,
   placement: placementConformance,
+  crossShardOutbox: crossShardOutboxConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
 
 export type ConformanceGroup = keyof typeof conformanceGroups
@@ -1557,6 +1559,7 @@ export const describeConformance = (options: {
     transportsLayer,
     mintLayer,
     placementLayer,
+    crossShardLayer,
     subscriptionsLayer(fixture.subscriptions),
     contentLayer(fixture.content),
     drainLayer(fixture.drain),
