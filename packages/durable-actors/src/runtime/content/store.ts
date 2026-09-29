@@ -90,10 +90,11 @@ export const makeContentStore = (settings: ContentSettings) => {
   })
 
   const refOf = (tenant: string, hash: string, size: number, expiresAt: number) =>
-    Effect.map(
-      grants.sign({ tenant, hash, size, expiresAt }),
-      (grant): ContentRef => ({ hash, size, grant }),
-    )
+    Effect.map(grants.sign({ tenant, hash, size, expiresAt }), (grant): ContentRef => ({
+      hash,
+      size,
+      grant,
+    }))
 
   /**
    * Creates the content row or raises its grant horizon, and registers the
@@ -283,7 +284,10 @@ export const makeContentStore = (settings: ContentSettings) => {
   })
 
   const read = (tenant: string, hash: string, size: number) =>
-    Effect.map(readRows(tenant, hash, size), Option.map((parts) => concat(parts, size)))
+    Effect.map(
+      readRows(tenant, hash, size),
+      Option.map((parts) => concat(parts, size)),
+    )
 
   /**
    * The content's chunks from one read-only REPEATABLE READ snapshot held for
@@ -417,7 +421,9 @@ export const makeContentStore = (settings: ContentSettings) => {
 
         yield* hooks.at("afterReferenceScan")
 
-        const unreferenced = candidates.map((row) => row.hash).filter((hash) => !referenced.has(hash))
+        const unreferenced = candidates
+          .map((row) => row.hash)
+          .filter((hash) => !referenced.has(hash))
 
         if (unreferenced.length === 0) continue
 

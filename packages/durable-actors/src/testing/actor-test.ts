@@ -172,6 +172,14 @@ export const cleanup: Effect.Effect<Swept, never, InternalActors> = Effect.gen(f
   return yield* (yield* InternalActors).cleanup
 })
 
+/**
+ * Sweeps every tenant's unreferenced content now, however recently each was
+ * swept, and returns how many contents it deleted; for benchmarks and tests.
+ */
+export const sweepContent: Effect.Effect<number, never, InternalActors> = Effect.gen(function* () {
+  return yield* (yield* InternalActors).sweepContent
+})
+
 /** A progress message an executor pool sent, and whether `dropProgress` dropped it. */
 export type ProgressRecord = Data.TaggedEnum<{
   Progress: ProgressMessage & { readonly dropped: boolean }

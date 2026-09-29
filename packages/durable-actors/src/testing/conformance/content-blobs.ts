@@ -151,11 +151,14 @@ const reads = Effect.succeed({
     return Option.map(found, (bytes) => decoder.decode(bytes))
   }),
   Streamed: Effect.fnUntraced(function* (name: string) {
-    return yield* (yield* Document.Read).blob(Attachments).stream(name).pipe(
-      Stream.runCollect,
-      Effect.map((parts) => Option.some(decoder.decode(concat(parts)))),
-      Effect.catchTag("NoSuchElementError", () => Effect.succeed(Option.none<string>())),
-    )
+    return yield* (yield* Document.Read)
+      .blob(Attachments)
+      .stream(name)
+      .pipe(
+        Stream.runCollect,
+        Effect.map((parts) => Option.some(decoder.decode(concat(parts)))),
+        Effect.catchTag("NoSuchElementError", () => Effect.succeed(Option.none<string>())),
+      )
   }),
   Digest: Effect.fnUntraced(function* (name: string) {
     const found = yield* (yield* Document.Read).blob(Attachments).get(name)
@@ -256,15 +259,17 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const refusal = (name: string, attached: ContentRef) =>
             doc.Attach({ name, ref: attached }).pipe(
               Effect.flip,
-              Effect.map((error) => (error._tag === "InvalidContentRef" ? error.reason : error._tag)),
+              Effect.map((error) =>
+                error._tag === "InvalidContentRef" ? error.reason : error._tag,
+              ),
             )
 
           expect(yield* refusal("bare", { hash: ref.hash, size: ref.size, grant: "" })).toBe(
             "malformed",
           )
-          expect(
-            yield* refusal("forged", { ...ref, grant: `${ref.grant.slice(0, -2)}AA` }),
-          ).toBe("invalid")
+          expect(yield* refusal("forged", { ...ref, grant: `${ref.grant.slice(0, -2)}AA` })).toBe(
+            "invalid",
+          )
           expect(yield* refusal("resized", { ...ref, size: ref.size + 1 })).toBe("invalid")
 
           // The same bytes in another tenant yield a grant this tenant can't use.
@@ -387,17 +392,22 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           expect(refused.status).toBe(413)
-          expect(refused.body).toMatchObject({ reason: { _tag: "InvalidInput", code: "too_large" } })
+          expect(refused.body).toMatchObject({
+            reason: { _tag: "InvalidInput", code: "too_large" },
+          })
           expect(yield* count).toBe(before)
 
           // The served download and grant routes reach content through the actor.
           const doc = yield* Document.get("served")
           yield* doc.Attach({ name: "notes", ref })
 
-          const downloaded = yield* server.send("/actors/Document/served/content/attachments/notes", {
-            method: "GET",
-            token,
-          })
+          const downloaded = yield* server.send(
+            "/actors/Document/served/content/attachments/notes",
+            {
+              method: "GET",
+              token,
+            },
+          )
 
           expect(downloaded.status).toBe(200)
           expect(downloaded.text).toBe(decoder.decode(body))
@@ -430,9 +440,9 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           expect(
             (yield* doc.AttachThenRefuse({ name: "refused", ref }).pipe(Effect.flip))._tag,
           ).toBe("Refused")
-          expect(Exit.isFailure(yield* doc.AttachThenDie({ name: "died", ref }).pipe(Effect.exit))).toBe(
-            true,
-          )
+          expect(
+            Exit.isFailure(yield* doc.AttachThenDie({ name: "died", ref }).pipe(Effect.exit)),
+          ).toBe(true)
           expect(yield* doc.Listed()).toEqual([])
 
           yield* doc.Attach({ name: "kept", ref })

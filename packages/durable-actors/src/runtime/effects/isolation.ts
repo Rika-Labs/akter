@@ -10,10 +10,7 @@ import { ContentStore } from "../../handles/content.ts"
  * would reach executors.
  */
 export type NoDatabase<R> = [
-  Extract<
-    R,
-    SqlClient.SqlClient | PgClient.PgClient | PgliteClient.PgliteClient | ContentStore
-  >,
+  Extract<R, SqlClient.SqlClient | PgClient.PgClient | PgliteClient.PgliteClient | ContentStore>,
 ] extends [never]
   ? unknown
   : { readonly "Executors have no database capability": never }

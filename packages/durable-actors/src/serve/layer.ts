@@ -274,9 +274,15 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const credentialBytes = options.limits?.credentialBytes ?? 8 * 1024
       const contentBytes = options.limits?.contentBytes ?? MAX_CONTENT_BYTES
 
-      if (!Number.isSafeInteger(contentBytes) || contentBytes < 0 || contentBytes > MAX_CONTENT_BYTES)
+      if (
+        !Number.isSafeInteger(contentBytes) ||
+        contentBytes < 0 ||
+        contentBytes > MAX_CONTENT_BYTES
+      )
         return yield* Effect.die(
-          new Error(`Actor.serve: limits.contentBytes must be a whole number of bytes up to ${MAX_CONTENT_BYTES}`),
+          new Error(
+            `Actor.serve: limits.contentBytes must be a whole number of bytes up to ${MAX_CONTENT_BYTES}`,
+          ),
         )
 
       const contentStore = yield* Effect.serviceOption(ContentStore)
@@ -740,7 +746,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           if (definition.contents.length > 0) {
             const entry = `${basePath}${memberPath({ definition, member: { tag: "content" } })}/:blob/:name`
 
-            yield* router.add("GET", entry as HttpRouter.PathInput, respond(downloadHandler(store, definition)))
+            yield* router.add(
+              "GET",
+              entry as HttpRouter.PathInput,
+              respond(downloadHandler(store, definition)),
+            )
             yield* router.add(
               "POST",
               `${entry}/grant` as HttpRouter.PathInput,

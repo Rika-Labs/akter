@@ -70,9 +70,7 @@ export const makeGrants = Effect.fnUntraced(function* (
 
   for (const key of keys) {
     if (!KEY_ID.test(key.id))
-      return yield* Effect.die(
-        new Error("content.keys ids are 1-32 letters, digits, - or _"),
-      )
+      return yield* Effect.die(new Error("content.keys ids are 1-32 letters, digits, - or _"))
 
     if (imported.has(key.id))
       return yield* Effect.die(new Error(`content.keys lists ${key.id} twice`))
@@ -80,7 +78,9 @@ export const makeGrants = Effect.fnUntraced(function* (
     const secret = utf8.encode(Redacted.value(key.secret))
 
     if (secret.byteLength < 32)
-      return yield* Effect.die(new Error(`content.keys ${key.id} needs a secret of at least 32 bytes`))
+      return yield* Effect.die(
+        new Error(`content.keys ${key.id} needs a secret of at least 32 bytes`),
+      )
 
     imported.set(
       key.id,

@@ -70,7 +70,9 @@ export const Content = {
    * reference whose grant lasts an hour. Uploading bytes the tenant already
    * holds stores nothing new and returns a fresh grant.
    */
-  upload: (bytes: Uint8Array): Effect.Effect<ContentRef, ContentTooLarge | ActorError, ContentStore> =>
+  upload: (
+    bytes: Uint8Array,
+  ): Effect.Effect<ContentRef, ContentTooLarge | ActorError, ContentStore> =>
     Effect.gen(function* () {
       yield* outsideTurn
       const store = yield* ContentStore

@@ -288,877 +288,887 @@ export const layer = (options: Options) => {
     !Number.isSafeInteger(contentSkewMs) ||
     contentSkewMs < 0
   )
-    throw new Error("content.grace and content.skew must be finite, non-negative whole milliseconds")
+    throw new Error(
+      "content.grace and content.skew must be finite, non-negative whole milliseconds",
+    )
 
   const subscriptionConcurrency = Count.make(options.relay?.subscriptionConcurrency ?? 16)
   const subscriptionBatch = Count.make(options.relay?.subscriptionBatch ?? 16)
 
-  const runtime = (deployment: string) => Layer.effectContext(
-    Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto
-      const scope = yield* Effect.scope
-      const sharding = yield* Sharding.Sharding
-      const registrations = new Map<string, Registration>()
-      const residency = new Map<string, (entityId: string) => boolean>()
-      const owners = new Map<string, Owner>()
-      // Actor types whose workflow rows retention sweeps, removed workflows included.
-      const sweepsWorkflows = new Set<string>()
-      const queryRegistrations = new Map<string, QueryRegistration>()
-      const effectRegistrations = new Map<string, EffectRegistration>()
+  const runtime = (deployment: string) =>
+    Layer.effectContext(
+      Effect.gen(function* () {
+        const crypto = yield* Crypto.Crypto
+        const scope = yield* Effect.scope
+        const sharding = yield* Sharding.Sharding
+        const registrations = new Map<string, Registration>()
+        const residency = new Map<string, (entityId: string) => boolean>()
+        const owners = new Map<string, Owner>()
+        // Actor types whose workflow rows retention sweeps, removed workflows included.
+        const sweepsWorkflows = new Set<string>()
+        const queryRegistrations = new Map<string, QueryRegistration>()
+        const effectRegistrations = new Map<string, EffectRegistration>()
 
-      const services = yield* Effect.context<
-        SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
-      >()
+        const services = yield* Effect.context<
+          SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
+        >()
 
-      const database = yield* rowsDatabase
-      const clockOffset = yield* FrameworkClock
+        const database = yield* rowsDatabase
+        const clockOffset = yield* FrameworkClock
 
-      const content =
-        options.content === undefined
-          ? undefined
-          : makeContentStore({
-              grants: yield* makeGrants(options.content.keys, deployment),
-              graceMs: contentGraceMs,
-              skewMs: contentSkewMs,
-              singleConnection: Option.isSome(
-                yield* Effect.serviceOption(PgliteClient.PgliteClient),
-              ),
-              offset: () => clockOffset.offsetMillis(),
-              hooks: yield* ContentHooks,
-            })
+        const content =
+          options.content === undefined
+            ? undefined
+            : makeContentStore({
+                grants: yield* makeGrants(options.content.keys, deployment),
+                graceMs: contentGraceMs,
+                skewMs: contentSkewMs,
+                singleConnection: Option.isSome(
+                  yield* Effect.serviceOption(PgliteClient.PgliteClient),
+                ),
+                offset: () => clockOffset.offsetMillis(),
+                hooks: yield* ContentHooks,
+              })
 
-      const contentBinding: ContentBinding | undefined =
-        content === undefined
-          ? undefined
-          : { store: content, skewMs: contentSkewMs, offset: () => clockOffset.offsetMillis() }
+        const contentBinding: ContentBinding | undefined =
+          content === undefined
+            ? undefined
+            : { store: content, skewMs: contentSkewMs, offset: () => clockOffset.offsetMillis() }
 
-      // The holder and transport refer to each other: the transport delivers
-      // to this runner's holder, which answers through the transport.
-      let holder: Holder | undefined
+        // The holder and transport refer to each other: the transport delivers
+        // to this runner's holder, which answers through the transport.
+        let holder: Holder | undefined
 
-      const transport: Transport = yield* holderTransport((message) =>
-        Effect.suspend(() => holder!.deliver(message)),
-      )
+        const transport: Transport = yield* holderTransport((message) =>
+          Effect.suspend(() => holder!.deliver(message)),
+        )
 
-      const connectionCall = <A, E>(effect: Effect.Effect<A, E>) =>
-        Effect.suspend(() => effect.pipe(Effect.forkIn(scope))).pipe(
-          Effect.flatMap(Fiber.join),
-          Effect.catchCause((cause) => {
-            const failure = Cause.findErrorOption(cause)
+        const connectionCall = <A, E>(effect: Effect.Effect<A, E>) =>
+          Effect.suspend(() => effect.pipe(Effect.forkIn(scope))).pipe(
+            Effect.flatMap(Fiber.join),
+            Effect.catchCause((cause) => {
+              const failure = Cause.findErrorOption(cause)
 
-            if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
-              return Effect.fail(failure.value)
+              if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
+                return Effect.fail(failure.value)
 
-            return Effect.fail(
-              ActorError.make({ reason: ActorUnavailable.make({ cause: Cause.squash(cause) }) }),
-            )
+              return Effect.fail(
+                ActorError.make({ reason: ActorUnavailable.make({ cause: Cause.squash(cause) }) }),
+              )
+            }),
+          )
+
+        const heldTypes = new Map<string, HeldActorType>()
+
+        const shardLockMs = Duration.toMillis(
+          Option.match(yield* Effect.serviceOption(ShardingConfig.ShardingConfig), {
+            onNone: () => ShardingConfig.defaults.shardLockExpiration,
+            onSome: (config) => config.shardLockExpiration,
           }),
         )
 
-      const heldTypes = new Map<string, HeldActorType>()
+        const heldType = (registration: Registration): HeldActorType => {
+          const entity = connectionEntity(registration.name)
 
-      const shardLockMs = Duration.toMillis(
-        Option.match(yield* Effect.serviceOption(ShardingConfig.ShardingConfig), {
-          onNone: () => ShardingConfig.defaults.shardLockExpiration,
-          onSome: (config) => config.shardLockExpiration,
-        }),
-      )
+          const client = (ref: ActorRef) =>
+            Effect.gen(function* () {
+              const make = yield* sharding.makeClient(entity)
 
-      const heldType = (registration: Registration): HeldActorType => {
-        const entity = connectionEntity(registration.name)
+              return make(yield* entityId(ref))
+            })
 
-        const client = (ref: ActorRef) =>
-          Effect.gen(function* () {
-            const make = yield* sharding.makeClient(entity)
-
-            return make(yield* entityId(ref))
-          })
-
-        return {
-          deliveryMs: registration.policy.deliveryMs,
-          takeoverMs: shardLockMs + registration.policy.deliveryMs,
-          reauthorizeMs: registration.policy.reauthorizeMs,
-          retryWindowMs,
-          placement: registration.placement,
-          routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
-          // A feed's holder rereads its events after an owner loss, so it waits for the new owner's answer.
-          hasResync: (member) =>
-            member === FEED_MEMBER || (registration.connections.get(member)?.hasResync ?? false),
-          hasMember: (member) =>
-            member === FEED_MEMBER
-              ? registration.feeds.size > 0
-              : registration.connections.has(member),
-          channel: {
-            open: (request) =>
-              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
-            frame: (request) =>
-              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Frame(request))),
-            close: (request) =>
-              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Close(request))),
-            resync: (request) =>
-              connectionCall(Effect.flatMap(client(request.ref), (c) => c.Resync(request))),
-          },
+          return {
+            deliveryMs: registration.policy.deliveryMs,
+            takeoverMs: shardLockMs + registration.policy.deliveryMs,
+            reauthorizeMs: registration.policy.reauthorizeMs,
+            retryWindowMs,
+            placement: registration.placement,
+            routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
+            // A feed's holder rereads its events after an owner loss, so it waits for the new owner's answer.
+            hasResync: (member) =>
+              member === FEED_MEMBER || (registration.connections.get(member)?.hasResync ?? false),
+            hasMember: (member) =>
+              member === FEED_MEMBER
+                ? registration.feeds.size > 0
+                : registration.connections.has(member),
+            channel: {
+              open: (request) =>
+                connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
+              frame: (request) =>
+                connectionCall(Effect.flatMap(client(request.ref), (c) => c.Frame(request))),
+              close: (request) =>
+                connectionCall(Effect.flatMap(client(request.ref), (c) => c.Close(request))),
+              resync: (request) =>
+                connectionCall(Effect.flatMap(client(request.ref), (c) => c.Resync(request))),
+            },
+          }
         }
-      }
 
-      holder = yield* connectionHolder({
-        transport: () => transport,
-        actorType: (name) => heldTypes.get(name),
-        authorize: (request) => options.authorize(request),
-      })
+        holder = yield* connectionHolder({
+          transport: () => transport,
+          actorType: (name) => heldTypes.get(name),
+          authorize: (request) => options.authorize(request),
+        })
 
-      // Tables that passed the startup check for an actor type of this runtime;
-      // group reads may only touch these, never other Actor.table values.
-      const checked = new Set<AnyOwnedTable>()
+        // Tables that passed the startup check for an actor type of this runtime;
+        // group reads may only touch these, never other Actor.table values.
+        const checked = new Set<AnyOwnedTable>()
 
-      // An interrupt is authorized as the workflow member its execution id names.
-      const authorizedAs = (request: Request) =>
-        request.command !== INTERRUPT
-          ? Effect.succeed(request)
-          : decodeTarget(request.payload).pipe(
-              Effect.flatMap(({ executionId }) => decodeExecutionId(executionId)),
-              Effect.map(({ workflow }) => ({ ...request, command: workflow })),
-              Effect.orElseSucceed(() => request),
-            )
+        // An interrupt is authorized as the workflow member its execution id names.
+        const authorizedAs = (request: Request) =>
+          request.command !== INTERRUPT
+            ? Effect.succeed(request)
+            : decodeTarget(request.payload).pipe(
+                Effect.flatMap(({ executionId }) => decodeExecutionId(executionId)),
+                Effect.map(({ workflow }) => ({ ...request, command: workflow })),
+                Effect.orElseSucceed(() => request),
+              )
 
-      const allow = Effect.fnUntraced(function* (
-        request: Request,
-        kind: "command" | "query" | "stream" = "command",
-      ) {
-        if (!(yield* options.authorize({ ...(yield* authorizedAs(request)), kind })))
-          return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
-      })
+        const allow = Effect.fnUntraced(function* (
+          request: Request,
+          kind: "command" | "query" | "stream" = "command",
+        ) {
+          if (!(yield* options.authorize({ ...(yield* authorizedAs(request)), kind })))
+            return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+        })
 
-      const authorize = Effect.fnUntraced(function* (request: Request) {
-        yield* allow(request, "command")
-        yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
-      })
+        const authorize = Effect.fnUntraced(function* (request: Request) {
+          yield* allow(request, "command")
+          yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
+        })
 
-      // The first registration records an actor type's placement; a later one
-      // that differs would read and write under different routing keys.
-      const checkPlacement = Effect.fnUntraced(function* (
-        registration: Pick<Registration, "name" | "placement">,
-      ) {
-        const sql = yield* SqlClient.SqlClient
-        yield* sql`INSERT INTO actor_placements (actor_type, placement, encoding)
+        // The first registration records an actor type's placement; a later one
+        // that differs would read and write under different routing keys.
+        const checkPlacement = Effect.fnUntraced(function* (
+          registration: Pick<Registration, "name" | "placement">,
+        ) {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`INSERT INTO actor_placements (actor_type, placement, encoding)
           VALUES (${registration.name}, ${registration.placement}, ${PLACEMENT_ENCODING})
           ON CONFLICT DO NOTHING`
 
-        const [recorded] = yield* sql<{ placement: string; encoding: number }>`
+          const [recorded] = yield* sql<{ placement: string; encoding: number }>`
           SELECT placement, encoding FROM actor_placements WHERE actor_type = ${registration.name}`
 
-        if (
-          recorded?.placement !== registration.placement ||
-          recorded.encoding !== PLACEMENT_ENCODING
-        )
-          return yield* Effect.die(
-            new Error(
-              `Actor ${registration.name} placement differs from the deployment; migrate explicitly`,
-            ),
+          if (
+            recorded?.placement !== registration.placement ||
+            recorded.encoding !== PLACEMENT_ENCODING
           )
-      })
+            return yield* Effect.die(
+              new Error(
+                `Actor ${registration.name} placement differs from the deployment; migrate explicitly`,
+              ),
+            )
+        })
 
-      const entityId = (ref: ActorRef) => encodeEntityId([ref.tenant, ref.id]).pipe(Effect.orDie)
+        const entityId = (ref: ActorRef) => encodeEntityId([ref.tenant, ref.id]).pipe(Effect.orDie)
 
-      // Records this type's routed declarations for every runner of the
-      // deployment, and drops the ones it no longer declares.
-      const recordRouted = Effect.fnUntraced(function* (registration: Registration) {
-        const sql = yield* SqlClient.SqlClient
+        // Records this type's routed declarations for every runner of the
+        // deployment, and drops the ones it no longer declares.
+        const recordRouted = Effect.fnUntraced(function* (registration: Registration) {
+          const sql = yield* SqlClient.SqlClient
 
-        const routed = registration.subscriptions.filter(
-          (declared) => declared.routed !== undefined,
-        )
+          const routed = registration.subscriptions.filter(
+            (declared) => declared.routed !== undefined,
+          )
 
-        for (const declared of routed)
-          yield* sql`INSERT INTO actor_routed_subscriptions (source_type, subscriber_type, subscription)
+          for (const declared of routed)
+            yield* sql`INSERT INTO actor_routed_subscriptions (source_type, subscriber_type, subscription)
             VALUES (${declared.sourceType}, ${registration.name}, ${declared.tag})
             ON CONFLICT DO NOTHING`
 
-        yield* sql`DELETE FROM actor_routed_subscriptions
+          yield* sql`DELETE FROM actor_routed_subscriptions
           WHERE subscriber_type = ${registration.name}
             AND NOT (source_type, subscription) IN (
               SELECT * FROM unnest(${textArray({ sql, values: routed.map((declared) => declared.sourceType) })},
                 ${textArray({ sql, values: routed.map((declared) => declared.tag) })}))`
-      })
+        })
 
-      /**
-       * A publishing turn creates a routed subscription's source-side rows
-       * only from the routed declarations its runner registers, so a runner
-       * that serves a source without a subscriber type routing from it would
-       * lose those events silently. Registering the source fails instead.
-       * Layers of one runtime register concurrently, so the subscriber gets
-       * a short window to register first.
-       */
-      const requireRoutedSubscribers = Effect.fnUntraced(function* (sourceType: string) {
-        const sql = yield* SqlClient.SqlClient
+        /**
+         * A publishing turn creates a routed subscription's source-side rows
+         * only from the routed declarations its runner registers, so a runner
+         * that serves a source without a subscriber type routing from it would
+         * lose those events silently. Registering the source fails instead.
+         * Layers of one runtime register concurrently, so the subscriber gets
+         * a short window to register first.
+         */
+        const requireRoutedSubscribers = Effect.fnUntraced(function* (sourceType: string) {
+          const sql = yield* SqlClient.SqlClient
 
-        const missing = Effect.map(
-          sql<{ subscriber_type: string; subscription: string }>`
+          const missing = Effect.map(
+            sql<{ subscriber_type: string; subscription: string }>`
             SELECT subscriber_type, subscription FROM actor_routed_subscriptions
             WHERE source_type = ${sourceType}`,
-          (rows) =>
-            rows.filter(
-              (row) =>
-                row.subscriber_type !== sourceType && !registrations.has(row.subscriber_type),
-            ),
-        )
-
-        for (let waited = 0; waited < ROUTED_SUBSCRIBER_WAIT_MS; waited += 100) {
-          if ((yield* missing).length === 0) return
-          yield* Effect.sleep("100 millis")
-        }
-
-        const unregistered = yield* missing
-
-        if (unregistered.length > 0)
-          return yield* Effect.die(
-            new Error(
-              `Actor ${sourceType} is registered without the subscriber types that route from it (${unregistered
-                .map((row) => `${row.subscriber_type}.${row.subscription}`)
-                .join(", ")}); register their layers on every runner that serves ${sourceType}`,
-            ),
+            (rows) =>
+              rows.filter(
+                (row) =>
+                  row.subscriber_type !== sourceType && !registrations.has(row.subscriber_type),
+              ),
           )
-      })
 
-      const declaresContent = (registration: { readonly blobs: ReadonlyArray<AnyBlob> }) =>
-        registration.blobs.some(isContent)
+          for (let waited = 0; waited < ROUTED_SUBSCRIBER_WAIT_MS; waited += 100) {
+            if ((yield* missing).length === 0) return
+            yield* Effect.sleep("100 millis")
+          }
 
-      const requireContent = (name: string) =>
-        content === undefined
-          ? Effect.die(
-              new Error(`Actor ${name} declares content; give the runtime content.keys`),
+          const unregistered = yield* missing
+
+          if (unregistered.length > 0)
+            return yield* Effect.die(
+              new Error(
+                `Actor ${sourceType} is registered without the subscriber types that route from it (${unregistered
+                  .map((row) => `${row.subscriber_type}.${row.subscription}`)
+                  .join(", ")}); register their layers on every runner that serves ${sourceType}`,
+              ),
             )
-          : Effect.void
+        })
 
-      // The sweep waits out the longest turn that may attach content, across
-      // every runner of the deployment; the value only grows.
-      const recordContentTurn = Effect.fnUntraced(function* (registration: Registration) {
-        const sql = yield* SqlClient.SqlClient
-        yield* sql`INSERT INTO actor_content_types (actor_type, turn_ms)
+        const declaresContent = (registration: { readonly blobs: ReadonlyArray<AnyBlob> }) =>
+          registration.blobs.some(isContent)
+
+        const requireContent = (name: string) =>
+          content === undefined
+            ? Effect.die(new Error(`Actor ${name} declares content; give the runtime content.keys`))
+            : Effect.void
+
+        // The sweep waits out the longest turn that may attach content, across
+        // every runner of the deployment; the value only grows.
+        const recordContentTurn = Effect.fnUntraced(function* (registration: Registration) {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`INSERT INTO actor_content_types (actor_type, turn_ms)
           VALUES (${registration.name}, ${registration.policy.executionMs})
           ON CONFLICT (actor_type) DO UPDATE
           SET turn_ms = greatest(actor_content_types.turn_ms, EXCLUDED.turn_ms)`
-      })
-
-      const publicActors = Actors.of({
-        mintCommandId: Effect.gen(function* () {
-          const now = yield* databaseTime
-          const uuid = yield* crypto.randomUUIDv4
-
-          return `v1.${now}.${now + retryWindowMs}.${uuid}`
-        }).pipe(Effect.provideContext(services), Effect.orDie),
-      })
-
-      // Intents are admitted by their sending turn, so internal delivery skips
-      // the external access and expiry checks; revocation stops new commands,
-      // not committed obligations.
-      const dispatch = Effect.fnUntraced(
-        function* (request: Request, external: boolean) {
-          const registration = registrations.get(request.ref.actor)
-
-          if (registration === undefined)
-            return yield* ActorError.make({
-              reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-            })
-
-          const address = yield* entityId(request.ref)
-
-          const isResident = () => residency.get(request.ref.actor)?.(address) === true
-          let rejectedAtCapacity = false
-
-          return yield* Effect.gen(function* () {
-            // Only the relay presents a mint proof, as the delivery of the
-            // parent's committed creating intent, and only the relay delivers
-            // a subscription, with its envelope.
-            if (
-              external &&
-              (request.delivery !== undefined ||
-                (Schema.is(System)(request.caller) &&
-                  (request.caller.mint !== undefined || request.caller.source === "subscription")))
-            )
-              return yield* ActorError.make({
-                reason: Unauthorized.make({ code: "access_denied" }),
-              })
-
-            if (external) yield* allow(request, "command")
-
-            // Postgres rejects some malformed ids and payloads outright; they
-            // still fail as terminal identity errors, checked as before.
-            const admission = yield* readAdmission(
-              request,
-              routingKey({ ref: request.ref, placement: registration.placement }),
-            ).pipe(
-              Effect.tapError(() =>
-                external
-                  ? Effect.flatMap(databaseTime, (now) =>
-                      checkIdentity(request.commandId, retryWindowMs, now),
-                    )
-                  : Effect.void,
-              ),
-            )
-
-            if (external) yield* checkIdentity(request.commandId, retryWindowMs, admission.now)
-
-            // A replayed resume still reaches the owner, whose turn replays the
-            // receipt and then wakes the execution the lost delivery would have.
-            if (admission.receipt !== undefined && request.command !== RESUME) {
-              const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
-
-              if (external) yield* authorize(request)
-
-              return retained
-            }
-
-            const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(address)
-
-            yield* (yield* TurnHooks).at("beforeDelivery", request)
-
-            // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
-            const deliver = Effect.suspend(() =>
-              client
-                .Execute(external ? { ...request, external } : request)
-                .pipe(Effect.forkIn(scope)),
-            ).pipe(
-              Effect.flatMap(Fiber.join),
-              Effect.catchCause((cause) => {
-                const failure = Cause.findErrorOption(cause)
-
-                if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
-                  return Effect.fail(failure.value)
-
-                // An unbounded mailbox cannot fill, so the runner is out of
-                // activation slots; a bounded one is full only while resident.
-                if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value)) {
-                  if (registration.policy.mailboxCapacity !== "unbounded" && isResident())
-                    return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
-
-                  rejectedAtCapacity = true
-
-                  return Effect.fail(ActorError.make({ reason: RunnerAtCapacity.make({}) }))
-                }
-
-                // Direct commands are not persisted. A restarted activation
-                // or lost runner drops the uncommitted attempt, so
-                // the handle retries with the same command id; the receipt
-                // replays anything that did commit.
-                return Effect.fail(
-                  ActorError.make({
-                    reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
-                  }),
-                )
-              }),
-            )
-
-            // Each retry waits from the error's own retryAfter, as a served
-            // caller would; the delivery timeout bounds the total.
-            const retrying = (attempt: number): typeof deliver =>
-              deliver.pipe(
-                Effect.catchIf(
-                  (error) =>
-                    Schema.is(ActorUnavailable)(error.reason) ||
-                    Schema.is(RunnerAtCapacity)(error.reason),
-                  (error) =>
-                    Effect.sleep(retryDelay(attempt)(error)).pipe(
-                      Effect.andThen(Effect.suspend(() => retrying(attempt + 1))),
-                    ),
-                ),
-              )
-
-            const outcome = yield* retrying(0)
-
-            if (external) yield* authorize(request)
-
-            return outcome
-          }).pipe(
-            Effect.timeoutOrElse({
-              duration: registration.policy.deliveryMs,
-              // A turn runs only in a resident activation. After a capacity
-              // rejection with none resident, the latest attempt was not
-              // admitted; an earlier one may still have committed.
-              orElse: () =>
-                Effect.fail(
-                  ActorError.make({
-                    reason:
-                      rejectedAtCapacity && !isResident()
-                        ? RunnerAtCapacity.make({})
-                        : Timeout.make({ commandId: request.commandId }),
-                  }),
-                ),
-            }),
-          )
-        },
-        Effect.provideContext(services),
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      )
-
-      // A claimed intent's lease covers the longest turn its receiver may take here.
-      const leaseForTurns = () => {
-        let longest = 0
-
-        for (const { policy } of registrations.values())
-          longest = Math.max(longest, policy.executionMs + policy.lockWaitMs)
-
-        return longest === 0 ? DEFAULT_CLAIM_LEASE_MS : longest + CLAIM_MARGIN_MS
-      }
-
-      // Executor progress goes to the performing actor's connection entity,
-      // fire-and-forget: no retry, no acknowledgment, and a lost message is a
-      // lost frame. Actor types with no member that receives an effect's
-      // progress get no messages at all.
-      const progressTap = yield* ProgressTap
-      const utf8Decoder = new TextDecoder()
-
-      const ownerOf = (ref: ActorRef) =>
-        Effect.gen(function* () {
-          const make = yield* sharding.makeClient(connectionEntity(ref.actor))
-
-          return make(yield* entityId(ref))
         })
 
-      const fireAndForget = <E>(send: Effect.Effect<void, E>) =>
-        send.pipe(Effect.timeout(PROGRESS_SEND_TIMEOUT), Effect.ignoreCause, Effect.forkIn(scope))
+        const publicActors = Actors.of({
+          mintCommandId: Effect.gen(function* () {
+            const now = yield* databaseTime
+            const uuid = yield* crypto.randomUUIDv4
 
-      // Each effect's last frame still on its way, so its close never overtakes it.
-      const inflight = new Map<string, Fiber.Fiber<void>>()
+            return `v1.${now}.${now + retryWindowMs}.${uuid}`
+          }).pipe(Effect.provideContext(services), Effect.orDie),
+        })
 
-      // Sends one progress message to its owner as the pool does, past the tap.
-      const deliverProgress = (message: ProgressMessage) =>
-        Effect.flatMap(ownerOf(message.ref), (client) =>
-          client.Progress(
-            { ...message, frame: utf8Decoder.decode(message.frame) },
-            { discard: true },
-          ),
-        )
-
-      const progressSink = ProgressSink.of({
-        wants: (actor, effect) => effectRegistrations.get(actor)?.progress.has(effect) === true,
-        send: (message) =>
-          Effect.flatMap(progressTap.send(message), (deliver) =>
-            deliver
-              ? fireAndForget(deliverProgress(message)).pipe(
-                  Effect.flatMap((fiber) =>
-                    Effect.sync(() => {
-                      inflight.set(message.effectId, fiber)
-                      fiber.addObserver(() => {
-                        if (inflight.get(message.effectId) === fiber)
-                          inflight.delete(message.effectId)
-                      })
-                    }),
-                  ),
-                )
-              : Effect.void,
-          ),
-        closed: (message) =>
-          Effect.flatMap(progressTap.closed(message), (deliver) =>
-            deliver
-              ? fireAndForget(
-                  Effect.suspend(() => {
-                    const last = inflight.get(message.effectId)
-
-                    return last === undefined ? Effect.void : Fiber.await(last)
-                  }).pipe(
-                    Effect.andThen(ownerOf(message.ref)),
-                    Effect.flatMap((client) => client.ProgressClosed(message, { discard: true })),
-                  ),
-                ).pipe(Effect.asVoid)
-              : Effect.void,
-          ),
-      })
-
-      // Every subscription this runner registers, by subscriber type.
-      const localSubscriptions = (): ReadonlyArray<LocalSubscription> =>
-        [...registrations.values()].flatMap((registration) =>
-          registration.subscriptions.map((subscription) => ({
-            subscriberType: registration.name,
-            subscription,
-          })),
-        )
-
-      const placements = new Map<string, Placement>()
-
-      // A source may be registered only on other runners; its recorded
-      // placement is fixed once written, so it is cached.
-      const placementOf = (actorType: string) =>
-        Effect.gen(function* () {
-          const known =
-            registrations.get(actorType)?.placement ??
-            queryRegistrations.get(actorType)?.placement ??
-            placements.get(actorType)
-
-          if (known !== undefined) return known
-
-          const sql = yield* SqlClient.SqlClient
-
-          const [recorded] = yield* sql<{ placement: Placement }>`
-            SELECT placement FROM actor_placements WHERE actor_type = ${actorType}`
-
-          if (recorded !== undefined) placements.set(actorType, recorded.placement)
-
-          return recorded?.placement
-        }).pipe(Effect.provideContext(services), Effect.orDie)
-
-      const subscriptions: SubscriptionRelay = yield* subscriptionRelay({
-        deliver: (request) => dispatch(request, false),
-        local: localSubscriptions,
-        placementOf,
-        wake: Effect.suspend(() => relay.wake),
-        settings: {
-          concurrency: subscriptionConcurrency,
-          batch: subscriptionBatch,
-          claimLeaseMs: () => claimLeaseMs ?? leaseForTurns(),
-          maxBackoffMs: relaySettings.maxBackoffMs,
-          retryWindowMs,
-        },
-      })
-
-      const relay = yield* outboxRelay(
-        (request) => dispatch(request, false),
-        () =>
-          [...effectRegistrations.values()].flatMap((registration) =>
-            [...registration.effects].map(([effect, registered]) => ({
-              actor: registration.name,
-              effect,
-              registered: {
-                ...registered,
-                execute: (payload: string, context: Parameters<typeof registered.execute>[1]) =>
-                  registered.execute(payload, context).pipe(withoutDatabase(registration.services)),
-              },
-            })),
-          ),
-        { ...relaySettings, claimLeaseMs: () => claimLeaseMs ?? leaseForTurns() },
-        {
-          concurrency: subscriptionConcurrency,
-          claim: subscriptions.claim,
-          decode: subscriptions.decode,
-          run: (work, handoff) =>
-            subscriptions.run(work, handoff).pipe(Effect.provideContext(services)),
-        },
-        () =>
-          new Map(
-            Array.from(registrations.values(), ({ name, cron, policy }) => [
-              name,
-              { entries: cron, skipMs: policy.cronSkipMs },
-            ]),
-          ),
-      ).pipe(Effect.provideService(ProgressSink, progressSink))
-
-      yield* relay.run.pipe(Effect.forkIn(scope))
-
-      const frameworkClock = yield* FrameworkClock
-      const cleanupHooks = yield* CleanupHooks
-
-      const cleanup = Effect.suspend(() =>
-        sweep(
-          Array.from(registrations.values(), ({ name, policy }) => ({
-            actorType: name,
-            keepReceiptsMs: policy.keepReceiptsMs,
-            keepEventsMs: policy.keepEventsMs,
-            holdEventsMs: policy.holdEventsMs,
-            deliveryMs: policy.deliveryMs,
-            keepWorkflowsMs: policy.keepWorkflowsMs,
-            workflows: sweepsWorkflows.has(name),
-          })),
-          retryWindowMs,
-        ).pipe(
-          // Rows of a subscription a registered subscriber type no longer
-          // declares go a day after they fall due.
-          Effect.tap(() =>
-            Effect.forEach(
-              [...registrations.values()],
-              (registration) =>
-                subscriptions.cleanupRemoved(
-                  registration.name,
-                  registration.subscriptions.map((declared) => declared.tag),
-                ),
-              { discard: true },
-            ),
-          ),
-          // Each tenant's content goes at most once an hour, whichever runner claims it.
-          Effect.flatMap((swept) =>
-            Effect.map(content === undefined ? Effect.succeed(0) : content.sweep(false), (contents) => ({
-              ...swept,
-              contents,
-            })),
-          ),
-        ),
-      ).pipe(
-        Effect.provideContext(services),
-        Effect.provideService(FrameworkClock, frameworkClock),
-        Effect.provideService(CleanupHooks, cleanupHooks),
-      )
-
-      // Horizons are days long, so a sweep a minute keeps up; each batch is
-      // its own short transaction, so turns never wait on a whole sweep.
-      if (cleanupHooks.periodic)
-        yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
-          Effect.andThen(
-            cleanup.pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.interrupt
-                  : Effect.logWarning("Retention cleanup failed", cause),
-              ),
-            ),
-          ),
-          Effect.forever,
-          Effect.forkIn(scope),
-        )
-      // Routed subscriptions registered here, by source type.
-
-      const routed = (sourceType: string) =>
-        localSubscriptions().flatMap(({ subscriberType, subscription }) =>
-          subscription.routed !== undefined && subscription.sourceType === sourceType
-            ? [{ ...subscription, subscriberType }]
-            : [],
-        )
-
-      const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled, routed }
-
-      const databaseNow = databaseTime.pipe(
-        Effect.provideContext(services),
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      )
-
-      const internalActors = InternalActors.of({
-        mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
-        mintChildId: (input) =>
-          deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),
-        retryWindowMs,
-        databaseNow,
-        mintCommandId: Effect.gen(function* () {
-          const now = yield* databaseNow
-          const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
-
-          return `v1.${now}.${now + retryWindowMs}.${uuid}`
-        }),
-        tables: (scope, write) =>
-          bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
-        blobs: (scope, write) =>
-          bindBlobs(scope, write, contentBinding).pipe(Effect.provideContext(services)),
-        sweepContent:
-          content === undefined
-            ? Effect.succeed(0)
-            : content.sweep(true).pipe(Effect.provideContext(services), Effect.orDie),
-        registered: (actor) => ({
-          commands: registrations.has(actor),
-          queries: queryRegistrations.has(actor),
-        }),
-        declaredBlobs: (actor) =>
-          (registrations.get(actor) ?? queryRegistrations.get(actor))?.blobs.map(
-            (blob) => blob.name,
-          ) ?? [],
-        register: Effect.fnUntraced(function* (registration: Registration) {
-          if (registrations.has(registration.name))
-            return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
-          yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-
-          if (declaresContent(registration)) {
-            yield* requireContent(registration.name)
-            yield* recordContentTurn(registration).pipe(
-              Effect.provideContext(services),
-              Effect.orDie,
-            )
-          }
-          yield* checkTables(registration.name, registration.tables).pipe(
-            Effect.provideContext(services),
-            Effect.orDie,
-          )
-
-          for (const table of registration.tables) checked.add(table)
-
-          if (
-            registration.workflows.size > 0 &&
-            registration.policy.keepWorkflowsMs < retryWindowMs
-          )
-            return yield* Effect.die(
-              new Error(
-                `Actor ${registration.name} keepWorkflows is shorter than the retry window`,
-              ),
-            )
-
-          // A runner that dies mid-activity is replaced after the recovery
-          // interval; if the rerun is then already past its call ids' expiry
-          // bound, the activity dies with ActivityOutcomeUnknown instead.
-          if (
-            registration.workflows.size > 0 &&
-            retryWindowMs - registration.policy.deliveryMs <= RECOVERY_MS
-          )
-            yield* Effect.logWarning(
-              `Actor ${registration.name}: the retry window minus deliveryTimeout is at most the ${RECOVERY_MS / 1000}-second workflow recovery interval, so an activity whose runner dies fails with ActivityOutcomeUnknown instead of rerunning its actor calls`,
-            )
-
-          const { incompatibilities, retained } = yield* acceptWorkflows({
-            name: registration.name,
-            workflows: Array.from(registration.workflows.values(), ({ member }) => member),
-          }).pipe(Effect.provideContext(services), Effect.orDie)
-
-          if (incompatibilities.length > 0)
-            return yield* Effect.die(
-              new Error(
-                [
-                  `Actor ${registration.name} workflows are incompatible with open executions; deploy refused`,
-                  ...incompatibilities.map(formatIncompatibility),
-                ].join("\n"),
-              ),
-            )
-
-          const { isResident, owner } = yield* registerActor(
-            registration,
-            transport,
-            options.authorize,
-          ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
-
-          yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
-          yield* requireRoutedSubscribers(registration.name).pipe(
-            Effect.provideContext(services),
-            Effect.orDie,
-          )
-
-          // A deploy may add an event class to a dynamic subscription; its
-          // caught-up rows must wake for it.
-          for (const declared of registration.subscriptions)
-            if (declared.routed === undefined)
-              yield* subscriptions
-                .widen(registration.name, declared)
-                .pipe(Effect.provideContext(services), Effect.orDie)
-
-          registrations.set(registration.name, registration)
-          residency.set(registration.name, isResident)
-          owners.set(registration.name, owner)
-
-          if (registration.connections.size > 0 || registration.feeds.size > 0)
-            heldTypes.set(registration.name, heldType(registration))
-
-          if (retained) sweepsWorkflows.add(registration.name)
-
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              registrations.delete(registration.name)
-              residency.delete(registration.name)
-              owners.delete(registration.name)
-              heldTypes.delete(registration.name)
-              sweepsWorkflows.delete(registration.name)
-            }),
-          )
-        }),
-        registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
-          if (queryRegistrations.has(registration.name))
-            return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
-          yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-
-          if (declaresContent(registration)) yield* requireContent(registration.name)
-          yield* checkTables(registration.name, registration.tables).pipe(
-            Effect.provideContext(services),
-            Effect.orDie,
-          )
-
-          for (const table of registration.tables) checked.add(table)
-          queryRegistrations.set(registration.name, registration)
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              queryRegistrations.delete(registration.name)
-            }),
-          )
-        }),
-        // Executors need no placement: they never touch the actor's rows.
-        registerEffects: Effect.fnUntraced(function* (registration: EffectRegistration) {
-          if (effectRegistrations.has(registration.name))
-            return yield* Effect.die(new Error(`Duplicate effect layer: ${registration.name}`))
-          effectRegistrations.set(registration.name, registration)
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              effectRegistrations.delete(registration.name)
-            }),
-          )
-        }),
-        exists: Effect.fnUntraced(
-          function* (ref: ActorRef) {
-            const registration = registrations.get(ref.actor)
+        // Intents are admitted by their sending turn, so internal delivery skips
+        // the external access and expiry checks; revocation stops new commands,
+        // not committed obligations.
+        const dispatch = Effect.fnUntraced(
+          function* (request: Request, external: boolean) {
+            const registration = registrations.get(request.ref.actor)
 
             if (registration === undefined)
               return yield* ActorError.make({
                 reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
               })
 
+            const address = yield* entityId(request.ref)
+
+            const isResident = () => residency.get(request.ref.actor)?.(address) === true
+            let rejectedAtCapacity = false
+
+            return yield* Effect.gen(function* () {
+              // Only the relay presents a mint proof, as the delivery of the
+              // parent's committed creating intent, and only the relay delivers
+              // a subscription, with its envelope.
+              if (
+                external &&
+                (request.delivery !== undefined ||
+                  (Schema.is(System)(request.caller) &&
+                    (request.caller.mint !== undefined ||
+                      request.caller.source === "subscription")))
+              )
+                return yield* ActorError.make({
+                  reason: Unauthorized.make({ code: "access_denied" }),
+                })
+
+              if (external) yield* allow(request, "command")
+
+              // Postgres rejects some malformed ids and payloads outright; they
+              // still fail as terminal identity errors, checked as before.
+              const admission = yield* readAdmission(
+                request,
+                routingKey({ ref: request.ref, placement: registration.placement }),
+              ).pipe(
+                Effect.tapError(() =>
+                  external
+                    ? Effect.flatMap(databaseTime, (now) =>
+                        checkIdentity(request.commandId, retryWindowMs, now),
+                      )
+                    : Effect.void,
+                ),
+              )
+
+              if (external) yield* checkIdentity(request.commandId, retryWindowMs, admission.now)
+
+              // A replayed resume still reaches the owner, whose turn replays the
+              // receipt and then wakes the execution the lost delivery would have.
+              if (admission.receipt !== undefined && request.command !== RESUME) {
+                const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
+
+                if (external) yield* authorize(request)
+
+                return retained
+              }
+
+              const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(address)
+
+              yield* (yield* TurnHooks).at("beforeDelivery", request)
+
+              // Runtime scope owns the in-flight turn; interrupting its waiter must not cancel it.
+              const deliver = Effect.suspend(() =>
+                client
+                  .Execute(external ? { ...request, external } : request)
+                  .pipe(Effect.forkIn(scope)),
+              ).pipe(
+                Effect.flatMap(Fiber.join),
+                Effect.catchCause((cause) => {
+                  const failure = Cause.findErrorOption(cause)
+
+                  if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
+                    return Effect.fail(failure.value)
+
+                  // An unbounded mailbox cannot fill, so the runner is out of
+                  // activation slots; a bounded one is full only while resident.
+                  if (
+                    Option.isSome(failure) &&
+                    Schema.is(ClusterError.MailboxFull)(failure.value)
+                  ) {
+                    if (registration.policy.mailboxCapacity !== "unbounded" && isResident())
+                      return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
+
+                    rejectedAtCapacity = true
+
+                    return Effect.fail(ActorError.make({ reason: RunnerAtCapacity.make({}) }))
+                  }
+
+                  // Direct commands are not persisted. A restarted activation
+                  // or lost runner drops the uncommitted attempt, so
+                  // the handle retries with the same command id; the receipt
+                  // replays anything that did commit.
+                  return Effect.fail(
+                    ActorError.make({
+                      reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                    }),
+                  )
+                }),
+              )
+
+              // Each retry waits from the error's own retryAfter, as a served
+              // caller would; the delivery timeout bounds the total.
+              const retrying = (attempt: number): typeof deliver =>
+                deliver.pipe(
+                  Effect.catchIf(
+                    (error) =>
+                      Schema.is(ActorUnavailable)(error.reason) ||
+                      Schema.is(RunnerAtCapacity)(error.reason),
+                    (error) =>
+                      Effect.sleep(retryDelay(attempt)(error)).pipe(
+                        Effect.andThen(Effect.suspend(() => retrying(attempt + 1))),
+                      ),
+                  ),
+                )
+
+              const outcome = yield* retrying(0)
+
+              if (external) yield* authorize(request)
+
+              return outcome
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: registration.policy.deliveryMs,
+                // A turn runs only in a resident activation. After a capacity
+                // rejection with none resident, the latest attempt was not
+                // admitted; an earlier one may still have committed.
+                orElse: () =>
+                  Effect.fail(
+                    ActorError.make({
+                      reason:
+                        rejectedAtCapacity && !isResident()
+                          ? RunnerAtCapacity.make({})
+                          : Timeout.make({ commandId: request.commandId }),
+                    }),
+                  ),
+              }),
+            )
+          },
+          Effect.provideContext(services),
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        )
+
+        // A claimed intent's lease covers the longest turn its receiver may take here.
+        const leaseForTurns = () => {
+          let longest = 0
+
+          for (const { policy } of registrations.values())
+            longest = Math.max(longest, policy.executionMs + policy.lockWaitMs)
+
+          return longest === 0 ? DEFAULT_CLAIM_LEASE_MS : longest + CLAIM_MARGIN_MS
+        }
+
+        // Executor progress goes to the performing actor's connection entity,
+        // fire-and-forget: no retry, no acknowledgment, and a lost message is a
+        // lost frame. Actor types with no member that receives an effect's
+        // progress get no messages at all.
+        const progressTap = yield* ProgressTap
+        const utf8Decoder = new TextDecoder()
+
+        const ownerOf = (ref: ActorRef) =>
+          Effect.gen(function* () {
+            const make = yield* sharding.makeClient(connectionEntity(ref.actor))
+
+            return make(yield* entityId(ref))
+          })
+
+        const fireAndForget = <E>(send: Effect.Effect<void, E>) =>
+          send.pipe(Effect.timeout(PROGRESS_SEND_TIMEOUT), Effect.ignoreCause, Effect.forkIn(scope))
+
+        // Each effect's last frame still on its way, so its close never overtakes it.
+        const inflight = new Map<string, Fiber.Fiber<void>>()
+
+        // Sends one progress message to its owner as the pool does, past the tap.
+        const deliverProgress = (message: ProgressMessage) =>
+          Effect.flatMap(ownerOf(message.ref), (client) =>
+            client.Progress(
+              { ...message, frame: utf8Decoder.decode(message.frame) },
+              { discard: true },
+            ),
+          )
+
+        const progressSink = ProgressSink.of({
+          wants: (actor, effect) => effectRegistrations.get(actor)?.progress.has(effect) === true,
+          send: (message) =>
+            Effect.flatMap(progressTap.send(message), (deliver) =>
+              deliver
+                ? fireAndForget(deliverProgress(message)).pipe(
+                    Effect.flatMap((fiber) =>
+                      Effect.sync(() => {
+                        inflight.set(message.effectId, fiber)
+                        fiber.addObserver(() => {
+                          if (inflight.get(message.effectId) === fiber)
+                            inflight.delete(message.effectId)
+                        })
+                      }),
+                    ),
+                  )
+                : Effect.void,
+            ),
+          closed: (message) =>
+            Effect.flatMap(progressTap.closed(message), (deliver) =>
+              deliver
+                ? fireAndForget(
+                    Effect.suspend(() => {
+                      const last = inflight.get(message.effectId)
+
+                      return last === undefined ? Effect.void : Fiber.await(last)
+                    }).pipe(
+                      Effect.andThen(ownerOf(message.ref)),
+                      Effect.flatMap((client) => client.ProgressClosed(message, { discard: true })),
+                    ),
+                  ).pipe(Effect.asVoid)
+                : Effect.void,
+            ),
+        })
+
+        // Every subscription this runner registers, by subscriber type.
+        const localSubscriptions = (): ReadonlyArray<LocalSubscription> =>
+          [...registrations.values()].flatMap((registration) =>
+            registration.subscriptions.map((subscription) => ({
+              subscriberType: registration.name,
+              subscription,
+            })),
+          )
+
+        const placements = new Map<string, Placement>()
+
+        // A source may be registered only on other runners; its recorded
+        // placement is fixed once written, so it is cached.
+        const placementOf = (actorType: string) =>
+          Effect.gen(function* () {
+            const known =
+              registrations.get(actorType)?.placement ??
+              queryRegistrations.get(actorType)?.placement ??
+              placements.get(actorType)
+
+            if (known !== undefined) return known
+
             const sql = yield* SqlClient.SqlClient
 
-            const rows = yield* sql`
+            const [recorded] = yield* sql<{ placement: Placement }>`
+            SELECT placement FROM actor_placements WHERE actor_type = ${actorType}`
+
+            if (recorded !== undefined) placements.set(actorType, recorded.placement)
+
+            return recorded?.placement
+          }).pipe(Effect.provideContext(services), Effect.orDie)
+
+        const subscriptions: SubscriptionRelay = yield* subscriptionRelay({
+          deliver: (request) => dispatch(request, false),
+          local: localSubscriptions,
+          placementOf,
+          wake: Effect.suspend(() => relay.wake),
+          settings: {
+            concurrency: subscriptionConcurrency,
+            batch: subscriptionBatch,
+            claimLeaseMs: () => claimLeaseMs ?? leaseForTurns(),
+            maxBackoffMs: relaySettings.maxBackoffMs,
+            retryWindowMs,
+          },
+        })
+
+        const relay = yield* outboxRelay(
+          (request) => dispatch(request, false),
+          () =>
+            [...effectRegistrations.values()].flatMap((registration) =>
+              [...registration.effects].map(([effect, registered]) => ({
+                actor: registration.name,
+                effect,
+                registered: {
+                  ...registered,
+                  execute: (payload: string, context: Parameters<typeof registered.execute>[1]) =>
+                    registered
+                      .execute(payload, context)
+                      .pipe(withoutDatabase(registration.services)),
+                },
+              })),
+            ),
+          { ...relaySettings, claimLeaseMs: () => claimLeaseMs ?? leaseForTurns() },
+          {
+            concurrency: subscriptionConcurrency,
+            claim: subscriptions.claim,
+            decode: subscriptions.decode,
+            run: (work, handoff) =>
+              subscriptions.run(work, handoff).pipe(Effect.provideContext(services)),
+          },
+          () =>
+            new Map(
+              Array.from(registrations.values(), ({ name, cron, policy }) => [
+                name,
+                { entries: cron, skipMs: policy.cronSkipMs },
+              ]),
+            ),
+        ).pipe(Effect.provideService(ProgressSink, progressSink))
+
+        yield* relay.run.pipe(Effect.forkIn(scope))
+
+        const frameworkClock = yield* FrameworkClock
+        const cleanupHooks = yield* CleanupHooks
+
+        const cleanup = Effect.suspend(() =>
+          sweep(
+            Array.from(registrations.values(), ({ name, policy }) => ({
+              actorType: name,
+              keepReceiptsMs: policy.keepReceiptsMs,
+              keepEventsMs: policy.keepEventsMs,
+              holdEventsMs: policy.holdEventsMs,
+              deliveryMs: policy.deliveryMs,
+              keepWorkflowsMs: policy.keepWorkflowsMs,
+              workflows: sweepsWorkflows.has(name),
+            })),
+            retryWindowMs,
+          ).pipe(
+            // Rows of a subscription a registered subscriber type no longer
+            // declares go a day after they fall due.
+            Effect.tap(() =>
+              Effect.forEach(
+                [...registrations.values()],
+                (registration) =>
+                  subscriptions.cleanupRemoved(
+                    registration.name,
+                    registration.subscriptions.map((declared) => declared.tag),
+                  ),
+                { discard: true },
+              ),
+            ),
+            // Each tenant's content goes at most once an hour, whichever runner claims it.
+            Effect.flatMap((swept) =>
+              Effect.map(
+                content === undefined ? Effect.succeed(0) : content.sweep(false),
+                (contents) => ({
+                  ...swept,
+                  contents,
+                }),
+              ),
+            ),
+          ),
+        ).pipe(
+          Effect.provideContext(services),
+          Effect.provideService(FrameworkClock, frameworkClock),
+          Effect.provideService(CleanupHooks, cleanupHooks),
+        )
+
+        // Horizons are days long, so a sweep a minute keeps up; each batch is
+        // its own short transaction, so turns never wait on a whole sweep.
+        if (cleanupHooks.periodic)
+          yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
+            Effect.andThen(
+              cleanup.pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.interrupt
+                    : Effect.logWarning("Retention cleanup failed", cause),
+                ),
+              ),
+            ),
+            Effect.forever,
+            Effect.forkIn(scope),
+          )
+        // Routed subscriptions registered here, by source type.
+
+        const routed = (sourceType: string) =>
+          localSubscriptions().flatMap(({ subscriberType, subscription }) =>
+            subscription.routed !== undefined && subscription.sourceType === sourceType
+              ? [{ ...subscription, subscriberType }]
+              : [],
+          )
+
+        const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled, routed }
+
+        const databaseNow = databaseTime.pipe(
+          Effect.provideContext(services),
+          Effect.catchIf(SqlError.isSqlError, (cause) =>
+            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+          ),
+        )
+
+        const internalActors = InternalActors.of({
+          mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+          mintChildId: (input) =>
+            deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),
+          retryWindowMs,
+          databaseNow,
+          mintCommandId: Effect.gen(function* () {
+            const now = yield* databaseNow
+            const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+
+            return `v1.${now}.${now + retryWindowMs}.${uuid}`
+          }),
+          tables: (scope, write) =>
+            bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
+          blobs: (scope, write) =>
+            bindBlobs(scope, write, contentBinding).pipe(Effect.provideContext(services)),
+          sweepContent:
+            content === undefined
+              ? Effect.succeed(0)
+              : content.sweep(true).pipe(Effect.provideContext(services), Effect.orDie),
+          registered: (actor) => ({
+            commands: registrations.has(actor),
+            queries: queryRegistrations.has(actor),
+          }),
+          declaredBlobs: (actor) =>
+            (registrations.get(actor) ?? queryRegistrations.get(actor))?.blobs.map(
+              (blob) => blob.name,
+            ) ?? [],
+          register: Effect.fnUntraced(function* (registration: Registration) {
+            if (registrations.has(registration.name))
+              return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
+            yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
+
+            if (declaresContent(registration)) {
+              yield* requireContent(registration.name)
+              yield* recordContentTurn(registration).pipe(
+                Effect.provideContext(services),
+                Effect.orDie,
+              )
+            }
+            yield* checkTables(registration.name, registration.tables).pipe(
+              Effect.provideContext(services),
+              Effect.orDie,
+            )
+
+            for (const table of registration.tables) checked.add(table)
+
+            if (
+              registration.workflows.size > 0 &&
+              registration.policy.keepWorkflowsMs < retryWindowMs
+            )
+              return yield* Effect.die(
+                new Error(
+                  `Actor ${registration.name} keepWorkflows is shorter than the retry window`,
+                ),
+              )
+
+            // A runner that dies mid-activity is replaced after the recovery
+            // interval; if the rerun is then already past its call ids' expiry
+            // bound, the activity dies with ActivityOutcomeUnknown instead.
+            if (
+              registration.workflows.size > 0 &&
+              retryWindowMs - registration.policy.deliveryMs <= RECOVERY_MS
+            )
+              yield* Effect.logWarning(
+                `Actor ${registration.name}: the retry window minus deliveryTimeout is at most the ${RECOVERY_MS / 1000}-second workflow recovery interval, so an activity whose runner dies fails with ActivityOutcomeUnknown instead of rerunning its actor calls`,
+              )
+
+            const { incompatibilities, retained } = yield* acceptWorkflows({
+              name: registration.name,
+              workflows: Array.from(registration.workflows.values(), ({ member }) => member),
+            }).pipe(Effect.provideContext(services), Effect.orDie)
+
+            if (incompatibilities.length > 0)
+              return yield* Effect.die(
+                new Error(
+                  [
+                    `Actor ${registration.name} workflows are incompatible with open executions; deploy refused`,
+                    ...incompatibilities.map(formatIncompatibility),
+                  ].join("\n"),
+                ),
+              )
+
+            const { isResident, owner } = yield* registerActor(
+              registration,
+              transport,
+              options.authorize,
+            ).pipe(Effect.provideContext(services), Effect.provideService(OutboxRuntime, outbox))
+
+            yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
+            yield* requireRoutedSubscribers(registration.name).pipe(
+              Effect.provideContext(services),
+              Effect.orDie,
+            )
+
+            // A deploy may add an event class to a dynamic subscription; its
+            // caught-up rows must wake for it.
+            for (const declared of registration.subscriptions)
+              if (declared.routed === undefined)
+                yield* subscriptions
+                  .widen(registration.name, declared)
+                  .pipe(Effect.provideContext(services), Effect.orDie)
+
+            registrations.set(registration.name, registration)
+            residency.set(registration.name, isResident)
+            owners.set(registration.name, owner)
+
+            if (registration.connections.size > 0 || registration.feeds.size > 0)
+              heldTypes.set(registration.name, heldType(registration))
+
+            if (retained) sweepsWorkflows.add(registration.name)
+
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                registrations.delete(registration.name)
+                residency.delete(registration.name)
+                owners.delete(registration.name)
+                heldTypes.delete(registration.name)
+                sweepsWorkflows.delete(registration.name)
+              }),
+            )
+          }),
+          registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
+            if (queryRegistrations.has(registration.name))
+              return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
+            yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
+
+            if (declaresContent(registration)) yield* requireContent(registration.name)
+            yield* checkTables(registration.name, registration.tables).pipe(
+              Effect.provideContext(services),
+              Effect.orDie,
+            )
+
+            for (const table of registration.tables) checked.add(table)
+            queryRegistrations.set(registration.name, registration)
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                queryRegistrations.delete(registration.name)
+              }),
+            )
+          }),
+          // Executors need no placement: they never touch the actor's rows.
+          registerEffects: Effect.fnUntraced(function* (registration: EffectRegistration) {
+            if (effectRegistrations.has(registration.name))
+              return yield* Effect.die(new Error(`Duplicate effect layer: ${registration.name}`))
+            effectRegistrations.set(registration.name, registration)
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                effectRegistrations.delete(registration.name)
+              }),
+            )
+          }),
+          exists: Effect.fnUntraced(
+            function* (ref: ActorRef) {
+              const registration = registrations.get(ref.actor)
+
+              if (registration === undefined)
+                return yield* ActorError.make({
+                  reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+                })
+
+              const sql = yield* SqlClient.SqlClient
+
+              const rows = yield* sql`
               SELECT 1 FROM actor_generations
               WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
                 AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-            return rows.length > 0
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+              return rows.length > 0
+            },
+            Effect.provideContext(services),
+            Effect.catchIf(SqlError.isSqlError, (cause) =>
+              Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+            ),
           ),
-        ),
-        // Feeds read committed events on the serving node, like queries: no activation.
-        readFeed: Effect.fnUntraced(
-          function* (
-            ref: ActorRef,
-            tags: ReadonlyArray<string>,
-            after: string | undefined,
-            limit: number,
-          ) {
-            const registration = registrations.get(ref.actor)
+          // Feeds read committed events on the serving node, like queries: no activation.
+          readFeed: Effect.fnUntraced(
+            function* (
+              ref: ActorRef,
+              tags: ReadonlyArray<string>,
+              after: string | undefined,
+              limit: number,
+            ) {
+              const registration = registrations.get(ref.actor)
 
-            if (registration === undefined)
-              return yield* ActorError.make({
-                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-              })
+              if (registration === undefined)
+                return yield* ActorError.make({
+                  reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+                })
 
-            const key = routingKey({ ref, placement: registration.placement })
-            const sql = yield* SqlClient.SqlClient
+              const key = routingKey({ ref, placement: registration.placement })
+              const sql = yield* SqlClient.SqlClient
 
-            const [row] = yield* sql<{ head: string }>`
+              const [row] = yield* sql<{ head: string }>`
               SELECT event_sequence::text AS head FROM actor_generations
               WHERE routing_key = ${key} AND tenant_id = ${ref.tenant}
                 AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-            // A feed never creates an actor, so a missing generation row is an answer, not a wake.
-            if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
+              // A feed never creates an actor, so a missing generation row is an answer, not a wake.
+              if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
 
-            return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+              return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
+            },
+            Effect.provideContext(services),
+            Effect.catchIf(SqlError.isSqlError, (cause) =>
+              Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+            ),
           ),
-        ),
-        // Queries read committed rows on the caller's node: no activation, no
-        // generation fence, no receipt, and no command id.
-        query: Effect.fnUntraced(
-          function* (request: Request) {
-            const registration = queryRegistrations.get(request.ref.actor)
-            const query = registration?.queries.get(request.command)
+          // Queries read committed rows on the caller's node: no activation, no
+          // generation fence, no receipt, and no command id.
+          query: Effect.fnUntraced(
+            function* (request: Request) {
+              const registration = queryRegistrations.get(request.ref.actor)
+              const query = registration?.queries.get(request.command)
 
-            if (registration === undefined || query === undefined)
-              return yield* ActorError.make({
-                reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
-              })
+              if (registration === undefined || query === undefined)
+                return yield* ActorError.make({
+                  reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
+                })
 
-            yield* allow(request, "query")
-            const key = routingKey({ ref: request.ref, placement: registration.placement })
+              yield* allow(request, "query")
+              const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-            // Query reads run on the pool outside a transaction, so no
-            // statement_timeout bounds them; interrupting a read past
-            // commandTimeout cancels its statement on the server instead.
-            const outcome = yield* Effect.gen(function* () {
-              const sql = yield* SqlClient.SqlClient
+              // Query reads run on the pool outside a transaction, so no
+              // statement_timeout bounds them; interrupting a read past
+              // commandTimeout cancels its statement on the server instead.
+              const outcome = yield* Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
 
-              // The event head is read with state in one statement, and every replay
-              // in this query stops at it, so state and events describe one moment.
-              const rows = yield* sql<{
-                head: string | null
-                key: string | null
-                value: Uint8Array | null
-              }>`
+                // The event head is read with state in one statement, and every replay
+                // in this query stops at it, so state and events describe one moment.
+                const rows = yield* sql<{
+                  head: string | null
+                  key: string | null
+                  value: Uint8Array | null
+                }>`
                 SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
                 FROM actor_generations
                 WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
@@ -1169,300 +1179,306 @@ export const layer = (options: Options) => {
                 WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
                   AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
 
-              let head: string | undefined
-              const state: Array<readonly [string, string]> = []
+                let head: string | undefined
+                const state: Array<readonly [string, string]> = []
 
-              for (const row of rows)
-                if (row.head !== null) head = row.head
-                else state.push([row.key!, decompress(row.value!)])
+                for (const row of rows)
+                  if (row.head !== null) head = row.head
+                  else state.push([row.key!, decompress(row.value!)])
 
-              // State counts only alongside its generation row, which carries the head.
-              if (head === undefined) state.length = 0
+                // State counts only alongside its generation row, which carries the head.
+                if (head === undefined) state.length = 0
 
-              const cursor = head ?? "0"
+                const cursor = head ?? "0"
 
-              return yield* query.run(request, state, cursor, (tag, after, limit) =>
-                replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
-                  Effect.catchIf(SqlError.isSqlError, Effect.die),
-                  Effect.provideContext(services),
-                ),
-              )
-            }).pipe(
-              Effect.timeoutOrElse({
-                duration: registration.timeoutMs,
-                orElse: () =>
-                  Effect.fail(
-                    ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
-                  ),
-              }),
-            )
-
-            // A failed replay read is unavailability, not a deterministic query defect.
-            if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
-              return yield* outcome.cause
-
-            // Access can be revoked while the handler runs; like a command's
-            // outcome, a query result is released only to a caller still allowed.
-            yield* allow(request, "query")
-
-            return outcome
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        ),
-        subscribe: (request) =>
-          Stream.unwrap(
-            Effect.gen(function* () {
-              const registration = registrations.get(request.ref.actor)
-
-              if (registration === undefined || !registration.streams.has(request.command))
-                return yield* ActorError.make({
-                  reason: ActorUnavailable.make({ cause: new Error("Stream not registered") }),
-                })
-
-              yield* allow(request, "stream")
-
-              const client = (yield* sharding.makeClient(connectionEntity(request.ref.actor)))(
-                yield* entityId(request.ref),
-              )
-
-              const authorizedUntil =
-                (yield* Clock.currentTimeMillis) +
-                frameworkClock.offsetMillis() +
-                registration.policy.reauthorizeMs
-
-              // The owner the stream runs on, once it answers; a runner that
-              // stops answering ends the stream as its activation would.
-              const started = yield* Deferred.make<{ owner: string; ownerEpoch: string }>()
-              const lost = yield* Deferred.make<never, ActorError>()
-              let owner: { owner: string; ownerEpoch: string } | undefined
-
-              yield* Deferred.await(started).pipe(
-                Effect.flatMap(({ owner, ownerEpoch }) =>
-                  owner === transport.holder
-                    ? Effect.never
-                    : transport.ping(owner, ownerEpoch).pipe(
-                        Effect.repeat({
-                          schedule: Schedule.spaced(OWNER_CHECK_INTERVAL),
-                          while: (alive) => alive,
-                        }),
-                        Effect.andThen(Deferred.fail(lost, activationEnded())),
-                      ),
-                ),
-                Effect.forkScoped,
-              )
-
-              let finished = false
-
-              return client
-                .Subscribe({
-                  member: request.command,
-                  caller: request.caller,
-                  input: request.payload,
-                  authorizedUntil,
-                })
-                .pipe(
-                  Stream.tap((item) =>
-                    Effect.gen(function* () {
-                      if (StreamItem.guards.Done(item)) finished = true
-
-                      if (!StreamItem.guards.Started(item)) return
-
-                      // Cluster resends a request whose runner died; a stream never resumes by itself.
-                      if (owner !== undefined) return yield* activationEnded()
-                      owner = item
-                      yield* Deferred.succeed(started, item)
-                    }),
-                  ),
-                  Stream.takeWhile((item) => !StreamItem.guards.Done(item)),
-                  Stream.filter(StreamItem.guards.Element),
-                  Stream.map((item) => item.value),
-                  // Only `Done` ends a stream cleanly; anything else is its activation ending.
-                  Stream.concat(
-                    Stream.fromEffect(
-                      Effect.suspend(() => (finished ? Effect.void : activationEnded())),
-                    ).pipe(Stream.drain),
-                  ),
-                  Stream.interruptWhen(Deferred.await(lost)),
-                  Stream.catchCause(
-                    (cause): Stream.Stream<never, ActorError | { readonly failure: string }> => {
-                      const failure = Cause.findErrorOption(cause)
-
-                      if (Option.isSome(failure)) {
-                        if (Schema.is(ActorError)(failure.value)) return Stream.fail(failure.value)
-
-                        if (Schema.is(StreamFailed)(failure.value))
-                          return Stream.fail({ failure: failure.value.value })
-                      }
-
-                      if (Cause.hasInterruptsOnly(cause)) return Stream.fromEffect(Effect.interrupt)
-
-                      // Before the owner answered, the subscription never started.
-                      return Stream.fail(
-                        owner === undefined
-                          ? ActorError.make({
-                              reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
-                            })
-                          : activationEnded(),
-                      )
-                    },
+                return yield* query.run(request, state, cursor, (tag, after, limit) =>
+                  replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
+                    Effect.catchIf(SqlError.isSqlError, Effect.die),
+                    Effect.provideContext(services),
                   ),
                 )
-            }).pipe(Effect.provideContext(services)),
+              }).pipe(
+                Effect.timeoutOrElse({
+                  duration: registration.timeoutMs,
+                  orElse: () =>
+                    Effect.fail(
+                      ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
+                    ),
+                }),
+              )
+
+              // A failed replay read is unavailability, not a deterministic query defect.
+              if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
+                return yield* outcome.cause
+
+              // Access can be revoked while the handler runs; like a command's
+              // outcome, a query result is released only to a caller still allowed.
+              yield* allow(request, "query")
+
+              return outcome
+            },
+            Effect.provideContext(services),
+            Effect.catchIf(SqlError.isSqlError, (cause) =>
+              Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+            ),
           ),
-        deliverProgress: (message) =>
-          deliverProgress(message).pipe(Effect.ignoreCause, Effect.provideContext(services)),
-        transport,
-        holder,
-        hibernate: (ref) =>
-          Effect.flatMap(
-            entityId(ref),
-            (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void,
-          ).pipe(Effect.provideContext(services)),
-        pollWorkflow: Effect.fnUntraced(
-          function* (request: Request) {
-            const registration =
-              registrations.get(request.ref.actor) ?? queryRegistrations.get(request.ref.actor)
+          subscribe: (request) =>
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const registration = registrations.get(request.ref.actor)
 
-            if (registration === undefined)
-              return yield* ActorError.make({
-                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-              })
+                if (registration === undefined || !registration.streams.has(request.command))
+                  return yield* ActorError.make({
+                    reason: ActorUnavailable.make({ cause: new Error("Stream not registered") }),
+                  })
 
-            yield* allow(request)
-            const sql = yield* SqlClient.SqlClient
+                yield* allow(request, "stream")
 
-            const [row] = yield* sql<{ status: string; result: Uint8Array | null }>`
+                const client = (yield* sharding.makeClient(connectionEntity(request.ref.actor)))(
+                  yield* entityId(request.ref),
+                )
+
+                const authorizedUntil =
+                  (yield* Clock.currentTimeMillis) +
+                  frameworkClock.offsetMillis() +
+                  registration.policy.reauthorizeMs
+
+                // The owner the stream runs on, once it answers; a runner that
+                // stops answering ends the stream as its activation would.
+                const started = yield* Deferred.make<{ owner: string; ownerEpoch: string }>()
+                const lost = yield* Deferred.make<never, ActorError>()
+                let owner: { owner: string; ownerEpoch: string } | undefined
+
+                yield* Deferred.await(started).pipe(
+                  Effect.flatMap(({ owner, ownerEpoch }) =>
+                    owner === transport.holder
+                      ? Effect.never
+                      : transport.ping(owner, ownerEpoch).pipe(
+                          Effect.repeat({
+                            schedule: Schedule.spaced(OWNER_CHECK_INTERVAL),
+                            while: (alive) => alive,
+                          }),
+                          Effect.andThen(Deferred.fail(lost, activationEnded())),
+                        ),
+                  ),
+                  Effect.forkScoped,
+                )
+
+                let finished = false
+
+                return client
+                  .Subscribe({
+                    member: request.command,
+                    caller: request.caller,
+                    input: request.payload,
+                    authorizedUntil,
+                  })
+                  .pipe(
+                    Stream.tap((item) =>
+                      Effect.gen(function* () {
+                        if (StreamItem.guards.Done(item)) finished = true
+
+                        if (!StreamItem.guards.Started(item)) return
+
+                        // Cluster resends a request whose runner died; a stream never resumes by itself.
+                        if (owner !== undefined) return yield* activationEnded()
+                        owner = item
+                        yield* Deferred.succeed(started, item)
+                      }),
+                    ),
+                    Stream.takeWhile((item) => !StreamItem.guards.Done(item)),
+                    Stream.filter(StreamItem.guards.Element),
+                    Stream.map((item) => item.value),
+                    // Only `Done` ends a stream cleanly; anything else is its activation ending.
+                    Stream.concat(
+                      Stream.fromEffect(
+                        Effect.suspend(() => (finished ? Effect.void : activationEnded())),
+                      ).pipe(Stream.drain),
+                    ),
+                    Stream.interruptWhen(Deferred.await(lost)),
+                    Stream.catchCause(
+                      (cause): Stream.Stream<never, ActorError | { readonly failure: string }> => {
+                        const failure = Cause.findErrorOption(cause)
+
+                        if (Option.isSome(failure)) {
+                          if (Schema.is(ActorError)(failure.value))
+                            return Stream.fail(failure.value)
+
+                          if (Schema.is(StreamFailed)(failure.value))
+                            return Stream.fail({ failure: failure.value.value })
+                        }
+
+                        if (Cause.hasInterruptsOnly(cause))
+                          return Stream.fromEffect(Effect.interrupt)
+
+                        // Before the owner answered, the subscription never started.
+                        return Stream.fail(
+                          owner === undefined
+                            ? ActorError.make({
+                                reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                              })
+                            : activationEnded(),
+                        )
+                      },
+                    ),
+                  )
+              }).pipe(Effect.provideContext(services)),
+            ),
+          deliverProgress: (message) =>
+            deliverProgress(message).pipe(Effect.ignoreCause, Effect.provideContext(services)),
+          transport,
+          holder,
+          hibernate: (ref) =>
+            Effect.flatMap(
+              entityId(ref),
+              (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void,
+            ).pipe(Effect.provideContext(services)),
+          pollWorkflow: Effect.fnUntraced(
+            function* (request: Request) {
+              const registration =
+                registrations.get(request.ref.actor) ?? queryRegistrations.get(request.ref.actor)
+
+              if (registration === undefined)
+                return yield* ActorError.make({
+                  reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+                })
+
+              yield* allow(request)
+              const sql = yield* SqlClient.SqlClient
+
+              const [row] = yield* sql<{ status: string; result: Uint8Array | null }>`
               SELECT status, result FROM actor_workflow_executions
               WHERE routing_key = ${routingKey({ ref: request.ref, placement: registration.placement })}
                 AND execution_id = ${request.payload} AND tenant_id = ${request.ref.tenant}
                 AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
                 AND workflow = ${request.command}`
 
-            // Access can be revoked while the read runs, as for a query.
-            yield* allow(request)
+              // Access can be revoked while the read runs, as for a query.
+              yield* allow(request)
 
-            if (row === undefined) return undefined
+              if (row === undefined) return undefined
 
-            return {
-              finished: row.status === "finished",
-              result: row.result === null ? undefined : yield* decodeResult(row.result),
-            } satisfies WorkflowStatus
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+              return {
+                finished: row.status === "finished",
+                result: row.result === null ? undefined : yield* decodeResult(row.result),
+              } satisfies WorkflowStatus
+            },
+            Effect.provideContext(services),
+            Effect.catchIf(SqlError.isSqlError, (cause) =>
+              Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+            ),
           ),
-        ),
-        execute: (request) => dispatch(request, true),
-        deliver: (request) => dispatch(request, false),
-        drainOutbox: relay.drain,
-        cleanup: cleanup.pipe(Effect.orDie),
-        extendOutboxLeases: relay.extendLeases,
-        shardId: (ref) =>
-          entityId(ref).pipe(
-            Effect.flatMap((id) => commandEntity(ref.actor).getShardId(EntityId.make(id))),
-            Effect.map(String),
-            Effect.provideService(Sharding.Sharding, sharding),
-          ),
-      })
+          execute: (request) => dispatch(request, true),
+          deliver: (request) => dispatch(request, false),
+          drainOutbox: relay.drain,
+          cleanup: cleanup.pipe(Effect.orDie),
+          extendOutboxLeases: relay.extendLeases,
+          shardId: (ref) =>
+            entityId(ref).pipe(
+              Effect.flatMap((id) => commandEntity(ref.actor).getShardId(EntityId.make(id))),
+              Effect.map(String),
+              Effect.provideService(Sharding.Sharding, sharding),
+            ),
+        })
 
-      const toUnavailable = (cause: SqlError.SqlError) =>
-        Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) }))
+        const toUnavailable = (cause: SqlError.SqlError) =>
+          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) }))
 
-      const configured = Effect.suspend(() =>
-        content === undefined
-          ? Effect.die(new Error("Content needs the runtime's content.keys"))
-          : Effect.succeed(content),
-      )
+        const configured = Effect.suspend(() =>
+          content === undefined
+            ? Effect.die(new Error("Content needs the runtime's content.keys"))
+            : Effect.succeed(content),
+        )
 
-      // The actor's reference to content, read on the actor's shard after
-      // `authorize` allows the operation; none for a name or blob it doesn't hold.
-      const contentEntry = Effect.fnUntraced(
-        function* (ref: ActorRef, caller: Caller, blob: string, name: string, operation: string) {
-          const registration = registrations.get(ref.actor) ?? queryRegistrations.get(ref.actor)
+        // The actor's reference to content, read on the actor's shard after
+        // `authorize` allows the operation; none for a name or blob it doesn't hold.
+        const contentEntry = Effect.fnUntraced(
+          function* (ref: ActorRef, caller: Caller, blob: string, name: string, operation: string) {
+            const registration = registrations.get(ref.actor) ?? queryRegistrations.get(ref.actor)
 
-          if (registration === undefined)
-            return yield* ActorError.make({
-              reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-            })
+            if (registration === undefined)
+              return yield* ActorError.make({
+                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+              })
 
-          if (
-            !(yield* options.authorize({
-              caller,
-              ref,
-              command: `${blob}.${operation}`,
-              kind: "content",
-            }))
-          )
-            return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+            if (
+              !(yield* options.authorize({
+                caller,
+                ref,
+                command: `${blob}.${operation}`,
+                kind: "content",
+              }))
+            )
+              return yield* ActorError.make({
+                reason: Unauthorized.make({ code: "access_denied" }),
+              })
 
-          if (!registration.blobs.some((declared) => declared.name === blob && isContent(declared)))
-            return Option.none()
+            if (
+              !registration.blobs.some((declared) => declared.name === blob && isContent(declared))
+            )
+              return Option.none()
 
-          const sql = yield* SqlClient.SqlClient
+            const sql = yield* SqlClient.SqlClient
 
-          const [found] = yield* sql<{ hash: string; size: number }>`
+            const [found] = yield* sql<{ hash: string; size: number }>`
             SELECT hash, size::float8 AS size FROM actor_content_refs
             WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
               AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
               AND blob = ${blob} AND name = ${name}`
 
-          const timeoutMs =
-            "policy" in registration ? registration.policy.executionMs : registration.timeoutMs
+            const timeoutMs =
+              "policy" in registration ? registration.policy.executionMs : registration.timeoutMs
 
-          return Option.map(Option.fromUndefinedOr(found), (row) => ({ ...row, timeoutMs }))
-        },
-        Effect.provideContext(services),
-        Effect.catchTag("SqlError", toUnavailable),
-      )
+            return Option.map(Option.fromUndefinedOr(found), (row) => ({ ...row, timeoutMs }))
+          },
+          Effect.provideContext(services),
+          Effect.catchTag("SqlError", toUnavailable),
+        )
 
-      const contentStore = ContentStore.of({
-        uploadBytes: (tenant, bytes) =>
-          Effect.flatMap(configured, (store) => store.uploadBytes(tenant, bytes)).pipe(
-            Effect.provideContext(services),
-            Effect.catchTag("SqlError", toUnavailable),
-          ),
-        upload: (tenant, body, limit) =>
-          Effect.flatMap(configured, (store) =>
-            store.uploadStream(tenant, body, Math.min(limit, MAX_CONTENT_BYTES)),
-          ).pipe(Effect.provideContext(services), Effect.catchTag("SqlError", toUnavailable)),
-        grant: (ref, caller, blob, name) =>
-          Effect.gen(function* () {
-            const store = yield* configured
-            const found = yield* contentEntry(ref, caller, blob, name, "grant")
+        const contentStore = ContentStore.of({
+          uploadBytes: (tenant, bytes) =>
+            Effect.flatMap(configured, (store) => store.uploadBytes(tenant, bytes)).pipe(
+              Effect.provideContext(services),
+              Effect.catchTag("SqlError", toUnavailable),
+            ),
+          upload: (tenant, body, limit) =>
+            Effect.flatMap(configured, (store) =>
+              store.uploadStream(tenant, body, Math.min(limit, MAX_CONTENT_BYTES)),
+            ).pipe(Effect.provideContext(services), Effect.catchTag("SqlError", toUnavailable)),
+          grant: (ref, caller, blob, name) =>
+            Effect.gen(function* () {
+              const store = yield* configured
+              const found = yield* contentEntry(ref, caller, blob, name, "grant")
 
-            if (Option.isNone(found)) return Option.none()
+              if (Option.isNone(found)) return Option.none()
 
-            return yield* store
-              .grant(ref.tenant, found.value.hash, found.value.size)
-              .pipe(Effect.provideContext(services), Effect.catchTag("SqlError", toUnavailable))
-          }),
-        download: (ref, caller, blob, name) =>
-          Effect.gen(function* () {
-            const store = yield* configured
-            const found = yield* contentEntry(ref, caller, blob, name, "get")
+              return yield* store
+                .grant(ref.tenant, found.value.hash, found.value.size)
+                .pipe(Effect.provideContext(services), Effect.catchTag("SqlError", toUnavailable))
+            }),
+          download: (ref, caller, blob, name) =>
+            Effect.gen(function* () {
+              const store = yield* configured
+              const found = yield* contentEntry(ref, caller, blob, name, "get")
 
-            return Option.map(found, ({ hash, size, timeoutMs }) => ({
-              size,
-              bytes: store.stream(ref.tenant, hash, size, timeoutMs).pipe(
-                Stream.provideContext(services),
-                Stream.mapError((cause) =>
-                  ActorError.make({ reason: ActorUnavailable.make({ cause }) }),
+              return Option.map(found, ({ hash, size, timeoutMs }) => ({
+                size,
+                bytes: store.stream(ref.tenant, hash, size, timeoutMs).pipe(
+                  Stream.provideContext(services),
+                  Stream.mapError((cause) =>
+                    ActorError.make({ reason: ActorUnavailable.make({ cause }) }),
+                  ),
                 ),
-              ),
-            }))
-          }),
-      })
+              }))
+            }),
+        })
 
-      return Context.make(Actors, publicActors).pipe(
-        Context.add(InternalActors, internalActors),
-        Context.add(ContentStore, contentStore),
-      )
-    }),
-  )
+        return Context.make(Actors, publicActors).pipe(
+          Context.add(InternalActors, internalActors),
+          Context.add(ContentStore, contentStore),
+        )
+      }),
+    )
 
   return Layer.unwrap(
     Effect.gen(function* () {
