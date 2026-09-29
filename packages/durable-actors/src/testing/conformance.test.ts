@@ -1,5 +1,5 @@
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Config, Crypto, Effect, Layer, ManagedRuntime, Option, Redacted } from "effect"
+import { Config, Crypto, Effect, Layer, ManagedRuntime, Option, Redacted, Schedule } from "effect"
 import { Pool } from "pg"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { describeConformance, type ConformanceBackend } from "./conformance.ts"
@@ -113,9 +113,30 @@ const backend: ConformanceBackend = {
                 ),
               }
 
+        // A template copy is a whole-database snapshot of a stopped deployment.
+        // A disposed runtime's server sessions can outlive its pool briefly, and
+        // Postgres refuses to copy a database with sessions.
+        const copy = Effect.fnUntraced(function* (database: Redacted.Redacted<string>) {
+          const source = new URL(Redacted.value(database)).pathname.slice(1)
+          const name = `restored_${(yield* crypto.randomUUIDv4).replaceAll("-", "")}`
+
+          yield* Effect.tryPromise(() =>
+            admin.query(`CREATE DATABASE "${name}" TEMPLATE "${source}"`),
+          ).pipe(Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }))
+          created.push(name)
+          const url = new URL(base.href)
+          url.pathname = `/${name}`
+
+          return Redacted.make(url.href)
+        }, Effect.orDie)
+
         return {
           database: main,
           freshDatabase: provision("isolated"),
+          copy: (database) =>
+            Redacted.isRedacted(database)
+              ? copy(database)
+              : Effect.die(new Error("The Postgres backend copies only Postgres databases")),
           connect,
           replica,
           close: Effect.gen(function* () {
