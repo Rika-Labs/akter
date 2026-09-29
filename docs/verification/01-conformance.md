@@ -549,6 +549,16 @@ The Playwright tests live in [`apps/e2e/chat.e2e.ts`](../../apps/e2e/chat.e2e.ts
 - `keeps the original command id across a retried POST after a lost response` — the first response to a committed post is dropped. The retry carries the same `Idempotency-Key`, and the message shows once.
 - `rejects a request with no credentials before any turn runs` — `401 missing_credentials`, and the room's history stays empty.
 
+### React hooks (CR.6)
+
+[`packages/react/src/index.test.ts`](../../packages/react/src/index.test.ts) renders a component that uses every hook with `renderToString` and checks that it renders the empty states and sends no request.
+
+The Playwright tests live in [`apps/e2e/react.e2e.ts`](../../apps/e2e/react.e2e.ts). They run in Chromium against the chat room's React page (`examples/chat/src/web/react.tsx`, under `StrictMode`) on the same server as the chat tests:
+
+- `useCommand retries a command after its responses were lost and the server keeps one receipt` — every response to the post is aborted, so the client times out and the hook shows the intent as not confirmed with its command id. After the user's retry succeeds, every attempt carried that one `Idempotency-Key`, and the room's history holds the message once.
+- `useEventFeed resumes after a dropped connection and after a reload with no gap or repeat` — the page connects through the cuttable TCP proxy. A message committed while the page is cut off appears after the connection is restored, with cursor `2`. After a reload, the feed resumes after the stored cursor: no earlier message is shown again, and the next message arrives with cursor `3`.
+- `useActorState shows an optimistic reaction at once and settles on the committed count` — the Presence connection opens with the `hello` credential, and two reactions show `2`.
+
 ### Multi-runner relay (M2.4)
 
 The cases live in [`conformance/relay.ts`](../../packages/durable-actors/src/testing/conformance/relay.ts) and are registered with `describeConformance`. Multi-runner cases build `ActorTest.cluster` on a fresh Postgres database with a 3-second `shardLockExpiration`; the fixture's `afterClaim` counter is a `TurnHooks` service around the cluster, so it sees every runner's claims. A `Relayer` stages `Take` intents to 32 `RelayMailbox` actors, and a `RelayCaller` performs `RelayCall` (`retry: { times: 1 }`, routed to `Called` and `CallFailed`), `RelayCallOnce` (`retry: { times: 0 }`), and `RelayTimed` (`timeout: "100 millis"`, `retry: { times: 3, backoff: { base: "10 millis", max: "40 millis" } }`). Cases that need to control which runner claims set `relay.poll` to an hour, so only the committing runner's wake and `advance` claim rows. Executor-lease cases use `executors.lease: "3 seconds"`.

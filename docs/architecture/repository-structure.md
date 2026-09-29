@@ -17,6 +17,7 @@ apps/                       deployables and the CLI bin; never imported by anoth
   cli/                      @durable-actors/cli        `durable login | dev | deploy | migrate | dead-letters`
 packages/
   durable-actors/           @durable-actors/core       the framework; published (other published packages follow ADR 0029)
+  react/                    @durable-actors/react      React hooks over @durable-actors/core/client
   deployments/              @durable-actors/deployments  Deployment, Runners (singleton), UsageMeter actors — written on the framework
   accounts/                 @durable-actors/accounts   better-auth, organizations, API keys
   billing/                  @durable-actors/billing    Polar

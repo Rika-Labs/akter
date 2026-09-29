@@ -65,6 +65,13 @@
       }
     },
     {
+      "files": ["packages/react/src/*.ts"],
+      "rules": {
+        "effecttsgo/async-function": "off",
+        "effecttsgo/missing-pipeable-signature": "off"
+      }
+    },
+    {
       "files": ["examples/chat/src/web/app.ts"],
       "rules": {
         "effecttsgo/async-function": "off",

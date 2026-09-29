@@ -13,12 +13,17 @@
   },
   "dependencies": {
     "@durable-actors/core": "workspace:*",
+    "@durable-actors/react": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "drizzle-orm": "catalog:",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:"
   },
   "devDependencies": {
     "@types/pg": "8.23.1",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
     "pg": "8.23.0",
     "vitest": "catalog:"
   }
