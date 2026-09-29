@@ -26,7 +26,7 @@ import {
   RESUME,
   START,
   StartPayload,
-  Target,
+  ExecutionTarget,
 } from "../../handles/workflow.ts"
 import { type ActorRef, Caller, type Principal, principal, System } from "../../identity/caller.ts"
 import { decodeExecutionId, encodeExecutionId } from "../../identity/execution.ts"
@@ -52,9 +52,9 @@ const decodeCaller = Schema.decodeEffect(CallerJson)
 
 const encodeExecutionOutput = Schema.encodeEffect(ExecutionIdOutput)
 
-const encodeTarget = Schema.encodeEffect(Target)
+const encodeTarget = Schema.encodeEffect(ExecutionTarget)
 
-const decodeTarget = Schema.decodeEffect(Target)
+const decodeTarget = Schema.decodeEffect(ExecutionTarget)
 
 const decodeStart = Schema.decodeEffect(StartPayload)
 

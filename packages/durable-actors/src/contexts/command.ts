@@ -7,25 +7,31 @@ import type { EventClass } from "../members/event.ts"
 import type { BlobReadOf, BlobWriteOf } from "../state/blob.ts"
 import type { Group, AnyOwnedTable, ScopedRead, ScopedRows } from "../tables/owned.ts"
 
+/**
+ * The running turn's marker while a command turn executes. Request/reply
+ * calls such as a handle's commands and `Content.upload` refuse to run while
+ * it is set.
+ */
 export const InsideTurn = Context.Reference<symbol | undefined>("durable-actors/InsideTurn", {
   defaultValue: () => undefined,
 })
 
+/** Dies with a defect when run inside a command turn, where request/reply would wait on a transaction it holds. */
 export const outsideTurn = Effect.gen(function* () {
   if ((yield* InsideTurn) !== undefined)
     return yield* Effect.die(new Error("Request/reply inside a turn"))
 })
 
-/** Type-level identity of one actor's command-turn service. */
-export declare const TurnTypeId: unique symbol
+declare const TurnTypeId: unique symbol
 
+/** Type-level identity of one actor's command-turn service, so `X.Turn` names only that actor's turn. */
 export interface Turn<Name extends string> {
   readonly [TurnTypeId]: Name
 }
 
-/** Type-level mark of an unkeyed actor that declares `policy.createdBy`, so turns can mint it. */
-export declare const MintableTypeId: unique symbol
+declare const MintableTypeId: unique symbol
 
+/** Type-level mark of an unkeyed actor that declares `policy.createdBy`, so turns can mint it. */
 export interface Mintable<Id extends string = string> {
   readonly [MintableTypeId]: Id
 }

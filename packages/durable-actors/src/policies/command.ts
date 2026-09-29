@@ -13,7 +13,7 @@ const horizon = (duration: Duration.Input) =>
   )
 
 /** The commands a `policy.cron` entry may target: those that take no input. */
-export type CronTarget<Command extends AnyCommand> = AnyCommand extends Command
+type CronTarget<Command extends AnyCommand> = AnyCommand extends Command
   ? AnyCommand
   : Extract<Command, { readonly input: Schema.Void }>
 
@@ -65,7 +65,7 @@ export interface Policy<
    * it finishes. Must be at least the deployment's retry window. Default 7 days.
    */
   readonly keepWorkflows?: Duration.Input
-  /** Per declared effect, keyed by tag: `retry`, `onSuccess`, and `onDeadLetter`. */
+  /** Per declared effect, keyed by tag; see `EffectPolicy`. */
   readonly effects?: EffectPolicies<Effects, Command>
   /**
    * Schedules mapped to the zero-input command each tick runs with a
@@ -104,6 +104,7 @@ export interface Policy<
   readonly holdEventsForSubscribers?: Duration.Input
 }
 
+/** A `Policy` resolved for the runtime: every default applied and every duration in whole milliseconds. */
 export interface TurnPolicy {
   readonly executionMs: number
   readonly lockWaitMs: number
@@ -124,6 +125,12 @@ export interface TurnPolicy {
   readonly holdEventsMs: number
 }
 
+/**
+ * Applies the defaults of `declared` and validates each bound: durations run
+ * from 1 ms to 2^31 - 1 ms, retention horizons up to about ten years, and
+ * `reauthorizeEvery` from 1 second to 1 hour. Throws when a value is out of
+ * range or `createdBy` is not one of `commands`.
+ */
 export const resolvePolicy = (policy: {
   readonly declared: Policy | undefined
   readonly commands: ReadonlyArray<AnyCommand>

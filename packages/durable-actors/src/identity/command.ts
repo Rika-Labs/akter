@@ -1,11 +1,16 @@
 import { Context, Effect, Schema } from "effect"
 
+/**
+ * A client-issued command id: `v1.<issuedAt>.<expiresAt>.<uuid v4>`, with both
+ * times in epoch milliseconds on the database clock.
+ */
 export const CommandId = Schema.String.check(
   Schema.isPattern(
     /^v1\.[1-9]\d{0,14}\.[1-9]\d{0,14}\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   ),
 )
 
+/** The explicit command id for the command calls it is provided to, set by `Actor.commandId(id)`; undefined lets each call mint its own. */
 export const CurrentCommandId = Context.Reference<string | undefined>(
   "durable-actors/CurrentCommandId",
   {
@@ -24,6 +29,7 @@ export const InternalCommandId = Schema.String.check(
   ),
 )
 
+/** The issue and expiry times, in epoch milliseconds, encoded in a command id. */
 export const commandTimes = (id: string) => {
   const parts = InternalCommandId.make(id).split(".")
 
@@ -53,7 +59,8 @@ const fromHex = (value: string) =>
 /**
  * The id of the `index`th call a connection handler makes while handling frame
  * `seq`: HMAC-SHA256 of the call under the connection's secret, shaped as a
- * version-4 UUID so it matches every other command id.
+ * version-4 UUID so it matches every other command id. The call's parts are
+ * length-prefixed before hashing, so no two calls encode to the same message.
  */
 export const connectionCommandId = ({
   commands,
@@ -75,7 +82,6 @@ export const connectionCommandId = ({
       ]),
     )
 
-    // Length-prefixed parts, so no two calls encode to the same message.
     const message = new TextEncoder().encode(
       [String(commands.seq), String(index), target, command]
         .map((part) => `${part.length}:${part}`)
@@ -93,4 +99,5 @@ export const connectionCommandId = ({
     return `v1.${commands.issuedAt}.${commands.expiresAt}.${uuid}`
   })
 
+/** Hex-encodes the random bytes a holder mints as a connection's `ConnectionCommands.secret`. */
 export const connectionSecret = (bytes: Uint8Array) => hex(bytes)
