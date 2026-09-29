@@ -52,7 +52,7 @@ const serve = (script: Script) => {
   return { url: `http://127.0.0.1:${server.port}`, received, closed }
 }
 
-// Far enough ahead that nothing expires during a test; the client doesn't read it.
+/** Far enough ahead that nothing expires during a test; the client doesn't read it. */
 const RENEW_BY = 4_102_444_800_000
 
 describe("client connections against a misbehaving server", () => {
@@ -110,7 +110,6 @@ describe("client connections against a misbehaving server", () => {
         expect(Schema.is(TransportError)(failure?.reason)).toBe(true)
         expect(failure?.reason).toMatchObject({ code: "decode" })
 
-        // The client closes its socket once the session failed, so the server sees it go.
         yield* Effect.suspend(() =>
           closed.at === undefined ? Effect.fail("open") : Effect.void,
         ).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 500 }), Effect.orDie)
@@ -124,7 +123,6 @@ describe("client connections against a misbehaving server", () => {
 
         const { url, received } = serve((send) => {
           send({ t: "reauthenticate", by: RENEW_BY })
-          // Sent after the renewal request, so it arrives once the failed renewal was handled.
           send({ t: "frame", frame: "still here" })
         })
 
@@ -217,7 +215,6 @@ describe("client event feeds", () => {
           timestamp: 0,
         }
 
-        // First a 503 asking for one second, then the feed with one event.
         const fetch = (_input: RequestInfo | URL) => {
           opened.push(performance.now())
 

@@ -18,12 +18,14 @@ export const ClientWireMessage = Schema.Union([
   Schema.Struct({ t: Schema.Literal("reauthenticate"), authorization: Schema.String }),
 ])
 
+/** A message a client sends on a connection's socket. */
 export type ClientWireMessage = typeof ClientWireMessage.Type
 
 /**
  * Messages a server sends on a connection's socket. Times are milliseconds
  * since the epoch, except `deadline`, which is how long the client has to
- * answer `resync`.
+ * answer `resync`. `progress` is executor progress apart from member frames:
+ * display-only, lossy, never replayed, and without cursors.
  */
 export const ServerWireMessage = Schema.Union([
   Schema.Struct({
@@ -45,7 +47,6 @@ export const ServerWireMessage = Schema.Union([
     deadline: Schema.Finite,
   }),
   Schema.Struct({ t: Schema.Literal("resyncReplayed"), through: Schema.optional(Schema.String) }),
-  // Executor progress, apart from member frames: display-only, lossy, never replayed, no cursors.
   Schema.Struct({
     t: Schema.Literal("progress"),
     effect: Schema.String,
@@ -59,4 +60,5 @@ export const ServerWireMessage = Schema.Union([
   Schema.Struct({ t: Schema.Literal("end"), error: Schema.optional(Schema.Json) }),
 ])
 
+/** A message a server sends on a connection's socket. */
 export type ServerWireMessage = typeof ServerWireMessage.Type

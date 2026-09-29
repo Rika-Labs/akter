@@ -17,6 +17,7 @@ import {
   type AuthProvider,
   type AuthRequest,
   type Binding,
+  bearerToken,
   Credential,
   unauthorized,
 } from "../auth.ts"
@@ -32,13 +33,16 @@ export const AssertionKey = Schema.Struct({
   exp: Schema.optionalKey(Schema.Finite),
 })
 
+/** An edge verification key. */
 export type AssertionKey = typeof AssertionKey.Type
 
 /** The key set the control plane publishes for runners. */
 export const AssertionKeySet = Schema.Struct({ keys: Schema.Array(AssertionKey) })
 
+/** The key set the control plane publishes for runners. */
 export type AssertionKeySet = typeof AssertionKeySet.Type
 
+/** Options of `Actor.auth.assertion`. */
 export interface AssertionOptions<Keys extends URL | AssertionKeySet> {
   /** The edge's issuer; `iss` must equal it. */
   readonly issuer: string
@@ -61,10 +65,10 @@ export const MAX_ASSERTION_SECONDS = 60
 /** Clock skew allowed on `iat` and `exp`; edge and runners run synchronized clocks. */
 export const ASSERTION_SKEW_MS = 5_000
 
-// An unknown `kid` rereads the key set at most this often.
+/** An unknown `kid` rereads the key set at most this often. */
 const UNKNOWN_KID_REFRESH_MS = 60_000
 
-// EdDSA with Ed25519 only: `none` and every other algorithm are refused.
+/** The JWS header of type `typ`. EdDSA with Ed25519 only: `none` and every other algorithm are refused. */
 const headerOf = (typ: string) =>
   Schema.decodeUnknownOption(
     Schema.fromJsonString(
@@ -89,6 +93,7 @@ export const KeyRefreshClaims = Schema.Struct({
   exp: Schema.Finite,
 })
 
+/** The claims of an edge's key-set refresh push. */
 export type KeyRefreshClaims = typeof KeyRefreshClaims.Type
 
 const decodeRefreshClaims = Schema.decodeUnknownOption(Schema.fromJsonString(KeyRefreshClaims))
@@ -115,6 +120,7 @@ export const AssertionClaims = Schema.Struct({
   cid: Schema.optionalKey(Schema.String),
 })
 
+/** The claims an edge signs. */
 export type AssertionClaims = typeof AssertionClaims.Type
 
 const decodeClaims = Schema.decodeUnknownOption(Schema.fromJsonString(AssertionClaims))
@@ -132,15 +138,8 @@ const headerToken = (request: AuthRequest) =>
   })
 
 /** The compact JWS from a WebSocket frame's `Bearer` credential, or from `durable-assertion`. */
-const tokenOf = (request: AuthRequest) => {
-  if (request.credential !== undefined) {
-    const match = /^Bearer[ ]+([^ ]+)[ ]*$/i.exec(request.credential)
-
-    return match === null ? Effect.fail(invalid) : Effect.succeed(match[1]!)
-  }
-
-  return headerToken(request)
-}
+const tokenOf = (request: AuthRequest) =>
+  request.credential === undefined ? headerToken(request) : bearerToken(request)
 
 const verifySignature = Effect.fnUntraced(function* (
   key: AssertionKey,
@@ -176,6 +175,13 @@ const verifySignature = Effect.fnUntraced(function* (
  * runner uses. It checks the signature, key, issuer, deployment, region, and
  * lifetime here; the server then checks the request binding against the
  * request it received before any turn.
+ *
+ * A key set older than `refreshEvery` is reread before use, and a runner that
+ * can't reread it refuses with `ActorUnavailable` rather than keep trusting
+ * keys the control plane may have removed. The provider's `refreshKeys` takes
+ * the edge's signed push and rereads the key set at once, however recently it
+ * was read, so a revoked key stops verifying without waiting for
+ * `refreshEvery`; repeating a push is harmless.
  */
 export const assertion = <Keys extends URL | AssertionKeySet>(
   options: AssertionOptions<Keys>,
@@ -201,8 +207,6 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
       ),
     )
 
-  // A key set older than `refreshEvery` is reread before use, and a runner that can't
-  // reread it refuses rather than keep trusting keys the control plane may have removed.
   const keysFor = (unknownKid: boolean) =>
     lock.withPermit(
       Effect.gen(function* () {
@@ -298,8 +302,6 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
     return { ...authenticated, expiresAt: DateTime.makeUnsafe(cexp * 1000) }
   })
 
-  // A push from the edge rereads the key set at once, however recently it was read, so a
-  // revoked key stops verifying without waiting for `refreshEvery`. Repeating it is harmless.
   const refreshKeys = Effect.fnUntraced(function* (request: AuthRequest) {
     const claims = decodeRefreshClaims(
       yield* signedClaims(yield* headerToken(request), decodeRefreshHeader),
