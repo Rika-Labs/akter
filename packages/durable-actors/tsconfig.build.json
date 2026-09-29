@@ -9,5 +9,9 @@
     "outDir": "dist",
     "plugins": []
   },
-  "exclude": ["src/**/*.test.ts", "src/testing/conformance/crash"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/testing/conformance/crash",
+    "src/testing/conformance/postgres"
+  ]
 }

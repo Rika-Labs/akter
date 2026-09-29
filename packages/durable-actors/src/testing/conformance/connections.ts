@@ -1787,7 +1787,9 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             Effect.map(
               sql<{
                 waiting: number
-              }>`SELECT count(*)::int AS waiting FROM pg_locks WHERE NOT granted`,
+              }>`SELECT count(*)::int AS waiting FROM pg_locks
+                JOIN pg_stat_activity USING (pid)
+                WHERE NOT granted AND datname = current_database()`,
               ([row]) => row!.waiting > 0,
             ).pipe(Effect.orDie),
             "the session write to wait on the takeover",
