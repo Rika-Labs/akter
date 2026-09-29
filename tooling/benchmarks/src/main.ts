@@ -10,7 +10,7 @@ import {
   Path,
   Schema,
 } from "effect"
-import { type Backend, type BackendName, pglite, postgres } from "./backend.ts"
+import { type Backend, type BackendName, pglite, pgliteFile, postgres } from "./backend.ts"
 import { machine, runtimeVersions, source } from "./environment.ts"
 import { type CaseResult, type Scenario, withRuntime } from "./scenario.ts"
 import { blobs } from "./scenarios/storage/blobs.ts"
@@ -42,6 +42,7 @@ import { workflows } from "./scenarios/workflows.ts"
 import { mint } from "./scenarios/mint.ts"
 import { cron } from "./scenarios/cron.ts"
 import { orders } from "./scenarios/orders.ts"
+import { embeddedPglite } from "./scenarios/embedded-pglite.ts"
 
 /** Every scenario, in run order. A new slice adds its scenario here. */
 const SCENARIOS: ReadonlyArray<Scenario> = [
@@ -74,6 +75,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   mint,
   cron,
   orders,
+  embeddedPglite,
 ]
 
 /**
@@ -124,7 +126,7 @@ const program = Effect.gen(function* () {
   ).pipe(Effect.orDie)
 
   const requested = yield* Schema.decodeUnknownEffect(
-    Schema.Literals(["all", "postgres", "pglite"]),
+    Schema.Literals(["all", "postgres", "pglite", "pglite-file"]),
   )(flag("backend") ?? (profile === "ci" ? "postgres" : "all")).pipe(Effect.orDie)
 
   if (profile === "ci" && requested !== "postgres")
@@ -179,7 +181,12 @@ const program = Effect.gen(function* () {
   for (const name of backends)
     yield* Effect.scoped(
       Effect.gen(function* () {
-        const backend: Backend = name === "postgres" ? yield* postgres(external) : yield* pglite
+        const backend: Backend =
+          name === "postgres"
+            ? yield* postgres(external)
+            : name === "pglite"
+              ? yield* pglite
+              : yield* pgliteFile
         const startedAt = DateTime.formatIso(yield* DateTime.now)
         yield* Console.log(`${backend.name}: ${backend.version}`)
 

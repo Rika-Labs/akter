@@ -4,6 +4,8 @@ export const Actors = { layer }
 
 export { Database } from "./layer.ts"
 
+export { DataDirLocked, DataDirVersion } from "../errors/database.ts"
+
 export type { Options } from "./layer.ts"
 
 export { checkWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
