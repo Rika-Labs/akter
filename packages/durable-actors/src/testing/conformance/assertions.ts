@@ -7,6 +7,7 @@ import {
   Encoding,
   Fiber,
   Layer,
+  Schedule,
   Schema,
   type Scope,
 } from "effect"
@@ -14,11 +15,14 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effe
 import { Actor, Unauthorized, User } from "../../index.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { InternalActors } from "../../handles/actors.ts"
+import type { RuntimeControl } from "../../runtime/drain.ts"
 import type { AssertionClaims, AssertionKey } from "../../serve/assertion/verify.ts"
 import type { AuthProvider } from "../../serve/auth.ts"
 import {
   ASSERTION_HEADER,
   ASSERTION_TYPE,
+  KEY_REFRESH_PATH,
+  KEY_REFRESH_TYPE,
   reauthenticationDigest,
   requestDigest,
 } from "../../serve/assertion/binding.ts"
@@ -92,6 +96,14 @@ export const signAssertion = Effect.fnUntraced(function* (
   return `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`
 })
 
+/** A key-set refresh push for `audience`, issued now for 10 seconds, signed with `key`. */
+export const signRefresh = Effect.fnUntraced(function* (key: EdgeKey, audience = DEPLOYMENT) {
+  const now = Math.floor((yield* Clock.currentTimeMillis) / 1000)
+  const claims = { iss: ISSUER, aud: audience, iat: now, exp: now + 10 }
+
+  return yield* signAssertion(key, claims, { typ: KEY_REFRESH_TYPE })
+})
+
 /** Claims for `tenant`'s `subject`, issued now for 10 seconds, bound to `req`. */
 export const claimsFor = Effect.fnUntraced(function* (options: {
   readonly tenant: string
@@ -129,6 +141,8 @@ interface Sent {
 }
 
 interface AssertedServer {
+  /** The runner's base URL. */
+  readonly url: string
   readonly send: (request: Sent) => Effect.Effect<Reply>
   /** The `req` claim for `request` as the runner will receive it. */
   readonly digest: (request: Sent) => Effect.Effect<string>
@@ -136,13 +150,40 @@ interface AssertedServer {
   readonly mint: Effect.Effect<string>
 }
 
+/** Sends `request` to the server at `url`. */
+const sendTo = (client: HttpClient.HttpClient, url: string) => (request: Sent) =>
+  Effect.gen(function* () {
+    const base = HttpClientRequest.make(request.method)(`${url}${request.path}`, {
+      headers: request.headers,
+    })
+
+    const keyed =
+      request.key === undefined
+        ? base
+        : HttpClientRequest.setHeader(base, "idempotency-key", request.key)
+
+    const built =
+      request.body === ""
+        ? keyed
+        : HttpClientRequest.bodyText(keyed, request.body, "application/json")
+
+    const response = yield* client.execute(built)
+    const text = yield* response.text
+
+    return { status: response.status, body: text === "" ? undefined : yield* decodeJson(text) }
+  }).pipe(Effect.orDie)
+
 /** Serves `HttpRoom` with `auth` from a real listening Bun server for the rest of the scope. */
 const serveAsserted = Effect.fnUntraced(function* (
   auth: AuthProvider<HttpClient.HttpClient> | AuthProvider,
-): Effect.fn.Return<AssertedServer, never, InternalActors | Crypto.Crypto | Scope.Scope> {
+): Effect.fn.Return<
+  AssertedServer,
+  never,
+  InternalActors | RuntimeControl | Crypto.Crypto | Scope.Scope
+> {
   const actors = yield* InternalActors
   const random = yield* Crypto.Crypto
-  const context = yield* Effect.context<InternalActors>()
+  const context = yield* Effect.context<InternalActors | RuntimeControl>()
   const fetchLayer = yield* Layer.build(FetchHttpClient.layer)
   const client = Context.get(fetchLayer, HttpClient.HttpClient)
 
@@ -165,33 +206,11 @@ const serveAsserted = Effect.fnUntraced(function* (
     ),
   )
 
-  const build = (request: Sent) => {
-    const base = HttpClientRequest.make(request.method)(
-      `http://127.0.0.1:${server.port}${request.path}`,
-      { headers: request.headers },
-    )
-
-    const keyed =
-      request.key === undefined
-        ? base
-        : HttpClientRequest.setHeader(base, "idempotency-key", request.key)
-
-    return request.body === ""
-      ? keyed
-      : HttpClientRequest.bodyText(keyed, request.body, "application/json")
-  }
+  const url = `http://127.0.0.1:${server.port}`
 
   return {
-    send: (request) =>
-      Effect.gen(function* () {
-        const response = yield* client.execute(build(request))
-        const text = yield* response.text
-
-        return {
-          status: response.status,
-          body: text === "" ? undefined : yield* decodeJson(text),
-        }
-      }).pipe(Effect.orDie),
+    url,
+    send: sendTo(client, url),
     digest: (request) =>
       requestDigest({
         method: request.method,
@@ -484,13 +503,16 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const tenant = yield* tenantOf
           const request = yield* command(server, "expiring", "Hold")
 
-          // Past its expiry by 4 seconds, which the 5-second skew still admits.
+          // Just past its expiry, which the 5-second skew still admits with room to spare.
+          const iat = Math.floor((yield* Clock.currentTimeMillis) / 1000) - 10
+          const exp = iat + 9
+
           const late = yield* assertionFor({
             edge,
             server,
             request,
             tenant,
-            change: (claims) => ({ ...claims, iat: claims.iat - 10, exp: claims.iat - 4 }),
+            change: (claims) => ({ ...claims, iat, exp }),
           })
 
           const entered = yield* Deferred.make<void>()
@@ -503,9 +525,18 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const before = runs.count
           const call = yield* asserted(server, request, late).pipe(Effect.forkChild)
 
-          yield* Deferred.await(entered)
-          // Now the assertion is past the skew as well.
-          yield* Effect.sleep("1500 millis")
+          // A refused request never enters the handler; its reply fails the case instead of a hang.
+          const admitted = yield* Effect.raceFirst(
+            Deferred.await(entered).pipe(Effect.as(undefined)),
+            Fiber.join(call),
+          )
+
+          expect(admitted).toBe(undefined)
+
+          // Hold the turn until the assertion is past the skew as well.
+          while ((yield* Clock.currentTimeMillis) <= (exp + 5) * 1000 + 200)
+            yield* Effect.sleep("100 millis")
+
           gate.hold = Effect.void
           yield* Deferred.succeed(release, undefined)
 
@@ -567,6 +598,78 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.sleep("1200 millis")
 
           expect(yield* status(old)).toBe(401)
+          expect(yield* status(rotated)).toBe(200)
+        }),
+      ),
+  },
+  {
+    name: "rereads its key set at once on the edge's authenticated refresh push, and refuses any other push",
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const old = yield* edgeKey("edge-2026-08")
+          const rotated = yield* edgeKey("edge-2026-09")
+          const stranger = yield* edgeKey("edge-9")
+          const keySet = yield* keySetServer([old, rotated])
+
+          // The default 5-minute poll: only a push can make the runner reread in this case.
+          const server = yield* serveAsserted(
+            Actor.auth.assertion({
+              issuer: ISSUER,
+              audience: DEPLOYMENT,
+              region: REGION,
+              keys: keySet.url,
+            }),
+          )
+
+          const tenant = yield* tenantOf
+
+          const status = Effect.fnUntraced(function* (key: EdgeKey) {
+            const request = yield* command(server, "pushed", "Whoami")
+            const assertion = yield* assertionFor({ edge: key, server, request, tenant })
+
+            return (yield* asserted(server, request, assertion)).status
+          })
+
+          const push = (token: string | undefined) =>
+            server.send({
+              method: "POST",
+              path: KEY_REFRESH_PATH,
+              key: undefined,
+              body: "",
+              headers: token === undefined ? {} : { [ASSERTION_HEADER]: token },
+            })
+
+          expect(yield* status(old)).toBe(200)
+
+          yield* keySet.publish([rotated])
+
+          // Still cached: without a push the runner keeps the key until its next poll.
+          expect(yield* status(old)).toBe(200)
+
+          const refused = [
+            yield* push(undefined),
+            yield* push(yield* signRefresh(stranger)),
+            yield* push(yield* signRefresh(rotated, "dep-other")),
+            // An assertion is not a refresh push.
+            yield* push(
+              yield* assertionFor({
+                edge: rotated,
+                server,
+                request: yield* command(server, "pushed", "Whoami"),
+                tenant,
+              }),
+            ),
+          ]
+
+          expect(refused.map((reply) => reply.status)).toEqual([401, 401, 401, 401])
+          expect(yield* status(old)).toBe(200)
+
+          // A valid push rereads at once, and repeating it changes nothing.
+          expect((yield* push(yield* signRefresh(rotated))).status).toBe(204)
+          expect(yield* status(old)).toBe(401)
+          expect((yield* push(yield* signRefresh(rotated))).status).toBe(204)
           expect(yield* status(rotated)).toBe(200)
         }),
       ),
@@ -639,6 +742,529 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
             tag: "Unauthorized",
             code: "invalid_credentials",
           })
+        }),
+      ),
+  },
+]
+
+/**
+ * The edge half: the same served actors behind a real hosted edge, which a
+ * backend supplies as `ConformanceEdge`. The framework can't import the edge,
+ * so the edge's own tests run these cases with it.
+ */
+
+/** A runner the edge may forward to. */
+export interface EdgeRunner {
+  readonly region: string
+  /** The runner's base URL, such as `http://127.0.0.1:4000`. */
+  readonly url: string
+  /** The runner's `Actor.serve` base path, where the edge pushes key-set refreshes. */
+  readonly basePath?: string
+}
+
+/** One running edge in front of one deployment, with the control plane it reads. */
+export interface HostedEdge {
+  /** The edge's base URL; requests to it are for `deployment`. */
+  readonly url: string
+  readonly issuer: string
+  readonly deployment: string
+  /** The published key set runners verify the edge's assertions with. */
+  readonly keys: URL
+  readonly addRunner: (runner: EdgeRunner) => Effect.Effect<void>
+  /** Issues a hosted API key for `tenant`'s `subject`. */
+  readonly issueApiKey: (options: {
+    readonly tenant: string
+    readonly subject: string
+  }) => Effect.Effect<string>
+  readonly revokeApiKey: (key: string) => Effect.Effect<void>
+  /** Revokes an edge signing key in the control plane, as an operator would. */
+  readonly revokeSigningKey: (kid: string) => Effect.Effect<void>
+  /** Writes a directory row as a tenant move would, which only L.1's operators can do. */
+  readonly home: (options: {
+    readonly tenant: string
+    readonly region: string
+  }) => Effect.Effect<void>
+  /** Rows in the tenant directory. */
+  readonly directoryRows: Effect.Effect<number>
+}
+
+export interface ConformanceEdge {
+  /** Starts an edge for a new deployment whose primary region is `primaryRegion`. */
+  readonly start: (options: {
+    readonly primaryRegion: string
+    /** How long each assertion lives; default 10 seconds. */
+    readonly assertionSeconds?: number
+    /** How long a session opened with an API key lasts before it must reauthenticate. */
+    readonly apiKeySessionSeconds?: number
+    /** The edge's signing keys; one new key when omitted. */
+    readonly signingKeys?: ReadonlyArray<EdgeKey>
+  }) => Effect.Effect<HostedEdge, never, Scope.Scope>
+}
+
+const edgeOf = (edge: ConformanceEdge | undefined) =>
+  edge === undefined ? Effect.die(new Error("The case needs a hosted edge")) : Effect.succeed(edge)
+
+/** Sends requests to the server at `url` for the rest of the scope. */
+const clientFor = Effect.fnUntraced(function* (url: string) {
+  const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
+
+  return sendTo(client, url)
+})
+
+/** A runner in `region` that trusts `edge`, rereading its key set every second. */
+const edgeRunner = (edge: HostedEdge, region: string) =>
+  serveAsserted(
+    Actor.auth.assertion({
+      issuer: edge.issuer,
+      audience: edge.deployment,
+      region,
+      keys: edge.keys,
+      refreshEvery: "1 second",
+    }),
+  )
+
+const bearerHeaders = (key: string) => ({ authorization: `Bearer ${key}` })
+
+/**
+ * A proxy in front of a runner that holds each request for the delay its
+ * path's actor id names, and counts the requests that reached it.
+ */
+const delayingProxy = Effect.fnUntraced(function* (target: string) {
+  const delays = new Map<string, number>()
+  const failures = new Map<string, number>()
+  const arrived: Array<string> = []
+  const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
+  const context = yield* Effect.context<never>()
+
+  const hold = (request: Request) =>
+    Effect.gen(function* () {
+      const path = new URL(request.url).pathname
+      const body = new Uint8Array(yield* Effect.promise(() => request.arrayBuffer()))
+
+      arrived.push(path)
+
+      const failing = failures.get(path) ?? 0
+
+      // Unavailable, as a runner that is restarting or briefly unreachable would be.
+      if (failing > 0) {
+        failures.set(path, failing - 1)
+
+        return new Response(null, { status: 503 })
+      }
+
+      yield* Effect.sleep(delays.get(path.split("/")[3] ?? "") ?? 0)
+
+      const forwarded = HttpClientRequest.make(request.method === "GET" ? "GET" : "POST")(
+        `${target}${path}`,
+        { headers: Object.fromEntries(request.headers) },
+      )
+
+      const response = yield* client.execute(
+        body.byteLength === 0
+          ? forwarded
+          : HttpClientRequest.bodyUint8Array(
+              forwarded,
+              body,
+              request.headers.get("content-type") ?? undefined,
+            ),
+      )
+
+      return new Response(yield* response.arrayBuffer, {
+        status: response.status,
+        headers: response.headers,
+      })
+    }).pipe(Effect.orDie)
+
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (request) => Effect.runPromiseWith(context)(hold(request)),
+  })
+
+  yield* Effect.addFinalizer(() => Effect.promise(() => server.stop(true)))
+
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    delay: (id: string, ms: number) => Effect.sync(() => delays.set(id, ms)),
+    /** Answers the next `times` requests for `path` with 503. */
+    fail: (path: string, times: number) => Effect.sync(() => failures.set(path, times)),
+    arrived: Effect.sync(() => arrived.length),
+  }
+})
+
+export const edgeConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "strips a client-supplied durable-assertion and takes the caller only from the assertion",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const edge = yield* (yield* edgeOf(environment.edge)).start({ primaryRegion: REGION })
+          const runner = yield* edgeRunner(edge, REGION)
+          const send = yield* clientFor(edge.url)
+          const tenant = yield* tenantOf
+          const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          yield* edge.addRunner({ region: REGION, url: runner.url })
+
+          // A client's own assertion, even one a runner would otherwise verify, never reaches it.
+          const forger = yield* edgeKey("edge-1")
+          const request = yield* command(runner, "stripped", "Whoami")
+
+          const forged = yield* assertionFor({
+            edge: forger,
+            server: runner,
+            request,
+            tenant: "mallory",
+          })
+
+          const reply = yield* send({
+            ...request,
+            headers: { ...bearerHeaders(key), [ASSERTION_HEADER]: forged },
+          })
+
+          expect(reply).toMatchObject({ status: 200, body: `${tenant}/alice` })
+
+          // Without a credential the edge forwards no assertion, and the runner refuses.
+          const bare = yield* send({
+            ...(yield* command(runner, "stripped", "Whoami")),
+            headers: { [ASSERTION_HEADER]: forged },
+          })
+
+          expect(bare.status).toBe(401)
+          expect(bare.body).toEqual(yield* unauthorizedBody("missing_credentials"))
+        }),
+      ),
+  },
+  {
+    name: "refuses new requests from a revoked caller at the edge, and admits in-flight ones only within the assertion lifetime",
+    requiresEdge: true,
+    timeoutMs: 40_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const edge = yield* (yield* edgeOf(environment.edge)).start({
+            primaryRegion: REGION,
+            assertionSeconds: 1,
+          })
+
+          const runner = yield* edgeRunner(edge, REGION)
+          const proxy = yield* delayingProxy(runner.url)
+          const send = yield* clientFor(edge.url)
+          const tenant = yield* tenantOf
+          const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          yield* edge.addRunner({ region: REGION, url: proxy.url })
+          // Held past the assertion's lifetime plus the runner's 5-second skew, and within it.
+          yield* proxy.delay("held-long", 7_000)
+          yield* proxy.delay("held-short", 300)
+
+          const long = yield* command(runner, "held-long", "Whoami")
+          const short = yield* command(runner, "held-short", "Whoami")
+          const late = yield* send({ ...long, headers: bearerHeaders(key) }).pipe(Effect.forkChild)
+
+          const inTime = yield* send({ ...short, headers: bearerHeaders(key) }).pipe(
+            Effect.forkChild,
+          )
+
+          while ((yield* proxy.arrived) < 2) yield* Effect.sleep("20 millis")
+
+          yield* edge.revokeApiKey(key)
+
+          const refused = yield* send({
+            ...(yield* command(runner, "after", "Whoami")),
+            headers: bearerHeaders(key),
+          })
+
+          expect(refused.status).toBe(401)
+          expect(refused.body).toEqual(yield* unauthorizedBody("invalid_credentials"))
+          expect(yield* proxy.arrived).toBe(2)
+          expect(yield* Fiber.join(inTime)).toMatchObject({ status: 200, body: `${tenant}/alice` })
+
+          const expired = yield* Fiber.join(late)
+
+          expect(expired.status).toBe(401)
+          expect(expired.body).toEqual(yield* unauthorizedBody("expired"))
+          expect(yield* receipts(tenant, "HttpRoom", "held-long")).toBe(0)
+          expect(yield* receipts(tenant, "HttpRoom", "after")).toBe(0)
+        }),
+      ),
+  },
+  {
+    name: "reauthenticates a WebSocket session through the edge and closes it at the revocation bound",
+    requiresEdge: true,
+    timeoutMs: 40_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const edge = yield* (yield* edgeOf(environment.edge)).start({
+            primaryRegion: REGION,
+            apiKeySessionSeconds: 4,
+          })
+
+          const host = yield* serveSockets(environment, {
+            auth: Actor.auth.assertion({
+              issuer: edge.issuer,
+              audience: edge.deployment,
+              region: REGION,
+              keys: edge.keys,
+              refreshEvery: "1 second",
+            }),
+          })
+
+          yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api/" })
+          // A registered runner that refuses connections: the edge must try the next one.
+          yield* edge.addRunner({ region: REGION, url: "http://127.0.0.1:9", basePath: "/api" })
+
+          const tenant = yield* tenantOf
+          const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          // The edge rotates its runner order per socket, so one of two opens starts at the dead one.
+          const probe = yield* socket(new URL(edge.url).host, "through-edge")
+
+          yield* probe.send({
+            t: "hello",
+            authorization: `Bearer ${key}`,
+            params: { name: "alice" },
+          })
+          yield* opened(yield* probe.next())
+          yield* probe.close
+
+          const ws = yield* socket(new URL(edge.url).host, "through-edge")
+
+          yield* ws.send({ t: "hello", authorization: `Bearer ${key}`, params: { name: "alice" } })
+
+          const open = yield* opened(yield* ws.next())
+          const started = yield* Clock.currentTimeMillis
+
+          // The session is capped by the API key's session bound, never by the 10-second assertion.
+          const by = open.reauthenticateBy ?? 0
+
+          expect(by > started + 2_000 && by <= started + 4_000).toBe(true)
+
+          const asked = (yield* ws.until("reauthenticate", 10_000)).at(-1)
+
+          expect(asked?.t).toBe("reauthenticate")
+
+          // A renewal a second later moves the bound a second on.
+          yield* Effect.sleep("1100 millis")
+          yield* ws.send({ t: "reauthenticate", authorization: `Bearer ${key}` })
+
+          const renewed = (yield* ws.until("reauthenticated", 10_000)).at(-1)
+
+          expect(
+            renewed?.t === "reauthenticated" && (renewed.by ?? 0) > (open.reauthenticateBy ?? 0),
+          ).toBe(true)
+
+          // Revoked: the edge refuses the next renewal, so the session ends at the bound.
+          yield* edge.revokeApiKey(key)
+          yield* ws.until("reauthenticate", 10_000)
+          yield* ws.send({ t: "reauthenticate", authorization: `Bearer ${key}` })
+
+          expect(yield* endReason((yield* ws.until("end", 10_000)).at(-1))).toMatchObject({
+            tag: "Unauthorized",
+            code: "invalid_credentials",
+          })
+          expect((yield* ws.closed).code).toBe(1008)
+          expect((yield* Clock.currentTimeMillis) - started < 10_000).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "pushes a signing-key revocation to runners, which refuse the key well before their polling bound",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const old = yield* edgeKey("edge-2026-08")
+          const rotated = yield* edgeKey("edge-2026-09")
+
+          const edge = yield* (yield* edgeOf(environment.edge)).start({
+            primaryRegion: REGION,
+            signingKeys: [old, rotated],
+          })
+
+          // The default 5-minute poll, so only the push can explain a prompt refusal.
+          const runner = yield* serveAsserted(
+            Actor.auth.assertion({
+              issuer: edge.issuer,
+              audience: edge.deployment,
+              region: REGION,
+              keys: edge.keys,
+            }),
+          )
+
+          // The first push fails, as it would for a runner that is briefly unreachable, so the
+          // edge must push again. `/` is the root base path, as `Actor.serve` reads it.
+          const door = yield* delayingProxy(runner.url)
+
+          yield* door.fail(KEY_REFRESH_PATH, 1)
+          yield* edge.addRunner({ region: REGION, url: door.url, basePath: "/" })
+
+          const send = yield* clientFor(edge.url)
+          const tenant = yield* tenantOf
+          const apiKey = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          const direct = Effect.fnUntraced(function* (key: EdgeKey) {
+            const request = yield* command(runner, "revoked-key", "Whoami")
+
+            const claims = yield* claimsFor({
+              tenant,
+              subject: "alice",
+              req: yield* runner.digest(request),
+            })
+
+            const assertion = yield* signAssertion(key, {
+              ...claims,
+              iss: edge.issuer,
+              aud: edge.deployment,
+            })
+
+            return (yield* asserted(runner, request, assertion)).status
+          })
+
+          expect(yield* direct(old)).toBe(200)
+
+          const started = yield* Clock.currentTimeMillis
+
+          yield* edge.revokeSigningKey(old.kid)
+
+          const refused = yield* direct(old).pipe(
+            Effect.repeat({
+              until: (status) => status === 401,
+              schedule: Schedule.spaced("100 millis"),
+              times: 100,
+            }),
+          )
+
+          const elapsed = (yield* Clock.currentTimeMillis) - started
+
+          expect(refused).toBe(401)
+          expect(elapsed < 10_000).toBe(true)
+          expect(yield* direct(rotated)).toBe(200)
+
+          // The edge signs with the key that remains.
+          const through = yield* send({
+            ...(yield* command(runner, "revoked-key", "Whoami")),
+            headers: bearerHeaders(apiKey),
+          })
+
+          expect(through).toMatchObject({ status: 200, body: `${tenant}/alice` })
+        }),
+      ),
+  },
+  {
+    name: "fails a WebSocket over to the next runner with an assertion signed after it accepts",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          // A 2-second assertion outlives no attempt on a runner that never answers.
+          const edge = yield* (yield* edgeOf(environment.edge)).start({
+            primaryRegion: REGION,
+            assertionSeconds: 2,
+          })
+
+          const host = yield* serveSockets(environment, {
+            auth: Actor.auth.assertion({
+              issuer: edge.issuer,
+              audience: edge.deployment,
+              region: REGION,
+              keys: edge.keys,
+              refreshEvery: "1 second",
+            }),
+          })
+
+          // Accepts the connection and never answers the upgrade.
+          const hole = Bun.listen({
+            hostname: "127.0.0.1",
+            port: 0,
+            socket: { data: () => undefined },
+          })
+
+          yield* Effect.addFinalizer(() => Effect.sync(() => hole.stop(true)))
+          yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api" })
+          yield* edge.addRunner({ region: REGION, url: `http://127.0.0.1:${hole.port}` })
+
+          const tenant = yield* tenantOf
+          const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          // The edge rotates its runner order per socket, so one of two opens starts at the hole.
+          for (let index = 0; index < 2; index++) {
+            const ws = yield* socket(new URL(edge.url).host, "fail-over")
+
+            yield* ws.send({
+              t: "hello",
+              authorization: `Bearer ${key}`,
+              params: { name: "alice" },
+            })
+
+            expect((yield* ws.next(10_000)).t).toBe("open")
+            yield* ws.close
+          }
+        }),
+      ),
+  },
+  {
+    name: "routes a tenant with no directory row to the primary region and never writes a row",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const edge = yield* (yield* edgeOf(environment.edge)).start({ primaryRegion: REGION })
+          const other = "test-2"
+          const primary = yield* edgeRunner(edge, REGION)
+          const secondary = yield* edgeRunner(edge, other)
+          // Counting proxies show which region's runner each request reached.
+          const primaryDoor = yield* delayingProxy(primary.url)
+          const secondaryDoor = yield* delayingProxy(secondary.url)
+          const send = yield* clientFor(edge.url)
+
+          yield* edge.addRunner({ region: REGION, url: primaryDoor.url })
+          yield* edge.addRunner({ region: other, url: secondaryDoor.url })
+
+          const homeless = yield* tenantOf
+          const moved = yield* tenantOf
+          const homelessKey = yield* edge.issueApiKey({ tenant: homeless, subject: "alice" })
+          const movedKey = yield* edge.issueApiKey({ tenant: moved, subject: "alice" })
+
+          yield* edge.home({ tenant: moved, region: other })
+
+          const call = (key: string) =>
+            Effect.flatMap(command(primary, "routed", "Whoami"), (request) =>
+              send({ ...request, headers: bearerHeaders(key) }),
+            )
+
+          for (let index = 0; index < 3; index++)
+            expect(yield* call(homelessKey)).toMatchObject({
+              status: 200,
+              body: `${homeless}/alice`,
+            })
+
+          expect(yield* primaryDoor.arrived).toBe(3)
+          expect(yield* secondaryDoor.arrived).toBe(0)
+          expect(yield* call(movedKey)).toMatchObject({ status: 200, body: `${moved}/alice` })
+          expect(yield* secondaryDoor.arrived).toBe(1)
+          // Only the row written for the moved tenant exists; routing wrote nothing.
+          expect(yield* edge.directoryRows).toBe(1)
+
+          // The cached absence gives way once the directory's version moves past it.
+          yield* edge.home({ tenant: homeless, region: other })
+
+          const reached = yield* call(homelessKey).pipe(
+            Effect.andThen(secondaryDoor.arrived),
+            Effect.repeat({
+              until: (arrived) => arrived > 1,
+              schedule: Schedule.spaced("200 millis"),
+              times: 100,
+            }),
+          )
+
+          expect(reached).toBe(2)
         }),
       ),
   },

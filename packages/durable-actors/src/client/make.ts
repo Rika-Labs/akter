@@ -9,6 +9,7 @@ import {
   Random,
   Schema,
   SchemaAST,
+  Stream,
 } from "effect"
 import type { ServedDefinition, ServedMember, StateValue } from "../actor/served.ts"
 import {
@@ -19,7 +20,13 @@ import {
   TransportError,
   Unauthorized,
 } from "../errors/actor.ts"
-import type { AnyMember, MemberRecord } from "../members/command.ts"
+import type { AnyMember, MemberRecord, ValueSchema } from "../members/command.ts"
+import type { AnyConnection } from "../members/connection.ts"
+import type { AnyStream } from "../members/stream.ts"
+import type { EventClass } from "../members/event.ts"
+import { type ClientConnection, type ConnectOptions, connect } from "./sessions/connection.ts"
+import { type FeedEntry, type FeedOptions, feedStream } from "./sessions/feed.ts"
+import { type StreamOptions, subscription } from "./sessions/stream.ts"
 import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
 import { Optimistic, type PendingInput } from "./optimistic.ts"
 import {
@@ -86,12 +93,45 @@ export interface ClientState<State> {
   readonly reconcile: (committed: State) => void
 }
 
-/** One actor over HTTP: each public member as a Promise-returning method. */
-export type ClientHandle<Members extends MemberRecord, Id = string, State = unknown> = {
-  readonly [K in keyof Members]: Call<Members[K]>
+/** A connection member: `connect` opens one session over WebSocket. */
+export interface ConnectionClient<M extends AnyConnection> {
+  readonly connect: (
+    ...args: M["input"]["Type"] extends void
+      ? [params?: M["input"]["Type"], options?: ConnectOptions]
+      : [params: M["input"]["Type"], options?: ConnectOptions]
+  ) => Promise<ClientConnection<M["server"]["Type"], M["client"]["Type"]>>
+}
+
+/** A stream member: each call subscribes once, as an `AsyncIterable` of its elements. */
+export type StreamCall<M extends AnyStream> = (
+  ...args: M["input"]["Type"] extends void
+    ? [options?: StreamOptions]
+    : [input: M["input"]["Type"], options?: StreamOptions]
+) => AsyncIterable<M["output"]["Type"]>
+
+/** One actor over HTTP: each public member as a Promise-returning method, connections as `connect`. */
+export type ClientHandle<
+  Members extends MemberRecord,
+  Id = string,
+  State = unknown,
+  Events extends EventClass = never,
+> = {
+  readonly [K in keyof Members]: Members[K] extends AnyConnection
+    ? ConnectionClient<Members[K]>
+    : Members[K] extends AnyStream
+      ? StreamCall<Members[K]>
+      : Call<Members[K]>
 } & {
   readonly ref: { readonly actor: string; readonly id: Id }
   readonly state: ClientState<State>
+  /**
+   * The actor's committed `event`s after `options.after`, over its event feed,
+   * as they commit. Only events the actor type lists in `feeds` are served.
+   */
+  readonly events: <E extends Events>(
+    event: E,
+    options?: FeedOptions,
+  ) => AsyncIterable<FeedEntry<E["Type"]>>
 }
 
 export type ActorClient<
@@ -99,18 +139,19 @@ export type ActorClient<
   Kind extends ServedDefinition["key"],
   Id,
   State = unknown,
+  Events extends EventClass = never,
 > = {
   /** A fresh command id, for a caller that saves it before sending the command. */
   readonly commandId: () => Promise<string>
 } & (Kind extends "singleton"
-  ? { readonly get: () => ClientHandle<Members, string, State> }
+  ? { readonly get: () => ClientHandle<Members, string, State, Events> }
   : Kind extends "minted"
     ? {
-        readonly get: (id: Id) => ClientHandle<Members, Id, State>
+        readonly get: (id: Id) => ClientHandle<Members, Id, State, Events>
         /** A handle to a new actor whose UUIDv7 id is minted here; it exists once a command reaches it. */
-        readonly create: () => ClientHandle<Members, Id, State>
+        readonly create: () => ClientHandle<Members, Id, State, Events>
       }
-    : { readonly get: (id: Id) => ClientHandle<Members, Id, State> })
+    : { readonly get: (id: Id) => ClientHandle<Members, Id, State, Events> })
 
 const DEFAULT_TIMEOUT_MS = 60_000
 
@@ -293,6 +334,18 @@ const retryDelay = (retry: Retry, clock: DatabaseClock) => (attempted: Attempted
 
 const joinUrl = (baseUrl: string, path: string) => `${baseUrl.replace(/\/+$/, "")}${path}`
 
+/**
+ * A connection's WebSocket URL from its route's URL, resolved against the page
+ * when relative: `wss:` for `https:` or `wss:`, and `ws:` otherwise.
+ */
+export const socketUrl = (route: string) => {
+  const url = new URL(route, "location" in globalThis ? globalThis.location.href : undefined)
+
+  url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:"
+
+  return url.href
+}
+
 interface Request {
   readonly method: "GET" | "POST"
   readonly path: string
@@ -377,6 +430,11 @@ export const clientOf =
         ? Effect.promise(() => Promise.resolve(headers()))
         : Effect.succeed(headers)
     })
+
+    // Browsers can't set headers on a WebSocket, so a connection sends this credential in `hello`.
+    const authorization = provided.pipe(
+      Effect.map((headers) => new Headers(headers).get("authorization") ?? undefined),
+    )
 
     // Every response carries `durable-now`, so each round trip refreshes the clock.
     const send = (request: Request) =>
@@ -697,10 +755,100 @@ export const clientOf =
         definition.members.find((member) => member.reducer !== undefined)?.reducer,
       )
 
+      const path = (member: string) =>
+        segment.pipe(Effect.map((encoded) => `/actors/${definition.name}${encoded}/${member}`))
+
       const created = {
         ...Object.fromEntries(
           definition.members.map((member) => [member.tag, method(member, segment, store)]),
         ),
+        ...Object.fromEntries(
+          definition.connections.map((member) => [
+            member.tag,
+            {
+              connect: (params: ValueSchema["Type"], connectOptions?: ConnectOptions) =>
+                Effect.runPromise(path(member.tag)).then((memberPath) =>
+                  connect({
+                    member,
+                    url: socketUrl(joinUrl(options.baseUrl, memberPath)),
+                    authorization,
+                    params,
+                    options: connectOptions ?? {},
+                  }),
+                ),
+            },
+          ]),
+        ),
+        ...Object.fromEntries(
+          definition.streams.map((member) => [
+            member.tag,
+            (...args: ReadonlyArray<unknown>) => {
+              const isVoid = isVoidInput(member)
+              const streamOptions: StreamOptions = (isVoid ? args[0] : args[1]) ?? {}
+
+              const body = Schema.encodeUnknownEffect(Schema.toCodecJson(member.input))(
+                isVoid ? undefined : args[0],
+              ).pipe(
+                Effect.flatMap((json) =>
+                  json === undefined ? Effect.succeedNone : Effect.asSome(encodeJson(json)),
+                ),
+                Effect.map(Option.getOrUndefined),
+                Effect.mapError(invalid),
+              )
+
+              return Stream.toAsyncIterable(
+                subscription({
+                  member,
+                  declared: declaredDecoder(member),
+                  options: streamOptions,
+                  open: (signal) =>
+                    Effect.gen(function* () {
+                      const payload = yield* body
+                      const headers = new Headers(yield* provided)
+                      headers.set("accept", "text/event-stream")
+                      headers.set("durable-protocol", "1")
+
+                      if (payload !== undefined) headers.set("content-type", "application/json")
+
+                      const url = joinUrl(options.baseUrl, yield* path(member.tag))
+
+                      return yield* Effect.tryPromise({
+                        try: () => fetch(url, { method: "POST", headers, body: payload, signal }),
+                        catch: network,
+                      })
+                    }),
+                }),
+              )
+            },
+          ]),
+        ),
+        events: (event: EventClass, feedOptions?: FeedOptions) =>
+          Stream.toAsyncIterable(
+            feedStream({
+              event,
+              options: feedOptions ?? {},
+              open: (cursor, signal) =>
+                Effect.gen(function* () {
+                  const query = new URLSearchParams({ event: event.identifier })
+                  const headers = new Headers(yield* provided)
+
+                  if (cursor !== undefined) headers.set("last-event-id", cursor)
+
+                  headers.set("accept", "text/event-stream")
+                  headers.set("durable-protocol", "1")
+                  const url = joinUrl(options.baseUrl, `${yield* path("events")}?${query}`)
+
+                  return yield* Effect.tryPromise({
+                    try: () =>
+                      fetch(url, {
+                        headers,
+                        signal,
+                      }),
+                    catch: network,
+                  })
+                }),
+            }),
+          ),
         ref: { actor: definition.name, id },
         state: {
           get current() {

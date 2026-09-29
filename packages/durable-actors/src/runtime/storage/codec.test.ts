@@ -50,6 +50,37 @@ describe("storage codec", () => {
     )
   })
 
+  it("gives a parent-placed child and grandchild their root's routing key", () => {
+    const order = { tenant: "acme", actor: "Order", id: "o-17" }
+    const shipment = { parent: "Order", placement: "actor" } as const
+    const label = { parent: "Shipment", placement: shipment } as const
+    const root = -7799243039352196172n
+
+    expect(BigInt.asIntN(64, Bun.hash.xxHash3('[1,"actor","acme","Order","o-17"]'))).toBe(root)
+    expect(routingKey({ ref: order, placement: "actor" })).toBe(root)
+    expect(
+      routingKey({
+        ref: { tenant: "acme", actor: "Shipment", id: "c1.4.o-17.pkg-1" },
+        placement: shipment,
+      }),
+    ).toBe(root)
+    expect(
+      routingKey({
+        ref: { tenant: "acme", actor: "Label", id: "c1.15.c1.4.o-17.pkg-1.label-1" },
+        placement: label,
+      }),
+    ).toBe(root)
+    expect(
+      routingKey({
+        ref: { tenant: "acme", actor: "Shipment", id: "c1.4.o-18.pkg-1" },
+        placement: shipment,
+      }),
+    ).not.toBe(root)
+    expect(() =>
+      routingKey({ ref: { tenant: "acme", actor: "Shipment", id: "pkg-1" }, placement: shipment }),
+    ).toThrow("carries no Order parent id")
+  })
+
   it("derives a stable signed 64-bit routing key that tenant placement shares across a tenant", () =>
     run(
       checkProperty({

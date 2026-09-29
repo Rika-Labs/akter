@@ -2,6 +2,7 @@ import { BunCrypto } from "@effect/platform-bun"
 import { type Crypto, Effect, ManagedRuntime, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { ActorRef, System } from "./caller.ts"
+import { childId } from "./child.ts"
 import { deriveMintId, isMintedId, mintPreimage, provesMint } from "./mint.ts"
 
 const commandId = "v1.1767225600000.1767312000000.0190a3b4-5c6d-4e7f-8a9b-0c1d2e3f4a5b"
@@ -91,6 +92,33 @@ describe("minted actor ids", () => {
         expect(yield* proves(System.make({ source: "effect", ref: parent, mint: proof }))).toBe(
           false,
         )
+      }),
+    ))
+
+  it("proves a parent-placed child only for the parent its id names", () =>
+    run(
+      Effect.gen(function* () {
+        const local = yield* deriveMintId({ parent, commandId, ordinal: 0, child: "Task" })
+
+        const caller = System.make({
+          source: "actor",
+          ref: parent,
+          mint: { commandId, ordinal: 0 },
+        })
+
+        const proves = (id: string, parentType = "Planner") =>
+          provesMint(caller, ActorRef.make({ tenant: "acme", actor: "Task", id }), parentType)
+
+        expect(yield* proves(childId({ parent: "p1", local }))).toBe(true)
+        expect(yield* proves(childId({ parent: "p2", local }))).toBe(false)
+        expect(yield* proves(childId({ parent: "p1", local }), "Other")).toBe(false)
+        expect(yield* proves(local)).toBe(false)
+        expect(
+          yield* provesMint(
+            caller,
+            ActorRef.make({ tenant: "acme", actor: "Task", id: childId({ parent: "p1", local }) }),
+          ),
+        ).toBe(false)
       }),
     ))
 })

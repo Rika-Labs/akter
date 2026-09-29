@@ -12,6 +12,7 @@ import {
   parseDev,
 } from "./commands/dev/run.ts"
 import { USAGE, actorsOf, check, loadEntry, parseCheck } from "./commands/workflows/check.ts"
+import { USAGE as PAYLOADS_USAGE, parsePayloads, payloads } from "./commands/payloads/run.ts"
 import {
   USAGE as TENANTS_USAGE,
   controlPlane,
@@ -53,6 +54,36 @@ const workflowsCheck = (args: ReadonlyArray<string>) =>
     Effect.catchTags({
       SqlError: (error) => fail(`Cannot read workflow state: ${error.message}`),
       UsageError: (error) => fail(`${error.message}\n${USAGE}`),
+    }),
+  )
+
+const payloadsCommand = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const options = yield* parsePayloads(args)
+    const module = yield* loadEntry(options.entry)
+    const actors = yield* actorsOf({ module, entry: options.entry })
+
+    const services = yield* Layer.build(
+      Database.postgres({ url: Redacted.make(options.databaseUrl) }).pipe(
+        Layer.provideMerge(BunCrypto.layer),
+      ),
+    )
+
+    const { output, exitCode } = yield* payloads({
+      command: options.command,
+      actors,
+      json: options.json,
+    }).pipe(Effect.provideContext(services))
+
+    yield* Console.log(output)
+    yield* Effect.sync(() => {
+      process.exitCode = exitCode
+    })
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      SqlError: (error) => fail(`Cannot read payload versions: ${error.message}`),
+      UsageError: (error) => fail(`${error.message}\n${PAYLOADS_USAGE}`),
     }),
   )
 
@@ -116,10 +147,12 @@ const program = Effect.gen(function* () {
 
   if (group === "workflows" && command === "check") return yield* workflowsCheck(args)
 
+  if (group === "payloads") return yield* payloadsCommand(process.argv.slice(3))
+
   if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
 
   return yield* fail(
-    `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${TENANTS_USAGE}`,
+    `Unknown command: ${[group, command].join(" ")}\n${DEV_USAGE}\n${USAGE}\n${PAYLOADS_USAGE}\n${TENANTS_USAGE}`,
   )
 })
 
