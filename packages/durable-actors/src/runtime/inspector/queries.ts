@@ -21,7 +21,7 @@ export const decodeText = (text: string | null): Decoded | null => {
 }
 
 /** Decodes a zstd-compressed JSON `bytea` column such as state, an event, or a step exit. */
-const decodeBytes = (bytes: Uint8Array | null): Decoded | null => {
+export const decodeBytes = (bytes: Uint8Array | null): Decoded | null => {
   if (bytes === null) return null
 
   let text: string
