@@ -640,7 +640,8 @@ Shared (PGlite and Postgres):
 
 Postgres only (independent connections, on the harness):
 
-- `claims each due row on exactly one runner` — three polling runners, 300 due intents: each intent id is claimed once (`attempts` stays 1), handled once, and has one receipt. Failure-matrix row **Two runners claim the same due rows**.
+- `claims each due row on exactly one runner` — three polling runners, 300 due intents: every intent id has one receipt, and the relay's per-claim `durable-actors.relay.intent` spans show its claims as attempts 1..n that never overlap in time, so no two runners held a row at once. A claim after a failed delivery is a later attempt, not a second holder. Failure-matrix row **Two runners claim the same due rows**.
+- `counts a delivery retried after a failure as the row's next attempt, not a second holder` — 30 due intents on three runners, three of whose first receiver runs defect: those three are claimed twice as attempts 1 and 2 that do not overlap, the other 27 once, and all 30 have one receipt. This is the delivery-failure path the previous case must tolerate.
 - `redelivers a row after its claim lease when the claiming runner is killed` — rows **Relay dies after claiming, before delivery** and **Relay crash after sender COMMIT** with a runner kill: runner 0 is killed at `beforeDelivery`; the survivors reach the due time without delivering, and one delivers the same intent id once after the lease.
 - `redelivers after a runner kill between receiver commit and row deletion with one receiver transition` — row **Relay crash after receiver commit / before outbox row deletion** with a runner kill: the survivor's redelivery replays the receipt and deletes the row.
 - `does not let rows that die unsettled delay newer due rows` — 300 rows whose settle dies, then one fresh intent, which is delivered within one poll; the dead rows wait out their lease, and one set to 9 attempts waits the 256-second cap after its next claim.
