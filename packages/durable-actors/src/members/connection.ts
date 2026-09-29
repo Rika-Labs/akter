@@ -17,6 +17,7 @@ export interface Connection<
   Client extends ValueSchema,
   Session extends ValueSchema | undefined,
   Errors extends ReadonlyArray<DeclaredError>,
+  Effects extends ProgressEffect = never,
 > extends Member<"connection", Tag, Params, typeof Schema.Void, Errors> {
   readonly server: Server
   readonly client: Client
@@ -24,7 +25,7 @@ export interface Connection<
   /** Stamp member frames with the flushed-through cursor and event cursor. Default true. */
   readonly stampCursor: boolean
   /** Executor progress this member's connections receive, if any. */
-  readonly progress: ConnectionProgress | undefined
+  readonly progress: ConnectionProgress<Effects> | undefined
 }
 
 /**
@@ -32,8 +33,8 @@ export interface Connection<
  * whom: `"performer"` (the default) only connections whose caller has the
  * performing turn's principal, `"all"` every open connection of the member.
  */
-export interface ConnectionProgress {
-  readonly effects: ReadonlyArray<ProgressEffect>
+export interface ConnectionProgress<Effects extends ProgressEffect = ProgressEffect> {
+  readonly effects: ReadonlyArray<Effects>
   readonly to: "performer" | "all"
 }
 
@@ -43,7 +44,8 @@ export type AnyConnection = Connection<
   ValueSchema,
   ValueSchema,
   ValueSchema | undefined,
-  ReadonlyArray<DeclaredError>
+  ReadonlyArray<DeclaredError>,
+  ProgressEffect
 >
 
 const taggedIdentifiers = (schema: Schema.Top): ReadonlyArray<string> => {
@@ -67,6 +69,7 @@ const make = <
   Client extends ValueSchema = typeof Schema.Never,
   Session extends ValueSchema | undefined = undefined,
   const Errors extends ReadonlyArray<DeclaredError> = readonly [],
+  Effects extends ProgressEffect = never,
 >(
   tag: Tag,
   options: {
@@ -77,11 +80,11 @@ const make = <
     readonly errors?: Errors
     readonly stampCursor?: boolean
     readonly progress?: {
-      readonly effects: ReadonlyArray<ProgressEffect>
+      readonly effects: ReadonlyArray<Effects>
       readonly to?: "performer" | "all"
     }
   },
-): Connection<Tag, Params, Server, Client, Session, Errors> => {
+): Connection<Tag, Params, Server, Client, Session, Errors, Effects> => {
   // `$` names framework members, such as the one an event feed opens.
   if (tag.startsWith("$")) throw new Error(`Connection ${tag} may not start with $`)
 

@@ -1,25 +1,44 @@
-import type { ClientConnection, ConnectOptions, Failure } from "@durable-actors/core/client"
+import type {
+  ClientConnection,
+  ConnectionMessage,
+  ConnectOptions,
+  Failure,
+  ProgressMessage,
+  ProgressUpdate,
+} from "@durable-actors/core/client"
+import { Predicate } from "effect"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 /** Anything that opens a connection: a connection member of an `X.client(...).get(id)` handle. */
-export interface ConnectionSource<Params, Server, Client> {
+export interface ConnectionSource<
+  Params,
+  Server,
+  Client,
+  Progress extends ProgressUpdate = ProgressUpdate,
+> {
   readonly connect: (
     params: Params,
     options?: ConnectOptions,
-  ) => Promise<ClientConnection<Server, Client>>
+  ) => Promise<ClientConnection<Server, Client, Progress>>
 }
 
 export interface UseConnectionOptions {
   /** Resynchronizes after an owner loss; see the Promise client's `onResync`. */
   readonly onResync?: ConnectOptions["onResync"]
-  /** Keeps at most this many recent frames in `frames`. Default 100. */
+  /** Keeps at most this many recent messages in each of `frames` and `progress`. Default 100. */
   readonly keep?: number
 }
 
-export interface Connected<Server, Client> {
+export interface Connected<Server, Client, Progress extends ProgressUpdate = ProgressUpdate> {
   readonly status: "connecting" | "open" | "closed"
   /** The most recent frames, oldest first. */
   readonly frames: ReadonlyArray<Server>
+  /**
+   * The most recent executor progress messages, oldest first: the Promise
+   * client's `Progress` messages, whose `frame` narrows by `effect`. Progress is
+   * display-only and lossy, and a `seq` gap within one `effectId` and `attempt` is a dropped one.
+   */
+  readonly progress: ReadonlyArray<ProgressMessage<Progress>>
   /** How the connection ended, if it did; a dropped socket is `SessionEnded` `HolderLost`. */
   readonly error: Failure | undefined
   /** Sends a frame; it rejects once the connection is not open. */
@@ -28,9 +47,31 @@ export interface Connected<Server, Client> {
 
 const DEFAULT_KEEP = 100
 
-/** `frames` with `frame` appended, trimmed to the last `keep`; none when `keep` is zero or less. */
-export const keepLast = <Frame>(frames: ReadonlyArray<Frame>, frame: Frame, keep: number) =>
-  keep <= 0 ? [] : [...frames, frame].slice(-keep)
+const NOTHING = { frames: [], progress: [] } as const
+
+/** `items` with `item` appended, trimmed to the last `keep`; none when `keep` is zero or less. */
+export const keepLast = <Item>(items: ReadonlyArray<Item>, item: Item, keep: number) =>
+  keep <= 0 ? [] : [...items, item].slice(-keep)
+
+interface Received<Server, Progress extends ProgressUpdate> {
+  readonly frames: ReadonlyArray<Server>
+  readonly progress: ReadonlyArray<ProgressMessage<Progress>>
+}
+
+/** `received` with `message` filed under `frames` or `progress`; resync notices are for `onResync`. */
+export const receive = <Server, Progress extends ProgressUpdate>(
+  received: Received<Server, Progress>,
+  message: ConnectionMessage<Server, Progress>,
+  keep: number,
+): Received<Server, Progress> => {
+  if (Predicate.isTagged(message, "Frame"))
+    return { ...received, frames: keepLast(received.frames, message.frame, keep) }
+
+  if (Predicate.isTagged(message, "Progress"))
+    return { ...received, progress: keepLast(received.progress, message, keep) }
+
+  return received
+}
 
 /**
  * Holds one connection open while the component is mounted with the same
@@ -38,26 +79,26 @@ export const keepLast = <Frame>(frames: ReadonlyArray<Frame>, frame: Frame, keep
  * unmounting, closes it; a connection is not reopened by itself, because a new
  * one is a new session. Nothing connects during rendering, so it is safe under SSR.
  */
-export const useConnection = <Params, Server, Client>(
-  member: ConnectionSource<Params, Server, Client>,
+export const useConnection = <Params, Server, Client, Progress extends ProgressUpdate>(
+  member: ConnectionSource<Params, Server, Client, Progress>,
   params: Params,
   options: UseConnectionOptions = {},
-): Connected<Server, Client> => {
+): Connected<Server, Client, Progress> => {
   const keep = options.keep ?? DEFAULT_KEEP
   const key = JSON.stringify(params ?? null)
-  const [status, setStatus] = useState<Connected<Server, Client>["status"]>("connecting")
-  const [frames, setFrames] = useState<ReadonlyArray<Server>>([])
+  const [status, setStatus] = useState<Connected<Server, Client, Progress>["status"]>("connecting")
+  const [received, setReceived] = useState<Received<Server, Progress>>(NOTHING)
   const [error, setError] = useState<Failure | undefined>(undefined)
-  const connection = useRef<ClientConnection<Server, Client> | undefined>(undefined)
+  const connection = useRef<ClientConnection<Server, Client, Progress> | undefined>(undefined)
   const onResync = useRef(options.onResync)
   onResync.current = options.onResync
 
   useEffect(() => {
     const controller = new AbortController()
-    let open: ClientConnection<Server, Client> | undefined
+    let open: ClientConnection<Server, Client, Progress> | undefined
 
     setStatus("connecting")
-    setFrames([])
+    setReceived(NOTHING)
     setError(undefined)
 
     const run = async () => {
@@ -72,8 +113,8 @@ export const useConnection = <Params, Server, Client>(
         connection.current = open
         setStatus("open")
 
-        for await (const frame of open.frames)
-          setFrames((current) => keepLast(current, frame, keep))
+        for await (const message of open.messages)
+          setReceived((current) => receive(current, message, keep))
 
         if (!controller.signal.aborted) setStatus("closed")
       } catch (thrown) {
@@ -103,5 +144,5 @@ export const useConnection = <Params, Server, Client>(
     return current.send(frame)
   }, [])
 
-  return { status, frames, error, send }
+  return { status, frames: received.frames, progress: received.progress, error, send }
 }
