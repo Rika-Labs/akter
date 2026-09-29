@@ -43,7 +43,7 @@ Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor
 
 ## Owned rows
 
-`turn.rows(table)` and `read.rows(table)` accept only the actor type's declared `tables` and scope every operation to the current tenant and actor; `group` reads across the placement group, which for a parent-placed type is the whole family under its root (target, [ADR 0033](../decisions/0033-parent-actor-placement.md)). Neither takes ownership fields or predicates. The operations, filters, and rejected uses are in [Drizzle integration](04-drizzle.md).
+`turn.rows(table)` and `read.rows(table)` accept only the actor type's declared `tables` and scope every operation to the current tenant and actor; `group` reads across the placement group, which for a parent-placed type is the whole family under its root, and never beyond it ([ADR 0033](../decisions/0033-parent-actor-placement.md)). Neither takes ownership fields or predicates. The operations, filters, and rejected uses are in [Drizzle integration](04-drizzle.md).
 
 ## Blobs
 

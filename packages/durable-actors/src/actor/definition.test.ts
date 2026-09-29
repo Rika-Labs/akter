@@ -311,8 +311,10 @@ describe("actor declarations", () => {
     expect(routingKey({ ref: { ...ref, tenant: "u" }, placement: "tenant" })).not.toBe(
       routingKey({ ref, placement: "tenant" }),
     )
-    // @ts-expect-error placement is "tenant" or "actor"
-    const _invalid = Actor.make("Bad", { api: { Read }, placement: "region" })
+    expect(() =>
+      // @ts-expect-error placement is "tenant", "actor", or { parent }
+      Actor.make("Bad", { api: { Read }, placement: "region" }),
+    ).toThrow('placement is "tenant", "actor", or { parent }')
   })
 
   it("splits commands and queries between toLayer and toQueryLayer", () => {

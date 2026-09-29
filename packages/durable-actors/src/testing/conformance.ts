@@ -55,6 +55,7 @@ import {
 import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
+import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
 import {
@@ -1447,6 +1448,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   },
   ...propertiesConformance,
   ...mintConformance,
+  ...placementConformance,
 ]
 
 interface ConformanceStore {
@@ -1499,6 +1501,7 @@ export const describeConformance = (options: {
     studioLayer,
     transportsLayer,
     mintLayer,
+    placementLayer,
     subscriptionsLayer(fixture.subscriptions),
     contentLayer(fixture.content),
     drainLayer(fixture.drain),

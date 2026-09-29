@@ -70,7 +70,8 @@ import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER } from "./connections/protocol.ts"
 import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
-import { decompress, PLACEMENT_ENCODING, routingKey } from "./storage/codec.ts"
+import { decompress, routingKey } from "./storage/codec.ts"
+import { checkPlacement, recordedPlacement } from "./storage/placements.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { OutboxRuntime, textArray } from "./turn/outbox.ts"
 import { turnConnections } from "./turn/pipeline.ts"
@@ -497,30 +498,6 @@ export const layer = (options: Options) => {
         yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
       })
 
-      // The first registration records an actor type's placement; a later one
-      // that differs would read and write under different routing keys.
-      const checkPlacement = Effect.fnUntraced(function* (
-        registration: Pick<Registration, "name" | "placement">,
-      ) {
-        const sql = yield* SqlClient.SqlClient
-        yield* sql`INSERT INTO actor_placements (actor_type, placement, encoding)
-          VALUES (${registration.name}, ${registration.placement}, ${PLACEMENT_ENCODING})
-          ON CONFLICT DO NOTHING`
-
-        const [recorded] = yield* sql<{ placement: string; encoding: number }>`
-          SELECT placement, encoding FROM actor_placements WHERE actor_type = ${registration.name}`
-
-        if (
-          recorded?.placement !== registration.placement ||
-          recorded.encoding !== PLACEMENT_ENCODING
-        )
-          return yield* Effect.die(
-            new Error(
-              `Actor ${registration.name} placement differs from the deployment; migrate explicitly`,
-            ),
-          )
-      })
-
       /**
        * Refuses a layer that can't read every payload version the database
        * may hold, as a placement or workflow mismatch is refused. `writes`
@@ -925,14 +902,11 @@ export const layer = (options: Options) => {
 
           if (known !== undefined) return known
 
-          const sql = yield* SqlClient.SqlClient
+          const recorded = yield* recordedPlacement(actorType)
 
-          const [recorded] = yield* sql<{ placement: Placement }>`
-            SELECT placement FROM actor_placements WHERE actor_type = ${actorType}`
+          if (recorded !== undefined) placements.set(actorType, recorded)
 
-          if (recorded !== undefined) placements.set(actorType, recorded.placement)
-
-          return recorded?.placement
+          return recorded
         }).pipe(Effect.provideContext(services), Effect.orDie)
 
       const subscriptions: SubscriptionRelay = yield* subscriptionRelay({

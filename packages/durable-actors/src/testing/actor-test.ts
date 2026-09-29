@@ -37,7 +37,8 @@ import { OpenRejected } from "../runtime/connections/holder.ts"
 import { ClientMessage } from "../runtime/connections/protocol.ts"
 import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
-import { compress, decompress, type Placement, routingKey } from "../runtime/storage/codec.ts"
+import { compress, decompress, routingKey } from "../runtime/storage/codec.ts"
+import { recordedPlacement } from "../runtime/storage/placements.ts"
 import { VERSION_KEY } from "../state/migration.ts"
 import { CleanupHooks, RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
 import {
@@ -344,13 +345,14 @@ export class ActorTest extends Context.Service<
             // Helpers address rows by the routing key production uses, so a row
             // written under the wrong key is invisible here too.
             const storedRoutingKey = Effect.fnUntraced(function* (ref: ActorRef) {
-              const [recorded] = yield* sql<{ placement: Placement }>`
-                SELECT placement FROM actor_placements WHERE actor_type = ${ref.actor}`
+              const placement = yield* recordedPlacement(ref.actor).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              )
 
-              if (recorded === undefined)
+              if (placement === undefined)
                 return yield* Effect.die(new Error(`Actor ${ref.actor} is not registered`))
 
-              return routingKey({ ref, placement: recorded.placement })
+              return routingKey({ ref, placement })
             })
 
             const internalActors = yield* InternalActors

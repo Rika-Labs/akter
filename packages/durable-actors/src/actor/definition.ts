@@ -93,6 +93,8 @@ import {
   type WorkflowRun,
 } from "../handles/workflow.ts"
 import { isMintedId } from "../identity/mint.ts"
+import { childId, parseChildId } from "../identity/child.ts"
+import type { Placement } from "../runtime/storage/codec.ts"
 import { type AnyBlob, isBlob, isContent } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
 import {
@@ -210,8 +212,47 @@ type KeySchema = Schema.Codec<string, string>
 
 type Key = KeySchema | SingletonKey | undefined
 
-// Actors a turn may mint, with the command that alone creates each.
-const mintables = new WeakMap<object, { readonly name: string; readonly createdBy: string }>()
+// Actors a turn may mint, with the command that alone creates each and, for
+// a parent-placed actor, the parent type whose turns alone mint it.
+const mintables = new WeakMap<
+  object,
+  { readonly name: string; readonly createdBy: string; readonly parent: string | undefined }
+>()
+
+/** How many levels below its actor-placed root a parent-placed actor may sit. */
+const MAX_PLACEMENT_DEPTH = 4
+
+// What a parent-placed child needs of each definition it may be placed on.
+const placedDefinitions = new WeakMap<
+  object,
+  {
+    readonly name: string
+    readonly placement: Placement
+    /** Levels below the actor-placed root; a root is 0. */
+    readonly depth: number
+    readonly isId: (id: string) => boolean
+  }
+>()
+
+export declare const PlacedType: unique symbol
+
+/** Type-level record of how a definition is placed and what its ids are. */
+export interface Placed<Kind extends "tenant" | "actor" | "parent", Id> {
+  readonly [PlacedType]?: { readonly kind: Kind; readonly id: Id }
+}
+
+/** A definition children may be placed on: placed by `"actor"` or on a parent of its own. */
+export interface ParentDefinition extends Placed<"actor" | "parent", string> {
+  readonly name: string
+}
+
+/**
+ * Which rows share a shard: the tenant's, each actor's own, or the parent
+ * actor's, whose id every child id carries.
+ */
+export type PlacementOption = "tenant" | "actor" | { readonly parent: ParentDefinition }
+
+type PlacementKind<Pl> = Pl extends "tenant" ? "tenant" : Pl extends "actor" ? "actor" : "parent"
 
 // What a subscriber needs of each definition it may subscribe to.
 const sources = new WeakMap<
@@ -545,10 +586,17 @@ interface Definition<
   Effects extends ReadonlyArray<AnyEffect>,
   Blobs extends ReadonlyArray<AnyBlob>,
   Subs extends ReadonlyArray<AnySubscription>,
+  Pl extends PlacementOption,
 > {
+  /** A parent-placed actor's key validates the local part of its id. */
   readonly key?: Key
-  /** Which rows share a shard: the tenant (default) or each actor on its own. */
-  readonly placement?: "tenant" | "actor"
+  /**
+   * Which rows share a shard: the tenant (default), each actor on its own, or
+   * `{ parent: P }`, the shard of the parent actor whose id each child id
+   * carries. `P` is placed by `"actor"` or by a parent, at most four levels
+   * below an actor-placed root.
+   */
+  readonly placement?: Pl
   readonly state?: ActorState<Fields>
   /** Event classes this actor may emit in a turn and replay in a query. */
   readonly events?: Events
@@ -593,9 +641,10 @@ const make = <
   const B extends ReadonlyArray<AnyBlob> = [],
   const F extends ReadonlyArray<Events[number]> = readonly [],
   const Subs extends ReadonlyArray<AnySubscription> = readonly [],
+  const Pl extends PlacementOption = "tenant",
 >(
   name: Name,
-  definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B, Subs> & {
+  definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B, Subs, Pl> & {
     readonly key?: K
     readonly policy?: P
     readonly feeds?: F
@@ -746,7 +795,39 @@ const make = <
       throw new Error(`Reducer ${reducer.tag} must declare its actor's state`)
 
   const tables: ReadonlyArray<AnyOwnedTable> = definition.tables ?? []
-  const placement = definition.placement ?? "tenant"
+  const declaredPlacement: PlacementOption = definition.placement ?? "tenant"
+
+  const parented =
+    declaredPlacement === "tenant" || declaredPlacement === "actor" ? undefined : declaredPlacement
+
+  const parent = parented === undefined ? undefined : placedDefinitions.get(parented.parent)
+
+  if (parented !== undefined) {
+    if (!Predicate.hasProperty(parented, "parent"))
+      throw new Error(`placement is "tenant", "actor", or { parent }`)
+
+    if (parent === undefined) throw new Error("placement.parent takes an Actor.make definition")
+
+    if (parent.placement === "tenant")
+      throw new Error(
+        `${name}'s parent ${parent.name} is tenant-placed, so its children already share its shard; place ${name} by "tenant"`,
+      )
+
+    if (parent.depth + 1 > MAX_PLACEMENT_DEPTH)
+      throw new Error(
+        `${name} would be ${parent.depth + 1} levels below its root; parent placement allows ${MAX_PLACEMENT_DEPTH}`,
+      )
+
+    if (isSingleton) throw new Error(`Singleton ${name} cannot be parent-placed`)
+
+    if (definition.key === undefined && policy.createdBy === undefined)
+      throw new Error(`Parent-placed ${name} needs a key or policy.createdBy`)
+  }
+
+  const placement: Placement =
+    declaredPlacement === "tenant" || declaredPlacement === "actor"
+      ? declaredPlacement
+      : { parent: parent!.name, placement: parent!.placement }
 
   // One actor type owns a table, so equal actor ids of two types never share rows.
   for (const table of tables) {
@@ -868,15 +949,31 @@ const make = <
 
   const mintable = key === undefined && policy.createdBy !== undefined
 
-  const idSchema: KeySchema = Schema.isSchema(key)
-    ? key
-    : key === undefined
+  // A parent-placed actor's own key, or its parent's mint, decides only the
+  // local part; the parent part must be an id of the parent type.
+  const isLocalId = Schema.isSchema(key) ? Schema.is(key) : isMintedId
+
+  const idSchema: KeySchema =
+    parent !== undefined
       ? Schema.String.check(
-          Schema.makeFilter((id: string) => isUUIDv7(id) || isMintedId(id), {
-            expected: "a UUID v7 or a minted UUID v8",
-          }),
+          Schema.makeFilter(
+            (id: string) => {
+              const parts = parseChildId(id)
+
+              return parts !== undefined && parent.isId(parts.parent) && isLocalId(parts.local)
+            },
+            { expected: `c1.<byte length>.<${parent.name} id>.<${name} local id>` },
+          ),
         ).pipe(Schema.brand(name))
-      : Schema.String.check(Schema.isUUID(7)).pipe(Schema.brand(name))
+      : Schema.isSchema(key)
+        ? key
+        : key === undefined
+          ? Schema.String.check(
+              Schema.makeFilter((id: string) => isUUIDv7(id) || isMintedId(id), {
+                expected: "a UUID v7 or a minted UUID v8",
+              }),
+            ).pipe(Schema.brand(name))
+          : Schema.String.check(Schema.isUUID(7)).pipe(Schema.brand(name))
 
   const decodeId = Schema.decodeEffect(idSchema)
 
@@ -1917,14 +2014,26 @@ const make = <
                   new Error("turn.mint needs an unkeyed actor that declares policy.createdBy"),
                 )
 
+              if (target.parent !== undefined && target.parent !== name)
+                return yield* Effect.die(
+                  new Error(
+                    `turn.mint(${target.name}) needs a turn of its parent ${target.parent}`,
+                  ),
+                )
+
               const proof = outbox.nextMint()
 
-              const id = yield* actors.mintChildId({
+              const minted = yield* actors.mintChildId({
                 parent: isSingleton ? { ...request.ref, id: "" } : request.ref,
                 commandId: request.commandId,
                 ordinal: proof.ordinal,
                 child: target.name,
               })
+
+              const id =
+                target.parent === undefined
+                  ? minted
+                  : childId({ parent: request.ref.id, local: minted })
 
               outbox.minted(
                 ActorRef.make({ tenant: request.ref.tenant, actor: target.name, id }),
@@ -2712,6 +2821,9 @@ const make = <
 
     if (definition.key !== undefined)
       return yield* Effect.die(new Error("Only minted actors use create()"))
+
+    if (parent !== undefined)
+      return yield* Effect.die(new Error(`${name} is minted only by its parent ${parent.name}`))
     const internalActors = yield* InternalActors
 
     return yield* getHandle(yield* internalActors.mintActorId, false)
@@ -2840,11 +2952,41 @@ const make = <
     ? () => getHandle("singleton", false)
     : (id: string) => getHandle(id, false)
 
-  type Id = K extends KeySchema ? K["Type"] : Schema.brand<Schema.String, Name>["Type"]
+  type Id = Pl extends { readonly parent: ParentDefinition }
+    ? Schema.brand<Schema.String, Name>["Type"]
+    : K extends KeySchema
+      ? K["Type"]
+      : Schema.brand<Schema.String, Name>["Type"]
+
+  type ParentId = Pl extends { readonly parent: infer P extends ParentDefinition }
+    ? NonNullable<P[typeof PlacedType]>["id"]
+    : never
+
+  type LocalKey = K extends KeySchema ? K["Type"] : never
+
+  // A parent-placed actor is reached by its full id, never created by a caller.
+  type ServedKey = K extends SingletonKey
+    ? "singleton"
+    : K extends undefined
+      ? PlacementKind<Pl> extends "parent"
+        ? "keyed"
+        : "minted"
+      : "keyed"
+
+  /** Builds a parent-placed actor's full id from its parent's id and its own key. */
+  const idOf = (parentId: ParentId, local: LocalKey): Id => {
+    if (parent === undefined) throw new Error(`${name} is not parent-placed`)
+
+    return childId({ parent: parentId, local }) as Id
+  }
 
   const served: ServedDefinition = {
     name,
-    key: isSingleton ? "singleton" : definition.key === undefined ? "minted" : "keyed",
+    key: isSingleton
+      ? "singleton"
+      : definition.key === undefined && parent === undefined
+        ? "minted"
+        : "keyed",
     decodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => decodeId(id),
     encodeId: isSingleton ? () => Effect.succeed("singleton") : (id) => encodeId(id),
     members: Object.values(api)
@@ -2884,8 +3026,12 @@ const make = <
       ? () => Effect.Effect<PublicHandle, never, Actors>
       : (id: Id) => Effect.Effect<PublicHandle, never, Actors>,
     create: create as K extends undefined
-      ? () => Effect.Effect<PublicHandle, never, Actors>
+      ? PlacementKind<Pl> extends "parent"
+        ? never
+        : () => Effect.Effect<PublicHandle, never, Actors>
       : never,
+    /** A parent-placed actor's id: `c1.<byte length of parent>.<parent>.<local>`. */
+    idOf: idOf as PlacementKind<Pl> extends "parent" ? typeof idOf : never,
     /**
      * Durable intents to this actor; only command turns provide `InTurn`. The
      * id is a plain string so `X.intents(turn.id)` works for every key kind;
@@ -2900,13 +3046,7 @@ const make = <
      */
     client: (options: ClientOptions) =>
       clientOf<
-        ActorClient<
-          Omit<Api, WorkflowKeys<Api>>,
-          K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
-          Id,
-          StateOf<Fields>,
-          F[number]
-        >
+        ActorClient<Omit<Api, WorkflowKeys<Api>>, ServedKey, Id, StateOf<Fields>, F[number]>
       >(served)(options),
   }
 
@@ -2924,7 +3064,14 @@ const make = <
     handle: (id, tenant, caller) => getHandle(id, true, caller, tenant),
   })
 
-  if (mintable) mintables.set(actor, { name, createdBy: policy.createdBy! })
+  if (mintable) mintables.set(actor, { name, createdBy: policy.createdBy!, parent: parent?.name })
+
+  placedDefinitions.set(actor, {
+    name,
+    placement,
+    depth: parent === undefined ? 0 : parent.depth + 1,
+    isId: isSingleton ? (id) => id === "singleton" : Schema.is(idSchema),
+  })
 
   sources.set(actor, {
     singleton: isSingleton,
@@ -2934,6 +3081,7 @@ const make = <
 
   return actor as typeof actor &
     DefinitionWithInternal<Handle<All, Creating, BoundedMailbox>> &
+    Placed<PlacementKind<Pl>, K extends SingletonKey ? "singleton" : Id> &
     (K extends undefined ? ([Creating] extends [never] ? unknown : Mintable<Id>) : unknown)
 }
 
