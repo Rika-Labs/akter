@@ -37,7 +37,9 @@ The workflow engine keeps its own persisted storage; Effect's `ClusterWorkflowEn
 
 ### Turn batches are pipelined
 
-The activation consumes its mailbox through `Entity.toLayerQueue` and runs batch N+1's handlers in memory against batch N's staged state while batch N commits. Replies, broadcasts, and outbox visibility still follow each commit. If batch N fails to commit, the activation restarts, and batch N+1's callers retry. The batch cap, per-command failure isolation, and no-added-wait rules from ADR 0005 remain.
+**Amended by [ADR 0020](0020-two-round-trip-turn-pipeline.md):** no handler runs speculatively. While batch N commits, batch N+1's `BEGIN` and admission statements may be sent in the same flight, behind N's `COMMIT`, on the same session; batch N+1's handlers run only after its own fence and receipt replies arrive, so there is no staged work of N+1 to hide while N commits. Replies, broadcasts, and outbox visibility still follow each commit. If batch N fails to commit, batch N+1's transaction is rolled back unseen, the activation restarts, and the callers of both batches retry. The batch cap, per-command failure isolation, and no-added-wait rules from ADR 0005 remain. The activation's mailbox is the framework's own, fed by Cluster, not `Entity.toLayerQueue`.
+
+The original text, superseded: the activation consumes its mailbox through `Entity.toLayerQueue` and runs batch N+1's handlers in memory against batch N's staged state while batch N commits.
 
 ### Reducers run on the client and may merge commutatively
 

@@ -3,6 +3,7 @@ import { pgTable, text } from "drizzle-orm/pg-core"
 import {
   Cause,
   Crypto,
+  Deferred,
   Duration,
   Effect,
   Exit,
@@ -12,11 +13,14 @@ import {
   Redacted,
   Schedule,
   Schema,
+  Tracer,
 } from "effect"
 import type { Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, ActorError, ActorUnavailable, Actors, Intent, User } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
+import { TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
+import type { Request } from "../../handles/actors.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest, ClusterMember } from "../actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
@@ -67,6 +71,13 @@ const Plain = Actor.make("Plain", {
   api: { Add, Defer, PingLater, CancelPing },
   internal: { Remind },
 })
+
+const AddPayload = Schema.fromJsonString(Schema.Struct({ value: Schema.Finite }))
+
+/** A runner's turn hooks: an effect at each fault point. */
+interface TestHooks {
+  readonly at: (point: TurnPoint, request: Request) => Effect.Effect<void>
+}
 
 interface Probe {
   /** Client writes sent after the server last answered: one per round trip. */
@@ -242,7 +253,14 @@ const relay = (url: URL, probe: Probe) =>
  */
 const withProbe = <A, E>(
   environment: ConformanceEnvironment,
-  options: { readonly prepare?: boolean; readonly everyPool?: boolean },
+  options: {
+    readonly prepare?: boolean
+    readonly everyPool?: boolean
+    /** Turn hooks the runner sees at every point no queued fault takes. */
+    readonly hooks?: TestHooks
+    /** The runner's tracer, so a case can read the spans turns open. */
+    readonly tracer?: Tracer.Tracer
+  },
   body: (
     probe: Probe,
     database: Redacted.Redacted<string>,
@@ -269,8 +287,11 @@ const withProbe = <A, E>(
               ActorTest.layer({
                 database,
                 as: User.make({ subject: "alice" }),
-              }),
+              }).pipe(
+                Layer.provide(Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void })),
+              ),
             ),
+            Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
             Layer.provide(
               Layer.mergeAll(
                 Layer.succeed(TurnPoolSettings, { stream, prepare: options.prepare !== false }),
@@ -675,8 +696,9 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const meter = yield* Meter.get("batched")
           yield* meter.Tap()
 
-          // Eight waiting commands whose handlers issue no statements: the
-          // held turn's commit, then one admission and one commit for all.
+          // Eight waiting commands whose handlers issue no statements: their
+          // admission rides with the held turn's commit, then one commit for
+          // all.
           const taps = yield* flightsOf(
             probe,
             Effect.gen(function* () {
@@ -694,13 +716,14 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             }),
           )
 
-          expect(probe.flights - taps.value.before).toBe(3)
+          expect(probe.flights - taps.value.before).toBe(2)
           const batch = probe.sent.slice(-2).map(wire)
-          expect(batch[0]).toContain("FOR UPDATE OF g")
+          expect(batch[0]!.indexOf("COMMIT") < batch[0]!.indexOf("FOR UPDATE OF g")).toBe(true)
           expect(batch[1]).toContain("COMMIT")
-          // Only the first handler's savepoint went out; the rest had no
-          // statement to protect and were never sent.
-          expect(batch.join("").split("SAVEPOINT durable_handler").length - 1).toBe(2)
+          // Besides the held turn's release, only the batch's first savepoint
+          // and its release went out; the rest had no statement to protect
+          // and were never sent.
+          expect(batch.join("").split("SAVEPOINT durable_handler").length - 1).toBe(3)
 
           // Handlers that insert and count: each awaited statement is one
           // round trip, and each savepoint rides with its handler's first
@@ -715,15 +738,275 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           yield* first.release
           yield* Fiber.join(first.fiber)
           expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual([1, 2, 3, 4])
-          expect(probe.flights - before).toBe(1 + 1 + 4 * 2 + 1)
+          expect(probe.flights - before).toBe(1 + 4 * 2 + 1)
           expect(
             probe.sent
-              .slice(-10)
+              .slice(-9)
               .map(wire)
               .every((flight) => /insert|select|commit/i.test(flight)),
           ).toBe(true)
         }),
       ),
+  },
+  {
+    name: "pipeline: the next batch's admission rides in the previous batch's commit flight, and its handlers wait for their own fence",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { prepare: false }, (probe, database) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const meter = yield* Plain.get("riding")
+          expect(yield* meter.Add(1)).toBe(1)
+          const context = yield* rival(database)
+          const first = yield* holding(meter.Add(1))
+          const waiting = yield* enqueue([meter.Add(10), meter.Add(100)].map(Effect.orDie))
+          const handled = probe.handled
+          const sent = probe.sent.length
+          const gate = yield* Deferred.make<void>()
+          const rivalPid = yield* Deferred.make<number>()
+
+          const lockWaiters = sql<{ pid: number }>`SELECT pid FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND datname = current_database()`
+
+          const waitFor = (found: (pids: ReadonlyArray<number>) => boolean) =>
+            Effect.gen(function* () {
+              const pids = (yield* lockWaiters).map(({ pid }) => pid)
+
+              if (!found(pids)) return yield* Effect.fail("not yet")
+            }).pipe(Effect.retry(Schedule.spaced("20 millis")), Effect.orDie)
+
+          // A rival asks for the generation row while the held turn owns it,
+          // so it is first in line when that turn commits, and then advances
+          // the generation.
+          const takeover = yield* Effect.forkDetach(
+            Effect.gen(function* () {
+              const rivalSql = yield* SqlClient.SqlClient
+
+              yield* rivalSql.withTransaction(
+                Effect.gen(function* () {
+                  const [row] = yield* rivalSql<{ pid: number }>`SELECT pg_backend_pid() AS pid`
+                  yield* Deferred.succeed(rivalPid, row!.pid)
+                  yield* rivalSql`SELECT 1 FROM actor_generations
+                    WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id} FOR UPDATE`
+                  yield* Deferred.await(gate)
+                  yield* rivalSql`UPDATE actor_generations SET generation = generation + 1
+                    WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id}`
+                }),
+              )
+            }).pipe(Effect.provideContext(context), Effect.orDie),
+          )
+
+          const pid = yield* Deferred.await(rivalPid)
+          yield* waitFor((pids) => pids.includes(pid))
+          yield* first.release
+          expect(yield* Fiber.join(first.fiber)).toBe(2)
+
+          // The held turn's caller has its reply. The batch's admission went
+          // out behind that COMMIT, its fence now waits behind the rival, and
+          // none of its handlers has run.
+          yield* waitFor((pids) => pids.some((waiter) => waiter !== pid))
+          expect(probe.handled).toBe(handled)
+
+          const riding = probe.sent
+            .slice(sent)
+            .map(wire)
+            .find((flight) => flight.includes("COMMIT") && flight.includes("FOR UPDATE OF g"))
+
+          expect(riding === undefined).toBe(false)
+          expect(riding!.indexOf("COMMIT") < riding!.indexOf("FOR UPDATE OF g")).toBe(true)
+
+          // The rival advanced the generation, so the batch failed its fence
+          // and its commands ran after the reload, each exactly once.
+          yield* Deferred.succeed(gate, undefined)
+          yield* Fiber.join(takeover)
+          expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual([12, 112])
+          expect(probe.handled).toBe(handled + 2)
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a batch whose commit fails rolls back the next batch before its handlers run, and every caller retries once",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { prepare: false }, (probe) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("failing")
+          expect(yield* meter.Add(1)).toBe(1)
+          const handled = probe.handled
+          const first = yield* holding(meter.Add(1))
+          const failing = yield* enqueue([meter.Add(10), meter.Add(100)].map(Effect.orDie))
+          const paused = yield* test.pauseNext("beforeCommit")
+          yield* first.release
+          expect(yield* Fiber.join(first.fiber)).toBe(2)
+          yield* paused.reached
+
+          // While the first batch is in its transaction, two more commands
+          // queue, and its receipt insert is set to fail once.
+          const next = yield* enqueue([meter.Add(1000), meter.Add(10000)].map(Effect.orDie))
+          yield* sql.unsafe(`CREATE SEQUENCE pipeline_batch_poison`)
+          yield* sql.unsafe(`CREATE FUNCTION pipeline_batch_poison() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+              IF nextval('pipeline_batch_poison') = 1 THEN RAISE EXCEPTION 'poisoned receipt'; END IF;
+              RETURN NEW;
+            END $$`)
+          yield* sql.unsafe(`CREATE TRIGGER pipeline_batch_poison BEFORE INSERT ON actor_receipts
+            FOR EACH ROW WHEN (NEW.actor_type = 'Plain') EXECUTE FUNCTION pipeline_batch_poison()`)
+          const sent = probe.sent.length
+          yield* paused.release
+
+          expect(yield* Effect.forEach(failing, Fiber.join)).toEqual([12, 112])
+          expect(yield* Effect.forEach(next, Fiber.join)).toEqual([1112, 11112])
+
+          // The failing commit carried the next batch's admission, which
+          // rolled back with it: the first batch's handlers ran twice, the
+          // next batch's once, after the first batch committed.
+          expect(
+            probe.sent
+              .slice(sent)
+              .map(wire)
+              .some(
+                (flight) =>
+                  flight.includes("INSERT INTO actor_receipts") &&
+                  flight.indexOf("COMMIT") < flight.lastIndexOf("FOR UPDATE OF g"),
+              ),
+          ).toBe(true)
+          expect(probe.handled - handled).toBe(1 + 2 * 2 + 2)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 11112 },
+            receipts: 6,
+          })
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a later batch stays hidden until its own commit",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, {}, () =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("hidden")
+          expect(yield* meter.Add(1)).toBe(1)
+          const first = yield* holding(meter.Add(1))
+          const later = yield* enqueue([meter.Defer(0), meter.Defer(0)].map(Effect.orDie))
+          const paused = yield* test.pauseNext("beforeCommit")
+          yield* first.release
+          expect(yield* Fiber.join(first.fiber)).toBe(2)
+          yield* paused.reached
+
+          const reminders = sql<{ count: number }>`SELECT count(*)::integer AS count
+            FROM actor_outbox WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id}`
+
+          // The later batch's admission rode with the first commit and its
+          // handlers ran, but nothing of it is visible before its commit.
+          expect(later.map((fiber) => fiber.pollUnsafe())).toEqual([undefined, undefined])
+          expect((yield* reminders)[0]!.count).toBe(0)
+          yield* paused.release
+          expect(yield* Effect.forEach(later, Fiber.join)).toEqual([2, 2])
+          expect((yield* reminders)[0]!.count).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a defect after a batch commits restarts the activation, and every caller gets its committed outcome",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      // Fails the afterCommit point once for each listed amount, with a defect
+      // that is not retryable, as a failing broadcast flush would.
+      const failing = new Set([2, 20])
+
+      const hooks: TestHooks = {
+        at: (point, request) =>
+          point !== "afterCommit" || request.command !== "Add"
+            ? Effect.void
+            : Schema.decodeEffect(AddPayload)(request.payload).pipe(
+                Effect.orDie,
+                Effect.flatMap(({ value }) =>
+                  failing.delete(value)
+                    ? Effect.die(new Error("Defect after commit"))
+                    : Effect.void,
+                ),
+              ),
+      }
+
+      return withProbe(environment, { hooks }, (probe) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("after-commit-defect")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          // A lone command: committed, then the defect; its caller still
+          // gets the committed count, not `Defect`, and the handler ran once.
+          const handled = probe.handled
+          expect(yield* meter.Add(2)).toBe(3)
+          expect(probe.handled).toBe(handled + 1)
+
+          // A batch whose first caller's answer fails after the shared commit.
+          const first = yield* holding(meter.Add(4))
+          const waiting = yield* enqueue([meter.Add(20), meter.Add(40)].map(Effect.orDie))
+          yield* first.release
+          expect(yield* Fiber.join(first.fiber)).toBe(7)
+          expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual([27, 67])
+          expect(probe.handled).toBe(handled + 4)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 67 },
+            receipts: 5,
+          })
+        }),
+      )
+    },
+  },
+  {
+    name: "pipeline: each pipelined batch has its own span, not the span of the batch before it",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      const spans: Array<Tracer.NativeSpan> = []
+
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options)
+          spans.push(span)
+
+          return span
+        },
+      })
+
+      return withProbe(environment, { tracer }, () =>
+        Effect.gen(function* () {
+          const meter = yield* Plain.get("spans")
+          yield* meter.Add(1)
+          const held = yield* (yield* Actors).mintCommandId
+          const before = spans.length
+          const first = yield* holding(meter.Add(1).pipe(Actor.commandId(held)))
+          const waiting = yield* enqueue([meter.Add(10), meter.Add(100)].map(Effect.orDie))
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+          yield* Effect.forEach(waiting, Fiber.join)
+
+          // The held command committed alone and the waiting two rode its
+          // commit flight as one batch; each batch has its own turn span.
+          const turns = spans
+            .slice(before)
+            .filter((span) => span.name.startsWith("durable-actors.Plain/"))
+
+          const lone = turns.filter((span) => span.attributes.get("command.id") === held)
+          const batch = turns.filter((span) => span.name === "durable-actors.Plain/batch")
+          expect(lone.map((span) => span.name)).toEqual(["durable-actors.Plain/Add"])
+          expect(batch.map((span) => span.attributes.get("batch.size"))).toEqual([2])
+          expect(batch[0]!.links.length).toBe(2)
+
+          expect(Option.getOrUndefined(batch[0]!.parent)?.spanId === lone[0]!.spanId).toBe(false)
+        }),
+      )
+    },
   },
   {
     name: "pipeline: a keyed delayed effect, its replacement, and its cancellation each keep two round trips",
