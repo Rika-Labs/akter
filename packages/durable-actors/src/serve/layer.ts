@@ -28,7 +28,14 @@ import { InternalActors, Outcome, Request } from "../handles/actors.ts"
 import { ContentStore } from "../handles/content.ts"
 import { MAX_CONTENT_BYTES } from "../runtime/content/store.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
-import { build, document, memberPath, PROTOCOL_OPERATIONS, schemeName } from "./api.ts"
+import {
+  build,
+  CONTENT_ROUTE,
+  document,
+  memberPath,
+  PROTOCOL_OPERATIONS,
+  schemeName,
+} from "./api.ts"
 import {
   type AuthProvider,
   type Authenticated,
@@ -76,7 +83,7 @@ const NAME = /^[A-Za-z][A-Za-z0-9_]*$/
 /** The path segment an actor's event feed is served at, so no member may take it. */
 const FEED_ROUTE = "events"
 
-const RESERVED_MEMBERS: ReadonlySet<string> = new Set([FEED_ROUTE])
+const RESERVED_MEMBERS: ReadonlySet<string> = new Set([FEED_ROUTE, CONTENT_ROUTE])
 
 const ALLOWED_HEADERS = [
   "authorization",
@@ -295,7 +302,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const contentStore = yield* Effect.serviceOption(ContentStore)
       const withCookies = readsCookies(options.auth)
       const withAssertion = options.auth.credentials.some(Credential.$is("Assertion"))
-      const api = build({ definitions, basePath })
+      const api = build({ definitions, basePath, content: Option.isSome(contentStore) })
 
       const withProtocol = (
         request: HttpServerRequest.HttpServerRequest,
@@ -725,12 +732,17 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           if (Option.isSome(length) && Number(length.value) > contentBytes)
             return yield* invalidInput("too_large")
 
+          // A request without framing headers may carry no body stream at all.
+          const empty =
+            (Option.isSome(length) && Number(length.value) === 0) ||
+            (Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding"))
+
+          const body = empty
+            ? Stream.empty
+            : request.stream.pipe(Stream.mapError(() => invalidInput("decode")))
+
           const ref = yield* store
-            .upload(
-              authenticated.tenant,
-              request.stream.pipe(Stream.mapError(() => invalidInput("decode"))),
-              contentBytes,
-            )
+            .upload(authenticated.tenant, body, contentBytes)
             .pipe(Effect.catchTag("ContentTooLarge", () => invalidInput("too_large")))
 
           return HttpServerResponse.jsonUnsafe(ref, { status: 200 })
@@ -821,7 +833,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
         for (const definition of definitions)
           if (definition.contents.length > 0) {
-            const entry = `${basePath}${memberPath({ definition, member: { tag: "content" } })}/:blob/:name`
+            const entry = `${basePath}${memberPath({ definition, member: { tag: CONTENT_ROUTE } })}/:blob/:name`
 
             yield* router.add(
               "GET",

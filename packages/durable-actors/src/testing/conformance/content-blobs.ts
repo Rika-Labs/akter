@@ -366,6 +366,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const server = yield* serveHttp({
             actors: [Document],
             limits: { requestBytes: 1024, contentBytes: 4096 },
+            openapi: { path: "/openapi.json" },
           })
 
           const token = `${test.tenant}:alice`
@@ -427,6 +428,17 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           expect(missing.status).toBe(404)
+
+          // The OpenAPI document lists every content route.
+          const spec = yield* server.send("/openapi.json", { method: "GET" })
+
+          expect(
+            [
+              "/content",
+              "/actors/Document/{id}/content/{blob}/{name}",
+              "/actors/Document/{id}/content/{blob}/{name}/grant",
+            ].map((path) => spec.text.includes(`"${path}"`)),
+          ).toEqual([true, true, true])
         }),
       ),
   },

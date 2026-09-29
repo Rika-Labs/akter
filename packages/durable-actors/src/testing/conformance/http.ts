@@ -983,6 +983,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               "HttpTicket.Join",
               "durable.commandIds",
               "durable.protocol",
+              "durable.uploadContent",
             ].sort(),
           )
 

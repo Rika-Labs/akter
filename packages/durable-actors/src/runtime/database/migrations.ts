@@ -493,6 +493,33 @@ export const migrations = {
     yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
         ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'effect', 'feed', 'control'))`
   }),
+  // Every tenant row admits only the tenant its transaction names. The table
+  // owner and superusers are exempt, so nothing changes until a deployment
+  // runs its turns and views as a role that is neither.
+  "0018_rls": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    for (const table of [
+      "actor_generations",
+      "actor_state",
+      "actor_receipts",
+      "actor_outbox",
+      "actor_events",
+      "actor_dead_letters",
+      "actor_blobs",
+      "actor_workflow_executions",
+      "actor_workflow_step",
+      "actor_connections",
+      "actor_subscriptions",
+      "actor_subscription_tags",
+      "actor_subscription_cursors",
+    ]) {
+      yield* sql`ALTER TABLE ${sql(table)} ENABLE ROW LEVEL SECURITY`
+      yield* sql`CREATE POLICY durable_tenant ON ${sql(table)}
+          USING (tenant_id = current_setting('durable.tenant', true))
+          WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
+    }
+  }),
   // Content is stored once per tenant on the tenant's routing key; actors
   // hold references on their own shard. Nothing counts references and no key
   // points from a reference or a chunk to a content row: the sweep finds
@@ -541,9 +568,24 @@ export const migrations = {
         swept_at_ms bigint NOT NULL,
         PRIMARY KEY (routing_key, tenant_id)
       )`
+
+    // A query reads references and chunks as the tenant role when row-level
+    // security is on; uploads, grants, and the sweep keep the exempt connecting role.
+    for (const table of [
+      "actor_content_refs",
+      "tenant_contents",
+      "tenant_content_chunks",
+      "tenant_content_sweeps",
+    ]) {
+      yield* sql`ALTER TABLE ${sql(table)} ENABLE ROW LEVEL SECURITY`
+      yield* sql`CREATE POLICY durable_tenant ON ${sql(table)}
+          USING (tenant_id = current_setting('durable.tenant', true))
+          WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
+    }
+
     // The longest turn of each actor type that declares content, which the
-    // sweep waits out; it only grows, so a runner of an older deploy still
-    // holding longer turns is covered.
+    // sweep waits out; it only grows, so a runner still on an earlier
+    // deploy with longer turns stays covered.
     yield* sql`CREATE TABLE actor_content_types (
         actor_type text PRIMARY KEY,
         turn_ms bigint NOT NULL CHECK (turn_ms > 0)
