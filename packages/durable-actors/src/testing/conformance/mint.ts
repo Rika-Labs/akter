@@ -447,10 +447,7 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
           const before = runs.length
           const first = yield* holding(planner.PlanDelayed().pipe(Actor.commandId(lone!)))
 
-          const [a, r, b] = yield* enqueue<
-            Exit.Exit<ReadonlyArray<string>, Refused>,
-            ActorTest | Actors
-          >([
+          const [a, r, b] = yield* enqueue<Exit.Exit<unknown, unknown>, ActorTest | Actors>([
             planner.PlanDelayed().pipe(Actor.commandId(one!), Effect.exit),
             planner.PlanDelayedThenRefuse().pipe(Actor.commandId(refused!), Effect.exit),
             planner.PlanDelayed().pipe(Actor.commandId(two!), Effect.exit),
