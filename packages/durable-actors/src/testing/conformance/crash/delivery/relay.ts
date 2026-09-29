@@ -46,7 +46,6 @@ const runtime = Layer.unwrap(
     const mode = yield* Config.String("CRASH_POINT")
     const database = yield* Config.String("CRASH_DATABASE_URL")
 
-    // Only the relay's delivery of `Add` stops, so the sender's own turn commits first.
     const hooks = Layer.succeed(TurnHooks, {
       at: (point, request) =>
         point === mode && request.command === "Add"
@@ -54,7 +53,6 @@ const runtime = Layer.unwrap(
           : Effect.void,
     })
 
-    // The recovering process runs past the killed relay's claim lease.
     const clock = Layer.succeed(FrameworkClock, {
       offsetMillis: () => (mode === "recover" ? 60_000 : 0),
     })
@@ -70,8 +68,6 @@ const runtime = Layer.unwrap(
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
 
-// A crashed process leaves its committed intent in actor_outbox; a fresh
-// process's relay must deliver it once and then delete the row.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
   const sql = yield* SqlClient.SqlClient
@@ -96,7 +92,6 @@ const program = Effect.gen(function* () {
     Schema.fromJsonString(Schema.Struct({ receipts: Schema.Int, state: Schema.String })),
   )({ receipts: rows[0]!.receipts, state: decompress(rows[0]!.state_bytes) })
 
-  // Tagged so the parent ignores runtime logs that share stdout.
   yield* Console.log(`RESULT ${result}`)
 }).pipe(Effect.timeout("10 seconds"))
 

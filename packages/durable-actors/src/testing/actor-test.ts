@@ -301,7 +301,6 @@ export class ActorTest extends Context.Service<
         const member = Option.getOrUndefined(yield* Effect.serviceOption(ClusterMember))
         const tenant = member?.tenant ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie))
         const faults = new Map<TurnPoint, Array<Effect.Effect<void>>>()
-        // Hooks the caller installed still see every point no fault is queued for.
         const outer = yield* TurnHooks
 
         let clockOffset = 0
@@ -330,8 +329,6 @@ export class ActorTest extends Context.Service<
                 return !dropped
               }),
           }),
-          // Tests sweep with `cleanup` when they choose, never on a timer
-          // that could fire between a case's `advance` and its assertions.
           Layer.succeed(CleanupHooks, {
             batchSize: 1000,
             afterBatch: Effect.void,
@@ -351,8 +348,6 @@ export class ActorTest extends Context.Service<
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
 
-            // Helpers address rows by the routing key production uses, so a row
-            // written under the wrong key is invisible here too.
             const storedRoutingKey = Effect.fnUntraced(function* (ref: ActorRef) {
               const placement = yield* recordedPlacement(ref.actor).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
@@ -437,8 +432,6 @@ export class ActorTest extends Context.Service<
                   value: decompress(value),
                 }))
 
-                // One statement, so a turn committing meanwhile can't be counted
-                // in one table and not the other.
                 const [counted] = yield* sql<{ receipts: number; events: number }>`SELECT
                   (SELECT count(*)::integer FROM actor_receipts
                     WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}) AS receipts,
@@ -529,7 +522,6 @@ export class ActorTest extends Context.Service<
                     new Error("advance needs a finite, non-negative duration"),
                   )
 
-                // Running attempts keep renewing through the jump, so their leases move with it.
                 yield* internalActors.extendOutboxLeases(
                   millis,
                   Effect.sync(() => {
@@ -576,7 +568,6 @@ export class ActorTest extends Context.Service<
                   .open({
                     ref,
                     member: member.tag,
-                    // The caller the test runs as, so `Actor.as` opens as someone else.
                     caller: yield* CurrentCaller,
                     params: encoded,
                   })
@@ -667,8 +658,6 @@ export class ActorTest extends Context.Service<
           test.pipe(Layer.provide(runtime)),
           Layer.succeed(CurrentCaller, options.as ?? Anonymous.make({})),
           Layer.succeed(Tenant, tenant),
-          // Test code reads the same advanced clock as the runtime, so an id it
-          // builds from database time is live in the runtime's eyes too.
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
         ).pipe(
           Layer.provide(hooks),
