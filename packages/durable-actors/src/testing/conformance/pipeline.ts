@@ -1082,4 +1082,116 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
+  {
+    name: "pipeline: a turn that loses the database mid-commit is answered, and its caller's retry commits it once",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { everyPool: true }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("lost-mid-commit")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          // The turn loses its connection before its commit group, and each
+          // later attempt fails to connect at once until the database is
+          // back: a failover caught mid-turn. Every attempt must be answered,
+          // however fast it fails, so the caller retries its id long before
+          // its 30-second delivery timeout.
+          const id = yield* (yield* Actors).mintCommandId
+          const committing = yield* test.pauseNext("beforeCommit")
+          const handled = probe.handled
+
+          const call = yield* meter.Add(2).pipe(
+            Actor.commandId(id),
+            Effect.retry({
+              while: (error) => error.isRetryable,
+              schedule: Schedule.spaced("100 millis"),
+              times: 50,
+            }),
+            Effect.timeoutOption("10 seconds"),
+            Effect.forkChild,
+          )
+
+          yield* committing.reached
+          relayed.cut()
+          yield* committing.release
+          yield* Effect.sleep("1 second")
+          relayed.restore()
+
+          expect(yield* Fiber.join(call)).toEqual(Option.some(3))
+          expect(probe.handled - handled).toBe(2)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 3 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a batch that loses the database mid-commit answers every command in it, and each caller's retry commits once",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { everyPool: true }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const actors = yield* Actors
+          const meter = yield* Plain.get("batch-lost-mid-commit")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          const amounts = [2, 3, 4]
+          const ids = yield* Effect.forEach(amounts, () => actors.mintCommandId)
+          const handled = probe.handled
+
+          // Three commands wait behind a held turn and take the next batch,
+          // whose one commit loses its connection; the database stays gone
+          // for a second, so every attempt on the restarted activation fails
+          // at once until then. Each caller must be answered and retry its id.
+          const first = yield* holding(meter.Add(10))
+
+          const calls = yield* enqueue(
+            amounts.map((amount, index) =>
+              meter.Add(amount).pipe(
+                Actor.commandId(ids[index]!),
+                Effect.retry({
+                  while: (error) => error.isRetryable,
+                  schedule: Schedule.spaced("100 millis"),
+                  times: 50,
+                }),
+                Effect.timeoutOption("10 seconds"),
+                Effect.orDie,
+              ),
+            ),
+          )
+
+          const inBatch = yield* test.pauseNext("beforeCommit")
+          const thenInBatch = yield* test.pauseNext("beforeCommit")
+          yield* first.release
+          yield* Fiber.join(first.fiber)
+          yield* inBatch.reached
+          yield* inBatch.release
+          yield* thenInBatch.reached
+
+          // The held turn and two of the batch's handlers have run; the batch
+          // is open with more than one command when the database goes.
+          expect(probe.handled - handled).toBe(1 + 2)
+          relayed.cut()
+          yield* thenInBatch.release
+          yield* Effect.sleep("1 second")
+          relayed.restore()
+
+          const replies = yield* Effect.forEach(calls, Fiber.join)
+          expect(replies.every(Option.isSome)).toBe(true)
+
+          // The held turn ran once, the aborted batch ran its three handlers,
+          // and each of the three retries ran once more and committed.
+          expect(probe.handled - handled).toBe(1 + amounts.length * 2)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 20 },
+            receipts: 5,
+          })
+        }),
+      ),
+  },
 ]
