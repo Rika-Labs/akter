@@ -41,8 +41,9 @@ const network = () => TransportError.make({ code: "network", retryable: true }).
 const undecodable = () => TransportError.make({ code: "decode", retryable: false }).pipe(transport)
 
 /** A body a feed was refused or ended with, as the failure it names. */
-const failureOf = (text: string, status: number) =>
-  decodeFailure(cursorError)({ status, headers: new Headers(), text, sentAt: 0 })
+/** A refusal's body, with its response's headers so a `Retry-After` is kept; an `end` message has none. */
+const failureOf = (text: string, status: number, headers = new Headers()) =>
+  decodeFailure(cursorError)({ status, headers, text, sentAt: 0 })
 
 interface Message {
   readonly id: string | undefined
@@ -126,7 +127,7 @@ export const feedStream = <E extends EventClass>({
         if (response.status !== 200) {
           const text = yield* Effect.tryPromise({ try: () => response.text(), catch: network })
 
-          return yield* failureOf(text, response.status)
+          return yield* failureOf(text, response.status, response.headers)
         }
 
         if (response.body === null) return yield* undecodable()
@@ -185,12 +186,12 @@ export const feedStream = <E extends EventClass>({
             hinted = Option.getOrUndefined(ended.value.retryAfter)
         }
 
-        // A dropped or refused feed reopens after `retryAfter`, or a jittered, growing delay.
+        // A dropped or refused feed reopens after `retryAfter`, never sooner, or after a jittered, growing delay.
         const backoff = Math.min(MAX_BACKOFF_MS, 100 * 2 ** failures)
         failures += 1
         const jitter = yield* Random.nextBetween(0.5, 1.5)
 
-        yield* Effect.sleep(Duration.millis(Math.round((hinted ?? backoff) * jitter)))
+        yield* Effect.sleep(Duration.millis(hinted ?? Math.round(backoff * jitter)))
       }
     }).pipe(
       Effect.catch((failure) => Queue.fail(out, failure)),

@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
 import { afterEach, describe, expect, it } from "vitest"
-import { ActorError, TransportError } from "../errors/actor.ts"
+import { ActorError, RunnerAtCapacity, TransportError } from "../errors/actor.ts"
 import { Actor } from "../index.ts"
 import { SUBPROTOCOL, type ServerWireMessage } from "../serve/frames.ts"
 import { socketUrl } from "./make.ts"
@@ -9,7 +9,7 @@ const Live = Actor.connection("Live", { client: Schema.String, server: Schema.St
 
 const Room = Actor.make("ConnectionClientRoom", { key: Schema.String, api: { Live } })
 
-type Script = (send: (message: ServerWireMessage) => void) => void
+type Script = (send: (message: ServerWireMessage) => void, raw: (text: string) => void) => void
 
 const servers: Array<ReturnType<typeof Bun.serve>> = []
 
@@ -37,7 +37,7 @@ const serve = (script: Script) => {
 
         if (received.length === 1) {
           send({ t: "open", connectionId: "c1", baseline: "0" })
-          script(send)
+          script(send, (raw) => ws.send(raw))
         }
       },
     },
@@ -71,6 +71,38 @@ describe("client connections against a misbehaving server", () => {
         )
 
         expect(Schema.is(ActorError)(failure)).toBe(true)
+        expect(Schema.is(TransportError)(failure?.reason)).toBe(true)
+        expect(failure?.reason).toMatchObject({ code: "decode" })
+      }),
+    ))
+
+  it("ignores a message whose t it doesn't know, and ends with a decode failure on one that isn't a message", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { url } = serve((send, raw) => {
+          raw(JSON.stringify({ t: "later", anything: 1 }))
+          send({ t: "frame", frame: "after the unknown one" })
+          raw("{not json")
+        })
+
+        const connection = yield* Effect.promise(() =>
+          Room.client({ baseUrl: url }).get("r1").Live.connect(),
+        )
+
+        const iterator = connection.frames[Symbol.asyncIterator]()
+
+        expect(yield* Effect.promise(() => iterator.next())).toEqual({
+          done: false,
+          value: "after the unknown one",
+        })
+
+        const failure = yield* Effect.promise(() =>
+          iterator.next().then(
+            () => undefined,
+            (thrown: ActorError) => thrown,
+          ),
+        )
+
         expect(Schema.is(TransportError)(failure?.reason)).toBe(true)
         expect(failure?.reason).toMatchObject({ code: "decode" })
       }),
@@ -120,4 +152,58 @@ describe("socketUrl", () => {
     expect(socketUrl("http://a.test/x")).toBe("ws://a.test/x")
     expect(socketUrl("ws://a.test/x")).toBe("ws://a.test/x")
   })
+})
+
+class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+
+const Board = Actor.make("FeedClientBoard", {
+  key: Schema.String,
+  events: [Posted],
+  feeds: [Posted],
+  api: { Ping: Actor.command("Ping") },
+})
+
+describe("client event feeds", () => {
+  it("waits the Retry-After a refused feed carried before it reopens", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const opened: Array<number> = []
+
+        const refused = yield* Schema.encodeEffect(Schema.toCodecJson(ActorError))(
+          ActorError.make({ reason: RunnerAtCapacity.make({}) }),
+        )
+
+        const entry = {
+          event: yield* Schema.encodeEffect(Schema.toCodecJson(Posted))(
+            Posted.make({ text: "hi" }),
+          ),
+          commandId: "c1",
+          timestamp: 0,
+        }
+
+        // First a 503 asking for one second, then the feed with one event.
+        const fetch = (_input: RequestInfo | URL) => {
+          opened.push(performance.now())
+
+          return Promise.resolve(
+            opened.length === 1
+              ? new Response(JSON.stringify(refused), {
+                  status: 503,
+                  headers: { "retry-after": "1" },
+                })
+              : new Response(`id: 1\ndata: ${JSON.stringify(entry)}\n\n`, {
+                  status: 200,
+                  headers: { "content-type": "text/event-stream" },
+                }),
+          )
+        }
+
+        const feed = Board.client({ baseUrl: "http://feed.test", fetch }).get("b1").events(Posted)
+        const first = yield* Effect.promise(() => feed[Symbol.asyncIterator]().next())
+
+        expect(first.value?.event).toEqual(Posted.make({ text: "hi" }))
+        expect(opened.length).toBe(2)
+        expect(opened[1]! - opened[0]!).toBeGreaterThanOrEqual(990)
+      }),
+    ))
 })

@@ -72,8 +72,15 @@ export interface SocketSource {
 
 const encodeClient = Schema.encodeEffect(Schema.fromJsonString(ClientWireMessage))
 
-// A server message this client doesn't know is ignored, so later servers can add control messages.
 const decodeServer = Schema.decodeUnknownOption(Schema.fromJsonString(ServerWireMessage))
+
+const decodeTagged = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ t: Schema.String })),
+)
+
+const KNOWN: ReadonlySet<string> = new Set(
+  ServerWireMessage.members.map((member) => member.fields.t.literal),
+)
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
@@ -275,7 +282,17 @@ export const connect = <Server, Client>({
           Effect.flatMap((text) =>
             text === DONE
               ? finish(holderLost)
-              : Option.match(decodeServer(text), { onNone: () => Effect.void, onSome: handle }),
+              : // A `t` this client doesn't know is ignored, as the protocol says; a broken message ends the session.
+                Option.match(decodeTagged(text), {
+                  onNone: () => finish(undecodable()),
+                  onSome: ({ t }) =>
+                    KNOWN.has(t)
+                      ? Option.match(decodeServer(text), {
+                          onNone: () => finish(undecodable()),
+                          onSome: handle,
+                        })
+                      : Effect.void,
+                }),
           ),
           Effect.forever,
         ),
