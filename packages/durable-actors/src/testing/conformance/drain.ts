@@ -472,6 +472,68 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "drain: starts no following batch behind the turn it finishes, and the waiting command commits once on a survivor",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.drain,
+        {},
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const { id, owner } = yield* placed("following", () => true)
+          const caller = (owner + 1) % cluster.runners
+          const ref = yield* refOf(id)
+          expect(yield* deposit(caller, id, 1)).toBe(1)
+
+          const commandId = yield* mint(caller)
+
+          const held = yield* on(
+            owner,
+            ActorTest.use((test) => test.pauseNext("beforeCommit")),
+          )
+
+          const first = yield* deposit(caller, id, 2).pipe(Effect.forkChild)
+          yield* held.reached
+
+          const queued = yield* on(
+            owner,
+            ActorTest.use((test) => test.pauseNext("queued")),
+          )
+
+          const second = yield* deposit(caller, id, 3, commandId).pipe(Effect.forkChild)
+          yield* queued.reached
+          yield* queued.release
+
+          const draining = yield* drain(owner, "30 seconds").pipe(Effect.forkChild)
+
+          yield* eventually(
+            Effect.map(readiness(owner), (ready) => !ready.ready && ready.reason === "draining"),
+            "the runner to turn unready",
+          )
+
+          yield* held.release
+
+          expect(yield* Fiber.join(draining)).toEqual({
+            outcome: "clean",
+            interruptedTurns: 0,
+            interruptedEffects: 0,
+          })
+          expect(yield* Fiber.join(first)).toBe(3)
+
+          // The waiting command was neither admitted nor run beside the commit.
+          expect(fixture.drain.runs.get(commandId)).toBeUndefined()
+          expect(yield* inspect(caller, ref)).toMatchObject({ state: { balance: 3 }, receipts: 2 })
+
+          yield* cluster.shutdown(owner)
+          expect(yield* Fiber.join(second)).toBe(6)
+          expect(fixture.drain.runs.get(commandId)).toBe(1)
+          expect(yield* inspect(caller, ref)).toMatchObject({ state: { balance: 6 }, receipts: 3 })
+        }),
+      ),
+  },
+  {
     name: "drain: rolls back a turn the deadline interrupts before its commit, reports it, and the caller's retry commits once on the next owner",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
