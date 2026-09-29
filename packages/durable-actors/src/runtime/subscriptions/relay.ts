@@ -16,6 +16,8 @@ import { TurnHooks } from "../turn/hooks.ts"
 import { ControlPayload, StringsJson, textArray } from "../turn/outbox.ts"
 import { candidates, outboxNow } from "../turn/relay.ts"
 import { deliveryCommandId } from "./identity.ts"
+import { count, Metrics } from "../telemetry/metrics.ts"
+import { SpanNames } from "../telemetry/spans.ts"
 
 /** How long a row whose declaration was removed stays due before cleanup deletes it. */
 const REMOVED_AFTER_MS = 86_400_000
@@ -739,6 +741,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             last_error = ${cause},
             due_at_ms = ${(yield* databaseTime) + backoff(row.attempts, settings)}
           WHERE ${held()}`
+        yield* count(Metrics.relayRetried, { kind: "subscription" }, 1)
       })
 
     if (local === undefined) return yield* backOff(BigInt(row.delivered), "Undeclared subscription")
@@ -994,9 +997,16 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     )
 
     if (!settled)
-      yield* Effect.logWarning("Subscription settle lost its claim").pipe(
+      return yield* Effect.logWarning("Subscription settle lost its claim").pipe(
         Effect.annotateLogs({ subscription: `${row.subscriber_type}.${row.subscription}` }),
       )
+
+    yield* count(Metrics.relayDelivered, { kind: "subscription" }, 1)
+    yield* count(
+      Metrics.undeliverableGaps,
+      { subscriber_type: row.subscriber_type, subscription: row.subscription },
+      uncountedGaps,
+    )
   })
 
   // Shutdown releases a claim at once instead of leaving it until its lease
@@ -1119,7 +1129,22 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     const running: Effect.Effect<void, SubscriptionError, SqlClient.SqlClient> =
       work.kind === "subscription"
-        ? deliverRow(work, claim)
+        ? deliverRow(work, claim).pipe(
+            Effect.withSpan(
+              SpanNames.relaySubscription,
+              {
+                kind: "producer",
+                attributes: {
+                  "actor.type": work.subscriber_type,
+                  "actor.tenant": work.tenant_id,
+                  "subscription.name": work.subscription,
+                  "subscription.source_type": work.source_type,
+                  "relay.attempt": work.attempts,
+                },
+              },
+              { captureStackTrace: false },
+            ),
+          )
         : Match.value(work.kind).pipe(
             Match.when("feed", () => expand(work, handoff)),
             Match.orElse(() => register(work)),
