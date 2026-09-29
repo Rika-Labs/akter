@@ -4,6 +4,7 @@ import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/Bun
 import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
 import { RunnerAddress, RunnerServer } from "effect/unstable/cluster"
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc"
+import { InternalActors } from "../../../../handles/actors.ts"
 import { Actor, Actors as ActorClient } from "../../../../index.ts"
 import { Actors, Database } from "../../../../runtime/index.ts"
 import { RunnerWiring } from "../../../../runtime/layer.ts"
@@ -146,6 +147,7 @@ const signal = (line: string) =>
 // it commits, as a client would, and reports each commit and its latency.
 const program = Effect.gen(function* () {
   const actors = yield* ActorClient
+  const internal = yield* InternalActors
   const operations = yield* Config.Int("DRILL_OPERATIONS")
   const holdAt = yield* Config.Int("DRILL_HOLD_AT").pipe(Config.withDefault(operations))
   yield* Console.log("READY")
@@ -177,7 +179,12 @@ const program = Effect.gen(function* () {
       )
 
     const latency = (yield* Clock.currentTimeMillis) - started
-    yield* Console.log(`DONE ${index} ${started} ${latency} ${incrementId} ${sendId}`)
+    // The shards each command went to, so the parent can tell which waited for a takeover.
+    const counterShard = yield* internal.shardId(counter.ref)
+    const senderShard = yield* internal.shardId(sender.ref)
+    yield* Console.log(
+      `DONE ${index} ${started} ${latency} ${incrementId} ${sendId} ${counterShard} ${senderShard}`,
+    )
   }
 
   yield* Console.log("FINISHED")
