@@ -1,7 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises"
-import { createServer, type Socket, connect } from "node:net"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { connect, createServer, type Socket } from "node:net"
 import { BunServices } from "@effect/platform-bun"
 import {
   Clock,
@@ -10,6 +7,7 @@ import {
   type Duration,
   Effect,
   ManagedRuntime,
+  Option,
   Schedule,
   Schema,
   Stream,
@@ -40,11 +38,11 @@ const freePort = Effect.callback<number>((resume) => {
 })
 
 /**
- * The one address runners know, standing in for the virtual IP or DNS name a
- * hosted database moves on failover. `hold` delays every reply without
- * dropping it, as a partition between the database and its clients would;
- * `sever` drops every connection and refuses new ones until `route` names the
- * next server.
+ * The one database address the runners know, standing in for the virtual IP
+ * or DNS name a hosted database moves on failover. `hold` delays every reply
+ * without dropping it, as a partition between the database and its clients
+ * would; `sever` drops every connection and refuses new ones until `route`
+ * names the next server.
  */
 const endpoint = Effect.fnUntraced(function* (port: number, initial: number) {
   const sockets = new Set<Socket>()
@@ -54,14 +52,17 @@ const endpoint = Effect.fnUntraced(function* (port: number, initial: number) {
 
   const server = createServer((client) => {
     if (target === undefined) return void client.destroy()
+
     const upstream = connect(target, "127.0.0.1")
     sockets.add(client).add(upstream)
+
     const close = () => {
       client.destroy()
       upstream.destroy()
       sockets.delete(client)
       sockets.delete(upstream)
     }
+
     client.on("error", close).on("close", close)
     upstream.on("error", close).on("close", close)
     client.on("data", (bytes) => upstream.write(bytes))
@@ -87,12 +88,14 @@ const endpoint = Effect.fnUntraced(function* (port: number, initial: number) {
     }),
     release: Effect.sync(() => {
       holding = false
+
       for (const write of held.splice(0)) write()
     }),
     sever: Effect.sync(() => {
       target = undefined
       holding = false
       held.length = 0
+
       for (const socket of sockets) socket.destroy()
     }),
     route: (next: number) =>
@@ -103,10 +106,8 @@ const endpoint = Effect.fnUntraced(function* (port: number, initial: number) {
 })
 
 interface Done {
-  readonly index: number
   readonly started: number
   readonly latency: number
-  readonly ids: ReadonlyArray<string>
 }
 
 interface Process {
@@ -114,6 +115,7 @@ interface Process {
   readonly acked: Set<string>
   ready: boolean
   finished: boolean
+  exited: boolean
 }
 
 describe("Postgres primary failover under load with separate runner processes", () => {
@@ -125,94 +127,36 @@ describe("Postgres primary failover under load with separate runner processes", 
     () =>
       runtime.runPromise(
         Effect.gen(function* () {
-          const bin = yield* Config.String("POSTGRES_BIN").pipe(
-            Config.withDefault("/usr/lib/postgresql/18/bin"),
-          )
           const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
-          const directory = yield* Effect.acquireRelease(
-            Effect.promise(() => mkdtemp(join(tmpdir(), "failover-"))),
-            (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+          // The primary and its standby run in containers of their own, the
+          // image CI's database service uses, so killing one kills every
+          // backend and the WAL sender with it, as losing a host would.
+          const image = yield* Config.String("FAILOVER_POSTGRES_IMAGE").pipe(
+            Config.withDefault("postgres:18.6"),
           )
 
-          const run = Effect.fnUntraced(function* (tool: string, args: ReadonlyArray<string>) {
-            const code = yield* spawner.exitCode(
-              ChildProcess.make(join(bin, tool), args, { stdout: "ignore", stderr: "inherit" }),
-            )
-            expect(code, `${tool} exit code`).toBe(0)
+          const docker = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
+            const output = yield* spawner.string(ChildProcess.make("docker", args), {
+              includeStderr: true,
+            })
+
+            return output.trim()
           })
 
-          // Both servers get their settings on the command line, so the
-          // replica's copied configuration never makes it wait for a standby
-          // of its own once promoted.
-          const serve = Effect.fnUntraced(function* (
-            data: string,
-            port: number,
-            settings: ReadonlyArray<string>,
-          ) {
-            const child = yield* spawner.spawn(
-              ChildProcess.make(
-                join(bin, "postgres"),
-                [
-                  "-D",
-                  data,
-                  "-p",
-                  String(port),
-                  "-h",
-                  "127.0.0.1",
-                  "-k",
-                  directory,
-                  "-c",
-                  "max_connections=300",
-                  ...settings.flatMap((setting) => ["-c", setting]),
-                ],
-                // SIGTERM would wait for every runner to disconnect first.
-                { stdout: "ignore", stderr: "ignore", killSignal: "SIGQUIT" },
+          const container = (args: ReadonlyArray<string>) =>
+            Effect.acquireRelease(
+              docker(["run", "--detach", "--network", "host", ...args]).pipe(
+                Effect.flatMap((output) => {
+                  const id = output.split("\n").at(-1)!
+
+                  return /^[0-9a-f]{64}$/.test(id)
+                    ? Effect.succeed(id)
+                    : Effect.die(new Error(`docker run failed: ${output}`))
+                }),
               ),
+              (id) => Effect.ignore(docker(["rm", "--force", "--volumes", id])),
             )
-            const url = `postgres://project@127.0.0.1:${port}/postgres`
-            yield* Effect.tryPromise(async () => {
-              const probe = new Pool({ connectionString: url, max: 1 })
-              try {
-                await probe.query("SELECT 1")
-              } finally {
-                await probe.end()
-              }
-            }).pipe(Effect.retry({ times: 100, schedule: Schedule.spaced("100 millis") }))
-            return child
-          })
-
-          const primaryPort = yield* freePort
-          const replicaPort = yield* freePort
-          const primaryData = join(directory, "primary")
-          const replicaData = join(directory, "replica")
-
-          yield* run("initdb", ["-D", primaryData, "-U", "project", "--auth=trust", "--no-sync"])
-
-          // Every commit waits until the standby has flushed it, so any commit
-          // a client could have been told about survives the promotion.
-          const primary = yield* serve(primaryData, primaryPort, [
-            "wal_level=replica",
-            "synchronous_standby_names=*",
-            "synchronous_commit=on",
-          ])
-
-          yield* run("pg_basebackup", [
-            "-h",
-            "127.0.0.1",
-            "-p",
-            String(primaryPort),
-            "-U",
-            "project",
-            "-D",
-            replicaData,
-            "-R",
-            "-X",
-            "stream",
-            "-c",
-            "fast",
-          ])
-          yield* serve(replicaData, replicaPort, [])
 
           const open = (port: number, database: string) =>
             Effect.acquireRelease(
@@ -240,22 +184,76 @@ describe("Postgres primary failover under load with separate runner processes", 
               }),
             )
 
-          const primaryAdmin = yield* open(primaryPort, "postgres")
+          const ready = Effect.fnUntraced(function* (port: number) {
+            const admin = yield* open(port, "postgres")
+
+            yield* Effect.tryPromise(() => admin.query("SELECT 1")).pipe(
+              Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
+              Effect.orDie,
+            )
+
+            return admin
+          })
+
+          const primaryPort = yield* freePort
+          const standbyPort = yield* freePort
+
+          const settings = (port: number) =>
+            [`port=${port}`, "listen_addresses=127.0.0.1", "max_connections=300"].flatMap(
+              (setting) => ["-c", setting],
+            )
+
+          const primaryId = yield* container(
+            [
+              "--env",
+              "POSTGRES_USER=project",
+              "--env",
+              "POSTGRES_HOST_AUTH_METHOD=trust",
+              image,
+            ].concat(settings(primaryPort)),
+          )
+
+          const primary = yield* ready(primaryPort)
+
+          // The standby copies the primary before it is asked to wait for one,
+          // so once promoted it never waits for a standby of its own.
+          yield* container([
+            "--user",
+            "postgres",
+            "--entrypoint",
+            "bash",
+            image,
+            "-c",
+            `pg_basebackup -h 127.0.0.1 -p ${primaryPort} -U project -D /tmp/standby -R -X stream -c fast && exec postgres -D /tmp/standby ${settings(standbyPort).join(" ")}`,
+          ])
+
+          const standby = yield* ready(standbyPort)
+
+          // Every commit waits until the standby has flushed it, so no commit
+          // a client could have been told about is missing after promotion.
+          yield* query(primary, "ALTER SYSTEM SET synchronous_standby_names = '*'")
+          yield* query(primary, "SELECT pg_reload_conf()")
           yield* until(
             query<{ state: string }>(
-              primaryAdmin,
+              primary,
               "SELECT sync_state AS state FROM pg_stat_replication",
             ).pipe(Effect.map((rows) => rows.some(({ state }) => state === "sync"))),
             "a synchronous standby",
             "30 seconds",
           )
-          yield* query(primaryAdmin, "CREATE DATABASE drill")
+          yield* query(primary, "CREATE DATABASE drill")
 
           const endpointPort = yield* freePort
           const database = yield* endpoint(endpointPort, primaryPort)
 
           const spawn = Effect.fnUntraced(function* () {
-            const process: Process = { done: [], acked: new Set(), ready: false, finished: false }
+            const process: Process = {
+              done: [],
+              acked: new Set(),
+              ready: false,
+              finished: false,
+              exited: false,
+            }
 
             const child = yield* spawner.spawn(
               ChildProcess.make("bun", [new URL("./runner.ts", import.meta.url).pathname], {
@@ -274,41 +272,43 @@ describe("Postgres primary failover under load with separate runner processes", 
               Stream.splitLines,
               Stream.runForEach((line) =>
                 Effect.sync(() => {
-                  const [tag, index, started, latency, incrementId, sendId] = line.split(" ")
+                  const [tag, first, started, latency] = line.split(" ")
 
                   if (tag === "READY") process.ready = true
 
                   if (tag === "FINISHED") process.finished = true
 
-                  if (tag === "ACKED") process.acked.add(index!)
+                  if (tag === "ACKED") process.acked.add(first!)
 
                   if (tag === "DONE")
-                    process.done.push({
-                      index: Number(index),
-                      started: Number(started),
-                      latency: Number(latency),
-                      ids: [incrementId!, sendId!],
-                    })
+                    process.done.push({ started: Number(started), latency: Number(latency) })
                 }),
               ),
               Effect.forkScoped,
             )
 
             yield* child.exitCode.pipe(
-              Effect.exit,
-              Effect.flatMap((e) => Console.error(`CHILD-EXIT ${child.pid} ${JSON.stringify(e)}`)),
+              Effect.ignore,
+              Effect.andThen(
+                Effect.sync(() => {
+                  process.exited = true
+                }),
+              ),
               Effect.forkScoped,
             )
-            yield* Console.error(`CHILD ${child.pid}`)
 
             const start = Stream.run(Stream.make(new TextEncoder().encode("GO\n")), child.stdin)
 
-            return { child, process, start }
+            return { process, start }
           })
 
           // Concurrent first migrations race on a fresh database, so one runner migrates first.
           const first = yield* spawn()
-          yield* until(Effect.sync(() => first.process.ready), "the migrating runner", "30 seconds")
+          yield* until(
+            Effect.sync(() => first.process.ready),
+            "the migrating runner",
+            "30 seconds",
+          )
           const runners = [first, yield* spawn(), yield* spawn()]
           yield* until(
             Effect.sync(() => runners.every(({ process }) => process.ready)),
@@ -327,6 +327,7 @@ describe("Postgres primary failover under load with separate runner processes", 
 
           const drill = yield* open(primaryPort, "drill")
 
+          // Read on the primary directly, past the held endpoint.
           const committed = query<{ command_id: string }>(
             drill,
             "SELECT command_id FROM actor_receipts WHERE command IN ('Increment', 'Send')",
@@ -337,74 +338,57 @@ describe("Postgres primary failover under load with separate runner processes", 
           // with those replies still in flight: each is commit-unknown.
           const unknown = yield* Effect.gen(function* () {
             yield* database.hold
+
             const found = yield* Effect.gen(function* () {
               while (true) {
                 const heard = acked()
                 const pending = (yield* committed).filter((id) => !heard.has(id))
+
                 if (pending.length > 0) return pending
+
                 yield* Effect.sleep("20 millis")
               }
             }).pipe(Effect.timeoutOption("400 millis"))
-            if (found._tag === "Some") return found.value
+
+            if (Option.isSome(found)) return found.value
+
             yield* database.release
             yield* Effect.sleep("200 millis")
-            return yield* Effect.fail("none in flight")
+
+            return yield* Effect.fail("no commit in flight")
           }).pipe(Effect.retry({ times: 50 }), Effect.orDie)
 
           // Every commit the primary made visible, taken while replies are held.
-          const beforeKill = new Set(yield* committed)
+          const visible = yield* committed
 
-          const killedAt = yield* Clock.currentTimeMillis
           expect(runners.some(({ process }) => process.finished)).toBe(false)
-          yield* primary.kill({ killSignal: "SIGKILL" })
+          const killedAt = yield* Clock.currentTimeMillis
+          yield* docker(["kill", "--signal", "KILL", primaryId])
           yield* database.sever
 
-          const replicaAdmin = yield* open(replicaPort, "postgres")
+          // Promotion follows at once: failure detection, which a real
+          // failover manager adds, is not part of this measure.
           const [promotion] = yield* query<{ promoted: boolean }>(
-            replicaAdmin,
+            standby,
             "SELECT pg_promote(true, 60) AS promoted",
           )
-          expect(promotion!.promoted).toBe(true)
-          const promotedAt = yield* Clock.currentTimeMillis
-          yield* database.route(replicaPort)
 
-          yield* Effect.gen(function* () {
-            while (true) {
-              yield* Effect.sleep("3 seconds")
-              yield* Console.error(
-                `DEBUG killedAt=${killedAt} +${(yield* Clock.currentTimeMillis) - killedAt}ms`,
-                runners.map(({ process }) => [process.done.length, process.acked.size]),
-                JSON.stringify(unknown.map((id) => [id, acked().has(id)])),
-              )
-              const debugPool = new Pool({
-                connectionString: `postgres://project@127.0.0.1:${replicaPort}/drill`,
-              })
-              const r = yield* Effect.promise(() =>
-                debugPool.query(
-                  `SELECT command, command_id FROM actor_receipts WHERE command_id = ANY($1)`,
-                  [unknown],
-                ),
-              )
-              const a = yield* Effect.promise(() =>
-                debugPool.query(
-                  `SELECT state, wait_event, left(query, 80) q, now() - state_change AS age FROM pg_stat_activity WHERE datname = 'drill' AND state <> 'idle'`,
-                ),
-              )
-              yield* Console.error(JSON.stringify(r.rows), JSON.stringify(a.rows))
-              yield* Console.error(
-                "PS",
-                yield* spawner.string(ChildProcess.make("ps", ["-o", "pid,stat,pcpu,etime,cmd", "--ppid", String(process.pid)])),
-              )
-              yield* Effect.promise(() => debugPool.end())
-            }
-          }).pipe(Effect.forkScoped)
+          expect(promotion!.promoted).toBe(true)
+
+          const promotedAt = yield* Clock.currentTimeMillis
+          yield* database.route(standbyPort)
+
           yield* until(
-            Effect.sync(() => runners.every(({ process }) => process.finished)),
+            Effect.suspend(() =>
+              runners.some(({ process }) => process.exited && !process.finished)
+                ? Effect.die(new Error("a runner exited before finishing its operations"))
+                : Effect.succeed(runners.every(({ process }) => process.finished)),
+            ),
             "runners to finish",
             "120 seconds",
           )
 
-          const promoted = yield* open(replicaPort, "drill")
+          const promoted = yield* open(standbyPort, "drill")
 
           yield* until(
             query<{ count: number }>(
@@ -419,6 +403,7 @@ describe("Postgres primary failover under load with separate runner processes", 
             promoted,
             "SELECT command, command_id FROM actor_receipts WHERE command IN ('Increment', 'Send', 'Add')",
           )
+
           const ids = new Set(receipts.map((receipt) => receipt.command_id))
 
           const total = (actorType: string) =>
@@ -434,28 +419,29 @@ describe("Postgres primary failover under load with separate runner processes", 
           const of = (command: string) =>
             receipts.filter((receipt) => receipt.command === command).length
 
-          // No acknowledged command and no commit the old primary showed is missing.
-          const lost = [...new Set([...acked(), ...beforeKill])].filter((id) => !ids.has(id))
+          // Nothing a caller heard of, and nothing the old primary showed, is missing.
+          const heard = acked()
+          const lost = [...new Set([...heard, ...visible])].filter((id) => !ids.has(id))
           expect(lost).toEqual([])
+
+          // Each commit-unknown caller retried under the same id and was
+          // answered from its receipt.
+          expect(unknown.filter((id) => !heard.has(id))).toEqual([])
+
+          // Every operation committed once: a duplicated transition would
+          // leave state ahead of its receipts.
           expect(runners.map(({ process }) => process.done.length)).toEqual([
             OPERATIONS,
             OPERATIONS,
             OPERATIONS,
           ])
-
-          // The commit-unknown commands' callers retried under the same ids and
-          // were answered from their receipts.
-          const heard = acked()
-          expect(unknown.filter((id) => !heard.has(id))).toEqual([])
-
-          // A duplicated transition would leave state ahead of its receipts.
-          expect(yield* total("DrillCounter")).toBe(of("Increment"))
-          expect(of("Add")).toBe(of("Send"))
-          expect(yield* total("DrillReceiver")).toBe(of("Send"))
           expect(of("Increment")).toBe(3 * OPERATIONS)
           expect(of("Send")).toBe(3 * OPERATIONS)
+          expect(of("Add")).toBe(3 * OPERATIONS)
+          expect(yield* total("DrillCounter")).toBe(of("Increment"))
+          expect(yield* total("DrillReceiver")).toBe(of("Add"))
 
-          // Each runner's command in flight at the kill waited out the
+          // Each runner's operation in flight at the kill waited out the
           // failover; the last of them to commit marks every runner serving.
           const resumed = runners.map(({ process }) =>
             Math.min(
@@ -464,6 +450,7 @@ describe("Postgres primary failover under load with separate runner processes", 
                 .filter((at) => at >= killedAt),
             ),
           )
+
           const recovery = Math.max(...resumed) - killedAt
 
           const worst = Math.max(
@@ -474,7 +461,6 @@ describe("Postgres primary failover under load with separate runner processes", 
           yield* Console.error(
             `FAILOVER increments=${of("Increment")} sends=${of("Send")} adds=${of("Add")} commitUnknown=${unknown.length} lost=${lost.length} promoteMs=${promotedAt - killedAt} recoveryMs=${recovery} worstCommandMs=${worst}`,
           )
-
         }).pipe(Effect.scoped, Effect.timeout("5 minutes")),
       ),
     330_000,

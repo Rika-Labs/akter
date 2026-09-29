@@ -685,6 +685,17 @@ The [nightly properties workflow](../../.github/workflows/properties.yml) runs t
 
 Ten runs with the start gate from [#219](https://github.com/Rika-Labs/durable-actors/issues/219): 0 lost and 0 duplicated operations every time, 305–319 committed operations per run, recovery from the kill to the commit of the first runner's slowest post-kill command on one of the killed runner's shards (read from `cluster_locks` before the kill) 2.50–4.57 s. Before the gate, a local loop failed 4 of 10 runs because runner 0 had finished before the kill and left the recovery measure empty; with it and the hold, every run since has passed (see [performance](03-performance.md#failure-drills-t7)).
 
+### Postgres primary failover drill (T10)
+
+[`crash/drills/failover.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/drills/failover.test.ts), in the core `test:integration` script, needs Docker. It starts its own Postgres 18.6 primary and streaming standby as `postgres:18.6` containers and runs the primary with synchronous replication to that standby. It then starts three T7 runner processes ([`crash/drills/runner.ts`](../../packages/durable-actors/src/testing/conformance/crash/drills/runner.ts)), which reach the database only through a TCP endpoint in the test process that stands in for a hosted database's moving address. Each runner runs 120 operations of an `Increment` plus a `Send` whose `Add` crosses the relay, each command under a minted id retried until it commits, and reports each acknowledgment.
+
+- `resolves commit-unknown turns through receipts after the primary fails over`. After every runner has done 30 operations, the endpoint holds replies until the primary shows a committed `Increment` or `Send` that no caller has heard of. Then the primary container gets SIGKILL, the standby is promoted with `pg_promote()`, and the endpoint moves to it. All three runners finish, and the outbox drains. The case asserts:
+  - no lost work: every acknowledged command id, and every receipt the old primary showed while replies were held, has a receipt on the promoted primary;
+  - every commit-unknown command was later acknowledged to its caller;
+  - no duplicated work: exactly 360 `Increment`, `Send`, and `Add` receipts, with the counter and receiver state totals equal to their receipt counts.
+
+Ten runs on 2026-09-29: 0 lost and 0 duplicated operations every time, and 1–3 commit-unknown commands per run, all resolved through their receipts. Promotion took 0.20–0.31 s. Recovery, from the kill to every runner committing again, was 0.37–0.42 s in 2 runs and 30.09–30.13 s in 8. In those 8 a command waited out its caller's 30-second `deliveryTimeout` because Cluster drops a command re-sent after a defect restart when its turn dies again before the rebuild completes ([#243](https://github.com/Rika-Labs/durable-actors/issues/243)). See [performance](03-performance.md#failure-drill-ii-postgres-primary-failover-t10). The drill runs table shard leases (`shardLockDisableAdvisory: true`), as T7 does, so shard ownership by session advisory locks across a failover is not covered.
+
 ### Chat on three runners (M2.11)
 
 [`examples/chat/src/room/cluster.test.ts`](../../examples/chat/src/room/cluster.test.ts) runs the chat example's own contract and handlers on `ActorTest.cluster` with three runners against a fresh Postgres database (`test:integration`; skipped on PGlite):

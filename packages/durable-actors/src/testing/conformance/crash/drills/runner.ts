@@ -1,7 +1,7 @@
 import { stdin } from "node:process"
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Cause, Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
+import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
 import { RunnerAddress, RunnerServer } from "effect/unstable/cluster"
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc"
 import { InternalActors } from "../../../../handles/actors.ts"
@@ -66,15 +66,14 @@ const runtime = Layer.unwrap(
 
     // A relay told to block stops at its first claim once the parent asks, holding what it claimed.
     const hooks = Layer.succeed(TurnHooks, {
-      at: (point, request) =>
-        Clock.currentTimeMillis.pipe(Effect.flatMap((t) => Console.error(`HOOK ${port} ${point} ${request.command} ${request.commandId} ${t}`))).pipe(Effect.andThen(
+      at: (point) =>
         blockRelay && point === "afterClaim" && !blocked
           ? Effect.suspend(() => {
               blocked = true
 
               return Console.log("CLAIMED").pipe(Effect.andThen(Effect.never))
             })
-          : Effect.void)),
+          : Effect.void,
     })
 
     const sharding = RunnerServer.layerWithClients.pipe(
@@ -145,12 +144,20 @@ const signal = (line: string) =>
   })
 
 // Each runner is also a caller: it retries a command under its minted id until
-// it commits, as a client would, and reports each commit and its latency.
+// it commits, as a client would, and reports each acknowledgment, and each
+// operation with its latency.
 const program = Effect.gen(function* () {
   const actors = yield* ActorClient
   const internal = yield* InternalActors
   const operations = yield* Config.Int("DRILL_OPERATIONS")
   const holdAt = yield* Config.Int("DRILL_HOLD_AT").pipe(Config.withDefault(operations))
+
+  // Minting reads the database clock, so it too waits out a failover.
+  const mint = actors.mintCommandId.pipe(
+    Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
+    Effect.orDie,
+  )
+
   yield* Console.log("READY")
   yield* signal("GO")
 
@@ -158,19 +165,15 @@ const program = Effect.gen(function* () {
     if (index === holdAt) yield* signal("RESUME")
 
     const started = yield* Clock.currentTimeMillis
-    yield* Console.error(`STEP ${process.env.DRILL_PORT} ${index} mint ${yield* Clock.currentTimeMillis}`)
-    const incrementId = yield* actors.mintCommandId
-    const sendId = yield* actors.mintCommandId
-    yield* Console.error(`STEP ${process.env.DRILL_PORT} ${index} get ${yield* Clock.currentTimeMillis}`)
+    const incrementId = yield* mint
+    const sendId = yield* mint
     const counter = yield* Counter.get(`counter-${index % 48}`)
     const sender = yield* Sender.get(`sender-${index % 24}`)
 
-    yield* Console.error(`STEP ${process.env.DRILL_PORT} ${index} increment ${yield* Clock.currentTimeMillis}`)
     yield* counter
       .Increment(1)
       .pipe(
         Actor.commandId(incrementId),
-        Effect.tapCause((c) => Clock.currentTimeMillis.pipe(Effect.flatMap((t) => Console.error(`ATTEMPT-FAIL ${process.env.DRILL_PORT} Increment ${index} ${t} ${JSON.stringify(Cause.squash(c)).slice(0, 400)} ${incrementId}`)))),
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
         Effect.orDie,
       )
@@ -180,7 +183,6 @@ const program = Effect.gen(function* () {
       .Send(`receiver-${index % 32}`)
       .pipe(
         Actor.commandId(sendId),
-        Effect.tapCause((c) => Clock.currentTimeMillis.pipe(Effect.flatMap((t) => Console.error(`ATTEMPT-FAIL ${process.env.DRILL_PORT} Send ${index} ${t} ${JSON.stringify(Cause.squash(c)).slice(0, 400)} ${sendId}`)))),
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
         Effect.orDie,
       )

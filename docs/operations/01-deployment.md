@@ -33,6 +33,15 @@ Measured on one machine (see [performance](../verification/03-performance.md#act
 
 Memory bounds the other runner limit. A resident activation holds about 20 KiB of JavaScript heap, so the default `maxResidentActors` of 10,000 is about 200 MiB per runner before the rest of the process. Raise it only with the memory you give the process.
 
+## Postgres primary failover
+
+A receipt, the state it covers, and the outbox rows staged with it commit in one transaction, so a failover keeps or loses them together. That makes two requirements:
+
+- **Replicate synchronously to the standby you will promote.** Run the primary with `synchronous_commit` at `on` (the default) or `remote_apply`, and name that standby in `synchronous_standby_names`. A commit then returns only after the standby has flushed it, so every command a caller was told about survives promotion. With asynchronous replication a promoted replica can lack acknowledged commits: their receipts are gone, and a retry under the same command id runs the handler again on the older state.
+- **Give runners one database address that moves.** Runners reconnect on their own through a DNS name or virtual IP that the failover moves to the promoted primary; they need no restart.
+
+A turn whose `COMMIT` was sent when the primary died is commit-unknown. Its caller's retry under the same command id replays the receipt if the commit reached the standby, and runs the command once if it did not. Commands issued while the database is unreachable, including their command-id mint, fail `ActorUnavailable`, which handles retry. The [failover drill](../verification/01-conformance.md#postgres-primary-failover-drill-t10) measures this on three runner processes. It also records one limit: a command caught by the failover can wait its whole `deliveryTimeout` before its caller retries ([#243](https://github.com/Rika-Labs/durable-actors/issues/243)). The drill runs Cluster's table shard leases (`shardLockDisableAdvisory: true`); shard ownership by session advisory locks, which a failover drops, is not yet covered.
+
 ## Readiness and bounded graceful drain
 
 The accepted behavior in [ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md) requires usable storage, compatible schemas, registered actors, operational routing, and a runner that is not draining before advertising readiness. Listening on a port is insufficient; waking every actor or finishing all workflows is unnecessary.
