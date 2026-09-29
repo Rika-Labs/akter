@@ -33,9 +33,9 @@ const seed = Effect.gen(function* () {
 
   yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
     VALUES (1, 't', 'Sender', 's')`
-  yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-      actor_type, actor_id, target_type, target_id, command, payload, caller)
-    SELECT 1, 'intent-' || i, 0, 0, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', ${caller}
+  yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, scheduled_at_ms,
+      tenant_id, actor_type, actor_id, target_type, target_id, command, payload, caller)
+    SELECT 1, 'intent-' || i, 0, 0, 0, 't', 'Sender', 's', 'Sink', 'sink', 'Deliver', '{}', ${caller}
     FROM generate_series(1, ${ROWS}::int) AS i`
 })
 
