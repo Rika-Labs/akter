@@ -96,6 +96,7 @@ export {
   CommandConflict,
   CommandExpired,
   InvalidCommandId,
+  InvalidInput,
   Unauthorized,
   Timeout,
   NotCreated,
@@ -181,6 +182,7 @@ export {
   AssertionClaims,
   AssertionKey,
   AssertionKeySet,
+  KeyRefreshClaims,
   MAX_ASSERTION_SECONDS,
 } from "./serve/assertion/verify.ts"
 
@@ -190,8 +192,14 @@ export {
   ASSERTION_HEADER,
   ASSERTION_TYPE,
   canonicalRequest,
+  KEY_REFRESH_PATH,
+  KEY_REFRESH_TYPE,
   reauthenticationDigest,
   requestDigest,
 } from "./serve/assertion/binding.ts"
 
 export type { BoundRequest } from "./serve/assertion/binding.ts"
+
+export { actorErrorBody, closeCodeOf, statusOf } from "./serve/wire.ts"
+
+export { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "./serve/frames.ts"

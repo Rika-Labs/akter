@@ -1,12 +1,24 @@
 import { createServer, connect, type Socket, type AddressInfo } from "node:net"
 import { pgTable, text } from "drizzle-orm/pg-core"
-import { Crypto, Duration, Effect, Fiber, Layer, Redacted, Schedule, Schema } from "effect"
+import {
+  Cause,
+  Crypto,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Redacted,
+  Schedule,
+  Schema,
+} from "effect"
 import type { Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, Intent, User } from "../../index.ts"
+import { Actor, ActorError, ActorUnavailable, Actors, Intent, User } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
-import { ActorTest } from "../actor-test.ts"
+import { ActorTest, ClusterMember } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 const marks = Actor.table(pgTable("pipeline_marks", { id: text("id").primaryKey() }))
@@ -139,17 +151,29 @@ const actorsLive = (probe: Probe) =>
     }).pipe(Effect.orDie),
   )
 
+interface Relay {
+  readonly port: number
+  readonly close: () => void
+  /** Drops every connection and refuses new ones, as an unreachable database would. */
+  readonly cut: () => void
+  readonly restore: () => void
+}
+
 /**
- * A TCP relay in front of Postgres for the turn pool only. The relay counts
- * a flight each time the client writes after the server has answered, which
- * is one network round trip no matter how the kernel splits the bytes.
+ * A TCP relay in front of Postgres, for the turn pool unless a case routes
+ * every pool through it. The relay counts a flight each time the client
+ * writes after the server has answered, which is one network round trip no
+ * matter how the kernel splits the bytes.
  */
 const relay = (url: URL, probe: Probe) =>
   Effect.acquireRelease(
-    Effect.callback<{ readonly port: number; readonly close: () => void }>((resume) => {
+    Effect.callback<Relay>((resume) => {
       const sockets = new Set<Socket>()
+      let refusing = false
 
       const server = createServer((client) => {
+        if (refusing) return void client.destroy()
+
         const upstream = connect({
           host: url.hostname,
           port: Number(url.port || 5432),
@@ -195,6 +219,14 @@ const relay = (url: URL, probe: Probe) =>
               for (const socket of sockets) socket.destroy()
               server.close()
             },
+            cut: () => {
+              refusing = true
+
+              for (const socket of sockets) socket.destroy()
+            },
+            restore: () => {
+              refusing = false
+            },
           }),
         )
       })
@@ -209,10 +241,11 @@ const relay = (url: URL, probe: Probe) =>
  */
 const withProbe = <A, E>(
   environment: ConformanceEnvironment,
-  options: { readonly prepare?: boolean },
+  options: { readonly prepare?: boolean; readonly everyPool?: boolean },
   body: (
     probe: Probe,
     database: Redacted.Redacted<string>,
+    relay: Relay,
   ) => Effect.Effect<A, E, Actors | ActorTest | SqlClient.SqlClient | Scope.Scope>,
 ) =>
   environment.run(Effect.service(Crypto.Crypto)).then((crypto) =>
@@ -226,7 +259,8 @@ const withProbe = <A, E>(
           return yield* Effect.die(new Error("The pipeline cases need a Postgres database"))
 
         const probe: Probe = { flights: 0, sent: [], handled: 0 }
-        const { port } = yield* relay(new URL(Redacted.value(database)), probe)
+        const relayed = yield* relay(new URL(Redacted.value(database)), probe)
+        const stream = () => connect({ host: "127.0.0.1", port: relayed.port, noDelay: true })
 
         const context = yield* Layer.build(
           actorsLive(probe).pipe(
@@ -237,15 +271,17 @@ const withProbe = <A, E>(
               }),
             ),
             Layer.provide(
-              Layer.succeed(TurnPoolSettings, {
-                stream: () => connect({ host: "127.0.0.1", port, noDelay: true }),
-                prepare: options.prepare !== false,
-              }),
+              Layer.mergeAll(
+                Layer.succeed(TurnPoolSettings, { stream, prepare: options.prepare !== false }),
+                options.everyPool === true
+                  ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
+                  : Layer.empty,
+              ),
             ),
           ),
         )
 
-        return yield* body(probe, database).pipe(Effect.provideContext(context))
+        return yield* body(probe, database, relayed).pipe(Effect.provideContext(context))
       }).pipe(Effect.scoped, Effect.provideService(Crypto.Crypto, crypto)),
     ),
   )
@@ -597,7 +633,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
-      withProbe(environment, {}, (probe) =>
+      withProbe(environment, { prepare: false }, (probe) =>
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
           const meter = yield* Plain.get("delayed")
@@ -617,6 +653,14 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(Number(row!.due) >= before + 400 + 3_600_000).toBe(true)
           expect(row!.scheduled).toBe(row!.due)
+
+          // clock_timestamp() moves while a statement runs; a shift read per
+          // column would leave the row's due and scheduled times apart
+          // whenever the statement crossed a millisecond.
+          const commit = wire(deferred.sent[1]!)
+          const moved = commit.slice(commit.indexOf("UPDATE actor_outbox"))
+          const shift = moved.slice(0, moved.indexOf("WHERE"))
+          expect(shift.split("clock_timestamp()").length - 1).toBe(1)
         }),
       ),
   },
@@ -653,6 +697,44 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
 
           expect((yield* flightsOf(probe, plain.CancelPing())).flights).toBe(2)
           expect(yield* pings).toEqual([])
+        }),
+      ),
+  },
+  {
+    name: "pipeline: an unreachable database fails a command id mint as ActorUnavailable, not a defect",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { everyPool: true }, (_probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const meter = yield* Plain.get("unreachable")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          const unavailable = (exit: Exit.Exit<unknown, unknown>) => {
+            if (Exit.isSuccess(exit) || Cause.hasDies(exit.cause)) return false
+            const error = Cause.findErrorOption(exit.cause)
+
+            return (
+              Option.isSome(error) &&
+              Schema.is(ActorError)(error.value) &&
+              Schema.is(ActorUnavailable)(error.value.reason)
+            )
+          }
+
+          relayed.cut()
+          // Explicitly, and implicitly by a handle call without an id.
+          const minted = yield* Effect.exit((yield* Actors).mintCommandId)
+          const called = yield* Effect.exit(meter.Add(1))
+          relayed.restore()
+
+          expect(unavailable(minted)).toBe(true)
+          expect(unavailable(called)).toBe(true)
+
+          // Nothing committed while the database was out of reach.
+          const retried = yield* meter
+            .Add(1)
+            .pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }))
+
+          expect(retried).toBe(2)
         }),
       ),
   },

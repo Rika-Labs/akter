@@ -255,6 +255,9 @@ const CLEANUP_INTERVAL = "1 minute"
 /** How long readiness waits for the database before it reports storage unavailable. */
 const READINESS_STORAGE_TIMEOUT = "2 seconds"
 
+/** How long readiness reuses its last storage answer. */
+const READINESS_CACHE = "1 second"
+
 export const layer = (options: Options) => {
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
@@ -567,14 +570,23 @@ export const layer = (options: Options) => {
           SET turn_ms = greatest(actor_content_types.turn_ms, EXCLUDED.turn_ms)`
       })
 
-      const publicActors = Actors.of({
-        mintCommandId: Effect.gen(function* () {
-          const now = yield* databaseTime
-          const uuid = yield* crypto.randomUUIDv4
+      // An unreachable database fails the read as ActorUnavailable, which a
+      // caller retries like any other delivery failure; it is not a defect.
+      const databaseNow = databaseTime.pipe(
+        Effect.provideContext(services),
+        Effect.catchIf(SqlError.isSqlError, (cause) =>
+          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
+        ),
+      )
 
-          return `v1.${now}.${now + retryWindowMs}.${uuid}`
-        }).pipe(Effect.provideContext(services), Effect.orDie),
+      const mintCommandId = Effect.gen(function* () {
+        const now = yield* databaseNow
+        const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+
+        return `v1.${now}.${now + retryWindowMs}.${uuid}`
       })
+
+      const publicActors = Actors.of({ mintCommandId })
 
       // Intents are admitted by their sending turn, so internal delivery skips
       // the external access and expiry checks; revocation stops new commands,
@@ -950,25 +962,13 @@ export const layer = (options: Options) => {
 
       const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled, routed }
 
-      const databaseNow = databaseTime.pipe(
-        Effect.provideContext(services),
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      )
-
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintChildId: (input) =>
           deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),
         retryWindowMs,
         databaseNow,
-        mintCommandId: Effect.gen(function* () {
-          const now = yield* databaseNow
-          const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
-
-          return `v1.${now}.${now + retryWindowMs}.${uuid}`
-        }),
+        mintCommandId,
         tables: (scope, write) =>
           bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
         blobs: (scope, write) =>
@@ -1410,24 +1410,35 @@ export const layer = (options: Options) => {
           ),
       })
 
+      // An embedded PGlite has one connection, which a turn holds for its
+      // whole transaction, so a probe would queue behind any long turn and
+      // report the runner unready; the in-process database is usable for as
+      // long as this layer is. On Postgres probes may come often and
+      // unauthenticated, so the database answers at most once a second.
+      const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
+
+      const storage = embedded
+        ? Effect.succeed(true)
+        : yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+
+            return yield* sql`SELECT 1`.pipe(
+              Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
+              Effect.map(Option.isSome),
+              Effect.orElseSucceed(() => false),
+            )
+          }).pipe(Effect.provideContext(services), Effect.cachedWithTTL(READINESS_CACHE))
+
       const serving = Effect.gen(function* () {
         if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
 
         if (registrations.size + queryRegistrations.size + effectRegistrations.size === 0)
           return { ready: false, reason: "unregistered" } as const
 
-        const sql = yield* SqlClient.SqlClient
-
-        const answered = yield* sql`SELECT 1`.pipe(
-          Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
-          Effect.map(Option.isSome),
-          Effect.orElseSucceed(() => false),
-        )
-
-        return answered
+        return (yield* storage)
           ? ({ ready: true } as const)
           : ({ ready: false, reason: "storage" } as const)
-      }).pipe(Effect.provideContext(services)) satisfies Effect.Effect<Readiness>
+      }) satisfies Effect.Effect<Readiness>
 
       const control = runtimeControl({
         gate,

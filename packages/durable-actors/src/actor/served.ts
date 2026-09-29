@@ -1,5 +1,6 @@
 import { Effect, type Result, Schema, SchemaAST } from "effect"
 import type { DeclaredError, MemberKind, ValueSchema } from "../members/command.ts"
+import type { ProgressEffect } from "../members/effect.ts"
 
 /** A public member as a served endpoint sees it: wire schemas and the runtime's payload codec. */
 export interface ServedMember {
@@ -48,6 +49,8 @@ export interface ServedConnection {
   readonly serverFrame: (encoded: string) => Effect.Effect<Schema.Json, Schema.SchemaError>
   /** A declared `open` failure, as the runtime stores it, as the JSON a client reads. */
   readonly openFailure: (encoded: string) => Effect.Effect<Schema.Json, Schema.SchemaError>
+  /** The progress schema of each effect whose executor progress this member receives, by tag. */
+  readonly progress: ReadonlyMap<string, ValueSchema>
 }
 
 export interface ServedDefinition {
@@ -64,6 +67,8 @@ export interface ServedDefinition {
   readonly feeds: ReadonlyArray<string>
   /** Names of the declared content blobs, served for download and grants. */
   readonly contents: ReadonlyArray<string>
+  /** `Actor.stream` members, served over SSE; each element is one encoded `output`. */
+  readonly streams: ReadonlyArray<ServedMember>
   readonly deliveryMs: number
 }
 
@@ -167,6 +172,7 @@ export const servedConnection = (member: {
   readonly client: ValueSchema
   readonly errors: ReadonlyArray<DeclaredError>
   readonly stampCursor: boolean
+  readonly progress: { readonly effects: ReadonlyArray<ProgressEffect> } | undefined
 }): ServedConnection => {
   const valueOf = (schema: ValueSchema) =>
     Schema.encodeEffect(Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: schema }))))
@@ -190,5 +196,8 @@ export const servedConnection = (member: {
     serverFrame: (encoded) =>
       decodeValueJson(encoded).pipe(Effect.map(({ value }) => value ?? null)),
     openFailure: decodeJsonString,
+    progress: new Map(
+      (member.progress?.effects ?? []).map((effect) => [effect.tag, effect.progress]),
+    ),
   }
 }

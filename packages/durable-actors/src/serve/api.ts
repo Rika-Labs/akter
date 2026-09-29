@@ -97,6 +97,21 @@ const ProtocolInfo = Schema.Struct({
   now: Schema.Int,
 }).annotate({ identifier: "Protocol" })
 
+const ReadinessReason = Schema.Literals([
+  "draining",
+  "drained",
+  "storage",
+  "routing",
+  "unregistered",
+])
+
+const Ready = Schema.Struct({ ready: Schema.Literal(true) }).annotate({ identifier: "Ready" })
+
+const NotReady = Schema.Struct({ ready: Schema.Literal(false), reason: ReadinessReason }).annotate({
+  identifier: "NotReady",
+  httpApiStatus: 503,
+})
+
 export const MintedCommandId = Schema.Struct({ commandId: Schema.String }).annotate({
   identifier: "MintedCommandId",
 })
@@ -215,6 +230,49 @@ const feedEndpoint = (basePath: string, definition: ServedDefinition) =>
     }
   })
 
+/** A refused subscription; one that ends later sends an `end` message instead. */
+const STREAM_ERRORS = {
+  400: ["InvalidInput"],
+  401: ["Unauthorized"],
+  403: ["InvalidInput"],
+  404: ["InvalidInput"],
+  413: ["InvalidInput"],
+  415: ["InvalidInput"],
+} as const
+
+const streamErrors = errorSchemas(STREAM_ERRORS, "Stream")
+
+// A stream is served over SSE: `element` messages, then one `end`; OpenAPI names its element schema.
+const streamEndpoint = (basePath: string, definition: ServedDefinition, member: ServedMember) =>
+  HttpApiEndpoint.post(
+    member.tag,
+    `${basePath}${memberPath({ definition, member })}` as `/${string}`,
+    {
+      params: definition.key === "singleton" ? undefined : { id: Schema.String },
+      payload: SchemaAST.isVoid(member.input.ast) ? undefined : member.input,
+      error: [...streamErrors, defect],
+    },
+  ).annotate(OpenApi.Transform, (operation) => {
+    const { 204: _, ...refusals }: { readonly [status: string]: Schema.Json } =
+      operation.responses ?? {}
+
+    return {
+      ...operation,
+      responses: {
+        200: {
+          description:
+            "Server-sent events: `element` with each encoded output, then `end` with null or the error that ended the stream",
+          content: { "text/event-stream": { schema: { type: "string" } } },
+        },
+        ...refusals,
+      },
+      "x-durable-transport": "sse",
+      "x-durable-element": {
+        $ref: `#/components/schemas/${definition.name}.${member.tag}.element`,
+      },
+    }
+  })
+
 const frameSchemas = (definition: ServedDefinition, connection: ServedConnection) =>
   Object.entries(frameParts(connection)).map(([part, schema]) =>
     schema.annotate({ identifier: frameSchemaName(definition, connection, part) }),
@@ -281,6 +339,21 @@ export const PROTOCOL_OPERATIONS: ReadonlySet<string> = new Set([
   `${PROTOCOL_GROUP}.protocol`,
   `${PROTOCOL_GROUP}.commandIds`,
   `${PROTOCOL_GROUP}.uploadContent`,
+  `${PROTOCOL_GROUP}.ready`,
+])
+
+/** Paths of the protocol routes under the base path; `openapi.path` may not take one. */
+export const PROTOCOL_PATHS: ReadonlySet<string> = new Set([
+  "/protocol",
+  "/command-ids",
+  "/ready",
+  "/content",
+])
+
+/** Protocol operations that take no credentials. */
+const UNAUTHENTICATED: ReadonlySet<string> = new Set([
+  `${PROTOCOL_GROUP}.protocol`,
+  `${PROTOCOL_GROUP}.ready`,
 ])
 
 export interface ServedRoutes {
@@ -295,6 +368,10 @@ export const build = ({ definitions, basePath, content }: ServedRoutes) => {
     HttpApiGroup.make(PROTOCOL_GROUP).add(
       HttpApiEndpoint.get("protocol", `${basePath}/protocol` as `/${string}`, {
         success: ProtocolInfo,
+      }),
+      HttpApiEndpoint.get("ready", `${basePath}/ready` as `/${string}`, {
+        success: Ready,
+        error: NotReady,
       }),
       HttpApiEndpoint.post("commandIds", `${basePath}/command-ids` as `/${string}`, {
         success: MintedCommandId,
@@ -315,6 +392,7 @@ export const build = ({ definitions, basePath, content }: ServedRoutes) => {
       ),
       ...(definition.feeds.length > 0 ? [feedEndpoint(basePath, definition)] : []),
       ...(content && definition.contents.length > 0 ? contentEndpoints(basePath, definition) : []),
+      ...definition.streams.map((member) => streamEndpoint(basePath, definition, member)),
     ]
 
     if (endpoints.length > 0)
@@ -325,9 +403,12 @@ export const build = ({ definitions, basePath, content }: ServedRoutes) => {
     .add(groups[0]!, ...groups.slice(1))
     .annotate(
       HttpApi.AdditionalSchemas,
-      definitions.flatMap((definition) =>
-        definition.connections.flatMap((connection) => frameSchemas(definition, connection)),
-      ),
+      definitions.flatMap((definition) => [
+        ...definition.connections.flatMap((connection) => frameSchemas(definition, connection)),
+        ...definition.streams.map((member) =>
+          member.output.annotate({ identifier: `${definition.name}.${member.tag}.element` }),
+        ),
+      ]),
     )
 
   return api
@@ -378,7 +459,7 @@ export const document = ({ api, auth, title, version }: DocumentOptions) => {
             ? operation
             : Object.assign({}, operation, {
                 security:
-                  "operationId" in operation && operation.operationId === "durable.protocol"
+                  "operationId" in operation && UNAUTHENTICATED.has(operation.operationId)
                     ? []
                     : security,
               }),

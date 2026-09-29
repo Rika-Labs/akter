@@ -19,3 +19,5 @@ export {
 export { splitKey, TenantHomeCommands } from "./tenant-home/layer.ts"
 
 export { TenantHomeReads } from "./tenant-home/queries.ts"
+
+export { publishedKeys } from "./edge-keys/repository.ts"

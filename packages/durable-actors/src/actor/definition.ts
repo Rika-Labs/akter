@@ -585,12 +585,14 @@ const make = <
   const Effects extends ReadonlyArray<AnyEffect> = readonly [],
   const P extends Policy<CommandsOf<Api> | Values<Internal>, Effects[number]> = {},
   const B extends ReadonlyArray<AnyBlob> = [],
+  const F extends ReadonlyArray<Events[number]> = readonly [],
   const Subs extends ReadonlyArray<AnySubscription> = readonly [],
 >(
   name: Name,
   definition: Definition<K, Fields, Api, Internal, Events, T, Effects, B, Subs> & {
     readonly key?: K
     readonly policy?: P
+    readonly feeds?: F
   },
 ) => {
   Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/)).make(name)
@@ -987,7 +989,7 @@ const make = <
     executionId: string,
     execute: (request: Request) => Effect.Effect<Outcome, ActorError>,
     poll: (request: Request) => Effect.Effect<WorkflowStatus | undefined, ActorError>,
-    mint: Effect.Effect<string>,
+    mint: Effect.Effect<string, ActorError>,
   ) =>
     workflowRun({
       executionId,
@@ -2782,6 +2784,9 @@ const make = <
     connections: connectionMembers.map(servedConnection),
     feeds: [...feeds],
     contents: blobs.flatMap((declared) => (isContent(declared) ? [declared.name] : [])),
+    streams: Object.values(api)
+      .filter((member) => member.kind === "stream")
+      .map((member) => servedMember({ member, codecs: codecs.get(member.tag)! })),
     deliveryMs: policy.deliveryMs,
   }
 
@@ -2824,10 +2829,11 @@ const make = <
     client: (options: ClientOptions) =>
       clientOf<
         ActorClient<
-          Omit<Api, WorkflowKeys<Api> | ConnectionKeys<Api> | StreamKeys<Api>>,
+          Omit<Api, WorkflowKeys<Api>>,
           K extends SingletonKey ? "singleton" : K extends undefined ? "minted" : "keyed",
           Id,
-          StateOf<Fields>
+          StateOf<Fields>,
+          F[number]
         >
       >(served)(options),
   }
