@@ -27,6 +27,7 @@ import {
 } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
+import { RuntimeControl } from "../../runtime/drain.ts"
 import { encodeExecutionId } from "../../identity/execution.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
 import type {
@@ -1051,6 +1052,65 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(result).toBe("r-sleep-k:v2")
           expect(fixture.workflows.runs.get("reserve:k1")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "workflows: abandons a running execution on drain and resumes it on another runner",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.workflows,
+        Effect.gen(function* () {
+          const gate = yield* Deferred.make<void>()
+          fixture.workflows.blocked = gate
+
+          const id = yield* on(
+            0,
+            Effect.gen(function* () {
+              const run = yield* (yield* Shipper.get("drained-activity")).Ship({
+                orderId: "d1",
+                sku: "block",
+              })
+
+              return run.executionId
+            }),
+          )
+
+          yield* eventually(
+            Effect.sync(() => fixture.workflows.runs.get("reserve:d1") === 1),
+            "the activity to start",
+          )
+
+          const cluster = yield* ActorCluster
+          const ref = (yield* cluster.on(0)(Shipper.get("drained-activity"))).ref
+          const owner = (yield* cluster.owner(ref))!
+          const survivor = (owner + 1) % cluster.runners
+
+          // A live workflow run is not a turn, so the drain is clean; the run
+          // ends, unrecorded, when the drained runner's layer closes.
+          expect(
+            yield* on(
+              owner,
+              RuntimeControl.use((control) => control.drain({ deadline: "5 seconds" })),
+            ),
+          ).toEqual({ outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 })
+          yield* cluster.shutdown(owner)
+          yield* cluster.ready
+          yield* advance(survivor, "31 seconds")
+
+          const result = yield* on(
+            survivor,
+            Effect.gen(function* () {
+              return yield* (yield* Shipper.run(Ship, id)).result
+            }),
+          )
+
+          expect(result).toBe("r-block:v2")
+          expect(fixture.workflows.runs.get("reserve:d1")).toBe(2)
+          yield* Deferred.succeed(gate, undefined)
         }),
       ),
   },

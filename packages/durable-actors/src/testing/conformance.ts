@@ -21,6 +21,7 @@ import { principal } from "../identity/caller.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 import type { InternalActors } from "../handles/actors.ts"
+import type { RuntimeControl } from "../runtime/drain.ts"
 import { ActorTest } from "./actor-test.ts"
 import { admissionConformance, admissionLayer, payloadHash } from "./conformance/admission.ts"
 import { capacityConformance } from "./conformance/capacity.ts"
@@ -63,6 +64,12 @@ import {
 } from "./conformance/retention.ts"
 import { httpConformance, httpLayer } from "./conformance/http.ts"
 import { multiRunnerConformance } from "./conformance/multi-runner.ts"
+import {
+  drainConformance,
+  drainFixture,
+  type DrainFixture,
+  drainLayer,
+} from "./conformance/drain.ts"
 import { pipelineConformance } from "./conformance/pipeline.ts"
 import {
   connectionsConformance,
@@ -171,6 +178,7 @@ export interface ConformanceConnection {
 export type ConformanceServices =
   | Actors
   | InternalActors
+  | RuntimeControl
   | ActorTest
   | SqlClient.SqlClient
   | Crypto.Crypto
@@ -234,6 +242,7 @@ export interface ConformanceFixture {
   readonly workflows: WorkflowsFixture
   readonly subscriptions: SubscriptionsFixture
   readonly connections: ConnectionsFixture
+  readonly drain: DrainFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -364,6 +373,7 @@ const makeFixture = (): ConformanceFixture => ({
   workflows: workflowsFixture(),
   subscriptions: subscriptionsFixture(),
   connections: connectionsFixture(),
+  drain: drainFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -396,6 +406,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...effectsConformance,
   ...progressConformance,
   ...multiRunnerConformance,
+  ...drainConformance,
   ...pipelineConformance,
   ...relayConformance,
   ...relayClusterConformance,
@@ -1454,6 +1465,7 @@ export const describeConformance = (options: {
     transportsLayer,
     mintLayer,
     subscriptionsLayer(fixture.subscriptions),
+    drainLayer(fixture.drain),
   )
 
   let store: ConformanceStore | undefined
