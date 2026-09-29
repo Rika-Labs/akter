@@ -513,6 +513,13 @@ On PGlite every after run beat every before run in both query cases: p50 −12%,
 - **`hot-actor` under contention now batches.** `concurrent-8` fell from 7 to 4 statements and from 2 to 0.5 round trips per command: the first caller's turn runs alone and the other seven wait behind it, so batches alternate 1 and 7. `concurrent-64` fell from 7 to 3.2 statements and from 2 to 0.1 round trips, about 20 commands per batch. Throughput rose from 351–375/second (the M1 measurement) to 612–686/second with 8 callers and 911–1,275/second with 64 across the four runs; `concurrent-64` p50 fell from 82–103 ms after P4 to 47–60 ms. The planning envelope's 2,000–10,000/second with batches is not reached on this VM, where the benchmark client, the runtime, and Postgres share four cores.
 - **Unchanged:** a lone command still takes 7 statements and 2 round trips (`hot-actor/sequential`), and every other gated case is within the gate's tolerance.
 
+### Pipelined batches (P5 part 2, #160)
+
+`2026-09-28-1c86f1c-p5-pipelined-batches-postgres.json` is one `ci` profile run on the same VM; three more `hot-actor` and `turn-batches` runs matched it within 0.12 statements and 0.01 round trips per operation.
+
+- **`turn-batches/waiting-32`:** 3 round trips per operation instead of 4, since the batch's admission rides in the held turn's commit flight; statements are unchanged at 107.03.
+- **`hot-actor` under contention:** `concurrent-8` went from 4 to 4.32–4.44 statements and from 0.5 to 0.36–0.37 round trips per command; `concurrent-64` from 3.2 to 3.28–3.30 statements and from 0.1 to 0.07 round trips. The next batch is now taken while the previous one commits, before that batch's callers have sent their next commands, so batches are a little smaller (more fence and receipt statements per command) but each rides a commit flight (fewer round trips). Throughput and latency moved within run-to-run noise (`concurrent-8` 540–720/second, `concurrent-64` 1,101–1,148/second).
+
 ### Orders example (CR.8, #95)
 
 `2026-09-28-ed00421-cr.8-orders-{postgres,pglite}.json` runs `bun run bench --scenario orders --label cr.8-orders` (full profile, one run per backend) with Bun 1.4.2 and Postgres 18.6 on one 16-vCPU Xeon VM shared by the client, the runtime, and Postgres. The scenario calls `examples/orders`' own `Order.Place` with two lines in two packages against an in-process fake provider, on a fresh order id each time. Each order is six turns on three new actors: `Place`, two shipment `Open`s, `Charged`, and two `Release`s, plus one executor call. The relay's work overlaps the next order in every case, so statements per operation count the whole order, not one turn.
