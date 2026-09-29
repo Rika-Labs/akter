@@ -42,7 +42,7 @@ export const takeBatch = <W extends { readonly request: Request; readonly queued
 
     if (!queued || ids.has(request.commandId) || alone.has(request.commandId)) break
 
-    ids.add(commandId)
+    ids.add(request.commandId)
     batch.push(waiting.shift()!)
   }
 

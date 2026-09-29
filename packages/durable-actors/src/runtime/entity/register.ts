@@ -501,7 +501,7 @@ export const registerActor = Effect.fnUntraced(function* (
           yield* ready.await
           const batch = takeBatch({ waiting, alone })
 
-          if (!waiting[0]?.queued) ready.closeUnsafe()
+          if (waiting[0]?.queued !== true) ready.closeUnsafe()
 
           // A draining runner refuses the batch, or interrupts it at the
           // deadline, and every caller it has not answered retries elsewhere.
