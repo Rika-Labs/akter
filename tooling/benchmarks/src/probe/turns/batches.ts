@@ -67,7 +67,9 @@ export const queued = ({
 
     if (waiting.count === waiting.target) {
       arrivals.delete(ref.id)
-      Deferred.doneUnsafe(waiting.done, Effect.void)
+      // The command joins a batch only once this hook has returned, so the round
+      // goes on in a later task.
+      setTimeout(() => Deferred.doneUnsafe(waiting.done, Effect.void), 0)
     }
   })
 
