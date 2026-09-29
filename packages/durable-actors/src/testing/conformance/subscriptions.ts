@@ -2011,11 +2011,7 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
 
           const runtime = <A>(record: Effect.Effect<A, never, SqlClient.SqlClient>) =>
             Layer.build(
-              Layer.fresh(subOrderLayer).pipe(
-                Layer.provideMerge(
-                  ActorTest.layer({ database, authorize: () => Effect.succeed(true) }),
-                ),
-              ),
+              Layer.fresh(subOrderLayer).pipe(Layer.provideMerge(ActorTest.layer({ database }))),
             ).pipe(
               Effect.flatMap((context) => record.pipe(Effect.provideContext(context))),
               Effect.scoped,
@@ -2369,7 +2365,6 @@ const withCluster = <A, E>(
           holdersOnly,
           shardLockExpiration: "3 seconds",
           actors: subscriptionsLayer(fixture),
-          as: User.make({ subject: "alice" }),
           relay: { claimLease: "3 seconds", poll: "200 millis" },
         }),
       )

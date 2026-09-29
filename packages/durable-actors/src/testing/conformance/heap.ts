@@ -1,5 +1,5 @@
 import { Crypto, Effect, Layer, ManagedRuntime, Schedule, Schema } from "effect"
-import { Actor, Actors, User } from "../../index.ts"
+import { Actor, Actors } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
@@ -86,9 +86,7 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
             Effect.map(Crypto.Crypto, (crypto) =>
               ManagedRuntime.make(
                 SleeperLive.pipe(
-                  Layer.provideMerge(
-                    ActorTest.layer({ database, as: User.make({ subject: "alice" }) }),
-                  ),
+                  Layer.provideMerge(ActorTest.layer({ database })),
                   Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
                   Layer.orDie,
                 ),
@@ -152,9 +150,7 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
             Effect.map(Crypto.Crypto, (crypto) =>
               ManagedRuntime.make(
                 SleeperLive.pipe(
-                  Layer.provideMerge(
-                    ActorTest.layer({ database, as: User.make({ subject: "alice" }) }),
-                  ),
+                  Layer.provideMerge(ActorTest.layer({ database })),
                   Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
                   Layer.orDie,
                 ),

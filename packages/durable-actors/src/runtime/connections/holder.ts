@@ -73,7 +73,7 @@ export interface HeldConnection {
   readonly writable: Effect.Effect<void>
   /**
    * Renews the session's authorization for the same caller, as a fresh
-   * credential does: `authorize` runs again, and the credential's own expiry,
+   * credential does: authorization runs again, and the credential's own expiry,
    * if any, becomes the session's new cap.
    */
   readonly reauthenticate: (expiresAt: number | undefined) => Effect.Effect<void, ActorError>
@@ -248,7 +248,7 @@ const ended = (cause: SessionEnded["cause"], resync: boolean, retryAfterMs?: num
  * authorization bound. A session past its credential's expiry reports that;
  * otherwise its last check is too old. A credential's expiry caps the session and
  * its buffered frames go with it. An answer that arrives past the bound never
- * extends it, and a credential that expired while `authorize` ran opens nothing.
+ * extends it, and a credential that expired while authorization ran opens nothing.
  * A holder that cannot confirm its rows for a whole bound stops serving them; a
  * connection opened since the checks began failing counts from its open. A
  * revoked client receives nothing more, including frames already queued.

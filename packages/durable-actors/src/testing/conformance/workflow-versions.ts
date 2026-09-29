@@ -11,7 +11,7 @@ import {
   Schema,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, User } from "../../index.ts"
+import { Actor } from "../../index.ts"
 import type { VersionRange } from "../../members/workflow.ts"
 import {
   acceptWorkflows,
@@ -165,7 +165,6 @@ const deploy = <A, E, LE>(
             Layer.provideMerge(
               ActorTest.layer({
                 database,
-                as: User.make({ subject: "alice" }),
                 retryWindowMs: 60_000,
               }),
             ),
@@ -274,7 +273,6 @@ const rollingDeploy = (options: {
             actors: Layer.empty,
             runnerActors: (runner) =>
               (runner === 0 ? next.layer : old.layer) as Layer.Layer<never, never, RunnerServices>,
-            as: User.make({ subject: "alice" }),
           }),
         )
 

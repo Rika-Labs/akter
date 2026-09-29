@@ -12,12 +12,12 @@ import {
   Schema,
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
-import { Actor, Intent, User } from "../../index.ts"
+import { Actor, Intent } from "../../index.ts"
 import type { Cancelled } from "../../members/effect.ts"
 import type { PerformOptions } from "../../contexts/effect.ts"
 import type { Request } from "../../handles/actors.ts"
 import type { ActorRef } from "../../identity/caller.ts"
-import type { layer as runtimeLayer } from "../../runtime/layer.ts"
+import type { Options as RuntimeOptions } from "../../runtime/layer.ts"
 import { TurnHooks } from "../../runtime/turn/hooks.ts"
 import { wakeWaiting } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -315,8 +315,6 @@ const runnerEffects = (fixture: EffectControlFixture, runner: number) => {
 /** The executors of the conformance environment's single runtime. */
 export const effectControlEffects = (fixture: EffectControlFixture) => runnerEffects(fixture, 0)
 
-type RuntimeOptions = Parameters<typeof runtimeLayer>[0]
-
 /** A poll far longer than any case, so only wakes after commit and `advance` claim rows. */
 const NO_POLL = { poll: "1 hour" } as const
 
@@ -346,7 +344,6 @@ const withCluster = <A, E>(
           actors: effectControlLayer,
           runnerActors: (runner) =>
             runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>,
-          as: User.make({ subject: "alice" }),
           relay: settings.relay,
           executors: settings.executors,
         }),

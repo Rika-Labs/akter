@@ -1,6 +1,6 @@
 import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, User } from "../../index.ts"
+import { Actor, Actors } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { RuntimeControl } from "../../runtime/drain.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -164,7 +164,6 @@ const withCluster = <A, E>(
             (settings.executors ?? []).includes(runner)
               ? chargeExecutor(fixture, runner)
               : Layer.empty,
-          as: User.make({ subject: "alice" }),
           relay: { poll: settings.poll ?? "200 millis" },
           executors: { lease: "3 seconds" },
         }),

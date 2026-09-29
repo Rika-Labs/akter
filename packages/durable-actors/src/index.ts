@@ -76,12 +76,12 @@ export const Actor = {
   InTurn,
   /** Provided by the runtime only inside stream handlers; `read.follow` requires it. */
   InStream,
-  /** Runs the piped Effect with `caller` as the ambient caller that handles capture. */
+  /** Runs the piped Effect with `caller` as the ambient caller that handles capture, for trusted code that acts on behalf of a user; without it, in-process code is `System({ source: "process" })`. */
   as:
     (caller: Caller) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.provideService(effect, CurrentCaller, caller),
-  /** Runs the piped Effect in `tenant`; the default tenant is `"default"`. */
+  /** Runs the piped Effect in `tenant`, for trusted code that acts on behalf of a tenant; the default tenant is `"default"`. */
   tenant:
     (tenant: string) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -124,6 +124,8 @@ export {
 export { ContentRef } from "./identity/content.ts"
 
 export type { ContentEntry } from "./identity/content.ts"
+
+export type { Access, AccessRequest } from "./policies/access.ts"
 
 export type { Policy } from "./policies/command.ts"
 

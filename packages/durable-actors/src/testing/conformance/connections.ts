@@ -14,7 +14,7 @@ import {
   Stream,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Intent, User } from "../../index.ts"
+import { Actor, Intent } from "../../index.ts"
 import { ActorError, ActorUnavailable, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import { type ActorRef, CurrentCaller, System, Tenant } from "../../identity/caller.ts"
 import {
@@ -401,7 +401,6 @@ const withCluster = <A, E>(
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
           actors: connectionsLayer(fixture),
           runnerActors: () => connectionsEffects(fixture),
-          as: User.make({ subject: "alice" }),
         }),
       )
 

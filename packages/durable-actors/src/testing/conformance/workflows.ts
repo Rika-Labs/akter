@@ -516,7 +516,6 @@ const withCluster = <A, E>(
           runners: 3,
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
           actors: workflowsLayer(fixture),
-          as: User.make({ subject: "alice" }),
         }),
       )
 

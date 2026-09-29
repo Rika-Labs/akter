@@ -10,6 +10,7 @@ import type { Placement } from "../runtime/storage/codec.ts"
 import type { ConnectionCommands } from "../identity/command.ts"
 import type { MintInput } from "../identity/mint.ts"
 import type { ExecutorContext } from "../contexts/effect.ts"
+import type { Access } from "../policies/access.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { CronEntry } from "../runtime/cron/schedule.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
@@ -390,6 +391,8 @@ export interface QueryRegistration {
   readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly blobs: ReadonlyArray<AnyBlob>
   readonly queries: ReadonlyMap<string, RegisteredQuery>
+  /** The actor's `access` policy; undefined when it declares none. */
+  readonly access: Access | undefined
   /** The event classes the layer reads, for the startup payload check. */
   readonly payloads: ReadonlyArray<PayloadDeclaration>
 }
@@ -402,6 +405,8 @@ export interface Registration {
   readonly mintable: boolean
   /** The deployment's default tenant: the ambient `Tenant` when the actor's layer is built. */
   readonly tenant: string
+  /** The actor's `access` policy; undefined when it declares none. */
+  readonly access: Access | undefined
   readonly placement: Placement
   readonly policy: TurnPolicy
   readonly tables: ReadonlyArray<AnyOwnedTable>

@@ -1,7 +1,7 @@
 import { Context, Crypto, Effect, Layer, Option, Schema, type Scope } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, Unauthorized, User } from "../../index.ts"
+import { Actor, Actors, Unauthorized } from "../../index.ts"
 import { OperatorAuth } from "../../runtime/operators/auth.ts"
 import { bearerToken } from "../../serve/auth.ts"
 import type { Capability } from "../../runtime/operators/grants.ts"
@@ -147,7 +147,6 @@ const withOperators = <A, E>(
           Layer.provideMerge(
             ActorTest.layer({
               database,
-              as: User.make({ subject: "alice" }),
               retryWindowMs: 60_000,
             }),
           ),

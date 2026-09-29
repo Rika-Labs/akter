@@ -17,6 +17,7 @@ export const ServedCounter = Actor.make("ServedCounter", {
   events: [Incremented],
   state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Increment },
+  access: () => true,
 })
 
 const CounterLive = ServedCounter.toLayer(
@@ -42,9 +43,7 @@ const program = Effect.gen(function* () {
   })
 
   const runtime = CounterLive.pipe(
-    Layer.provideMerge(
-      Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(Layer.provide(hooks)),
-    ),
+    Layer.provideMerge(Actors.layer().pipe(Layer.provide(hooks))),
     Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
     Layer.provide(BunCrypto.layer),
   )

@@ -76,6 +76,7 @@ import {
 } from "../handles/intents.ts"
 
 import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
+import type { Access } from "../policies/access.ts"
 import {
   CurrentCommandId,
   CurrentConnectionCommands,
@@ -659,7 +660,7 @@ interface Definition<
   readonly events?: Events
   /**
    * The declared events `Actor.serve` serves as event feeds. None are served
-   * unless listed, and `authorize` still decides who reads each.
+   * unless listed, and `access` and `authorize` still decide who reads each.
    */
   readonly feeds?: ReadonlyArray<Events[number]>
   /**
@@ -680,6 +681,14 @@ interface Definition<
   readonly effects?: Effects
   /** Limits, retention, creation, cron, subscriber, and per-effect settings. */
   readonly policy?: Policy<CommandsOf<Api> | Values<Internal>, Effects[number]>
+  /**
+   * Who may do what to this actor: asked for every external command, query,
+   * connection, stream, feed, live-session recheck, and content operation, and
+   * required beside the runtime's global `authorize` when both exist. Without
+   * it and without `authorize`, only `System` callers are allowed. Return
+   * `false` for a kind you do not know.
+   */
+  readonly access?: Access | undefined
   /**
    * `Actor.subscription` members: other actors' committed events this actor
    * receives through internal handler commands.
@@ -2439,6 +2448,7 @@ const make = <
           singleton: isSingleton,
           mintable,
           tenant: yield* Tenant,
+          access: definition.access,
           placement,
           policy,
           tables,
@@ -2650,6 +2660,7 @@ const make = <
 
       yield* actors.registerQueries({
         name,
+        access: definition.access,
         placement,
         timeoutMs: policy.executionMs,
         tables,

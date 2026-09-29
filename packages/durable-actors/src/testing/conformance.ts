@@ -132,6 +132,7 @@ import {
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
+import { accessConformance } from "./conformance/access.ts"
 import { rlsConformance } from "./conformance/rls.ts"
 import {
   progressDeliveryConformance,
@@ -1442,6 +1443,7 @@ const counterConformance: ReadonlyArray<ConformanceCase> = [
  */
 export const conformanceGroups = {
   foundation: foundationConformance,
+  access: accessConformance,
   admission: admissionConformance,
   http: httpConformance,
   assertions: assertionsConformance,

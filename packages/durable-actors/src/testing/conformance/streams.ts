@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream } from "effect"
-import { Actor, User } from "../../index.ts"
+import { Actor } from "../../index.ts"
 import { ActorError, RunnerAtCapacity, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import type { ActorRef } from "../../identity/caller.ts"
@@ -134,7 +134,6 @@ const withCluster = <A, E>(
           runners,
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
           actors: streamsLayer,
-          as: User.make({ subject: "alice" }),
         }),
       )
 

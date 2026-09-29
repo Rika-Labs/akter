@@ -1115,7 +1115,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
               runners: 2,
               shardLockExpiration: "3 seconds",
               actors: transportsLayer,
-              as: User.make({ subject: "alice" }),
             }),
           )
 
@@ -1431,7 +1430,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
               runners: 2,
               shardLockExpiration: "3 seconds",
               actors: transportsLayer,
-              as: User.make({ subject: "alice" }),
             }),
           )
 
@@ -1729,7 +1727,6 @@ export const transportsConformance: ReadonlyArray<ConformanceCase> = [
               runners: 2,
               shardLockExpiration: "3 seconds",
               actors: transportsLayer,
-              as: User.make({ subject: "alice" }),
             }),
           )
 

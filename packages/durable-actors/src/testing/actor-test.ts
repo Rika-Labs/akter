@@ -17,7 +17,6 @@ import {
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import {
-  Anonymous,
   type ActorRef,
   type Caller,
   CurrentCaller,
@@ -416,14 +415,17 @@ export class ActorTest extends Context.Service<
                 definition: D,
                 id = "singleton",
               ) {
-                const as = options.as ?? Anonymous.make({})
+                const { as } = options
 
-                const caller = Schema.is(System)(as)
-                  ? as
-                  : System.make({
-                      source: "actor",
-                      onBehalfOf: Option.getOrUndefined(principal(as)),
-                    })
+                const caller =
+                  as === undefined
+                    ? System.make({ source: "actor" })
+                    : Schema.is(System)(as)
+                      ? as
+                      : System.make({
+                          source: "actor",
+                          onBehalfOf: Option.getOrUndefined(principal(as)),
+                        })
 
                 type H = InternalHandleOf<D> & { readonly ref: ActorRef }
 
@@ -699,7 +701,7 @@ export class ActorTest extends Context.Service<
         )
 
         const runtime = runtimeLayer({
-          authorize: options.authorize ?? (() => Effect.succeed(true)),
+          authorize: options.authorize,
           retryWindowMs: options.retryWindowMs,
           maxResidentActors: options.maxResidentActors,
           relay: options.relay,
@@ -713,7 +715,7 @@ export class ActorTest extends Context.Service<
         return Layer.mergeAll(
           runtime,
           test.pipe(Layer.provide(runtime)),
-          Layer.succeed(CurrentCaller, options.as ?? Anonymous.make({})),
+          options.as === undefined ? Layer.empty : Layer.succeed(CurrentCaller, options.as),
           Layer.succeed(Tenant, tenant),
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
         ).pipe(

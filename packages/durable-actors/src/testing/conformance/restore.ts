@@ -1,5 +1,5 @@
 import { Effect, Layer, Schedule, Schema, type Scope } from "effect"
-import { Actor, Actors, Intent, User } from "../../index.ts"
+import { Actor, Actors, Intent } from "../../index.ts"
 import { CommandExpired } from "../../errors/actor.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
@@ -416,7 +416,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               retryWindowMs: RETRY_WINDOW_MS,
               actors: Layer.empty,
               runnerActors: (runner) => accountVersion(fixture.restore, versions[runner]!),
-              as: User.make({ subject: "alice" }),
             }),
           )
 
