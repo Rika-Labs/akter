@@ -57,6 +57,7 @@ import { heapConformance } from "./conformance/heap.ts"
 import { clientConformance } from "./conformance/client.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
+import { observabilityConformance } from "./conformance/observability.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
@@ -1468,6 +1469,7 @@ export const conformance: ReadonlyArray<ConformanceCase> = [
   ...propertiesConformance,
   ...mintConformance,
   ...readYourWritesConformance,
+  ...observabilityConformance,
   ...placementConformance,
 ]
 
