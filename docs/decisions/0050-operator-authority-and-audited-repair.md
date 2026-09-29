@@ -1,6 +1,6 @@
 # ADR 0050: Operator authority, audited repair, and `durable inspect`
 
-**Status:** proposed (2026-09-29). Built with M4.6 ([#226](https://github.com/Rika-Labs/durable-actors/issues/226)). It makes concrete the operator rule of [ADR 0003](0003-failure-scoping-drain-and-hosted-trust.md) and the operator receipt access of [ADR 0004](0004-receipt-access-revocation-and-expiry.md), amends [ADR 0049](0049-observability-names-metrics-and-defect-spans.md) section 3, and uses migration `0023_operator_audit`.
+**Status:** accepted (2026-09-30, Dallen). Built with M4.6 ([#226](https://github.com/Rika-Labs/durable-actors/issues/226)). It makes concrete the operator rule of [ADR 0003](0003-failure-scoping-drain-and-hosted-trust.md) and the operator receipt access of [ADR 0004](0004-receipt-access-revocation-and-expiry.md), amends [ADR 0049](0049-observability-names-metrics-and-defect-spans.md) section 3, and uses migration `0023_operator_audit`.
 
 **Responsibility:** define who is an operator, what an operator may do to which resources, how each operator action is recorded, and what `durable inspect` shows.
 
@@ -42,7 +42,7 @@ ADR 0003 requires "separate action- and resource-scoped capabilities and audited
 - **A read is audited before it is answered.** `inspect`, `receipts.read`, `defects.read`, and `audit.read` write their row first; a request whose row cannot be written is refused.
 - **An authenticated operator refused by scope is audited** with outcome `"denied"`. A request that fails authentication is not audited, because an unauthenticated caller could fill the table; it is logged as a warning with no credential. A repair that is authorized but refused by its own rule (`NotFound`, `ProviderOutcomeUnknown`, `EffectNotServed`) rolls back with nothing written.
 - **Repairs require a reason**, 1–500 characters, stored as given.
-- **Audit rows are never pruned by the runtime.** Their retention is the operator's, like dead letters'.
+- **Audit rows are never pruned by the runtime.** No runtime retention sweep touches `actor_operator_audit`; their retention is the operator's, like dead letters'.
 
 ### 3. Dead-letter repair respects provider outcome safety
 
@@ -73,7 +73,7 @@ ADR 0003 requires "separate action- and resource-scoped capabilities and audited
 - `@durable-actors/core/runtime` exports `Operators.serve`, `OperatorAuth.make` and `.tokens`, and the `OperatorGrant`, `Capability`, `OperatorAction`, and `AuditRecord` schemas.
 - `durable-actors.effect.dead_letters` is unchanged; retried and discarded dead letters are visible in `durable.operator_audit`.
 - The inspector's "Retrying a dead letter waits for audited repair" note points to `durable dead-letters retry`.
-- Subscription skip (ADR 0026 question 6) is not in this slice; it will be one more action on the same audit.
+- Subscription skip (ADR 0026 question 6) belongs to M4.6 and is not in this slice's commit; it lands as one more action on the same audit, with the same reason and capability rules.
 
 ## Verification
 
@@ -96,4 +96,4 @@ ADR 0003 requires "separate action- and resource-scoped capabilities and audited
 
 - Operators need time-bound or approval-gated grants (two-person repair).
 - Subscription skip or tenant moves join the operator actions.
-- Audit retention needs a policy the runtime enforces.
+- Operators ask for a runtime-enforced audit retention policy; until then the runtime never prunes audit rows.

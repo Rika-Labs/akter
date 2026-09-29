@@ -13,20 +13,20 @@ Everything a view shows is committed. A turn that rolls back (a defect, a crash 
 
 `SELECT * FROM durable.views` lists each view and its version. Version 1:
 
-| View                     | Rows                                                                               |
-| ------------------------ | ---------------------------------------------------------------------------------- |
-| `durable.actors`         | one per actor identity                                                             |
-| `durable.state`          | one per stored state key                                                           |
-| `durable.receipts`       | one per retained command receipt                                                   |
-| `durable.events`         | one per retained committed event                                                   |
-| `durable.outbox`         | pending intents and timers                                                         |
-| `durable.timers`         | pending keyed timers (a subset of `outbox`), including `policy.cron` entries       |
-| `durable.effects`        | performed effects not yet settled                                                  |
-| `durable.dead_letters`   | exhausted effects, kept for operators                                              |
-| `durable.workflows`      | one per retained workflow execution, open or finished                              |
-| `durable.workflow_steps` | recorded steps of open executions (a finished execution has none)                  |
-| `durable.views`          | this catalog                                                                       |
-| `durable.operator_audit` | one per operator action, and per operator refusal by scope (`0023_operator_audit`) |
+| View                     | Rows                                                                                                            |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `durable.actors`         | one per actor identity                                                                                          |
+| `durable.state`          | one per stored state key                                                                                        |
+| `durable.receipts`       | one per retained command receipt                                                                                |
+| `durable.events`         | one per retained committed event                                                                                |
+| `durable.outbox`         | pending intents and timers                                                                                      |
+| `durable.timers`         | pending keyed timers (a subset of `outbox`), including `policy.cron` entries                                    |
+| `durable.effects`        | performed effects not yet settled                                                                               |
+| `durable.dead_letters`   | exhausted effects, kept for operators                                                                           |
+| `durable.workflows`      | one per retained workflow execution, open or finished                                                           |
+| `durable.workflow_steps` | recorded steps of open executions (a finished execution has none)                                               |
+| `durable.views`          | this catalog                                                                                                    |
+| `durable.operator_audit` | one per operator action, and per operator refusal by scope (`0023_operator_audit`); never pruned by the runtime |
 
 Adding a column at the end keeps a view's version. Any other change adds a new view, such as `durable.receipts_v2`, and a catalog row.
 
