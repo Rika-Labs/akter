@@ -42,3 +42,18 @@ Drain makes the runner unready, stops new local admission and acquisition of add
 Stopping an executor cannot undo a completed external call; ambiguous provider outcomes require reconciliation or proven idempotency. Parked sockets survive activation sleep, not transport-process shutdown. Draining one runner is not deployment-wide quiescence: [restore](04-backup-restore.md) also pauses ingress and all relevant execution.
 
 `RuntimeControl` remains unimplemented. Its concrete signatures and default deadline still need specification; no example timeout is an accepted default or availability guarantee. Verification must exercise both clean and deadline-expired drain, new-work rejection, interrupted transactions, pending delivery, safe takeover, and provider ambiguity.
+
+## The hosted tenant directory
+
+Implemented (M4.8, [ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md) §5): the control-plane database holds each hosted `deployment` with its `primary_region`, and the `tenant_directory` table maps `(deployment, tenant)` to `{ region, state, version }` (`packages/postgres/migrations/0002_tenant_directory.sql`). A tenant with no row lives in its deployment's primary region, and no request writes a row.
+
+Only the `TenantHome` actor in `packages/deployments`, keyed by `<deployment>/<tenant>`, writes the directory, so every change is a receipted command attributed to its operator. Its `Create` command records the tenant's home and returns it again when repeated with the same region. It refuses an unknown deployment (`UnknownDeployment`), any region but the primary (`NotPrimaryRegion`), and a second region for a tenant that already has one (`TenantAlreadyHomed`), because moves wait for L.1. A trigger gives every insert and update the next `version` from one sequence, under a transaction-scoped advisory lock, so versions are assigned in commit order. A reader that holds every row up to version `v` can poll for rows above `v` and never skip a change that commits later with a lower number.
+
+The operator command runs the control-plane actors embedded against the control-plane database:
+
+```sh
+durable tenants create acme --deployment dep-1 --region us-east \
+  --database-url "$CONTROL_PLANE_DATABASE_URL" --operator ops@example.com
+```
+
+It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `durable tenants move` arrives with L.1.
