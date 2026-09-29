@@ -1,11 +1,11 @@
 import { connect } from "node:net"
 import { Database } from "@durable-actors/core/runtime"
 import { TurnPoolSettings } from "@durable-actors/core/testing"
-import { Context, Effect, Fiber, Layer, Redacted, Schedule, type Scope } from "effect"
+import { Context, Effect, Fiber, FileSystem, Layer, Redacted, Schedule, type Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { flightCounter } from "./flights.ts"
 
-export type BackendName = "postgres" | "pglite"
+export type BackendName = "postgres" | "pglite" | "pglite-file"
 
 /** Wait-event and connection-state samples of one database, as fractions of samples. */
 export interface Activity {
@@ -291,3 +291,45 @@ export const pglite = Effect.gen(function* () {
       }),
   } satisfies Backend
 }).pipe(Effect.orDie)
+
+/**
+ * File-backed PGlite, the embedded production shape: one process, one
+ * connection, and each case's database in a fresh temporary `dataDir` on
+ * the local filesystem, removed when the case ends.
+ */
+export const pgliteFile = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const probe = Context.get(yield* Layer.build(Database.pglite()), SqlClient.SqlClient)
+  const version = (yield* probe<{ version: string }>`SELECT version()`)[0]!.version
+  const sample = yield* fs.makeTempDirectoryScoped({ prefix: "durable-actors-bench-" })
+
+  return {
+    name: "pglite-file",
+    version,
+    settings: {
+      connections: "1 (in-process)",
+      storage: `file-backed dataDir in the system temporary directory (${filesystemOf(sample)})`,
+    },
+    database: () =>
+      fs.makeTempDirectoryScoped({ prefix: "durable-actors-bench-" }).pipe(
+        Effect.map(
+          (dataDir) =>
+            ({
+              layer: Database.pglite({ dataDir }).pipe(Layer.orDie),
+              url: undefined,
+              instruments: undefined,
+            }) satisfies CaseDatabase,
+        ),
+        Effect.orDie,
+      ),
+  } satisfies Backend
+}).pipe(Effect.orDie)
+
+/** The filesystem type holding `path`, from `df`, for the results' record of the machine. */
+const filesystemOf = (path: string) => {
+  const result = Bun.spawnSync(["df", "-T", path])
+
+  if (!result.success) return "unknown filesystem"
+
+  return result.stdout.toString().trim().split("\n").at(-1)?.split(/\s+/)[1] ?? "unknown filesystem"
+}

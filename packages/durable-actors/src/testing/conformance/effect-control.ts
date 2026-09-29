@@ -947,7 +947,8 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
 
               const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
                 FROM pg_stat_activity
-                WHERE wait_event_type = 'Lock' AND query LIKE 'UPDATE actor_outbox SET due_at_ms%'`
+                WHERE datname = current_database()
+                  AND wait_event_type = 'Lock' AND query LIKE 'UPDATE actor_outbox SET due_at_ms%'`
 
               return blocked!.n > 0
             }).pipe(Effect.orDie),
@@ -1039,7 +1040,8 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             Effect.gen(function* () {
               const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
                 FROM pg_stat_activity
-                WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`
+                WHERE datname = current_database()
+                  AND wait_event_type = 'Lock' AND wait_event = 'advisory'`
 
               return blocked!.n > 0
             }).pipe(Effect.orDie),

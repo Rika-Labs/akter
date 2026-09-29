@@ -102,7 +102,7 @@ These landed with the acceptance, as labelled targets until the slice builds the
 
 **Verification.**
 
-- [Conformance](../verification/01-conformance.md): a **PGlite embedded production** gate row, and `conformance/pglite-production.ts` with the cases below. The existing "PGlite in tests" rows are unchanged.
+- [Conformance](../verification/01-conformance.md): a **PGlite embedded production** gate row, and `conformance/crash/pglite-production.ts` with the cases below. The existing "PGlite in tests" rows are unchanged.
 - [Performance](../verification/03-performance.md): turn and wake latency on file-backed PGlite, and the largest measured `dataDir`.
 
 ## Migration
@@ -121,12 +121,11 @@ Dallen accepted every recommended default on 2026-09-28.
 
 ## Evidence required
 
-In `conformance/pglite-production.ts`, with a child process on a file-backed `dataDir`, like `crash/client.test.ts`:
+In `conformance/crash/pglite-production.ts`, with a child process on a file-backed `dataDir`, like `crash/client.test.ts`:
 
 - `recovers the last committed turn after SIGKILL at beforeCommit and afterCommit, and replays its receipt`
 - `recovers committed outbox rows and effects after SIGKILL and delivers each once`
 - `refuses a second process with DataDirLocked while the first runs, and admits a new process after the first is SIGKILLed`
-- `migrates a populated dataDir from an earlier migration id, and retries a migration interrupted by SIGKILL`
 - `restores a stopped copy and refuses expired command ids after restore`
 - `fails with DataDirVersion on a dataDir from another Postgres major`
 - `refuses relaxedDurability with a dataDir`

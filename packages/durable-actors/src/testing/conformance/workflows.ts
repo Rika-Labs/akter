@@ -779,7 +779,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("sleeping")
           const run = yield* shipper.Ship({ orderId: "o3", sku: "sleep" })
-          yield* Effect.sleep("100 millis")
+          yield* suspendedRow(run.executionId)
           const pending = yield* run.poll
           expect(Option.isSome(pending) && pending.value._tag).toBe("Suspended")
           yield* test.advance("11 seconds")
@@ -896,7 +896,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           yield* reset(fixture.workflows)
           const shipper = yield* Shipper.get("waiting")
           const run = yield* shipper.Ship({ orderId: "o4", sku: "wait" })
-          yield* Effect.sleep("100 millis")
+          yield* suspendedRow(run.executionId)
           yield* shipper.Pay({ orderId: "other", amount: 1 })
           yield* shipper.Pay({ orderId: "o4", amount: 7 })
           expect(yield* run.result).toBe("r-wait:paid-7")
@@ -912,7 +912,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("timeout")
           const run = yield* shipper.Ship({ orderId: "o5", sku: "wait" })
-          yield* Effect.sleep("100 millis")
+          yield* suspendedRow(run.executionId)
           yield* test.advance("61 seconds")
           expect(yield* run.result).toBe("r-wait:unpaid")
         }),
@@ -927,7 +927,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           const shipper = yield* Shipper.get("interrupt")
           const run = yield* shipper.Ship({ orderId: "o6", sku: "wait" })
-          yield* Effect.sleep("100 millis")
+          yield* suspendedRow(run.executionId)
           yield* run.interrupt
           yield* run.interrupt
           const exit = yield* run.result.pipe(Effect.exit)
@@ -1047,7 +1047,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("evicted")
           const run = yield* shipper.Ship({ orderId: "o8", sku: "sleep-e" })
-          yield* Effect.sleep("100 millis")
+          yield* suspendedRow(run.executionId)
           yield* test.invalidate(shipper.ref)
           yield* test.advance("11 seconds")
           const reattached = yield* Shipper.run(Ship, run.executionId)
