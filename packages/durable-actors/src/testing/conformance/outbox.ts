@@ -241,10 +241,11 @@ const seedSleepers = Effect.fnUntraced(function* (from: number, to: number, dueA
   // actor_generations looked tiny scans the whole table for every outbox row, which
   // makes this insert quadratic. Fresh statistics invalidate that plan.
   yield* sql`ANALYZE actor_generations`
-  yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms, tenant_id,
-      actor_type, actor_id, target_type, target_id, command, payload, caller)
+  yield* sql`INSERT INTO actor_outbox (routing_key, intent_id, bucket, due_at_ms,
+      scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command, payload,
+      caller)
     SELECT ((i % 256) - 128)::bigint << 56 | i, 'sleep-' || i, (i % 256) - 128, ${dueAt}::bigint,
-      'scan', 'Sleeper', i::text, 'Sleeper', i::text, 'Wake', '{}', '{}'
+      ${dueAt}::bigint, 'scan', 'Sleeper', i::text, 'Sleeper', i::text, 'Wake', '{}', '{}'
     FROM generate_series(${from}::int, ${to}::int) AS i`
   yield* sql`ANALYZE actor_outbox`
 })

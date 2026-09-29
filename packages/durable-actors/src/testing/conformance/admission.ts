@@ -57,31 +57,27 @@ export const payloadHash = Effect.fnUntraced(function* (payload: string) {
   return yield* hashCanonical(rows[0]!.canonical)
 })
 
-// SHA-256 of `{"value": {"a": 1, "b": 2}}`, the hash the admission path stored for
-// `{ b: 2, a: 1 }` before canonicalization moved into the admission statements.
-const LEGACY_HASH = "f8d20b296bbcf711deb5ce365b02b79c16ddc2b0c19b292d1e866c4bcc3c1b4a"
-
-// Writes the receipt row exactly as the previous admission path committed it.
-const writeLegacyReceipt = Effect.fnUntraced(function* (ref: ActorRef, commandId: string) {
+// Writes the receipt row of `Sum({ b: 2, a: 1 })` as another runner's turn commits it.
+const writeReceipt = Effect.fnUntraced(function* (ref: ActorRef, commandId: string) {
   const sql = yield* SqlClient.SqlClient
+  const hash = yield* payloadHash('{"value":{"b":2,"a":1}}')
   const key = routingKey({ ref, placement: "tenant" })
   yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
     VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}) ON CONFLICT DO NOTHING`
   yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
-    VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${commandId}, 'Sum', ${LEGACY_HASH},
+    VALUES (${key}, ${ref.tenant}, ${ref.actor}, ${ref.id}, ${commandId}, 'Sum', ${hash},
       ${callerKey(User.make({ subject: "alice" }))}, '{"_tag":"Success","value":"{\\"value\\":40}"}', ${commandTimes(commandId).expiresAt})`
 })
 
 export const admissionConformance: ReadonlyArray<ConformanceCase> = [
   {
-    name: "replays a previously stored receipt by its canonical payload hash and conflicts on a changed payload",
+    name: "replays a receipt another runner stored by its canonical payload hash and conflicts on a changed payload",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          expect(yield* payloadHash('{"value":{"b":2,"a":1}}')).toBe(LEGACY_HASH)
-          const adder = yield* Adder.get("legacy-receipt")
+          const adder = yield* Adder.get("stored-receipt")
           const id = yield* (yield* Actors).mintCommandId
-          yield* writeLegacyReceipt(adder.ref, id)
+          yield* writeReceipt(adder.ref, id)
           const before = executions.count
 
           expect(yield* adder.Sum({ b: 2, a: 1 }).pipe(Actor.commandId(id))).toBe(40)
@@ -96,12 +92,12 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "resolves a previously stored receipt inside the turn's fenced admission",
+    name: "resolves a receipt another runner stored inside the turn's fenced admission",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
-          const adder = yield* Adder.get("legacy-receipt-in-turn")
+          const adder = yield* Adder.get("stored-receipt-in-turn")
           expect(yield* adder.Sum({ b: 0, a: 0 })).toBe(0)
           const before = executions.count
 
@@ -112,7 +108,7 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
             const pause = yield* test.pauseNext("beforeDelivery")
             const call = yield* adder.Sum(input).pipe(Actor.commandId(id), Effect.forkChild)
             yield* pause.reached
-            yield* writeLegacyReceipt(adder.ref, id)
+            yield* writeReceipt(adder.ref, id)
             yield* pause.release
 
             return { id, call }

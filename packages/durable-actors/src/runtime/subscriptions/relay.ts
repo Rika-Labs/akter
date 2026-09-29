@@ -230,7 +230,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           'intent_id', o.intent_id, 'attempts', o.attempts, 'tenant_id', o.tenant_id,
           'actor_type', o.actor_type, 'actor_id', o.actor_id, 'target_type', o.target_type,
           'target_id', o.target_id, 'command', o.command, 'payload', o.payload,
-          'scheduled_at_ms', coalesce(o.scheduled_at_ms, o.due_at_ms)::text,
+          'scheduled_at_ms', o.scheduled_at_ms::text,
           'claimed_until', o.due_at_ms::text)::text AS work
       )`
   }

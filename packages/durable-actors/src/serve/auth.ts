@@ -21,6 +21,18 @@ export interface Authenticated {
   readonly tenant: string
   /** The credential's own expiry, which caps live sessions. */
   readonly expiresAt?: DateTime.Utc
+  /**
+   * The one request the credential was issued for: the server refuses the
+   * request unless it rebuilds the same digest from what it received.
+   */
+  readonly binding?: Binding
+}
+
+export interface Binding {
+  /** The SHA-256 hex of the canonical request string. */
+  readonly request: string
+  /** The streaming session the credential belongs to; a renewal must name the same one. */
+  readonly session?: string
 }
 
 /** A credential a provider reads, documented as one OpenAPI security scheme. */
@@ -31,6 +43,8 @@ export type Credential = Data.TaggedEnum<{
   Jwt: {}
   /** The named cookie. */
   Cookie: { readonly name: string }
+  /** `durable-assertion: <jws>`, a hosted edge's signed assertion. */
+  Assertion: {}
 }>
 
 export const Credential = Data.taggedEnum<Credential>()
