@@ -50,7 +50,6 @@ const runtime = Layer.unwrap(
     const database = yield* Config.String("CRASH_DATABASE_URL")
     let batches = 0
 
-    // Two rows per batch, so the sweep commits several batches before the kill.
     const hooks = Layer.mergeAll(
       Layer.succeed(FrameworkClock, { offsetMillis: () => offset }),
       Layer.succeed(CleanupHooks, {
@@ -82,8 +81,6 @@ const Result = Schema.fromJsonString(
   }),
 )
 
-// The crashing process seeds seven receipts and twelve events, moves 40 days
-// on, and dies inside a sweep; a fresh process finishes it.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
   const sql = yield* SqlClient.SqlClient

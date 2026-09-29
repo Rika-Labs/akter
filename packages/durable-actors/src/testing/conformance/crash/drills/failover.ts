@@ -93,7 +93,6 @@ export const endpoint = Effect.fnUntraced(function* (port: number, initial: numb
 export const open = Effect.fnUntraced(function* (port: number, database: string) {
   return yield* Effect.acquireRelease(
     Effect.sync(() =>
-      // A pool on the killed primary sees its idle connections die.
       new Pool({
         connectionString: `postgres://project@127.0.0.1:${port}/${database}`,
       }).on("error", () => {}),
@@ -186,8 +185,6 @@ export const synchronousPair = Effect.fnUntraced(function* (database: string) {
 
   const primary = yield* ready(primaryPort)
 
-  // The standby copies the primary before it is asked to wait for one, so
-  // once promoted it never waits for a standby of its own.
   yield* container([
     "--user",
     "postgres",
@@ -200,8 +197,6 @@ export const synchronousPair = Effect.fnUntraced(function* (database: string) {
 
   const standby = yield* ready(standbyPort)
 
-  // Every commit waits until the standby has flushed it, so no commit a
-  // client could have been told about is missing after promotion.
   yield* query(primary, "ALTER SYSTEM SET synchronous_standby_names = '*'")
   yield* query(primary, "SELECT pg_reload_conf()")
   yield* until(

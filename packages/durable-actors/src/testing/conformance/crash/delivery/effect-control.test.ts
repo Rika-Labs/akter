@@ -14,8 +14,6 @@ describe("cancelled effect process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  // The crash lands after the provider applied the call and before its result
-  // was recorded; the attempt's claim is the only durable trace of it.
   for (const [point, calls, row] of [["afterExecute", 1, ["effect", 1]]] as const) {
     it(
       `recovers a SIGKILL ${point} on a cancelled effect and reports it once`,
@@ -70,7 +68,6 @@ describe("cancelled effect process death with Postgres", () => {
             yield* child.kill({ killSignal: "SIGKILL" })
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
 
-            // The author committed its effect; nothing was routed yet.
             expect((yield* Effect.promise(() => pool.query(counts))).rows).toEqual([
               { posted: 1, routed: 0, calls, outbox: [row] },
             ])
@@ -83,7 +80,6 @@ describe("cancelled effect process death with Postgres", () => {
               pool.query<{ idempotency_key: string }>("SELECT idempotency_key FROM provider_calls"),
             )).rows.map(({ idempotency_key }) => idempotency_key)
 
-            // The cancelled attempt is reported once as Unknown under the effect id and never rerun.
             expect(
               output
                 .split("\n")
