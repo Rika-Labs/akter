@@ -26,8 +26,12 @@ const createDatabase = Effect.fnUntraced(function* (
 const { replicaUrl, ci } = Effect.runSync(
   Effect.gen(function* () {
     return {
+      // check:ci passes an empty value when it started no replica.
       replicaUrl: Option.getOrUndefined(
-        yield* Config.option(Config.String("TEST_REPLICA_DATABASE_URL")),
+        Option.filter(
+          yield* Config.option(Config.String("TEST_REPLICA_DATABASE_URL")),
+          (url) => url !== "",
+        ),
       ),
       ci: Option.isSome(yield* Config.option(Config.String("CI"))),
     }
