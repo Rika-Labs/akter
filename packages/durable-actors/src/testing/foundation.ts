@@ -125,7 +125,6 @@ const DeliveryActor = Actor.make("DeliveryActor", {
   policy: { deliveryTimeout: "100 millis" },
 })
 
-// Profile state history: v0 stored a single `name`; v1 split it; v2 added tags.
 const ProfileV0 = { name: Schema.String }
 
 const ProfileV1 = { first: Schema.String, last: Schema.String }
@@ -151,7 +150,6 @@ const Profile = Actor.make("Profile", {
   state: Actor.state(ProfileV2, {
     migrations: [
       Actor.migration(ProfileV0, ProfileV1, ({ name }) => {
-        // Models an upcast bug so the suite can prove it rolls back as a defect.
         if (name === "unreadable") throw new Error("Unreadable profile")
         const [first = "", ...rest] = name.split(" ")
 
@@ -163,7 +161,6 @@ const Profile = Actor.make("Profile", {
   api: { Describe, Show },
 })
 
-// `inspect` hides the version row, so migration cases read it directly.
 const storedVersion = Effect.fnUntraced(function* (ref: ActorRef) {
   const sql = yield* SqlClient.SqlClient
 
@@ -182,6 +179,7 @@ const attribution = (turn: {
   principal: Option.getOrNull(turn.principal),
 })
 
+/** Handlers for the foundation actors; `fixture` supplies the observable state cases assert on. */
 export const foundationLayer = (fixture: FoundationFixture) =>
   Layer.mergeAll(
     Minted.toLayer(Effect.succeed({ Ping: () => Effect.succeed("minted") })),
@@ -275,6 +273,7 @@ export const foundationLayer = (fixture: FoundationFixture) =>
     ),
   )
 
+/** Identity, admission, receipts, state migration, and blob cases every backend must pass. A receipt retry may wait for PGlite's busy connection, so its delivery deadline covers that wait as well as the RPC reply. */
 export const foundationConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "resolves all identity modes without writes and receipts stateless commands",
@@ -420,7 +419,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const actor = yield* Small.get("bytes")
-          expect(yield* actor.SetText("éé")).toBe("éé") // {"text":"éé"} is exactly 15 UTF-8 bytes.
+          expect(yield* actor.SetText("éé")).toBe("éé")
           const before = yield* test.inspect(actor.ref)
           const defects = fixture.foundation.defects.length
           const failure = yield* actor.SetText("ééa").pipe(Effect.exit)
@@ -439,8 +438,6 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* test.inspect(actor.ref)).generation).toBe(before.generation)
           const sql = yield* SqlClient.SqlClient
           yield* sql`UPDATE actor_state SET value = ${compress("13")} WHERE tenant_id = ${actor.ref.tenant} AND actor_type = 'Small' AND actor_id = 'bytes'`
-          // A warm activation trusts its cached committed state; advancing the
-          // generation forces the next turn to reload the row.
           yield* test.invalidate(actor.ref)
           expect(Exit.isFailure(yield* actor.SetText("ok").pipe(Effect.exit))).toBe(true)
           expect(fixture.foundation.defects.length).toBe(defects + 2)
@@ -456,16 +453,12 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const profile = yield* Profile.get("ada")
           yield* test.seed(profile.ref, { name: "Ada King Lovelace" }, 0)
-          // A query upcasts to read but never writes.
           expect(yield* profile.Show()).toBe("Ada|King Lovelace|")
           expect((yield* test.inspect(profile.ref)).state).toEqual({ name: "Ada King Lovelace" })
           expect(yield* profile.Describe(true).pipe(Effect.flip)).toEqual(Rename.make({}))
-          // A declared failure discards the migration writes along with the business change.
           expect((yield* test.inspect(profile.ref)).state).toEqual({ name: "Ada King Lovelace" })
           expect(yield* storedVersion(profile.ref)).toBe(undefined)
-          // The same warm activation upcasts again from the unchanged rows.
           expect(yield* profile.Describe(false)).toBe("Ada|King Lovelace|seen")
-          // A successful upcast rewrites the current shape and drops obsolete keys.
           expect((yield* test.inspect(profile.ref)).state).toEqual({
             first: "Ada",
             last: "King Lovelace",
@@ -481,8 +474,6 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             tags: ["seen"],
           })
           expect(yield* storedVersion(mid.ref)).toBe("2")
-          // An actor with no stored rows starts at the current shape. No upcast
-          // runs, so the turn writes only the key it set, not every key.
           const fresh = yield* Profile.get("new")
           expect(yield* fresh.Describe(false)).toBe("||seen")
           expect((yield* test.inspect(fresh.ref)).state).toEqual({ tags: ["seen"] })
@@ -635,8 +626,6 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             isRetryable: true,
           })
 
-          // A receipt retry may wait for PGlite's busy connection before admission.
-          // Its delivery deadline must cover that wait, not just the RPC reply.
           const retry = yield* actor
             .Bump()
             .pipe(

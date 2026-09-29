@@ -109,8 +109,6 @@ describe("file-backed PGlite as an embedded production backend", () => {
               yield* complete("turn:recover", directory, "RESULT", { PGLITE_COMMAND_ID: id }),
             )
 
-            // Before commit the turn rolled back and runs once more; after
-            // commit the retry replays the receipt without running.
             expect(result).toEqual({
               runs: point === "beforeCommit" ? 1 : 0,
               value: 47,
@@ -135,7 +133,6 @@ describe("file-backed PGlite as an embedded production backend", () => {
           yield* fs.writeFileString(calls, "")
           const child = yield* spawn("deliver:crash", directory, { PGLITE_CALLS: calls })
 
-          // The payee committed the intent, and the provider was called; neither settled.
           expect((yield* waitFor(child, "READY", 2)).toSorted()).toEqual([
             "READY afterExecute",
             "READY beforeOutboxDelete",
@@ -148,7 +145,6 @@ describe("file-backed PGlite as an embedded production backend", () => {
 
           expect(delivered).toEqual({ outbox: 0, receives: 1, charged: 1, runs: 0, payee: "3" })
 
-          // The effect ran again after the crash under the same idempotency key.
           const keys = (yield* fs.readFileString(calls)).trim().split("\n")
           expect(keys.length).toBe(2)
           expect(new Set(keys).size).toBe(1)
@@ -186,7 +182,6 @@ describe("file-backed PGlite as an embedded production backend", () => {
           const directory = yield* dataDir
           const kept = yield* complete("deposit:4000", directory, "ID")
 
-          // A stopped process released the lock, so this copy is a backup.
           const backup = `${directory}.backup`
           yield* fs.copy(directory, backup)
           const lost = yield* complete("deposit:4000", directory, "ID")
@@ -227,7 +222,6 @@ describe("file-backed PGlite as an embedded production backend", () => {
           expect(Exit.isFailure(exit) && Cause.squash(exit.cause)).toEqual(
             DataDirVersion.make({ dataDir: directory, found: "17", expected: POSTGRES_MAJOR }),
           )
-          // PGlite never opened it.
           expect((yield* fs.readDirectory(directory)).toSorted()).toEqual([LOCK_FILE, "PG_VERSION"])
         }),
       ),
@@ -249,7 +243,6 @@ describe("file-backed PGlite as an embedded production backend", () => {
             "A file-backed PGlite database refuses relaxedDurability",
           )
 
-          // An in-memory database keeps nothing to lose, so the option stays allowed there.
           yield* Layer.build(Database.pglite({ relaxedDurability: true }))
         }),
       ),

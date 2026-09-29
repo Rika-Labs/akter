@@ -111,7 +111,6 @@ describe("runner and relay process death with Postgres", () => {
                   DRILL_HOLD_AT: String(options.holdAt ?? operations),
                 },
                 extendEnv: true,
-                // Kept open so the parent can send more than one signal.
                 stdin: { stream: "pipe", endOnDone: false },
                 stderr: "inherit",
               }),
@@ -175,9 +174,6 @@ describe("runner and relay process death with Postgres", () => {
             expect(String((yield* child.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
           })
 
-          // Concurrent first migrations race on a fresh database, so one runner migrates first.
-          // The first runner holds halfway until the kill, so it is always
-          // still under load when a peer dies, however fast it runs.
           const first = yield* spawn(OPERATIONS, { holdAt: OPERATIONS / 2 })
           yield* until(() => first.process.ready, "the migrating runner", "30 seconds")
           const second = yield* spawn(OPERATIONS)
@@ -191,7 +187,6 @@ describe("runner and relay process death with Postgres", () => {
 
           yield* until(() => second.process.done.length >= 30, "r1 under load", "60 seconds")
 
-          // Read while its locks are still live: the shards the kill takes out of reach.
           const dead = new Set(
             (yield* query<{ shard_id: string }>(
               `SELECT shard_id FROM cluster_locks WHERE address = '127.0.0.1:${second.port}'`,
@@ -200,7 +195,6 @@ describe("runner and relay process death with Postgres", () => {
 
           expect(dead.size > 0).toBe(true)
           const killedAt = yield* Clock.currentTimeMillis
-          // The kill lands under load only while the first runner still has work.
           expect(first.process.finished).toBe(false)
           yield* killed(second.child)
           yield* first.resume
@@ -251,7 +245,6 @@ describe("runner and relay process death with Postgres", () => {
           const of = (command: string) =>
             receipts.filter((receipt) => receipt.command === command).length
 
-          // Every acknowledged command committed exactly once, including the dead runners'.
           const lost = [first, second, third, fourth, fifth].flatMap(({ process }) =>
             process.done.flatMap(({ ids: minted }) => minted.filter((id) => !ids.has(id))),
           )
@@ -263,16 +256,10 @@ describe("runner and relay process death with Postgres", () => {
             REPLACEMENT_OPERATIONS,
           ])
 
-          // A duplicated transition would leave state ahead of its receipts.
           expect(yield* total("DrillCounter")).toBe(of("Increment"))
           expect(of("Add")).toBe(of("Send"))
           expect(yield* total("DrillReceiver")).toBe(of("Send"))
 
-          // Measured on the first runner, warm and serving throughout, over its
-          // commands started after the kill that went to one of the killed
-          // runner's shards: the slowest waited for the takeover, and its
-          // commit marks those shards serving again. The hold leaves it half
-          // its operations after the kill.
           const afterKill = first.process.done.filter(({ started }) => started >= killedAt)
           expect(afterKill.length >= OPERATIONS / 2).toBe(true)
 
@@ -292,7 +279,6 @@ describe("runner and relay process death with Postgres", () => {
             ...survivors.flatMap(({ process }) => process.done.map(({ latency }) => latency)),
           )
 
-          // Tagged so a drill run's recovery can be read from the test output.
           yield* Console.error(
             `DRILL increments=${of("Increment")} sends=${of("Send")} adds=${of("Add")} lost=${lost.length} recoveryMs=${recovery} worstCommandMs=${worst}`,
           )

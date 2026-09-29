@@ -48,8 +48,6 @@ const live = Layer.unwrap(
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
 
-// Commands are direct, so a crashed process leaves no pending message:
-// recovery is the caller retrying its saved command id against a fresh process.
 const program = Effect.gen(function* () {
   const mode = yield* Config.String("CRASH_POINT")
   const commandId = yield* Config.String("CRASH_COMMAND_ID")
@@ -89,7 +87,6 @@ const program = Effect.gen(function* () {
     state: decompress(rows[0]!.state_bytes),
   })
 
-  // Tagged so the parent ignores runtime logs that share stdout.
   yield* Console.log(`RESULT ${result}`)
 }).pipe(Effect.timeout("10 seconds"))
 
