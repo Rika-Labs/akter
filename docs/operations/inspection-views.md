@@ -176,3 +176,7 @@ Benchmark `inspection-views` (`bun run bench --scenario inspection-views`), 2026
 | 20 soonest `timers` across tenants (table scan, top-N) | 24.8 / 32.4 / 35.3 and 25.3 / 30.6 / 34.2       | 60.0 / 70.0 / 72.0 and 58.9 / 68.9 / 75.7       |
 
 Keyed lookups stay sub-millisecond; anything filtered by tenant or identity alone scans its table and grows linearly with it. The views add nothing to the turn path: no index, trigger, or write, so the statement gate's counts are unchanged.
+
+## Accepted additions
+
+Targets from the accepted M4 ADRs, added at the end of each view as ADR 0028 allows: `payload_version` on `durable.events`, `durable.effects`, and `durable.dead_letters` (M4.7, [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)); new views `durable.contents` and `durable.content_refs` (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)); and, when L.2 builds the cold tier, a cold marker on `durable.actors` ([ADR 0036](../decisions/0036-cold-tier.md)).
