@@ -10,6 +10,7 @@ import {
   type RetentionGap,
   type UnknownCursor,
 } from "../index.ts"
+import type { ConnectOptions } from "../client/index.ts"
 import type { InternalActors } from "../handles/actors.ts"
 import type { BlobRead, BlobWrite } from "../state/blob.ts"
 import { resolveCron } from "../runtime/cron/schedule.ts"
@@ -71,7 +72,26 @@ describe("actor declarations", () => {
     const _unbranded = A.get("not-a-minted-id")
   })
 
-  it("leaves connection members off the Promise client", () => {
+  it("types a client's event feed to the events the actor serves in feeds", () => {
+    class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+
+    class Hidden extends Actor.Event<Hidden>()("Hidden", {}) {}
+
+    const Ping = Actor.command("Ping")
+
+    const Served = Actor.make("FeedTyped", {
+      key: Schema.String,
+      events: [Posted, Hidden],
+      feeds: [Posted],
+      api: { Ping },
+    })
+
+    type Events = Parameters<ReturnType<ReturnType<typeof Served.client>["get"]>["events"]>[0]
+
+    expectTypeOf<Events>().toEqualTypeOf<typeof Posted>()
+  })
+
+  it("serves connection members on the Promise client through connect", () => {
     const Ping = Actor.command("Ping")
     const Live = Actor.connection("Live", { client: Schema.String, server: Schema.String })
     const Served = Actor.make("Served", { key: Schema.String, api: { Ping, Live } })
@@ -79,7 +99,15 @@ describe("actor declarations", () => {
     type Handle = ReturnType<ReturnType<typeof Served.client>["get"]>
 
     expectTypeOf<keyof Handle & "Ping">().toEqualTypeOf<"Ping">()
-    expectTypeOf<keyof Handle & "Live">().toEqualTypeOf<never>()
+    expectTypeOf<keyof Handle["Live"]>().toEqualTypeOf<"connect">()
+
+    // A connection without params still takes them first, so options are never mistaken for params.
+    expectTypeOf<Parameters<Handle["Live"]["connect"]>>().toEqualTypeOf<
+      [params?: void, options?: ConnectOptions]
+    >()
+    expectTypeOf<Handle["Live"]["connect"]>().parameter(0).toEqualTypeOf<void | undefined>()
+    // @ts-expect-error options can't be passed where the params go
+    expectTypeOf<Handle["Live"]["connect"]>().toBeCallableWith({ signal: AbortSignal.abort() })
   })
 
   it("types stream handles and handlers, and keeps read.follow to stream handlers", () => {
