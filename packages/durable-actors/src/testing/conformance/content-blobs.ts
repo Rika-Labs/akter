@@ -613,24 +613,24 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const bytes = yield* fresh("handoff")
-          const from = yield* Document.get("handoff-from")
-          const to = yield* Document.get("handoff-to")
-          yield* from.Attach({ name: "file", ref: yield* upload(bytes) })
+          const source = yield* Document.get("handoff-source")
+          const target = yield* Document.get("handoff-target")
+          yield* source.Attach({ name: "file", ref: yield* upload(bytes) })
 
           // The upload's own grant has expired; the reference still yields a fresh one.
           yield* test.advance("2 hours")
-          const granted = yield* Content.grant(Document, "handoff-from", Attachments, "file")
+          const granted = yield* Content.grant(Document, "handoff-source", Attachments, "file")
           expect(Option.isSome(granted)).toBe(true)
-          yield* to.Attach({ name: "copy", ref: Option.getOrThrow(granted) })
-          expect(yield* to.Text("copy")).toEqual(Option.some(decoder.decode(bytes)))
+          yield* target.Attach({ name: "copy", ref: Option.getOrThrow(granted) })
+          expect(yield* target.Text("copy")).toEqual(Option.some(decoder.decode(bytes)))
 
-          expect(yield* Content.grant(Document, "handoff-from", Attachments, "none")).toEqual(
+          expect(yield* Content.grant(Document, "handoff-source", Attachments, "none")).toEqual(
             Option.none(),
           )
 
           fixture.denied.add("attachments.grant")
 
-          const denied = yield* Content.grant(Document, "handoff-from", Attachments, "file").pipe(
+          const denied = yield* Content.grant(Document, "handoff-source", Attachments, "file").pipe(
             Effect.flip,
             Effect.ensuring(Effect.sync(() => fixture.denied.delete("attachments.grant"))),
           )
