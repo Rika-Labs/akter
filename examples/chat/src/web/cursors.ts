@@ -1,6 +1,8 @@
-// Presence and live cursors in a browser, over the Promise client: one Live
-// connection per page, the peers from its Here, Joined, Moved and Left frames,
-// and this page's own pointer sent as frames.
+/**
+ * Presence and live cursors in a browser, over the Promise client: one Live
+ * connection per page, the peers from its Here, Joined, Moved and Left frames,
+ * and this page's own pointer sent as frames.
+ */
 import { Match } from "effect"
 import { Cursor, DocId, type Peer } from "../cursor/contract.ts"
 

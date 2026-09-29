@@ -1,5 +1,7 @@
-// Presence and live cursors with @durable-actors/react: the Live connection
-// opened from the actor handle, and the peers as a reducer over its frames.
+/**
+ * Presence and live cursors with @durable-actors/react: the Live connection
+ * opened from the actor handle, and the peers as a reducer over its frames.
+ */
 import { useActor } from "@durable-actors/react"
 import { Match } from "effect"
 import { type ReactNode, StrictMode, useEffect, useReducer, useRef, useState } from "react"
@@ -62,8 +64,10 @@ const App = (): ReactNode => {
   const [status, setStatus] = useState("connecting")
   const send = useRef<((point: typeof Point.Type) => Promise<void>) | undefined>(undefined)
 
-  // Moves arrive many times a second, so the peers are folded from every frame
-  // as it arrives; useConnection keeps only a window of recent frames.
+  /**
+   * Moves arrive many times a second, so the peers are folded from every frame
+   * as it arrives; useConnection keeps only a window of recent frames.
+   */
   useEffect(() => {
     const controller = new AbortController()
 

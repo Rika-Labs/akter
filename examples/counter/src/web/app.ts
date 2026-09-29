@@ -1,5 +1,7 @@
-// The counter in a browser, over the Promise client: the count follows the
-// counter's event feed, so every open page sees each increment as it commits.
+/**
+ * The counter in a browser, over the Promise client: the count follows the
+ * counter's event feed, so every open page sees each increment as it commits.
+ */
 import { ActorError, type Failure, NotCreated } from "@durable-actors/core/client"
 import { Effect } from "effect"
 import { Counter, Incremented } from "../counter/contract.ts"
@@ -30,7 +32,9 @@ const counters = Counter.client({
 
 const counter = counters.get(counterId)
 
-// A feed never creates its counter: until the first increment does, the page waits and asks again.
+/**
+ * A feed never creates its counter: until the first increment does, the page waits and asks again.
+ */
 const follow = async (after?: string): Promise<void> => {
   let cursor = after
 

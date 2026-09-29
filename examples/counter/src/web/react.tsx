@@ -1,5 +1,7 @@
-// The counter with @durable-actors/react: the count from the event feed, and
-// each click as one command with its own command id.
+/**
+ * The counter with @durable-actors/react: the count from the event feed, and
+ * each click as one command with its own command id.
+ */
 import { useActor, useCommand, useEventFeed } from "@durable-actors/react"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
