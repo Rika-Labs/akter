@@ -380,6 +380,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const ref = yield* Schema.decodeUnknownEffect(ContentRef)(accepted.body).pipe(
             Effect.orDie,
           )
+
           expect(ref.size).toBe(body.byteLength)
 
           const count = Effect.map(
