@@ -472,7 +472,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "answers /ready with 503 draining while a drain waits for an in-flight command, which still commits",
+    name: "stays ready while a command is in flight, then answers /ready with 503 draining while a drain waits for it, and it still commits",
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
       Effect.runPromise(
@@ -494,6 +494,15 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
                 .pipe(Effect.forkChild)
 
               yield* Deferred.await(entered)
+
+              // A long turn is not a storage outage, even on a one-connection
+              // database; waiting out the storage check's cache makes it re-probe.
+              yield* Effect.sleep("1100 millis")
+
+              expect(yield* server.send("/ready", { method: "GET" })).toMatchObject({
+                status: 200,
+                body: { ready: true },
+              })
 
               const drain = yield* RuntimeControl.use((control) =>
                 control.drain({ deadline: "30 seconds" }),

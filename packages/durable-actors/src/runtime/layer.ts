@@ -1297,16 +1297,24 @@ export const layer = (options: Options) => {
           ),
       })
 
-      // Probes may come often and unauthenticated, so the database answers at most once a second.
-      const storage = yield* Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
+      // An embedded PGlite has one connection, which a turn holds for its
+      // whole transaction, so a probe would queue behind any long turn and
+      // report the runner unready; the in-process database is usable for as
+      // long as this layer is. On Postgres probes may come often and
+      // unauthenticated, so the database answers at most once a second.
+      const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
 
-        return yield* sql`SELECT 1`.pipe(
-          Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
-          Effect.map(Option.isSome),
-          Effect.orElseSucceed(() => false),
-        )
-      }).pipe(Effect.provideContext(services), Effect.cachedWithTTL(READINESS_CACHE))
+      const storage = embedded
+        ? Effect.succeed(true)
+        : yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+
+            return yield* sql`SELECT 1`.pipe(
+              Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
+              Effect.map(Option.isSome),
+              Effect.orElseSucceed(() => false),
+            )
+          }).pipe(Effect.provideContext(services), Effect.cachedWithTTL(READINESS_CACHE))
 
       const serving = Effect.gen(function* () {
         if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const

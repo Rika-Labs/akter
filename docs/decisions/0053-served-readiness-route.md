@@ -25,7 +25,7 @@ M4.2 ([#245](https://github.com/Rika-Labs/durable-actors/pull/245)) built `Runti
    `reason` is one of `draining`, `drained`, `storage`, `routing`, or `unregistered`, as `RuntimeControl.readiness` defines them. A `503` tells a load balancer or the edge to stop routing to this runner; the body tells an operator why.
 
 2. **No credentials.** Load-balancer and orchestrator probes cannot authenticate, so `/ready` takes no credentials, like `/protocol`. It reveals nothing tenant-specific: only whether this runner should get traffic, and why not. It still passes the origin and `durable-protocol` checks of every route.
-3. **Never cached.** Responses carry `cache-control: no-store`, because a cached `200` would keep sending traffic to a draining runner. Each probe reads `RuntimeControl` state at once. The database check behind `storage` is reused for at most one second, so probes at any rate cost at most one `SELECT 1` per second per runner.
+3. **Never cached.** Responses carry `cache-control: no-store`, because a cached `200` would keep sending traffic to a draining runner. Each probe reads `RuntimeControl` state at once. On Postgres, the database check behind `storage` is a `SELECT 1` on the off-turn pool, reused for at most one second, so probes at any rate cost at most one query per second per runner. An embedded PGlite has one connection, which a turn holds for its whole transaction, so a probe there would queue behind any long turn and report a busy runner as a storage outage. On PGlite, readiness therefore skips the probe: the in-process database is usable for as long as the layer is.
 4. **OpenAPI.** The document lists `GET /ready` as `durable.ready`, with `Ready` as its `200` response and `NotReady` as its `503` response, and without security requirements. `durable.ready` joins the reserved protocol operation ids, and `/ready` joins the paths that `openapi.path` may not take. `Actor.serve` fails at startup on either collision, as it does for the other protocol routes.
 5. **Dependency.** `Actor.serve` requires `RuntimeControl`, which `Actors.layer` provides beside `InternalActors`.
 6. **Liveness is out of scope.** A runner that answers `/ready` at all is alive, so a separate liveness route adds nothing. An orchestrator should restart a runner only on a failed connection or a timeout, never on a `503`: a drained runner answers `503` until its process exits, and restarting it early would cut the drain short.
@@ -48,7 +48,7 @@ M4.2 ([#245](https://github.com/Rika-Labs/durable-actors/pull/245)) built `Runti
 `conformance/http.ts`, on PGlite and real Postgres:
 
 - `answers /ready without credentials: 200 while serving, then 503 drained, and refuses commands`;
-- `answers /ready with 503 draining while a drain waits for an in-flight command, which still commits`;
+- `stays ready while a command is in flight, then answers /ready with 503 draining while a drain waits for it, and it still commits` (on PGlite it fails without the embedded-database rule in decision 3);
 - `documents every served route and serves every documented one; the document is deterministic`, which now expects `durable.ready` with no security;
 - `fails Actor.serve at startup when openapi.path collides with a protocol route`, which now includes `/ready`.
 
