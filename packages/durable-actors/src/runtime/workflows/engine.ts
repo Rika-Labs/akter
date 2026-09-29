@@ -26,7 +26,7 @@ import {
   RESUME,
   START,
   StartPayload,
-  Target,
+  ExecutionTarget,
 } from "../../handles/workflow.ts"
 import { type ActorRef, Caller, type Principal, principal, System } from "../../identity/caller.ts"
 import { decodeExecutionId, encodeExecutionId } from "../../identity/execution.ts"
@@ -41,6 +41,7 @@ import { manifestOf, toJson } from "./manifest.ts"
 /** A running activity re-arms its execution's timer this far ahead, so a lost runner's work resumes. */
 export const RECOVERY_MS = 30_000
 
+/** The outbox timer key of an execution's recovery timer. */
 export const timerKey = (executionId: string) => `wf:${executionId}`
 
 const CallerJson = Schema.fromJsonString(Caller)
@@ -51,9 +52,9 @@ const decodeCaller = Schema.decodeEffect(CallerJson)
 
 const encodeExecutionOutput = Schema.encodeEffect(ExecutionIdOutput)
 
-const encodeTarget = Schema.encodeEffect(Target)
+const encodeTarget = Schema.encodeEffect(ExecutionTarget)
 
-const decodeTarget = Schema.decodeEffect(Target)
+const decodeTarget = Schema.decodeEffect(ExecutionTarget)
 
 const decodeStart = Schema.decodeEffect(StartPayload)
 
@@ -124,6 +125,13 @@ const deleteTimer = (
 /**
  * Inserts an execution with its version markers inside the starting owner
  * turn. A repeated start attaches: nothing is rewritten.
+ *
+ * An owner-staged start's cursor sits before the staging turn's events, so a wait
+ * sees them and every later owner event, including ones committed before the
+ * start is delivered. The run starts at once on this activation and the recovery
+ * timer resumes it if this runner dies first. The start manifest is restored if
+ * retention pruned it while a runner of an older deployment still starts
+ * executions under it.
  */
 const insertExecution = Effect.fnUntraced(function* (options: {
   readonly routingKey: bigint
@@ -140,11 +148,6 @@ const insertExecution = Effect.fnUntraced(function* (options: {
   const now = yield* databaseTime
   const manifest = yield* manifestOf(ref.actor, workflow.member)
 
-  // An owner-staged start's cursor sits before the staging turn's events, so a
-  // wait sees them and every later owner event, including ones committed
-  // before the start is delivered.
-  // The start manifest is restored if retention pruned it while a runner of an
-  // older deployment still starts executions under it.
   const inserted = yield* sql`
     WITH x AS (INSERT INTO actor_workflow_executions (routing_key, execution_id, bucket, tenant_id, actor_type, actor_id,
       workflow, workflow_key, manifest_hash, payload, caller, event_cursor, status, started_at_ms)
@@ -181,7 +184,6 @@ const insertExecution = Effect.fnUntraced(function* (options: {
       })),
     )}`
 
-  // The run starts at once on this activation; the timer resumes it if this runner dies first.
   yield* armTimer(routingKey, ref, executionId, now + RECOVERY_MS, principal(options.caller))
 
   return true
@@ -190,6 +192,8 @@ const insertExecution = Effect.fnUntraced(function* (options: {
 /**
  * The reserved commands a workflow member adds to its owner: the member's own
  * start, a start staged as an intent, the relay's resume, and interrupt.
+ *
+ * Interrupting a finished or unknown execution changes nothing.
  */
 export const workflowCommands = ({
   registration,
@@ -293,7 +297,6 @@ export const workflowCommands = ({
           WHERE routing_key = ${routingKey} AND execution_id = ${executionId} AND status <> 'finished'
           RETURNING caller`
 
-        // Interrupting a finished or unknown execution changes nothing.
         if (row !== undefined) {
           const caller = yield* decodeCaller(row.caller).pipe(Effect.orDie)
           yield* armTimer(routingKey, request.ref, executionId, undefined, principal(caller))
@@ -398,6 +401,44 @@ const derivedUuid = (bytes: Uint8Array) => {
  * Runs one activation's workflow executions. Postgres holds every step; the
  * live fibers here only save a replay. Each write is a short transaction that
  * first checks the activation still holds the owner's generation.
+ *
+ * Compatibility: a runner leaves an execution for a compatible one when it lacks
+ * the workflow, its markers exclude the execution's, it lacks a recorded step or a
+ * step of the start manifest, or it would decode a recorded result or the input
+ * differently. Once this runner's result schemas apply to the steps still to
+ * settle, its manifest becomes the execution's start manifest; a `newer` manifest
+ * is one accepted after this runner's own, as when a newer deployment starts
+ * executions while this runner still serves.
+ *
+ * Replay: an interrupted execution replays to its first unsettled step and stops
+ * there, so the compensation finalizers of completed steps run before the
+ * interrupt is recorded. A replay of a parked execution counts as running until it parks or
+ * finishes, so inspection never reports a working run as suspended. A wake that
+ * arrived during a run replays it once more unless the run lost its generation,
+ * and a run the engine stopped to replay always replays. A parking step waits
+ * until every other step of the run has parked or finished: a parked branch would
+ * otherwise interrupt concurrent branches mid-step, losing a sibling's clock, wait
+ * or activity work and possibly replaying forever. A race branch parked on a clock
+ * or wait that can now settle stops the run so its replay settles it, and a
+ * running sibling activity reruns under the same attempt. The relay consumed the
+ * recovery timer, so a still-running activity needs another.
+ *
+ * Steps: only the caller and tenant are inherited from the activation, because
+ * steps run inside the body's fiber whose caller and tenant are the execution's
+ * recorded ones. Effect's workflow instance names a workflow, and compensation
+ * never reads more of it. Rows are keyed by step and attempt, so each
+ * `Activity.retry` attempt is its own row with its own exit. The pending row is
+ * committed before an activity runs, so a rerun after a crash reuses its attempt
+ * and derived ids. A clock's due time is recorded once, so a replay never moves it.
+ * Step writes run inside the body's fiber, where a failed statement is a defect
+ * and the timer resumes. A wait's `where` runs outside any lock, and the fenced
+ * conditional settle makes a racing timeout or second run settle once. Holding the
+ * generation lock, a suspend finds any event committed after a wait's scan, so its
+ * wake survives.
+ *
+ * Compensation: `Workflow.withCompensation` and `Workflow.addFinalizer` register
+ * on the run's instance scope. Only a run that records a result closes it, and a
+ * replay registers them again, so they run once per execution.
  */
 export const activationEngine = (options: {
   readonly registration: Registration
@@ -412,8 +453,6 @@ export const activationEngine = (options: {
     const sql = yield* SqlClient.SqlClient
     const crypto = yield* Crypto.Crypto
     const { retryWindowMs } = yield* OutboxRuntime
-    // Only these two: steps run inside the body's fiber, whose caller and
-    // tenant are the execution's recorded ones, not the activation's.
 
     const services = Context.pick(
       SqlClient.SqlClient,
@@ -424,7 +463,6 @@ export const activationEngine = (options: {
 
     const instanceWorkflows = new Map<string, EffectWorkflow.Any>()
 
-    // Effect's workflow instance names a workflow; compensation never reads more of it.
     const instanceWorkflow = (tag: string) => {
       let found = instanceWorkflows.get(tag)
 
@@ -466,9 +504,6 @@ export const activationEngine = (options: {
 
     const now = databaseTime
 
-    // Per foreign start manifest, by hash: whether this runner registers its
-    // steps and input, and the steps whose recorded results it would decode
-    // under another schema.
     const startManifests = new Map<
       string,
       { readonly covered: boolean; readonly changed: ReadonlyArray<string> }
@@ -486,8 +521,6 @@ export const activationEngine = (options: {
         let known = startManifests.get(hash)
 
         if (known === undefined) {
-          // `newer`: accepted after this runner's own manifest, as when a
-          // newer deployment starts executions while this runner still serves.
           const [row] = yield* sql<{ manifest: string; newer: boolean }>`
             SELECT m.manifest::text AS manifest, m.accepted_at_ms > COALESCE((SELECT o.accepted_at_ms
               FROM actor_workflow_manifests o WHERE o.actor_type = m.actor_type AND o.workflow = m.workflow
@@ -551,9 +584,6 @@ export const activationEngine = (options: {
             }),
           ).pipe(Effect.as("finished" as const))
 
-        // An interrupted execution replays to its first unsettled step and
-        // stops there, so the compensation finalizers of the steps it
-        // completed run before the interrupt is recorded.
         const interrupting = execution.interrupt
         const workflow = registration.workflows.get(execution.workflow)
 
@@ -564,7 +594,6 @@ export const activationEngine = (options: {
           WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
           ORDER BY step, attempt`
 
-        // Keyed by step and attempt: each `Activity.retry` attempt is its own row.
         const steps = new Map<string, StepRow>()
         const markers = new Map<string, number>()
         const settledSteps = new Set<string>()
@@ -577,10 +606,6 @@ export const activationEngine = (options: {
             if (row.exit !== null) settledSteps.add(row.step)
           }
 
-        // A runner without this workflow, whose markers exclude the
-        // execution's, that lacks a recorded step or a step of the start
-        // manifest, or that would decode a recorded result or the input
-        // differently, leaves it for a compatible runner.
         const compatible =
           workflow !== undefined &&
           (yield* coversStartManifest(workflow, execution.manifest_hash, settledSteps)) &&
@@ -605,8 +630,6 @@ export const activationEngine = (options: {
 
         const own = yield* manifestOf(ref.actor, workflow.member)
 
-        // Once this runner's result schemas apply to the steps still to
-        // settle, its manifest becomes the execution's start manifest.
         if (
           execution.manifest_hash !== own.hash &&
           (startManifests.get(execution.manifest_hash)?.changed.length ?? 0) > 0
@@ -621,8 +644,6 @@ export const activationEngine = (options: {
               AND manifest_hash = ${execution.manifest_hash}`)
         }
 
-        // A replay of a parked execution is running again until it parks or
-        // finishes, so inspection never reports a working run as suspended.
         if (execution.status === "suspended")
           yield* fenced(sql`UPDATE actor_workflow_executions SET status = 'running'
             WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
@@ -694,11 +715,6 @@ export const activationEngine = (options: {
             ...row,
           })
 
-        // A branch that parks would otherwise interrupt concurrent branches
-        // mid-step: a sibling registering or settling its own clock or wait,
-        // or running an activity, would lose that work and could replay
-        // forever. So a parking step waits until every other step of the run
-        // has parked or finished, as Effect's engines let running steps finish.
         const working = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           Effect.acquireUseRelease(
             Effect.sync(() => (entry.active += 1)),
@@ -721,7 +737,6 @@ export const activationEngine = (options: {
           () => Effect.sync(() => (entry.active += 1)),
         ).pipe(Effect.andThen(Effect.die(new Suspend())))
 
-        // Step writes run inside the body's fiber; a failed statement is a defect there, and the timer resumes.
         const guarded = <A, R>(effect: Effect.Effect<A, SqlError.SqlError, R>) =>
           effect.pipe(Effect.orDie, Effect.provideContext(services))
 
@@ -729,7 +744,6 @@ export const activationEngine = (options: {
           activity: (step, run) =>
             Effect.gen(function* () {
               yield* registered(step)
-              // `Activity.retry` numbers its attempts; each records its own exit.
               const attempt = yield* Activity.CurrentAttempt
               let row = yield* recordedOf(step, attempt)
 
@@ -738,8 +752,6 @@ export const activationEngine = (options: {
 
               if (interrupting) return yield* Effect.interrupt
 
-              // The pending row is committed before the activity runs, so a
-              // rerun after a crash reuses its attempt and derived ids.
               if (row === undefined) {
                 const at = yield* now
                 yield* fenced(
@@ -814,7 +826,6 @@ export const activationEngine = (options: {
                 remember(step, { due_at_ms: String(dueAt), started_at_ms: String(at) })
               } else dueAt = Number(row.due_at_ms)
 
-              // The due time is recorded once, so a replay never moves it.
               if (at < dueAt) {
                 entry.parked.add(step.name)
 
@@ -869,8 +880,6 @@ export const activationEngine = (options: {
 
               let scanned = BigInt(row.scanned!)
 
-              // `where` runs here, outside any lock; the settle below is fenced
-              // and conditional, so a racing timeout or a second run settles once.
               for (;;) {
                 const page = yield* sql<{
                   sequence: string
@@ -969,9 +978,6 @@ export const activationEngine = (options: {
             ),
         }
 
-        // `Workflow.withCompensation` and `Workflow.addFinalizer` register on
-        // this run's instance scope. Only a run that records a result closes
-        // it; a replay registers them again, so they run once per execution.
         const instance = WorkflowEngine.WorkflowInstance.initial(
           instanceWorkflow(workflow.member.tag),
           executionId,
@@ -1019,8 +1025,6 @@ export const activationEngine = (options: {
                 yield* sql`UPDATE actor_workflow_executions SET status = 'suspended'
                   WHERE routing_key = ${routingKey} AND execution_id = ${executionId} AND status = 'running'`
 
-                // Holding the generation lock, an event committed after a wait's
-                // scan but before this suspend is found here, so its wake survives.
                 const [unseen] = yield* sql<{ found: boolean }>`
                   SELECT EXISTS (
                     SELECT 1 FROM actor_workflow_step s
@@ -1076,9 +1080,6 @@ export const activationEngine = (options: {
           const outcome = yield* Fiber.join(body).pipe(Effect.exit)
           entry.body = undefined
 
-          // A wake that arrived during a run replays it once more, unless the run
-          // lost its generation; a finished execution's replay just reads it. A
-          // run the engine stopped to replay always replays, however it ended.
           if (
             !entry.rerun ||
             (!entry.preempted && Exit.isSuccess(outcome) && outcome.value === "abandoned")
@@ -1087,8 +1088,6 @@ export const activationEngine = (options: {
         }
       }).pipe(Effect.ensuring(Effect.sync(() => live.delete(executionId))))
 
-    // Whether a step the live run is parked on can settle now: a clock or a
-    // wait timeout that is due, or a wait with owner events it hasn't scanned.
     const settleable = (executionId: string, parked: ReadonlySet<string>) =>
       parked.size === 0
         ? Effect.succeed(false)
@@ -1129,14 +1128,10 @@ export const activationEngine = (options: {
             current.body !== undefined &&
             (yield* settleable(executionId, current.parked))
           ) {
-            // A race branch parked on a clock or wait that can now settle: stop
-            // the run so its replay settles it, as a deferred completion would.
-            // A running sibling activity reruns, under the same attempt.
             current.preempted = true
             yield* Fiber.interrupt(current.body).pipe(Effect.forkIn(scope))
           }
 
-          // The relay consumed the recovery timer; a still-running activity needs another.
           if (current.activities > 0)
             yield* fenced(
               Effect.gen(function* () {

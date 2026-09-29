@@ -6,9 +6,12 @@ type Fields = Readonly<Record<string, ValueSchema>>
 
 type StateOf<F extends Fields> = Schema.Struct<F>["Type"]
 
-/** Combines two inputs into one whose single application equals applying both in order. */
+/**
+ * Combines two inputs into one whose single application equals applying both
+ * in order, which lets the server merge queued calls into one turn. Declared
+ * as a method so its parameters stay bivariant and any reducer fits `AnyReducer`.
+ */
 export interface Commutative<Input> {
-  // Method syntax keeps the parameters bivariant so any reducer fits `AnyReducer`.
   combine(first: Input, second: Input): Input
 }
 
@@ -25,11 +28,12 @@ export interface Reducer<
   Errors extends ReadonlyArray<DeclaredError>,
 > extends Member<"reducer", Tag, Input, Output, Errors> {
   readonly state: ActorState<F>
-  // Method syntax keeps the parameters bivariant so any reducer fits `AnyReducer`.
+  /** Declared as a method so its parameters stay bivariant and any reducer fits `AnyReducer`. */
   reduce(state: StateOf<F>, input: Input["Type"]): Result.Result<StateOf<F>, Errors[number]["Type"]>
   readonly commutative: Commutative<Input["Type"]> | undefined
 }
 
+/** Any reducer, whatever its schemas. */
 export type AnyReducer = Reducer<
   string,
   Fields,
@@ -38,7 +42,20 @@ export type AnyReducer = Reducer<
   ReadonlyArray<DeclaredError>
 >
 
-/** `Actor.reducer`: a commutative reducer replies `void` and cannot fail; any other replies the new state. */
+/**
+ * The overloads of `Actor.reducer`. A commutative reducer replies `void` and
+ * cannot fail, so merged turns stay equivalent to sequential ones; any other
+ * replies the committed state. Declaring `errors` on a commutative reducer
+ * throws.
+ *
+ * @example
+ * const Add = Actor.reducer("Add", {
+ *   state: Counter,
+ *   input: Schema.Struct({ by: Schema.Int }),
+ *   reduce: (state, { by }) => Result.succeed({ count: state.count + by }),
+ *   commutative: { combine: (a, b) => ({ by: a.by + b.by }) },
+ * })
+ */
 export interface MakeReducer {
   <const Tag extends string, const F extends Fields, Input extends ValueSchema = Schema.Void>(
     tag: Tag,
@@ -85,7 +102,6 @@ const reducer = (
   const { state, reduce, commutative } = options
   const input = options.input ?? Schema.Void
 
-  // A reducer replies with the committed state; a commutative one replies nothing and cannot fail.
   if (commutative === undefined)
     return {
       kind: "reducer",
@@ -113,5 +129,5 @@ const reducer = (
   }
 }
 
-// The declared signatures carry the precise types the untyped implementation cannot express.
+/** `Reducer.make` is `Actor.reducer`; see `MakeReducer` for its two forms. */
 export const Reducer = { make: reducer as MakeReducer }

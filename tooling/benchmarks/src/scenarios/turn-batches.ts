@@ -29,7 +29,6 @@ export const turnBatches: Scenario = {
     Effect.gen(function* () {
       const quick = context.profile === "quick"
 
-      // One round: hold a turn, queue `waiting` calls behind it, release.
       const rounds = (options: {
         readonly name: string
         readonly waiting: number

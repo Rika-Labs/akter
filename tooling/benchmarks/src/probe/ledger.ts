@@ -16,7 +16,10 @@ export const entries = Actor.table(
   ),
 )
 
-// What drizzle-kit generates for `entries`; the runtime checks its primary key at startup.
+/**
+ * What drizzle-kit generates for `entries`; the runtime checks its primary key
+ * at startup.
+ */
 const ENTRIES_DDL = [
   `CREATE TABLE IF NOT EXISTS bench_entries (
   routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL,
@@ -35,16 +38,21 @@ const ENTRIES_DDL = [
 
 const Entry = Schema.Struct({ id: Schema.String, amount: Schema.Int, memo: Schema.String })
 
+/** Inserts one row with the given id and replies with 1. */
 export const Append = Actor.command("Append", { input: Schema.String, output: Schema.Int })
 
+/** Inserts `count` rows `seed-<from + n>` in one statement. */
 export const Seed = Actor.command("Seed", {
   input: Schema.Struct({ from: Schema.Int, count: Schema.Int }),
 })
 
+/** Adds one to the amount of the row with this id; does nothing when it is absent. */
 export const Bump = Actor.command("Bump", { input: Schema.String })
 
+/** The row with this id, if any. */
 export const Entry1 = Actor.query("Entry", { input: Schema.String, output: Schema.Option(Entry) })
 
+/** Up to `limit` rows, largest amount first. */
 export const Page = Actor.query("Page", { input: Schema.Int, output: Schema.Array(Entry) })
 
 /** Writes and reads its own rows of `entries` through `turn.rows` and `read.rows`. */
@@ -112,7 +120,10 @@ export const spreadItems = Actor.table(
   pgTable("bench_spread_items", { id: text("id").primaryKey(), label: text("label").notNull() }),
 )
 
-// What drizzle-kit generates for the item tables, row-level security policy included.
+/**
+ * What drizzle-kit generates for the item tables, row-level security policy
+ * included.
+ */
 const ITEMS_DDL = ["bench_parented_items", "bench_spread_items"].flatMap((table) => [
   `CREATE TABLE IF NOT EXISTS ${table} (
   routing_key bigint NOT NULL, tenant_id text NOT NULL, actor_id text NOT NULL,
@@ -127,10 +138,12 @@ const ITEMS_DDL = ["bench_parented_items", "bench_spread_items"].flatMap((table)
   END $$`,
 ])
 
+/** Stages a `Mark` intent for the item, on the root's shard when `parented`, on the item's own shard otherwise. */
 export const Notify = Actor.command("Notify", {
   input: Schema.Struct({ item: Schema.String, parented: Schema.Boolean, label: Schema.String }),
 })
 
+/** Number of parented item rows visible from the root's shard group. */
 export const FamilyLabels = Actor.query("FamilyLabels", { output: Schema.Int })
 
 /** An actor-placed root whose items are placed either on it or on their own shards. */
@@ -140,10 +153,13 @@ export const FamilyRoot = Actor.make("FamilyRoot", {
   api: { Notify, FamilyLabels },
 })
 
+/** Upserts the item's `mark` row with the label and completes the pending mark for it. */
 export const Mark = Actor.command("Mark", { input: Schema.String })
 
+/** Number of rows in the item's table. */
 export const ItemLabels = Actor.query("ItemLabels", { output: Schema.Int })
 
+/** Item placed on its `FamilyRoot`'s shard. */
 export const ParentedItem = Actor.make("ParentedItem", {
   key: Schema.NonEmptyString,
   placement: { parent: FamilyRoot },
@@ -151,6 +167,7 @@ export const ParentedItem = Actor.make("ParentedItem", {
   api: { Mark },
 })
 
+/** Item placed on a shard of its own. */
 export const SpreadItem = Actor.make("SpreadItem", {
   key: Schema.NonEmptyString,
   placement: "actor",

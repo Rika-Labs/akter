@@ -27,6 +27,7 @@ export class Beat extends Actor.Event<Beat>()("Beat", { n: Schema.Int }) {}
 
 const Emit = Actor.command("Emit", { input: Schema.Int })
 
+/** Publishes `Beat` events; nothing routes from it. */
 export const BeatSource = Actor.make("BeatSource", {
   key: Schema.NonEmptyString,
   events: [Beat],
@@ -170,6 +171,7 @@ const count = <S extends { readonly count: number }>(turn: {
   readonly state: S & { readonly set: (patch: { readonly count: number }) => Effect.Effect<void> }
 }) => turn.state.set({ count: turn.state.count + 1 })
 
+/** Handlers for every subscription probe actor. */
 export const SubscriptionProbeLive = Layer.mergeAll(
   PulseSource.toLayer(
     Effect.succeed({

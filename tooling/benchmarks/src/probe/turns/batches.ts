@@ -4,6 +4,7 @@ import { Deferred, Effect, Result, Schema } from "effect"
 /** Holds its turn open until the scenario releases the gate named by its input. */
 export const Hold = Actor.command("Hold", { input: Schema.String, output: Schema.Int })
 
+/** Adds the amount to the count and replies with the new total. */
 export const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
 
 const state = Actor.state({
@@ -62,7 +63,13 @@ export const expectArrivals = ({
   return Deferred.await(done)
 }
 
-/** The runtime's `queued` point: counts commands entering a `BatchProbe` mailbox. */
+/**
+ * The runtime's `queued` point: counts commands entering a `BatchProbe`
+ * mailbox.
+ *
+ * The command joins a batch only once this hook has returned, so the round
+ * goes on in a later task.
+ */
 export const queued = ({
   ref,
 }: {
@@ -81,8 +88,6 @@ export const queued = ({
 
     arrivals.delete(ref.id)
 
-    // The command joins a batch only once this hook has returned, so the round
-    // goes on in a later task.
     return Effect.sleep(0).pipe(
       Effect.andThen(Deferred.succeed(waiting.done, undefined)),
       Effect.forkDetach,
@@ -90,6 +95,7 @@ export const queued = ({
     )
   })
 
+/** Handlers for `BatchProbe`. */
 export const BatchProbeLive = BatchProbe.toLayer(
   Effect.succeed({
     Hold: Effect.fnUntraced(function* (name: string) {

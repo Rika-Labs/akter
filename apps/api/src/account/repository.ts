@@ -5,6 +5,11 @@ import { member, organization, user } from "@durable-actors/postgres/schema"
 import { organizationBilling } from "../billing/schema.ts"
 import { project } from "./schema.ts"
 
+/**
+ * The user's organization with their role: the active one, or with
+ * `displayOnly` their earliest membership when none is active; null when there
+ * is none.
+ */
 export const organizationFor = Effect.fn("Account.organizationFor")(function* (
   userId: string,
   activeId: string | null | undefined,
@@ -35,6 +40,7 @@ export const organizationFor = Effect.fn("Account.organizationFor")(function* (
   return rows[0] ?? null
 })
 
+/** The organization's members, oldest first. */
 export const membersFor = Effect.fn("Account.membersFor")(function* (organizationId: string) {
   const db = yield* PgDrizzle.makeWithDefaults()
 
@@ -47,6 +53,7 @@ export const membersFor = Effect.fn("Account.membersFor")(function* (organizatio
     .pipe(Effect.orDie)
 })
 
+/** The organization's billing row with the renewal date as an ISO string, or undefined. */
 export const billingFor = Effect.fn("Account.billingFor")(function* (organizationId: string) {
   const db = yield* PgDrizzle.makeWithDefaults()
 
@@ -66,6 +73,7 @@ export const billingFor = Effect.fn("Account.billingFor")(function* (organizatio
   return row === undefined ? undefined : { ...row, renewalDate: row.renewalDate?.toISOString() }
 })
 
+/** The organization's projects, oldest first. */
 export const projectsFor = Effect.fn("Account.projectsFor")(function* (organizationId: string) {
   const db = yield* PgDrizzle.makeWithDefaults()
 
@@ -77,6 +85,10 @@ export const projectsFor = Effect.fn("Account.projectsFor")(function* (organizat
     .pipe(Effect.orDie)
 })
 
+/**
+ * Inserts a project if the user is still a member, checked under a share lock
+ * in the same transaction; undefined when they are not.
+ */
 export const insertProject = Effect.fn("Account.insertProject")(function* (
   id: string,
   organizationId: string,

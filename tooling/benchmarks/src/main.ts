@@ -206,7 +206,6 @@ const program = Effect.gen(function* () {
         for (const scenario of selected) {
           const cases = []
 
-          // One runner keeps the embedded runtime and the case names the baselines use.
           for (const runners of scenario.multiRunner === true ? runnerCounts : [1]) {
             if (runners > 1 && backend.name !== "postgres") continue
             yield* Console.log(`${scenario.name} (${profile}, ${runners} runner(s))`)

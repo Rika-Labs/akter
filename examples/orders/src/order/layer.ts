@@ -14,6 +14,15 @@ import {
 import { OrderEffects } from "./effects.ts"
 import { OrderReads } from "./queries.ts"
 
+/**
+ * Order command handlers.
+ *
+ * `Place` mints one shipment per package, named by the order lines, so a rerun
+ * of the command mints the same ids. `ChargeFailed` cancels the shipments only
+ * for a typed decline on the last attempt, which means nothing was charged; a
+ * crash or timeout leaves the outcome unknown, so the shipments stay pending
+ * for an operator to check with the provider.
+ */
 export const OrderCommands = Order.toLayer(
   Effect.succeed({
     Place: Effect.fnUntraced(function* ({ customer, lines }) {
@@ -24,8 +33,6 @@ export const OrderCommands = Order.toLayer(
       const total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0)
       yield* turn.rows(orderLines).insert(lines)
 
-      // One shipment per package, minted in the order lines name them, so a
-      // rerun of this command mints the same ids.
       const packages = new Map<string, Array<string>>()
 
       for (const { sku, package: pkg } of lines)
@@ -60,9 +67,6 @@ export const OrderCommands = Order.toLayer(
       for (const id of turn.state.shipments) yield* (yield* Shipment.intents(id)).Release()
     }),
 
-    // A typed decline on the last attempt means nothing was charged, so the
-    // shipments are cancelled. A crash or timeout leaves the outcome unknown:
-    // the shipments stay pending for an operator to check with the provider.
     ChargeFailed: Effect.fnUntraced(function* ({ ambiguous }) {
       const turn = yield* Order.Turn
       const { customerId, total, shipments } = turn.state

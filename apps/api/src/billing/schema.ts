@@ -1,6 +1,7 @@
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { organization } from "@durable-actors/postgres/schema"
 
+/** Current plan and subscription of an organization, with the time of the event that set it. */
 export const organizationBilling = pgTable("organization_billing", {
   organizationId: text("organization_id")
     .primaryKey()
@@ -13,6 +14,7 @@ export const organizationBilling = pgTable("organization_billing", {
   eventAt: timestamp("event_at", { withTimezone: true }).notNull(),
 })
 
+/** Webhook event ids already applied. */
 export const billingWebhook = pgTable("billing_webhook", {
   id: text().primaryKey(),
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),

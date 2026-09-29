@@ -1,6 +1,8 @@
-// The chat room with @durable-actors/react: the feed with a cursor kept across
-// reloads, posts as one command id per intent with an explicit retry,
-// optimistic reactions, and Presence.
+/**
+ * The chat room with @durable-actors/react: the feed with a cursor kept across
+ * reloads, posts as one command id per intent with an explicit retry,
+ * optimistic reactions, and Presence.
+ */
 import {
   useActor,
   useActorState,
@@ -20,7 +22,10 @@ const user = query.get("user") ?? "alice"
 
 const roomId = RoomId.make(location.pathname.split("/").at(-1) || "lobby")
 
-// A short timeout, so a post whose responses keep getting lost fails and offers a retry.
+/**
+ * A short timeout, so a post whose responses keep getting lost fails and
+ * offers a retry.
+ */
 const rooms = Room.client({
   baseUrl: "/api",
   headers: () => ({ authorization: `Bearer ${user}` }),

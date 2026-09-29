@@ -13,13 +13,16 @@ import {
 import { BunCrypto } from "@effect/platform-bun"
 import { Effect, Layer, Redacted, Schema } from "effect"
 
+/** The arguments could not be parsed; the message says why. */
 export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
   message: Schema.String,
 }) {}
 
+/** Usage text for `durable tenants`. */
 export const USAGE =
   "Usage: durable tenants create <tenant> --deployment <id> --region <region> --database-url <control-plane url> --operator <subject>"
 
+/** Parsed arguments of `tenants create`. */
 export interface CreateOptions {
   readonly tenant: string
   readonly deployment: string

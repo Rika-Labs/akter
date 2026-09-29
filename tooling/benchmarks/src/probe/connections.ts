@@ -7,8 +7,10 @@ export const Feed = Actor.connection("Feed", {
   client: Schema.String,
 })
 
+/** Broadcasts the text to every connection open on the actor. */
 export const Shout = Actor.command("Shout", { input: Schema.String })
 
+/** Event emitted by `Log` and streamed by `Tail`. */
 export class Logged extends Actor.Event<Logged>()("Logged", { text: Schema.String }) {}
 
 /** Emits one `Logged` event; `Tail` subscribers see it once the turn commits. */
@@ -27,6 +29,7 @@ export const LiveProbe = Actor.make("LiveProbe", {
   api: { Feed, Shout, Log, Tail, Once },
 })
 
+/** Handlers for `LiveProbe`. */
 export const LiveProbeLive = LiveProbe.toLayer(
   Effect.succeed({
     Shout: Effect.fnUntraced(function* (text: string) {
@@ -84,6 +87,7 @@ export const Plain = Actor.connection("Plain", { server: Schema.String })
 
 const policy = { effects: { Report: { onSuccess: Reported, progressEvery: "50 millis" } } } as const
 
+/** Actor whose route reports progress every 50 ms to its `Watch` connections. */
 export const ProgressProbe = Actor.make("ProgressProbe", {
   key: Schema.NonEmptyString,
   effects: [Report],
@@ -92,6 +96,10 @@ export const ProgressProbe = Actor.make("ProgressProbe", {
   policy,
 })
 
+/**
+ * Same route as `ProgressProbe`, but its `Plain` connections receive only the
+ * final broadcast.
+ */
 export const QuietProbe = Actor.make("QuietProbe", {
   key: Schema.NonEmptyString,
   effects: [Report],
@@ -102,6 +110,7 @@ export const QuietProbe = Actor.make("QuietProbe", {
 
 const handlers = { open: () => Effect.void, frame: () => Effect.void }
 
+/** Handlers for `ProgressProbe` and `QuietProbe`. */
 export const ProgressProbeLive = Layer.mergeAll(
   ProgressProbe.toLayer(
     Effect.succeed({

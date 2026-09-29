@@ -19,8 +19,10 @@ const lines = [
 /** Orders waiting for their `Charged` turn to commit, by order id. */
 const waiting = new Map<string, Deferred.Deferred<void>>()
 
-// The round trip ends when the charge's onSuccess turn commits, which only
-// the runtime's post-commit hook observes.
+/**
+ * The round trip ends when the charge's onSuccess turn commits, which only the
+ * runtime's post-commit hook observes.
+ */
 const hooks = Layer.succeed(TurnHooks, {
   at: (point, request) =>
     point === "afterCommit" && request.command === "Charged"

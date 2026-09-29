@@ -1,10 +1,12 @@
 import { Context, Data, Effect, Layer } from "effect"
 
+/** The provider's answer to a charge: approved with a charge id, or declined with a reason. */
 export type ChargeResult = Data.TaggedEnum<{
   Approved: { readonly chargeId: string }
   Declined: { readonly reason: string }
 }>
 
+/** Constructors and matchers for `ChargeResult`. */
 export const ChargeResult = Data.taggedEnum<ChargeResult>()
 
 /**
@@ -36,6 +38,7 @@ export interface Ledger {
   readonly calls: Map<string, number>
 }
 
+/** An empty provider ledger. */
 export const ledger = (): Ledger => ({ cards: new Map(), results: new Map(), calls: new Map() })
 
 /** A stand-in provider: the card token `tok_declined` declines, any other card is approved. */

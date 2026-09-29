@@ -1,6 +1,7 @@
 import { Actor } from "@durable-actors/core"
 import { Effect, Result, Schema } from "effect"
 
+/** Declared failure of `Add` for a negative amount. */
 export class Negative extends Schema.TaggedError<Negative>()("Negative", {
   amount: Schema.Int,
 }) {}

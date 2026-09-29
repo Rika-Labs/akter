@@ -184,8 +184,6 @@ describe("TenantHome", () => {
 
           expect(new Set(versions).size).toBe(tenants.length)
 
-          // A writer that stamps a version waits for an open one to commit, so the
-          // edge, polling for versions above the highest it holds, never skips one.
           const url = yield* DatabaseUrl
           const first = yield* connection(url)
           const second = yield* connection(url)

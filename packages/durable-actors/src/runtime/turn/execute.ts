@@ -29,12 +29,11 @@ import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
   asSqlConnection,
-  isInterrupted,
-  pipeline,
-  queue,
-  replies,
+  awaitReplies,
+  queueStatements,
+  sendPipelined,
+  sendSequentially,
   type Send,
-  sequential,
   TurnConnections,
 } from "./pipeline.ts"
 import { MERGE_CAP, merges } from "../entity/mailbox.ts"
@@ -345,10 +344,85 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * own staged work, and an admission error (expiry, `NotCreated`, a receipt
  * conflict) answers only that command. A stale fence or any defect fails the
  * whole batch and writes nothing. A batch with nothing to commit rolls back.
+ * Every command id in a batch must be distinct.
  *
  * `statements` marks an actor whose handler can issue SQL; only its handlers
  * run under a savepoint, so a declared failure discards the handler's rows.
- * Every command id in a batch must be distinct.
+ * The first handler's savepoint goes out with admission and each later one's
+ * with that handler's first statement. A handler that issued no statement has
+ * nothing to roll back, so its unsent savepoint is dropped. Rolling back to a
+ * savepoint keeps it, so each failed handler leaves one open until commit; a
+ * batch never holds more savepoints than its command cap. `parent` is a
+ * parent-placed actor's parent type, whose turns alone mint it, and `waited`
+ * holds the event tags workflows wait on.
+ *
+ * Admission statements take no parameter from another's reply, so they share
+ * one flight. The generation insert precedes the fenced read, so a brand-new
+ * actor's receipts resolve under the generation row lock. The timeout
+ * `set_config` runs before that insert, so `lock_timeout` bounds the insert's
+ * row waits but not the table lock taken as the statement starts;
+ * `statement_timeout` applies from the next statement. With row-level
+ * security the same statement takes the tenant role, which binds every later
+ * statement of the turn, the handler's included, to the actor's tenant at no
+ * extra round trip. A subscription delivery's cursor row is read in the
+ * fenced statement, and the delivery's canonical payload, not the event's
+ * bytes, binds its identity. When another runner advanced the generation
+ * since this activation acquired it, its cached state may be stale, so
+ * nothing runs, the activation drops its cache, and the retry reloads under a
+ * new generation.
+ *
+ * Admission checks. An external command still runs past expiry, but not once
+ * retention cleanup may have pruned a receipt of its id that committed
+ * meanwhile, or the expired id would run again. Only the relay's subscription
+ * deliveries reach a handler, and only a handler takes one, so no caller
+ * reaches it around the cursor or route. A routed event for a subscriber its
+ * creating command has not created is skipped, and its cursor keeps a stale
+ * redelivery from running after another command creates the subscriber. A
+ * minted actor is created only by the relay delivering the creating intent
+ * its parent's turn staged and committed: the mint proof binds the id to the
+ * parent's command, and the parent's outbox row, which stays until its
+ * delivery commits, proves that command committed the intent.
+ *
+ * Handlers and commit. Calls of a commutative reducer already waiting right
+ * behind a command merge into its turn: their inputs are combined and reduced
+ * once. A complete result lists every key it keeps, and any other key it was
+ * given is deleted. A delivery's cursor position is applied with its receipt,
+ * declared failures included. Re-arming waiting workflows reads their steps,
+ * so it runs before the commit group and only an actor with a workflow
+ * waiting on an emitted class pays for it. A cold activation that replays or
+ * acknowledges still commits and keeps the generation it acquired, so work
+ * the replay wakes runs under it. The first batch a generation commits
+ * schedules every cron entry not yet ticking from the database clock after
+ * its handlers ran, so a first tick is never due before the batch that
+ * writes it. A batch's work is bounded like a lone turn's: interruption and
+ * the command timeout roll it back, and SQL failures are defects. A failed or
+ * unknown commit leaves nothing the cached state can be trusted for, so it
+ * clears the cache.
+ *
+ * On Postgres a run uses one leased session. Each admission group opens with
+ * `BEGIN`, and each commit group ends with `COMMIT`, whose command tag must
+ * be `COMMIT`, since Postgres answers `COMMIT` in an aborted transaction with
+ * `ROLLBACK`. While batch N commits, the next batch already waiting sends its
+ * `BEGIN` and admission group in the same flight, right behind N's `COMMIT`:
+ * the server runs them strictly after it, as a new transaction on the same
+ * session. That admission is built as if N commits, which its fence proves. A
+ * batch that leaves the cache cold is committed alone, so the next one
+ * prepares, which may acquire the generation itself, before its admission
+ * locks the generation row. N's callers are answered once its `COMMIT` reply
+ * arrives, and the next batch's handlers run only once its own fence and
+ * receipt replies arrive. If N's commit fails, the next batch's transaction
+ * is rolled back unseen with it. The commit version is read on the same
+ * session after the transaction ends, in the same flight, so it covers the
+ * batch's commit record and any receipt it replayed.
+ *
+ * The session is unsafe from the moment a `BEGIN` may be queued until a
+ * transaction-ending reply with nothing queued behind it. Any other exit
+ * rolls back, and a session whose transaction state is unknown never goes
+ * back to the pool: an interrupted batch cancels its backend's statement and
+ * discards the session, so an unsent `COMMIT` rolls back with it and one
+ * already sent resolves through the receipt on retry. Deferred statements go
+ * out in the same flight as the next statement a handler sends, or at the
+ * head of the commit group.
  */
 export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, RN, RP, RC>(
   run: Run<W, RN, RP, RC>,
@@ -356,7 +430,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   routingKey: bigint,
   policy: TurnPolicy,
   mintable: boolean,
-  /** A parent-placed actor's parent type, whose turns alone mint it. */
   parent: string | undefined,
   statements: boolean,
   waited: ReadonlySet<string> = new Set(),
@@ -372,7 +445,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
-  // A delivery's canonical payload binds its identity, not the event's bytes.
   const canonicalsOf = (batch: ReadonlyArray<Delivery>) =>
     Effect.forEach(batch, ({ request }) => hashedPayload(request))
 
@@ -380,7 +452,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     sql`${actorRow} AND subscription = ${delivery.subscription}
       AND source_type = ${delivery.sourceType} AND source_id = ${delivery.sourceId}`
 
-  // A routed subscriber's row starts at epoch 0 with its first delivery.
   const applyCursor = (delivery: SubscriptionDelivery) =>
     Effect.asVoid(sql`INSERT INTO actor_subscription_cursors (routing_key, tenant_id, actor_type, actor_id,
         subscription, source_type, source_id, epoch, active, applied)
@@ -390,9 +461,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       DO UPDATE SET applied = greatest(actor_subscription_cursors.applied, EXCLUDED.applied)
       WHERE actor_subscription_cursors.epoch = 0`)
 
-  // Builds a batch's admission group against `view`, the activation as its
-  // handlers will find it once every earlier batch commits. `resume` runs the
-  // rest of the batch once the group's replies arrive.
   const admit = (
     batch: ReadonlyArray<Delivery>,
     canonicals: ReadonlyArray<string>,
@@ -402,9 +470,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   ) => {
     const cold = view.generation === undefined
 
-    // With row-level security the same statement takes the tenant role, so
-    // every later statement of the turn, the handler's included, is bound
-    // to this actor's tenant at no extra round trip.
     const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
       set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)
       ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
@@ -414,8 +479,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     let bumped: string | undefined
     let stored: ReadonlyArray<{ key: string; value: Uint8Array }> = []
 
-    // Subscription deliveries read their cursor rows in the fenced admission
-    // statement; a batch without one keeps the statement unchanged.
     const subscribed = batch.some(({ request }) => request.delivery !== undefined)
 
     const commands = sql.csv(
@@ -443,14 +506,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           AND s.source_id = c.source_id`
       : sql.literal("")
 
-    // None of these takes a parameter from another's reply. The insert comes
-    // before the fenced read, so a brand-new actor's receipts are resolved
-    // under the generation row lock too.
     const group: ReadonlyArray<Statement> = [
       ...begin,
-      // set_config runs before the row is inserted, so lock_timeout bounds the
-      // insert's row waits but not the table lock taken when the statement
-      // starts; statement_timeout applies from the next statement.
       cold
         ? Effect.asVoid(sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
             SELECT ${routingKey}, ${tenant}, ${actor}, ${id}
@@ -506,9 +563,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     const resume = Effect.fnUntraced(function* () {
       const first = admissions[0]
 
-      // Another runner advanced the generation since this activation acquired
-      // it, so its cached state may be stale. Nothing runs or is written; the
-      // activation drops its cache and the retry reloads under a new generation.
       if (first === undefined || (!cold && view.generation !== first.generation)) {
         cache.generation = undefined
         cache.state = undefined
@@ -526,9 +580,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         retryWindowMs,
       })
 
-      // The first batch a generation commits schedules every entry not yet
-      // ticking, from the database clock after its handlers ran, so a first
-      // tick is never due before the batch that writes it.
       const ticks = Effect.gen(function* () {
         if (!cold || cron.length === 0) return []
 
@@ -539,20 +590,15 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       })
 
       const settled: Array<Settled> = Array.from({ length: batch.length })
-      // State after every handler so far, loaded only once a handler runs.
       let next: Map<string, string> | undefined
       const dirty = new Map<string, string>()
       const removed = new Set<string>()
-      // Each command's events and outbox rows, in delivery order.
       const staged: Array<Statement> = []
       const receipts: Array<ReceiptRow> = []
       let created = first.created
       let creates = false
-      // A cold activation that replays or acknowledges keeps the generation it
-      // acquired, so work the replay wakes runs under it.
       let replayed = false
       let wake = false
-      // Broadcasts of committed successes, and how many events the batch appends.
       const broadcasts: Array<Broadcast> = []
       let events = 0
       let intents = 0
@@ -560,8 +606,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       const replays = new Set<number>()
       const committed: Array<Omit<CommittedEvents, "emittedAtMs">> = []
       const emitted: Array<{ readonly emittedAtMs: number; readonly fed: boolean }> = []
-      // Cursor rows as the batch's earlier deliveries left them, so a later
-      // delivery of the same subscription is checked against them.
       const cursors = new Map<string, Cursor>()
 
       const cursorKey = (delivery: SubscriptionDelivery) =>
@@ -575,9 +619,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
       const outboxes: Array<OutboxReplies> = []
 
-      // Resolves one command's receipt and admission checks; undefined when
-      // the command is answered without running, with its payload hash when
-      // it runs.
       const admitOne = Effect.fnUntraced(function* (index: number) {
         const { request, command } = batch[index]!
         const admitted = admissions[index]!
@@ -598,9 +639,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           return undefined
         }
 
-        // Admitted work still runs past expiry, but not once cleanup may have
-        // pruned a receipt of this id that committed meanwhile: without it, an
-        // expired external id would run again.
         if (
           request.external === true &&
           now >= commandTimes(request.commandId).expiresAt + expiryMarginMs
@@ -617,14 +655,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         const { delivery } = request
 
-        // Acknowledged without running the handler or writing a receipt.
         const acknowledge = (reason: Acknowledgement) => {
           replayed = true
           settled[index] = Result.succeed(Outcome.cases.Acknowledged.make({ reason }))
         }
 
-        // Only the relay's subscription deliveries reach a handler, and only a
-        // handler takes one, so no caller can reach it around the cursor or route.
         if (command.handler || delivery !== undefined) {
           const caller = request.caller
 
@@ -653,9 +688,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         }
 
         if (policy.createdBy !== undefined && !created && policy.createdBy !== request.command) {
-          // A routed event for a subscriber its creating command hasn't created
-          // is skipped, and the cursor keeps a stale redelivery of it from
-          // running after another command creates the subscriber.
           if (delivery !== undefined && delivery.epoch === "0" && delivery.kind === "event") {
             staged.push(applyCursor(delivery))
             apply(index, delivery)
@@ -669,10 +701,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           return undefined
         }
 
-        // A minted actor is created only by the relay delivering the creating
-        // intent its parent's turn staged and committed: the proof binds the id to
-        // the parent's command, and the parent's outbox row, which stays until its
-        // delivery commits, proves that command committed the intent.
         if (
           mintable &&
           policy.createdBy === request.command &&
@@ -705,8 +733,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         const members = [{ index, request, hash }]
         index += 1
 
-        // Calls of a commutative reducer already waiting right behind this
-        // one merge into its turn: their inputs are combined and reduced once.
         while (
           index < batch.length &&
           members.length < MERGE_CAP &&
@@ -727,8 +753,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         const given = next
         const head = String(BigInt(first.head) + BigInt(events))
 
-        // The first handler's savepoint went out with admission; each later
-        // one's goes out with that handler's first statement, if it has one.
         const savepoint = `SAVEPOINT ${HANDLER_SAVEPOINT}`
 
         if (statements && start > 0) yield* session.defer(savepoint)
@@ -748,10 +772,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           ? business.success
           : business.failure
 
-        // A handler that issued no statement has nothing to roll back, so its
-        // unsent savepoint is dropped. Rolling back to a savepoint keeps it, so
-        // each failed handler leaves one open until commit: a batch never holds
-        // more savepoints than its cap of commands.
         if (statements && (start === 0 || !session.withdraw(savepoint)))
           yield* session.defer(
             Result.isSuccess(business)
@@ -761,8 +781,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         const written = new Map(result.state)
 
-        // A complete result lists every key it keeps; any other key it was
-        // given is deleted.
         if (result.complete)
           for (const key of given.keys())
             if (!written.has(key)) {
@@ -794,9 +812,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         if (Outcome.guards.Success(result.outcome)) broadcasts.push(...(result.broadcasts ?? []))
 
-        // Re-arming waiting workflows reads their steps, so it runs before the
-        // commit group; only an actor with a workflow waiting on an emitted class
-        // pays for it.
         if (yield* notifyEvents(request, routingKey, result.events, waited)) wake = true
 
         if (
@@ -819,7 +834,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         staged.push(...outbox.statements)
         outboxes.push(outbox.replies)
 
-        // The delivery's position is applied with its receipt, declared failures included.
         const { delivery } = request
 
         if (delivery !== undefined) {
@@ -837,8 +851,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         const outcome = yield* encodeOutcome(result.outcome).pipe(Effect.orDie)
 
-        // A merged turn commits one receipt per original command id, each
-        // with its own payload hash and caller.
         for (const member of members) {
           receipts.push({
             routing_key: routingKey,
@@ -857,8 +869,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         }
       }
 
-      // Nothing ran, nothing replays on a newly acquired generation, and no
-      // cursor moved, so there is nothing worth committing.
       if (receipts.length === 0 && staged.length === 0 && !(cold && replayed))
         return {
           writes: undefined,
@@ -930,8 +940,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     return { group, resume }
   }
 
-  // Bounds one batch's work like a lone turn's: interruption and the command
-  // timeout roll it back, and SQL failures are defects.
   const bounded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.interruptible,
@@ -944,7 +952,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
   const view = (): View => ({ generation: cache.generation, state: cache.state })
 
-  // A committed batch moves the cache; a rolled-back one changed nothing.
   const finish = Effect.fnUntraced(function* (
     batch: ReadonlyArray<W>,
     plan: Plan,
@@ -984,8 +991,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     answering = false
   })
 
-  // The batch being run, a following one whose admission is on the wire, and
-  // whether the current batch committed and its callers are being answered.
   let current: ReadonlyArray<W> = run.first
   let orphan: ReadonlyArray<W> | undefined
   let answering = false
@@ -995,28 +1000,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     orphan = following
   }
 
-  /**
-   * Runs batches on one leased Postgres session. Each admission group opens
-   * with `BEGIN`, and each commit group ends with `COMMIT`, whose command tag
-   * must be `COMMIT`, since Postgres answers `COMMIT` in an aborted transaction
-   * with `ROLLBACK`.
-   *
-   * While batch N commits, the next batch already waiting sends its `BEGIN` and
-   * admission group in the same flight, right behind N's `COMMIT`: the server
-   * runs them strictly after it, as a new transaction on the same session. N's
-   * callers are answered once its `COMMIT` reply arrives, and the next batch's
-   * handlers run only once its own fence and receipt replies arrive. If N's
-   * commit fails, the next batch's transaction is rolled back unseen with it.
-   * A batch that leaves the cache cold is committed alone, so the next one
-   * prepares before its admission locks the generation row.
-   *
-   * Any other exit rolls back, and a session whose transaction state is unknown
-   * never goes back to the pool: an interrupted batch cancels its backend's
-   * statement and discards the session, so an unsent `COMMIT` rolls back with
-   * it and one already sent resolves through the receipt on retry. Deferred
-   * statements go out in the same flight as the next statement a handler sends,
-   * or at the head of the commit group.
-   */
   const pipelined = (turns: TurnConnections["Service"]) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1037,7 +1020,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
             let reply: { readonly value: A } | undefined
 
-            return pipeline([
+            return sendPipelined([
               ...flush(),
               Effect.map(statement, (value) => {
                 reply = { value }
@@ -1046,7 +1029,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           })
 
         const session: Session = {
-          send: pipeline,
+          send: sendPipelined,
           control: (text) => Effect.asVoid(control(text)),
           defer: (text) =>
             Effect.sync(() => {
@@ -1055,8 +1038,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           withdraw: (text) => deferred.at(-1) === text && deferred.pop() !== undefined,
         }
 
-        // The session is unsafe from the moment a BEGIN may be queued until a
-        // transaction-ending reply with nothing queued behind it.
         const begin = Effect.suspend(() => {
           open = true
 
@@ -1072,17 +1053,14 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         const batches = Effect.gen(function* () {
           let batch = run.first
 
-          // A batch's admission group, queued but not yet answered.
           let pending:
             | {
                 readonly admission: ReturnType<typeof admit>
-                readonly admitted: Effect.Success<ReturnType<typeof queue>>
+                readonly admitted: Effect.Success<ReturnType<typeof queueStatements>>
               }
             | undefined
 
           while (true) {
-            // Preparing may acquire the generation itself, so an admission
-            // not already pipelined is built after it.
             if (pending === undefined) {
               yield* run.prepare
 
@@ -1090,7 +1068,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
               pending = {
                 admission: fresh,
-                admitted: yield* inTurn(queue({ scope, group: fresh.group })),
+                admitted: yield* inTurn(queueStatements({ scope, group: fresh.group })),
               }
             }
 
@@ -1102,15 +1080,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
             const step = yield* Effect.gen(function* () {
               const stepped = yield* Effect.gen(function* () {
-                yield* replies(admitted)
+                yield* awaitReplies(admitted)
                 const plan = yield* admission.resume()
                 const following = yield* run.next
                 const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
 
-                // Built as if this batch commits; its fence proves it did. A
-                // cold view would make the next admission lock the generation
-                // row that preparing must then bump on another connection, so
-                // that batch waits for this commit and prepares first.
                 const after: View =
                   plan.writes === undefined
                     ? view()
@@ -1131,9 +1105,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
                     if (!chained) open = false
                   }),
-                  // Read on this session after the transaction ends, in the same
-                  // flight, so it covers the batch's commit record and any
-                  // receipt it replayed.
                   Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
                     version = (result.rows[0] as { version: string }).version
                   }),
@@ -1143,8 +1114,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
                 if (!chained) {
                   yield* ending === "COMMIT"
-                    ? pipeline(commit).pipe(Effect.withSpan(SpanNames.commit))
-                    : pipeline(commit)
+                    ? sendPipelined(commit).pipe(Effect.withSpan(SpanNames.commit))
+                    : sendPipelined(commit)
 
                   return { plan, ending, tag, version, following, next: undefined }
                 }
@@ -1153,9 +1124,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   begin,
                 ])
 
-                const flight = yield* queue({ scope, group: [...commit, ...upcoming.group] })
+                const flight = yield* queueStatements({
+                  scope,
+                  group: [...commit, ...upcoming.group],
+                })
 
-                const answered = replies(flight.slice(0, commit.length))
+                const answered = awaitReplies(flight.slice(0, commit.length))
 
                 yield* ending === "COMMIT"
                   ? answered.pipe(Effect.withSpan(SpanNames.commit))
@@ -1192,7 +1166,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           Effect.onExit((exit) => {
             if (Exit.isSuccess(exit) || !open) return Effect.void
 
-            if (isInterrupted(exit))
+            if (Cause.hasInterrupts(exit.cause))
               return sql`SELECT pg_cancel_backend(${connection.processId})`.pipe(
                 Effect.ignore,
                 Effect.andThen(turns.invalidate(connection)),
@@ -1222,7 +1196,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           yield* run.prepare
 
           const control = (text: string) => Effect.asVoid(sql.unsafe(text))
-          const session = { send: sequential, control, defer: control, withdraw: () => false }
+          const session = { send: sendSequentially, control, defer: control, withdraw: () => false }
 
           yield* Effect.gen(function* () {
             const plan: Plan = yield* bounded(
@@ -1237,13 +1211,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                       [],
                     )
 
-                    yield* sequential(admission.group)
+                    yield* sendSequentially(admission.group)
                     const decided = yield* admission.resume()
 
                     if (decided.writes === undefined)
                       return yield* Effect.fail(new RolledBack(decided))
 
-                    yield* sequential(decided.writes).pipe(Effect.withSpan(SpanNames.commit))
+                    yield* sendSequentially(decided.writes).pipe(Effect.withSpan(SpanNames.commit))
 
                     return decided
                   }),
@@ -1266,7 +1240,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       })
 
   const exit = yield* each.pipe(
-    // A failed or unknown commit leaves nothing the cache can trust.
     Effect.onError(() =>
       Effect.sync(() => {
         cache.state = undefined
