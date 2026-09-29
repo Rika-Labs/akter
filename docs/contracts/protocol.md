@@ -15,6 +15,21 @@ Commands MUST map committed outputs and declared failures through receipts. Fram
 
 The Effect handle, Promise client from `@durable-actors/core/client`, HTTP, WebSocket, and SSE adapters MUST preserve these semantics rather than define independent lifecycle states. Public spans MUST use `durable-actors.<Actor>/<Command>`.
 
+## Hosted assertions ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md))
+
+Implemented on runners by M4.8 (`Actor.auth.assertion`). Evidence: [`conformance/assertions.ts`](../verification/01-conformance.md#hosted-assertions-m48). A hosted edge forwards each request with a `durable-assertion` header, and removes any `durable-assertion` a client sent. A WebSocket `hello` or `reauthenticate` frame carries the assertion as `authorization: Bearer <jws>` instead. The assertion is a compact JWS with `alg` `EdDSA` (Ed25519) and nothing else, `typ` `durable-assertion+jwt`, and a `kid`; `crit` is refused. Its claims are `iss`, `aud` (the deployment), `region`, `iat`, `exp`, `tenant`, `caller` (an encoded `User` or `Anonymous`), `actor`, `id`, `member`, `cid` when the request carries a command id, `sid` on streaming assertions, `cexp`, and `req`. `exp − iat` is at most 60 seconds, and runners allow 5 seconds of skew on `iat` and `exp`. `cexp` is the external credential's own expiry in epoch seconds, which caps a live session; the assertion's short `exp` never does. `actor`, `id`, `member`, and `cid` are for logs and never checked. `req` is the lowercase hex SHA-256 of this UTF-8 string with lines joined by `\n`:
+
+```text
+durable-assertion/v1
+<method>
+<path, percent-encoding normalised to uppercase hex, no dot segments>
+<query parameters sorted by name then value, each percent-encoded, joined by &>
+<Idempotency-Key header value, or empty>
+<lowercase hex SHA-256 of the body bytes exactly as forwarded>
+```
+
+Both sides also decode percent-escapes of RFC 3986 unreserved characters in the path, so `%41` is `A`. A WebSocket upgrade, its `hello`, and an SSE feed bind a `GET` with an empty body. A reauthentication assertion's string is `durable-assertion/v1`, `REAUTHENTICATE`, the session's upgrade path, and the `sid`, and it must carry the `sid` the session opened with. The runner rebuilds the string from what it received; any difference is `Unauthorized` `invalid_credentials` before any turn. A missing assertion is `missing_credentials`, one past `exp` plus skew is `expired`, and every other failure (signature, key, algorithm, issuer, deployment, region, or lifetime) is `invalid_credentials`; none falls back to another credential.
+
 ## Served mapping ([ADR 0027](../decisions/0027-served-protocol.md))
 
 M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, and OpenAPI; M3.3 serves connection members as WebSocket sessions and declared `feeds` as SSE event feeds; streams are a later slice. Evidence: [`conformance/http.ts`](../verification/01-conformance.md#served-http-m32) and [`conformance/transports.ts`](../verification/01-conformance.md#served-websocket-connections-m33).
