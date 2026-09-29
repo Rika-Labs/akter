@@ -31,6 +31,7 @@ try {
             Effect.map(({ report, status, log }) => ({
               run,
               suite,
+              started: Option.isSome(log),
               report: Option.getOrUndefined(report),
               status: Option.getOrUndefined(status),
               unhandledErrors: Option.exists(log, (text) =>

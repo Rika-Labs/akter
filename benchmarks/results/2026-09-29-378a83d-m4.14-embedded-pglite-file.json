@@ -1,0 +1,381 @@
+{
+  "schema": 2,
+  "label": "m4.14-embedded",
+  "note": null,
+  "profile": "full",
+  "startedAt": "2026-09-29T01:34:46.802Z",
+  "finishedAt": "2026-09-29T01:38:37.838Z",
+  "git": {
+    "sha": "378a83d00e272825f34e4c25cbd03a01a455762e",
+    "shortSha": "378a83d",
+    "branch": "feat/231-pglite-production",
+    "mainBase": "808710aa877a96baefd50d0fd8f86b3ca207e325",
+    "dirty": false,
+    "merges": [
+      {
+        "commit": "90208e446c9a95fc187b9dfd041f3c037a5e6170",
+        "parents": [
+          "21a4a4edf270fec408d15e416c5c958277c8c296",
+          "808710aa877a96baefd50d0fd8f86b3ca207e325"
+        ]
+      }
+    ]
+  },
+  "backend": {
+    "name": "pglite-file",
+    "version": "PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit",
+    "settings": {
+      "connections": "1 (in-process)",
+      "storage": "file-backed dataDir under /tmp (ext4)"
+    },
+    "external": false
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+    "logicalCpus": 16,
+    "memoryGiB": 31.4,
+    "os": "Linux 6.1.158+",
+    "hostname": "e2b.local",
+    "topology": "one machine; the benchmark client, actor runtime, and Postgres container share its CPUs; database over loopback TCP"
+  },
+  "scenarios": [
+    {
+      "name": "embedded-pglite",
+      "description": "Warm turns, wakes after hibernation, and 16-caller throughput with 0 to 100,000 stored actors seeded into the database; run with --backend pglite-file for file-backed PGlite.",
+      "cases": [
+        {
+          "name": "turn-0",
+          "parameters": {
+            "workers": 1,
+            "stored": 0
+          },
+          "operations": 2000,
+          "elapsedMs": 9728,
+          "throughput": 205.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 4.861,
+            "min": 4.049,
+            "p50": 4.527,
+            "p90": 5.407,
+            "p95": 6.189,
+            "p99": 13.177,
+            "max": 34.383
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 139.3,
+            "server": null,
+            "clientMsPerOperation": 6.776,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 9625723
+          }
+        },
+        {
+          "name": "wake-0",
+          "parameters": {
+            "workers": 1,
+            "stored": 0,
+            "actors": 300,
+            "hibernateAfterMs": 250
+          },
+          "operations": 300,
+          "elapsedMs": 2008,
+          "throughput": 149.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 300,
+            "mean": 6.691,
+            "min": 5.358,
+            "p50": 6.058,
+            "p90": 8.739,
+            "p95": 8.984,
+            "p99": 15.986,
+            "max": 24.507
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 126.7,
+            "server": null,
+            "clientMsPerOperation": 8.481,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 9273467,
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "throughput-0",
+          "parameters": {
+            "workers": 16,
+            "stored": 0,
+            "actors": 256
+          },
+          "operations": 10000,
+          "elapsedMs": 45625,
+          "throughput": 219.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10000,
+            "mean": 72.961,
+            "min": 21.76,
+            "p50": 71.559,
+            "p90": 81.369,
+            "p95": 86.059,
+            "p99": 93.315,
+            "max": 102.053
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 112.2,
+            "server": null,
+            "clientMsPerOperation": 5.118,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 14196859
+          }
+        },
+        {
+          "name": "turn-10000",
+          "parameters": {
+            "workers": 1,
+            "stored": 10000
+          },
+          "operations": 2000,
+          "elapsedMs": 9460,
+          "throughput": 211.4,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 4.728,
+            "min": 4.026,
+            "p50": 4.5,
+            "p90": 4.915,
+            "p95": 5.779,
+            "p99": 11.087,
+            "max": 21.768
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 111.8,
+            "server": null,
+            "clientMsPerOperation": 5.289,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 17088635
+          }
+        },
+        {
+          "name": "wake-10000",
+          "parameters": {
+            "workers": 1,
+            "stored": 10000,
+            "actors": 300,
+            "hibernateAfterMs": 250
+          },
+          "operations": 300,
+          "elapsedMs": 1858,
+          "throughput": 161.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 300,
+            "mean": 6.19,
+            "min": 5.266,
+            "p50": 5.844,
+            "p90": 6.911,
+            "p95": 7.243,
+            "p99": 13.565,
+            "max": 22.909
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 113.1,
+            "server": null,
+            "clientMsPerOperation": 7.005,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 16457851,
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "throughput-10000",
+          "parameters": {
+            "workers": 16,
+            "stored": 10000,
+            "actors": 256
+          },
+          "operations": 10000,
+          "elapsedMs": 47063,
+          "throughput": 212.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10000,
+            "mean": 75.259,
+            "min": 28.691,
+            "p50": 73.671,
+            "p90": 84.576,
+            "p95": 89.956,
+            "p99": 98.602,
+            "max": 122.517
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 111.7,
+            "server": null,
+            "clientMsPerOperation": 5.256,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 21430395
+          }
+        },
+        {
+          "name": "turn-100000",
+          "parameters": {
+            "workers": 1,
+            "stored": 100000
+          },
+          "operations": 2000,
+          "elapsedMs": 9365,
+          "throughput": 213.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 2000,
+            "mean": 4.68,
+            "min": 3.833,
+            "p50": 4.485,
+            "p90": 5.013,
+            "p95": 5.376,
+            "p99": 10.805,
+            "max": 21.249
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 112.1,
+            "server": null,
+            "clientMsPerOperation": 5.251,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 82403451
+          }
+        },
+        {
+          "name": "wake-100000",
+          "parameters": {
+            "workers": 1,
+            "stored": 100000,
+            "actors": 300,
+            "hibernateAfterMs": 250
+          },
+          "operations": 300,
+          "elapsedMs": 1835,
+          "throughput": 163.5,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 300,
+            "mean": 6.112,
+            "min": 5.266,
+            "p50": 5.759,
+            "p90": 6.478,
+            "p95": 7.87,
+            "p99": 10.042,
+            "max": 22.546
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 113.5,
+            "server": null,
+            "clientMsPerOperation": 6.941,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 81780859,
+            "reactivatedFraction": 1
+          }
+        },
+        {
+          "name": "throughput-100000",
+          "parameters": {
+            "workers": 16,
+            "stored": 100000,
+            "actors": 256
+          },
+          "operations": 10000,
+          "elapsedMs": 46908,
+          "throughput": 213.2,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 10000,
+            "mean": 75.013,
+            "min": 23.902,
+            "p50": 73.715,
+            "p90": 84.319,
+            "p95": 89.143,
+            "p99": 94.863,
+            "max": 110.087
+          },
+          "statementsPerOperation": null,
+          "roundTripsPerOperation": null,
+          "statements": null,
+          "activity": null,
+          "cpu": {
+            "client": 110.5,
+            "server": null,
+            "clientMsPerOperation": 5.182,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "databaseBytes": 86696059
+          }
+        }
+      ]
+    }
+  ]
+}

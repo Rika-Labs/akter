@@ -75,6 +75,7 @@ import { checkPlacement, recordedPlacement } from "./storage/placements.ts"
 import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
 import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
 import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
+import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
 import { count, Metrics } from "./telemetry/metrics.ts"
 import { databaseSampler, TelemetrySampler } from "./telemetry/sampler.ts"
 import { OutboxRuntime, textArray } from "./turn/outbox.ts"
@@ -221,9 +222,10 @@ export interface Options {
    * the `durable.tenant` setting of the actor they serve, so the
    * `durable_tenant` policies admit no other tenant's rows. The role must not
    * be a superuser or bypass row-level security, this login must be able to
-   * `SET ROLE` to it, it must read and write every framework and owned table,
-   * and it must own every `durable` inspection view; the runtime refuses to
-   * start otherwise. Framework work that spans tenants, such as the relay,
+   * `SET ROLE` to it, and it must read and write every framework and owned
+   * table. Every `durable` inspection view must belong to a separate
+   * view-owner role that the policies bind and that `role` is not a member
+   * of. The runtime refuses to start otherwise. Framework work that spans tenants, such as the relay,
    * executors, and retention, keeps the connecting role, which the policies exempt.
    */
   readonly rowLevelSecurity?: {
@@ -1132,6 +1134,14 @@ export const layer = (options: Options) => {
 
       const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled, routed }
 
+      const operators = operatorRuntime({
+        services,
+        clock: frameworkClock,
+        outbox,
+        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        wake: relay.wake,
+      })
+
       const internalActors = InternalActors.of({
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintChildId: (input) =>
@@ -1231,20 +1241,6 @@ export const layer = (options: Options) => {
             if (declared.writes) writerDeclarations.push(declared)
           yield* refreshPayloadWriters.pipe(Effect.orDie)
 
-          // The log goes inside `services`: those carry whatever context built the
-          // layer, which may hold another runtime's log.
-          const { isResident, owner } = yield* registerActor(
-            registration,
-            transport,
-            options.authorize,
-            gate,
-            writable,
-          ).pipe(
-            Effect.provideService(DefectLog, defectLog),
-            Effect.provideContext(services),
-            Effect.provideService(OutboxRuntime, outbox),
-          )
-
           yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
           yield* requireRoutedSubscribers(registration.name).pipe(
             Effect.provideContext(services),
@@ -1259,9 +1255,9 @@ export const layer = (options: Options) => {
                 .widen(registration.name, declared)
                 .pipe(Effect.provideContext(services), Effect.orDie)
 
+          // Registered before the entity starts serving: a singleton's first
+          // activation may call itself at once, and must find its type.
           registrations.set(registration.name, registration)
-          residency.set(registration.name, isResident)
-          owners.set(registration.name, owner)
 
           if (registration.connections.size > 0 || registration.feeds.size > 0)
             heldTypes.set(registration.name, heldType(registration))
@@ -1277,6 +1273,23 @@ export const layer = (options: Options) => {
               sweepsWorkflows.delete(registration.name)
             }),
           )
+
+          // The log goes inside `services`: those carry whatever context built the
+          // layer, which may hold another runtime's log.
+          const { isResident, owner } = yield* registerActor(
+            registration,
+            transport,
+            options.authorize,
+            gate,
+            writable,
+          ).pipe(
+            Effect.provideService(DefectLog, defectLog),
+            Effect.provideContext(services),
+            Effect.provideService(OutboxRuntime, outbox),
+          )
+
+          residency.set(registration.name, isResident)
+          owners.set(registration.name, owner)
         }),
         registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
           if (queryRegistrations.has(registration.name))
@@ -1326,7 +1339,9 @@ export const layer = (options: Options) => {
             const rows = yield* sql`
               SELECT 1 FROM actor_generations
               WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
-                AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+                AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`.pipe(
+              withTenant(ref.tenant),
+            )
 
             return rows.length > 0
           },
@@ -1353,15 +1368,17 @@ export const layer = (options: Options) => {
             const key = routingKey({ ref, placement: registration.placement })
             const sql = yield* SqlClient.SqlClient
 
-            const [row] = yield* sql<{ head: string }>`
-              SELECT event_sequence::text AS head FROM actor_generations
-              WHERE routing_key = ${key} AND tenant_id = ${ref.tenant}
-                AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
+            const events = yield* Effect.gen(function* () {
+              const [row] = yield* sql<{ head: string }>`
+                SELECT event_sequence::text AS head FROM actor_generations
+                WHERE routing_key = ${key} AND tenant_id = ${ref.tenant}
+                  AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-            // A feed never creates an actor, so a missing generation row is an answer, not a wake.
-            if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
+              // A feed never creates an actor, so a missing generation row is an answer, not a wake.
+              if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
 
-            const events = yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
+              return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
+            }).pipe(withTenant(ref.tenant))
 
             // Clients read the current shape, whatever version each event was written at.
             return yield* Effect.forEach(events, (event) =>
@@ -1591,7 +1608,7 @@ export const layer = (options: Options) => {
               WHERE routing_key = ${routingKey({ ref: request.ref, placement: registration.placement })}
                 AND execution_id = ${request.payload} AND tenant_id = ${request.ref.tenant}
                 AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-                AND workflow = ${request.command}`
+                AND workflow = ${request.command}`.pipe(withTenant(request.ref.tenant))
 
             // Access can be revoked while the read runs, as for a query.
             yield* allow(request)
@@ -1755,6 +1772,7 @@ export const layer = (options: Options) => {
         Context.add(RuntimeControl, control),
         Context.add(DefectLog, defectLog),
         Context.add(TelemetrySampler, TelemetrySampler.of({ sample })),
+        Context.add(OperatorRuntime, operators),
       )
     }),
   )

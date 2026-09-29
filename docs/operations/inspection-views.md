@@ -13,19 +13,20 @@ Everything a view shows is committed. A turn that rolls back (a defect, a crash 
 
 `SELECT * FROM durable.views` lists each view and its version. Version 1:
 
-| View                     | Rows                                                                         |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| `durable.actors`         | one per actor identity                                                       |
-| `durable.state`          | one per stored state key                                                     |
-| `durable.receipts`       | one per retained command receipt                                             |
-| `durable.events`         | one per retained committed event                                             |
-| `durable.outbox`         | pending intents and timers                                                   |
-| `durable.timers`         | pending keyed timers (a subset of `outbox`), including `policy.cron` entries |
-| `durable.effects`        | performed effects not yet settled                                            |
-| `durable.dead_letters`   | exhausted effects, kept for operators                                        |
-| `durable.workflows`      | one per retained workflow execution, open or finished                        |
-| `durable.workflow_steps` | recorded steps of open executions (a finished execution has none)            |
-| `durable.views`          | this catalog                                                                 |
+| View                     | Rows                                                                                                            |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `durable.actors`         | one per actor identity                                                                                          |
+| `durable.state`          | one per stored state key                                                                                        |
+| `durable.receipts`       | one per retained command receipt                                                                                |
+| `durable.events`         | one per retained committed event                                                                                |
+| `durable.outbox`         | pending intents and timers                                                                                      |
+| `durable.timers`         | pending keyed timers (a subset of `outbox`), including `policy.cron` entries                                    |
+| `durable.effects`        | performed effects not yet settled                                                                               |
+| `durable.dead_letters`   | exhausted effects, kept for operators                                                                           |
+| `durable.workflows`      | one per retained workflow execution, open or finished                                                           |
+| `durable.workflow_steps` | recorded steps of open executions (a finished execution has none)                                               |
+| `durable.views`          | this catalog                                                                                                    |
+| `durable.operator_audit` | one per operator action, and per operator refusal by scope (`0023_operator_audit`); never pruned by the runtime |
 
 Adding a column at the end keeps a view's version. Any other change adds a new view, such as `durable.receipts_v2`, and a catalog row.
 
@@ -71,7 +72,7 @@ That role reads every view and gets `permission denied` on every `actor_*` table
 
 A role also holds every privilege granted to `PUBLIC`, and these grants are not limited to `durable`: `EXECUTE` on functions by default, `USAGE` on schema `public`, and any table grant made to `PUBLIC`. To keep the role view-only, audit and revoke those grants, for example `REVOKE ALL ON SCHEMA public FROM PUBLIC` and `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`, or point the tool at a database where `PUBLIC` holds nothing else.
 
-Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows. Without row-level security nothing enforces the filter, so treat view access as operator access to every tenant in the database. With [row-level security](01-deployment.md#row-level-security) on, the views belong to the runtime's tenant role. They keep their owner's rights, so the base-table policies apply through them, and a reader sees only the tenant its transaction names:
+Every row names its tenant, and filtering on `tenant_id` returns exactly that tenant's rows. Without row-level security nothing enforces the filter, so treat view access as operator access to every tenant in the database. With [row-level security](01-deployment.md#row-level-security) on, the views belong to a dedicated view-owner role (`durable_views` in the guide's script), which the policies bind and the runtime's tenant role can't act as. They keep their owner's rights, so the base-table policies apply through them, and a reader sees only the tenant its transaction names:
 
 ```sql
 BEGIN;
@@ -111,7 +112,7 @@ The inspector adds no access of its own:
 - **Read-only.** It reads only the `durable` views, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and Postgres refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)). Each transaction also sets `durable.tenant` to the principal's tenant, so with row-level security on the database enforces the tenant too.
 - **Step history.** Steps are shown while an execution is open; the engine deletes a finished execution's steps, so a finished execution shows its result and no steps.
 
-Connections are not shown: no inspection view covers `actor_connections` yet. Retrying a dead letter waits for M4.6's audited repair.
+Connections are not shown: no inspection view covers `actor_connections` yet. Retrying or discarding a dead letter is an operator repair: `durable dead-letters retry|discard` through `Operators.serve` ([ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md)).
 
 ## Example queries
 
