@@ -101,7 +101,6 @@ describe("actor declarations", () => {
     expectTypeOf<keyof Handle & "Ping">().toEqualTypeOf<"Ping">()
     expectTypeOf<keyof Handle["Live"]>().toEqualTypeOf<"connect">()
 
-    // A connection without params still takes them first, so options are never mistaken for params.
     expectTypeOf<Parameters<Handle["Live"]["connect"]>>().toEqualTypeOf<
       [params?: void, options?: ConnectOptions]
     >()
@@ -408,7 +407,6 @@ describe("actor declarations", () => {
       yield* turn.emit(Undeclared.make({}))
     })
 
-    // Emitting needs X.Turn, which only a command turn provides.
     expectTypeOf<Effect.Services<typeof emits>>().toEqualTypeOf<
       Context.Service.Identifier<typeof Feed.Turn>
     >()
@@ -575,7 +573,6 @@ describe("actor declarations", () => {
       Layer.Layer<never, never, Context.Service.Identifier<typeof Actor.InTurn> | InternalActors>
     >()
 
-    // Outside a turn nothing provides InTurn, so neither Effect can run.
     expectTypeOf(Target.intents("other")).not.toExtend<Effect.Effect<unknown>>()
     expectTypeOf(Intent.cancel("wake")).not.toExtend<Effect.Effect<unknown>>()
 
@@ -787,7 +784,6 @@ describe("actor declarations", () => {
     expect(() =>
       Actor.make("Spaced", { api: { Tick, Tock }, policy: { cron: { " 0  8 * * * ": Tick } } }),
     ).not.toThrow()
-    // A tick's caller is System, so its target need not be publicly callable.
     expect(() =>
       Actor.make("InternalTarget", {
         api: { Tock },
@@ -817,7 +813,6 @@ describe("actor declarations", () => {
       "$cron:UTC 0 * * * 0",
       "$cron:UTC 30 * * * * *",
     ])
-    // A zone is part of the key as declared; an interval's key is its length.
     expect(
       resolveCron({
         declared: {
