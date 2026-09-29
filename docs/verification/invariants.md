@@ -58,4 +58,4 @@ P1 has single-runner evidence from M1.7 on PGlite and Postgres: a lost result re
 
 The mapping from these invariants to normative guarantees is in [runtime contracts](../contracts/README.md); crash expectations are in the [failure matrix](02-failure-matrix.md).
 
-R5 with automatic pruning (boundary, prune/retry race, crash inside a sweep, and restart) is executed in `conformance/retention.ts` and `crash/retention.test.ts`; its restore and version-skew cases wait for M4.
+R5 with automatic pruning (boundary, prune/retry race, crash inside a sweep, and restart) is executed in `conformance/retention.ts` and `crash/retention.test.ts`; its restore and version-skew cases, and D1, are executed in `conformance/restore.ts` (M4.4) under the [restore procedure](../operations/04-backup-restore.md), which requires every runner stopped before the restore.

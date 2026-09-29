@@ -1,7 +1,17 @@
 import { BunCrypto, BunHttpServer, BunFileSystem } from "@effect/platform-bun"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Cause, Clock, Effect, Exit, FileSystem, Layer, ManagedRuntime, Schema } from "effect"
+import {
+  Cause,
+  Clock,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  ManagedRuntime,
+  Redacted,
+  Schema,
+} from "effect"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Migrator, SqlClient } from "effect/unstable/sql"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -29,11 +39,32 @@ const backend: ConformanceBackend = {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const dataDir = yield* fs.makeTempDirectory({ prefix: "durable-actors-pglite-" })
+        const copies: Array<string> = []
 
         return {
           database: { dataDir },
           freshDatabase: Effect.succeed({}),
-          close: fs.remove(dataDir, { recursive: true }).pipe(Effect.ignore),
+          // A stopped copy of the data directory is PGlite's backup.
+          copy: (database) =>
+            Effect.gen(function* () {
+              if (
+                Redacted.isRedacted(database) ||
+                !("dataDir" in database) ||
+                database.dataDir === undefined
+              )
+                return yield* Effect.die(new Error("Only a file-backed PGlite database is copied"))
+
+              const copied = yield* fs.makeTempDirectory({ prefix: "durable-actors-restored-" })
+              copies.push(copied)
+              yield* fs.copy(database.dataDir, `${copied}/data`)
+
+              return { dataDir: `${copied}/data` }
+            }).pipe(Effect.orDie),
+          close: Effect.suspend(() =>
+            Effect.forEach([dataDir, ...copies], (path) =>
+              fs.remove(path, { recursive: true }).pipe(Effect.ignore),
+            ),
+          ),
         }
       }),
     ),
