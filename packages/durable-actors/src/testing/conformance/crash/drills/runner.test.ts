@@ -246,13 +246,16 @@ describe("runner and relay process death with Postgres", () => {
           expect(of("Add")).toBe(of("Send"))
           expect(yield* total("DrillReceiver")).toBe(of("Send"))
 
-          // The slowest command any survivor started after the kill waited for
-          // the killed runner's shards; its commit marks their takeover. The
-          // replacements start after the kill, so there is always one.
-          const stalled = survivors
-            .flatMap(({ process }) => process.done)
-            .filter(({ started }) => started >= killedAt)
-            .reduce((slowest, done) => (done.latency > slowest.latency ? done : slowest))
+          // Measured on the first runner alone: it was warm and serving before
+          // the kill, so its slowest command started after the kill is the one
+          // routed to a dead runner's shard that waited for the takeover, not
+          // a replacement's start-up. Its hold leaves it half its operations.
+          const afterKill = first.process.done.filter(({ started }) => started >= killedAt)
+          expect(afterKill.length >= OPERATIONS / 2).toBe(true)
+
+          const stalled = afterKill.reduce((slowest, done) =>
+            done.latency > slowest.latency ? done : slowest,
+          )
 
           const recovery = stalled.started + stalled.latency - killedAt
 

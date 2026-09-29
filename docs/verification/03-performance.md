@@ -541,12 +541,12 @@ The crash drill (`examples/orders/src/drill/runner.test.ts`) measured, per fault
 
 | Metric                                         | Min    | p50    | Max (≈p95 of 10) |
 | ---------------------------------------------- | ------ | ------ | ---------------- |
-| Recovery, kill to the stalled command's commit | 2.66 s | 3.58 s | 3.64 s           |
-| Slowest single operation on a survivor         | 2.64 s | 3.32 s | 3.62 s           |
-| Committed operations per run                   | 299    | 308    | 318              |
+| Recovery, kill to the stalled command's commit | 2.59 s | 2.74 s | 4.07 s           |
+| Slowest single operation on a survivor         | 2.58 s | 2.69 s | 3.81 s           |
+| Committed operations per run                   | 300    | 306    | 313              |
 | Lost / duplicated operations                   | 0 / 0  | 0 / 0  | 0 / 0            |
 
-Recovery runs from the kill to the commit of the slowest command any survivor (the first runner or a replacement) started after it: that command was routed to a killed runner's shard and waited for the takeover, so its commit marks the shard serving again. It is bounded by the 3 s shard-lock expiry plus Cluster's shard refresh, and can be under 3 s because the dead runner's last lock refresh predates the kill. Until [#219](https://github.com/Rika-Labs/durable-actors/issues/219) the first runner started its operations before the other two were up and could finish them all before the kill, which left no post-kill command on it to measure and the kill not under load. With 10 samples, p99 is not meaningful. Committed operations vary because a runner killed mid-operation may commit an `Increment` without its `Send`; those are counted as committed, never lost.
+Recovery runs from the kill to the commit of the slowest command the first runner, which stays up and serving throughout, started after it: that command was routed to a killed runner's shard and waited for the takeover, so its commit marks the shard serving again. It is bounded by the 3 s shard-lock expiry plus Cluster's shard refresh, and can be under 3 s because the dead runner's last lock refresh predates the kill. Until [#219](https://github.com/Rika-Labs/durable-actors/issues/219) the first runner started its operations before the other two were up and could finish them all before the kill, which left no post-kill command on it to measure and the kill not under load. With 10 samples, p99 is not meaningful. Committed operations vary because a runner killed mid-operation may commit an `Increment` without its `Send`; those are counted as committed, never lost.
 
 ### Recommendations (not applied)
 
