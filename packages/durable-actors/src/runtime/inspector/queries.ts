@@ -51,16 +51,23 @@ export interface ActorIdentity {
 
 /**
  * Runs `effect` in a read-only, repeatable-read transaction, so every read in
- * it sees one snapshot and Postgres refuses any write it could attempt.
+ * it sees one snapshot and Postgres refuses any write it could attempt. The
+ * transaction names `tenant`, so when row-level security owns the views they
+ * return no other tenant's rows, whatever a read's own filter says.
  */
-export const readOnly = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
+export const readOnly =
+  (tenant: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
 
-    return yield* sql.withTransaction(
-      sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.pipe(Effect.andThen(effect)),
-    )
-  })
+      return yield* sql.withTransaction(
+        sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.pipe(
+          Effect.andThen(sql`SELECT set_config('durable.tenant', ${tenant}, true)`),
+          Effect.andThen(effect),
+        ),
+      )
+    })
 
 export interface Overview {
   readonly tenant: string

@@ -1,6 +1,6 @@
 # ADR 0028: SQL inspection views over runtime tables
 
-**Status:** accepted (2026-09-28, Dallen, with the recommended answer to every open question; proposed 2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements it; the [decided questions](#decided-questions) record the answers. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) corrects §2's wording about `scheduled_at_ms`.
+**Status:** accepted (2026-09-28, Dallen, with the recommended answer to every open question; proposed 2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements it; the [decided questions](#decided-questions) record the answers. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) corrects §2's wording about `scheduled_at_ms`. [ADR 0051](0051-row-level-security.md) amends §4, §5, and question 6: with row-level security the views keep owner rights, owned by the tenant role, instead of switching to `security_invoker`.
 
 **Responsibility:** define a stable, documented, read-only SQL surface for inspecting committed runtime state, which rows and columns it exposes, how it is tenant scoped, and which privileges read it.
 
@@ -22,7 +22,7 @@ These facts from the shipped code shape the answer:
 - There is no separate cron table: cron entries are keyed timers with `timer_key = '$cron:<expression>'` (ADR 0021), and each tick leaves a receipt.
 - Workflow executions and their steps live in `actor_workflow_executions` and `actor_workflow_step`, created by `0012_workflows` (ADR 0022), which precedes `0013`. Step rows are deleted when their execution finishes.
 - The Effect migrator applies ids in order and skips any id at or below the latest applied. The framework refuses to start a database where a registered id below the latest applied one is missing, checked both before and after the migrator runs, so a database that recorded `0013` without `0012` fails loudly instead of skipping `0012` without a word.
-- RLS is optional and per table (contract 10); M4.5 will add the framework's policies.
+- RLS is optional and per table (contract 10); M4.5 adds the framework's policies ([ADR 0051](0051-row-level-security.md)).
 
 ## Decision
 
@@ -62,7 +62,7 @@ Each view joins `actor_placements`, so Postgres never treats it as an automatica
 
 Every row of every view carries `tenant_id`, and no view aggregates or joins across tenants: a row always belongs to the one tenant it names. Filtering on `tenant_id` returns exactly that tenant's rows. The views add no access of their own: they expose only what the runtime already stores, and a tenant filter is the caller's choice, not an enforced boundary.
 
-Until the framework's RLS policies land (M4.5), read access through these views is operator-only, like base-table access. When RLS lands, the views will be recreated with `security_invoker = true` so the base-table policies apply to the reading role; that is compatible (same columns and rows for an operator) and keeps version 1.
+Unless the deployment turns on row-level security, read access through these views is operator access to every tenant, like base-table access. With row-level security ([ADR 0051](0051-row-level-security.md)), the views keep owner rights but belong to the runtime's tenant role, so the base-table policies apply through them and each view returns only the tenant the reader's transaction names in `durable.tenant`. The columns and version 1 stay the same. This replaces the `security_invoker` switch this section planned: invoker rights would have required granting the reader the base tables.
 
 ### 5. Privileges: a role granted only the views
 
@@ -74,7 +74,7 @@ GRANT USAGE ON SCHEMA durable TO durable_inspector;
 GRANT SELECT ON ALL TABLES IN SCHEMA durable TO durable_inspector;
 ```
 
-That role can read every view and cannot read any `actor_*` table or write through a view. A later migration that adds a view requires the `GRANT SELECT ON ALL TABLES` to be rerun (or `ALTER DEFAULT PRIVILEGES` set by the migration user).
+That role can read every view and cannot read any `actor_*` table or write through a view. With row-level security on, it reads only the tenant its transaction sets in `durable.tenant` ([ADR 0051](0051-row-level-security.md) §4). A later migration that adds a view requires the `GRANT SELECT ON ALL TABLES` to be rerun (or `ALTER DEFAULT PRIVILEGES` set by the migration user).
 
 ### 6. Indexes and cost
 
@@ -93,7 +93,7 @@ Dallen took the recommended answer to every question on 2026-09-28. Migration `0
 3. **`durable.state` and `durable.events` expose compressed values** as `bytea` with `value_bytes`, decoded client-side. Omitting values until a `pg` zstd extension is a supported deployment requirement was rejected.
 4. **No secondary index for identity lookups;** use the two-step pattern. `actor_generations (tenant_id, actor_type, actor_id)`, one extra index write per new actor, was rejected; the benchmark suggests it is not needed below millions of actors.
 5. **Workflow views are in `0013`** (`durable.workflows` and `durable.workflow_steps`, §7), because `0012_workflows` merged first. Moving them to a later migration would only have delayed them.
-6. **When RLS lands, the views switch to `security_invoker`** (§4). Keeping owner-rights views with per-view tenant predicates driven by a session setting was rejected.
+6. **When RLS lands, the views switch to `security_invoker`** (§4). Keeping owner-rights views with per-view tenant predicates driven by a session setting was rejected. Amended by [ADR 0051](0051-row-level-security.md): the views keep owner rights and belong to the tenant role, so the base-table policies apply through them and a schema-only reader still holds no grant on any `actor_*` table.
 
 ## Alternatives considered
 
@@ -119,5 +119,5 @@ Dallen took the recommended answer to every question on 2026-09-28. Migration `0
 
 ## Revisit when
 
-- M4.5 adds RLS policies (question 6).
+- M4.5 added RLS policies; [ADR 0051](0051-row-level-security.md) answered question 6.
 - A deployment needs identity lookups on tables large enough that the scan in §6 matters (question 4).
