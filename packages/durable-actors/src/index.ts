@@ -140,6 +140,8 @@ export type { ConnectionHandlers, StreamHandler } from "./actor/definition.ts"
 
 export type { EffectClass, EffectPolicy, ProgressEffect, ProgressOf } from "./members/effect.ts"
 
+export type { PayloadMigrations, PayloadOptions } from "./members/payload.ts"
+
 export type { Executors, Handle, Intents, WorkflowHandlers } from "./actor/definition.ts"
 
 export type { Commutative, Reducer } from "./members/reducer.ts"

@@ -95,6 +95,12 @@ import {
 import { isMintedId } from "../identity/mint.ts"
 import { type AnyBlob, isBlob, isContent } from "../members/blob.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
+import {
+  definitionPayloads,
+  type PayloadDeclaration,
+  payloadChain,
+  payloadCodec,
+} from "../members/payload.ts"
 import { isCursor } from "../runtime/events/replay.ts"
 import { SubscriptionFailure } from "../errors/subscription.ts"
 import type {
@@ -662,13 +668,9 @@ const make = <
     effects.set(declared.tag, declared)
   }
 
-  const effectEncoders = new Map(
+  const effectCodecs = new Map(
     [...effects.values()].map(
-      (declared) =>
-        [
-          declared.tag,
-          Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.toCodecJson(declared))),
-        ] as const,
+      (declared) => [declared.tag, payloadCodec({ schema: declared, tag: declared.tag })] as const,
     ),
   )
 
@@ -776,15 +778,40 @@ const make = <
   }
 
   const eventCodecs = new Map(
-    [...events.values()].map((event) => {
-      const codec = Schema.fromJsonString(Schema.toCodecJson(event))
-
-      return [
-        event,
-        { encode: Schema.encodeEffect(codec), decode: Schema.decodeEffect(codec) },
-      ] as const
-    }),
+    [...events.values()].map(
+      (event) => [event, payloadCodec({ schema: event, tag: event.identifier })] as const,
+    ),
   )
+
+  const eventCodecsByTag = new Map(
+    [...eventCodecs].map(([event, codec]) => [event.identifier, codec] as const),
+  )
+
+  // A stored event the current class cannot read fails the read that met it.
+  const upcastEvent = (tag: string, version: number, value: string) => {
+    const codec = eventCodecsByTag.get(tag)
+
+    return codec === undefined
+      ? Effect.die(new Error(`Undeclared event: ${tag}`))
+      : codec.upcast(value, version).pipe(Effect.orDie)
+  }
+
+  const payloadDeclarations = (writes: boolean): ReadonlyArray<PayloadDeclaration> => [
+    ...[...events.values()].map((event) => ({
+      actorType: name,
+      kind: "event" as const,
+      tag: event.identifier,
+      chain: payloadChain(event),
+      writes,
+    })),
+    ...[...effects.values()].map((declared) => ({
+      actorType: name,
+      kind: "effect" as const,
+      tag: declared.tag,
+      chain: payloadChain(declared),
+      writes,
+    })),
+  ]
 
   const blobs: ReadonlyArray<AnyBlob> = definition.blobs ?? []
   const blobNames = new Set<string>()
@@ -898,10 +925,7 @@ const make = <
       const decoders = new Map(
         declared.events.map(
           (event) =>
-            [
-              event.identifier,
-              Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(event))),
-            ] as const,
+            [event.identifier, payloadCodec({ schema: event, tag: event.identifier })] as const,
         ),
       )
 
@@ -914,18 +938,34 @@ const make = <
         events: declared.events.map((event) => event.identifier),
         retired: declared.retired,
         routed: route === undefined ? undefined : Predicate.isFunction(route) ? "id" : "singleton",
-        route: (tag, value, source) =>
+        upcast: (tag, version, value) =>
           Effect.gen(function* () {
-            if (!Predicate.isFunction(route)) return "singleton"
+            const codec = decoders.get(tag)
 
-            const decode = decoders.get(tag)
-
-            if (decode === undefined)
+            if (codec === undefined)
               return yield* SubscriptionFailure.make({
                 message: `Subscription ${declared.tag} names no ${tag}`,
               })
 
-            const event = yield* decode(value)
+            return yield* codec.upcast(value, version)
+          }).pipe(
+            Effect.catchTag("PayloadError", (error) =>
+              Effect.fail(SubscriptionFailure.make({ message: error.message })),
+            ),
+          ),
+        route: (tag, value, source) =>
+          Effect.gen(function* () {
+            if (!Predicate.isFunction(route)) return "singleton"
+
+            const codec = decoders.get(tag)
+
+            if (codec === undefined)
+              return yield* SubscriptionFailure.make({
+                message: `Subscription ${declared.tag} names no ${tag}`,
+              })
+
+            // The relay upcasts before it routes, so the value is current.
+            const event = yield* codec.decode(value, codec.chain.current)
 
             const id = yield* Effect.try({
               try: () => route(event, source),
@@ -934,9 +974,12 @@ const make = <
 
             return yield* decodeId(id)
           }).pipe(
-            Effect.catchTag("SchemaError", (error) =>
-              Effect.fail(SubscriptionFailure.make({ message: error.message })),
-            ),
+            Effect.catchTags({
+              SchemaError: (error) =>
+                Effect.fail(SubscriptionFailure.make({ message: error.message })),
+              PayloadError: (error) =>
+                Effect.fail(SubscriptionFailure.make({ message: error.message })),
+            }),
           ),
       }
     },
@@ -1035,7 +1078,7 @@ const make = <
 
   const entryOf = <E extends Event>(event: E, stored: StoredEvent) =>
     Effect.map(
-      eventCodecs.get(event)!.decode(stored.value).pipe(Effect.orDie),
+      eventCodecs.get(event)!.decode(stored.value, stored.version).pipe(Effect.orDie),
       (decoded): EventEntry<E["Type"]> => ({
         cursor: stored.cursor,
         event: decoded as E["Type"],
@@ -1510,7 +1553,9 @@ const make = <
               Effect.fnUntraced(function* (stored) {
                 const entry: EventEntry<E["Type"]> = {
                   cursor: stored.cursor,
-                  event: (yield* decode(stored.value).pipe(Effect.orDie)) as E["Type"],
+                  event: (yield* decode(stored.value, stored.version).pipe(
+                    Effect.orDie,
+                  )) as E["Type"],
                   commandId: stored.commandId,
                   timestamp: DateTime.makeUnsafe(stored.timestampMs),
                 }
@@ -1797,7 +1842,10 @@ const make = <
               if (declared === undefined || !Schema.is(declared)(event))
                 return yield* Effect.die(new Error(`Undeclared event: ${event._tag}`))
 
-              const value = yield* eventCodecs.get(declared)!.encode(event).pipe(Effect.orDie)
+              const { value, version } = yield* eventCodecs
+                .get(declared)!
+                .encode(event)
+                .pipe(Effect.orDie)
 
               emittedBytes += new TextEncoder().encode(value).byteLength
 
@@ -1806,7 +1854,7 @@ const make = <
                   new Error(`Events emitted in one turn exceed ${MAX_EMIT_BYTES} bytes`),
                 )
 
-              emitted.push({ tag: declared.identifier, value })
+              emitted.push({ tag: declared.identifier, value, version })
             })
 
             const view = { set }
@@ -1894,7 +1942,7 @@ const make = <
               if (!open || (yield* InsideTurn) !== turn)
                 return yield* Effect.die(new Error("Effect capability escaped its turn"))
 
-              const declared = effectEncoders.get(instance._tag)
+              const declared = effectCodecs.get(instance._tag)
 
               if (declared === undefined)
                 return yield* Effect.die(new Error(`Undeclared effect: ${instance._tag}`))
@@ -1902,10 +1950,12 @@ const make = <
               const scheduled = yield* Effect.sync(() => performSchedule(options))
 
               if (scheduled.key !== undefined) yield* warnUnrouted(instance._tag)
+              const { value, version } = yield* declared.encode(instance).pipe(Effect.orDie)
 
               outbox.perform({
                 effect: instance._tag,
-                payload: yield* declared(instance).pipe(Effect.orDie),
+                payload: value,
+                version,
                 capped: effectPolicies[instance._tag]?.concurrency !== undefined,
                 ...scheduled,
               })
@@ -2202,6 +2252,20 @@ const make = <
           cron,
           subscriptions: registeredSubscriptions,
           subscribers: policy.subscribers,
+          // A subscriber reads its sources' events, so it checks their chains too.
+          payloads: [
+            ...payloadDeclarations(true),
+            ...subscriptions.flatMap((declared) =>
+              declared.events.map((event) => ({
+                actorType: declared.source.name,
+                kind: "event" as const,
+                tag: event.identifier,
+                chain: payloadChain(event),
+                writes: false,
+              })),
+            ),
+          ],
+          upcastEvent,
         }
 
         if (!isSingleton) {
@@ -2403,6 +2467,7 @@ const make = <
         tables,
         blobs,
         queries: registered,
+        payloads: payloadDeclarations(false).filter((declared) => declared.kind === "event"),
       })
     })
 
@@ -2451,7 +2516,7 @@ const make = <
           return yield* Effect.die(new Error(`Missing executor ${declared.tag}`))
 
         const routes = effectPolicies[declared.tag]
-        const decode = Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(declared)))
+        const { decode } = effectCodecs.get(declared.tag)!
         const onSuccess = routes?.onSuccess === undefined ? undefined : routeCodec(routes.onSuccess)
 
         const onDeadLetter =
@@ -2462,7 +2527,7 @@ const make = <
 
         const cancelledRoute = (
           effect: AnyEffect["Type"],
-          letter: Parameters<RegisteredEffect["cancelled"]>[1] | CancelledSuccess,
+          letter: Parameters<RegisteredEffect["cancelled"]>[2] | CancelledSuccess,
         ): Effect.Effect<EffectRoute | undefined, Schema.SchemaError> =>
           Effect.gen(function* () {
             if (onCancelled === undefined) return undefined
@@ -2492,9 +2557,15 @@ const make = <
           progressEveryMs: encodeProgress === undefined ? undefined : progressEveryMs,
           perActor: routes?.concurrency?.perActor,
           routesCancelled: onCancelled !== undefined,
-          execute: Effect.fnUntraced(function* (payload, attempt) {
-            const effect = yield* decode(payload).pipe(
-              Effect.mapError((error) => ({ cause: String(error), ambiguous: false })),
+          execute: Effect.fnUntraced(function* (payload, version, attempt) {
+            // A payload the chain cannot read never reaches the executor, so
+            // this attempt applied nothing and earlier attempts decide ambiguity.
+            const effect = yield* decode(payload, version).pipe(
+              Effect.mapError((error) => ({
+                cause: error.message,
+                ambiguous: false,
+                notStarted: true,
+              })),
             )
 
             const { report, reporting, ...identity } = attempt
@@ -2592,8 +2663,8 @@ const make = <
 
             return { success: success.success, cancelled, rejected: undefined }
           }) as RegisteredEffect["execute"],
-          cancelled: Effect.fnUntraced(function* (payload, letter) {
-            const effect = yield* decode(payload).pipe(Effect.option)
+          cancelled: Effect.fnUntraced(function* (payload, version, letter) {
+            const effect = yield* decode(payload, version).pipe(Effect.option)
 
             if (Option.isNone(effect)) return undefined
 
@@ -2601,8 +2672,8 @@ const make = <
           }, Effect.orDie),
           // A payload that no longer decodes is still dead-lettered for
           // operators; only its route, which needs the decoded effect, is skipped.
-          deadLetter: Effect.fnUntraced(function* (payload, letter) {
-            const effect = yield* decode(payload).pipe(Effect.option)
+          deadLetter: Effect.fnUntraced(function* (payload, version, letter) {
+            const effect = yield* decode(payload, version).pipe(Effect.option)
 
             if (onDeadLetter === undefined || Option.isNone(effect)) return undefined
 
@@ -2616,6 +2687,7 @@ const make = <
         progress: progressEffects,
         services: services as Context.Context<never>,
         effects: registered,
+        payloads: payloadDeclarations(false).filter((declared) => declared.kind === "effect"),
       })
     })
 
@@ -2841,6 +2913,12 @@ const make = <
   for (const member of Object.values(api)) checkDeclaredErrors(member)
 
   servedDefinitions.set(actor, served)
+
+  definitionPayloads.set(actor, {
+    declarations: payloadDeclarations(true),
+    keepEventsMs: policy.keepEventsMs,
+    commandTimeoutMs: policy.executionMs,
+  })
 
   internalDefinitions.set(actor, {
     handle: (id, tenant, caller) => getHandle(id, true, caller, tenant),

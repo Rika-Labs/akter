@@ -33,6 +33,8 @@ export interface StagedIntent {
 export interface StagedEffect {
   readonly effect: string
   readonly payload: string
+  /** The payload version `payload` is encoded at. */
+  readonly version: number
   readonly caller: Caller
   readonly due: Due | undefined
   readonly key: string | undefined
@@ -165,7 +167,9 @@ export const openOutbox = ({
   return {
     marker,
     /** Stages an effect; the caller checks that its turn is still running. */
-    perform: (effect: Pick<StagedEffect, "effect" | "payload" | "due" | "key" | "capped">) => {
+    perform: (
+      effect: Pick<StagedEffect, "effect" | "payload" | "version" | "due" | "key" | "capped">,
+    ) => {
       if (effect.key !== undefined) cancelEffectKey(staging, effect.key)
       // Routes deliver to the performing actor as the effect, on the turn's principal.
       staging.effects.push({

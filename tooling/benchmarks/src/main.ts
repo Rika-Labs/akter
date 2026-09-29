@@ -21,6 +21,7 @@ import { progress } from "./scenarios/progress.ts"
 import { effectConcurrency } from "./scenarios/effect-concurrency.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
+import { eventsReplay } from "./scenarios/events-replay.ts"
 import { retention } from "./scenarios/retention.ts"
 import { hotActor } from "./scenarios/hot-actor.ts"
 import { http } from "./scenarios/http.ts"
@@ -53,6 +54,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   receiptReplay,
   stateSize,
   events,
+  eventsReplay,
   manyActors,
   retainedHeap,
   storedOverhead,
