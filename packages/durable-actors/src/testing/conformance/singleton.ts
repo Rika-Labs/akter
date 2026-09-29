@@ -38,7 +38,8 @@ interface Loop {
   live: boolean
   closed: boolean
   attempts: number
-  refused: number
+  /** Why each refused tick failed, so a failure names its cause. */
+  readonly refused: Array<string>
 }
 
 /** Every loop each cluster's singleton started, keyed by the cluster's tenant. */
@@ -73,7 +74,7 @@ const BeaconLive = Layer.mergeAll(
         live: true,
         closed: false,
         attempts: 0,
-        refused: 0,
+        refused: [],
       }
 
       started.push(loop)
@@ -86,9 +87,9 @@ const BeaconLive = Layer.mergeAll(
         Effect.gen(function* () {
           loop.attempts += 1
           yield* beacon.Tick(loop.id).pipe(
-            Effect.catch(() =>
+            Effect.catch((error) =>
               Effect.sync(() => {
-                loop.refused += 1
+                loop.refused.push(String(error))
               }),
             ),
           )
@@ -314,7 +315,7 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const runner of [0, 1, 2])
             expect(log.find(({ loop: from }) => from === `runner-${runner}`)?.by).toBe(loop.id)
-          expect(loop.refused).toBe(0)
+          expect(loop.refused).toEqual([])
 
           const inspection = yield* inspectOn(1, ref)
           expect(inspection.receipts).toBe(inspection.events)
@@ -387,7 +388,7 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
           // The dead runner's loop winds down; the survivor's keeps going.
           yield* awaitThat(() => !loop.live, "the dead runner's loop to stop")
           expect(liveOf(ref.tenant)).toEqual([successor])
-          expect(successor.refused).toBe(0)
+          expect(successor.refused).toEqual([])
 
           const inspection = yield* inspectOn(next, ref)
           expect(inspection.receipts).toBe(inspection.events)
