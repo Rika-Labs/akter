@@ -349,7 +349,9 @@ export const registerActor = Effect.fnUntraced(function* (
         Execute: Effect.fnUntraced(
           function* ({ payload }) {
             if (lost) return yield* leaseLost
+
             if (ended) return yield* restartIncomplete
+
             yield* writable
 
             const { owned, activated } = current
