@@ -177,7 +177,6 @@ export const connectionsLayer = (fixture: ConnectionsFixture) =>
 
         yield* turn.state.set({ posts: turn.state.posts + 1 })
       }),
-      // `to` is optional so that an actor's own timer reads as `Forward({ text, afterMs })`.
       Forward: Effect.fnUntraced(function* ({ to, text, afterMs }) {
         const turn = yield* Room.Turn
         const intent = (yield* Room.intents(to ?? turn.id)).Post(text)
@@ -220,7 +219,6 @@ export const connectionsLayer = (fixture: ConnectionsFixture) =>
 
           if (frame.text === "receipted") return yield* conn.send(receipted)
 
-          // Grows the session's name to `length` characters.
           if (frame.text.startsWith("grow:")) {
             const length = Number(frame.text.slice("grow:".length))
             yield* conn.session.set({ name: "x".repeat(length), frames })
@@ -527,6 +525,7 @@ const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: string) =>
     Effect.asVoid,
   )
 
+/** Connection cases: open, ordered frames, session storage, broadcasts, and cleanup on close. */
 export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "a connection opened after every earlier one to a resident actor closed still receives broadcasts",
@@ -539,7 +538,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(frameOf((yield* next(connection))[0])).toEqual(Said.make({ text: "first" }))
           yield* connection.close
 
-          // The owner stays resident and its channel to this holder keeps counting.
           const again = yield* test.connect(room.ref, Live, { name: "bob" })
           yield* next(again)
           yield* room.Post("second")
@@ -672,7 +670,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* room.Post("again")
           const [again] = yield* next(connection)
           expect(frameOf(again)).toEqual(Said.make({ text: "again" }))
-          // The second turn's frame carries the watermark the first turn's flush advanced.
           expect(BigInt(cursorOf(again) ?? "0") > BigInt(connection.cursor)).toBe(true)
         }),
       ),
@@ -800,7 +797,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const { room, connection } = yield* connect("connections-slow")
           yield* next(connection)
           yield* connection.send(Say.make({ text: "flood" }))
-          // The client reads nothing until its session has ended and its row is gone.
           yield* rows(room.ref).pipe(
             Effect.repeat({
               schedule: Schedule.spaced("20 millis"),
@@ -892,10 +888,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             }),
             actorType: () => type,
             authorize: () => Effect.succeed(true),
-          }).pipe(
-            // Every clock read advances, so values read separately never share a millisecond.
-            Effect.provideService(FrameworkClock, { offsetMillis: () => ticks++ }),
-          )
+          }).pipe(Effect.provideService(FrameworkClock, { offsetMillis: () => ticks++ }))
 
           const openHeld = holder.open({
             ref: { tenant: room.ref.tenant, actor: "Recovered", id: "recovered" },
@@ -904,7 +897,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             params: "{}",
           })
 
-          // An earlier connection moved the holder's cursor for this actor past the retried open's.
           const earlier = yield* openHeld
           const held = yield* openHeld
 
@@ -922,7 +914,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(resync?._tag).toBe("Resync")
           expect(resync?._tag === "Resync" ? resync.after : undefined).toBe("5")
           expect(resyncs).toEqual(["5"])
-          // The resync request carries the session's authorization bound, like a frame.
           expect(bounds.length === 1 && bounds[0]! > 0).toBe(true)
           yield* held.close
           yield* earlier.close
@@ -951,7 +942,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             hasMember: () => true,
             routingKey: () => 0n,
             channel: {
-              // The owner's row, so the holder's liveness check keeps the session.
               open: (request) =>
                 sql`
                   INSERT INTO actor_connections (
@@ -980,7 +970,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             actorType: () => type,
             authorize: (request) =>
               Effect.sync(() => {
-                // The check started inside the bound and answers after it.
                 if (request.kind === "reauthorize") offset += 700
 
                 return true
@@ -1034,7 +1023,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             hasMember: () => true,
             routingKey: () => 0n,
             channel: {
-              // The owner's row, so the holder's liveness check keeps the session.
               open: (request) =>
                 sql`
                   INSERT INTO actor_connections (
@@ -1063,7 +1051,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             actorType: () => type,
             authorize: (request) =>
               Effect.sync(() => {
-                // Each slow check allows its session, but answers a second later.
                 if (request.kind === "reauthorize" || (request.kind === "open" && slowOpen))
                   offset += 1_000
 
@@ -1130,7 +1117,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             hasMember: () => true,
             routingKey: () => 0n,
             channel: {
-              // The owner's row, so the holder's liveness check keeps the session.
               open: (request) =>
                 sql`
                   INSERT INTO actor_connections (
@@ -1145,7 +1131,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
                 ),
               frame: () => Effect.die(new Error("No frame is sent")),
               close: () => Effect.void,
-              // The new owner answers after the credential's expiry, closing the session as the owner does.
               resync: () =>
                 Effect.sync(() => {
                   offset += 1_000
@@ -1177,7 +1162,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             expiresAt: (yield* holder.now) + 500,
           })
 
-          // A message from a newer generation over an unsealed one: the first owner died.
           yield* holder.deliver({
             epoch: "resync-epoch",
             owner: "other",
@@ -1214,7 +1198,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const cluster = yield* ActorCluster
           yield* cluster.ready
 
-          // The holder is runner 0; find an actor that runner 1 owns.
           let ref: ActorRef | undefined
 
           for (let index = 0; ref === undefined && index < 200; index++) {
@@ -1253,7 +1236,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const after = lost?.after
           expect(after === undefined).toBe(false)
 
-          // The new owner replays events after the cursor, then the holder reports the replay done.
           const replay = yield* connection.messages.pipe(
             Stream.takeUntil((message) => Predicate.isTagged(message, "ResyncReplayed")),
             Stream.runCollect,
@@ -1264,13 +1246,11 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect([...replay].at(-1)?._tag).toBe("ResyncReplayed")
           expect([...replay].filter(isFrame)).toEqual([])
 
-          // A resync handler that closes its connection ends it instead of reporting the replay done.
           expect(reasonOf(yield* endOf(quitter))).toMatchObject({
             cause: "ServerClosed",
             resync: false,
           })
 
-          // A live broadcast committed before the client acknowledges the resync waits for it.
           yield* cluster.on(0)(
             Room.get(target.id).pipe(Effect.flatMap((room) => room.Post("during"))),
           )
@@ -1302,7 +1282,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const { room, connection } = yield* connect("connections-session-limit")
           yield* next(connection)
 
-          // The name that makes the session's encoded JSON exactly the limit on the next frame.
           const fits = MAX_SESSION_BYTES - (yield* sessionJson({ name: "", frames: 1 })).length
           yield* connection.send(Say.make({ text: `grow:${fits}` }))
           const [grown] = yield* next(connection)
@@ -1315,7 +1294,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const json = yield* sessionJson(session)
           expect(new TextEncoder().encode(json).byteLength).toBe(MAX_SESSION_BYTES)
 
-          // One byte more is a defect of the handler: its session and frames are never written.
           yield* connection.send(Say.make({ text: `grow:${fits + 1}` }))
           const { seen, ended } = yield* untilEnd(connection)
           expect(seen).toEqual([])
@@ -1368,7 +1346,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             EXECUTE FUNCTION connections_keep_row()`.pipe(Effect.orDie)
 
           yield* Effect.gen(function* () {
-            // The handler closes its connection, but the owner cannot delete the row.
             yield* connection.send(Say.make({ text: "leave" }))
             yield* room.Post("still here")
             const [still] = yield* next(connection)
@@ -1396,7 +1373,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* connection.send(Say.make({ text: "hold" }))
           yield* hold.reached
 
-          // Every queued frame would post; none may once the queue overflowed.
           for (let index = 0; index <= 1_024; index++)
             yield* connection.send(Say.make({ text: "queued" })).pipe(Effect.ignore)
 
@@ -1418,7 +1394,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const { test, room, connection } = yield* connect("connections-revoked-queue")
           yield* next(connection)
 
-          // A broadcast the client has not read yet.
           yield* room.Post("unread")
           const hold = yield* holdNext(fixture.connections)
           yield* connection.send(Say.make({ text: "hold" }))
@@ -1427,7 +1402,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           fixture.allowed = false
 
-          // The client reads only after revocation deleted the session's row.
           const { seen, ended } = yield* test.advance("55 seconds").pipe(
             Effect.andThen(
               eventually(
@@ -1444,7 +1418,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* hold.release
           yield* Effect.sleep("500 millis")
-          // Only the direct post ran; the queued frame's post never did.
           expect(yield* posts(room.ref)).toBe(1)
         }),
       ),
@@ -1506,7 +1479,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           const { ended } = yield* Effect.gen(function* () {
-            // The first failing check, then a reauthorization that succeeds, then the bound.
             yield* test.advance("11 seconds")
             yield* Effect.sleep("500 millis")
             yield* test.advance("40 seconds")
@@ -1525,7 +1497,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(Schema.is(SessionEnded)(ended)).toBe(true)
           expect(ended).toMatchObject({ cause: "ActorUnavailable", resync: true })
 
-          // The holder now holds nothing; a connection opened after the database is back is proven by its open.
           const after = yield* connect("connections-sighted")
           yield* next(after.connection)
           yield* Effect.sleep("300 millis")
@@ -1556,7 +1527,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const bytes = yield* fake.open(room.ref)
           const once = fake.message(room.ref, "1", 1, [rawFrame([frames.connectionId], "once")])
           yield* fake.holder.deliver(once)
-          // The owner resends after its acknowledgment was lost; the holder acknowledges it again.
           expect(yield* fake.holder.deliver(once)).toEqual({ wrongEpoch: false, unknown: [] })
 
           yield* fake.holder.deliver(
@@ -1576,7 +1546,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             ),
           ).toEqual(["once", "twice"])
 
-          // The owner stops answering pings: both connections resync, and live frames wait behind it.
           alive = false
 
           for (const held of [frames, bytes]) {
@@ -1650,7 +1619,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             template: connection.connectionId,
             type: { deliveryMs: 200 },
             channel: (copyRow) => ({
-              // The owner commits the open well after the holder's delivery timeout.
               open: (request) => copyRow(request).pipe(Effect.delay("600 millis")),
               close: (request) => Effect.sync(() => closes.push(request.cause)),
             }),
@@ -1689,7 +1657,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             template: connection.connectionId,
             type: { takeoverMs: 300 },
             channel: (copyRow) => ({
-              // A retried open whose first commit's reply was lost resyncs from its baseline.
               open: (request) =>
                 copyRow(request).pipe(
                   Effect.map((opened) => ({ ...opened, baseline: "4", recovered: true })),
@@ -1745,7 +1712,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           ]).pipe(Effect.orDie)
 
           yield* Effect.gen(function* () {
-            // The frame's acquisitions fail and are retried until the database accepts one.
             yield* connection.send(Say.make({ text: "whoami" }))
             yield* Effect.sleep("300 millis")
             yield* dropped
@@ -1770,7 +1736,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* connection.send(Say.make({ text: "hold" }))
           yield* hold.reached
 
-          // Another owner takes the generation and holds its row while the handler finishes.
           const takeover = yield* environment.connect!
           yield* takeover.query("BEGIN")
 
@@ -1797,7 +1762,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* takeover.query("COMMIT")
 
-          // The fenced-out generation never sealed, so the holder resyncs before the new owner's answer.
           const replay = yield* throughReplayed(connection)
           expect(replay.map((message) => message._tag)).toEqual(["Resync", "ResyncReplayed"])
           expect(replay[0]).toMatchObject({
@@ -1814,7 +1778,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const [row] = yield* rows(room.ref)
           expect(row?.frame_seq).toBe("1")
 
-          // The redelivered frame ran on an activation that took a newer generation still.
           const test = yield* ActorTest
 
           expect(BigInt((yield* test.inspect(room.ref)).generation!)).toBe(
@@ -1846,7 +1809,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* next(connection)
           const generation = holder(ActorTest.use((test) => test.inspect(ref)))
 
-          // Hibernates the actor on its owner, which is never the holder's runner.
           const park = Effect.gen(function* () {
             const owner = yield* cluster.owner(ref)
             expect(owner === undefined || owner === 0).toBe(false)
@@ -1861,7 +1823,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             expect(BigInt((yield* generation).generation!) > parked).toBe(true)
           })
 
-          // An intent another actor staged.
           let parked = yield* park
 
           yield* holder(
@@ -1872,7 +1833,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* woken("by intent", parked)
 
-          // A timer the actor set for itself before it parked.
           yield* holder(
             Room.get(id).pipe(
               Effect.flatMap((room) => room.Forward({ text: "by timer", afterMs: 30_000 })),
@@ -1884,7 +1844,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* holder(ActorTest.use((test) => test.advance("31 seconds")))
           yield* woken("by timer", parked)
 
-          // An effect route: the executor succeeds only after the actor parked.
           const executed = yield* Deferred.make<void>()
           fixture.connections.echo = Deferred.await(executed)
 
@@ -1916,7 +1875,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const post = (text: string) =>
             holder(Room.get(id).pipe(Effect.flatMap((room) => room.Post(text))))
 
-          // An event before the connection opens, so its open cursor is not the beginning.
           yield* post("earlier")
           const ref = (yield* holder(Room.get(id))).ref
 
@@ -1940,7 +1898,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const [resync] = yield* next(connection)
           expect(resync).toMatchObject(resyncFrom(connection.cursor))
 
-          // Acknowledged before the new owner answered, so the holder ignores it.
           yield* connection.resyncDone
 
           const replay = yield* throughReplayed(connection)
@@ -1948,7 +1905,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(replayed.map(frameOf)).toEqual([Said.make({ text: "lost" })])
           expect(BigInt(replayed[0]!.event!) > BigInt(connection.cursor)).toBe(true)
 
-          // The 30-second deadline started at ResyncReplayed, not at Resync.
           yield* holder(ActorTest.use((test) => test.advance("27 seconds")))
           expect(yield* quiet(connection)).toBe(true)
           yield* holder(ActorTest.use((test) => test.advance("4 seconds")))
@@ -1993,7 +1949,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(first[0]).toMatchObject(resyncFrom(undefined))
           expect(first.filter(isFrame)).toEqual([])
 
-          // The new owner's broadcast moves the holder's watermark while the client has not acknowledged.
           yield* holder(Room.get(id).pipe(Effect.flatMap((room) => room.Post("between"))))
           yield* killOwner
           const second = yield* throughReplayed(connection)
@@ -2031,7 +1986,6 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* next(connection)
 
-          // The owner's clock is past the bound the holder stamps on the frame.
           yield* cluster.on(1)(ActorTest.use((test) => test.advance("61 seconds")))
           yield* connection.send(Say.make({ text: "stale" }))
           const { seen, ended } = yield* untilEnd(connection)
