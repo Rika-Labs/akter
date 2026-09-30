@@ -182,15 +182,15 @@ export interface Options {
      */
     readonly skew?: Duration.Input
   }
-  /** The effect executor pool of this runner. */
+  /** The job executor pool of this runner. */
   readonly executors?: {
-    /** Effect attempts running at once. Default 64. */
+    /** Job attempts running at once. Default 64. */
     readonly concurrency?: number
     /** An attempt's claim, renewed every third of it; at least 3 seconds. Default 60 seconds. */
     readonly lease?: Duration.Input
     /**
      * How often a running attempt checks whether a turn on another runner
-     * cancelled its effect; at least 1 second, at most a third of the lease.
+     * cancelled its job; at least 1 second, at most a third of the lease.
      * Default a third of the lease. A cancellation committed on the attempt's
      * own runner reaches it at once.
      */

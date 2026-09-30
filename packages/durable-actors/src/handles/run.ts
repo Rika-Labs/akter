@@ -70,12 +70,15 @@ export const workflowRun = <W extends AnyWorkflow>(options: {
           found instanceof EffectWorkflow.Complete,
       ),
     ),
-    Effect.flatMap(Option.match({ onNone: () => Effect.fail(pending), onSome: Effect.succeed })),
-    Effect.retry({ while: (error) => error === pending, schedule: RESULT_POLL }),
-    Effect.flatMap((complete) => complete.exit),
+    Effect.repeat({
+      until: (
+        found,
+      ): found is Option.Some<EffectWorkflow.Complete<W["success"]["Type"], W["error"]["Type"]>> =>
+        Option.isSome(found),
+      schedule: RESULT_POLL,
+    }),
+    Effect.flatMap((complete) => complete.value.exit),
   )
 
   return { executionId: options.executionId, poll, result, interrupt: options.interrupt }
 }
-
-const pending = Symbol("pending")

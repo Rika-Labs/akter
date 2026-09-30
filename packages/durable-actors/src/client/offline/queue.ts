@@ -102,7 +102,7 @@ export interface Delivery<Output> {
 }
 
 /** The queue a client drives: what an application sees, plus saving commands. */
-interface CommandQueue<Output> extends OfflineQueue {
+export interface CommandQueue<Output> extends OfflineQueue {
   /**
    * Saves the command `make` builds, then delivers it. Calls are taken one at
    * a time in the order they were made, so an id that takes longer to mint
