@@ -15,7 +15,7 @@ import {
   Stream,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, Intent, User } from "../../index.ts"
+import { Actor, Actors, Intent, System } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import { Outcome, Request } from "../../runtime/request.ts"
 import { migrate } from "../../runtime/database/migrations.ts"
@@ -862,7 +862,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
               .query(
                 Request.make({
                   ref: ledger.ref,
-                  caller: User.make({ subject: "alice" }),
+                  caller: System.make({ source: "process" }),
                   command: "Read",
                   commandId: "",
                   payload: '{"value":null}',
