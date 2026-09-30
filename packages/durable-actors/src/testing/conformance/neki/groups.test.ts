@@ -24,8 +24,9 @@ const moduleOf = (group: ConformanceGroup) =>
     .replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}.ts`
 
 /**
- * Whether a group's module, or a `-harness` module it imports, opens a fresh
- * database or a snapshot; a shared harness can hold the call.
+ * Whether a group's module, a `-harness` module it imports, or a module in the
+ * folder of the same name beside it opens a fresh database or a snapshot; a
+ * shared harness or a themed slice of the group can hold the call.
  */
 const needsFreshDatabase = Effect.fnUntraced(function* (group: ConformanceGroup) {
   const fs = yield* FileSystem.FileSystem
@@ -37,7 +38,16 @@ const needsFreshDatabase = Effect.fnUntraced(function* (group: ConformanceGroup)
     ([, name]) => name!,
   )
 
-  const sources = yield* Effect.forEach(beside, (name) =>
+  const folder = new URL(moduleOf(group).replace(/\.ts$/, "/"), new URL("../", import.meta.url))
+
+  const sliced =
+    !moduleOf(group).includes("/") && (yield* fs.exists(folder.pathname))
+      ? (yield* fs.readDirectory(folder.pathname))
+          .filter((name) => name.endsWith(".ts"))
+          .map((name) => `./${moduleOf(group).replace(/\.ts$/, "")}/${name}`)
+      : []
+
+  const sources = yield* Effect.forEach([...beside, ...sliced], (name) =>
     fs.readFileString(new URL(name, file).pathname),
   )
 
