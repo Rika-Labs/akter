@@ -95,7 +95,7 @@ const BENCH_CONTENT_KEY = {
   secret: Redacted.make("durable-actors benchmark content grant key only"),
 }
 
-export const runtimeLayer = (
+const runtimeLayer = (
   maxResidentActors: number | undefined,
   subscriptions?: boolean,
   rowLevelSecurity?: { readonly role: string },
@@ -112,6 +112,9 @@ export const runtimeLayer = (
     Layer.provide(BunCrypto.layer),
     Layer.orDie,
   )
+
+/** The actor runtime every single-runner case builds, with the default residency and no subscription probes. */
+export const caseRuntime = runtimeLayer(undefined)
 
 /** What a scenario receives from the runner. */
 export interface ScenarioContext {

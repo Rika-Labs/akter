@@ -47,7 +47,7 @@ const Balance = Actor.query("Balance", {
 const zero = Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0)))
 
 /** An account whose deposits, held turns, and reminders are each counted in state. */
-export const ColdLedger = Actor.make("ColdLedger", {
+const ColdLedger = Actor.make("ColdLedger", {
   key: Schema.String,
   state: Actor.state({ balance: zero, holds: zero, reminded: zero }),
   api: { Deposit, Hold, Plan, Balance },
@@ -138,6 +138,7 @@ export const coldServeConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const cold = fixture.coldServe
           yield* reset(cold)
+          yield* environment.restart
 
           const first = yield* Effect.promise(() =>
             environment.run(
@@ -349,6 +350,7 @@ export const coldServeEdgeConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const start = (yield* edgeOf(environment.edge)).start
           const always = yield* start({ primaryRegion: REGION })
+
           const scaled = yield* start({
             primaryRegion: REGION,
             scaleToZero: true,

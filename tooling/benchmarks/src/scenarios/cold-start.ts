@@ -18,7 +18,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { load, now, summarize, throughput } from "../measure.ts"
 import { Probe, Sender } from "../probe/contract.ts"
 import { deliveries } from "../probe/layer.ts"
-import { type CaseResult, DEFAULT_POOL, runtimeLayer, type Scenario } from "../scenario.ts"
+import { type CaseResult, caseRuntime, DEFAULT_POOL, type Scenario } from "../scenario.ts"
 
 const ProtocolInfo = Schema.Struct({ retryWindowMs: Schema.Int, now: Schema.Int })
 
@@ -29,7 +29,7 @@ const startRunner = Effect.fnUntraced(function* (database: Context.Context<SqlCl
   const scope = yield* Scope.make()
 
   const services = yield* Layer.build(
-    runtimeLayer(undefined).pipe(Layer.provideMerge(Layer.succeedContext(database))),
+    caseRuntime.pipe(Layer.provideMerge(Layer.succeedContext(database))),
   ).pipe(Scope.provide(scope))
 
   const web = HttpRouter.toWebHandler(
@@ -134,6 +134,7 @@ export const coldStart: Scenario = {
 
           for (let drill = 0; drill < drills; drill++) {
             const ids = Array.from({ length: due }, (_, index) => `cold-${due}-${drill}-${index}`)
+
             const pending = yield* Effect.forEach(ids, (id) =>
               Deferred.make<void>().pipe(
                 Effect.tap((done) => Effect.sync(() => deliveries.set(id, done))),

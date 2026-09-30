@@ -806,8 +806,8 @@ export const clientFor = Effect.fnUntraced(function* (url: string) {
 })
 
 /** A runner in `region` that trusts `edge`, rereading its key set every second. */
-export const edgeRunner = (edge: HostedEdge, region: string) =>
-  serveAsserted(
+export const edgeRunner = Effect.fnUntraced(function* (edge: HostedEdge, region: string) {
+  return yield* serveAsserted(
     Actor.auth.assertion({
       issuer: edge.issuer,
       audience: edge.deployment,
@@ -816,6 +816,7 @@ export const edgeRunner = (edge: HostedEdge, region: string) =>
       refreshEvery: "1 second",
     }),
   )
+})
 
 export const bearerHeaders = (key: string) => ({ authorization: `Bearer ${key}` })
 
