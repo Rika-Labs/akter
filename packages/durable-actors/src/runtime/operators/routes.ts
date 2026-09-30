@@ -40,7 +40,7 @@ const ReceiptParams = Schema.Struct({
   commandId: Schema.NonEmptyString,
 })
 
-const EffectParams = Schema.Struct({ effectId: Schema.NonEmptyString })
+const JobParams = Schema.Struct({ jobId: Schema.NonEmptyString })
 
 const PageQuery = Schema.Struct({ tenant: Tenant, limit: Schema.optional(Limit) })
 
@@ -100,7 +100,7 @@ const repairResponse = <A>(repair: Effect.Effect<A, RepairError>) =>
             OperatorNotFound: notFoundResponse,
             ProviderOutcomeUnknown: (refused) =>
               HttpServerResponse.jsonUnsafe(refused, { status: 409 }),
-            EffectNotServed: (refused) => HttpServerResponse.jsonUnsafe(refused, { status: 503 }),
+            JobNotServed: (refused) => HttpServerResponse.jsonUnsafe(refused, { status: 503 }),
           }),
         ),
       ),
@@ -125,8 +125,8 @@ const decodeBody = <A, RD>(schema: Schema.ConstraintDecoder<A, RD>) =>
  * - `GET /actors/:type/:id/export?tenant`: `export`; the actor's seed, read-only. Answers 409 `ExportRefused` when a stored value does not decode or the actor holds too much pending work.
  * - `GET /receipts/:type/:id/:commandId?tenant`: `receipts.read`; never runs the command.
  * - `GET /defects?tenant&actor&sinceMs&limit`: `defects.read`; `tenant` may be `*`.
- * - `POST /dead-letters/:effectId/retry` `{ tenant, actorType, actorId, reason, providerChecked? }`: `dead-letters.retry`.
- * - `POST /dead-letters/:effectId/discard` `{ tenant, actorType, actorId, reason }`: `dead-letters.discard`.
+ * - `POST /dead-letters/:jobId/retry` `{ tenant, actorType, actorId, reason, providerChecked? }`: `dead-letters.retry`.
+ * - `POST /dead-letters/:jobId/discard` `{ tenant, actorType, actorId, reason }`: `dead-letters.discard`.
  * - `POST /subscriptions/skip` `{ tenant, sourceType, sourceId, subscriberType, subscription, subscriberId, through, reason }`: `subscriptions.skip`, scoped to the source actor.
  * - `GET /subscriptions/lagging?tenant&minAttempts&limit`: `inspect`, tenant-wide; failing subscription rows with their lag and last error.
  * - `GET /audit?tenant&limit`: `audit.read`; `tenant` may be `*`.
@@ -279,39 +279,39 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
         path: "retry" | "discard",
         run: (
           body: typeof RetryBody.Type,
-          effectId: string,
+          jobId: string,
           audit: AuditEntry,
         ) => Effect.Effect<Schema.Json, RepairError>,
       ) =>
-        route("POST", `/dead-letters/:effectId/${path}`, (grant) =>
+        route("POST", `/dead-letters/:jobId/${path}`, (grant) =>
           Effect.gen(function* () {
-            const { effectId } = yield* HttpRouter.schemaPathParams(EffectParams)
+            const { jobId } = yield* HttpRouter.schemaPathParams(JobParams)
             const body = yield* decodeBody(RetryBody)
 
             const entry = yield* authorize(
               grant,
               path === "retry" ? "dead-letters.retry" : "dead-letters.discard",
               target(body),
-              effectId,
+              jobId,
             )
 
-            return yield* repairResponse(run(body, effectId, { ...entry, reason: body.reason }))
+            return yield* repairResponse(run(body, jobId, { ...entry, reason: body.reason }))
           }),
         )
 
-      yield* repair("retry", (body, effectId, audit) =>
+      yield* repair("retry", (body, jobId, audit) =>
         runtime.retry({
           target: target(body),
-          effectId,
+          jobId,
           providerChecked: body.providerChecked === true,
           audit,
         }),
       )
 
-      yield* repair("discard", (body, effectId, audit) =>
+      yield* repair("discard", (body, jobId, audit) =>
         runtime
-          .discard({ target: target(body), effectId, audit })
-          .pipe(Effect.as({ discarded: effectId })),
+          .discard({ target: target(body), jobId, audit })
+          .pipe(Effect.as({ discarded: jobId })),
       )
 
       yield* route("POST", "/subscriptions/skip", (grant) =>
