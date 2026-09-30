@@ -49,11 +49,17 @@ const Room = Actor.make("Room", {
   state: count,
   api: { Post, Whoami, Clear, Count, Peek, Recent },
   internal: { Secret },
+  access: () => true,
 })
 
 const Join = Actor.command("Join", { output: Schema.Int })
 
-const Lobby = Actor.make("Lobby", { key: Actor.singleton, state: count, api: { Join } })
+const Lobby = Actor.make("Lobby", {
+  key: Actor.singleton,
+  state: count,
+  api: { Join },
+  access: () => true,
+})
 
 const runs = { count: 0 }
 
