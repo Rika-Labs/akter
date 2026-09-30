@@ -42,11 +42,10 @@ export const workflowCheck: Scenario = {
     "The workflow deploy check (checkWorkflows, read-only) over open WorkflowProbe executions that each recorded two steps and sleep; one check per operation, sequentially.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
       const crypto = Context.get(yield* Layer.build(BunCrypto.layer), Crypto.Crypto)
 
-      for (const open of quick ? [100] : [100, 1_000])
+      for (const open of context.quick ? [100] : [100, 1_000])
         results.push(
           yield* context.withRuntime({}, (instruments) =>
             Effect.gen(function* () {
@@ -57,7 +56,7 @@ export const workflowCheck: Scenario = {
                 parameters: { workers: 1, open, recordedSteps: 2 },
                 instruments,
                 workers: 1,
-                operations: quick ? 20 : 100,
+                operations: context.quick ? 20 : 100,
                 operation: () =>
                   checkWorkflows([WorkflowProbe]).pipe(
                     Effect.flatMap((found) =>

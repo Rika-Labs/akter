@@ -31,6 +31,12 @@ export interface Harness {
   readonly deadLetters: Effect.Effect<
     ReadonlyArray<{ effect_id: string; effect: string; ambiguous: boolean }>
   >
+  /**
+   * Every audit row in the order the requests wrote them. `at_ms` has
+   * millisecond resolution and back-to-back requests can share one, so ties
+   * break by the writing transaction's id, which grows with each sequential
+   * request, never by the random audit id.
+   */
   readonly audit: Effect.Effect<ReadonlyArray<AuditRow>>
 }
 
@@ -155,7 +161,7 @@ export const operatorHarness = <A, E>({
           Effect.orDie,
         ),
         audit: sql<AuditRow>`SELECT operator, action, actor_id, target, capability, reason, outcome
-          FROM durable.operator_audit ORDER BY at_ms, audit_id`.pipe(Effect.orDie),
+          FROM actor_operator_audit ORDER BY at_ms, xmin::text::bigint`.pipe(Effect.orDie),
       }
 
       return yield* body(harness).pipe(Effect.provideContext(services))

@@ -14,11 +14,10 @@ import { fakeGateway, ledger } from "./account/gateway.ts"
 import { AccountLive } from "./account/layer.ts"
 
 const DatabaseLive = Layer.unwrap(
-  Effect.gen(function* () {
-    const url = yield* Config.option(Config.Redacted("DATABASE_URL"))
-
-    return Option.isSome(url) ? Database.postgres({ url: url.value }) : Database.pglite()
-  }),
+  Effect.map(
+    Config.option(Config.Redacted("DATABASE_URL")),
+    Option.match({ onNone: () => Database.pglite(), onSome: (url) => Database.postgres({ url }) }),
+  ),
 )
 
 const live = AccountLive.pipe(

@@ -35,16 +35,15 @@ export const blobs: Scenario = {
     "turn.blob set and append turns, read.blob reads of one-chunk and 16-chunk entries, and compact of 16 chunks, at 4 KiB, 64 KiB, and 1 MiB (set also at 16 and 32 KiB).",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
-      for (const size of quick
+      for (const size of context.quick
         ? [4 * KIB, 1024 * KIB]
         : [...SIZES, ...SET_ONLY].sort((a, b) => a - b)) {
         const large = size >= 1024 * KIB
-        const writes = quick ? 20 : large ? 100 : 500
-        const reads = quick ? 50 : large ? 200 : 1000
-        const compactions = quick ? 10 : large ? 50 : 200
+        const writes = context.quick ? 20 : large ? 100 : 500
+        const reads = context.quick ? 50 : large ? 200 : 1000
+        const compactions = context.quick ? 10 : large ? 50 : 200
         const setOnly = SET_ONLY.includes(size)
         const parameters = { blobBytes: size, workers: 1 }
 

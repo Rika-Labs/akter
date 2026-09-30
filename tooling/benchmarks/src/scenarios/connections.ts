@@ -59,7 +59,7 @@ export const connections: Scenario = {
     "Connection round trips through the in-process holder: a frame echoed by a warm owner, a frame that wakes a hibernated owner, and a turn's broadcast reaching 1 and 64 parked connections; stream subscriptions, and a commit reaching a read.follow subscriber.",
   run: (context) =>
     Effect.gen(function* () {
-      const operations = context.profile === "quick" ? 200 : 2000
+      const operations = context.quick ? 200 : 2000
       const results: Array<CaseResult> = []
 
       results.push(

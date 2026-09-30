@@ -10,14 +10,12 @@
  */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Database } from "@durable-actors/core/runtime"
-import { Config, Effect, Layer, Redacted } from "effect"
+import { Config, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { app } from "./app.ts"
 
 const database = Layer.unwrap(
-  Effect.map(Config.String("DATABASE_URL"), (url) =>
-    Database.postgres({ url: Redacted.make(url) }),
-  ),
+  Effect.map(Config.Redacted("DATABASE_URL"), (url) => Database.postgres({ url })),
 )
 
 HttpRouter.serve(app).pipe(
