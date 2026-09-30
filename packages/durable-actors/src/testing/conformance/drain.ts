@@ -6,6 +6,8 @@ import { RuntimeControl } from "../../runtime/drain.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment, ConformanceExpect } from "../conformance.ts"
+import { type ConnectionsFixture, connectionsLayer, Live, Room } from "./connections/actors.ts"
+import { next } from "./connections/harness.ts"
 
 /** One executor attempt as the fake provider saw it. */
 interface Attempt {
@@ -146,7 +148,12 @@ const EXPIRATION_SECONDS = 3
 const withCluster = <A, E>(
   environment: ConformanceEnvironment,
   fixture: DrainFixture,
-  settings: { readonly executors?: ReadonlyArray<number>; readonly poll?: Duration.Input },
+  settings: {
+    readonly executors?: ReadonlyArray<number>
+    readonly poll?: Duration.Input
+    /** Also registers the connection cases' room, for a case that holds a connection. */
+    readonly connections?: ConnectionsFixture
+  },
   body: Effect.Effect<A, E, ActorCluster>,
 ) =>
   environment.run(
@@ -159,7 +166,10 @@ const withCluster = <A, E>(
           database,
           runners: 3,
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
-          actors: drainLayer(fixture),
+          actors:
+            settings.connections === undefined
+              ? drainLayer(fixture)
+              : Layer.merge(drainLayer(fixture), connectionsLayer(settings.connections)),
           runnerActors: (runner) =>
             (settings.executors ?? []).includes(runner)
               ? chargeExecutor(fixture, runner)
@@ -804,6 +814,107 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           }
 
           expect(fixture.drain.runs.size).toBe(calls.length)
+        }),
+      ),
+  },
+  {
+    name: "drain: returns within its deadline while a turn, a relay delivery, and a held connection are in flight, and reports the turn it cut off",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.drain,
+        { connections: fixture.connections },
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const drained = 0
+          const survivor = 1
+          const room = yield* placed("room", (placedOn) => placedOn === drained, Room.get)
+          const roomRef = yield* refOf(room.id, Room.get)
+
+          const connection = yield* on(
+            drained,
+            ActorTest.use((test) => test.connect(roomRef, Live, { name: "alice" })),
+          )
+
+          yield* next(connection)
+
+          const sender = yield* placed("sender", (placedOn) => placedOn === drained, Sender.get)
+          const receiver = yield* placed("receiver", (placedOn) => placedOn !== drained)
+
+          const receiving = yield* on(
+            receiver.owner,
+            ActorTest.use((test) => test.pauseNext("beforeCommit")),
+          )
+
+          yield* on(
+            survivor,
+            Sender.get(sender.id).pipe(
+              Effect.flatMap((handle) => handle.Transfer({ to: receiver.id, amount: 5 })),
+            ),
+          )
+          yield* receiving.reached
+
+          const locked = yield* Deferred.make<void>()
+          const unlock = yield* Deferred.make<void>()
+
+          yield* cluster.sql`SELECT 1 FROM actor_outbox WHERE kind = 'intent' FOR UPDATE`.pipe(
+            Effect.andThen(Deferred.succeed(locked, undefined)),
+            Effect.andThen(Deferred.await(unlock)),
+            cluster.sql.withTransaction,
+            Effect.orDie,
+            Effect.forkChild,
+          )
+          yield* Deferred.await(locked)
+
+          const held = yield* placed("held", (placedOn) => placedOn === drained)
+          expect(yield* deposit(survivor, held.id, 1)).toBe(1)
+
+          const turning = yield* on(
+            drained,
+            ActorTest.use((test) => test.pauseNext("beforeCommit")),
+          )
+
+          const call = yield* deposit(survivor, held.id, 2).pipe(Effect.forkChild)
+          yield* turning.reached
+
+          const slowDatabase = yield* Effect.sleep("1500 millis").pipe(
+            Effect.andThen(turning.release),
+            Effect.andThen(Effect.sleep("3 seconds")),
+            Effect.andThen(Deferred.succeed(unlock, undefined)),
+            Effect.forkChild,
+          )
+
+          const started = yield* Clock.currentTimeMillis
+          const report = yield* drain(drained, "500 millis")
+          const took = (yield* Clock.currentTimeMillis) - started
+
+          expect(report).toEqual({
+            outcome: "deadline-expired",
+            interruptedTurns: 1,
+            interruptedEffects: 0,
+          })
+          expect(took < 500 + 1_000).toBe(true)
+
+          yield* Fiber.join(slowDatabase)
+          yield* receiving.release
+          yield* cluster.shutdown(drained)
+          expect(yield* Fiber.join(call)).toBe(3)
+
+          yield* eventually(
+            Effect.map(stateOf(survivor, receiver.id), (inspection) => inspection.outbox === 0),
+            "the transfer to be delivered",
+          )
+          expect(yield* stateOf(survivor, receiver.id)).toMatchObject({
+            state: { balance: 5 },
+            receipts: 1,
+          })
+          expect(yield* stateOf(survivor, held.id)).toMatchObject({
+            state: { balance: 3 },
+            receipts: 2,
+          })
+          expect([...fixture.drain.runs.values()].reduce((sum, runs) => sum + runs, 0)).toBe(4)
         }),
       ),
   },
