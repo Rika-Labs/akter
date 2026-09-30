@@ -11,9 +11,9 @@ const EXPIRATION_SECONDS = 3
 
 const TICK_INTERVAL = "50 millis"
 
-const Tick = Actor.command("Tick", { input: Schema.String, output: Schema.Int })
+const Tick = Actor.command("Tick", { payload: Schema.String, success: Schema.Int })
 
-const Last = Actor.query("Last", { output: Schema.String })
+const Last = Actor.query("Last", { success: Schema.String })
 
 /** A singleton whose build forks a loop that commits a `Tick` every 50 ms. */
 const Beacon = Actor.make("Beacon", {
@@ -56,13 +56,11 @@ const BeaconLive = Layer.mergeAll(
       }
     }),
   ),
-  Beacon.toQueryLayer(
-    Effect.succeed({
-      Last: Effect.fnUntraced(function* () {
-        return (yield* Beacon.Read).state.by
-      }),
+  Beacon.toQueryLayer({
+    Last: Effect.fnUntraced(function* () {
+      return (yield* Beacon.Read).state.by
     }),
-  ),
+  }),
 )
 
 const lastOn = (runner: number) =>

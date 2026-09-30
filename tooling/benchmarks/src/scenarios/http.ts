@@ -1,5 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor, ASSERTION_TYPE, type BoundRequest, requestDigest, User } from "@durable-actors/core"
+import { ASSERTION_TYPE, type BoundRequest, requestDigest, User } from "@durable-actors/core"
+import { Actors, Auth } from "@durable-actors/core/runtime"
 import {
   type Cause,
   Clock,
@@ -64,15 +65,15 @@ interface Served extends Endpoint {
   ) => Effect.Effect<unknown, Cause.UnknownError>
 }
 
-interface Auth {
+interface Credentials {
   readonly name: string
-  readonly provider: typeof Actor.auth.none
+  readonly provider: typeof Auth.none
   readonly authorization?: string
   /** Per-request headers, for a credential bound to the request it authenticates. */
   readonly sign?: (request: BoundRequest) => Effect.Effect<RequestHeaders>
 }
 
-const none: Auth = { name: "none", provider: Actor.auth.none }
+const none: Credentials = { name: "none", provider: Auth.none }
 
 const ISSUER = "https://issuer.bench"
 
@@ -81,7 +82,7 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 const segment = (value: Schema.Json) =>
   encodeJson(value).pipe(Effect.orDie, Effect.map(Encoding.encodeBase64Url))
 
-/** `Actor.auth.jwt` with a static ES256 key, and a token it accepts for the whole run. */
+/** `Auth.jwt` with a static ES256 key, and a token it accepts for the whole run. */
 const jwtAuth = Effect.gen(function* () {
   const keys = yield* Effect.promise(() =>
     crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]),
@@ -108,7 +109,7 @@ const jwtAuth = Effect.gen(function* () {
 
   return {
     name: "jwt-es256",
-    provider: Actor.auth.jwt({
+    provider: Auth.jwt({
       issuer: ISSUER,
       audience: "bench",
       algorithms: ["ES256"],
@@ -118,11 +119,11 @@ const jwtAuth = Effect.gen(function* () {
       tenant: () => "bench",
     }),
     authorization: `Bearer ${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`,
-  } satisfies Auth
+  } satisfies Credentials
 })
 
 /**
- * `Actor.auth.assertion` with a static Ed25519 key, and an edge-like signer
+ * `Auth.assertion` with a static Ed25519 key, and an edge-like signer
  * that binds a fresh assertion to every request, as the hosted edge does.
  */
 const assertionAuth = Effect.gen(function* () {
@@ -136,7 +137,7 @@ const assertionAuth = Effect.gen(function* () {
 
   return {
     name: "assertion-ed25519",
-    provider: Actor.auth.assertion({
+    provider: Auth.assertion({
       issuer: ISSUER,
       audience: "bench",
       region: "bench-1",
@@ -165,7 +166,7 @@ const assertionAuth = Effect.gen(function* () {
           "durable-assertion": `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`,
         }
       }),
-  } satisfies Auth
+  } satisfies Credentials
 })
 
 /**
@@ -180,9 +181,9 @@ const largestSubject = (() => {
   return "\u0001".repeat(escaped) + "s".repeat(512 - escaped)
 })()
 
-const largest: Auth = {
+const largest: Credentials = {
   name: "largest-principal",
-  provider: Actor.auth.make(() =>
+  provider: Auth.make(() =>
     Effect.succeed({ caller: User.make({ subject: largestSubject }), tenant: "default" }),
   ),
 }
@@ -211,11 +212,11 @@ const losing = () => {
   }
 }
 
-/** The probe's `Actor.serve` layer as a web handler, disposed with the scope. */
-const handler = Effect.fnUntraced(function* (auth: Auth) {
+/** The probe's `Actors.serve` layer as a web handler, disposed with the scope. */
+const handler = Effect.fnUntraced(function* (auth: Credentials) {
   const services = yield* Effect.context<ActorServices>()
 
-  const app = Actor.serve({ actors: [Probe, ReducerProbe], auth: auth.provider }).pipe(
+  const app = Actors.serve({ actors: [Probe, ReducerProbe], auth: auth.provider }).pipe(
     Layer.provide(Layer.succeedContext(services)),
   )
 
@@ -228,7 +229,7 @@ const handler = Effect.fnUntraced(function* (auth: Auth) {
 const decodeProtocol = Schema.decodeEffect(Schema.fromJsonString(ProtocolInfo))
 
 /** Commands, 64 KiB payloads, and queries through `send`, as a thin client that keeps a clock offset sends them. */
-const endpoint = Effect.fnUntraced(function* (auth: Auth, send: Send) {
+const endpoint = Effect.fnUntraced(function* (auth: Credentials, send: Send) {
   const crypto = Context.get(yield* Layer.build(BunCrypto.layer), Crypto.Crypto)
 
   const protocol = yield* send("GET", "/protocol", {}).pipe(
@@ -278,7 +279,7 @@ const endpoint = Effect.fnUntraced(function* (auth: Auth, send: Send) {
 })
 
 /** Serves the probe from a listening Bun server over HTTP/1.1; every request crosses loopback through `fetch`. */
-const serve = Effect.fnUntraced(function* (auth: Auth = none) {
+const serve = Effect.fnUntraced(function* (auth: Credentials = none) {
   const handle = yield* handler(auth)
 
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient).pipe(
@@ -338,14 +339,14 @@ const serve = Effect.fnUntraced(function* (auth: Auth = none) {
 })
 
 /** Serves the same layer over cleartext HTTP/2; every caller's request is a stream on one shared connection. */
-const serveHttp2 = Effect.fnUntraced(function* (auth: Auth = none) {
+const serveHttp2 = Effect.fnUntraced(function* (auth: Credentials = none) {
   const url = yield* listen(yield* handler(auth))
 
   return yield* endpoint(auth, yield* connect(url))
 })
 
 /**
- * Commands and queries through `Actor.serve`; compare with hot-actor and
+ * Commands and queries through `Actors.serve`; compare with hot-actor and
  * query-latency for the embedded cost.
  *
  * Each lost response is retried with its id; a second turn would count twice.
@@ -353,7 +354,7 @@ const serveHttp2 = Effect.fnUntraced(function* (auth: Auth = none) {
 export const http: Scenario = {
   name: "http",
   description:
-    "Actor.serve over loopback HTTP/1.1 keep-alive and cleartext HTTP/2: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch, the @durable-actors/core/client Promise SDK (also with 1% response loss), and raw requests on one multiplexed HTTP/2 connection, then sequential commands with an ES256 JWT, an Ed25519 edge assertion signed per request, the largest allowed principal, and a 64 KiB payload over both protocols.",
+    "Actors.serve over loopback HTTP/1.1 keep-alive and cleartext HTTP/2: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch, the @durable-actors/core/client Promise SDK (also with 1% response loss), and raw requests on one multiplexed HTTP/2 connection, then sequential commands with an ES256 JWT, an Ed25519 edge assertion signed per request, the largest allowed principal, and a 64 KiB payload over both protocols.",
   run: (context) =>
     Effect.gen(function* () {
       const results: Array<CaseResult> = []
@@ -536,7 +537,7 @@ export const http: Scenario = {
 
       const sequential = (
         name: string,
-        auth: Auth,
+        auth: Credentials,
         extra: Readonly<Record<string, number | string>>,
         operation: (served: Endpoint) => Effect.Effect<string, Failure>,
       ) =>

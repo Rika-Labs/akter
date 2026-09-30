@@ -1,15 +1,15 @@
 import { Deferred, Effect } from "effect"
 import { load } from "../measure.ts"
 import { Sender } from "../probe/contract.ts"
-import { EffectProbe, roundTrip } from "../probe/effects.ts"
+import { JobProbe, roundTrip } from "../probe/jobs.ts"
 import { deliveries } from "../probe/layer.ts"
 import { type CaseResult, measure, type Scenario } from "../scenario.ts"
 
-/** More stalled effects than any runner has executor slots, so every slot stays busy. */
+/** More stalled jobs than any runner has executor slots, so every slot stays busy. */
 const STALLED = 128
 
 /**
- * A command that performs an effect, the relay running its executor after
+ * A command that enqueues a job, the relay running its executor after
  * commit, and the executor's result committed by the `onSuccess` turn. The
  * executor does no I/O, so the time is the framework's.
  *
@@ -19,7 +19,7 @@ const STALLED = 128
 export const effectRoundTrip: Scenario = {
   name: "effect-round-trip",
   description:
-    "Perform an effect, run its executor after commit, and commit its onSuccess turn: one caller for latency, then 64 callers on 64 actors; then intent delivery latency while every executor slot runs a slow effect.",
+    "Enqueue a job, run its executor after commit, and commit its onSuccess turn: one caller for latency, then 64 callers on 64 actors; then intent delivery latency while every executor slot runs a slow job.",
   multiRunner: true,
   run: (context) =>
     Effect.gen(function* () {
@@ -78,7 +78,7 @@ export const effectRoundTrip: Scenario = {
             yield* Effect.forEach(
               Array.from({ length: STALLED }, (_, index) => index),
               (index) =>
-                EffectProbe.get(`stall-${index}`).pipe(
+                JobProbe.get(`stall-${index}`).pipe(
                   Effect.flatMap((probe) => probe.Hold(window + 10_000)),
                   Effect.orDie,
                 ),

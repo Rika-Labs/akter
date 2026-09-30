@@ -3,11 +3,11 @@ import { ActorCluster, ActorTest } from "@durable-actors/core/testing"
 import { Deferred, Duration, Effect, Layer } from "effect"
 import { load, now, summarize } from "../measure.ts"
 import {
-  type ControlEffect,
+  type ControlJob,
   ControlProbe,
   ControlProbeCommands,
   controlAttempts,
-  controlProbeEffects,
+  controlProbeJobs,
   controlWaiters,
 } from "../probe/control.ts"
 import type { Instruments } from "../backend.ts"
@@ -45,7 +45,7 @@ const withCluster = <A, E>(
           runnerActors: (runner) =>
             settings.withoutExecutors.includes(runner)
               ? Layer.empty
-              : controlProbeEffects(PROVIDER_MS),
+              : controlProbeJobs(PROVIDER_MS),
           executors:
             settings.cancelCheck === undefined
               ? { concurrency: settings.concurrency }
@@ -95,37 +95,37 @@ const expectAll = (labels: ReadonlyArray<string>) =>
     return waits
   })
 
-const performed = new Map<string, number>()
+const enqueued = new Map<string, number>()
 
-/** Performs `labels` in one turn on `actor` through `runner` and waits for every attempt. */
-const performAndWait = (
+/** Enqueues `labels` in one turn on `actor` through `runner` and waits for every attempt. */
+const enqueueAndWait = (
   runner: number,
   actor: string,
-  effect: ControlEffect,
+  job: ControlJob,
   labels: ReadonlyArray<string>,
 ) =>
   Effect.gen(function* () {
     const cluster = yield* ActorCluster
     const finished = yield* expectAll(labels)
     yield* cluster.on(runner)(
-      ControlProbe.get(actor).pipe(Effect.flatMap((probe) => probe.PerformAll({ effect, labels }))),
+      ControlProbe.get(actor).pipe(Effect.flatMap((probe) => probe.EnqueueAll({ job, labels }))),
     )
     const at = yield* now
 
-    for (const label of labels) performed.set(label, at)
+    for (const label of labels) enqueued.set(label, at)
     yield* Effect.forEach(finished, Deferred.await, { discard: true })
   })
 
 /**
- * Due-to-start latency: from the reply to the performing turn, which follows
- * its commit and so the effect becoming due, to the provider seeing the attempt.
+ * Due-to-start latency: from the reply to the enqueuing turn, which follows
+ * its commit and so the job becoming due, to the provider seeing the attempt.
  */
 const startLatency = (labels: Iterable<string>) => {
   const samples: Array<number> = []
 
   for (const label of labels) {
     const attempt = controlAttempts.get(label)
-    const at = performed.get(label)
+    const at = enqueued.get(label)
 
     if (attempt !== undefined && at !== undefined) samples.push(attempt.startedAt - at)
   }
@@ -141,12 +141,12 @@ const labelsFor = (actor: string, count: number) =>
   Array.from({ length: count }, (_, index) => `${actor}/${index}`)
 
 /**
- * Effect executor concurrency across runners; see its description. An attempt
+ * Job executor concurrency across runners; see its description. An attempt
  * that ends exactly when another starts does not overlap it.
  */
 export const effectConcurrency: Scenario = {
   name: "effect-concurrency",
-  description: `Three in-process runners on one Postgres, a ${PROVIDER_MS} ms fake provider: effect throughput uncapped and at concurrency.perActor 2, a hot actor at perActor 1 beside cold actors, and cancel-to-interrupt latency of running effects cancelled from turns on a runner that executes none of them, at the default and a 1 second executors.cancelCheck. The runners share one process and its CPU.`,
+  description: `Three in-process runners on one Postgres, a ${PROVIDER_MS} ms fake provider: job throughput uncapped and at concurrency.perActor 2, a hot actor at perActor 1 beside cold actors, and cancel-to-interrupt latency of running jobs cancelled from turns on a runner that executes none of them, at the default and a 1 second executors.cancelCheck. The runners share one process and its CPU.`,
   run: (context) =>
     Effect.gen(function* () {
       if (context.backend.name !== "postgres") return []
@@ -155,7 +155,7 @@ export const effectConcurrency: Scenario = {
       const perActor = 10
       const results: Array<CaseResult> = []
 
-      for (const [name, effect] of [
+      for (const [name, job] of [
         ["throughput-uncapped", "Work"],
         ["throughput-per-actor-2", "PairWork"],
       ] as const)
@@ -165,12 +165,12 @@ export const effectConcurrency: Scenario = {
             { concurrency: 64, cancelCheck: undefined, withoutExecutors: [] },
             (instruments) =>
               Effect.gen(function* () {
-                performed.clear()
+                enqueued.clear()
                 yield* load({
                   workers: 16,
                   operations: 16,
                   operation: (index) =>
-                    performAndWait(index % RUNNERS, `warm-${index}`, effect, [`warm-${index}/0`]),
+                    enqueueAndWait(index % RUNNERS, `warm-${index}`, job, [`warm-${index}/0`]),
                 })
                 controlAttempts.clear()
 
@@ -181,17 +181,17 @@ export const effectConcurrency: Scenario = {
                     actors,
                     effectsPerActor: perActor,
                     providerMs: PROVIDER_MS,
-                    perActor: effect === "Work" ? "none" : 2,
+                    perActor: job === "Work" ? "none" : 2,
                     workers: 64,
                   },
                   instruments,
                   workers: 64,
                   operations: actors,
                   operation: (index) =>
-                    performAndWait(
+                    enqueueAndWait(
                       index % RUNNERS,
                       `a-${index}`,
-                      effect,
+                      job,
                       labelsFor(`a-${index}`, perActor),
                     ),
                 })
@@ -226,7 +226,7 @@ export const effectConcurrency: Scenario = {
           { concurrency: 64, cancelCheck: undefined, withoutExecutors: [] },
           (instruments) =>
             Effect.gen(function* () {
-              performed.clear()
+              enqueued.clear()
               controlAttempts.clear()
 
               const result = yield* measure({
@@ -244,8 +244,8 @@ export const effectConcurrency: Scenario = {
                 operations: actors + 1,
                 operation: (index) =>
                   index === 0
-                    ? performAndWait(0, "hot", "SingleWork", labelsFor("hot", hotEffects))
-                    : performAndWait(index % RUNNERS, `cold-${index}`, "SingleWork", [
+                    ? enqueueAndWait(0, "hot", "SingleWork", labelsFor("hot", hotEffects))
+                    : enqueueAndWait(index % RUNNERS, `cold-${index}`, "SingleWork", [
                         `cold-${index}/0`,
                       ]),
               })
@@ -259,7 +259,7 @@ export const effectConcurrency: Scenario = {
               )
 
               const hotEnd = Math.max(...hot.map(([, attempt]) => attempt.endedAt ?? 0))
-              const hotStart = Math.min(...hot.map(([label]) => performed.get(label) ?? 0))
+              const hotStart = Math.min(...hot.map(([label]) => enqueued.get(label) ?? 0))
 
               return {
                 ...result,
@@ -307,7 +307,7 @@ export const effectConcurrency: Scenario = {
                     cluster.on(0)(
                       ControlProbe.get(owned[index]!).pipe(
                         Effect.flatMap((probe) =>
-                          probe.PerformAll({ effect: "Hang", labels: [`${owned[index]}/hang`] }),
+                          probe.EnqueueAll({ job: "Hang", labels: [`${owned[index]}/hang`] }),
                         ),
                       ),
                     ),

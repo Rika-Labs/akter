@@ -2,12 +2,12 @@ import { Actor, Intent } from "@durable-actors/core"
 import { DateTime, Deferred, Effect, Layer, Schema } from "effect"
 
 /** Creating command of `MintedChild`; completes the pending creation for the label. */
-export const Open = Actor.command("Open", { input: Schema.String })
+export const Open = Actor.command("Open", { payload: Schema.String })
 
 /** A child that only its parent's minting turn, or `create()`, brings into being. */
 export const MintedChild = Actor.make("MintedChild", {
   api: { Open },
-  policy: { createdBy: Open },
+  createdBy: Open,
 })
 
 /**
@@ -15,12 +15,12 @@ export const MintedChild = Actor.make("MintedChild", {
  * `atMs`, and replies with their ids.
  */
 export const MintMany = Actor.command("MintMany", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     label: Schema.String,
     count: Schema.Int,
     atMs: Schema.optional(Schema.Int),
   }),
-  output: Schema.Array(Schema.String),
+  success: Schema.Array(Schema.String),
 })
 
 /** Mints `count` children per turn and stages each one's creating intent. */
@@ -31,31 +31,27 @@ export const creations = new Map<string, Deferred.Deferred<void>>()
 
 /** Handlers for `Minter` and `MintedChild`. */
 export const MintLive = Layer.mergeAll(
-  MintedChild.toLayer(
-    Effect.succeed({
-      Open: (label: string) =>
-        Effect.suspend(() => {
-          const pending = creations.get(label)
+  MintedChild.toLayer({
+    Open: (label: string) =>
+      Effect.suspend(() => {
+        const pending = creations.get(label)
 
-          return pending === undefined ? Effect.void : Deferred.succeed(pending, undefined)
-        }).pipe(Effect.asVoid),
+        return pending === undefined ? Effect.void : Deferred.succeed(pending, undefined)
+      }).pipe(Effect.asVoid),
+  }),
+  Minter.toLayer({
+    MintMany: Effect.fnUntraced(function* ({ label, count, atMs }) {
+      const turn = yield* Minter.Turn
+      const ids: Array<string> = []
+
+      for (let index = 0; index < count; index++) {
+        const id = yield* turn.mint(MintedChild)
+        const open = (yield* MintedChild.intents(id)).Open(`${label}-${index}`)
+        yield* atMs === undefined ? open : open.pipe(Intent.at(DateTime.makeUnsafe(atMs)))
+        ids.push(id)
+      }
+
+      return ids
     }),
-  ),
-  Minter.toLayer(
-    Effect.succeed({
-      MintMany: Effect.fnUntraced(function* ({ label, count, atMs }) {
-        const turn = yield* Minter.Turn
-        const ids: Array<string> = []
-
-        for (let index = 0; index < count; index++) {
-          const id = yield* turn.mint(MintedChild)
-          const open = (yield* MintedChild.intents(id)).Open(`${label}-${index}`)
-          yield* atMs === undefined ? open : open.pipe(Intent.at(DateTime.makeUnsafe(atMs)))
-          ids.push(id)
-        }
-
-        return ids
-      }),
-    }),
-  ),
+  }),
 )

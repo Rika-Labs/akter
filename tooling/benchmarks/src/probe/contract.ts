@@ -2,16 +2,16 @@ import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { Effect, Layer, Schema } from "effect"
 
 /** Adds the amount to the count and replies with the new total. */
-export const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+export const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
 /** Stores the payload as state and replies with its length. */
-export const Fill = Actor.command("Fill", { input: Schema.String, output: Schema.Int })
+export const Fill = Actor.command("Fill", { payload: Schema.String, success: Schema.Int })
 
 /** Counts a payload without storing it, so its size is limited by the request, not by state. */
-export const Weigh = Actor.command("Weigh", { input: Schema.String, output: Schema.Int })
+export const Weigh = Actor.command("Weigh", { payload: Schema.String, success: Schema.Int })
 
 /** Current count. */
-export const Peek = Actor.query("Peek", { output: Schema.Int })
+export const Peek = Actor.query("Peek", { success: Schema.Int })
 
 const state = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -43,26 +43,26 @@ export const ResidentProbe = Actor.make("ResidentProbe", {
 })
 
 /** Event emitted by `Emit`, numbered from zero within one call. */
-export class Ticked extends Actor.Event<Ticked>()("Ticked", { n: Schema.Int }) {}
+export const Ticked = Actor.event("Ticked", { n: Schema.Int })
 
 /** Emits that many `Ticked` events in one turn and replies with the count. */
-export const Emit = Actor.command("Emit", { input: Schema.Int, output: Schema.Int })
+export const Emit = Actor.command("Emit", { payload: Schema.Int, success: Schema.Int })
 
 /**
  * Reads the whole event stream after the cursor, page by page, and replies
  * with the event count and the last cursor.
  */
 export const Replay = Actor.query("Replay", {
-  input: Schema.optional(Schema.String),
-  output: Schema.Struct({ events: Schema.Int, last: Schema.String }),
-  errors: [UnknownCursor, RetentionGap],
+  payload: Schema.optional(Schema.String),
+  success: Schema.Struct({ events: Schema.Int, last: Schema.String }),
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
 /** Reads one page of events after a cursor. */
 export const ReplayPage = Actor.query("ReplayPage", {
-  input: Schema.Struct({ after: Schema.String, limit: Schema.Int }),
-  output: Schema.Int,
-  errors: [UnknownCursor, RetentionGap],
+  payload: Schema.Struct({ after: Schema.String, limit: Schema.Int }),
+  success: Schema.Int,
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
 /** Emits a given number of events per turn and replays them from a cursor. */
@@ -81,7 +81,7 @@ export const RetentionProbe = Actor.make("RetentionProbe", {
 })
 
 /** Relay-delivered intent; its handler completes the pending delivery for the payload. */
-export const Deliver = Actor.command("Deliver", { input: Schema.String })
+export const Deliver = Actor.command("Deliver", { payload: Schema.String })
 
 /** Receives relay-delivered intents; only System callers reach `Deliver`. */
 export const Sink = Actor.make("Sink", {
@@ -91,16 +91,16 @@ export const Sink = Actor.make("Sink", {
 })
 
 /** Stages one `Deliver` intent to the sink chosen by the id. */
-export const Send = Actor.command("Send", { input: Schema.String })
+export const Send = Actor.command("Send", { payload: Schema.String })
 
 /** Stages one `Deliver` intent per id, all due at `atMs` (epoch milliseconds). */
 export const SendAt = Actor.command("SendAt", {
-  input: Schema.Struct({ ids: Schema.Array(Schema.String), atMs: Schema.Int }),
+  payload: Schema.Struct({ ids: Schema.Array(Schema.String), atMs: Schema.Int }),
 })
 
 /** Stages `count` intents due at `atMs`, generating their ids in the handler so the payload stays small. */
 export const SendMany = Actor.command("SendMany", {
-  input: Schema.Struct({ offset: Schema.Int, count: Schema.Int, atMs: Schema.Int }),
+  payload: Schema.Struct({ offset: Schema.Int, count: Schema.Int, atMs: Schema.Int }),
 })
 
 /** Stages intents to `Sink` actors, one per id, keyed by the id's sink. */
@@ -115,12 +115,12 @@ export const Open = Actor.command("Open")
 /** Cron handler; records the run in `cronFires`. */
 export const Tick = Actor.command("Tick")
 
-/** An actor with one minutely cron entry; `Open` creates it and writes its first tick. */
+/** An actor with one minutely schedule; `Open` creates it and writes its first tick. */
 export const CronProbe = Actor.make("CronProbe", {
   key: Schema.NonEmptyString,
   state,
   api: { Open, Tick },
-  policy: { cron: { "* * * * *": Tick } },
+  schedules: { "* * * * *": Tick },
 })
 
 /**
@@ -147,13 +147,13 @@ const steps = [
 ]
 
 /** `Emit` for the evolved actors: emits `Tallied` events and replies with the count. */
-export const EvolvedEmit = Actor.command("Emit", { input: Schema.Int, output: Schema.Int })
+export const EvolvedEmit = Actor.command("Emit", { payload: Schema.Int, success: Schema.Int })
 
 /** `Replay` for the evolved actors. */
 export const EvolvedReplay = Actor.query("Replay", {
-  input: Schema.optional(Schema.String),
-  output: Schema.Struct({ events: Schema.Int, last: Schema.String }),
-  errors: [UnknownCursor, RetentionGap],
+  payload: Schema.optional(Schema.String),
+  success: Schema.Struct({ events: Schema.Int, last: Schema.String }),
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
 /**
@@ -161,10 +161,10 @@ export const EvolvedReplay = Actor.query("Replay", {
  * current version, so every replayed event passes through that many upcasts.
  */
 const evolved = (behind: 0 | 1 | 3) => {
-  class Tallied extends Actor.Event<Tallied>()("Tallied", V3, {
+  const Tallied = Actor.event("Tallied", V3, {
     migrations: steps,
     writeVersion: 3 - behind,
-  }) {}
+  })
 
   const Probe = Actor.make(`EvolvedProbe${behind}`, {
     key: Schema.NonEmptyString,
@@ -172,36 +172,32 @@ const evolved = (behind: 0 | 1 | 3) => {
     api: { Emit: EvolvedEmit, Replay: EvolvedReplay },
   })
 
-  const commands = Probe.toLayer(
-    Effect.succeed({
-      Emit: Effect.fnUntraced(function* (count: number) {
-        const turn = yield* Probe.Turn
+  const commands = Probe.toLayer({
+    Emit: Effect.fnUntraced(function* (count: number) {
+      const turn = yield* Probe.Turn
 
-        for (let n = 0; n < count; n++)
-          yield* turn.emit(Tallied.make({ count: n, unit: "items", note: "" }))
+      for (let n = 0; n < count; n++)
+        yield* turn.emit(Tallied.make({ count: n, unit: "items", note: "" }))
 
-        return count
-      }),
+      return count
     }),
-  )
+  })
 
-  const reads = Probe.toQueryLayer(
-    Effect.succeed({
-      Replay: Effect.fnUntraced(function* (after: string | undefined) {
-        const read = yield* Probe.Read
-        let events = 0
-        let last = after ?? "0"
+  const reads = Probe.toQueryLayer({
+    Replay: Effect.fnUntraced(function* (after: string | undefined) {
+      const read = yield* Probe.Read
+      let events = 0
+      let last = after ?? "0"
 
-        for (;;) {
-          const page = yield* read.events(Tallied, { after: last, limit: 10_000 })
-          events += page.length
-          last = page.at(-1)?.cursor ?? last
+      for (;;) {
+        const page = yield* read.events(Tallied, { after: last, limit: 10_000 })
+        events += page.length
+        last = page.at(-1)?.cursor ?? last
 
-          if (page.length < 10_000) return { events, last }
-        }
-      }),
+        if (page.length < 10_000) return { events, last }
+      }
     }),
-  )
+  })
 
   return { Probe, layer: Layer.merge(commands, reads) }
 }

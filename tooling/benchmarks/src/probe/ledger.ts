@@ -39,21 +39,24 @@ const ENTRIES_DDL = [
 const Entry = Schema.Struct({ id: Schema.String, amount: Schema.Int, memo: Schema.String })
 
 /** Inserts one row with the given id and replies with 1. */
-export const Append = Actor.command("Append", { input: Schema.String, output: Schema.Int })
+export const Append = Actor.command("Append", { payload: Schema.String, success: Schema.Int })
 
 /** Inserts `count` rows `seed-<from + n>` in one statement. */
 export const Seed = Actor.command("Seed", {
-  input: Schema.Struct({ from: Schema.Int, count: Schema.Int }),
+  payload: Schema.Struct({ from: Schema.Int, count: Schema.Int }),
 })
 
 /** Adds one to the amount of the row with this id; does nothing when it is absent. */
-export const Bump = Actor.command("Bump", { input: Schema.String })
+export const Bump = Actor.command("Bump", { payload: Schema.String })
 
 /** The row with this id, if any. */
-export const Entry1 = Actor.query("Entry", { input: Schema.String, output: Schema.Option(Entry) })
+export const Entry1 = Actor.query("Entry", {
+  payload: Schema.String,
+  success: Schema.Option(Entry),
+})
 
 /** Up to `limit` rows, largest amount first. */
-export const Page = Actor.query("Page", { input: Schema.Int, output: Schema.Array(Entry) })
+export const Page = Actor.query("Page", { payload: Schema.Int, success: Schema.Array(Entry) })
 
 /** Writes and reads its own rows of `entries` through `turn.rows` and `read.rows`. */
 export const Ledger = Actor.make("Ledger", {
@@ -62,42 +65,38 @@ export const Ledger = Actor.make("Ledger", {
   api: { Append, Seed, Bump, Entry: Entry1, Page },
 })
 
-const LedgerCommands = Ledger.toLayer(
-  Effect.succeed({
-    Append: Effect.fnUntraced(function* (id: string) {
-      const turn = yield* Ledger.Turn
-      yield* turn.rows(entries).insert({ id, amount: 1, memo: "append" })
+const LedgerCommands = Ledger.toLayer({
+  Append: Effect.fnUntraced(function* (id: string) {
+    const turn = yield* Ledger.Turn
+    yield* turn.rows(entries).insert({ id, amount: 1, memo: "append" })
 
-      return 1
-    }),
-    Seed: Effect.fnUntraced(function* ({ from, count }) {
-      yield* (yield* Ledger.Turn).rows(entries).insert(
-        Array.from({ length: count }, (_, offset) => ({
-          id: `seed-${from + offset}`,
-          amount: from + offset,
-          memo: "seed",
-        })),
-      )
-    }),
-    Bump: Effect.fnUntraced(function* (id: string) {
-      const rows = (yield* Ledger.Turn).rows(entries)
-      const found = yield* rows.one({ where: { id } })
-
-      if (Option.isSome(found)) yield* rows.update({ amount: found.value.amount + 1 }).where({ id })
-    }),
+    return 1
   }),
-)
-
-const LedgerReads = Ledger.toQueryLayer(
-  Effect.succeed({
-    Entry: Effect.fnUntraced(function* (id: string) {
-      return yield* (yield* Ledger.Read).rows(entries).one({ where: { id } })
-    }),
-    Page: Effect.fnUntraced(function* (limit: number) {
-      return yield* (yield* Ledger.Read).rows(entries).all({ orderBy: { amount: "desc" }, limit })
-    }),
+  Seed: Effect.fnUntraced(function* ({ from, count }) {
+    yield* (yield* Ledger.Turn).rows(entries).insert(
+      Array.from({ length: count }, (_, offset) => ({
+        id: `seed-${from + offset}`,
+        amount: from + offset,
+        memo: "seed",
+      })),
+    )
   }),
-)
+  Bump: Effect.fnUntraced(function* (id: string) {
+    const rows = (yield* Ledger.Turn).rows(entries)
+    const found = yield* rows.one({ where: { id } })
+
+    if (Option.isSome(found)) yield* rows.update({ amount: found.value.amount + 1 }).where({ id })
+  }),
+})
+
+const LedgerReads = Ledger.toQueryLayer({
+  Entry: Effect.fnUntraced(function* (id: string) {
+    return yield* (yield* Ledger.Read).rows(entries).one({ where: { id } })
+  }),
+  Page: Effect.fnUntraced(function* (limit: number) {
+    return yield* (yield* Ledger.Read).rows(entries).all({ orderBy: { amount: "desc" }, limit })
+  }),
+})
 
 /** Creates the table as a drizzle-kit migration would, then registers the actor. */
 export const LedgerLive = Layer.unwrap(
@@ -140,11 +139,11 @@ const ITEMS_DDL = ["bench_parented_items", "bench_spread_items"].flatMap((table)
 
 /** Stages a `Mark` intent for the item, on the root's shard when `parented`, on the item's own shard otherwise. */
 export const Notify = Actor.command("Notify", {
-  input: Schema.Struct({ item: Schema.String, parented: Schema.Boolean, label: Schema.String }),
+  payload: Schema.Struct({ item: Schema.String, parented: Schema.Boolean, label: Schema.String }),
 })
 
 /** Number of parented item rows visible from the root's shard group. */
-export const FamilyLabels = Actor.query("FamilyLabels", { output: Schema.Int })
+export const FamilyLabels = Actor.query("FamilyLabels", { success: Schema.Int })
 
 /** An actor-placed root whose items are placed either on it or on their own shards. */
 export const FamilyRoot = Actor.make("FamilyRoot", {
@@ -154,10 +153,10 @@ export const FamilyRoot = Actor.make("FamilyRoot", {
 })
 
 /** Upserts the item's `mark` row with the label and completes the pending mark for it. */
-export const Mark = Actor.command("Mark", { input: Schema.String })
+export const Mark = Actor.command("Mark", { payload: Schema.String })
 
 /** Number of rows in the item's table. */
-export const ItemLabels = Actor.query("ItemLabels", { output: Schema.Int })
+export const ItemLabels = Actor.query("ItemLabels", { success: Schema.Int })
 
 /** Item placed on its `FamilyRoot`'s shard. */
 export const ParentedItem = Actor.make("ParentedItem", {
@@ -197,53 +196,43 @@ export const FamilyLive = Layer.unwrap(
     for (const statement of ITEMS_DDL) yield* sql.unsafe(statement)
 
     return Layer.mergeAll(
-      FamilyRoot.toLayer(
-        Effect.succeed({
-          Notify: Effect.fnUntraced(function* ({ item, parented, label }) {
-            const turn = yield* FamilyRoot.Turn
+      FamilyRoot.toLayer({
+        Notify: Effect.fnUntraced(function* ({ item, parented, label }) {
+          const turn = yield* FamilyRoot.Turn
 
-            yield* parented
-              ? (yield* ParentedItem.intents(ParentedItem.idOf(turn.id, item))).Mark(label)
-              : (yield* SpreadItem.intents(spreadId({ root: turn.id, item }))).Mark(label)
-          }),
+          yield* parented
+            ? (yield* ParentedItem.intents(ParentedItem.idOf(turn.id, item))).Mark(label)
+            : (yield* SpreadItem.intents(spreadId({ root: turn.id, item }))).Mark(label)
         }),
-      ),
-      FamilyRoot.toQueryLayer(
-        Effect.succeed({
-          FamilyLabels: Effect.fnUntraced(function* () {
-            const rows = yield* (yield* FamilyRoot.Read).group((db) =>
-              db.select({ label: parentedItems.label }).from(parentedItems),
-            )
+      }),
+      FamilyRoot.toQueryLayer({
+        FamilyLabels: Effect.fnUntraced(function* () {
+          const rows = yield* (yield* FamilyRoot.Read).group((db) =>
+            db.select({ label: parentedItems.label }).from(parentedItems),
+          )
 
-            return rows.length
-          }),
+          return rows.length
         }),
-      ),
-      ParentedItem.toLayer(
-        Effect.succeed({
-          Mark: Effect.fnUntraced(function* (label: string) {
-            const turn = yield* ParentedItem.Turn
-            yield* turn.rows(parentedItems).upsert({ id: "mark", label })
-            yield* marked(label)
-          }),
+      }),
+      ParentedItem.toLayer({
+        Mark: Effect.fnUntraced(function* (label: string) {
+          const turn = yield* ParentedItem.Turn
+          yield* turn.rows(parentedItems).upsert({ id: "mark", label })
+          yield* marked(label)
         }),
-      ),
-      SpreadItem.toLayer(
-        Effect.succeed({
-          Mark: Effect.fnUntraced(function* (label: string) {
-            const turn = yield* SpreadItem.Turn
-            yield* turn.rows(spreadItems).upsert({ id: "mark", label })
-            yield* marked(label)
-          }),
+      }),
+      SpreadItem.toLayer({
+        Mark: Effect.fnUntraced(function* (label: string) {
+          const turn = yield* SpreadItem.Turn
+          yield* turn.rows(spreadItems).upsert({ id: "mark", label })
+          yield* marked(label)
         }),
-      ),
-      SpreadItem.toQueryLayer(
-        Effect.succeed({
-          ItemLabels: Effect.fnUntraced(function* () {
-            return yield* (yield* SpreadItem.Read).rows(spreadItems).count()
-          }),
+      }),
+      SpreadItem.toQueryLayer({
+        ItemLabels: Effect.fnUntraced(function* () {
+          return yield* (yield* SpreadItem.Read).rows(spreadItems).count()
         }),
-      ),
+      }),
     )
   }).pipe(Effect.orDie),
 )

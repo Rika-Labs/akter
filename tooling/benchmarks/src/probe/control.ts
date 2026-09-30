@@ -2,60 +2,62 @@ import { Actor } from "@durable-actors/core"
 import { Deferred, Effect, Schema } from "effect"
 
 /** Holds an executor for the provider's latency; no cap. */
-export class Work extends Actor.effect<Work>()("Work", {
-  input: { label: Schema.String },
+export const Work = Actor.job("Work", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
-
-/** `Work` with at most two running attempts per actor. */
-export class PairWork extends Actor.effect<PairWork>()("PairWork", {
-  input: { label: Schema.String },
-  success: Schema.String,
-}) {}
-
-/** `Work` with one running attempt per actor. */
-export class SingleWork extends Actor.effect<SingleWork>()("SingleWork", {
-  input: { label: Schema.String },
-  success: Schema.String,
-}) {}
-
-/** Runs until it is interrupted; performed under its label as key and cancelled. */
-export class Hang extends Actor.effect<Hang>()("Hang", {
-  input: { label: Schema.String },
-  success: Schema.String,
-}) {}
-
-/** Names of the effects `ControlProbe` can perform. */
-export const ControlEffect = Schema.Literals(["Work", "PairWork", "SingleWork", "Hang"])
-
-/** Name of one effect `ControlProbe` can perform. */
-export type ControlEffect = typeof ControlEffect.Type
-
-const PerformAll = Actor.command("PerformAll", {
-  input: Schema.Struct({ effect: ControlEffect, labels: Schema.Array(Schema.String) }),
 })
 
-const CancelAll = Actor.command("CancelAll", { input: Schema.Array(Schema.String) })
+/** `Work` with at most two running attempts per actor. */
+export const PairWork = Actor.job("PairWork", {
+  payload: { label: Schema.String },
+  success: Schema.String,
+})
 
-const Finished = Actor.command("Finished", { input: Schema.String })
+/** `Work` with one running attempt per actor. */
+export const SingleWork = Actor.job("SingleWork", {
+  payload: { label: Schema.String },
+  success: Schema.String,
+})
 
-const HangCancelled = Actor.command("HangCancelled", { input: Actor.Cancelled(Hang) })
+/** Runs until it is interrupted; enqueued under its label as key and cancelled. */
+export const Hang = Actor.job("Hang", {
+  payload: { label: Schema.String },
+  success: Schema.String,
+})
 
-/** Performs a batch of effects in one turn and cancels keyed ones in another. */
+/** Names of the jobs `ControlProbe` can enqueue. */
+export const ControlJob = Schema.Literals(["Work", "PairWork", "SingleWork", "Hang"])
+
+/** Name of one job `ControlProbe` can enqueue. */
+export type ControlJob = typeof ControlJob.Type
+
+const EnqueueAll = Actor.command("EnqueueAll", {
+  payload: Schema.Struct({ job: ControlJob, labels: Schema.Array(Schema.String) }),
+})
+
+const CancelAll = Actor.command("CancelAll", { payload: Schema.Array(Schema.String) })
+
+const Finished = Actor.command("Finished", { payload: Schema.String })
+
+const HangCancelled = Actor.command("HangCancelled", { payload: Actor.Cancelled(Hang) })
+
+/** Enqueues a batch of jobs in one turn and cancels keyed ones in another. */
 export const ControlProbe = Actor.make("ControlProbe", {
   key: Schema.NonEmptyString,
   state: Actor.state({
     finished: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  effects: [Work, PairWork, SingleWork, Hang],
-  api: { PerformAll, CancelAll },
+  api: { EnqueueAll, CancelAll },
   internal: { Finished, HangCancelled },
-  policy: {
-    effects: {
-      Work: { onSuccess: Finished },
-      PairWork: { concurrency: { perActor: 2 }, onSuccess: Finished },
-      SingleWork: { concurrency: { perActor: 1 }, onSuccess: Finished },
-      Hang: { retry: { times: 0 }, timeout: "5 minutes", onCancelled: HangCancelled },
+  jobs: {
+    Work: { job: Work, onSuccess: Finished },
+    PairWork: { job: PairWork, concurrency: { perActor: 2 }, onSuccess: Finished },
+    SingleWork: { job: SingleWork, concurrency: { perActor: 1 }, onSuccess: Finished },
+    Hang: {
+      job: Hang,
+      retry: { times: 0 },
+      timeout: "5 minutes",
+      onCancelled: HangCancelled,
     },
   },
 })
@@ -89,33 +91,31 @@ const ended = (label: string) =>
   })
 
 /** Handlers for `ControlProbe`. */
-export const ControlProbeCommands = ControlProbe.toLayer(
-  Effect.succeed({
-    PerformAll: Effect.fnUntraced(function* ({ effect, labels }) {
-      const turn = yield* ControlProbe.Turn
-      const Declared = { Work, PairWork, SingleWork, Hang }[effect]
+export const ControlProbeCommands = ControlProbe.toLayer({
+  EnqueueAll: Effect.fnUntraced(function* ({ job, labels }) {
+    const turn = yield* ControlProbe.Turn
+    const Declared = { Work, PairWork, SingleWork, Hang }[job]
 
-      for (const label of labels)
-        yield* turn.perform(Declared.make({ label }), effect === "Hang" ? { key: label } : {})
-    }),
-    CancelAll: Effect.fnUntraced(function* (keys) {
-      const turn = yield* ControlProbe.Turn
-
-      for (const key of keys) yield* turn.cancelEffect(key)
-    }),
-    Finished: Effect.fnUntraced(function* () {
-      const turn = yield* ControlProbe.Turn
-      yield* turn.state.set({ finished: turn.state.finished + 1 })
-    }),
-    HangCancelled: Effect.fnUntraced(function* () {
-      const turn = yield* ControlProbe.Turn
-      yield* turn.state.set({ finished: turn.state.finished + 1 })
-    }),
+    for (const label of labels)
+      yield* turn.enqueue(Declared.make({ label }), job === "Hang" ? { key: label } : {})
   }),
-)
+  CancelAll: Effect.fnUntraced(function* (keys) {
+    const turn = yield* ControlProbe.Turn
+
+    for (const key of keys) yield* turn.cancelJob(key)
+  }),
+  Finished: Effect.fnUntraced(function* () {
+    const turn = yield* ControlProbe.Turn
+    yield* turn.state.set({ finished: turn.state.finished + 1 })
+  }),
+  HangCancelled: Effect.fnUntraced(function* () {
+    const turn = yield* ControlProbe.Turn
+    yield* turn.state.set({ finished: turn.state.finished + 1 })
+  }),
+})
 
 /** The fake provider: `latencyMs` per call, or until interrupted for `Hang`. */
-export const controlProbeEffects = (latencyMs: number) => {
+export const controlProbeJobs = (latencyMs: number) => {
   const call = (label: string) =>
     Effect.gen(function* () {
       const { ref } = yield* ControlProbe.Executor
@@ -125,18 +125,16 @@ export const controlProbeEffects = (latencyMs: number) => {
       return label
     }).pipe(Effect.ensuring(ended(label)))
 
-  return ControlProbe.toEffectLayer(
-    Effect.succeed({
-      Work: ({ label }) => call(label),
-      PairWork: ({ label }) => call(label),
-      SingleWork: ({ label }) => call(label),
-      Hang: ({ label }) =>
-        Effect.gen(function* () {
-          const { ref } = yield* ControlProbe.Executor
-          yield* began(label, ref.id)
+  return ControlProbe.toJobLayer({
+    Work: ({ label }) => call(label),
+    PairWork: ({ label }) => call(label),
+    SingleWork: ({ label }) => call(label),
+    Hang: ({ label }) =>
+      Effect.gen(function* () {
+        const { ref } = yield* ControlProbe.Executor
+        yield* began(label, ref.id)
 
-          return yield* Effect.never
-        }).pipe(Effect.ensuring(ended(label))),
-    }),
-  )
+        return yield* Effect.never
+      }).pipe(Effect.ensuring(ended(label))),
+  })
 }

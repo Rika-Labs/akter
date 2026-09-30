@@ -32,16 +32,16 @@ const bytesOf = (size: number, variant: number) => {
 const Write = Schema.Struct({ name: Schema.String, size: Schema.Int, variant: Schema.Int })
 
 /** Writes `size` seeded bytes under `name`, replacing any existing entry. */
-export const Put = Actor.command("Put", { input: Write })
+export const Put = Actor.command("Put", { payload: Write })
 
 /** Appends `size` seeded bytes to the entry `name`. */
-export const Add = Actor.command("Add", { input: Write })
+export const Add = Actor.command("Add", { payload: Write })
 
 /** Rewrites the entry `name` as one compact chunk. */
-export const Compact = Actor.command("Compact", { input: Schema.String })
+export const Compact = Actor.command("Compact", { payload: Schema.String })
 
 /** Byte length of the entry `name`, or -1 when absent. */
-export const Length = Actor.query("Length", { input: Schema.String, output: Schema.Int })
+export const Length = Actor.query("Length", { payload: Schema.String, success: Schema.Int })
 
 /** Writes and reads its own entries of `documents` through `turn.blob` and `read.blob`. */
 export const Archive = Actor.make("Archive", {
@@ -50,33 +50,29 @@ export const Archive = Actor.make("Archive", {
   api: { Put, Add, Compact, Length },
 })
 
-const ArchiveCommands = Archive.toLayer(
-  Effect.succeed({
-    Put: Effect.fnUntraced(function* ({ name, size, variant }) {
-      yield* (yield* Archive.Turn).blob(documents).set(name, bytesOf(size, variant))
-    }),
-    Add: Effect.fnUntraced(function* ({ name, size, variant }) {
-      yield* (yield* Archive.Turn).blob(documents).append(name, bytesOf(size, variant))
-    }),
-    Compact: Effect.fnUntraced(function* (name: string) {
-      yield* (yield* Archive.Turn).blob(documents).compact(name)
-    }),
+const ArchiveCommands = Archive.toLayer({
+  Put: Effect.fnUntraced(function* ({ name, size, variant }) {
+    yield* (yield* Archive.Turn).blob(documents).set(name, bytesOf(size, variant))
   }),
-)
+  Add: Effect.fnUntraced(function* ({ name, size, variant }) {
+    yield* (yield* Archive.Turn).blob(documents).append(name, bytesOf(size, variant))
+  }),
+  Compact: Effect.fnUntraced(function* (name: string) {
+    yield* (yield* Archive.Turn).blob(documents).compact(name)
+  }),
+})
 
 /**
  * Returns the length, not the bytes, so the reply's encoding is not the
  * measured cost.
  */
-const ArchiveReads = Archive.toQueryLayer(
-  Effect.succeed({
-    Length: Effect.fnUntraced(function* (name: string) {
-      const found = yield* (yield* Archive.Read).blob(documents).get(name)
+const ArchiveReads = Archive.toQueryLayer({
+  Length: Effect.fnUntraced(function* (name: string) {
+    const found = yield* (yield* Archive.Read).blob(documents).get(name)
 
-      return Option.match(found, { onNone: () => -1, onSome: (bytes) => bytes.byteLength })
-    }),
+    return Option.match(found, { onNone: () => -1, onSome: (bytes) => bytes.byteLength })
   }),
-)
+})
 
 /** Shared content a `Shelf` references. */
 export const Files = Actor.content("files")
@@ -84,10 +80,10 @@ export const Files = Actor.content("files")
 const Attaching = Schema.Struct({ name: Schema.String, ref: ContentRef })
 
 /** Attaches already-uploaded content to the entry `name` without copying its bytes. */
-export const AttachFile = Actor.command("Attach", { input: Attaching })
+export const AttachFile = Actor.command("Attach", { payload: Attaching })
 
 /** The referenced content's length, read off-turn. */
-export const Size = Actor.query("Size", { input: Schema.String, output: Schema.Int })
+export const Size = Actor.query("Size", { payload: Schema.String, success: Schema.Int })
 
 /** An actor that references tenant content, for the content-blobs scenario. */
 export const Shelf = Actor.make("Shelf", {
@@ -99,22 +95,18 @@ export const Shelf = Actor.make("Shelf", {
 
 /** Command and query handlers for `Shelf`. */
 export const ShelfLive = Layer.mergeAll(
-  Shelf.toLayer(
-    Effect.succeed({
-      Attach: Effect.fnUntraced(function* ({ name, ref }: typeof Attaching.Type) {
-        yield* (yield* Shelf.Turn).blob(Files).attach(name, ref).pipe(Effect.orDie)
-      }),
+  Shelf.toLayer({
+    Attach: Effect.fnUntraced(function* ({ name, ref }: typeof Attaching.Type) {
+      yield* (yield* Shelf.Turn).blob(Files).attach(name, ref).pipe(Effect.orDie)
     }),
-  ),
-  Shelf.toQueryLayer(
-    Effect.succeed({
-      Size: Effect.fnUntraced(function* (name: string) {
-        const found = yield* (yield* Shelf.Read).blob(Files).get(name)
+  }),
+  Shelf.toQueryLayer({
+    Size: Effect.fnUntraced(function* (name: string) {
+      const found = yield* (yield* Shelf.Read).blob(Files).get(name)
 
-        return Option.match(found, { onNone: () => -1, onSome: (bytes) => bytes.byteLength })
-      }),
+      return Option.match(found, { onNone: () => -1, onSome: (bytes) => bytes.byteLength })
     }),
-  ),
+  }),
 )
 
 /** Handlers for `Archive` and `Shelf`. */
