@@ -14,7 +14,7 @@
 | Keyed actor state in `actor_state`                | the ordered chain in `Actor.state(fields, { migrations })`                                                                         | by the turn that next loads the actor            |
 | Stored event and effect payloads                  | `Actor.migration` chains on `Actor.Event` and `Actor.effect` ([ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)) | upcast on read, without rewriting                |
 
-Separately, `packages/postgres` owns the hosted control-plane schema and `bin/migrate.ts`. The planned `durable migrate` command is not implemented; framework migrations run only at boot.
+Separately, `packages/postgres` owns the hosted control-plane schema and `bin/migrate.ts`. The CLI has no `migrate` command; framework migrations run only at boot.
 
 ## How framework migrations run
 
