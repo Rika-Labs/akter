@@ -424,7 +424,7 @@ export const layer = (options: Options = {}) => {
       const owners = new Map<string, Owner>()
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
-      const effectRegistrations = new Map<string, JobRegistration>()
+      const jobRegistrations = new Map<string, JobRegistration>()
       const runtimeId = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
       const frameworkClock = yield* FrameworkClock
       const writerDeclarations: Array<PayloadDeclaration> = []
@@ -862,7 +862,7 @@ export const layer = (options: Options = {}) => {
         )
 
       const progressSink = ProgressSink.of({
-        wants: (actor, job) => effectRegistrations.get(actor)?.progress.has(job) === true,
+        wants: (actor, job) => jobRegistrations.get(actor)?.progress.has(job) === true,
         send: (message) =>
           Effect.flatMap(progressTap.send(message), (deliver) =>
             deliver
@@ -941,7 +941,7 @@ export const layer = (options: Options = {}) => {
       const relay = yield* outboxRelay(
         relayDeliver,
         () =>
-          [...effectRegistrations.values()].flatMap((registration) =>
+          [...jobRegistrations.values()].flatMap((registration) =>
             [...registration.jobs].map(([job, registered]) => ({
               actor: registration.name,
               job,
@@ -1032,7 +1032,7 @@ export const layer = (options: Options = {}) => {
         services,
         clock: frameworkClock,
         outbox,
-        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.jobs.get(effect),
+        jobOf: (actorType, job) => jobRegistrations.get(actorType)?.jobs.get(job),
         wake: relay.wake,
         tenantScope: yield* TenantScope,
       })
@@ -1041,7 +1041,7 @@ export const layer = (options: Options = {}) => {
         services,
         clock: frameworkClock,
         outbox,
-        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.jobs.get(effect),
+        jobOf: (actorType, job) => jobRegistrations.get(actorType)?.jobs.get(job),
         createdBy: (actorType) => registrations.get(actorType)?.policy.createdBy !== undefined,
         wake: relay.wake,
         tenantScope: yield* TenantScope,
@@ -1079,7 +1079,7 @@ export const layer = (options: Options = {}) => {
         ...actorRegistration({
           registrations,
           queryRegistrations,
-          effectRegistrations,
+          jobRegistrations,
           residency,
           diagnostics,
           owners,
@@ -1154,7 +1154,7 @@ export const layer = (options: Options = {}) => {
         services,
         registrations,
         queryRegistrations,
-        effectRegistrations,
+        jobRegistrations,
       })
 
       const control = runtimeControl({

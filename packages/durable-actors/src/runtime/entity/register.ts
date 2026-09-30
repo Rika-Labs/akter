@@ -392,7 +392,7 @@ export const registerActor = Effect.fnUntraced(function* (
       yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
       yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
       yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
-      yield* count(Metrics.outboxStaged, { kind: "job" }, done.written.effects)
+      yield* count(Metrics.outboxStaged, { kind: "job" }, done.written.jobs)
     })
 
   /**
@@ -656,7 +656,7 @@ export const registerActor = Effect.fnUntraced(function* (
             if (Result.isSuccess(settled) && !Outcome.guards.Defect(settled.success))
               yield* owner.closeProgress(owned, batch[index]!.request.commandId)
 
-          for (const effectId of done.cancelledEffects) yield* owner.closeProgress(owned, effectId)
+          for (const jobId of done.cancelledJobs) yield* owner.closeProgress(owned, jobId)
         }
 
         if (owner.hasConnections || owner.hasStreams) {

@@ -22,13 +22,13 @@ export const servingReadiness = Effect.fnUntraced(function* ({
   services,
   registrations,
   queryRegistrations,
-  effectRegistrations,
+  jobRegistrations,
 }: {
   readonly sharding: Sharding.Sharding["Service"]
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding>
   readonly registrations: ReadonlyMap<string, unknown>
   readonly queryRegistrations: ReadonlyMap<string, unknown>
-  readonly effectRegistrations: ReadonlyMap<string, unknown>
+  readonly jobRegistrations: ReadonlyMap<string, unknown>
 }) {
   const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
 
@@ -47,7 +47,7 @@ export const servingReadiness = Effect.fnUntraced(function* ({
   const serving = Effect.gen(function* () {
     if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
 
-    if (registrations.size + queryRegistrations.size + effectRegistrations.size === 0)
+    if (registrations.size + queryRegistrations.size + jobRegistrations.size === 0)
       return { ready: false, reason: "unregistered" } as const
 
     return (yield* storage)

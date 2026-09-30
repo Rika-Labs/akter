@@ -42,7 +42,7 @@ const ROUTED_SUBSCRIBER_WAIT_MS = 5000
 export const actorRegistration = ({
   registrations,
   queryRegistrations,
-  effectRegistrations,
+  jobRegistrations,
   residency,
   diagnostics,
   owners,
@@ -69,7 +69,7 @@ export const actorRegistration = ({
 }: {
   readonly registrations: Map<string, Registration>
   readonly queryRegistrations: Map<string, QueryRegistration>
-  readonly effectRegistrations: Map<string, JobRegistration>
+  readonly jobRegistrations: Map<string, JobRegistration>
   readonly residency: Map<string, (entityId: string) => boolean>
   /** Each actor type's view of its activations, for a delivery that timed out. */
   readonly diagnostics: Map<
@@ -334,13 +334,13 @@ export const actorRegistration = ({
       )
     }),
     registerJobs: Effect.fnUntraced(function* (registration: JobRegistration) {
-      if (effectRegistrations.has(registration.name))
+      if (jobRegistrations.has(registration.name))
         return yield* Effect.die(new Error(`Duplicate job layer: ${registration.name}`))
       yield* checkPayloadVersions(registration.name, registration.payloads)
-      effectRegistrations.set(registration.name, registration)
+      jobRegistrations.set(registration.name, registration)
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          effectRegistrations.delete(registration.name)
+          jobRegistrations.delete(registration.name)
         }),
       )
     }),

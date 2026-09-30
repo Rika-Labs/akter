@@ -258,10 +258,10 @@ export interface Written {
   readonly receipts: number
   readonly events: number
   readonly intents: number
-  readonly effects: number
+  readonly jobs: number
 }
 
-const nothingWritten: Written = { receipts: 0, events: 0, intents: 0, effects: 0 }
+const nothingWritten: Written = { receipts: 0, events: 0, intents: 0, jobs: 0 }
 
 const nothingWrote: WriteSet = { state: false, events: [], tables: [], blobs: [] }
 
@@ -280,8 +280,8 @@ export interface Done {
   readonly head: string
   /** Each command's committed events, stamped, in delivery order. */
   readonly committed: ReadonlyArray<CommittedEvents>
-  /** Started effects the batch's commands cancelled. */
-  readonly cancelledEffects: ReadonlyArray<string>
+  /** Started jobs the batch's commands cancelled. */
+  readonly cancelledJobs: ReadonlyArray<string>
   readonly generation: string
   /** The positions in `settled` that answered from a stored receipt. */
   readonly replays: ReadonlySet<number>
@@ -620,7 +620,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       const broadcasts: Array<Broadcast> = []
       let events = 0
       let intents = 0
-      let effects = 0
+      let jobs = 0
       const eventTags = new Set<string>()
       const tables = new Set<string>()
       const blobs = new Set<string>()
@@ -835,7 +835,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         for (const blob of result.writes?.blobs ?? []) blobs.add(blob)
         intents += result.outbox.intents.length
-        effects += result.outbox.jobs.length
+        jobs += result.outbox.jobs.length
 
         if (Outcome.guards.Success(result.outcome)) broadcasts.push(...(result.broadcasts ?? []))
 
@@ -961,7 +961,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         emitted,
         outbox: outboxes,
         replays,
-        written: { receipts: receipts.length, events, intents, effects },
+        written: { receipts: receipts.length, events, intents, jobs },
         wrote: {
           state: dirty.size > 0 || removed.size > 0,
           events: [...eventTags],
@@ -1019,7 +1019,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         ...entry,
         emittedAtMs: plan.emitted[index]!.emittedAtMs,
       })),
-      cancelledEffects: plan.outbox.flatMap((replies) => replies.cancelledIds),
+      cancelledJobs: plan.outbox.flatMap((replies) => replies.cancelledIds),
       generation: plan.generation,
       replays: plan.replays,
       written: plan.writes === undefined ? nothingWritten : plan.written,
