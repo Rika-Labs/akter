@@ -488,7 +488,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase<RestoreFixture>> 
                     runner,
                     RuntimeControl.use((control) => control.drain({ deadline: "10 seconds" })),
                   ),
-                ).toEqual({ outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 })
+                ).toEqual({ outcome: "clean", interruptedTurns: 0, interruptedJobs: 0 })
                 versions[runner] = "v2"
                 yield* cluster.restart(runner)
                 yield* cluster.ready
