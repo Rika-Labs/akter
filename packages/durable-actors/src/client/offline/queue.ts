@@ -18,8 +18,12 @@ export interface PendingCommand {
   readonly member: string
   /** The JSON the command was called with, as sent. */
   readonly input: Schema.Json | undefined
-  /** `queued` is still being delivered; `expired` and `failed` wait for the application to `discard` them. */
-  readonly status: QueuedCommand["status"]
+  /**
+   * `queued` is still being delivered; `held` was queued under another
+   * principal and waits until that principal signs back in or the application
+   * discards it; `expired` and `failed` wait for the application to `discard` them.
+   */
+  readonly status: QueuedCommand["status"] | "held"
   /**
    * While `queued`, the last answer that did not settle the command, such as a
    * network failure or a rejected credential. For `expired`, its
@@ -49,14 +53,14 @@ export interface OfflineQueue {
   /**
    * Forgets a command and never sends it again; a command already sent may
    * have been applied. It settles a caller still waiting with `Timeout`.
-   * The only way to resolve an `expired` or `failed` command.
+   * The only way to resolve an `expired`, `failed`, or `held` command.
    */
   readonly discard: (commandId: string) => Promise<void>
   /** Stops delivering. Saved commands stay saved for the next session. */
   readonly close: () => void
 }
 
-/** What a client asks the queue to save; the queue adds its position, base URL and status. */
+/** What a client asks the queue to save; the queue adds its position, base URL, principal and status. */
 type NewCommand = Pick<QueuedCommand, "commandId" | "target" | "member" | "body">
 
 /** One answered attempt that did not settle the command, with when to try again if the client knows. */
@@ -72,6 +76,11 @@ export interface QueueOptions<Output> {
   readonly baseUrl: string
   /** Only commands of this actor type are delivered. */
   readonly actor: string
+  /**
+   * The principal the client runs as now, read before each command is saved
+   * and before each attempt; only commands saved under it are sent.
+   */
+  readonly principal: Effect.Effect<string>
   /** The estimated database time, for judging a command's expiry. */
   readonly now: () => number
   /**
@@ -140,14 +149,17 @@ const guard = <A>(operation: OfflineStoreError["operation"], work: () => Promise
 const expiredFailure = (commandId: string) =>
   ActorError.make({ reason: CommandExpired.make({ commandId }) })
 
-const viewOf = <Output>({ command, failure }: Slot<Output>): PendingCommand => ({
-  commandId: command.commandId,
-  target: command.target,
-  member: command.member,
-  input: command.body === undefined ? undefined : Option.getOrUndefined(decodeBody(command.body)),
-  status: command.status,
-  failure,
-})
+const viewOf =
+  (principal: string | undefined) =>
+  <Output>({ command, failure }: Slot<Output>): PendingCommand => ({
+    commandId: command.commandId,
+    target: command.target,
+    member: command.member,
+    input: command.body === undefined ? undefined : Option.getOrUndefined(decodeBody(command.body)),
+    status:
+      command.status === "queued" && command.principal !== principal ? "held" : command.status,
+    failure,
+  })
 
 /**
  * The queue behind a client's `offline` option. It keeps each actor's commands
@@ -155,6 +167,10 @@ const viewOf = <Output>({ command, failure }: Slot<Output>): PendingCommand => (
  * never overtakes an earlier one that is still waiting for the network;
  * different actors are delivered independently. A command that expires or is
  * rejected for good does not hold back those after it.
+ *
+ * Each command is saved under the principal the client ran as, and only
+ * commands of the current principal are sent: another's are `held`, so a
+ * shared store never sends one user's commands with another's credential.
  *
  * Ids are minted by the caller and stored with the command, so a replay after
  * a lost reply, a reload, or a second tab is a retry the receipt answers, never
@@ -169,6 +185,7 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
   const parked = new Set<string>()
   const loading = Deferred.makeUnsafe<void, OfflineStoreError>()
   let snapshot: ReadonlyArray<PendingCommand> = []
+  let principal: string | undefined = undefined
   let sequence = 0
   let loaded = false
   let closed = false
@@ -177,7 +194,7 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
   Deferred.doneUnsafe(tail, Effect.void)
 
   const publish = () => {
-    snapshot = Array.from(slots.values(), viewOf)
+    snapshot = Array.from(slots.values(), viewOf(principal))
 
     for (const listener of listeners)
       try {
@@ -211,6 +228,18 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
     return Effect.sync(() => {
       wakers.delete(wake)
     })
+  })
+
+  /** Reads the current principal, and republishes when it changed, since that moves commands in and out of `held`. */
+  const current = Effect.gen(function* () {
+    const next = yield* options.principal
+
+    if (next !== principal) {
+      principal = next
+      publish()
+    }
+
+    return next
   })
 
   const sleep = (ms: number) => Effect.raceFirst(Effect.sleep(Duration.millis(ms)), awaitWake)
@@ -259,6 +288,8 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
       const deadline = retryDeadline(commandId)
 
       while (true) {
+        if (slot.command.principal !== (yield* current)) return "held" as const
+
         if (deadline !== undefined && options.now() >= deadline) return yield* expire(slot)
 
         const outcome = yield* Effect.match(attempt, {
@@ -305,10 +336,15 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
 
     const deliverAll = Effect.gen(function* () {
       while (true) {
+        const running = yield* current
         let head: Slot<Output> | undefined = undefined
 
         for (const slot of slots.values())
-          if (slot.command.target === target && slot.command.status === "queued") {
+          if (
+            slot.command.target === target &&
+            slot.command.status === "queued" &&
+            slot.command.principal === running
+          ) {
             head = slot
             break
           }
@@ -354,6 +390,7 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
     }
 
     loaded = true
+    principal = yield* options.principal.pipe(Effect.catchCause(() => Effect.succeed(undefined)))
     publish()
     drainQueued()
     yield* Effect.forkDetach(options.warm)
@@ -375,7 +412,8 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
         if (
           command.target !== input.target ||
           command.member !== input.member ||
-          command.body !== input.body
+          command.body !== input.body ||
+          command.principal !== (yield* current)
         )
           return yield* ActorError.make({
             reason: CommandConflict.make({ commandId: input.commandId }),
@@ -395,6 +433,7 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
       const command: QueuedCommand = {
         ...input,
         baseUrl: options.baseUrl,
+        principal: yield* current,
         sequence,
         status: "queued",
         answer: undefined,

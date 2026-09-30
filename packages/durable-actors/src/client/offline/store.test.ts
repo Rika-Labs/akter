@@ -7,6 +7,7 @@ const saved = (commandId: string, sequence: number): QueuedCommand => ({
   commandId,
   sequence,
   baseUrl: "/api",
+  principal: "alice",
   target: "/actors/Room/r1",
   member: "Post",
   body: `{"text":"${commandId}"}`,

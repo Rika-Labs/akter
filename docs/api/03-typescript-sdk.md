@@ -128,7 +128,7 @@ The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
 
 ## Offline queue (M6.5)
 
-`X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Name the database per signed-in user: commands saved under one name are delivered by any client that opens it.
+`X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Each command is saved under the client's `identity`, a stable key for the signed-in user (never a credential); without one, the key is the `iss` and `sub` of an `authorization: Bearer` JWT, and an offline client with neither refuses to queue. Only the current principal's commands are sent: another's show as `held` until that user signs back in or the application discards them, so a shared device never sends one user's commands as another.
 
 <!-- snippet
 import { Offline, type PendingCommand } from "@durable-actors/core/client"
@@ -139,12 +139,16 @@ declare const render: (pending: ReadonlyArray<PendingCommand>) => void
 -->
 
 ```ts
-const rooms = Room.client({ baseUrl: "/api", offline: Offline.indexedDb(`chat:${user}`) })
+const rooms = Room.client({
+  baseUrl: "/api",
+  identity: () => user,
+  offline: Offline.indexedDb(`chat:${user}`),
+})
 const queue = rooms.offline! // undefined without `offline`
 
 queue.subscribe((pending) => render(pending)) // { commandId, target, member, input, status, failure }
 await rooms.get(RoomId.make("lobby")).Post({ body: "on a plane" }) // resolves once the server answers
-await queue.discard(commandId) // the only way to resolve an `expired` or `failed` command
+await queue.discard(commandId) // the only way to resolve an `expired`, `failed`, or `held` command
 ```
 
 - **Calls stay Promises.** A command resolves with its output once the server answers. `timeoutInMs` or `signal` stops the wait with `Timeout` carrying the command id, as always, but the command stays queued and is still delivered. A call aborted before its command was saved queues nothing.
