@@ -13,12 +13,12 @@ const Post = Actor.command("Post", { payload: Schema.String })
 
 const Source = Actor.make("ProcessSource", { key: Schema.String, events: [Posted], api: { Post } })
 
-const Record = Actor.command("Record", {
-  payload: Actor.Delivery({ source: Source, events: [Posted] }),
-})
+const Posts = Actor.Delivery({ source: Source, events: [Posted] })
+
+const Record = Actor.command("Record", { payload: Posts })
 
 const Followed = Actor.subscription("Followed", {
-  delivery: Actor.Delivery({ source: Source, events: [Posted] }),
+  delivery: Posts,
 
   handler: Record,
 })
