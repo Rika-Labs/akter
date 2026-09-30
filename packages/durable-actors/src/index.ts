@@ -93,6 +93,16 @@ export const Actor = {
       Effect.provideService(effect, CurrentCommandId, id),
 }
 
+export type {
+  Aggregate,
+  AggregateKind,
+  AnyFleetView,
+  DerivedTable,
+  FleetView,
+} from "./tables/fleet.ts"
+
+export { Fleet } from "./tables/fleet.ts"
+
 export { Actors } from "./handles/actors.ts"
 
 export { Intent } from "./handles/intents.ts"

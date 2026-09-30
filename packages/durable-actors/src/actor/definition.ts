@@ -937,6 +937,7 @@ const make = <
     if (info.owner !== undefined && info.owner !== name)
       throw new Error(`Table ${info.name} is already owned by actor ${info.owner}`)
     info.owner = name
+    info.placement = placement
   }
 
   const events = new Map<string, EventClass>()

@@ -47,3 +47,7 @@ export { Seed, SeedJson } from "./operators/seed.ts"
 export { checkPayloads, clearPayloads, formatPayloadProblem } from "./payloads/versions.ts"
 
 export type { ClearResult, PayloadProblem } from "./payloads/versions.ts"
+
+export { FleetSetupRefused, rebuildFleetView, setupFleet } from "./fleet/setup.ts"
+
+export type { FleetSetup } from "./fleet/setup.ts"

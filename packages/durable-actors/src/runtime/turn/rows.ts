@@ -204,6 +204,24 @@ const copyFilter = (info: Ownership, filter: Operand): OperandRecord => {
   return copy
 }
 
+/**
+ * Renders an application filter on `table` as SQL after `copyFilter` has
+ * checked and copied it, for reads the framework builds outside a turn.
+ */
+export const filterSql = ({
+  table,
+  filter,
+}: {
+  readonly table: AnyOwnedTable
+  readonly filter: Filter<AnyOwnedTable>
+}) => {
+  const info = ownership(table)
+
+  if (info === undefined) return reject("Filters apply to owned tables")
+
+  return relationsFilterToSQL(table, copyFilter(info, filter as Operand) as Filter<AnyOwnedTable>)
+}
+
 const checkOrder = (info: Ownership, order: Order<AnyOwnedTable>) => {
   for (const [key, direction] of Object.entries(order)) {
     checkColumn(info, key)
@@ -228,6 +246,7 @@ const GROUP: Ownership = {
   columns: [],
   primaryKey: [],
   owner: undefined,
+  placement: undefined,
 }
 
 type Decoded = SQL & { decoder: DriverValueDecoder<unknown, unknown> }

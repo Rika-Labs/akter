@@ -58,6 +58,7 @@ import { clientConformance } from "./conformance/client.ts"
 import { offlineConformance } from "./conformance/offline.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
+import { fleetConformance } from "./conformance/fleet.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
 import { OperatorRuntime } from "../runtime/operators/repair.ts"
 import { exportConformance } from "./conformance/export.ts"
@@ -267,6 +268,8 @@ export interface ConformanceBackend {
   readonly independentConnections: boolean
   /** True when `open` returns a streaming replica of the primary. */
   readonly hasReplica?: boolean
+  /** True when the server runs `wal_level=logical`, which fleet views need. */
+  readonly logicalDecoding?: boolean
   /** Extra services merged into every test runtime, e.g. BunCrypto.layer. */
   readonly services: Layer.Layer<Crypto.Crypto, never, never>
   /**
@@ -339,6 +342,8 @@ export interface ConformanceCase {
   readonly requiresReplica?: boolean
   /** Requires `backend.edge`; backends without one register the case through `registrar.skip`. */
   readonly requiresEdge?: boolean
+  /** Requires a server with `wal_level=logical`; backends without one skip the case. */
+  readonly requiresLogicalDecoding?: boolean
   readonly run: (ctx: ConformanceContext) => Promise<void>
   readonly timeoutMs?: number
 }
@@ -1497,6 +1502,7 @@ export const conformanceGroups = {
   operator: operatorConformance,
   export: exportConformance,
   placement: placementConformance,
+  fleet: fleetConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
 
 export type ConformanceGroup = keyof typeof conformanceGroups
@@ -1701,7 +1707,8 @@ export const describeConformance = (options: {
         (conformanceCase.requiresIndependentConnections === true &&
           backend.independentConnections === false) ||
         (conformanceCase.requiresReplica === true && backend.hasReplica !== true) ||
-        (conformanceCase.requiresEdge === true && backend.edge === undefined)
+        (conformanceCase.requiresEdge === true && backend.edge === undefined) ||
+        (conformanceCase.requiresLogicalDecoding === true && backend.logicalDecoding !== true)
       ) {
         registrar.skip(conformanceCase.name)
         continue

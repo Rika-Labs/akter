@@ -1,7 +1,10 @@
 /**
  * Starts a physical streaming replica of the Postgres server at
  * TEST_DATABASE_URL and prints its connection string, for the read-your-writes
- * conformance cases. It runs from `check:ci`, because the evidence gate refuses
+ * conformance cases. In CI it first sets the primary's `wal_level` to logical
+ * and restarts its container, because the fleet cases decode its WAL and the
+ * service container takes no server flags; outside CI a lower level is left
+ * alone and the fleet cases skip. It runs from `check:ci`, because the evidence gate refuses
  * a pull request that changes the verification workflow. Without
  * TEST_DATABASE_URL or Docker it prints nothing, so the replica cases are
  * skipped; in CI that is an error instead.
@@ -57,6 +60,33 @@ const program = Effect.gen(function* () {
   if (container === undefined) return yield* unavailable(`no container publishes port ${port}`)
 
   const image = yield* must(["docker", "inspect", "-f", "{{.Config.Image}}", container])
+
+  const psql = (statement: string) => [
+    "docker",
+    "exec",
+    container,
+    "psql",
+    "-U",
+    user,
+    "-d",
+    "postgres",
+    "-Atc",
+    statement,
+  ]
+
+  if ((yield* must(psql("SHOW wal_level"))) !== "logical" && Bun.env["CI"] !== undefined) {
+    yield* must(psql("ALTER SYSTEM SET wal_level = logical"))
+    yield* must(["docker", "restart", container])
+
+    for (let attempt = 0; ; attempt++) {
+      if ((yield* run(psql("SHOW wal_level"))).stdout === "logical") break
+
+      if (attempt === 60)
+        return yield* Effect.die(new Error("The primary did not restart with wal_level=logical"))
+
+      yield* Effect.sleep("1 second")
+    }
+  }
 
   yield* must([
     "docker",

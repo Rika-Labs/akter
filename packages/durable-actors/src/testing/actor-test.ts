@@ -98,6 +98,8 @@ export interface TestOptions {
   readonly payloadWriterWindow?: Options["payloadWriterWindow"]
   /** Shared content settings; omitted, a fixed test grant key with the default grace and skew. */
   readonly content?: Options["content"] | undefined
+  /** Fleet views the runtime maintains; they need Postgres with `wal_level=logical`. */
+  readonly fleet?: Options["fleet"]
 }
 
 /** The grant key tests sign content grants with unless they configure their own. */
@@ -734,6 +736,7 @@ export class ActorTest extends Context.Service<
           rowLevelSecurity: options.rowLevelSecurity,
           payloadWriterWindow: options.payloadWriterWindow,
           content: options.content ?? { keys: [TEST_CONTENT_KEY] },
+          fleet: options.fleet,
         })
 
         return Layer.mergeAll(

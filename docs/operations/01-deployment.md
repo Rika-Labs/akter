@@ -77,6 +77,19 @@ Command turns, queries, and every read that serves a caller outside a turn (feed
 
 Rerun step 2 after any migration that adds a table or a view; a new view stays with the migrating role until you do. Until then, a runner with the option refuses to start and names the object ([runbooks](runbooks.md)). The role must not be a superuser or have `BYPASSRLS`, and the runtime's login must be able to `SET ROLE` to it.
 
+## Fleet views
+
+Fleet views ([ADR 0056](../decisions/0056-fleet-views.md)) are maintained from Postgres logical decoding, so a deployment that registers any needs:
+
+- `wal_level = logical` on the primary (`ALTER SYSTEM SET wal_level = logical`, then a restart). `compose.yaml` sets it for development.
+- A runtime login with the `REPLICATION` attribute, which the slot functions need.
+- `durable fleet setup --entry <module> --database-url <url>`, run as a role that may alter the source tables and create publications: it gives each source `REPLICA IDENTITY FULL` (an update then names the group a row left), sets publication `durable_fleet` to the sources, and creates the logical slot `durable_fleet`, or recreates it when it was lost. The entry module exports `fleet`, an array of the views. One slot serves one database of a server; slot names are server-wide.
+- The recompute index of each view and its derived table, from the application's migrations.
+
+The runtime refuses to start, naming the fix, when `wal_level` is below logical, the login lacks `REPLICATION`, a source is outside the publication or lacks full replica identity, the slot is missing or lost, a source's actor type is not tenant-placed, the index or the derived table is missing, or the row-level-security tenant role owns a derived table.
+
+One runner at a time maintains the views: it holds the session advisory lock `durable-actors/fleet` on a connection of its off-turn pool, and the others retry every two seconds. It polls the slot every 200 ms, recomputes each touched group, commits, and only then advances the slot, so a crash replays a batch harmlessly. Update-heavy sources write more WAL under full replica identity, and an unread slot pins WAL until `max_slot_wal_keep_size` invalidates it; see the [runbook](runbooks.md#fleet-views).
+
 ## Readiness and bounded graceful drain
 
 The accepted behavior in [ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md) requires usable storage, compatible schemas, registered actors, operational routing, and a runner that is not draining before advertising readiness. Listening on a port is insufficient; waking every actor or finishing all workflows is unnecessary.

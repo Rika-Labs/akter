@@ -60,6 +60,13 @@ import {
 } from "./commands/workflows/check.ts"
 import { USAGE as PAYLOADS_USAGE, parsePayloads, payloads } from "./commands/payloads/run.ts"
 import {
+  USAGE as FLEET_USAGE,
+  parseFleet,
+  rebuild as rebuildView,
+  setup as setupViews,
+  viewsOf,
+} from "./commands/fleet/run.ts"
+import {
   USAGE as TENANTS_USAGE,
   controlPlane,
   create as createTenant,
@@ -130,6 +137,42 @@ const payloadsCommand = (args: ReadonlyArray<string>) =>
     Effect.catchTags({
       SqlError: (error) => fail(`Cannot read payload versions: ${error.message}`),
       UsageError: (error) => fail(`${error.message}\n${PAYLOADS_USAGE}`),
+    }),
+  )
+
+const fleetCommand = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const options = yield* parseFleet(args)
+
+    const services = yield* Layer.build(
+      Database.postgres({ url: Redacted.make(options.databaseUrl) }).pipe(
+        Layer.provideMerge(BunCrypto.layer),
+      ),
+    )
+
+    if (options.command === "setup") {
+      const views = yield* viewsOf({
+        module: yield* loadEntry(options.entry),
+        entry: options.entry,
+      })
+
+      return yield* Console.log(yield* setupViews(views).pipe(Effect.provideContext(services)))
+    }
+
+    const { output, exitCode } = yield* rebuildView(options.view).pipe(
+      Effect.provideContext(services),
+    )
+
+    yield* Console.log(output)
+    yield* Effect.sync(() => {
+      process.exitCode = exitCode
+    })
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      SqlError: (error) => fail(`Cannot set up fleet views: ${error.message}`),
+      FleetSetupRefused: (error) => fail(error.message),
+      UsageError: (error) => fail(`${error.message}\n${FLEET_USAGE}`),
     }),
   )
 
@@ -273,6 +316,8 @@ const program = Effect.gen(function* () {
 
   if (group === "payloads") return yield* payloadsCommand(process.argv.slice(3))
 
+  if (group === "fleet") return yield* fleetCommand(process.argv.slice(3))
+
   if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
 
   if (group === "inspect")
@@ -315,6 +360,7 @@ const program = Effect.gen(function* () {
       USAGE,
       DEFECTS_USAGE,
       PAYLOADS_USAGE,
+      FLEET_USAGE,
       INSPECT_USAGE,
       EXPORT_USAGE,
       RECEIPTS_USAGE,

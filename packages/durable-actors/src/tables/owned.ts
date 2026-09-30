@@ -116,6 +116,8 @@ export interface Ownership {
   readonly primaryKey: ReadonlyArray<string>
   /** The actor type listing this table; set once by `Actor.make`. */
   owner: string | undefined
+  /** The owning actor type's placement; set with `owner`. */
+  placement: Placement | undefined
 }
 
 /**
@@ -357,6 +359,7 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
     columns: Object.keys(columns),
     primaryKey: key,
     owner: undefined,
+    placement: undefined,
   })
 
   if (!isOwned(source)) throw new Error(`Table ${name} did not take ownership`)

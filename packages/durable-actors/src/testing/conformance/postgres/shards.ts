@@ -15,6 +15,7 @@ export const shards = {
   cron: ["cron", "cronCluster"],
   drain: ["drain"],
   "effect-control": ["effectControl", "effectControlCluster"],
+  fleet: ["fleet"],
   heap: ["heap"],
   "multi-runner": ["multiRunner"],
   offline: ["offline"],
