@@ -39,9 +39,6 @@ export const hashedPayload = (request: Request) =>
     ? Effect.succeed(request.payload)
     : deliveryIdentity({ subscriber: request.ref, envelope: request.delivery })
 
-const hex = (bytes: Uint8Array) =>
-  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
-
 /**
  * A delivery's command id: `v1.<s>.<s + retryWindow>.<digest>`, where `s` is
  * fixed by the delivered record (an event's emit time, a gap's detection
@@ -69,7 +66,7 @@ export const deliveryCommandId = Effect.fnUntraced(function* ({
   const bytes = new Uint8Array(digest).slice(0, 16)
   bytes[6] = (bytes[6]! & 0x0f) | 0x80
   bytes[8] = (bytes[8]! & 0x3f) | 0x80
-  const raw = hex(bytes)
+  const raw = Buffer.from(bytes).toString("hex")
 
   const uuid = `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`
 
