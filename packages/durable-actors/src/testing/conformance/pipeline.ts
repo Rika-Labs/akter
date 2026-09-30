@@ -177,7 +177,10 @@ interface Relay {
 }
 
 /** A `CommandComplete` message whose tag is `COMMIT`. */
-const COMMIT_COMPLETE = Buffer.concat([Buffer.from([0x43, 0, 0, 0, 11]), Buffer.from("COMMIT\0")])
+const COMMIT_COMPLETE = Buffer.concat([
+  Buffer.of(0x43, 0, 0, 0, 11),
+  new TextEncoder().encode("COMMIT\0"),
+])
 
 /**
  * A TCP relay in front of Postgres, for the turn pool unless a case routes
