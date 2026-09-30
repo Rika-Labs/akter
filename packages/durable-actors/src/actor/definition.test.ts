@@ -301,7 +301,7 @@ describe("actor declarations", () => {
     const Read = Actor.command("Read")
     const ref = { tenant: "t", actor: "Session", id: "a" }
     const other = { ...ref, id: "b" }
-    expect(Actor.make("Session", { api: { Read }, placement: "actor" })).toBeDefined()
+    expect(() => Actor.make("Session", { api: { Read }, placement: "actor" })).not.toThrow()
     expect(routingKey({ ref, placement: "tenant" })).toBe(
       routingKey({ ref: other, placement: "tenant" }),
     )
@@ -509,13 +509,11 @@ describe("actor declarations", () => {
     // @ts-expect-error an effect that emits cannot run outside a turn
     const _outside = () => Effect.runPromise(emits)
 
-    const plain = Effect.gen(function* () {
+    const _plain = Effect.gen(function* () {
       const turn = yield* Plain.Turn
       // @ts-expect-error an actor without events cannot emit
       yield* turn.emit(Posted.make({ body: "hi" }))
     })
-
-    expect(plain).toBeDefined()
 
     const reads = Feed.toQueryLayer(
       Effect.succeed({
@@ -537,14 +535,12 @@ describe("actor declarations", () => {
 
     expectTypeOf<Effect.Error<typeof replay>>().toEqualTypeOf<UnknownCursor | RetentionGap>()
 
-    const misuse = (read: QueryContext<{}, typeof Posted>) => [
+    const _misuse = (read: QueryContext<{}, typeof Posted>) => [
       // @ts-expect-error queries are read-only and cannot emit
       read.emit,
       // @ts-expect-error only declared event classes can be replayed
       read.events(Undeclared),
     ]
-
-    expect(misuse).toBeDefined()
   })
 
   it("rejects invalid state migration chains", () => {

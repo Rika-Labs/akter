@@ -2,15 +2,18 @@ import {
   adoptionStatus,
   adoptionWriters,
   backfillAdoption,
+  enforceAdoption,
   formatAdoptionPlan,
   formatAdoptionStatus,
   formatBackfill,
+  formatEnforce,
   formatObservedWriter,
   observeAdoption,
   planAdoption,
+  releaseAdoption,
   type AdoptionRefused,
 } from "@durable-actors/core/runtime"
-import { Effect } from "effect"
+import { Clock, Effect } from "effect"
 import { UsageError } from "../workflows/check.ts"
 
 /** Usage text for `durable adopt`. */
@@ -19,11 +22,13 @@ export const USAGE = [
   "       durable adopt observe <table> --entry <module> --database-url <url>",
   "       durable adopt observe <table> --report [--since 7d] [--clear] --entry <module> --database-url <url> [--json]",
   "       durable adopt backfill <table> [--batch 1000] --entry <module> --database-url <url>",
+  "       durable adopt enforce <table> --writer-role <role> [--allow <role>]... [--quiet 7d] --entry <module> --database-url <url>",
   "       durable adopt status --database-url <url> [--json]",
+  "       durable adopt release <table> --to observe --entry <module> --database-url <url>",
 ].join("\n")
 
 /** The commands `durable adopt` runs. */
-export type AdoptCommand = "plan" | "observe" | "backfill" | "status"
+export type AdoptCommand = "plan" | "observe" | "backfill" | "enforce" | "status" | "release"
 
 /** Parsed arguments of `adopt`. */
 export interface AdoptOptions {
@@ -36,6 +41,10 @@ export interface AdoptOptions {
   readonly clear: boolean
   readonly sinceMs: number | undefined
   readonly batch: number | undefined
+  readonly writerRole: string | undefined
+  readonly allow: ReadonlyArray<string>
+  readonly quietMs: number | undefined
+  readonly to: string | undefined
 }
 
 const UNITS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const
@@ -67,7 +76,9 @@ export const parseAdopt = ({
       command !== "plan" &&
       command !== "observe" &&
       command !== "backfill" &&
-      command !== "status"
+      command !== "enforce" &&
+      command !== "status" &&
+      command !== "release"
     )
       return yield* UsageError.make({ message: `Unknown adopt command: ${command ?? ""}` })
 
@@ -79,6 +90,10 @@ export const parseAdopt = ({
     let clear = false
     let sinceMs: number | undefined
     let batch: number | undefined
+    let writerRole: string | undefined
+    let quietMs: number | undefined
+    let to: string | undefined
+    const allow: Array<string> = []
 
     for (let index = 0; index < args.length; index++) {
       const arg = args[index]!
@@ -91,7 +106,11 @@ export const parseAdopt = ({
         arg === "--database-url" ||
         arg === "--table" ||
         arg === "--since" ||
-        arg === "--batch"
+        arg === "--batch" ||
+        arg === "--writer-role" ||
+        arg === "--allow" ||
+        arg === "--quiet" ||
+        arg === "--to"
       ) {
         const value = args[++index]
 
@@ -102,6 +121,10 @@ export const parseAdopt = ({
         else if (arg === "--table") table = value
         else if (arg === "--since")
           sinceMs = nowMs - (yield* parseWindow({ flag: arg, text: value }))
+        else if (arg === "--quiet") quietMs = yield* parseWindow({ flag: arg, text: value })
+        else if (arg === "--writer-role") writerRole = value
+        else if (arg === "--allow") allow.push(value)
+        else if (arg === "--to") to = value
         else {
           batch = Number(value)
 
@@ -118,8 +141,25 @@ export const parseAdopt = ({
     if (command !== "status" && entry === undefined)
       return yield* UsageError.make({ message: "--entry is required" })
 
-    if ((command === "observe" || command === "backfill") && table === undefined)
+    if (command !== "plan" && command !== "status" && table === undefined)
       return yield* UsageError.make({ message: `${command} takes the table to ${command}` })
+
+    if (command === "enforce" && writerRole === undefined)
+      return yield* UsageError.make({ message: "--writer-role is required" })
+
+    if (
+      command !== "enforce" &&
+      (writerRole !== undefined || allow.length > 0 || quietMs !== undefined)
+    )
+      return yield* UsageError.make({
+        message: "--writer-role, --allow, and --quiet belong to enforce",
+      })
+
+    if (command === "release" && to !== "observe")
+      return yield* UsageError.make({ message: "release takes --to observe" })
+
+    if (command !== "release" && to !== undefined)
+      return yield* UsageError.make({ message: "--to belongs to release" })
 
     if ((sinceMs !== undefined || clear) && !report)
       return yield* UsageError.make({ message: "--since and --clear belong to observe --report" })
@@ -140,6 +180,10 @@ export const parseAdopt = ({
       clear,
       sinceMs,
       batch,
+      writerRole,
+      allow,
+      quietMs,
+      to,
     } satisfies AdoptOptions
   })
 
@@ -167,6 +211,32 @@ export const adopt = ({
           : statuses.length === 0
             ? "No table is adopted"
             : statuses.map(formatAdoptionStatus).join("\n"),
+        exitCode: 0,
+      }
+    }
+
+    if (options.command === "enforce") {
+      const enforced = yield* enforceAdoption(actors, {
+        only: options.table!,
+        writerRole: options.writerRole!,
+        allowedRoles: options.allow,
+        quietMs: options.quietMs,
+        nowMs: yield* Clock.currentTimeMillis,
+      })
+
+      return {
+        output: options.json ? printJson({ enforced }) : enforced.map(formatEnforce).join("\n"),
+        exitCode: 0,
+      }
+    }
+
+    if (options.command === "release") {
+      const released = yield* releaseAdoption(actors, { only: options.table! })
+
+      return {
+        output: options.json
+          ? printJson({ observing: released })
+          : released.map((table) => `${table} is observing again`).join("\n"),
         exitCode: 0,
       }
     }
