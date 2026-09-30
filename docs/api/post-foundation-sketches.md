@@ -54,11 +54,11 @@ Ship: Effect.fn(function* (order) {
 ## Derive protocols
 
 ```ts
-Actor.serve({ actors: [ChatLive], auth: jwt(...) })
-// planned OpenAPI; proposed MCP endpoint and generated Python client
+Actor.serve({ actors: [ChatLive], auth: jwt(...), openapi: { path: "/openapi.json" }, mcp: { path: "/mcp" } })
+// generated Python client: bun packages/python-client/src/main.ts <openapi.json> --out <dir>
 ```
 
-MCP exposes only public members. A durable tool invocation requires a stable caller-supplied operation ID; a transport event ID with no guaranteed retry stability is insufficient. The Python client follows the same runtime schemas and expiry semantics as the TypeScript client.
+MCP (shipped as `serve({ mcp })`, described in [generating clients](05-generated-clients.md#mcp)) exposes only public members. A durable tool invocation requires a stable caller-supplied `commandId`; a transport event ID with no guaranteed retry stability is insufficient. The Python client (see [generating clients](05-generated-clients.md#python)) follows the same runtime schemas and expiry semantics as the TypeScript client.
 
 ## Serve cold
 
