@@ -107,9 +107,9 @@ const armTimer = Effect.fnUntraced(function* (
       },
     ],
     replaced: [key],
-    effects: [],
+    jobs: [],
     subscriptions: [],
-    cancelledEffects: [],
+    cancelledJobs: [],
   })
 })
 

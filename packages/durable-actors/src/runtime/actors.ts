@@ -1,7 +1,7 @@
 import { Context, type Effect, type Scope, type Stream } from "effect"
 import type { Transport } from "./connections/transport.ts"
 import type { Holder } from "./connections/holder.ts"
-import type { ProgressMessage } from "./effects/progress.ts"
+import type { ProgressMessage } from "./jobs/progress.ts"
 import type { ActorError } from "../errors/actor.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
@@ -13,7 +13,7 @@ import type { TableAccess, TableScope } from "../tables/owned.ts"
 import type { Executed, Outcome, Request } from "./request.ts"
 import type { FleetRequest } from "./fleet/subscribe.ts"
 import type {
-  EffectRegistration,
+  JobRegistration,
   QueryRegistration,
   Registration,
   StoredEvent,
@@ -52,7 +52,7 @@ export class InternalActors extends Context.Service<
      */
     readonly extendOutboxLeases: (millis: number, jump: Effect.Effect<void>) => Effect.Effect<void>
     readonly registerQueries: (actor: QueryRegistration) => Effect.Effect<void, never, Scope.Scope>
-    readonly registerEffects: (actor: EffectRegistration) => Effect.Effect<void, never, Scope.Scope>
+    readonly registerJobs: (actor: JobRegistration) => Effect.Effect<void, never, Scope.Scope>
     /**
      * Reads committed state. With `minVersion`, a configured replica answers
      * only once it has replayed that commit version; otherwise the primary does.

@@ -45,14 +45,14 @@ import { InvalidExecutionId, InvalidExecutionKey } from "../errors/workflow.ts"
 import { Actors } from "../handles/actors.ts"
 import {
   type BusinessResult,
-  type EffectRoute,
+  type JobRoute,
   type Broadcast,
   type ConnectionLister,
   type ConnectionResult,
   type RegisteredCommand,
   type RegisteredConnection,
   ConnectionPhase,
-  type RegisteredEffect,
+  type RegisteredJob,
   type RegisteredQuery,
   type RegisteredSubscription,
   type RegisteredStream,
@@ -68,8 +68,8 @@ import { Outcome, Request } from "../runtime/request.ts"
 import {
   currentStaging,
   Due,
-  effectKey,
   emptyOutbox,
+  jobKey,
   InTurn,
   openOutbox,
   stageIntent,
@@ -126,8 +126,8 @@ import {
   type ProgressEffect,
   type ProgressOf,
 } from "../members/effect.ts"
-import type { NoDatabase } from "../runtime/effects/isolation.ts"
-import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
+import type { NoDatabase } from "../runtime/jobs/isolation.ts"
+import { MAX_PROGRESS_BYTES } from "../runtime/jobs/progress.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 import { resolveCron } from "../runtime/cron/schedule.ts"
 import { type AnyOwnedTable, ownership, recordDeclaredTables } from "../tables/owned.ts"
@@ -600,7 +600,7 @@ const effectTiming = (tag: string, policy: EffectPolicy<AnyEffect, AnyCommand> |
           }),
   } satisfies {
     readonly timeoutMs: number
-    readonly backoff: RegisteredEffect["backoff"]
+    readonly backoff: RegisteredJob["backoff"]
     readonly progressEveryMs: number
   }
 
@@ -612,7 +612,7 @@ const effectTiming = (tag: string, policy: EffectPolicy<AnyEffect, AnyCommand> |
 
 /** When and under which key `turn.perform` stages an effect. */
 const performSchedule = (options: PerformOptions | undefined) => {
-  if (options?.key !== undefined) effectKey(options.key)
+  if (options?.key !== undefined) jobKey(options.key)
 
   if (options?.after !== undefined && options.at !== undefined)
     throw new Error("turn.perform takes after or at, not both")
@@ -635,7 +635,7 @@ const performSchedule = (options: PerformOptions | undefined) => {
 
 /** The `onCancelled` input of a cancelled effect whose provider call succeeded. */
 interface CancelledSuccess {
-  readonly effectId: string
+  readonly jobId: string
   readonly attempts: number
   readonly outcome: { readonly _tag: "Succeeded"; readonly value: unknown }
   readonly ambiguous: boolean
@@ -1030,7 +1030,7 @@ const make = <
     })),
     ...[...effects.values()].map((declared) => ({
       actorType: name,
-      kind: "effect" as const,
+      kind: "job" as const,
       tag: declared.tag,
       chain: payloadChain(declared),
       writes,
@@ -2208,8 +2208,8 @@ const make = <
               if (scheduled.key !== undefined) yield* warnUnrouted(instance._tag)
               const { value, version } = yield* declared.encode(instance).pipe(Effect.orDie)
 
-              outbox.perform({
-                effect: instance._tag,
+              outbox.enqueue({
+                job: instance._tag,
                 payload: value,
                 version,
                 capped: effectPolicies[instance._tag]?.concurrency !== undefined,
@@ -2257,8 +2257,8 @@ const make = <
               if (!open || (yield* InsideTurn) !== turn)
                 return yield* Effect.die(new Error("Effect capability escaped its turn"))
 
-              yield* Effect.sync(() => effectKey(key))
-              outbox.cancelEffect(key)
+              yield* Effect.sync(() => jobKey(key))
+              outbox.cancelJob(key)
             })
 
             const context: CommandContext<State, Event, Owned, Blobs> &
@@ -2831,7 +2831,7 @@ const make = <
 
     return (value: typeof command.input.Type) =>
       Schema.encodeEffect(codec)({ value }).pipe(
-        Effect.map((payload): EffectRoute => ({ command: command.tag, payload })),
+        Effect.map((payload): JobRoute => ({ command: command.tag, payload })),
       )
   }
 
@@ -2841,7 +2841,7 @@ const make = <
   ) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
-      const registered = new Map<string, RegisteredEffect>()
+      const registered = new Map<string, RegisteredJob>()
 
       for (const declared of effects.values()) {
         const execute = (
@@ -2866,13 +2866,13 @@ const make = <
 
         const cancelledRoute = (
           effect: AnyEffect["Type"],
-          letter: Parameters<RegisteredEffect["cancelled"]>[2] | CancelledSuccess,
-        ): Effect.Effect<EffectRoute | undefined, Schema.SchemaError> =>
+          letter: Parameters<RegisteredJob["cancelled"]>[2] | CancelledSuccess,
+        ): Effect.Effect<JobRoute | undefined, Schema.SchemaError> =>
           Effect.gen(function* () {
             if (onCancelled === undefined) return undefined
 
             return yield* onCancelled({
-              effectId: letter.effectId,
+              effectId: letter.jobId,
               effect,
               attempts: letter.attempts,
               outcome: letter.outcome,
@@ -2905,7 +2905,7 @@ const make = <
               })),
             )
 
-            const { report, reporting, ...identity } = attempt
+            const { report, reporting, jobId, ...identity } = attempt
 
             const progress = (
               target: AnyEffect,
@@ -2930,7 +2930,11 @@ const make = <
                       ),
                     )
 
-            const context = { ...identity, progress } as ExecutorContext<Effects[number]>
+            const context = {
+              ...identity,
+              effectId: jobId,
+              progress,
+            } as ExecutorContext<Effects[number]>
 
             const exit = yield* execute(effect).pipe(
               Effect.timeoutOrElse({
@@ -2955,14 +2959,14 @@ const make = <
               onCancelled === undefined
                 ? undefined
                 : yield* cancelledRoute(effect, {
-                    effectId: context.effectId,
+                    jobId,
                     attempts: context.attempt,
                     outcome: CancelledOutcome.cases.Succeeded.make({ value: exit.value }),
                     ambiguous: false,
                   }).pipe(
                     Effect.catch((error) =>
                       cancelledRoute(effect, {
-                        effectId: context.effectId,
+                        jobId,
                         attempts: context.attempt,
                         outcome: CancelledOutcome.cases.Unknown.make({
                           cause: `The onCancelled route cannot accept the result: ${String(error)}`,
@@ -2990,7 +2994,7 @@ const make = <
               }
 
             return { success: success.success, cancelled, rejected: undefined }
-          }) as RegisteredEffect["execute"],
+          }) as RegisteredJob["execute"],
           cancelled: Effect.fnUntraced(function* (payload, version, letter) {
             const effect = yield* decode(payload, version).pipe(Effect.option)
 
@@ -3003,17 +3007,23 @@ const make = <
 
             if (onDeadLetter === undefined || Option.isNone(effect)) return undefined
 
-            return yield* onDeadLetter({ ...letter, effect: effect.value })
+            return yield* onDeadLetter({
+              effectId: letter.jobId,
+              effect: effect.value,
+              attempts: letter.attempts,
+              cause: letter.cause,
+              ambiguous: letter.ambiguous,
+            })
           }, Effect.orDie),
         })
       }
 
-      yield* actors.registerEffects({
+      yield* actors.registerJobs({
         name,
         progress: progressEffects,
         services: services as Context.Context<never>,
-        effects: registered,
-        payloads: payloadDeclarations(false).filter((declared) => declared.kind === "effect"),
+        jobs: registered,
+        payloads: payloadDeclarations(false).filter((declared) => declared.kind === "job"),
       })
     })
 
