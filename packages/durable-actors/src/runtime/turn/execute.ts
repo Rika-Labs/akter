@@ -294,7 +294,7 @@ export interface Done {
  * batch's handlers, and `committed` once the batch commits or rolls back,
  * before the next batch's handlers run.
  */
-export interface Run<W extends Delivery, RN, RP, RC> {
+interface Run<W extends Delivery, RN, RP, RC> {
   readonly first: ReadonlyArray<W>
   readonly next: Effect.Effect<ReadonlyArray<W> | undefined, never, RN>
   readonly prepare: Effect.Effect<void, never, RP>
