@@ -19,8 +19,9 @@ import type { Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, ActorError, ActorUnavailable, Actors, Intent, User } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
-import { TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
+import { RetryTurn, TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
 import type { Request } from "../../handles/actors.ts"
+import { NekiTurnSessions } from "../../runtime/database/neki/session.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest, ClusterMember } from "../actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
@@ -73,6 +74,12 @@ const Plain = Actor.make("Plain", {
 })
 
 const AddPayload = Schema.fromJsonString(Schema.Struct({ value: Schema.Finite }))
+
+/** The command whose next `afterCommit` a case's hook crashes, and the signal that it did. */
+interface InjectedCrash {
+  commandId: string | undefined
+  readonly reached: Deferred.Deferred<void>
+}
 
 /** A runner's turn hooks: an effect at each fault point. */
 interface TestHooks {
@@ -165,7 +172,22 @@ interface Relay {
   /** Drops every connection and refuses new ones, as an unreachable database would. */
   readonly cut: () => void
   readonly restore: () => void
+  /**
+   * Drops the connection that next sends `COMMIT` once the server has
+   * answered it with `COMMIT`, without passing that answer on: the transaction
+   * committed, and the client never learns it. Needs `prepare: false`, so the
+   * statement's text is on the wire.
+   */
+  readonly loseCommitReply: () => void
+  /** Connections dropped by `loseCommitReply` after their commit. */
+  readonly lostCommits: () => number
 }
+
+/** A `CommandComplete` message whose tag is `COMMIT`. */
+const COMMIT_COMPLETE = Buffer.concat([
+  Buffer.of(0x43, 0, 0, 0, 11),
+  new TextEncoder().encode("COMMIT\0"),
+])
 
 /**
  * A TCP relay in front of Postgres, for the turn pool unless a case routes
@@ -178,6 +200,8 @@ const relay = (url: URL, probe: Probe) =>
     Effect.callback<Relay>((resume) => {
       const sockets = new Set<Socket>()
       let refusing = false
+      let armed = false
+      let lost = 0
 
       const server = createServer((client) => {
         if (refusing) return void client.destroy()
@@ -188,6 +212,8 @@ const relay = (url: URL, probe: Probe) =>
         })
 
         let answered = true
+        let losing = false
+        let replies = Buffer.alloc(0)
 
         sockets.add(client)
         sockets.add(upstream)
@@ -199,12 +225,26 @@ const relay = (url: URL, probe: Probe) =>
             probe.sent.push(chunk)
           } else probe.sent[probe.sent.length - 1] = Buffer.concat([probe.sent.at(-1)!, chunk])
 
+          if (armed && chunk.includes("COMMIT")) {
+            armed = false
+            losing = true
+          }
+
           answered = false
           upstream.write(chunk)
         })
         upstream.on("data", (chunk: Buffer) => {
           answered = true
-          client.write(chunk)
+
+          if (!losing) return void client.write(chunk)
+
+          replies = Buffer.concat([replies, chunk])
+
+          if (!replies.includes(COMMIT_COMPLETE)) return
+
+          lost += 1
+          client.destroy()
+          upstream.destroy()
         })
 
         const end = () => {
@@ -235,6 +275,10 @@ const relay = (url: URL, probe: Probe) =>
             restore: () => {
               refusing = false
             },
+            loseCommitReply: () => {
+              armed = true
+            },
+            lostCommits: () => lost,
           }),
         )
       })
@@ -263,45 +307,50 @@ const withProbe = <A, E>(
     relay: Relay,
   ) => Effect.Effect<A, E, Actors | ActorTest | SqlClient.SqlClient | Scope.Scope>,
 ) =>
-  environment.run(Effect.service(Crypto.Crypto)).then((crypto) =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        yield* Effect.acquireRelease(environment.stop, () => environment.restart)
-        const database = yield* environment.freshDatabase
+  environment
+    .run(Effect.all([Effect.service(Crypto.Crypto), Effect.service(NekiTurnSessions)]))
+    .then(([crypto, neki]) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          yield* Effect.acquireRelease(environment.stop, () => environment.restart)
+          const database = yield* environment.freshDatabase
 
-        if (!Redacted.isRedacted(database))
-          return yield* Effect.die(new Error("The pipeline cases need a Postgres database"))
+          if (!Redacted.isRedacted(database))
+            return yield* Effect.die(new Error("The pipeline cases need a Postgres database"))
 
-        const probe: Probe = { flights: 0, sent: [], handled: 0 }
-        const relayed = yield* relay(new URL(Redacted.value(database)), probe)
-        const stream = () => connect({ host: "127.0.0.1", port: relayed.port, noDelay: true })
+          const probe: Probe = { flights: 0, sent: [], handled: 0 }
+          const relayed = yield* relay(new URL(Redacted.value(database)), probe)
+          const stream = () => connect({ host: "127.0.0.1", port: relayed.port, noDelay: true })
 
-        const context = yield* Layer.build(
-          actorsLive(probe).pipe(
-            Layer.provideMerge(
-              ActorTest.layer({
-                database,
-                as: User.make({ subject: "alice" }),
-              }).pipe(
-                Layer.provide(Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void })),
+          const context = yield* Layer.build(
+            actorsLive(probe).pipe(
+              Layer.provideMerge(
+                ActorTest.layer({
+                  database,
+                  as: User.make({ subject: "alice" }),
+                }).pipe(
+                  Layer.provide(
+                    Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void }),
+                  ),
+                ),
+              ),
+              Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(TurnPoolSettings, { stream, prepare: options.prepare !== false }),
+                  Layer.succeed(NekiTurnSessions, neki),
+                  options.everyPool === true
+                    ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
+                    : Layer.empty,
+                ),
               ),
             ),
-            Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
-            Layer.provide(
-              Layer.mergeAll(
-                Layer.succeed(TurnPoolSettings, { stream, prepare: options.prepare !== false }),
-                options.everyPool === true
-                  ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
-                  : Layer.empty,
-              ),
-            ),
-          ),
-        )
+          )
 
-        return yield* body(probe, database, relayed).pipe(Effect.provideContext(context))
-      }).pipe(Effect.scoped, Effect.provideService(Crypto.Crypto, crypto)),
-    ),
-  )
+          return yield* body(probe, database, relayed).pipe(Effect.provideContext(context))
+        }).pipe(Effect.scoped, Effect.provideService(Crypto.Crypto, crypto)),
+      ),
+    )
 
 /** Flights `effect` sends through the relay once warm connections are open. */
 const flightsOf = <A, E, R>(probe: Probe, effect: Effect.Effect<A, E, R>) =>
@@ -325,6 +374,16 @@ const positions = (flight: Buffer, fragments: ReadonlyArray<string>) =>
 
 const increasing = (values: ReadonlyArray<number>) =>
   values.every((value, index) => value >= 0 && (index === 0 || value > values[index - 1]!))
+
+/**
+ * Queues a rival behind the held turn's lock on the generation table, ahead of
+ * the next batch's admission. Postgres grants a queued table lock to its
+ * waiter when the holder commits, so a `FOR UPDATE` sent in the same flight as
+ * that COMMIT waits behind the rival. A row lock gives no such order: the
+ * statement can lock the row it finds committed before the waiting rival wakes,
+ * and the batch then runs ahead of the takeover the case needs to fence it.
+ */
+const takeoverLock = "LOCK TABLE actor_generations IN EXCLUSIVE MODE"
 
 /** Another runner's connection to the same database. */
 const rival = (database: Redacted.Redacted<string>) =>
@@ -628,6 +687,79 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "pipeline: commands queued behind or arriving after a turn that crashes after commit are answered promptly and commit once",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      const crash: InjectedCrash = { commandId: undefined, reached: Deferred.makeUnsafe<void>() }
+
+      return withProbe(
+        environment,
+        {
+          hooks: {
+            at: (point, request) => {
+              if (point !== "afterCommit" || request.commandId !== crash.commandId)
+                return Effect.void
+
+              crash.commandId = undefined
+
+              return Deferred.succeed(crash.reached, undefined).pipe(
+                Effect.andThen(
+                  Effect.die(RetryTurn.make({ message: "Injected afterCommit crash" })),
+                ),
+              )
+            },
+          },
+        },
+        (probe) =>
+          Effect.gen(function* () {
+            const test = yield* ActorTest
+            const actors = yield* Actors
+            const meter = yield* Plain.get("queued-behind-crash")
+            expect(yield* meter.Add(1)).toBe(1)
+
+            const [crashing, queued, arriving] = yield* Effect.forEach(
+              [1, 2, 3],
+              () => actors.mintCommandId,
+            )
+
+            crash.commandId = crashing
+            const handled = probe.handled
+
+            const answered = <A>(call: Effect.Effect<A, ActorError>) =>
+              call.pipe(
+                Effect.retry({
+                  while: (error) => error.isRetryable,
+                  schedule: Schedule.spaced("100 millis"),
+                  times: 50,
+                }),
+                Effect.timeoutOption("5 seconds"),
+                Effect.orDie,
+              )
+
+            const first = yield* holding(meter.Add(2).pipe(Actor.commandId(crashing!), answered))
+            const [behind] = yield* enqueue([meter.Add(3).pipe(Actor.commandId(queued!), answered)])
+
+            yield* first.release
+            yield* Deferred.await(crash.reached)
+
+            const after = yield* Effect.forkChild(
+              meter.Add(4).pipe(Actor.commandId(arriving!), answered),
+            )
+
+            expect(yield* Fiber.join(first.fiber)).toEqual(Option.some(3))
+            expect(Option.isSome(yield* Fiber.join(behind!))).toBe(true)
+            expect(Option.isSome(yield* Fiber.join(after))).toBe(true)
+            expect(probe.handled - handled).toBe(3)
+            expect(yield* test.inspect(meter.ref)).toMatchObject({
+              state: { count: 10 },
+              receipts: 4,
+            })
+          }),
+      )
+    },
+  },
+  {
     name: "pipeline: a delayed intent keeps two round trips and is due its delay after commit",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
@@ -749,8 +881,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
                 Effect.gen(function* () {
                   const [row] = yield* rivalSql<{ pid: number }>`SELECT pg_backend_pid() AS pid`
                   yield* Deferred.succeed(rivalPid, row!.pid)
-                  yield* rivalSql`SELECT 1 FROM actor_generations
-                    WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id} FOR UPDATE`
+                  yield* rivalSql.unsafe(takeoverLock)
                   yield* Deferred.await(gate)
                   yield* rivalSql`UPDATE actor_generations SET generation = generation + 1
                     WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id}`
@@ -1056,6 +1187,37 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* Fiber.join(call)).toEqual(Option.some(3))
           expect(probe.handled - handled).toBe(2)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 3 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a turn whose COMMIT applied but whose reply was lost is answered from its receipt, never rerun or failed",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { prepare: false }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("lost-commit-reply")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          const id = yield* (yield* Actors).mintCommandId
+          const handled = probe.handled
+          relayed.loseCommitReply()
+
+          const reply = yield* meter
+            .Add(2)
+            .pipe(Actor.commandId(id), Effect.timeoutOption("20 seconds"))
+
+          expect(relayed.lostCommits()).toBe(1)
+          expect(reply).toEqual(Option.some(3))
+          expect(probe.handled - handled).toBe(1)
+          expect(yield* meter.Add(2).pipe(Actor.commandId(id))).toBe(3)
+          expect(probe.handled - handled).toBe(1)
           expect(yield* test.inspect(meter.ref)).toMatchObject({
             state: { count: 3 },
             receipts: 2,

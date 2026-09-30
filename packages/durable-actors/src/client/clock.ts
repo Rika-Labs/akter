@@ -81,6 +81,15 @@ export class DatabaseClock {
   }
 
   /**
+   * Local milliseconds until the database clock has surely reached
+   * `epochMillis`. The server may have stamped its sample anywhere within the
+   * round trip, so the estimate can run ahead by half of it.
+   */
+  untilReached(epochMillis: number): number {
+    return epochMillis - this.now() + (this.best()?.rtt ?? 0) / 2
+  }
+
+  /**
    * A v1 command id issued behind the estimated database clock, with the
    * deployment's window. The lead is at least a second and the sample's round
    * trip, but a short window caps it at a quarter of the window, never below the

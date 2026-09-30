@@ -30,7 +30,8 @@ import {
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core"
 import { Cause, Effect, Option, Predicate } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import { checkOwnedTable, inTenant, TenantScope } from "../database/tenancy.ts"
+import { checkAdoptedTable, checkOwnedTable, inTenant, TenantScope } from "../database/tenancy.ts"
+import { ownerIndexExists, ownerIndexSql } from "../adoption/plan.ts"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
 import {
   OWNERSHIP,
@@ -109,14 +110,14 @@ const isRecord = (value: Operand | Selection | SQLChunk): value is OperandRecord
   return prototype === Object.prototype || prototype === null
 }
 
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 const reject = (message: string): never => {
   throw new Error(message)
 }
 
-const reserved: ReadonlyArray<string> = OWNERSHIP
-
-const checkColumn = (info: Ownership, key: string) => {
-  if (reserved.includes(key))
+const checkColumn = (info: Ownership, key: string, write: boolean) => {
+  if (info.ownerKeys.includes(key) && (write || !info.adopted || key === info.routingKey))
     reject(`Ownership column ${key} of ${info.name} comes from the turn, not the application`)
 
   if (!info.columns.includes(key)) reject(`Unknown column ${key} of ${info.name}`)
@@ -166,7 +167,7 @@ const copyOperand = (info: Ownership, value: Operand): Operand => {
 const copyValues = (info: Ownership, values: OperandRecord): OperandRecord => {
   if (!isRecord(values)) reject(`Rows of ${info.name} are plain objects`)
 
-  for (const key of Object.keys(values)) checkColumn(info, key)
+  for (const key of Object.keys(values)) checkColumn(info, key, true)
 
   return copyOperand(info, values) as OperandRecord
 }
@@ -191,7 +192,7 @@ const copyFilter = (info: Ownership, filter: Operand): OperandRecord => {
       copy[key] = value.map((item: Operand) => copyFilter(info, item))
     } else if (key === "NOT") copy[key] = copyFilter(info, value)
     else {
-      checkColumn(info, key)
+      checkColumn(info, key, false)
       const operand = copyOperand(info, value)
 
       if (operand instanceof Date || operand instanceof Uint8Array)
@@ -206,7 +207,7 @@ const copyFilter = (info: Ownership, filter: Operand): OperandRecord => {
 
 const checkOrder = (info: Ownership, order: Order<AnyOwnedTable>) => {
   for (const [key, direction] of Object.entries(order)) {
-    checkColumn(info, key)
+    checkColumn(info, key, false)
 
     if (direction !== "asc" && direction !== "desc")
       reject(`Order on ${info.name} is "asc" or "desc"`)
@@ -228,6 +229,15 @@ const GROUP: Ownership = {
   columns: [],
   primaryKey: [],
   owner: undefined,
+  adopted: false,
+  access: "read",
+  ownerKeys: [],
+  ownerColumns: [],
+  routingKey: undefined,
+  tenantKey: "",
+  actorKey: "",
+  tenantKind: "text",
+  actorKind: "text",
 }
 
 type Decoded = SQL & { decoder: DriverValueDecoder<unknown, unknown> }
@@ -250,7 +260,7 @@ const groupRebuilder = (tables: ReadonlyArray<AnyOwnedTable>) => {
     if (!tables.includes(table))
       return reject("Group queries reference columns of the tables they select from or join")
 
-    if (reserved.includes(name))
+    if (ownership(table)!.ownerColumns.includes(name))
       return reject("Group queries do not read or filter ownership columns")
 
     const real = Object.values(getTableColumns(table)).find((candidate) => candidate.name === name)
@@ -389,14 +399,34 @@ export const bindTables = Effect.fnUntraced(function* (
   const { ref } = scope
   const routingKey = routingKeyOf({ ref, placement: scope.placement })
 
-  const owner = { routing_key: routingKey, tenant_id: ref.tenant, actor_id: ref.id }
+  const ownerOf = (info: Ownership) => {
+    const owner = { [info.tenantKey]: ref.tenant, [info.actorKey]: ref.id }
 
+    if (info.routingKey === undefined) return owner
+
+    return { ...owner, [info.routingKey]: routingKey }
+  }
+
+  /**
+   * Off-turn contexts and read-adopted tables get no mutation methods at all,
+   * whatever their static type.
+   */
   const rows = (table: AnyOwnedTable): ScopedRead<AnyOwnedTable> => {
     const info = ownership(table)
 
     const check = () => {
       if (info === undefined || !scope.tables.includes(table))
         reject(`${info?.name ?? "This table"} is not an owned table of ${ref.actor}`)
+
+      if (info!.tenantKind === "uuid" && !CANONICAL_UUID.test(ref.tenant))
+        reject(
+          `${info!.name} maps a uuid tenant column, and tenant ${ref.tenant} is not a lowercase uuid`,
+        )
+
+      if (info!.actorKind === "uuid" && !CANONICAL_UUID.test(ref.id))
+        reject(
+          `${info!.name} maps a uuid actor column, and actor id ${ref.id} is not a lowercase uuid`,
+        )
 
       return info!
     }
@@ -409,9 +439,9 @@ export const bindTables = Effect.fnUntraced(function* (
       const copy = filter === undefined ? {} : copyFilter(info, filter as OperandRecord)
 
       return and(
-        eq(columns["routing_key"]!, routingKey),
-        eq(columns["tenant_id"]!, ref.tenant),
-        eq(columns["actor_id"]!, ref.id),
+        info.routingKey === undefined ? undefined : eq(columns[info.routingKey]!, routingKey),
+        eq(columns[info.tenantKey]!, ref.tenant),
+        eq(columns[info.actorKey]!, ref.id),
         relationsFilterToSQL(table, copy as Filter<AnyOwnedTable>),
       )
     }
@@ -443,6 +473,8 @@ export const bindTables = Effect.fnUntraced(function* (
     const prepare = (values: Insert<AnyOwnedTable> | ReadonlyArray<Insert<AnyOwnedTable>>) => {
       const info = check()
       const list: ReadonlyArray<Insert<AnyOwnedTable>> = Array.isArray(values) ? values : [values]
+
+      const owner = ownerOf(info)
 
       return {
         info,
@@ -478,7 +510,7 @@ export const bindTables = Effect.fnUntraced(function* (
         ),
     } satisfies ScopedRead<AnyOwnedTable>
 
-    if (!write) return read
+    if (!write || info?.access === "read") return read
 
     return {
       ...read,
@@ -496,11 +528,14 @@ export const bindTables = Effect.fnUntraced(function* (
           const { info, list } = prepare(values)
 
           if (list.length === 0) return Effect.void
-          const target = [...OWNERSHIP, ...info.primaryKey].map((key) => columns[key]!)
 
-          const set = Object.fromEntries(
+          const target = (info.adopted ? info.primaryKey : [...OWNERSHIP, ...info.primaryKey]).map(
+            (key) => columns[key]!,
+          )
+
+          const set: Record<string, SQL> = Object.fromEntries(
             [...new Set(list.flatMap((value) => Object.keys(value)))].flatMap((key) =>
-              info.primaryKey.includes(key) || reserved.includes(key)
+              info.primaryKey.includes(key) || (info.ownerKeys.includes(key) && !info.adopted)
                 ? []
                 : [[key, fragment`excluded.${fragment.identifier(columns[key]!.name)}`]],
             ),
@@ -508,9 +543,41 @@ export const bindTables = Effect.fnUntraced(function* (
 
           const insert = db.insert(table).values(list)
 
-          return Object.keys(set).length === 0
-            ? insert.onConflictDoNothing({ target })
-            : insert.onConflictDoUpdate({ target, set })
+          if (!info.adopted)
+            return Object.keys(set).length === 0
+              ? insert.onConflictDoNothing({ target })
+              : insert.onConflictDoUpdate({ target, set })
+
+          delete set[info.tenantKey]
+          delete set[info.actorKey]
+
+          const first = columns[info.primaryKey[0]!]!
+
+          const applied = insert
+            .onConflictDoUpdate({
+              target,
+              set:
+                Object.keys(set).length === 0
+                  ? { [info.primaryKey[0]!]: fragment`excluded.${fragment.identifier(first.name)}` }
+                  : set,
+              setWhere: and(
+                eq(columns[info.tenantKey]!, ref.tenant),
+                eq(columns[info.actorKey]!, ref.id),
+              ),
+            })
+            .returning({ key: first })
+
+          return applied.pipe(
+            Effect.flatMap((written) =>
+              written.length === list.length
+                ? Effect.void
+                : Effect.die(
+                    new Error(
+                      `An upsert of ${info.name} reached a primary key that belongs to another actor`,
+                    ),
+                  ),
+            ),
+          )
         }).pipe(
           Effect.tap(() => wrote),
           Effect.asVoid,
@@ -530,14 +597,22 @@ export const bindTables = Effect.fnUntraced(function* (
 
   const inGroup = (table: AnyOwnedTable) => {
     const columns = getTableColumns(table)
+    const info = ownership(table)!
 
-    return and(eq(columns["routing_key"]!, routingKey), eq(columns["tenant_id"]!, ref.tenant))
+    return and(eq(columns[info.routingKey!]!, routingKey), eq(columns[info.tenantKey]!, ref.tenant))
   }
 
-  const ownedTable = (table: PgSelectConfig["table"]): AnyOwnedTable =>
-    is(table, Table) && checked.has(table as AnyOwnedTable)
-      ? (table as AnyOwnedTable)
-      : reject("Group queries read tables registered by an actor type, not aliases or subqueries")
+  const ownedTable = (table: PgSelectConfig["table"]): AnyOwnedTable => {
+    if (!is(table, Table) || !checked.has(table as AnyOwnedTable))
+      return reject(
+        "Group queries read tables registered by an actor type, not aliases or subqueries",
+      )
+
+    if (ownership(table)!.access === "read")
+      return reject("Group queries cannot read a table adopted for reading only")
+
+    return table as AnyOwnedTable
+  }
 
   const bound = (value: PgSelectConfig["limit"]) => {
     if (value === undefined) return undefined
@@ -627,6 +702,101 @@ export const bindTables = Effect.fnUntraced(function* (
 })
 
 /**
+ * Refuses an adopted table whose physical state does not match its
+ * declaration: a writable one needs its `actor_adoptions` row (which
+ * `durable adopt observe` writes) with the declared type and columns and a
+ * bigint `routing_key`; every adopted table needs mapped columns of a mappable
+ * type and an index that leads with them. Each message names the fix.
+ */
+const checkAdoptedDeclaration = Effect.fnUntraced(function* ({
+  actor,
+  table,
+  info,
+  schema,
+  role,
+}: {
+  readonly actor: string
+  readonly table: AnyOwnedTable
+  readonly info: Ownership
+  readonly schema: string
+  readonly role: string | undefined
+}) {
+  const sql = yield* SqlClient.SqlClient
+  const columns = getTableColumns(table)
+  const tenantColumn = columns[info.tenantKey]!.name
+  const actorColumn = columns[info.actorKey]!.name
+  const refuse = (message: string) => Effect.die(new Error(`Adopted table ${info.name} ${message}`))
+
+  const physical = yield* sql<{ name: string; type: string }>`
+    SELECT a.attname AS name, t.typname AS type FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_type t ON t.oid = a.atttypid
+    WHERE n.nspname = ${schema} AND c.relname = ${info.table} AND a.attnum > 0 AND NOT a.attisdropped`
+
+  if (physical.length === 0) return yield* refuse("does not exist")
+
+  for (const [column, kind] of [
+    [tenantColumn, info.tenantKind],
+    [actorColumn, info.actorKind],
+  ] as const) {
+    const found = physical.find((candidate) => candidate.name === column)
+
+    if (found === undefined) return yield* refuse(`has no column ${column}`)
+
+    if (
+      (found.type === "uuid") !== (kind === "uuid") ||
+      !["text", "varchar", "uuid"].includes(found.type)
+    )
+      return yield* refuse(
+        `maps ${column}, which is ${found.type}, not the declared ${kind} column`,
+      )
+  }
+
+  if (info.access === "write") {
+    const [adoption] = yield* sql<{
+      actor_type: string
+      tenant_column: string
+      actor_column: string
+    }>`SELECT actor_type, tenant_column, actor_column FROM actor_adoptions
+      WHERE table_schema = ${schema} AND table_name = ${info.table}`
+
+    if (adoption === undefined)
+      return yield* refuse(
+        `has no adoption record; run durable adopt observe ${info.table} before serving it`,
+      )
+
+    if (adoption.actor_type !== actor)
+      return yield* refuse(`is adopted by actor ${adoption.actor_type}, not ${actor}`)
+
+    if (adoption.tenant_column !== tenantColumn || adoption.actor_column !== actorColumn)
+      return yield* refuse(
+        `was adopted with columns (${adoption.tenant_column}, ${adoption.actor_column}) but declares (${tenantColumn}, ${actorColumn}); run durable adopt observe ${info.table} again`,
+      )
+
+    const routing = physical.find((candidate) => candidate.name === "routing_key")
+
+    if (routing?.type !== "int8")
+      return yield* refuse(`has no bigint routing_key; run durable adopt observe ${info.table}`)
+  }
+
+  const target = {
+    schema,
+    table: info.table,
+    access: info.access,
+    tenantColumn,
+    actorColumn,
+  }
+
+  if (!(yield* ownerIndexExists(target)))
+    return yield* refuse(
+      `needs an index that leads with its owner columns: ${ownerIndexSql(target)}`,
+    )
+
+  if (role !== undefined)
+    yield* checkAdoptedTable(schema, info.table, role, info.access === "write")
+})
+
+/**
  * Records which actor type owns each declared table and checks that the
  * physical table's primary key leads with the ownership columns. A table
  * claimed by another actor type, missing, or keyed without ownership fails
@@ -644,6 +814,22 @@ export const checkTables = Effect.fnUntraced(function* (
 
     const schema =
       info.schema ?? (yield* sql<{ schema: string }>`SELECT current_schema() AS schema`)[0]!.schema
+
+    if (info.adopted) {
+      yield* checkAdoptedDeclaration({ actor, table, info, schema, role })
+      yield* sql`INSERT INTO actor_tables (table_schema, table_name, actor_type)
+        VALUES (${schema}, ${info.table}, ${actor}) ON CONFLICT DO NOTHING`
+
+      const [claimed] = yield* sql<{ actor_type: string }>`
+        SELECT actor_type FROM actor_tables WHERE table_schema = ${schema} AND table_name = ${info.table}`
+
+      if (claimed?.actor_type !== actor)
+        return yield* Effect.die(
+          new Error(`Table ${info.name} is owned by actor ${claimed?.actor_type}, not ${actor}`),
+        )
+
+      continue
+    }
 
     const key = yield* sql<{ name: string }>`
       SELECT a.attname AS name FROM pg_index i

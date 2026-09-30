@@ -111,6 +111,7 @@ import type {
   AnyMember,
   CommandRecord,
   DeclaredError,
+  MemberKind,
   MemberRecord,
   ValueSchema,
 } from "../members/command.ts"
@@ -132,7 +133,7 @@ import type { NoDatabase } from "../runtime/effects/isolation.ts"
 import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 import { resolveCron } from "../runtime/cron/schedule.ts"
-import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
+import { type AnyOwnedTable, ownership, recordDeclaredTables } from "../tables/owned.ts"
 import { type ActorClient, type ClientOptions, clientOf } from "../client/make.ts"
 import {
   checkDeclaredErrors,
@@ -207,7 +208,7 @@ type StateOf<Fields extends StateFields> = Schema.Struct<Fields>["Type"]
 const SingletonKeySchema = Schema.TaggedStruct("Singleton", {})
 
 /** Marker for a singleton actor's `key`: one instance per tenant, resolved with `X.get()`. */
-export const singleton = SingletonKeySchema.make({})
+const singleton = SingletonKeySchema.make({})
 
 /** The type of `Actor.singleton`, the `key` of a singleton actor. */
 type SingletonKey = typeof singleton
@@ -259,7 +260,7 @@ interface ParentDefinition extends Placed<"actor" | "parent", string> {
  */
 type PlacementOption = "tenant" | "actor" | { readonly parent: ParentDefinition }
 
-type PlacementKind<Pl> = Pl extends "tenant" ? "tenant" : Pl extends "actor" ? "actor" : "parent"
+type PlacementKind<Pl> = Pl extends "tenant" | "actor" ? Pl : "parent"
 
 /** What a subscriber needs of each definition it may subscribe to. */
 const sources = new WeakMap<
@@ -323,21 +324,18 @@ type CommandsOf<Members extends MemberRecord> = Extract<
   { readonly kind: "command" }
 >
 
-type CommandKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "command" ? K : never
+/** The keys of the members of `kind`. */
+type KeysOf<Members extends MemberRecord, Kind extends MemberKind> = {
+  [K in keyof Members]: Members[K]["kind"] extends Kind ? K : never
 }[keyof Members]
 
-type QueryKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "query" ? K : never
-}[keyof Members]
+type CommandKeys<Members extends MemberRecord> = KeysOf<Members, "command">
 
-type ConnectionKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "connection" ? K : never
-}[keyof Members]
+type QueryKeys<Members extends MemberRecord> = KeysOf<Members, "query">
 
-type StreamKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "stream" ? K : never
-}[keyof Members]
+type ConnectionKeys<Members extends MemberRecord> = KeysOf<Members, "connection">
+
+type StreamKeys<Members extends MemberRecord> = KeysOf<Members, "stream">
 
 type ConnectionsOf<Members extends MemberRecord> = Extract<
   Values<Members>,
@@ -357,13 +355,9 @@ export type ConnectionHandlers<C extends AnyConnection, R> = {
   readonly resync?: (input: { readonly after: string | undefined }) => Effect.Effect<void, never, R>
 }
 
-type WorkflowKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "workflow" ? K : never
-}[keyof Members]
+type WorkflowKeys<Members extends MemberRecord> = KeysOf<Members, "workflow">
 
-type ReducerKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "reducer" ? K : never
-}[keyof Members]
+type ReducerKeys<Members extends MemberRecord> = KeysOf<Members, "reducer">
 
 /** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
 type QueryReason = "ActorUnavailable" | "Unauthorized" | "Timeout"
@@ -979,6 +973,11 @@ const make = <
 
     if (info.owner !== undefined && info.owner !== name)
       throw new Error(`Table ${info.name} is already owned by actor ${info.owner}`)
+
+    if (info.adopted && policy.createdBy !== undefined)
+      throw new Error(
+        `Actor ${name} mints its ids and cannot adopt table ${info.name}: legacy rows carry ids it never minted`,
+      )
     info.owner = name
   }
 
@@ -3327,6 +3326,8 @@ const make = <
   })
 
   if (mintable) mintables.set(actor, { name, createdBy: policy.createdBy!, parent: parent?.name })
+
+  recordDeclaredTables({ definition: actor, tables: { actor: name, placement, tables } })
 
   placedDefinitions.set(actor, {
     name,

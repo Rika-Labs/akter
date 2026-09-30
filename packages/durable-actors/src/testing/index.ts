@@ -1,6 +1,6 @@
 export { ActorTest, cleanup, sweepContent } from "./actor-test.ts"
 
-export type { FaultOptions, TestConnection, TestMessage } from "./actor-test.ts"
+export type { FaultOptions, TestActorOptions, TestConnection, TestMessage } from "./actor-test.ts"
 
 export { ActorCluster } from "./cluster.ts"
 

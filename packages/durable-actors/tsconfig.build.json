@@ -12,6 +12,7 @@
   "exclude": [
     "src/**/*.test.ts",
     "src/testing/conformance/crash",
-    "src/testing/conformance/postgres"
+    "src/testing/conformance/postgres",
+    "src/testing/conformance/neki/backend.ts"
   ]
 }

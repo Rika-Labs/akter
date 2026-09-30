@@ -61,11 +61,10 @@ const seed = Effect.fnUntraced(function* (rows: number) {
 export const retention: Scenario = {
   name: "retention",
   description:
-    "One cleanup sweep over 10^6 (quick: 10^5) old receipts and events; warm turns while a sweep runs against an idle run; one replay page of 100 and 1,000 events.",
+    "One cleanup sweep over 10^6 (context.quick: 10^5) old receipts and events; warm turns while a sweep runs against an idle run; one replay page of 100 and 1,000 events.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const rows = quick ? 100_000 : 1_000_000
+      const rows = context.quick ? 100_000 : 1_000_000
       const results: Array<CaseResult> = []
 
       results.push(
@@ -105,7 +104,7 @@ export const retention: Scenario = {
         ),
       )
 
-      const windowMs = quick ? 1000 : 5000
+      const windowMs = context.quick ? 1000 : 5000
 
       results.push(
         ...(yield* context.withRuntime({}, (instruments) =>
@@ -168,7 +167,7 @@ export const retention: Scenario = {
                   parameters: { streamEvents: 10_000, pageEvents: limit, workers: 1 },
                   instruments,
                   workers: 1,
-                  operations: quick ? 100 : 1000,
+                  operations: context.quick ? 100 : 1000,
                   operation: (index) =>
                     probe.ReplayPage({ after: String((index * limit) % 9000), limit }),
                 }),

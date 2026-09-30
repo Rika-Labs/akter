@@ -29,8 +29,7 @@ export const placement: Scenario = {
     "Parent placement against actor placement: parent-to-child intent latency, and reading a 10-item family in one group select against one query per item.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const operations = quick ? 200 : 2000
+      const operations = context.quick ? 200 : 2000
       const results: Array<CaseResult> = []
 
       for (const parented of [true, false]) {

@@ -7,19 +7,46 @@
 
 Handlers take only their input. Each phase provides one typed context object as an Effect service on the actor definition, so a capability used in the wrong phase is a missing-service type error. The runtime remains the final authority even when TypeScript prevents invalid use. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
 
+<!-- snippet
+import { Actor, type ActorRef, type Caller } from "@durable-actors/core"
+import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
+import { Context, DateTime, Effect, Schema } from "effect"
+class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {}) {}
+class NotAMember extends Schema.TaggedError<NotAMember>()("NotAMember", {}) {}
+class MessageAdded extends Actor.Event<MessageAdded>()("MessageAdded", { id: Schema.String, body: Schema.String }) {}
+const messages = Actor.table(pgTable("chat_messages", { id: text("id").primaryKey(), author_id: text("author_id").notNull(), body: text("body").notNull(), sent_at: timestamp("sent_at", { withTimezone: true }).notNull() }))
+const SendMessage = Actor.command("SendMessage", { input: Schema.Struct({ body: Schema.String }), output: Schema.String, errors: [NotAMember] })
+const Chat = Actor.make("Chat", { key: Schema.String, state: Actor.state({ closed: Schema.Boolean }), tables: [messages], events: [MessageAdded], api: { SendMessage } })
+class Access extends Context.Service<Access, { readonly requireMember: (caller: Caller, ref: ActorRef) => Effect.Effect<string, NotAMember> }>()("Access") {}
+-->
+
 ```ts
-SendMessage: Effect.fn(function* ({ body }) {
-  const turn = yield* Chat.Turn
-  yield* access.requireMember(turn.caller, turn.ref)
-  yield* turn
-    .rows(messages)
-    .insert({ id: turn.commandId, author_id: turn.caller.id, body, sent_at: yield* DateTime.now })
-  yield* turn.emit(new MessageAdded({ id: turn.commandId, body }))
-  return turn.commandId
-})
+export const ChatLive = Chat.toLayer(
+  Effect.gen(function* () {
+    const access = yield* Access
+    return {
+      SendMessage: Effect.fn(function* ({ body }) {
+        const turn = yield* Chat.Turn
+        const author = yield* access.requireMember(turn.caller, turn.ref)
+        yield* turn.rows(messages).insert({
+          id: turn.commandId,
+          author_id: author,
+          body,
+          sent_at: DateTime.toDateUtc(yield* DateTime.now),
+        })
+        yield* turn.emit(new MessageAdded({ id: turn.commandId, body }))
+        return turn.commandId
+      }),
+    }
+  }),
+)
 
 // A helper's requirement states where it may run.
-const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(function* () {
+const requireOpen: Effect.Effect<
+  void,
+  RoomClosed,
+  Context.Service.Identifier<typeof Chat.Turn>
+> = Effect.gen(function* () {
   const turn = yield* Chat.Turn
   if (turn.state.closed) return yield* new RoomClosed()
 })
@@ -29,13 +56,13 @@ const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(funct
 
 | Service        | Phase                                                   | Provides                                                                                                                                                                                                                                       |
 | -------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `X.Turn`       | command handler (public or internal)                    | `id`, `ref`, `caller`, `principal`, `commandId`, `isNew`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `perform`, `broadcast`, `subscribe`, `unsubscribe`, `terminate`, `cancelEffect`, `mint`                                 |
+| `X.Turn`       | command handler (public or internal)                    | `id`, `ref`, `caller`, `principal`, `commandId`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `perform`, `cancelEffect`, `broadcast`, `connections`, `subscribe`, `unsubscribe`, `mint`                                        |
 | `X.Read`       | query and stream handlers                               | `id`, `ref`, `caller`, `principal`, committed `state` and its event `cursor`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`; stream handlers also get `follow(Event, { after })` and `progress(E, { effectId? })`          |
 | `X.Connection` | connection handler (`open`, `frame`, `close`, `resync`) | `X.Read` capabilities plus `connectionId`, `member`, `session` (16 KiB), `resumed`, `send`, `broadcast`, `connections`, and `close`; `id` stays the actor id and `state` the actor's committed state                                           |
 | `X.Workflow`   | workflow body                                           | owner `id` and `ref`, `principal`, `executionId`, `key`, and `version(name)`; waits, sleeps, and steps are `Ship.wait`/`sleep`/`step` constructors                                                                                             |
 | `X.Executor`   | effect executor                                         | `effectId`, `attempt`, `principal`, and owner `ref`; no database capability; `progress(E, frame)` for an effect declaring `progress` delivered to opted-in connections and streams ([ADR 0030](../decisions/0030-executor-progress-frames.md)) |
 
-Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker, which command turns provide and `X.toLayer` removes from handler requirements. A command handler that acquires a handle with `X.get` does not compile. Request/reply handles (`X.get`) are available outside turns: in applications, effect executors, and connection handlers ([ADR 0023](../decisions/0023-connections-parking-and-streams.md)), and in workflow bodies only inside an activity. Workflows are target API; these workflow rules come from [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md), which changed the earlier text that let workflow bodies call `X.intents` and use handles anywhere. Executors report results by returning a value; the framework delivers it to the effect's `onSuccess` route ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)). `turn.mint(Child)` implements [ADR 0025](../decisions/0025-turn-mint.md): it returns the child's branded id, derived from the tenant, the parent's type and id, the command id, the call's ordinal within the command (from 0, across child types), and the child's type, so a rerun of the same command mints the same ids. It accepts only unkeyed actors that declare `policy.createdBy`; any other actor fails to compile and dies at runtime. Each minted id needs a creating intent to the child's `createdBy` command staged in the same turn, or the turn dies with `Minted actor <type>/<id> has no creating intent` and rolls back; that intent cannot take `Intent.key` (the turn dies with `Minted actor <type>/<id> has a keyed creating intent`), so no later keyed intent or cancel can remove it. That intent's caller is `System({ source, ref: <parent>, onBehalfOf, mint: { commandId, ordinal } })`, and only the relay, delivering the intent row the parent's turn committed to its outbox with a proof that derives the target id, may create the child; a System caller carrying `mint` through `Actor.as`, a client, or any other external entry point fails `Unauthorized` with code `access_denied` before its turn runs; any other caller of the creating command, including the parent without the proof, fails `Unauthorized` with code `access_denied` and no receipt. A captured `mint` dies with `Mint capability escaped its turn`. `turn.perform(effect)` is implemented on `X.Turn`; its `{ key, after, at }` options and `turn.cancelEffect(key)` are implemented (M2.13) with the accepted defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md), and a captured `cancelEffect` dies like a captured `perform`; and `X.Executor` is provided to executors in `X.toEffectLayer`. An effect layer whose executors or build Effect require `SqlClient`, `PgClient`, or `PgliteClient` does not compile, and the runtime removes those clients from the context an executor runs in. A client obtained outside Effect's context (for example a driver pool created in the build) is not detected. `X.Executor.attempt` starts at 1, and a later attempt may follow one whose outcome is unknown, so executors pass `effectId` to the provider as an idempotency key. Workflow bodies use the member's typed step constructors (`Ship.step`, `Ship.sleep`, `Ship.wait`, `Ship.race`), which compile to Effect's `Activity`, `DurableClock`, and `DurableDeferred`; the primitives used directly in a body die ([server API](01-server-api.md)). Wrap a step's `run` in Effect's `Activity.retry` to retry it: each attempt, numbered by `Activity.CurrentAttempt`, records its own exit and derives its own call ids, and a replay returns the final one. Effect's `Workflow.withCompensation` and `Workflow.addFinalizer` work in bodies; they run when the execution records its result, so a compensation runs when the execution fails or is interrupted, including an interrupt of a suspended execution, which replays the recorded steps to register them ([ADR 0046](../decisions/0046-workflow-engine-suite-drivers.md), proposed). A runner that dies while compensating replays and compensates again, so compensations must be idempotent. Inside a step's `execute`, each handle call gets a command id derived from the execution, step, attempt, and call order, so a rerun attempt repeats its ids; keep calls within one activity sequential, or use one call per activity. Those calls carry the execution's recorded System caller, `onBehalfOf` the principal that started it, and are admitted like relay delivery: the external `authorize` and command-id expiry checks don't run, so the workflow continues after that principal loses access, and a receiver that must reauthorize checks `onBehalfOf` itself. A call that would be sent past its id's expiry bound is not sent, and the activity dies with `ActivityOutcomeUnknown`.
+Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker, which command turns provide and `X.toLayer` removes from handler requirements. A command handler that acquires a handle with `X.get` does not compile. Request/reply handles (`X.get`) are available outside turns: in applications, effect executors, and connection handlers ([ADR 0023](../decisions/0023-connections-parking-and-streams.md)), and in workflow bodies only inside an activity. These workflow rules come from [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md), which changed the earlier text that let workflow bodies call `X.intents` and use handles anywhere. Executors report results by returning a value; the framework delivers it to the effect's `onSuccess` route ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)). `turn.mint(Child)` implements [ADR 0025](../decisions/0025-turn-mint.md): it returns the child's branded id, derived from the tenant, the parent's type and id, the command id, the call's ordinal within the command (from 0, across child types), and the child's type, so a rerun of the same command mints the same ids. It accepts only unkeyed actors that declare `policy.createdBy`; any other actor fails to compile and dies at runtime. Each minted id needs a creating intent to the child's `createdBy` command staged in the same turn, or the turn dies with `Minted actor <type>/<id> has no creating intent` and rolls back; that intent cannot take `Intent.key` (the turn dies with `Minted actor <type>/<id> has a keyed creating intent`), so no later keyed intent or cancel can remove it. That intent's caller is `System({ source, ref: <parent>, onBehalfOf, mint: { commandId, ordinal } })`, and only the relay, delivering the intent row the parent's turn committed to its outbox with a proof that derives the target id, may create the child; a System caller carrying `mint` through `Actor.as`, a client, or any other external entry point fails `Unauthorized` with code `access_denied` before its turn runs; any other caller of the creating command, including the parent without the proof, fails `Unauthorized` with code `access_denied` and no receipt. A captured `mint` dies with `Mint capability escaped its turn`. `turn.perform(effect)` is implemented on `X.Turn`; its `{ key, after, at }` options and `turn.cancelEffect(key)` are implemented (M2.13) with the accepted defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md), and a captured `cancelEffect` dies like a captured `perform`; and `X.Executor` is provided to executors in `X.toEffectLayer`. An effect layer whose executors or build Effect require `SqlClient`, `PgClient`, or `PgliteClient` does not compile, and the runtime removes those clients from the context an executor runs in. A client obtained outside Effect's context (for example a driver pool created in the build) is not detected. `X.Executor.attempt` starts at 1, and a later attempt may follow one whose outcome is unknown, so executors pass `effectId` to the provider as an idempotency key. Workflow bodies use the member's typed step constructors (`Ship.step`, `Ship.sleep`, `Ship.wait`, `Ship.race`), which compile to Effect's `Activity`, `DurableClock`, and `DurableDeferred`; the primitives used directly in a body die ([server API](01-server-api.md)). Wrap a step's `run` in Effect's `Activity.retry` to retry it: each attempt, numbered by `Activity.CurrentAttempt`, records its own exit and derives its own call ids, and a replay returns the final one. Effect's `Workflow.withCompensation` and `Workflow.addFinalizer` work in bodies; they run when the execution records its result, so a compensation runs when the execution fails or is interrupted, including an interrupt of a suspended execution, which replays the recorded steps to register them ([ADR 0046](../decisions/0046-workflow-engine-suite-drivers.md), proposed). A runner that dies while compensating replays and compensates again, so compensations must be idempotent. Inside a step's `execute`, each handle call gets a command id derived from the execution, step, attempt, and call order, so a rerun attempt repeats its ids; keep calls within one activity sequential, or use one call per activity. Those calls carry the execution's recorded System caller, `onBehalfOf` the principal that started it, and are admitted like relay delivery: the external `authorize` and command-id expiry checks don't run, so the workflow continues after that principal loses access, and a receiver that must reauthorize checks `onBehalfOf` itself. A call that would be sent past its id's expiry bound is not sent, and the activity dies with `ActivityOutcomeUnknown`.
 
 ## Subscriptions
 
@@ -49,17 +76,46 @@ Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor
 
 `turn.blob(B)` and `read.blob(B)` accept only the actor type's declared `blobs` and address entries of the current tenant, actor type, and actor by name alone. `turn.blob` returns `BlobWrite` (`get`, `set`, `append`, `compact`, `delete`), bound to the turn transaction, so a turn reads its own writes and a declared failure discards them. `read.blob` returns `BlobRead`, which has only `get`; the object carries no write methods, whatever a cast claims. `get` returns `Option.none()` for an entry that was never written and `Option.some` of an empty array for one set to no bytes. For an `Actor.content` blob (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)), `turn.blob(C)` returns `ContentWrite`: `attach(name, ref)`, `detach(name)`, and `list`, an Effect of the references by name. `read.blob(C)` returns `ContentRead`: `get(name)`, `stream(name)`, and `list`. Turns never see content bytes. `attach` checks the grant's MAC without a read and requires it to stay valid for the skew margin past the actor shard's clock, failing `InvalidContentRef` otherwise; a reference with an existing name replaces it, and references count against `policy.maxBlobEntries` with the actor's own entries. `get` returns `Option.none()` for a missing name, and so does a read whose content a sweep removed after the name resolved; it never returns partial bytes. `stream` reads every chunk from one `REPEATABLE READ` snapshot held for at most `commandTimeout` and fails with `NoSuchElementError` before any chunk for a missing name.
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { Effect, Option, Schema } from "effect"
+-->
+
 ```ts
 const Attachments = Actor.blob("attachments")
 
-// in a command handler
-const files = (yield * Room.Turn).blob(Attachments)
-yield * files.set(id, bytes)
-yield * files.append("log", line) // a new chunk; earlier chunks are not rewritten
-yield * files.compact("log") // one chunk, same bytes
+const Attach = Actor.command("Attach", {
+  input: Schema.Struct({ id: Schema.String, bytes: Schema.Uint8Array, line: Schema.Uint8Array }),
+})
+const Download = Actor.query("Download", {
+  input: Schema.String,
+  output: Schema.Option(Schema.Uint8Array),
+})
+const Room = Actor.make("Room", {
+  key: Schema.String,
+  blobs: [Attachments],
+  api: { Attach, Download },
+})
 
-// in a query handler
-const file = yield * (yield * Room.Read).blob(Attachments).get(id)
+export const RoomLive = Room.toLayer(
+  Effect.succeed({
+    Attach: Effect.fn(function* ({ id, bytes, line }) {
+      const files = (yield* Room.Turn).blob(Attachments)
+      yield* files.set(id, bytes)
+      yield* files.append("log", line) // a new chunk; earlier chunks are not rewritten
+      yield* files.compact("log") // one chunk, same bytes
+    }),
+  }),
+)
+
+export const RoomReads = Room.toQueryLayer(
+  Effect.succeed({
+    Download: Effect.fn(function* (id) {
+      const file: Option.Option<Uint8Array> = yield* (yield* Room.Read).blob(Attachments).get(id)
+      return file
+    }),
+  }),
+)
 ```
 
 ## Command turns
@@ -87,6 +143,10 @@ Unhandled declared failures roll back business changes and staged notifications 
 
 `read.events(Event, { after })` returns the committed events of one declared class after the exclusive cursor, oldest first, as `EventEntry` values:
 
+<!-- snippet
+import type { DateTime } from "effect"
+-->
+
 ```ts
 interface EventEntry<E> {
   readonly cursor: string // pass as `after` to resume after this event
@@ -109,19 +169,19 @@ Replay is paged: `read.events(E, { after, limit })` returns at most `limit` entr
 
 ## Connections and streams
 
-Connection members (through the in-process holder transport), `Actor.stream`, and `read.follow` are implemented (M2.10, [ADR 0023](../decisions/0023-connections-parking-and-streams.md)); `conn.connections` does not yet take a page `cursor` (it returns the first 1,000). Neither connections nor streams are served over HTTP until the WebSocket wire in M3.
+Connection members, `Actor.stream`, and `read.follow` are implemented (M2.10, [ADR 0023](../decisions/0023-connections-parking-and-streams.md)), and `Actor.serve` serves connections over WebSocket and streams over SSE (M3.3). `conn.connections` does not take a page `cursor`; it returns the first 1,000.
 
 A runtime's transport holds each socket; the actor never does. A connection member's handlers are `open(params)`, `frame(frame)`, and optional `close(reason)` and `resync({ after })`, each a short Effect with `X.Connection`. Handlers of one connection run one at a time in frame order, outside the command mailbox, and read the state the activation last committed.
 
 - `conn.session.get` and `conn.session.set(patch)` read and change this connection's own state; `conn.state` is the actor's committed state, as in every read context. A changed session is written once, after the handler returns, fenced by the actor's generation; above 16 KiB encoded the handler is a defect that closes the connection and writes nothing.
 - `conn.resumed` is `true` when this activation did not run the connection's `open`: after hibernation, a move to another runner, or a restart.
 - `conn.send(frame)` sends to this connection. `conn.broadcast(frame, { except?, to? })` sends to this member's open connections, parked or not, wherever they are held. `turn.broadcast(Member, frame, { except?, to? })` does the same from a command and flushes after commit; `turn.connections(Member)` lists that member's open connections so a turn can filter them into `to`.
-- `conn.connections({ cursor?, session? })` lists this member's open connections as `{ connectionId, caller, session? }`, at most 1,000 per page.
+- `conn.connections({ session? })` lists this member's open connections as `{ connectionId, caller, session? }`, at most 1,000.
 - A connection member may add `resync({ after })`, which runs on the new owner after an ungraceful owner death, with `resumed === true`, to replay what the client may have missed (it may not call `session.set`); the client receives a `Resync { after, reason, deadline }` control frame first and answers `ResyncDone { through }` within 30 seconds.
 - Every member frame reaches the client as `{ frame, cursor?, event? }`. `cursor` is the activation's flushed-through watermark, the highest commit whose broadcasts to that holder all went out before this frame, and is how `Resync.after` is known; `event` is the cursor of the event the frame was sent from (`conn.send(entry)`, or `turn.broadcast(Member, entry)` with an `EventEntry`), which is what clients deduplicate on. After `Resync`, the client replays events after `after`, reloads state derived from frames that carry no event, waits for `ResyncReplayed` when the member has a `resync` handler, and answers `ResyncDone { through }` within 30 seconds. A member declared with `stampCursor: false` hides every cursor (`cursor`, `event`, the open baseline, `Resync.after`, and `ResyncReplayed.through`), cannot declare a `resync` handler, and its clients resync from state. The `resync` handler runs under the connection's current authorization, at bounded concurrency, and never without a cursor.
-- `conn.close(reason?)` closes this connection. The client sees `ActorError` reason `SessionEnded` with cause `ServerClosed`. A `close` handler runs after the client is gone: its `conn.broadcast` reaches the member's other connections, and its `conn.send` is discarded.
+- `conn.close` closes this connection once the handler returns. The client sees `ActorError` reason `SessionEnded` with cause `ServerClosed`. A `close` handler runs after the client is gone: its `conn.broadcast` reaches the member's other connections, and its `conn.send` is discarded.
 - Connection handlers cannot write actor state, rows, events, or blobs. They call commands through `X.get`, including on the connection's own actor. Handlers run with the actor's tenant and the caller stored at open; the build Effect runs as a `System` caller, so handles acquired there carry no connection's identity. Frame handlers are at least once, so these calls get command ids derived by HMAC from a per-connection secret, the frame sequence, and the call index: a redelivered frame replays its commands' receipts, and no other caller can predict the ids.
-- `conn.connections()` is paged and returns `session` only when asked. It shows every connection's caller, so don't send it to clients unfiltered.
+- `conn.connections()` returns `session` only when asked. It shows every connection's caller, so don't send it to clients unfiltered.
 
 `read.follow(Event, { after })` exists only in stream handlers. It replays the committed events after the exclusive cursor, then emits each new event as its turn commits, with no gap or repeat between the two, and fails with `UnknownCursor` or `RetentionGap` like `read.events`. It requires `Actor.InStream`, which only stream handlers provide, so a query that follows leaves that requirement on its layer and does not compile into a runtime. A stream handler's `X.Read` otherwise matches a query's: `state` and `cursor` are the activation's committed state and event head when the subscription started, `events`, `rows`, `group`, and `blob` read committed data, and command or query calls from the handler are defects. The live part follows commits on the activation it runs on, so it ends with that activation; a subscriber that reconnects passes the last `cursor` it received as `after`. Each commit that emits events costs every following subscription one indexed read of `actor_events`, outside any turn.
 
