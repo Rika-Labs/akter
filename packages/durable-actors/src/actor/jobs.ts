@@ -25,9 +25,7 @@ const routeCodec = (command: AnyCommand) => {
   )
 
   return (value: Decoded) =>
-    encode({ value }).pipe(
-      Effect.map((payload): JobRoute => ({ command: command.tag, payload })),
-    )
+    encode({ value }).pipe(Effect.map((payload): JobRoute => ({ command: command.tag, payload })))
 }
 
 /**

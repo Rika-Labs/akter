@@ -358,11 +358,11 @@ export interface Registration {
   /**
    * Resolves one activation's commands in the activation's scope. A singleton
    * runs its build here, so fibers it forks live as long as the activation,
-   * and a build failure fails that activation.
+   * and a build failure defects that activation rather than failing its layer.
    */
   readonly activate: (
     ref: ActorRef,
-  ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, unknown, Scope.Scope>
+  ) => Effect.Effect<ReadonlyMap<string, RegisteredCommand>, never, Scope.Scope>
   readonly connections: ReadonlyMap<string, RegisteredConnection>
   readonly streams: ReadonlyMap<string, RegisteredStream>
   /** Tags of the events this actor type serves as event feeds. */

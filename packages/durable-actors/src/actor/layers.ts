@@ -241,6 +241,7 @@ export const singletonLayer = <H extends object, E, RB, RS>({
               Effect.provideService(Tenant, ref.tenant),
               Effect.provideService(CurrentCaller, System.make({ source: "actor", ref })),
               Effect.provideContext(buildServices),
+              Effect.orDie,
             ),
           )
 
