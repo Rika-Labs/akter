@@ -10,12 +10,10 @@ import {
 } from "../operator/request.ts"
 
 const flags = {
-  effectId: Argument.String("effectId").pipe(
-    Argument.withDescription("The dead-lettered effect's id"),
-  ),
+  jobId: Argument.String("jobId").pipe(Argument.withDescription("The dead-lettered job's id")),
   actor: actorFlag({
     name: "actor",
-    description: "The actor that performed the effect, as <Type>/<id>",
+    description: "The actor that enqueued the job, as <Type>/<id>",
   }),
   tenant,
   reason,
@@ -38,7 +36,7 @@ export const repair = ({
 }) =>
   operatorRequest({
     url: options.urls[0]!,
-    path: `/operator/dead-letters/${encodeURIComponent(options.effectId)}/${options.action}`,
+    path: `/operator/dead-letters/${encodeURIComponent(options.jobId)}/${options.action}`,
     token,
     body:
       options.action === "retry"
@@ -57,7 +55,7 @@ export const repair = ({
           },
   })
 
-/** `durable dead-letters retry <effectId>`: runs a dead-lettered effect again, printing the runner's JSON answer. */
+/** `durable dead-letters retry <jobId>`: runs a dead-lettered job again, printing the runner's JSON answer. */
 export const retryCommand = Command.make(
   "retry",
   {
@@ -75,13 +73,13 @@ export const retryCommand = Command.make(
       request: repair,
       format: encodeJson,
     }),
-).pipe(Command.withDescription("Run a dead-lettered effect again"))
+).pipe(Command.withDescription("Run a dead-lettered job again"))
 
-/** `durable dead-letters discard <effectId>`: settles a dead letter without running it, printing the runner's JSON answer. */
+/** `durable dead-letters discard <jobId>`: settles a dead letter without running it, printing the runner's JSON answer. */
 export const discardCommand = Command.make("discard", flags, (options) =>
   operatorCommand({
     options: { ...options, action: "discard" as const, providerChecked: false },
     request: repair,
     format: encodeJson,
   }),
-).pipe(Command.withDescription("Settle a dead-lettered effect without running it"))
+).pipe(Command.withDescription("Settle a dead-lettered job without running it"))

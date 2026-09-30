@@ -10,18 +10,16 @@ import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
 import { OperatorRefused } from "../operator/request.ts"
 import { formatDefects, listDefects } from "./list.ts"
 
-const Break = Actor.command("Break", { input: Schema.String })
+const Break = Actor.command("Break", { payload: Schema.String })
 
 const Fine = Actor.command("Fine")
 
 const Boiler = Actor.make("Boiler", { key: Schema.String, api: { Break, Fine } })
 
-const BoilerLive = Boiler.toLayer(
-  Effect.succeed({
-    Break: (reason: string) => Effect.die(new Error(`boiler broke: ${reason}`)),
-    Fine: () => Effect.void,
-  }),
-)
+const BoilerLive = Boiler.toLayer({
+  Break: (reason: string) => Effect.die(new Error(`boiler broke: ${reason}`)),
+  Fine: () => Effect.void,
+})
 
 const live = BoilerLive.pipe(
   Layer.provideMerge(ActorTest.layer()),

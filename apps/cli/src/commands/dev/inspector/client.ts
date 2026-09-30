@@ -5,7 +5,7 @@ import {
   actorView,
   actorsView,
   deadLettersView,
-  effectsView,
+  jobsView,
   h,
   outboxView,
   overviewTiles,
@@ -96,10 +96,10 @@ const view = ({ path, params }: Route, now: number, counts: Inspection.Overview[
         now,
       })
 
-    if (path === "/effects")
-      return effectsView({
-        rows: (yield* get(`/effects?${LIST}`, Inspection.EffectsPage)).effects,
-        total: counts.effects,
+    if (path === "/jobs")
+      return jobsView({
+        rows: (yield* get(`/jobs?${LIST}`, Inspection.JobsPage)).jobs,
+        total: counts.jobs,
         now,
       })
 

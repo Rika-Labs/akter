@@ -29,7 +29,7 @@ describe("durable", () => {
       const retry = yield* runCli(["dead-letters", "retry", "--help"])
 
       expect(retry.exitCode).toBe(0)
-      expect(retry.stdout).toContain("durable dead-letters retry [flags] <effectId>")
+      expect(retry.stdout).toContain("durable dead-letters retry [flags] <jobId>")
 
       for (const flag of [
         "--actor",

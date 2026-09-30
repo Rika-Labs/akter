@@ -26,7 +26,7 @@ const ExportAnswer = Schema.Struct({
   actor: Schema.String,
   state: Schema.Finite,
   intents: Schema.Finite,
-  effects: Schema.Finite,
+  jobs: Schema.Finite,
   omitted: Schema.Struct({
     receipts: Schema.Finite,
     events: Schema.Finite,
@@ -70,7 +70,7 @@ export const exportSeed = Effect.fnUntraced(function* ({
     actor: `${seed.actor.type}/${seed.actor.id}`,
     state: Object.keys(seed.state).length,
     intents: seed.intents.length,
-    effects: seed.effects.length,
+    jobs: seed.jobs.length,
     omitted: seed.omitted,
   } satisfies typeof ExportAnswer.Type
 })
@@ -80,7 +80,7 @@ export const formatExport = (answer: Schema.Json) =>
   Effect.map(Schema.decodeUnknownEffect(ExportAnswer)(answer), (exported) =>
     [
       `Exported ${exported.actor} to ${exported.output}`,
-      `carries ${exported.state} state keys, ${exported.intents} pending intents, ${exported.effects} pending effects`,
+      `carries ${exported.state} state keys, ${exported.intents} pending intents, ${exported.jobs} pending jobs`,
       `omits ${exported.omitted.receipts} receipts, ${exported.omitted.events} events, ${exported.omitted.workflows} workflows, ${exported.omitted.deadLetters} dead letters, ${exported.omitted.tableRows} owned-table rows, ${exported.omitted.blobs} blob entries`,
     ].join("\n"),
   )
@@ -90,6 +90,6 @@ export const exportCommand = Command.make("export", flags, (options) =>
   operatorCommand({ options, request: exportSeed, format: formatExport }),
 ).pipe(
   Command.withDescription(
-    "Write one actor's state and pending intents and effects to a new seed file, through the first runner named",
+    "Write one actor's state and pending intents and jobs to a new seed file, through the first runner named",
   ),
 )

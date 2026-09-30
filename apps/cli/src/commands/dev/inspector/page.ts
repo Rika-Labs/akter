@@ -93,7 +93,7 @@ article.workflow dd { margin: 0; }
 const SECTIONS: ReadonlyArray<readonly [string, string, string]> = [
   ["#/actors", "/actor", "Actors"],
   ["#/outbox", "/outbox", "Outbox and timers"],
-  ["#/effects", "/effects", "Effects"],
+  ["#/jobs", "/jobs", "Jobs"],
   ["#/dead-letters", "/dead-letters", "Dead letters"],
   ["#/workflows", "/workflows", "Workflows"],
 ]

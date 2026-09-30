@@ -1,4 +1,5 @@
 import { Actor } from "@durable-actors/core"
+import { Actors, Auth } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { Context, Effect, Fiber, FileSystem, Layer, Schedule, Schema } from "effect"
@@ -9,7 +10,7 @@ import { UsageError } from "../../failure.ts"
 import { runCli, startCli } from "../../testing.ts"
 import { INSPECTOR_PATH, appOf, devRoutes } from "./run.ts"
 
-const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
 const Tally = Actor.make("Tally", {
   key: Schema.String,
@@ -18,16 +19,14 @@ const Tally = Actor.make("Tally", {
   api: { Add },
 })
 
-const TallyLive = Tally.toLayer(
-  Effect.succeed({
-    Add: Effect.fnUntraced(function* (amount: number) {
-      const turn = yield* Tally.Turn
-      yield* turn.state.set({ total: turn.state.total + amount })
+const TallyLive = Tally.toLayer({
+  Add: Effect.fnUntraced(function* (amount: number) {
+    const turn = yield* Tally.Turn
+    yield* turn.state.set({ total: turn.state.total + amount })
 
-      return turn.state.total
-    }),
+    return turn.state.total
   }),
-)
+})
 
 const runtime = TallyLive.pipe(
   Layer.provideMerge(ActorTest.layer()),
@@ -120,7 +119,7 @@ describe("durable dev", () => {
     Effect.gen(function* () {
       const context = yield* Layer.build(runtime)
 
-      const app = Actor.serve({ actors: [Tally], auth: Actor.auth.none }).pipe(
+      const app = Actors.serve({ actors: [Tally], auth: Auth.none }).pipe(
         Layer.provide(Layer.succeedContext(context)),
       )
 
