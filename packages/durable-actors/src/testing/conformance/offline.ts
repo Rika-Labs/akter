@@ -120,6 +120,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
             timeoutInMs: 300,
           })
 
@@ -182,6 +183,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
             timeoutInMs: 300,
           })
 
@@ -209,6 +211,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
           })
 
           const second = queueOf(after)
@@ -239,6 +242,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             commandId: expired,
             sequence: 0,
             baseUrl: server.url,
+            principal: `${tenant}/alice`,
             target: "/actors/HttpRoom/stale",
             member: "Post",
             body: '{"text":"old"}',
@@ -253,6 +257,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
           })
 
           const queue = queueOf(rooms)
@@ -303,6 +308,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
             timeoutInMs: 300,
           })
 
@@ -367,6 +373,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
             timeoutInMs: 200,
           })
 
@@ -420,6 +427,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
           }
 
           const rooms = HttpRoom.client({ ...options, timeoutInMs: 200 })
@@ -475,6 +483,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: () => ({ authorization: `Bearer ${token}` }),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
             timeoutInMs: 300,
           })
 
@@ -505,6 +514,78 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "offline client holds the commands another principal queued on a shared store, sends only the signed-in principal's, and delivers the held ones once their principal signs back in",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          const network = wire()
+          const store = Offline.memory()
+
+          const signIn = (subject: string) =>
+            Effect.gen(function* () {
+              const client = HttpRoom.client({
+                baseUrl: server.url,
+                headers: { authorization: `Bearer ${tenant}:${subject}` },
+                identity: () => `${tenant}/${subject}`,
+                fetch: network.fetch,
+                offline: store,
+                timeoutInMs: 300,
+              })
+
+              const queue = queueOf(client)
+
+              yield* Effect.addFinalizer(() => Effect.sync(() => queue.close()))
+              yield* Effect.promise(() => queue.ready)
+              yield* Effect.promise(() => client.commandId())
+
+              return { client, queue }
+            })
+
+          const alice = yield* signIn("alice")
+
+          network.down = true
+
+          const ran = runs.count
+          const queued = yield* settle(alice.client.get("shared").Post({ text: "from alice" }))
+          const aliceId = idsOf(alice.queue)[0]!
+
+          expect(reasonOf(queued)).toMatchObject({ tag: "Timeout", commandId: aliceId })
+          alice.queue.close()
+
+          network.down = false
+
+          const bob = yield* signIn("bob")
+
+          yield* until(() => bob.queue.pending[0]?.status === "held")
+          bob.queue.flush()
+
+          const own = yield* settle(bob.client.get("bobs").Post({ text: "from bob" }))
+
+          expect(own.ok).toBe(true)
+          yield* Effect.sleep("200 millis")
+
+          expect(runs.count - ran).toBe(1)
+          expect(network.commands("Post").includes(aliceId)).toBe(false)
+          expect(yield* receipts(tenant, "HttpRoom", "shared")).toBe(0)
+          expect(bob.queue.pending.map((pending) => [pending.commandId, pending.status])).toEqual([
+            [aliceId, "held"],
+          ])
+          bob.queue.close()
+
+          const back = yield* signIn("alice")
+
+          back.queue.flush()
+          yield* until(() => back.queue.pending.length === 0)
+
+          expect(runs.count - ran).toBe(2)
+          expect(yield* receipts(tenant, "HttpRoom", "shared")).toBe(1)
+          expect(yield* savedIds(store)).toEqual([])
+        }),
+      ),
+  },
+  {
     name: "offline client rejects a command its store could not save, and never sends it",
     run: ({ expect, environment }) =>
       environment.run(
@@ -524,6 +605,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: full,
+            identity: () => `${tenant}/alice`,
           })
 
           const queue = queueOf(rooms)
@@ -558,6 +640,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             headers: bearer(tenant),
             fetch: network.fetch,
             offline: store,
+            identity: () => `${tenant}/alice`,
             timeoutInMs: 200,
           })
 

@@ -2,11 +2,13 @@ import {
   Clock,
   Duration,
   Effect,
+  Encoding,
   Exit,
   Match,
   Option,
   Predicate,
   Random,
+  Result,
   Schema,
   SchemaAST,
   Stream,
@@ -25,6 +27,7 @@ import {
 } from "./sessions/connection.ts"
 import { type FeedEntry, type FeedOptions, feedStream } from "./sessions/feed.ts"
 import { type StreamOptions, subscription } from "./sessions/stream.ts"
+import { type WatchOptions, watchStream } from "./sessions/watch.ts"
 import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
 import { openCommandQueue, type OfflineQueue, type Refused } from "./offline/queue.ts"
 import type { OfflineStore } from "./offline/store.ts"
@@ -39,6 +42,26 @@ import {
   networkFailure,
   retryAfterHeader,
 } from "./transport.ts"
+
+const JwtClaims = Schema.Struct({ iss: Schema.NonEmptyString, sub: Schema.NonEmptyString })
+
+const decodeJwtPayload = Schema.decodeUnknownOption(Schema.fromJsonString(JwtClaims))
+
+/**
+ * The unverified `iss` and `sub` of a `Bearer` JWT: only a key naming whose
+ * queued commands these are, since the server verifies every attempt.
+ */
+const decodeJwtClaims = (header: string | undefined) => {
+  const parts =
+    header === undefined ? undefined : /^Bearer[ ]+([^ ]+)[ ]*$/i.exec(header)?.[1]?.split(".")
+
+  if (parts?.length !== 3) return Option.none()
+
+  return Result.match(Encoding.decodeBase64UrlString(parts[1]!), {
+    onFailure: () => Option.none(),
+    onSuccess: decodeJwtPayload,
+  })
+}
 
 type HeadersValue = Readonly<Record<string, string>> | Headers | Array<[string, string]>
 
@@ -69,6 +92,15 @@ export interface ClientOptions {
    * `ActorClient.offline`. Queries and streams are unaffected.
    */
   readonly offline?: OfflineStore
+  /**
+   * A stable key for who the client runs as, such as the signed-in user's id,
+   * read before each offline command is saved and before each attempt. The
+   * offline queue sends only the commands saved under the current key and
+   * holds the rest. Never a credential. Without it, the key is the `iss` and
+   * `sub` of an `authorization: Bearer` JWT, and an offline client with
+   * neither refuses to queue commands.
+   */
+  readonly identity?: () => string | Promise<string>
 }
 
 /** Options of one query call. */
@@ -85,14 +117,27 @@ export interface CommandOptions extends QueryOptions {
   readonly commandId?: string
 }
 
-type Call<M extends AnyMember> = M["input"]["Type"] extends void
+/**
+ * The `watch` of a query declared `watch: true`: an `AsyncIterable` of the
+ * query's current result and then its newest result after each change. It is
+ * state, not history: intermediate results are skipped and a reconnect sends the
+ * current result first, never one older than one already delivered.
+ */
+export type WatchCall<M extends AnyMember> = (
+  ...args: M["input"]["Type"] extends void
+    ? [options?: WatchOptions]
+    : [input: M["input"]["Type"], options?: WatchOptions]
+) => AsyncIterable<M["output"]["Type"]>
+
+type Call<M extends AnyMember> = (M["input"]["Type"] extends void
   ? (
       options?: M["kind"] extends "query" ? QueryOptions : CommandOptions,
     ) => Promise<M["output"]["Type"]>
   : (
       input: M["input"]["Type"],
       options?: M["kind"] extends "query" ? QueryOptions : CommandOptions,
-    ) => Promise<M["output"]["Type"]>
+    ) => Promise<M["output"]["Type"]>) &
+  (M extends { readonly watch: true } ? { readonly watch: WatchCall<M> } : unknown)
 
 /**
  * A handle's view of its actor's state: the committed state it last learned,
@@ -478,6 +523,23 @@ export const clientOf =
       Effect.map((headers) => new Headers(headers).get("authorization") ?? undefined),
     )
 
+    const identity = options.identity
+
+    const principal =
+      identity === undefined
+        ? Effect.flatMap(authorization, (header) => {
+            const claims = decodeJwtClaims(header)
+
+            return Option.isSome(claims)
+              ? Effect.succeed(`${claims.value.iss}\n${claims.value.sub}`)
+              : Effect.die(
+                  new Error(
+                    "An offline client needs ClientOptions.identity unless its authorization is a Bearer JWT with iss and sub",
+                  ),
+                )
+          })
+        : Effect.promise(() => Promise.resolve(identity()))
+
     const send = (request: Request) =>
       Effect.gen(function* () {
         const headers = new Headers(yield* provided)
@@ -779,6 +841,7 @@ export const clientOf =
             store: options.offline,
             baseUrl: options.baseUrl,
             actor: definition.name,
+            principal,
             now: () => clock.now(),
             begin: (command) => {
               const member = members.get(command.member)
@@ -1012,9 +1075,55 @@ export const clientOf =
       const path = (member: string) =>
         segment.pipe(Effect.map((encoded) => `/actors/${definition.name}${encoded}/${member}`))
 
+      const watching =
+        (member: ServedMember) =>
+        (...args: ReadonlyArray<unknown>) => {
+          const isVoid = isVoidInput(member)
+          const watchOptions: WatchOptions = (isVoid ? args[0] : args[1]) ?? {}
+
+          const body = Schema.encodeUnknownEffect(Schema.toCodecJson(member.input))(
+            isVoid ? undefined : args[0],
+          ).pipe(
+            Effect.flatMap((json) =>
+              json === undefined ? Effect.succeedNone : Effect.asSome(encodeJson(json)),
+            ),
+            Effect.map(Option.getOrUndefined),
+            Effect.mapError(invalid),
+          )
+
+          return Stream.toAsyncIterable(
+            watchStream({
+              member,
+              declared: declaredDecoder(member),
+              options: watchOptions,
+              token: () => origin.token.value,
+              open: (version, signal) =>
+                Effect.gen(function* () {
+                  const payload = yield* body
+                  const headers: Record<string, string> = {}
+
+                  if (payload !== undefined) headers["content-type"] = "application/json"
+
+                  if (version !== undefined) headers["durable-min-version"] = version
+
+                  return yield* openEvents(
+                    path(member.tag).pipe(Effect.map((query) => `${query}/watch`)),
+                    signal,
+                    { method: "POST", body: payload, headers },
+                  )
+                }),
+            }),
+          )
+        }
+
       const created = {
         ...Object.fromEntries(
-          definition.members.map((member) => [member.tag, method(member, segment, store)]),
+          definition.members.map((member) => [
+            member.tag,
+            member.watch
+              ? Object.assign(method(member, segment, store), { watch: watching(member) })
+              : method(member, segment, store),
+          ]),
         ),
         ...Object.fromEntries(
           definition.connections.map((member) => [

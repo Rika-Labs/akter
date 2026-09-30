@@ -3,7 +3,8 @@ import { Deferred, Effect, Schema } from "effect"
 /**
  * A command a client saved before its first attempt. Everything here is plain
  * data, so an adapter can keep it in any structured store; credentials are
- * never part of it, since headers are read again for each attempt.
+ * never part of it, since headers are read again for each attempt. It names
+ * the principal it was queued under, so it is never sent as anyone else.
  */
 export interface QueuedCommand {
   /** The id minted once for this command; every attempt, in any session, sends it unchanged. */
@@ -12,6 +13,11 @@ export interface QueuedCommand {
   readonly sequence: number
   /** The client's `baseUrl`; a client delivers only the commands saved under its own. */
   readonly baseUrl: string
+  /**
+   * Who queued the command: the client's `identity`, never a credential. A
+   * client delivers only the commands saved under the principal it runs as.
+   */
+  readonly principal: string
   /** The actor's route under `baseUrl`, such as `/actors/Room/r1`. */
   readonly target: string
   /** The member's name. */
