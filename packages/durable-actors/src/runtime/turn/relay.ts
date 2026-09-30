@@ -987,6 +987,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
     const warnAttempt = (message: string) =>
       Effect.logWarning(message).pipe(Effect.annotateLogs({ attempt }), annotate)
+
     const request = yield* requestOf(row, "sender").pipe(Effect.orDie)
     const ref = ActorRef.make(request.ref)
     const lease = running.get(row.intent_id)?.lease ?? { until: Number(row.claimed_until) }
