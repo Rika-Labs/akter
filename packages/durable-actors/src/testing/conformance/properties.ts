@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util"
-import { Effect, Exit, Match, Predicate, Schema } from "effect"
+import { Effect, Match, Predicate, Schema } from "effect"
 import { Arbitrary } from "effect/unstable/arbitrary"
-import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, CommandExpired, InvalidCommandId } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
@@ -9,7 +8,6 @@ import { checkProperty } from "../property.ts"
 import { payloadHash } from "./admission.ts"
 import { bodies, cursors, Feed, prune, eventsSuite } from "./events.ts"
 import { Outboxer, receivedBodies, outboxSuite } from "./outbox.ts"
-import { Misuse, Notebook, tablesSuite } from "./tables.ts"
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", { amount: Schema.Int }) {}
 
@@ -133,8 +131,6 @@ const receiptModel = Effect.fnUntraced(function* (
 
 const Json = Schema.Json
 
-type Stored = { readonly tenant_id: string; readonly actor_id: string; readonly id: string }
-
 type Replay = readonly [ReadonlyArray<string>, ReadonlyArray<string>] | string
 
 const encodeJson = (value: typeof Json.Type) =>
@@ -156,32 +152,6 @@ const EventOp = Schema.Union([
 ])
 
 const eventOps = Arbitrary.array(Arbitrary.schema(EventOp), { minLength: 1, maxLength: 8 })
-
-const TableOp = Schema.Union([
-  Schema.TaggedStruct("Save", {
-    at: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })),
-    id: Schema.Literals(["x", "y", "z"]),
-    rank: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })),
-  }),
-  Schema.TaggedStruct("Remove", {
-    at: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })),
-    id: Schema.Literals(["x", "y", "z"]),
-  }),
-  Schema.TaggedStruct("Promote", {
-    at: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })),
-    atLeast: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })),
-    rank: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })),
-  }),
-  Schema.TaggedStruct("Clear", {
-    at: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })),
-  }),
-  Schema.TaggedStruct("Misuse", {
-    at: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })),
-    kind: Misuse,
-  }),
-])
-
-const tableOps = Arbitrary.array(Arbitrary.schema(TableOp), { minLength: 1, maxLength: 6 })
 
 const TimerOp = Schema.Union([
   Schema.TaggedStruct("Schedule", { key: Schema.optionalKey(Schema.Literals(["a", "b", "c"])) }),
@@ -397,122 +367,6 @@ export const propertiesConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "property: owned rows never cross tenants or actors under random operations, filters, and exploits",
-    timeoutMs: 600_000,
-    run: ({ environment }) =>
-      environment.run(
-        checkProperty({
-          name: "owned-table scoping model",
-          arbitrary: tableOps,
-          property: Effect.fnUntraced(function* (ops) {
-            const test = yield* ActorTest
-            const sql = yield* SqlClient.SqlClient
-            const id = nextCase("tables")
-            const tenants = [test.tenant, `${test.tenant}-property`]
-
-            const scopes = [0, 1, 2, 3].map((at) => ({
-              tenant: tenants[at % 2]!,
-              actor: `${id}-${Math.floor(at / 2)}`,
-            }))
-
-            const handles = yield* Effect.forEach(scopes, ({ tenant, actor }) =>
-              Notebook.get(actor).pipe(Actor.tenant(tenant)),
-            )
-
-            const model = scopes.map(() => new Map<string, number>())
-
-            const exploited = sql<Stored>`
-              SELECT tenant_id, actor_id, id FROM conformance_notes
-              WHERE (actor_id = 'victim' OR tenant_id = 'elsewhere'
-                OR id IN ('forged', 'raw', 'unknown', 'wrapped', 'before-misuse'))
-                AND actor_id NOT LIKE ${`${id}-%`}
-              ORDER BY tenant_id COLLATE "C", actor_id COLLATE "C", id COLLATE "C"`.pipe(
-              Effect.orDie,
-            )
-
-            const before = yield* exploited
-
-            for (const op of ops) {
-              const notebook = handles[op.at]!
-              const rows = model[op.at]!
-
-              const agrees = yield* Match.value(op).pipe(
-                Match.tagsExhaustive({
-                  Save: ({ id: key, rank }) =>
-                    notebook.Save({ id: key, body: key, rank }).pipe(
-                      Effect.tap(() => Effect.sync(() => rows.set(key, rank))),
-                      Effect.as(true),
-                    ),
-                  Remove: ({ id: key }) =>
-                    notebook.Remove(key).pipe(
-                      Effect.tap(() => Effect.sync(() => rows.delete(key))),
-                      Effect.as(true),
-                    ),
-                  Promote: ({ atLeast, rank }) =>
-                    notebook.Promote({ atLeast, rank }).pipe(
-                      Effect.map(() => {
-                        for (const [key, current] of rows)
-                          if (current >= atLeast) rows.set(key, rank)
-
-                        return true
-                      }),
-                    ),
-                  Clear: () =>
-                    notebook.Clear().pipe(
-                      Effect.map(() => {
-                        rows.clear()
-
-                        return true
-                      }),
-                    ),
-                  Misuse: ({ kind }) =>
-                    Effect.exit(notebook.WriteThenMisuse(kind)).pipe(Effect.map(Exit.isFailure)),
-                }),
-              )
-
-              if (!agrees) return false
-            }
-
-            for (const [at, notebook] of handles.entries()) {
-              const listed = yield* notebook.List()
-
-              const expected = [...model[at]!.entries()]
-                .sort(([a], [b]) => (a < b ? -1 : 1))
-                .map(([key, rank]) => ({ id: key, body: key, rank }))
-
-              if (!isDeepStrictEqual(listed, expected)) return false
-            }
-
-            const stored = yield* sql<Stored>`
-              SELECT tenant_id, actor_id, id FROM conformance_notes
-              WHERE actor_id LIKE ${`${id}-%`}
-              ORDER BY tenant_id COLLATE "C", actor_id COLLATE "C", id COLLATE "C"`.pipe(
-              Effect.orDie,
-            )
-
-            const expected = scopes
-              .flatMap(({ tenant, actor }, at) =>
-                [...model[at]!.keys()].map((key) => ({
-                  tenant_id: tenant,
-                  actor_id: actor,
-                  id: key,
-                })),
-              )
-              .sort((a, b) => {
-                const left = `${a.tenant_id}\u0000${a.actor_id}\u0000${a.id}`
-                const right = `${b.tenant_id}\u0000${b.actor_id}\u0000${b.id}`
-
-                return left < right ? -1 : left > right ? 1 : 0
-              })
-
-            return (
-              isDeepStrictEqual(stored, expected) && isDeepStrictEqual(yield* exploited, before)
-            )
-          }),
-        }).pipe(Effect.asVoid),
-      ),
-  },
-  {
     name: "property: keyed timers replace and cancel exactly as a model predicts",
     timeoutMs: 600_000,
     run: ({ environment }) =>
@@ -564,8 +418,8 @@ export const propertiesConformance: ReadonlyArray<ConformanceCase> = [
   },
 ]
 
-/** Property actors, beside the feed, outbox and table actors the properties drive. */
+/** Property actors, beside the feed and outbox actors the properties drive. */
 export const propertiesSuite: ConformanceSuite = {
   layer: () => propertiesLayer,
-  uses: [eventsSuite, outboxSuite, tablesSuite],
+  uses: [eventsSuite, outboxSuite],
 }
