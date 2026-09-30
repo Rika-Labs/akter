@@ -41,7 +41,9 @@ const live = Vault.toLayer(
 
 const runtime = (as: string) =>
   live.pipe(
-    Layer.provideMerge(ActorTest.layer({ as: User.make({ subject: as }) })),
+    Layer.provideMerge(
+      ActorTest.layer({ as: User.make({ subject: as }), authorize: () => Effect.succeed(true) }),
+    ),
     Layer.provideMerge(BunCrypto.layer),
   )
 

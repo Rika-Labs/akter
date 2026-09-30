@@ -1,5 +1,4 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { afterAll, beforeAll, expect, test } from "bun:test"
@@ -42,7 +41,7 @@ const harness = () =>
 const app = () =>
   ManagedRuntime.make(
     CounterLive.pipe(
-      Layer.provideMerge(Actors.layer({ authorize: () => Effect.succeed(true) })),
+      Layer.provideMerge(Actors.layer()),
       Layer.provide(
         Option.match(url, {
           onNone: () => Database.pglite({ dataDir }),
@@ -103,10 +102,7 @@ test("a crash before or after commit leaves exactly one increment", async () => 
 
 test("the count survives a restart", async () => {
   const increment = Effect.gen(function* () {
-    const counter = yield* Counter.get(key).pipe(
-      Actor.tenant("quickstart-test"),
-      Actor.as(User.make({ subject: "test" })),
-    )
+    const counter = yield* Counter.get(key)
 
     return yield* counter.Increment(1)
   })

@@ -1,5 +1,4 @@
 import { Effect, Layer, Stream } from "effect"
-import { User } from "../../../index.ts"
 import { ActorTest } from "../../actor-test.ts"
 import { ActorCluster } from "../../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../../conformance.ts"
@@ -34,7 +33,6 @@ const withCluster = <A, E>(
           holdersOnly,
           shardLockExpiration: "3 seconds",
           actors: subscriptionsLayer(fixture),
-          as: User.make({ subject: "alice" }),
           relay: { claimLease: "3 seconds", poll: "200 millis" },
         }),
       )

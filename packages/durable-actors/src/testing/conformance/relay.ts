@@ -13,11 +13,11 @@ import {
   Tracer,
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
-import { Actor, Intent, User } from "../../index.ts"
+import { Actor, Intent } from "../../index.ts"
 import type { Request } from "../../runtime/request.ts"
 import type { EffectPolicy } from "../../members/effect.ts"
 import type { ActorRef } from "../../identity/caller.ts"
-import { layer as runtimeLayer } from "../../runtime/layer.ts"
+import { layer as runtimeLayer, type Options as RuntimeOptions } from "../../runtime/layer.ts"
 import { SpanNames } from "../../runtime/telemetry/spans.ts"
 import { TurnHooks } from "../../runtime/turn/hooks.ts"
 import { claimIntents } from "../../runtime/turn/relay.ts"
@@ -270,8 +270,6 @@ const NO_POLL = { poll: "1 hour" } as const
 
 const SHORT_LEASE = { lease: "3 seconds" } as const
 
-type RuntimeOptions = Parameters<typeof runtimeLayer>[0]
-
 interface ClusterSettings {
   readonly relay?: RuntimeOptions["relay"]
   readonly executors?: RuntimeOptions["executors"]
@@ -304,7 +302,6 @@ const withCluster = <A, E>(
           (settings.withoutExecutors ?? []).includes(runner)
             ? Layer.empty
             : (runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>),
-        as: User.make({ subject: "alice" }),
         relay: settings.relay,
         executors: settings.executors,
       })
@@ -1755,21 +1752,19 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
             }
           }
 
-          const authorize = () => Effect.succeed(true)
-
           expect(
             rejects(() => {
-              runtimeLayer({ authorize, executors: { lease: "2 seconds" } })
+              runtimeLayer({ executors: { lease: "2 seconds" } })
             }),
           ).toContain("executors.lease must be at least 3 seconds")
           expect(
             rejects(() => {
-              runtimeLayer({ authorize, relay: { deliveryConcurrency: 0 } })
+              runtimeLayer({ relay: { deliveryConcurrency: 0 } })
             }),
           ).not.toBe(undefined)
           expect(
             rejects(() => {
-              runtimeLayer({ authorize, executors: { lease: "3 seconds", concurrency: 1 } })
+              runtimeLayer({ executors: { lease: "3 seconds", concurrency: 1 } })
             }),
           ).toBe(undefined)
 

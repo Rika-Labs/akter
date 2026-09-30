@@ -41,6 +41,7 @@ import { type EffectRegistration, type QueryRegistration, type Registration } fr
 import type { Executed, Request } from "./request.ts"
 import { InternalActors } from "./actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
+import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { ReadReplica, replicaLayer } from "./database/replica.ts"
@@ -96,31 +97,14 @@ import { startSweeps } from "./sweeps.ts"
 
 /** Configuration for `Actors.layer`: authorization, actor and effect layers, timing, retention, and row-level security. */
 export interface Options {
-  readonly authorize: (request: {
-    readonly caller: Caller
-    readonly ref: ActorRef
-    readonly command: string
-    /**
-     * What is being authorized: `command` for commands and reducers, `query`
-     * for queries, `open` for a connection, `feed` for an event feed (with
-     * `command` set to the event tag), `watch` for a query watch (with
-     * `command` set to the query tag), `reauthorize` for a live session's
-     * periodic check, and `content` for a content operation on the actor, with
-     * `command` set to `<blob>.grant` or `<blob>.get`; hooks should deny kinds
-     * they do not know.
-     */
-    readonly kind:
-      | "command"
-      | "query"
-      | "open"
-      | "stream"
-      | "feed"
-      | "watch"
-      | "reauthorize"
-      | "content"
-    /** On `reauthorize`, what the session is: an `open` connection, a `stream`, a `feed`, or a `watch`. */
-    readonly of?: "open" | "stream" | "feed" | "watch"
-  }) => Effect.Effect<boolean>
+  /**
+   * The global authorization hook, asked about every external request beside
+   * the actor's own `access` policy; when both exist both must allow. With
+   * neither, `System` callers are allowed and `User` and `Anonymous` callers,
+   * which only arrive through `Actor.serve` or the client, are denied. Hooks
+   * should deny kinds they do not know.
+   */
+  readonly authorize?: (request: AccessRequest) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
    * Activations this runner keeps in memory at once. A command that needs a
@@ -341,7 +325,7 @@ const IdleSweep = Entity.make("durable-actors/IdleSweep", [])
  * - An unreachable database fails a read as `ActorUnavailable`, which callers
  *   retry like any delivery failure; it is not a defect.
  */
-export const layer = (options: Options) => {
+export const layer = (options: Options = {}) => {
   const enforcedTypes = new Set<string>()
 
   const retryWindowMs = Schema.Int.check(
@@ -551,10 +535,34 @@ export const layer = (options: Options) => {
         }
       }
 
+      /**
+       * Whether the request is allowed: the global `authorize` and the
+       * actor's `access` both when both exist, either alone when only one
+       * does, and with neither, a `System` caller. A registration the runner
+       * does not hold has no `access`, so only the global hook or the default
+       * applies.
+       */
+      const permitted = Effect.fnUntraced(function* (request: AccessRequest) {
+        const access = (
+          registrations.get(request.ref.actor) ?? queryRegistrations.get(request.ref.actor)
+        )?.access
+
+        if (options.authorize === undefined && access === undefined)
+          return Schema.is(System)(request.caller)
+
+        if (options.authorize !== undefined && !(yield* options.authorize(request))) return false
+
+        if (access === undefined) return true
+
+        const allowed = access(request)
+
+        return Effect.isEffect(allowed) ? yield* allowed : allowed
+      })
+
       holder = yield* connectionHolder({
         transport: () => transport,
         actorType: (name) => heldTypes.get(name),
-        authorize: (request) => options.authorize(request),
+        authorize: permitted,
       })
 
       const checked = new Set<AnyOwnedTable>()
@@ -572,7 +580,9 @@ export const layer = (options: Options) => {
         request: Request,
         kind: "command" | "query" | "stream" = "command",
       ) {
-        if (!(yield* options.authorize({ ...(yield* authorizedAs(request)), kind })))
+        const { caller, ref, command } = yield* authorizedAs(request)
+
+        if (!(yield* permitted({ caller, ref, command, kind })))
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
@@ -1043,7 +1053,7 @@ export const layer = (options: Options) => {
           refreshPayloadWriters,
           subscriptions,
           transport,
-          authorize: options.authorize,
+          authorize: permitted,
           gate,
           writable,
           defectLog,
@@ -1131,7 +1141,7 @@ export const layer = (options: Options) => {
             })
 
           if (
-            !(yield* options.authorize({
+            !(yield* permitted({
               caller,
               ref,
               command: `${blob}.${operation}`,

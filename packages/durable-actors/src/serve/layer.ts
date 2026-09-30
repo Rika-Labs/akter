@@ -33,7 +33,7 @@ import { InternalActors } from "../runtime/actors.ts"
 import { Outcome, Request } from "../runtime/request.ts"
 import { ContentStore } from "../handles/content.ts"
 import { MAX_CONTENT_BYTES } from "../runtime/content/store.ts"
-import { ActorRef, Anonymous, User } from "../identity/caller.ts"
+import { ActorRef, Anonymous, CurrentCaller, User } from "../identity/caller.ts"
 import { isVersion } from "../identity/version.ts"
 import {
   buildServedApi,
@@ -454,6 +454,12 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             return yield* invalidInput("unsupported_protocol")
         })
 
+      /**
+       * Answers one route. A handler passes the authenticated caller in each
+       * request it makes, and runs with `Anonymous` as the ambient caller, so
+       * a path that forgot to pass it is refused like a visitor without
+       * credentials instead of running as the process's trusted `System`.
+       */
       const respond =
         (
           handler: (
@@ -468,6 +474,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         (request: HttpServerRequest.HttpServerRequest) =>
           guard(request).pipe(
             Effect.andThen(handler(request)),
+            Effect.provideService(CurrentCaller, Anonymous.make({})),
             Effect.catch((error) => actorErrorResponse(error)),
             Effect.catchCause(defectResponse),
             Effect.map((response) =>

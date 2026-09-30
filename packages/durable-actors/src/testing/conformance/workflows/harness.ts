@@ -31,6 +31,7 @@ export const withCluster = <A, E>(
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
           actors: workflowsLayer(fixture),
           as: User.make({ subject: "alice" }),
+          authorize: () => Effect.succeed(true),
         }),
       )
 

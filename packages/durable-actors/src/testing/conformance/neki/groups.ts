@@ -8,6 +8,7 @@ import type { ConformanceGroup } from "../../conformance.ts"
  * name, and `groups.test.ts` reads every group's module to keep the list true.
  */
 export const nekiExcluded = [
+  "access",
   "capacity",
   "heap",
   "progress",

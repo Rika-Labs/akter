@@ -1,5 +1,4 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { Config, Crypto, DateTime, Effect, Layer, ManagedRuntime, Redacted } from "effect"
 import { Pool } from "pg"
@@ -42,9 +41,7 @@ const live = Layer.unwrap(
   Effect.gen(function* () {
     return Layer.mergeAll(SandboxReaperLive, CodingAgentLive).pipe(
       Layer.provide(fakeLayer(fake)),
-      Layer.provideMerge(
-        ActorTest.layer({ database: yield* database, as: User.make({ subject: "ops" }) }),
-      ),
+      Layer.provideMerge(ActorTest.layer({ database: yield* database })),
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)

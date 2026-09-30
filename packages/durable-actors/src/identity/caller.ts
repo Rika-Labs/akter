@@ -19,7 +19,7 @@ export type ActorRef = typeof ActorRef.Type
 /** A caller authenticated as the principal `subject`. */
 export const User = Schema.TaggedStruct("User", { subject: Schema.NonEmptyString })
 
-/** A caller that presented no credentials; the default `CurrentCaller`. */
+/** A caller that presented no credentials, as `Actor.auth.none` resolves every served request. */
 export const Anonymous = Schema.TaggedStruct("Anonymous", {})
 
 /** Where a minted actor id came from: the minting command and its position in that turn. */
@@ -32,14 +32,24 @@ export const MintProof = Schema.Struct({
 export type MintProof = typeof MintProof.Type
 
 /**
- * A caller the framework creates for its own deliveries. `source` names the
- * mechanism (an actor's intent, a timer, cron, a workflow, an effect route, or
- * a subscription), `ref` the actor that sent it, and `onBehalfOf` the principal
- * of the turn that caused it. `mint` is set only on a minted child's creating
- * intent, and proves the child's id was derived by its parent.
+ * A caller the framework creates for its own deliveries, and the caller of
+ * code that runs in the application's own process. `source` names the
+ * mechanism (the process itself, an actor's intent, a timer, cron, a workflow,
+ * an effect route, or a subscription), `ref` the actor that sent it, and
+ * `onBehalfOf` the principal of the turn that caused it. `mint` is set only on
+ * a minted child's creating intent, and proves the child's id was derived by
+ * its parent.
  */
 export const System = Schema.TaggedStruct("System", {
-  source: Schema.Literals(["actor", "timer", "cron", "workflow", "effect", "subscription"]),
+  source: Schema.Literals([
+    "process",
+    "actor",
+    "timer",
+    "cron",
+    "workflow",
+    "effect",
+    "subscription",
+  ]),
   ref: Schema.optional(ActorRef),
   onBehalfOf: Schema.optional(Principal),
   mint: Schema.optional(MintProof),
@@ -52,14 +62,16 @@ export const Caller = Schema.Union([User, Anonymous, System]).pipe(Schema.toTagg
 export type Caller = typeof Caller.Type
 
 /**
- * The ambient caller, `Anonymous` by default. Authentication sets it at the
- * edge, and `Actor.as(caller)` scopes it around an Effect.
+ * The ambient caller. Code running in the application's own process, outside
+ * any turn and not through `Actor.serve`, is the trusted `System` caller with
+ * source `"process"`; the transport sets it for a served request, and
+ * `Actor.as(caller)` scopes another around an Effect.
  */
 export const CurrentCaller = Context.Reference<Caller>("durable-actors/CurrentCaller", {
-  defaultValue: () => Anonymous.make({}),
+  defaultValue: () => System.make({ source: "process" }),
 })
 
-/** The ambient tenant, `"default"` unless `Actor.tenant(tenant)` scopes another around an Effect. */
+/** The ambient tenant, `"default"` unless the transport sets one for a served request or `Actor.tenant(tenant)` scopes another around an Effect. */
 export const Tenant = Context.Reference<string>("durable-actors/Tenant", {
   defaultValue: () => "default",
 })

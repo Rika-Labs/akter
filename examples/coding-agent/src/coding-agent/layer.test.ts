@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { type ActorRef, User } from "@durable-actors/core"
+import { type ActorRef } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import {
   Config,
@@ -50,9 +50,7 @@ const live = Layer.unwrap(
   Effect.gen(function* () {
     return CodingAgentLive.pipe(
       Layer.provide(fakeLayer(fake)),
-      Layer.provideMerge(
-        ActorTest.layer({ database: yield* database, as: User.make({ subject: "ada" }) }),
-      ),
+      Layer.provideMerge(ActorTest.layer({ database: yield* database })),
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)

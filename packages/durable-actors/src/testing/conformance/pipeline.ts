@@ -17,7 +17,7 @@ import {
 } from "effect"
 import type { Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, ActorError, ActorUnavailable, Actors, Intent, User } from "../../index.ts"
+import { Actor, ActorError, ActorUnavailable, Actors, Intent } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
 import type { Request } from "../../runtime/request.ts"
@@ -327,7 +327,6 @@ const withProbe = <A, E>(
               Layer.provideMerge(
                 ActorTest.layer({
                   database,
-                  as: User.make({ subject: "alice" }),
                 }).pipe(
                   Layer.provide(
                     Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void }),

@@ -1,13 +1,11 @@
 import { Actor, type ActorError, Unauthorized, User } from "@durable-actors/core"
 import { Effect, Layer, Match, Option, Schema } from "effect"
 import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { TENANT } from "./access.ts"
 import { quote } from "./catalog/repository.ts"
 import { Order, OrderId } from "./order/contract.ts"
 import { salesBySku } from "./reports/sales.ts"
 import { Shipment } from "./shipment/contract.ts"
-
-/** Every order of this demo belongs to one shop. */
-export const TENANT = "shop"
 
 /**
  * A stand-in for a real identity provider: the bearer token is the customer

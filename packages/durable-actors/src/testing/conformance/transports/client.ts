@@ -280,6 +280,7 @@ export const transportClientConformance: ReadonlyArray<ConformanceCase> = [
               shardLockExpiration: "3 seconds",
               actors: transportsLayer,
               as: User.make({ subject: "alice" }),
+              authorize: () => Effect.succeed(true),
             }),
           )
 

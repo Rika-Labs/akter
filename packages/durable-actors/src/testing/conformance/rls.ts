@@ -15,7 +15,7 @@ import {
   Stream,
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, Intent, User } from "../../index.ts"
+import { Actor, Actors, Intent, System } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import { Outcome, Request } from "../../runtime/request.ts"
 import { migrate } from "../../runtime/database/migrations.ts"
@@ -296,7 +296,6 @@ const runtimeOn = (target: Target, role: string, replica?: Redacted.Redacted<str
           Layer.provideMerge(
             ActorTest.layer({
               database: Redacted.isRedacted(target) ? target : { liveClient: target.liveClient },
-              as: User.make({ subject: "alice" }),
               rowLevelSecurity: { role },
               replica,
             }),
@@ -406,7 +405,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
               runners: 3,
               shardLockExpiration: "3 seconds",
               actors: live,
-              as: User.make({ subject: "alice" }),
               rowLevelSecurity: { role },
             }).pipe(Layer.provide(Layer.succeed(Crypto.Crypto, crypto))),
           )
@@ -864,7 +862,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
               .query(
                 Request.make({
                   ref: ledger.ref,
-                  caller: User.make({ subject: "alice" }),
+                  caller: System.make({ source: "process" }),
                   command: "Read",
                   commandId: "",
                   payload: '{"value":null}',

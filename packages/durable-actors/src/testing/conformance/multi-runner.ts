@@ -134,6 +134,7 @@ const withCluster = <A, E>(
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
           actors: Layer.merge(TallyLive, EnvoyLive),
           as: User.make({ subject: "alice" }),
+          authorize: () => Effect.succeed(true),
         }),
       )
 

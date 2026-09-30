@@ -1,4 +1,5 @@
 import { type Context, type Effect, type Exit, Schema, type Scope, type Stream } from "effect"
+import type { Access } from "../policies/access.ts"
 import type { SubscriptionFailure } from "../errors/subscription.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import type { ActorRef, Caller } from "../identity/caller.ts"
@@ -320,6 +321,8 @@ export interface QueryRegistration {
   readonly tables: ReadonlyArray<AnyOwnedTable>
   readonly blobs: ReadonlyArray<AnyBlob>
   readonly queries: ReadonlyMap<string, RegisteredQuery>
+  /** The actor's `access` policy; undefined when it declares none. */
+  readonly access: Access | undefined
   /** The event classes the layer reads, for the startup payload check. */
   readonly payloads: ReadonlyArray<PayloadDeclaration>
 }
@@ -332,6 +335,8 @@ export interface Registration {
   readonly mintable: boolean
   /** The deployment's default tenant: the ambient `Tenant` when the actor's layer is built. */
   readonly tenant: string
+  /** The actor's `access` policy; undefined when it declares none. */
+  readonly access: Access | undefined
   readonly placement: Placement
   readonly policy: TurnPolicy
   readonly tables: ReadonlyArray<AnyOwnedTable>

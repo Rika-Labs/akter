@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor, ActorError, CommandConflict, User, Actors } from "@durable-actors/core"
+import { Actor, ActorError, CommandConflict, Actors } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
 import { Pool } from "pg"
@@ -39,9 +39,7 @@ const live = Layer.unwrap(
   Effect.gen(function* () {
     return OrdersLive.pipe(
       Layer.provide(ledger.layer),
-      Layer.provideMerge(
-        ActorTest.layer({ database: yield* database, as: User.make({ subject: "ada" }) }),
-      ),
+      Layer.provideMerge(ActorTest.layer({ database: yield* database })),
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)

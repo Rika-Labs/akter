@@ -1,5 +1,6 @@
 import { Actor } from "@durable-actors/core"
 import { Schema } from "effect"
+import { signedIn } from "../access.ts"
 
 /** A document's key: a non-empty string. */
 export const DocId = Schema.NonEmptyString.pipe(Schema.brand("DocId"))
@@ -43,5 +44,6 @@ export const Live = Actor.connection("Live", {
 /** A document whose viewers' cursors are shared over `Live`. */
 export const Cursor = Actor.make("Cursor", {
   key: DocId,
+  access: signedIn,
   api: { Live },
 })

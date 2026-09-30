@@ -1,5 +1,6 @@
 import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
+import { shopper } from "../access.ts"
 
 /** Where a shipment stands. */
 export const ShipmentStatus = Schema.Literals(["pending", "ready", "cancelled"])
@@ -47,6 +48,7 @@ export const Tracking = Actor.query("Tracking", {
  */
 export const Shipment = Actor.make("Shipment", {
   state: ShipmentState,
+  access: shopper,
   api: { Tracking },
   internal: { Open, Release, Cancel },
   policy: { createdBy: Open },
