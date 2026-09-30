@@ -671,8 +671,6 @@ Not covered:
 
 With 10 samples, p99 is not meaningful.
 
-<<<<<<< HEAD
-
 ### M4 exit rehearsal: drain, failover, and restore on the served chat room (#306)
 
 `CHAT_BACKEND=postgres bun --bun node_modules/vitest/vitest.mjs run --root . examples/chat/src/rehearsal`, on Dallen's MacBook Pro (Apple silicon, Docker Desktop) with load averages of 20–60 from other worktrees. Each run prints one `REHEARSAL` line. The drill is [`examples/chat/src/rehearsal/rehearsal.test.ts`](../../examples/chat/src/rehearsal/rehearsal.test.ts), and it runs in the chat package's `test:integration` script.
@@ -697,7 +695,6 @@ With 10 samples, p99 is not meaningful.
 - **External calls.** The moderation effect of a phase-one post reached the stand-in provider more than once in 4–7 posts per run (runs 2 and 3; run 1 did not check), always under one idempotency key: effect retries after the failover, which a provider honouring the key answers once. A phase-two post the restore lost is moderated again under a new effect id when its client retries, which is the reconciliation case step 5 of [backup and restore](../operations/04-backup-restore.md#restore-procedure) describes.
 - **Drain time exceeded its deadline while reporting clean.** The drain call took 9.9–101.4 s against a 20 s deadline, with nothing interrupted. The machine was heavily loaded and the time includes the harness's dispatch to runner 0, so this is not yet a drain defect; [#423](https://github.com/Rika-Labs/durable-actors/issues/423) tracks it. The clients saw no failures during it: other runners served every post.
 - These are single-machine numbers under unrelated load, not targets. The failover recovery times agree with T10's (0.31–1.97 s here, 0.36–1.11 s there).
-  \=======
 
 ### SSE event feeds (M3.3, #293)
 
@@ -712,8 +709,6 @@ The `sse` scenario ([`4822780-m3.3-sse`](../../benchmarks/results/2026-09-29-482
 - **Live delivery** is timed from a command's call until every open feed holds its event. With 64 open feeds on the actor, p50 rose from 11.4 to 13.1 ms, and the command's cost stayed at 7 statements: the owner broadcasts a committed feed event to the feed rows without more database work per feed. The one-feed p95 (90 ms) is above the 64-feed p95 (41 ms) in this run, which was not repeated, so the tails say little about feed count.
 - **Replay** reads committed events from `actor_events` in pages of 256 without waking the actor: 5,000 events took a median of 124 ms (about 40,000 events per second) and 45 statements per replay, about 20 pages plus the request's own statements.
 - No case had errors. This covers loopback HTTP/1.1 only: it does not measure TLS, HTTP/2, or a feed that lags behind the owner's live buffer.
-
-> > > > > > > origin/main
 
 ### M2 close: statements per operation against the baseline
 
