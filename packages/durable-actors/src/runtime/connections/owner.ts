@@ -37,7 +37,13 @@ import type { ConnectionCommands } from "../../identity/connection.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { FrameworkClock } from "../turn/admission.ts"
-import { type ActivationCache, emptyActivationCache } from "../storage/generation.ts"
+import {
+  type ActivationCache,
+  actorRow,
+  emptyActivationCache,
+  forget as forgetGeneration,
+  heldGeneration,
+} from "../storage/generation.ts"
 import type { CommittedEvents } from "../turn/execute.ts"
 import {
   Committed,
@@ -395,14 +401,6 @@ export const activationOwner = ({
         ),
     )
 
-  const where = (activation: Activation) =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-
-      return sql`routing_key = ${activation.key} AND tenant_id = ${activation.ref.tenant}
-          AND actor_type = ${activation.ref.actor} AND actor_id = ${activation.ref.id}`
-    })
-
   const enter = (entityId: string, ref: ActorRef, key: bigint) =>
     Effect.acquireRelease(
       Effect.sync(() => {
@@ -469,7 +467,7 @@ export const activationOwner = ({
     Effect.gen(function* () {
       if (ids.length === 0) return
       const sql = yield* SqlClient.SqlClient
-      const actor = yield* where(activation)
+      const actor = actorRow({ sql, actor: activation })
 
       yield* sql`DELETE FROM actor_connections WHERE ${actor} AND connection_id IN ${sql.in(ids)}`
 
@@ -540,8 +538,7 @@ export const activationOwner = ({
       .pipe(Effect.timeout("2 seconds"), Effect.ignore)
 
   const forget = (activation: Activation) => {
-    activation.cache.generation = undefined
-    activation.cache.state = undefined
+    forgetGeneration(activation.cache)
     activation.rows = undefined
     activation.channels.clear()
   }
@@ -556,7 +553,7 @@ export const activationOwner = ({
     Effect.gen(function* () {
       if (activation.cache.generation !== undefined && activation.cache.state !== undefined) return
       const sql = yield* SqlClient.SqlClient
-      const actor = yield* where(activation)
+      const actor = actorRow({ sql, actor: activation })
       const { ref, key } = activation
 
       const acquired = yield* sql.withTransaction(
@@ -607,7 +604,7 @@ export const activationOwner = ({
     Effect.gen(function* () {
       if (activation.rows !== undefined) return
       const sql = yield* SqlClient.SqlClient
-      const actor = yield* where(activation)
+      const actor = actorRow({ sql, actor: activation })
 
       const stored = yield* sql<{
         connection_id: string
@@ -919,7 +916,7 @@ export const activationOwner = ({
           }
 
         const sql = yield* SqlClient.SqlClient
-        const actor = yield* where(activation)
+        const actor = actorRow({ sql, actor: activation })
 
         if (registration.policy.createdBy !== undefined) {
           const [created] = yield* sql<{ created: boolean }>`
@@ -996,7 +993,7 @@ export const activationOwner = ({
             ${request.member}, ${request.holder}, ${request.holderEpoch}, ${caller},
             ${result.session === undefined ? null : compress(result.session)},
             floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint, ${baseline}::bigint
-          FROM actor_generations WHERE ${actor} AND generation = ${activation.cache.generation!}
+          FROM (${heldGeneration({ sql, actor: activation, generation: activation.cache.generation!, lock: "SHARE" })}) g
           RETURNING connection_id`
 
         if (inserted.length === 0) {
@@ -1126,13 +1123,7 @@ export const activationOwner = ({
             const written = yield* sql<{ connection_id: string }>`
               UPDATE actor_connections c SET session = ${result.session === undefined ? null : compress(result.session)},
                 frame_seq = ${request.seq}
-              FROM (
-                SELECT routing_key, tenant_id, actor_type, actor_id FROM actor_generations
-                WHERE routing_key = ${activation.key} AND tenant_id = ${activation.ref.tenant}
-                  AND actor_type = ${activation.ref.actor} AND actor_id = ${activation.ref.id}
-                  AND generation = ${activation.cache.generation!}
-                FOR SHARE
-              ) g
+              FROM (${heldGeneration({ sql, actor: activation, generation: activation.cache.generation!, lock: "SHARE" })}) g
               WHERE c.routing_key = g.routing_key AND c.tenant_id = g.tenant_id
                 AND c.actor_type = g.actor_type AND c.actor_id = g.actor_id
                 AND c.connection_id = ${request.connectionId} AND c.frame_seq < ${request.seq}
@@ -1511,7 +1502,7 @@ export const activationOwner = ({
       if (failed !== undefined && at - failed < EFFECT_CHECK_RETRY_MS) return undefined
 
       const sql = yield* SqlClient.SqlClient
-      const actor = yield* where(activation)
+      const actor = actorRow({ sql, actor: activation })
       activation.checking.add(message.effectId)
 
       const read = yield* sql<{
