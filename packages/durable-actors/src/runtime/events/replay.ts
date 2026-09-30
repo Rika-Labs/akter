@@ -1,12 +1,12 @@
 import { Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
-import type { StoredEvent } from "../../handles/actors.ts"
+import type { StoredEvent } from "../members.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { decompress } from "../storage/codec.ts"
 
 /** A cursor is an event sequence: a non-negative 64-bit integer in canonical decimal. */
-export const CURSOR = /^(0|[1-9][0-9]{0,18})$/
+const CURSOR = /^(0|[1-9][0-9]{0,18})$/
 
 const MAX_SEQUENCE = 2n ** 63n - 1n
 
@@ -42,7 +42,7 @@ export const replayEvents = Effect.fnUntraced(function* (
 ) {
   const cursor = after ?? "0"
 
-  if (!isCursor(cursor)) return yield* UnknownCursor.make({ cursor })
+  if (!isCursor(cursor) || BigInt(cursor) > head) return yield* UnknownCursor.make({ cursor })
 
   const position = BigInt(cursor)
   const sql = yield* SqlClient.SqlClient
@@ -63,23 +63,17 @@ export const replayEvents = Effect.fnUntraced(function* (
 
   const oldest = rows[0]?.oldest
 
-  if (position > head) return yield* UnknownCursor.make({ cursor })
-
   if (position < head && (oldest == null || BigInt(oldest) > position + 1n))
     return yield* RetentionGap.make({ cursor })
 
-  const events: Array<StoredEvent & { readonly tag: string }> = []
-
-  for (const row of rows)
-    if (row.sequence !== null)
-      events.push({
-        cursor: row.sequence,
-        tag: row.event!,
-        commandId: row.command_id!,
-        value: decompress(row.value!),
-        version: row.payload_version!,
-        timestampMs: Number(row.emitted_at_ms),
-      })
-
-  return events
+  return rows
+    .filter((row) => row.sequence !== null)
+    .map((row): StoredEvent & { readonly tag: string } => ({
+      cursor: row.sequence!,
+      tag: row.event!,
+      commandId: row.command_id!,
+      value: decompress(row.value!),
+      version: row.payload_version!,
+      timestampMs: Number(row.emitted_at_ms),
+    }))
 })

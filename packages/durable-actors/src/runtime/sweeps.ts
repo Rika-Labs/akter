@@ -1,7 +1,7 @@
 import { Cause, Context, Crypto, Effect, Scope } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import type { Registration } from "../handles/actors.ts"
+import type { Registration } from "./members.ts"
 import type { tenantContent } from "./content/store.ts"
 import { dropWriters } from "./payloads/versions.ts"
 import { sweep } from "./storage/retention.ts"
