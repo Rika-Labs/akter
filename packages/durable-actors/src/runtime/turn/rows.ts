@@ -31,6 +31,7 @@ import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core"
 import { Cause, Effect, Option, Predicate } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { checkAdoptedTable, checkOwnedTable, inTenant, TenantScope } from "../database/tenancy.ts"
+import { checkEnforcedTable, checkWriterRole } from "../adoption/startup.ts"
 import { ownerIndexExists, ownerIndexSql } from "../adoption/plan.ts"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
 import {
@@ -714,12 +715,14 @@ const checkAdoptedDeclaration = Effect.fnUntraced(function* ({
   info,
   schema,
   role,
+  adoption,
 }: {
   readonly actor: string
   readonly table: AnyOwnedTable
   readonly info: Ownership
   readonly schema: string
   readonly role: string | undefined
+  readonly adoption: AdoptionStartup
 }) {
   const sql = yield* SqlClient.SqlClient
   const columns = getTableColumns(table)
@@ -752,26 +755,36 @@ const checkAdoptedDeclaration = Effect.fnUntraced(function* ({
       )
   }
 
+  let enforcement:
+    | { readonly writerRole: string; readonly allowedRoles: ReadonlyArray<string> }
+    | undefined
+
   if (info.access === "write") {
-    const [adoption] = yield* sql<{
+    const [recorded] = yield* sql<{
       actor_type: string
       tenant_column: string
       actor_column: string
-    }>`SELECT actor_type, tenant_column, actor_column FROM actor_adoptions
-      WHERE table_schema = ${schema} AND table_name = ${info.table}`
+      mode: string
+      writer_role: string | null
+      allowed_roles: ReadonlyArray<string>
+    }>`SELECT actor_type, tenant_column, actor_column, mode, writer_role, allowed_roles
+      FROM actor_adoptions WHERE table_schema = ${schema} AND table_name = ${info.table}`
 
-    if (adoption === undefined)
+    if (recorded === undefined)
       return yield* refuse(
         `has no adoption record; run durable adopt observe ${info.table} before serving it`,
       )
 
-    if (adoption.actor_type !== actor)
-      return yield* refuse(`is adopted by actor ${adoption.actor_type}, not ${actor}`)
+    if (recorded.actor_type !== actor)
+      return yield* refuse(`is adopted by actor ${recorded.actor_type}, not ${actor}`)
 
-    if (adoption.tenant_column !== tenantColumn || adoption.actor_column !== actorColumn)
+    if (recorded.tenant_column !== tenantColumn || recorded.actor_column !== actorColumn)
       return yield* refuse(
-        `was adopted with columns (${adoption.tenant_column}, ${adoption.actor_column}) but declares (${tenantColumn}, ${actorColumn}); run durable adopt observe ${info.table} again`,
+        `was adopted with columns (${recorded.tenant_column}, ${recorded.actor_column}) but declares (${tenantColumn}, ${actorColumn}); run durable adopt observe ${info.table} again`,
       )
+
+    if (recorded.mode === "enforce")
+      enforcement = { writerRole: recorded.writer_role!, allowedRoles: recorded.allowed_roles }
 
     const routing = physical.find((candidate) => candidate.name === "routing_key")
 
@@ -794,7 +807,29 @@ const checkAdoptedDeclaration = Effect.fnUntraced(function* ({
 
   if (role !== undefined)
     yield* checkAdoptedTable(schema, info.table, role, info.access === "write")
+
+  if (enforcement === undefined || !adoption.writes) return enforcement !== undefined
+
+  if (role !== undefined && role !== enforcement.writerRole)
+    return yield* refuse(
+      `is enforced for writer role ${enforcement.writerRole}, but row-level security takes ${role}; both options must name the same role`,
+    )
+
+  yield* checkEnforcedTable({
+    target: { schema, table: info.table, tenantColumn, actorColumn, actor },
+    ...enforcement,
+    runtimeRole: adoption.role,
+    refuse,
+  })
+
+  return true
 })
+
+/** How a layer registers adopted tables: its writer role, and whether the registering layer writes them. */
+export interface AdoptionStartup {
+  readonly role: string | undefined
+  readonly writes: boolean
+}
 
 /**
  * Records which actor type owns each declared table and checks that the
@@ -806,8 +841,11 @@ export const checkTables = Effect.fnUntraced(function* (
   actor: string,
   tables: ReadonlyArray<AnyOwnedTable>,
   role: string | undefined,
+  adoption: AdoptionStartup,
 ) {
   const sql = yield* SqlClient.SqlClient
+  const guarded: Array<{ readonly schema: string; readonly table: string }> = []
+  let enforced = false
 
   for (const table of tables) {
     const info = ownership(table)!
@@ -815,8 +853,20 @@ export const checkTables = Effect.fnUntraced(function* (
     const schema =
       info.schema ?? (yield* sql<{ schema: string }>`SELECT current_schema() AS schema`)[0]!.schema
 
+    guarded.push({ schema, table: info.table })
+
     if (info.adopted) {
-      yield* checkAdoptedDeclaration({ actor, table, info, schema, role })
+      const isEnforced = yield* checkAdoptedDeclaration({
+        actor,
+        table,
+        info,
+        schema,
+        role,
+        adoption,
+      })
+
+      if (isEnforced && adoption.writes) enforced = true
+
       yield* sql`INSERT INTO actor_tables (table_schema, table_name, actor_type)
         VALUES (${schema}, ${info.table}, ${actor}) ON CONFLICT DO NOTHING`
 
@@ -862,4 +912,14 @@ export const checkTables = Effect.fnUntraced(function* (
         new Error(`Table ${info.name} is owned by actor ${recorded?.actor_type}, not ${actor}`),
       )
   }
+
+  if (!enforced) return false
+
+  yield* checkWriterRole({
+    role: adoption.role!,
+    tables: guarded,
+    refuse: (message) => Effect.die(new Error(`Adoption writer role: ${message}`)),
+  })
+
+  return true
 })

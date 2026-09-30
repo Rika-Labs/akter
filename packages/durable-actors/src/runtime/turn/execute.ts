@@ -456,9 +456,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
-  const { role } = yield* TenantScope
+  const scope = yield* TenantScope
   const { ref } = run.first[0]!.request
   const { tenant, actor, id } = ref
+
+  const role =
+    scope.role ?? (scope.adoption?.enforced.has(actor) === true ? scope.adoption.role : undefined)
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
