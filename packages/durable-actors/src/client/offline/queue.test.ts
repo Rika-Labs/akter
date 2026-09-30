@@ -564,11 +564,19 @@ describe("offline command queue", () => {
         const before = yield* Effect.promise(() => queue.submit(command("a"), early.signal))
 
         const midway = controller()
-        const slow = Effect.sleep("30 millis").pipe(Effect.andThen(command("b")))
+        const minting = Deferred.makeUnsafe<void>()
+        const minted = Deferred.makeUnsafe<void>()
+
+        const slow = Deferred.succeed(minting, undefined).pipe(
+          Effect.andThen(Deferred.await(minted)),
+          Effect.andThen(command("b")),
+        )
+
         const during = queue.submit(slow, midway.signal)
 
-        yield* Effect.sleep("5 millis")
+        yield* Deferred.await(minting)
         midway.abort()
+        yield* Deferred.succeed(minted, undefined)
 
         expect(before).toBeUndefined()
         expect(yield* Effect.promise(() => during)).toBeUndefined()
