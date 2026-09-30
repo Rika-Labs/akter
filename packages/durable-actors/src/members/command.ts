@@ -66,7 +66,8 @@ export type MemberRecord = Readonly<Record<string, AnyMember>>
 /** A record of commands keyed by tag. */
 export type CommandRecord = Readonly<Record<string, AnyCommand>>
 
-const member =
+/** Builds a member of `kind`: `input` and `output` default to `void`, and `errors` to none. */
+export const member =
   <Kind extends MemberKind>(kind: Kind) =>
   <
     const Tag extends string,
