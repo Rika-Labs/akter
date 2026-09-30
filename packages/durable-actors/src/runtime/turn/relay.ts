@@ -656,6 +656,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const services = yield* Effect.context<SqlClient.SqlClient>()
   const lock = Semaphore.makeUnsafe(1)
   const signals = yield* Queue.sliding<void>(1)
+  const wakeRelay = Queue.offer(signals, undefined).pipe(Effect.asVoid)
   const deliveries = yield* FiberSet.make<unknown, unknown>()
   const attempts = yield* FiberSet.make<unknown, unknown>()
 
@@ -720,16 +721,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
         Schema.decodeEffect(Request)({
           ref:
             target === "receiver"
-              ? {
-                  tenant: row.tenant_id,
-                  actor: row.target_type,
-                  id: row.target_id,
-                }
-              : {
-                  tenant: row.tenant_id,
-                  actor: row.actor_type,
-                  id: row.actor_id,
-                },
+              ? { tenant: row.tenant_id, actor: row.target_type, id: row.target_id }
+              : { tenant: row.tenant_id, actor: row.actor_type, id: row.actor_id },
           caller,
           command: row.command,
           commandId: row.intent_id,
@@ -806,9 +799,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
         { captureStackTrace: false },
       ),
       Effect.onInterrupt(() =>
-        Effect.gen(function* () {
-          yield* sql`UPDATE actor_outbox SET due_at_ms = ${yield* databaseTime} WHERE ${claim}`
-        }).pipe(Effect.ignore),
+        databaseTime.pipe(
+          Effect.flatMap((at) => sql`UPDATE actor_outbox SET due_at_ms = ${at} WHERE ${claim}`),
+          Effect.ignore,
+        ),
       ),
     )
   })
@@ -871,11 +865,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
                 timer_key = NULL
               WHERE ${guard} RETURNING 1`
 
-        if (route !== undefined && settled.length > 0) yield* Queue.offer(signals, undefined)
+        if (settled.length === 0) return false
+        ended.add(row.intent_id)
 
-        if (settled.length > 0) ended.add(row.intent_id)
+        if (route !== undefined) yield* wakeRelay
 
-        return settled.length > 0
+        return true
       })
 
     const exhaust = (attempts: number, cause: string, ambiguous: boolean, cancelled: boolean) =>
@@ -989,6 +984,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
       )
 
     const attempt = row.attempts
+
+    const warnAttempt = (message: string) =>
+      Effect.logWarning(message).pipe(Effect.annotateLogs({ attempt }), annotate)
+
     const request = yield* requestOf(row, "sender").pipe(Effect.orDie)
     const ref = ActorRef.make(request.ref)
     const lease = running.get(row.intent_id)?.lease ?? { until: Number(row.claimed_until) }
@@ -999,10 +998,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     yield* hooks.at("beforeExecute", request)
 
     if ((yield* Clock.currentTimeNanos) - confirmed >= leaseNanos)
-      return yield* Effect.logWarning("Effect attempt outlived its lease before it started").pipe(
-        Effect.annotateLogs({ attempt }),
-        annotate,
-      )
+      return yield* warnAttempt("Effect attempt outlived its lease before it started")
 
     let signal = claimSignal
 
@@ -1094,17 +1090,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
           Effect.ensuring(slot.close),
         )
 
-      if (outcome === "lost")
-        return yield* Effect.logWarning("Effect attempt lost its lease").pipe(
-          Effect.annotateLogs({ attempt }),
-          annotate,
-        )
+      if (outcome === "lost") return yield* warnAttempt("Effect attempt lost its lease")
 
       if (outcome === "deadline")
-        return yield* Effect.logWarning("Effect attempt outlived its lease; interrupted").pipe(
-          Effect.annotateLogs({ attempt }),
-          annotate,
-        )
+        return yield* warnAttempt("Effect attempt outlived its lease; interrupted")
 
       if (outcome === "cancelled") {
         yield* Effect.logInfo("Effect attempt interrupted by its cancellation").pipe(
@@ -1123,10 +1112,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
 
           if (late.length > 0)
-            return yield* Effect.logWarning("Effect succeeded after it was dead-lettered").pipe(
-              Effect.annotateLogs({ attempt }),
-              annotate,
-            )
+            return yield* warnAttempt("Effect succeeded after it was dead-lettered")
 
           const reported = routes.cancelled?.command
 
@@ -1150,10 +1136,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
             RETURNING 1`
 
             if (recorded.length > 0)
-              yield* Effect.logWarning("Effect succeeded after its cancellation settled").pipe(
-                Effect.annotateLogs({ attempt }),
-                annotate,
-              )
+              yield* warnAttempt("Effect succeeded after its cancellation settled")
           }
         })
 
@@ -1300,24 +1283,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
             Effect.gen(function* () {
               const woke = yield* wakeWaiting({ sql, group: groupOf(row), at: yield* databaseTime })
 
-              if (woke.length > 0) yield* Queue.offer(signals, undefined)
+              if (woke.length > 0) yield* wakeRelay
             }).pipe(Effect.ignore),
           ),
         )
   }
 
   const freed = (kind: "intents" | "effects" | "subscriptions") =>
-    Effect.suspend(() => (more[kind] ? Queue.offer(signals, undefined) : Effect.void))
+    Effect.suspend(() => (more[kind] ? wakeRelay : Effect.void))
 
-  const inFlight = Effect.gen(function* () {
-    return (
-      (yield* FiberSet.size(deliveries)) +
-      (yield* FiberSet.size(attempts)) +
-      (yield* FiberSet.size(subscriptionWork.feed)) +
-      (yield* FiberSet.size(subscriptionWork.control)) +
-      (yield* FiberSet.size(subscriptionWork.subscription))
-    )
-  })
+  const interruptible = [deliveries, ...Object.values(subscriptionWork)]
+  const everything = [deliveries, attempts, ...Object.values(subscriptionWork)]
+
+  const inFlight = Effect.map(Effect.forEach(everything, FiberSet.size), (sizes) =>
+    sizes.reduce((sum, size) => sum + size, 0),
+  )
 
   const pass = lock
     .withPermit(
@@ -1510,13 +1490,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     }
   })
 
-  const idle = Effect.gen(function* () {
-    yield* FiberSet.awaitEmpty(deliveries)
-    yield* FiberSet.awaitEmpty(attempts)
-    yield* FiberSet.awaitEmpty(subscriptionWork.feed)
-    yield* FiberSet.awaitEmpty(subscriptionWork.control)
-    yield* FiberSet.awaitEmpty(subscriptionWork.subscription)
-  })
+  const idle = Effect.forEach(everything, FiberSet.awaitEmpty, { discard: true })
 
   const drain = Effect.gen(function* () {
     for (let rounds = 0; rounds < DRAIN_ROUNDS;) {
@@ -1531,13 +1505,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
     return yield* Effect.die(new Error("Outbox did not settle; intents keep producing due work"))
   }).pipe(Effect.orDie)
 
-  yield* Effect.addFinalizer(() =>
-    lock.withPermit(
-      Effect.sync(() => {
-        stopping = true
-      }),
-    ),
+  const halt = lock.withPermit(
+    Effect.sync(() => {
+      stopping = true
+    }),
   )
+
+  yield* Effect.addFinalizer(() => halt)
 
   const extendLeases = (millis: number, jump: Effect.Effect<void>) =>
     lock
@@ -1559,18 +1533,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
       )
       .pipe(Effect.orDie)
 
-  const stop = lock
-    .withPermit(
-      Effect.sync(() => {
-        stopping = true
-      }),
-    )
-    .pipe(
-      Effect.andThen(FiberSet.clear(deliveries)),
-      Effect.andThen(FiberSet.clear(subscriptionWork.feed)),
-      Effect.andThen(FiberSet.clear(subscriptionWork.control)),
-      Effect.andThen(FiberSet.clear(subscriptionWork.subscription)),
-    )
+  const stop = Effect.andThen(
+    halt,
+    Effect.forEach(interruptible, FiberSet.clear, { discard: true }),
+  )
 
   const interruptAttempts = Effect.flatMap(FiberSet.size(attempts), (running) =>
     FiberSet.clear(attempts).pipe(Effect.as(running)),
@@ -1583,7 +1549,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     attemptsIdle: FiberSet.awaitEmpty(attempts),
     interruptAttempts,
     extendLeases,
-    wake: Queue.offer(signals, undefined).pipe(Effect.asVoid),
+    wake: wakeRelay,
     cancelled,
   }
 })

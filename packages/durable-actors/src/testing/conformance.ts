@@ -70,6 +70,12 @@ import {
 } from "./conformance/cold-serve.ts"
 import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
+import {
+  type WatchFixture,
+  watchConformance,
+  watchFixture,
+  watchLayer,
+} from "./conformance/watch.ts"
 import { singleShardConformance } from "./conformance/single-shard.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
@@ -334,6 +340,7 @@ export interface ConformanceFixture {
   readonly content: ContentFixture
   readonly drain: DrainFixture
   readonly coldServe: ColdServeFixture
+  readonly watch: WatchFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -474,6 +481,7 @@ const makeFixture = (): ConformanceFixture => ({
   content: contentFixture(),
   drain: drainFixture(),
   coldServe: coldServeFixture(),
+  watch: watchFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -1527,6 +1535,7 @@ export const conformanceGroups = {
   export: exportConformance,
   coldServe: coldServeConformance,
   placement: placementConformance,
+  watch: watchConformance,
   adoption: adoptionConformance,
   singleShard: singleShardConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
@@ -1607,6 +1616,7 @@ export const describeConformance = (options: {
     contentLayer(fixture.content),
     drainLayer(fixture.drain),
     coldServeLayer(fixture.coldServe),
+    watchLayer(fixture.watch),
   )
 
   let store: ConformanceStore | undefined

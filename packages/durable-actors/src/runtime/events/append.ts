@@ -8,7 +8,7 @@ import { compress } from "../storage/codec.ts"
 import { notifyWaits } from "../workflows/engine.ts"
 
 /** The outbox key of an actor's feed row, which tells the relay to expand its subscriptions. */
-export const FEED_KEY = "$feed"
+const FEED_KEY = "$feed"
 
 /**
  * The statement that appends a turn's events inside its transaction, and the
