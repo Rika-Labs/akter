@@ -76,6 +76,7 @@ const perActor = (before: Retained, after: Retained) => ({
 export const heapConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "retains bounded heap for touched actors once every activation hibernates",
+    requiresFreshDatabase: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) =>
       environment.run(
@@ -139,6 +140,7 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "retains bounded heap per command once Cluster forgets processed request ids",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) =>

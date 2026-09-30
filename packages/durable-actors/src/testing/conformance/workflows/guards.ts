@@ -3,24 +3,24 @@ import { SqlClient } from "effect/unstable/sql"
 import { InvalidExecutionKey } from "../../../index.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { EngineProbe, Ledger, Shipper } from "./actors.ts"
+import { EngineProbe, Ledger, Shipper, type WorkflowsFixture } from "./actors.ts"
 import { eventually, reset, suspendedRow } from "./harness.ts"
 
 /** Expiry bounds, fencing, deduplication, and body-shape guards of workflows. */
-export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
+export const workflowGuardConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
   {
     name: "workflows: dies with ActivityOutcomeUnknown instead of calling past the expiry bound",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const gate = yield* Deferred.make<void>()
-          fixture.workflows.blocked = gate
+          fixture.blocked = gate
           const run = yield* (yield* Shipper.get("late")).Ship({ orderId: "late1", sku: "late" })
 
           yield* eventually(
-            Effect.sync(() => fixture.workflows.runs.get("reserve:late1") === 1),
+            Effect.sync(() => fixture.runs.get("reserve:late1") === 1),
             "the activity to start",
           )
 
@@ -42,7 +42,7 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
       environment.run(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
-          const engine = fixture.workflows.engine
+          const engine = fixture.engine
           const outcomes = new Set<string>()
 
           for (let round = 0; round < 8; round++) {
@@ -89,16 +89,16 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const gate = yield* Deferred.make<void>()
-          fixture.workflows.blocked = gate
+          fixture.blocked = gate
           const shipper = yield* Shipper.get("stale")
           const run = yield* shipper.Ship({ orderId: "st1", sku: "block-stale" })
 
           yield* eventually(
-            Effect.sync(() => fixture.workflows.runs.get("reserve:st1") === 1),
+            Effect.sync(() => fixture.runs.get("reserve:st1") === 1),
             "the activity to start",
           )
 
@@ -116,7 +116,7 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.invalidate(shipper.ref)
           yield* test.advance("31 seconds")
           expect(yield* run.result).toBe("r-block-stale:v2")
-          expect(fixture.workflows.runs.get("reserve:st1")).toBe(2)
+          expect(fixture.runs.get("reserve:st1")).toBe(2)
         }),
       ),
   },
@@ -125,10 +125,10 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const gate = yield* Deferred.make<void>()
-          fixture.workflows.blocked = gate
+          fixture.blocked = gate
           const shipper = yield* Shipper.get("rerun-calls")
           const run = yield* shipper.Ship({ orderId: "rc1", sku: "charge-block" })
           const ledger = yield* Ledger.get("rc1")
@@ -145,7 +145,7 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
             WHERE timer_key = ${`wf:${run.executionId}`}`
           yield* test.advance("1 second")
           expect(yield* run.result).toBe("r-charge-block-1-2:v2")
-          expect(fixture.workflows.runs.get("reserve:rc1")).toBe(2)
+          expect(fixture.runs.get("reserve:rc1")).toBe(2)
           expect(yield* test.receiptsFor(ledger.ref, "Charge")).toBe(2)
           yield* Deferred.succeed(gate, undefined)
         }),
@@ -156,10 +156,10 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const run = yield* (yield* Shipper.get("twice")).Ship({ orderId: "tw1", sku: "twice" })
           expect(yield* run.result).toBe("r-twice|r-twice")
-          expect(fixture.workflows.runs.get("reserve:tw1")).toBe(1)
+          expect(fixture.runs.get("reserve:tw1")).toBe(1)
         }),
       ),
   },
@@ -168,7 +168,7 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
 
           const run = yield* (yield* Shipper.get("outside")).Ship({
@@ -219,7 +219,7 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("markers")
@@ -239,7 +239,7 @@ export const workflowGuardConformance: ReadonlyArray<ConformanceCase> = [
           expect(markers).toEqual([{ step: "label", version: 1 }])
           yield* test.advance("11 seconds")
           expect(yield* again.result).toBe("r-sleep-mk:v1")
-          expect(fixture.workflows.runs.get("reserve:mk1")).toBe(1)
+          expect(fixture.runs.get("reserve:mk1")).toBe(1)
         }),
       ),
   },

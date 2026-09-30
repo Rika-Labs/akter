@@ -7,11 +7,11 @@ import { FrameworkClock } from "../../../runtime/turn/admission.ts"
 import { ActorTest } from "../../actor-test.ts"
 import { ActorCluster } from "../../cluster.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Hello, Live, Room, Said, Say } from "./actors.ts"
+import { Hello, Live, Room, Said, Say, type ConnectionsFixture } from "./actors.ts"
 import { connect, endOf, frameOf, isFrame, next, reasonOf, rows, withCluster } from "./harness.ts"
 
 /** Slow consumers, resync after lost replies or owners, and credential expiry during checks. */
-export const connectionResyncConformance: ReadonlyArray<ConformanceCase> = [
+export const connectionResyncConformance: ReadonlyArray<ConformanceCase<ConnectionsFixture>> = [
   {
     name: "a connection that falls 1,024 frames behind ends with SlowConsumer and resync",
     run: ({ expect, environment }) =>
@@ -410,12 +410,13 @@ export const connectionResyncConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "an ungraceful owner death resyncs a held connection in place from its flushed-through cursor",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.connections,
+        fixture,
         { runners: 2 },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster

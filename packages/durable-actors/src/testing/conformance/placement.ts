@@ -12,7 +12,7 @@ import { routingKey } from "../../runtime/storage/codec.ts"
 import type { AuthRequest } from "../../serve/auth.ts"
 import type { Group } from "../../tables/owned.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 const orderRows = Actor.table(pgTable("placement_orders", { id: text("id").primaryKey() }))
 
@@ -792,3 +792,8 @@ export const placementConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Placement actors. */
+export const placementSuite: ConformanceSuite = {
+  layer: () => placementLayer,
+}

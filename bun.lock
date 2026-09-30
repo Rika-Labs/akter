@@ -418,6 +418,7 @@
     "tooling/structure": {
       "name": "@durable-actors/structure",
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
       },

@@ -2,12 +2,13 @@ import { Effect, Redacted, Schedule, type Scope } from "effect"
 import { dual } from "effect/Function"
 import { ActorError, InvalidInput } from "../../errors/actor.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
-import { HttpRoom, serveHttp, tenantOf, type Server } from "./http.ts"
+import { HttpRoom, serveHttp, tenantOf, type Server, httpSuite } from "./http.ts"
 import type {
   ConformanceCase,
   ConformanceConnection,
   ConformanceEnvironment,
   ConformanceServices,
+  ConformanceSuite,
 } from "../conformance.ts"
 
 const VERSION = /^(0|[1-9]\d*)$/
@@ -294,3 +295,8 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
     },
   },
 ]
+
+/** Read-your-writes cases call the served HTTP actors. */
+export const readYourWritesSuite: ConformanceSuite = {
+  uses: [httpSuite],
+}

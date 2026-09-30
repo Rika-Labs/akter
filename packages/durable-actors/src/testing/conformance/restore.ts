@@ -10,6 +10,7 @@ import type {
   ConformanceDatabase,
   ConformanceEnvironment,
   ConformanceServices,
+  ConformanceSuite,
 } from "../conformance.ts"
 
 export interface RestoreFixture {
@@ -200,9 +201,10 @@ export const vaults = {
 const RETRY_WINDOW_MS = 60_000
 
 /** Restore cases: a backup neither reopens expired command ids nor drops pending intents and effects. */
-export const restoreConformance: ReadonlyArray<ConformanceCase> = [
+export const restoreConformance: ReadonlyArray<ConformanceCase<RestoreFixture>> = [
   {
     name: "restores a backup without reopening expired command ids or dropping pending intents",
+    requiresFreshDatabase: true,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
       offline(
@@ -244,8 +246,8 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
             }),
           )
 
-          const deposits = fixture.restore.deposits
-          const receives = fixture.restore.receives
+          const deposits = fixture.deposits
+          const receives = fixture.receives
 
           yield* session(
             environment,
@@ -263,7 +265,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               })
 
               yield* test.advance("2 minutes")
-              expect(fixture.restore.receives - receives).toBe(1)
+              expect(fixture.receives - receives).toBe(1)
               expect(yield* test.inspect(to.ref)).toMatchObject({
                 state: { total: 7 },
                 receipts: 1,
@@ -276,10 +278,10 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               expect(
                 (yield* vault.Deposit(4).pipe(Actor.commandId(lost), Effect.flip)).reason,
               ).toBeInstanceOf(CommandExpired)
-              expect(fixture.restore.deposits).toBe(deposits)
+              expect(fixture.deposits).toBe(deposits)
 
               yield* test.advance("2 minutes")
-              expect(fixture.restore.receives - receives).toBe(1)
+              expect(fixture.receives - receives).toBe(1)
 
               expect(yield* vault.Deposit(1)).toBe(6)
               expect(
@@ -292,6 +294,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "replays a receipt the backup holds and runs an unexpired command the backup lost once",
+    requiresFreshDatabase: true,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
       offline(
@@ -323,7 +326,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
             }),
           )
 
-          const deposits = fixture.restore.deposits
+          const deposits = fixture.deposits
 
           yield* session(
             environment,
@@ -332,11 +335,11 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               const test = yield* ActorTest
               const vault = yield* vaultOf(backedUp.tenant, "restore-replay")
               expect(yield* vault.Deposit(3).pipe(Actor.commandId(backedUp.id))).toBe(3)
-              expect(fixture.restore.deposits).toBe(deposits)
+              expect(fixture.deposits).toBe(deposits)
 
               expect(yield* vault.Deposit(4).pipe(Actor.commandId(lost))).toBe(7)
               expect(yield* vault.Deposit(4).pipe(Actor.commandId(lost))).toBe(7)
-              expect(fixture.restore.deposits - deposits).toBe(1)
+              expect(fixture.deposits - deposits).toBe(1)
               expect(yield* test.inspect(vault.ref)).toMatchObject({
                 state: { total: 7 },
                 receipts: 2,
@@ -348,16 +351,17 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "retries an effect in flight at the backup with its idempotency key after restore, and routes its result once",
+    requiresFreshDatabase: true,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
       offline(
         environment,
         Effect.gen(function* () {
-          const charges = fixture.restore.charges
+          const charges = fixture.charges
           const since = (index: number) => charges.slice(index)
           let before = charges.length
 
-          fixture.restore.hold = true
+          fixture.hold = true
 
           const tenant = yield* session(
             environment,
@@ -376,7 +380,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
 
               return (yield* ActorTest).tenant
             }),
-          ).pipe(Effect.ensuring(Effect.sync(() => (fixture.restore.hold = false))))
+          ).pipe(Effect.ensuring(Effect.sync(() => (fixture.hold = false))))
 
           const [first] = since(before)
           const snapshot = yield* environment.snapshot
@@ -427,6 +431,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
@@ -441,7 +446,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               shardLockExpiration: "3 seconds",
               retryWindowMs: RETRY_WINDOW_MS,
               actors: Layer.empty,
-              runnerActors: (runner) => accountVersion(fixture.restore, versions[runner]!),
+              runnerActors: (runner) => accountVersion(fixture, versions[runner]!),
             }),
           )
 
@@ -451,8 +456,8 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
             const on = <A, E, R>(runner: number, effect: Effect.Effect<A, E, R>) =>
               cluster.on(runner)(effect)
 
-            const runs = () => fixture.restore.versions.v1 + fixture.restore.versions.v2
-            const { v1, v2, receives } = fixture.restore.versions
+            const runs = () => fixture.versions.v1 + fixture.versions.v2
+            const { v1, v2, receives } = fixture.versions
 
             yield* cluster.ready
             let id = ""
@@ -500,7 +505,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
             )
 
             expect(yield* add(0, 5, commandId)).toBe(5)
-            expect(fixture.restore.versions.v1 - v1).toBe(1)
+            expect(fixture.versions.v1 - v1).toBe(1)
             yield* on(
               0,
               Account.get(id).pipe(
@@ -517,9 +522,9 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
             expect(yield* add(1, 5, commandId)).toBe(5)
             expect(yield* add(1, 1)).toBe(7)
             expect(runs() - v1 - v2).toBe(3)
-            expect(fixture.restore.versions.v2 - v2 > 0).toBe(true)
+            expect(fixture.versions.v2 - v2 > 0).toBe(true)
 
-            yield* Effect.sync(() => fixture.restore.versions.receives - receives).pipe(
+            yield* Effect.sync(() => fixture.versions.receives - receives).pipe(
               Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (n) => n > 0 }),
               Effect.timeoutOrElse({
                 duration: "30 seconds",
@@ -558,9 +563,15 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
             )
             expect(runs() - v1 - v2).toBe(3)
             yield* Effect.sleep("500 millis")
-            expect(fixture.restore.versions.receives - receives).toBe(1)
+            expect(fixture.versions.receives - receives).toBe(1)
           }).pipe(Effect.provideContext(context))
         }),
       ),
   },
 ]
+
+/** Restore actors. */
+export const restoreSuite: ConformanceSuite<RestoreFixture> = {
+  fixture: restoreFixture,
+  layer: restoreLayer,
+}

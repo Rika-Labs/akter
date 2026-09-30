@@ -1,87 +1,9 @@
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Clock, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schedule } from "effect"
+import { Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect"
 import type { Config } from "effect"
 import { Pool } from "pg"
 import type { ConformanceBackend, ConformanceDatabase } from "../../conformance.ts"
-
-/** Postgres refuses to copy a database while a session is open on its source, and the server ends a closed pool's sessions a moment after the client has, so template copies retry. */
-const copyDatabase = (admin: Pool, name: string, template: string) =>
-  Effect.tryPromise(() => admin.query(`CREATE DATABASE "${name}" TEMPLATE "${template}"`)).pipe(
-    Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }),
-  )
-
-/** A test database older than this belongs to no live run: runs are cut off well before it. */
-const STALE_AFTER_MS = 60 * 60 * 1000
-
-const NAMED = /^(?:actors|actors_template|isolated|restored)_(\d{13})_[0-9a-f]{32}$/
-
-/**
- * A name for a test database that carries its creation time, so a later run
- * on a shared server can tell a leftover from a live run's database.
- */
-export const databaseName = Effect.fnUntraced(function* (crypto: Crypto.Crypto, prefix: string) {
-  const uuid = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")
-
-  return `${prefix}_${yield* Clock.currentTimeMillis}_${uuid}`
-})
-
-/**
- * Drops `names` at once. Each `DROP DATABASE` waits for a checkpoint, and
- * concurrent drops share one, so a suite's databases go in about the time of
- * one drop instead of one checkpoint each.
- */
-export const dropDatabases = ({
-  admin,
-  names,
-}: {
-  readonly admin: Pool
-  readonly names: ReadonlyArray<string>
-}) =>
-  Effect.forEach(
-    names,
-    (name) => Effect.promise(() => admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`)),
-    { concurrency: "unbounded", discard: true },
-  )
-
-/**
- * Drops the test databases an earlier run left behind: a run that was killed,
- * or whose suite teardown timed out, never dropped its own.
- */
-export const sweepStaleDatabases = Effect.fnUntraced(function* (admin: Pool) {
-  const now = yield* Clock.currentTimeMillis
-
-  const { rows } = yield* Effect.promise(() =>
-    admin.query<{ datname: string }>("SELECT datname FROM pg_database"),
-  )
-
-  yield* dropDatabases({
-    admin,
-    names: rows
-      .map(({ datname }) => datname)
-      .filter((name) => {
-        const created = NAMED.exec(name)?.[1]
-
-        return created !== undefined && now - Number(created) > STALE_AFTER_MS
-      }),
-  })
-})
-
-const createDatabase = Effect.fnUntraced(function* (
-  crypto: Crypto.Crypto,
-  admin: Pool,
-  base: URL,
-  prefix: string,
-  template?: string,
-) {
-  const name = yield* databaseName(crypto, prefix)
-
-  if (template === undefined) yield* Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`))
-  else yield* copyDatabase(admin, name, template).pipe(Effect.orDie)
-  const database = new URL(base.href)
-  database.pathname = `/${name}`
-
-  return { name, url: database.href }
-})
+import { disposableDatabase } from "../../database.ts"
 
 const harness = ManagedRuntime.make(BunCrypto.layer)
 
@@ -96,11 +18,16 @@ export interface PostgresBackendOptions {
   readonly neki?: boolean
   /** The server runs `wal_level=logical`, so the fleet cases run. */
   readonly logicalDecoding?: boolean
+  /**
+   * The server lets the suite create databases beside its main one. A Neki
+   * router does not, so cases that open fresh databases or snapshots skip.
+   */
+  readonly freshDatabases?: boolean
 }
 
 /**
  * The conformance backend for a Postgres-protocol server: each suite gets its
- * own databases on it, and the backend drops them when the suite closes.
+ * own disposable databases on it, dropped together when the suite closes.
  * Databases created on the primary replicate, so a replica serves each under
  * the same name. A template copy is a whole-database snapshot of a stopped
  * deployment; a disposed runtime's server sessions can outlive its pool
@@ -111,22 +38,20 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
   hasReplica: options.replicaUrl !== undefined,
   neki: options.neki === true,
   logicalDecoding: options.logicalDecoding === true,
+  freshDatabases: options.freshDatabases !== false,
   services: BunCrypto.layer,
   httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>
     harness.runPromise(
       Effect.gen(function* () {
-        const base = new URL(yield* options.url)
-        const crypto = yield* Crypto.Crypto
-        const admin = new Pool({ connectionString: base.href })
-        const created: Array<string> = []
+        const url = Redacted.make(yield* options.url)
+        const scope = yield* Scope.make("parallel")
 
-        const provision = Effect.fnUntraced(function* (prefix: string, template?: string) {
-          const database = yield* createDatabase(crypto, admin, base, prefix, template)
-          created.push(database.name)
-
-          return Redacted.make(database.url)
-        })
+        const provision = (prefix: "actors" | "isolated" | "restored", template?: string) =>
+          disposableDatabase({ url, prefix, template }).pipe(
+            Scope.provide(scope),
+            Effect.provide(BunCrypto.layer),
+          )
 
         const main = yield* provision("actors", options.template?.())
 
@@ -152,10 +77,10 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
         )
 
         const onReplica = (database: Redacted.Redacted<string>) => {
-          const url = new URL(options.replicaUrl!)
-          url.pathname = new URL(Redacted.value(database)).pathname
+          const replicaUrl = new URL(options.replicaUrl!)
+          replicaUrl.pathname = new URL(Redacted.value(database)).pathname
 
-          return Redacted.make(url.href)
+          return Redacted.make(replicaUrl.href)
         }
 
         const replica =
@@ -178,31 +103,16 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
                 ),
               }
 
-        const copy = Effect.fnUntraced(function* (database: Redacted.Redacted<string>) {
-          const source = new URL(Redacted.value(database)).pathname.slice(1)
-          const name = yield* databaseName(crypto, "restored")
-
-          yield* copyDatabase(admin, name, source)
-          created.push(name)
-          const url = new URL(base.href)
-          url.pathname = `/${name}`
-
-          return Redacted.make(url.href)
-        }, Effect.orDie)
-
         return {
           database: main,
           freshDatabase: provision("isolated"),
           copy: (database: ConformanceDatabase) =>
             Redacted.isRedacted(database)
-              ? copy(database)
+              ? provision("restored", new URL(Redacted.value(database)).pathname.slice(1))
               : Effect.die(new Error("The Postgres backend copies only Postgres databases")),
           connect,
           replica,
-          close: Effect.gen(function* () {
-            yield* dropDatabases({ admin, names: created })
-            yield* Effect.promise(() => admin.end())
-          }),
+          close: Scope.close(scope, Exit.void),
         }
       }),
     ),

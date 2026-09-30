@@ -191,6 +191,7 @@ const died = (exit: Exit.Exit<unknown, unknown>, message: string) =>
 export const exportConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "exports an actor's state and pending work as a seed with no tenant or caller, and audits the read",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(environment, exporter, ({ tenant, send, audit }) =>
         Effect.gen(function* () {
@@ -249,6 +250,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "reads the actor without writing any table",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(environment, exporter, ({ tenant, send }) =>
         Effect.gen(function* () {
@@ -264,6 +266,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses an export outside the export grant, audits the denial, and returns no state",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
@@ -310,6 +313,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "answers no seed when the audit row cannot be written",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(environment, exporter, ({ tenant, send, audit }) =>
         Effect.gen(function* () {
@@ -333,6 +337,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "answers not found for an actor of another tenant, however broad the grant",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(environment, exporter, ({ send }) =>
         Effect.gen(function* () {
@@ -349,6 +354,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses an actor whose stored state does not decode, naming the key and never its value",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(environment, exporter, ({ tenant, send, audit }) =>
         Effect.gen(function* () {
@@ -368,6 +374,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses an actor holding more pending work than one export carries",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(environment, exporter, ({ tenant, send }) =>
         Effect.gen(function* () {
@@ -389,6 +396,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "starts an actor in another tenant from an exported seed, running its pending work as the test's caller",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(environment, exporter, ({ tenant, send }) =>
         Effect.gen(function* () {
@@ -442,6 +450,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses a seed that is malformed, of another actor type, names an unregistered effect, marks created an actor without createdBy, or targets an existing actor, writing nothing",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -492,6 +501,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "seeds nothing when one row of the seed cannot be written",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {

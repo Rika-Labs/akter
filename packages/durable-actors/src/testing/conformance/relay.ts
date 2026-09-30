@@ -23,7 +23,7 @@ import { TurnHooks } from "../../runtime/turn/hooks.ts"
 import { claimIntents } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
 import { mintedTitle, mintLayer, planLaterTask } from "./mint.ts"
 import { CLAIM_LEASE, ExplainOutput, planNodes } from "./outbox.ts"
 
@@ -532,12 +532,13 @@ const kill = (runner: number) =>
   ActorCluster.use((cluster) => cluster.kill(runner).pipe(Effect.andThen(cluster.ready)))
 
 /** Multi-runner cases: real Postgres only, each on a fresh database and cluster. */
-export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
+export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture>> = [
   {
     name: "claims each due row on exactly one runner",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) => {
+    run: ({ expect, environment, fixture }) => {
       const spans: Array<Tracer.Span> = []
 
       return withCluster(
@@ -573,9 +574,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "counts a delivery retried after a failure as the row's next attempt, not a second holder",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) => {
+    run: ({ expect, environment, fixture }) => {
       const spans: Array<Tracer.Span> = []
 
       return withCluster(
@@ -627,9 +629,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "redelivers a row after its claim lease when the claiming runner is killed",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -657,9 +660,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "redelivers after a runner kill between receiver commit and row deletion with one receiver transition",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -685,9 +689,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "creates a minted child once when the runner claiming its creating intent is killed",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -713,9 +718,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "does not let rows that die unsettled delay newer due rows",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -774,9 +780,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps a stale runner's settle from changing a row another runner claimed",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -813,9 +820,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "delivers intents while every executor slot runs a slow effect",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -868,9 +876,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "renews an executor lease so a long attempt is not taken over",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -894,9 +903,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "interrupts an attempt that loses its lease and routes at most one result",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -940,9 +950,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "dead-letters as ambiguous when the last attempt's lease expires",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -967,9 +978,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "claims effects only on runners that have their executor",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1002,9 +1014,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "uses per-effect timeout and backoff from policy.effects",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1066,9 +1079,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "claims no more intents than free delivery slots",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1119,9 +1133,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "routes a lease-expired attempt's success when it beats the takeover",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1161,9 +1176,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "marks the dead letter ambiguous when a stale success arrives after it",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1205,9 +1221,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "interrupts an attempt at its local deadline when renewals cannot reach the database",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1244,9 +1261,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "does not start an attempt whose claim outlived its lease before execution",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1278,9 +1296,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps a failure's backoff when a renewal races the settle",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1311,9 +1330,10 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "routes one result when the runner is killed after the provider succeeded",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1342,9 +1362,9 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
 const releasesOnShutdown = (
   point: "afterClaim" | "beforeDelivery",
   name: string,
-): ConformanceCase => ({
+): ConformanceCase<RelayFixture> => ({
   name,
-  run: ({ expect, environment, fixture: { relay: fixture } }) =>
+  run: ({ expect, environment, fixture }) =>
     Effect.runPromise(
       Effect.gen(function* () {
         const claimedAt = yield* Effect.promise(() =>
@@ -1391,7 +1411,7 @@ const releasesOnShutdown = (
 })
 
 /** Single-runner cases on the conformance environment, shared by PGlite and Postgres. */
-export const relayConformance: ReadonlyArray<ConformanceCase> = [
+export const relayConformance: ReadonlyArray<ConformanceCase<RelayFixture>> = [
   releasesOnShutdown("afterClaim", "releases claimed but unstarted rows on graceful shutdown"),
   releasesOnShutdown(
     "beforeDelivery",
@@ -1399,7 +1419,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   ),
   {
     name: "keeps scheduled_at_ms across claims while due_at_ms moves",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1429,7 +1449,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "backs off a row whose settle dies by max(claim lease, backoff(attempts)) up to maxBackoff",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1505,9 +1525,10 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "claims later due intents while other transactions hold the earliest rows locked",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1559,7 +1580,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "dead-letters an already exhausted row with its recorded outcome",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1673,7 +1694,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "claims a runner's own effects past due effect rows it cannot execute in the same bucket",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1716,7 +1737,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "drains a due backlog far larger than the delivery slots in one advance",
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1800,3 +1821,9 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Relay actors and the executors of runner 0. */
+export const relaySuite: ConformanceSuite<RelayFixture> = {
+  fixture: relayFixture,
+  layer: (fixture) => Layer.merge(relayLayer(fixture), relayEffects(fixture)),
+}

@@ -5,7 +5,7 @@ import type { InTurn } from "../../handles/intents.ts"
 import { CommandId } from "../../identity/command.ts"
 import { claimIntents } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 export interface OutboxFixture {
   /** Receiver handler runs, including runs whose turn later rolled back. */
@@ -274,7 +274,7 @@ class Measured extends Data.TaggedError("Measured")<{
 export const CLAIM_LEASE = "37 seconds"
 
 /** Outbox cases: committed intents deliver as System commands under the intent id, and staged intents from failed or rolled-back turns never deliver. */
-export const outboxConformance: ReadonlyArray<ConformanceCase> = [
+export const outboxConformance: ReadonlyArray<ConformanceCase<OutboxFixture>> = [
   {
     name: "delivers a committed intent as a System command whose command id is the intent id",
     run: ({ expect, environment }) =>
@@ -304,7 +304,7 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const sender = yield* Outboxer.get("rollback")
-          const before = fixture.outbox.receives
+          const before = fixture.receives
           expect(
             yield* sender
               .SendThenRefuse({ to: "rollback-inbox", body: "refused" })
@@ -320,7 +320,7 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           yield* sender.Send({ to: "rollback-inbox", body: "retried" })
           yield* test.advance(0)
           expect(yield* receivedBodies("rollback-inbox")).toEqual(["retried"])
-          expect(fixture.outbox.receives - before).toBe(1)
+          expect(fixture.receives - before).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ receipts: 2, outbox: 0 })
         }),
       ),
@@ -352,7 +352,7 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "delays timers until due, past the retry window and after caller revocation",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
@@ -364,10 +364,10 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 2 })
           yield* test.advance("59 minutes")
           expect(yield* receivedBodies("timers-inbox")).toEqual([])
-          fixture.allowed = false
+          access.allowed = false
           yield* test
             .advance("1 minute")
-            .pipe(Effect.ensuring(Effect.sync(() => (fixture.allowed = true))))
+            .pipe(Effect.ensuring(Effect.sync(() => (access.allowed = true))))
           expect(yield* receivedBodies("timers-inbox")).toEqual(["after"])
           yield* test.advance("1 hour")
           expect(yield* receivedBodies("timers-inbox")).toEqual(["after", "at"])
@@ -438,7 +438,7 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const sender = yield* Outboxer.get("relay-crash")
           const inbox = yield* Inbox.get("relay-crash-inbox")
-          const before = fixture.outbox.receives
+          const before = fixture.receives
           yield* sender.Schedule({ to: "relay-crash-inbox", body: "once", afterMs: 60_000 })
 
           yield* test.crashNext("beforeOutboxDelete")
@@ -447,14 +447,14 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
           const draining = yield* test.advance(CLAIM_LEASE).pipe(Effect.forkChild)
           yield* pause.reached
-          expect(fixture.outbox.receives - before).toBe(1)
+          expect(fixture.receives - before).toBe(1)
           expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
           yield* pause.release
           yield* Fiber.join(draining)
 
           expect(yield* receivedBodies("relay-crash-inbox")).toEqual(["once"])
-          expect(fixture.outbox.receives - before).toBe(1)
+          expect(fixture.receives - before).toBe(1)
           expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
         }),
@@ -468,11 +468,11 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const sender = yield* Outboxer.get("receiver-crash")
           const inbox = yield* Inbox.get("receiver-crash-inbox")
-          const before = fixture.outbox.receives
+          const before = fixture.receives
           yield* sender.Schedule({ to: "receiver-crash-inbox", body: "once", afterMs: 60_000 })
           yield* test.crashNext("beforeCommit")
           yield* test.advance("1 minute")
-          expect(fixture.outbox.receives - before).toBe(2)
+          expect(fixture.receives - before).toBe(2)
           expect(yield* receivedBodies("receiver-crash-inbox")).toEqual(["once"])
           expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
@@ -510,7 +510,7 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
           const sender = yield* Outboxer.get("backoff")
           const inbox = yield* Inbox.get("backoff-inbox")
           yield* sender.Schedule({ to: "backoff-inbox", body: "retried", afterMs: 60_000 })
-          fixture.outbox.failNext = true
+          fixture.failNext = true
           yield* test.advance("1 minute")
           expect(yield* test.receiptsFor(inbox.ref, "Receive")).toBe(0)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
@@ -589,3 +589,9 @@ export const outboxConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The outbox actors. */
+export const outboxSuite: ConformanceSuite<OutboxFixture> = {
+  fixture: outboxFixture,
+  layer: outboxLayer,
+}

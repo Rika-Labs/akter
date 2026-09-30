@@ -4,7 +4,7 @@ import { Actor, Intent } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { CLAIM_LEASE } from "./outbox.ts"
 
 const Receive = Actor.command("Receive", { input: Schema.String })
@@ -212,3 +212,8 @@ export const crossShardOutboxConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Cross-shard mailbox actors. */
+export const crossShardSuite: ConformanceSuite = {
+  layer: () => crossShardLayer,
+}

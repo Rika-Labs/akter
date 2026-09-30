@@ -1,11 +1,11 @@
-import { DateTime, Deferred, Effect, Exit, Fiber, Schema } from "effect"
+import { DateTime, Deferred, Effect, Exit, Fiber, Schema, Layer } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, RetentionGap, System, UnknownCursor } from "../../index.ts"
 import { Request } from "../../runtime/request.ts"
 import { appendEvents } from "../../runtime/events/append.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 export interface EventsFixture {
   escaped: Effect.Effect<void>
@@ -165,7 +165,7 @@ export const prune = Effect.fnUntraced(function* (id: string, through: number) {
 }, Effect.orDie)
 
 /** Event cases: events append only on commit, replay in order after an exclusive cursor, and are discarded on declared failures and defects. */
-export const eventsConformance: ReadonlyArray<ConformanceCase> = [
+export const eventsConformance: ReadonlyArray<ConformanceCase<EventsFixture>> = [
   {
     name: "appends events only on commit and replays one class in order after an exclusive cursor",
     run: ({ expect, environment }) =>
@@ -237,28 +237,30 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
-  ...(["beforeHandler", "beforeCommit", "afterCommit"] as const).map((point): ConformanceCase => ({
-    name: `appends one event per command and none for a declared failure across ${point} crashes`,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const feed = yield* Feed.get(`crash-${point}`)
-          yield* feed.Post("before")
-          yield* test.crashNext(point)
-          const commandId = yield* feed.Post("crashed")
-          yield* feed.Post("after")
-          const history = yield* feed.History({})
-          expect(bodies(history)).toEqual(["before", "crashed", "after"])
-          expect(cursors(history)).toEqual(["1", "2", "3"])
-          expect(history[1]!.commandId).toBe(commandId)
-          expect(yield* test.inspect(feed.ref)).toMatchObject({ receipts: 3, events: 3 })
-          yield* test.crashNext(point)
-          expect(yield* feed.PostThenFail("failed").pipe(Effect.flip)).toEqual(Closed.make({}))
-          expect(yield* test.inspect(feed.ref)).toMatchObject({ receipts: 4, events: 3 })
-        }),
-      ),
-  })),
+  ...(["beforeHandler", "beforeCommit", "afterCommit"] as const).map(
+    (point): ConformanceCase<EventsFixture> => ({
+      name: `appends one event per command and none for a declared failure across ${point} crashes`,
+      run: ({ expect, environment }) =>
+        environment.run(
+          Effect.gen(function* () {
+            const test = yield* ActorTest
+            const feed = yield* Feed.get(`crash-${point}`)
+            yield* feed.Post("before")
+            yield* test.crashNext(point)
+            const commandId = yield* feed.Post("crashed")
+            yield* feed.Post("after")
+            const history = yield* feed.History({})
+            expect(bodies(history)).toEqual(["before", "crashed", "after"])
+            expect(cursors(history)).toEqual(["1", "2", "3"])
+            expect(history[1]!.commandId).toBe(commandId)
+            expect(yield* test.inspect(feed.ref)).toMatchObject({ receipts: 3, events: 3 })
+            yield* test.crashNext(point)
+            expect(yield* feed.PostThenFail("failed").pipe(Effect.flip)).toEqual(Closed.make({}))
+            expect(yield* test.inspect(feed.ref)).toMatchObject({ receipts: 4, events: 3 })
+          }),
+        ),
+    }),
+  ),
   {
     name: "rejects escaped and undeclared emits without committing events",
     run: ({ expect, environment }) =>
@@ -331,12 +333,12 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
           yield* feed.Post("b")
           const reached = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
-          fixture.events.duringQuery = Deferred.succeed(reached, undefined).pipe(
+          fixture.duringQuery = Deferred.succeed(reached, undefined).pipe(
             Effect.andThen(Deferred.await(release)),
           )
           const reader = yield* feed.Snapshot().pipe(Effect.forkChild)
           yield* Deferred.await(reached)
-          fixture.events.duringQuery = Effect.void
+          fixture.duringQuery = Effect.void
           yield* feed.Post("c")
           yield* Deferred.succeed(release, undefined)
           expect(yield* Fiber.join(reader)).toEqual({
@@ -461,3 +463,9 @@ export const eventsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The event feed actor and its queries. */
+export const eventsSuite: ConformanceSuite<EventsFixture> = {
+  fixture: eventsFixture,
+  layer: (fixture) => Layer.merge(eventsLayer(fixture), eventsQueryLayer(fixture)),
+}

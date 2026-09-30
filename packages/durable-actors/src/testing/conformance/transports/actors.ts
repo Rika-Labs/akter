@@ -3,6 +3,7 @@ import { DateTime, Effect, Layer, Option, Schema, Stream } from "effect"
 import { Actor, User } from "../../../index.ts"
 import { Unauthorized } from "../../../errors/actor.ts"
 import { type Authenticated, bearerToken } from "../../../serve/auth.ts"
+import type { ConformanceSuite } from "../../conformance.ts"
 
 export class Said extends Actor.Event<Said>()("Said", { text: Schema.String }) {}
 
@@ -207,3 +208,8 @@ export const tokens = Actor.auth.make((request) =>
 export const transportsLayer = Layer.mergeAll(socketLayer, renderLayer, feedLayer)
 
 export type { NodeInspectSymbol, Unify }
+
+/** Transport actors. */
+export const transportsSuite: ConformanceSuite = {
+  layer: () => transportsLayer,
+}

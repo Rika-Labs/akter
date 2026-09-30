@@ -8,9 +8,9 @@ import {
   type ConformanceBackend,
   type ConformanceCase,
   type ConformanceDatabase,
-  describeConformance,
+  registerConformance,
 } from "../../../conformance.ts"
-import { restoreConformance, vaults } from "../../restore.ts"
+import { restoreConformance, type RestoreFixture, restoreSuite, vaults } from "../../restore.ts"
 import { archivingPostgres } from "./online-restore.ts"
 
 type Server = Effect.Success<ReturnType<typeof archivingPostgres>>
@@ -102,6 +102,7 @@ const recovered: Backup = {
 
 const backendOf = (backup: Backup): ConformanceBackend => ({
   independentConnections: true,
+  freshDatabases: true,
   services: BunCrypto.layer,
   httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>
@@ -133,7 +134,7 @@ const backendOf = (backup: Backup): ConformanceBackend => ({
  * without running its handler again, the tail written during and after the
  * backup is absent, and each pending transfer is delivered once.
  */
-const consistentWhileCommitting = (backup: Backup): ConformanceCase => ({
+const consistentWhileCommitting = (backup: Backup): ConformanceCase<RestoreFixture> => ({
   name: "restores one consistent snapshot of a database whose turns keep committing during the backup",
   timeoutMs: 240_000,
   run: ({ expect, environment, fixture }) =>
@@ -208,12 +209,12 @@ const consistentWhileCommitting = (backup: Backup): ConformanceCase => ({
                 expect(deposits >= before.length).toBe(true)
                 expect(deposits < written).toBe(true)
 
-                const ran = fixture.restore.deposits
+                const ran = fixture.deposits
 
                 for (const { vault, id, total: reached } of before.slice(0, 40))
                   expect(yield* vaults.deposit(vault, 1, { tenant, commandId: id })).toBe(reached)
 
-                expect(fixture.restore.deposits).toBe(ran)
+                expect(fixture.deposits).toBe(ran)
 
                 yield* test.advance("2 minutes")
 
@@ -235,7 +236,7 @@ const consistentWhileCommitting = (backup: Backup): ConformanceCase => ({
  * checks that each recovered database holds exactly the phases before its
  * point, with the transfer staged before the first point still pending.
  */
-const recoversToEachRestorePoint: ConformanceCase = {
+const recoversToEachRestorePoint: ConformanceCase<RestoreFixture> = {
   name: "recovers to a named restore point holding exactly the commits before it",
   timeoutMs: 240_000,
   run: ({ expect, environment }) =>
@@ -327,7 +328,7 @@ for (const [backup, extra] of [
   [dumped, []],
   [recovered, [recoversToEachRestorePoint]],
 ] as const)
-  describeConformance({
+  registerConformance({
     name: backup.name,
     backend: backendOf(backup),
     registrar: {
@@ -338,5 +339,10 @@ for (const [backup, extra] of [
       expect,
       skip: (name) => it.skip(name),
     },
-    cases: [...restoreCases, consistentWhileCommitting(backup), ...extra],
+    selected: [
+      {
+        suite: restoreSuite,
+        cases: [...restoreCases, consistentWhileCommitting(backup), ...extra],
+      },
+    ],
   })

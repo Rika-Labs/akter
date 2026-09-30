@@ -3,6 +3,7 @@ import { Effect, Layer, Match, Option, Predicate, Schema } from "effect"
 import { Actor, type Caller } from "../../../index.ts"
 import { Request } from "../../../runtime/request.ts"
 import type { TurnPoint } from "../../../runtime/turn/hooks.ts"
+import type { ConformanceSuite } from "../../conformance.ts"
 
 /** What a subscription handler does with one delivery, decided per entry. */
 export type Behaviour = "apply" | "defect" | "refuse"
@@ -490,3 +491,10 @@ export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
   )
 
 export type { NodeInspectSymbol, Unify }
+
+/** Subscription actors; cases replace the fixture hook to fault one turn. */
+export const subscriptionsSuite: ConformanceSuite<SubscriptionsFixture> = {
+  fixture: subscriptionsFixture,
+  layer: subscriptionsLayer,
+  turn: (fixture) => (point, request) => Effect.suspend(() => fixture.hook(point, request)),
+}

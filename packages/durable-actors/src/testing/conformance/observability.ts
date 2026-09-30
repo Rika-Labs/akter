@@ -260,6 +260,7 @@ const execute = (sql: SqlClient.SqlClient, statement: string) =>
 export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "names the turn span durable-actors.<Actor>/<Command> and correlates it with the command id (O1)",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withTelemetry(environment, ({ spans }) =>
         Effect.gen(function* () {
@@ -309,6 +310,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "answers a retried command id from its receipt in the admission span, without a second turn",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withTelemetry(environment, ({ spans }) =>
         Effect.gen(function* () {
@@ -339,6 +341,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fails a defect's turn span with its cause, keeps it in the defect log, and counts it",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withTelemetry(environment, ({ spans }) =>
         Effect.gen(function* () {
@@ -389,6 +392,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "names the relay's intent delivery, the receiver's turn, and the effect attempt",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withTelemetry(environment, ({ spans }) =>
         Effect.gen(function* () {
@@ -431,6 +435,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "counts turns, receipts, events, and activations, records mailbox age, and exposes them to Prometheus",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withTelemetry(environment, () =>
         Effect.gen(function* () {
@@ -461,6 +466,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "samples outbox rows, the lag of an effect no runner executes, and intents claimed 8 times",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withTelemetry(environment, () =>
         Effect.gen(function* () {
@@ -501,6 +507,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "samples subscription lag, stuck rows, and pinned events, and counts a gap without a recipient",
+    requiresFreshDatabase: true,
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
       withTelemetry(environment, () =>

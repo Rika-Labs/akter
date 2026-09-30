@@ -1,32 +1,28 @@
-import { BunFileSystem } from "@effect/platform-bun"
-import { Effect, FileSystem, ManagedRuntime } from "effect"
-import { afterAll, describe, expect, it } from "vitest"
-import { conformanceGroups } from "../../conformance.ts"
-import { shards } from "./shards.ts"
+import { describe, expect, it } from "vitest"
+import { conformanceGroups, type ConformanceGroup } from "../../conformance.ts"
+import { groupsOf, shards, UNSHARDED, unshardedGroups } from "./shards.ts"
 
-const harness = ManagedRuntime.make(BunFileSystem.layer)
-
-afterAll(() => harness.dispose())
+const workers = [...Object.keys(shards), UNSHARDED]
 
 describe("Postgres conformance shards", () => {
-  it("gives every shard a file that runs exactly its groups", () =>
-    harness.runPromise(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-
-        for (const shard of Object.keys(shards)) {
-          const file = yield* fs.readFileString(
-            new URL(`../${shard}.test.ts`, import.meta.url).pathname,
-          )
-
-          expect(file).toContain(`describePostgres(shards["${shard}"])`)
-        }
-      }),
-    ))
-
-  it("names each group in at most one shard, and only groups that exist", () => {
-    const named = Object.values(shards).flat()
+  it("runs every group in exactly one worker", () => {
+    const named = workers.flatMap((worker) => groupsOf(worker))
     expect(new Set(named).size).toBe(named.length)
-    expect(named.filter((group) => !(group in conformanceGroups))).toEqual([])
+    expect([...named].sort()).toEqual(Object.keys(conformanceGroups).sort())
+    expect(unshardedGroups.length > 0).toBe(true)
+  })
+
+  it("keeps every group with a replica case in one worker", () => {
+    const replicaWorkers = workers.filter((worker) =>
+      groupsOf(worker).some((group: ConformanceGroup) =>
+        conformanceGroups[group].cases.some((conformanceCase) => conformanceCase.requiresReplica),
+      ),
+    )
+
+    expect(replicaWorkers).toEqual(["replica"])
+  })
+
+  it("refuses a shard name the registry does not define", () => {
+    expect(() => groupsOf("no-such-shard")).toThrow("Unknown conformance shard no-such-shard")
   })
 })

@@ -5,7 +5,7 @@ import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
 
 class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
 
@@ -257,23 +257,23 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rejects a subscription its caller may not open, and ends one whose reauthorization is denied",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const journal = yield* Journal.get("streams-revoked")
 
-          fixture.allowed = false
+          access.allowed = false
 
           const refused = yield* endOf(journal.Count(1)).pipe(
-            Effect.ensuring(Effect.sync(() => (fixture.allowed = true))),
+            Effect.ensuring(Effect.sync(() => (access.allowed = true))),
           )
 
           expect(reasonOf(refused)).toMatchObject(Unauthorized.make({ code: "access_denied" }))
 
           const pull = yield* open(journal.Flood())
           yield* read(pull, 1)
-          fixture.allowed = false
+          access.allowed = false
           yield* test.advance("55 seconds")
 
           const revoked = yield* Effect.gen(function* () {
@@ -281,7 +281,7 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
           }).pipe(
             Effect.flip,
             Effect.timeout(WAIT),
-            Effect.ensuring(Effect.sync(() => (fixture.allowed = true))),
+            Effect.ensuring(Effect.sync(() => (access.allowed = true))),
           )
 
           expect(revoked).toMatchObject({ reason: Unauthorized.make({ code: "access_denied" }) })
@@ -360,6 +360,7 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "delivers a stream from an owner on another runner and ends it with ActivationEnded when that runner is killed",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -394,6 +395,7 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps cursor order in a followed stream written through turns on different runners over time",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) =>
@@ -433,3 +435,8 @@ export const streamsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The stream actor. */
+export const streamsSuite: ConformanceSuite = {
+  layer: () => streamsLayer,
+}

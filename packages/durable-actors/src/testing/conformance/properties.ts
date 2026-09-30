@@ -4,12 +4,12 @@ import { Arbitrary } from "effect/unstable/arbitrary"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, CommandExpired, InvalidCommandId } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { checkProperty } from "../property.ts"
 import { payloadHash } from "./admission.ts"
-import { bodies, cursors, Feed, prune } from "./events.ts"
-import { Outboxer, receivedBodies } from "./outbox.ts"
-import { Misuse, Notebook } from "./tables.ts"
+import { bodies, cursors, Feed, prune, eventsSuite } from "./events.ts"
+import { Outboxer, receivedBodies, outboxSuite } from "./outbox.ts"
+import { Misuse, Notebook, tablesSuite } from "./tables.ts"
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", { amount: Schema.Int }) {}
 
@@ -563,3 +563,9 @@ export const propertiesConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Property actors, beside the feed, outbox and table actors the properties drive. */
+export const propertiesSuite: ConformanceSuite = {
+  layer: () => propertiesLayer,
+  uses: [eventsSuite, outboxSuite, tablesSuite],
+}

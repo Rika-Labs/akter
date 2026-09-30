@@ -16,7 +16,7 @@ import type { ExecutorContext } from "../../contexts/effect.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest, ProgressRecord, type TestConnection, type TestMessage } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
 
 /** What one executor attempt does after reporting its frames. */
 type ProgressStep = "ok" | "fail"
@@ -171,7 +171,7 @@ const encode = { percent: 50, stage: "encode" } as const
 
 const upload = { percent: 95, stage: "upload" } as const
 
-export const progressConformance: ReadonlyArray<ConformanceCase> = [
+export const progressConformance: ReadonlyArray<ConformanceCase<ProgressFixture>> = [
   {
     name: "sends an executor's latest progress frame before the effect settles, then closes it",
     run: ({ expect, environment, fixture }) =>
@@ -179,12 +179,12 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("latest")
-          fixture.progress.frames = [probe, encode, upload]
+          fixture.frames = [probe, encode, upload]
           yield* encoder.Start("a")
           yield* test.advance(0)
           const records = yield* recordsOf("latest")
           const frames = framesOf(records)
-          const effectId = fixture.progress.captured?.effectId
+          const effectId = fixture.captured?.effectId
 
           expect([1, 2]).toContain(frames.length)
           expect(frames.at(-1)).toEqual({ attempt: 1, seq: 3, frame: upload })
@@ -206,18 +206,18 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("invalid")
-          const exec = () => fixture.progress.captured!
-          fixture.progress.frames = [
+          const exec = () => fixture.captured!
+          fixture.frames = [
             { percent: "half", stage: "encode" },
             { percent: 1, stage: "encode", note: "x".repeat(5000) },
             { percent: 1, stage: "mux" },
           ]
-          fixture.progress.progressFailed = false
+          fixture.progressFailed = false
           yield* encoder.Start("b")
           yield* test.advance(0)
           yield* exec().progress(Import as never, { done: 1 } as never)
 
-          expect(fixture.progress.progressFailed).toBe(false)
+          expect(fixture.progressFailed).toBe(false)
           expect(framesOf(yield* recordsOf("invalid"))).toEqual([])
           expect(closedOf(yield* recordsOf("invalid")).length).toBe(1)
           expect(yield* outputsOf("invalid")).toEqual(["b.mp4"])
@@ -231,11 +231,11 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("captured")
-          fixture.progress.frames = [probe]
+          fixture.frames = [probe]
           yield* encoder.Start("c")
           yield* test.advance(0)
           const before = (yield* recordsOf("captured")).length
-          yield* fixture.progress.captured!.progress(Transcode, upload)
+          yield* fixture.captured!.progress(Transcode, upload)
           yield* test.advance("1 minute")
 
           expect((yield* recordsOf("captured")).length).toBe(before)
@@ -252,8 +252,8 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("retry")
-          fixture.progress.frames = [encode]
-          fixture.progress.plan = ["fail"]
+          fixture.frames = [encode]
+          fixture.plan = ["fail"]
           yield* encoder.Start("d")
           yield* test.advance(0)
 
@@ -280,8 +280,8 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("dead")
-          fixture.progress.frames = [probe]
-          fixture.progress.plan = ["fail", "fail"]
+          fixture.frames = [probe]
+          fixture.plan = ["fail", "fail"]
           yield* encoder.Start("e")
           yield* test.advance(0)
           yield* test.advance("1 minute")
@@ -301,7 +301,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("lossy")
-          fixture.progress.frames = [probe, encode, upload]
+          fixture.frames = [probe, encode, upload]
           yield* test.dropProgress((message) => message.ref.id === "lossy")
           yield* encoder.Start("f")
           yield* test.advance(0)
@@ -327,7 +327,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
           const encoder = yield* Encoder.get("plain")
           yield* encoder.Thumb("g")
           yield* test.advance(0)
-          yield* fixture.progress.captured!.progress(Transcode, probe)
+          yield* fixture.captured!.progress(Transcode, probe)
 
           expect(yield* recordsOf("plain")).toEqual([])
         }),
@@ -575,7 +575,7 @@ const sentFor = (id: string, count: number) =>
   })
 
 /** Progress-delivery cases: frames stay in order, drop after cancellation, and coalesce per effect for a paused client. */
-export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
+export const progressDeliveryConformance: ReadonlyArray<ConformanceCase<ProgressFixture>> = [
   {
     name: "keeps an effect's progress in order when its first frames on an activation arrive together",
     run: ({ expect, environment }) =>
@@ -917,6 +917,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "delivers progress from an executor on runner C to a connection parked at holder A for an actor owned by runner B",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -966,3 +967,9 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Progress actors, executors and the studio. */
+export const progressSuite: ConformanceSuite<ProgressFixture> = {
+  fixture: progressFixture,
+  layer: (fixture) => Layer.merge(progressLayer(fixture), studioLayer),
+}

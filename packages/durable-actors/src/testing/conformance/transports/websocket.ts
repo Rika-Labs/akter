@@ -329,7 +329,7 @@ export const transportWebSocketConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "revokes a live and a parked WebSocket session within reauthorizeEvery",
     timeoutMs: 40_000,
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const { test, host, token } = yield* setup(environment)
@@ -340,7 +340,7 @@ export const transportWebSocketConformance: ReadonlyArray<ConformanceCase> = [
           yield* greet(parked, token("bob"), "bob")
           yield* test.hibernate(room.ref)
 
-          fixture.denied.add("Chat")
+          access.denied.add("Chat")
 
           yield* Effect.gen(function* () {
             for (const ws of [live, parked]) {
@@ -350,7 +350,7 @@ export const transportWebSocketConformance: ReadonlyArray<ConformanceCase> = [
               })
               expect((yield* ws.closed).code).toBe(1008)
             }
-          }).pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Chat"))))
+          }).pipe(Effect.ensuring(Effect.sync(() => access.denied.delete("Chat"))))
         }),
       ),
   },
@@ -407,6 +407,7 @@ export const transportWebSocketConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "resyncs a WebSocket in place after its owner dies, and holds live frames until resyncDone",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) =>

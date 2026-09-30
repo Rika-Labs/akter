@@ -287,6 +287,7 @@ const contiguous = (log: ReadonlyArray<{ readonly cursor: string }>) =>
 export const singletonConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps one singleton activation and one background loop across three runners",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -326,6 +327,7 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "registers a singleton's type before its entity can activate",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -363,6 +365,7 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "moves the singleton and its loop to exactly one survivor after its runner is killed",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -424,6 +427,7 @@ export const singletonConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "stops a heartbeat-paused singleton owner's loop before its successor starts and fences its commits",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>

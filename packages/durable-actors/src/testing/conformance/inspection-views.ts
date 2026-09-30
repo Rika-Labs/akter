@@ -3,7 +3,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { Actor, Intent } from "../../index.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 class Noted extends Actor.Event<Noted>()("Noted", { body: Schema.String }) {}
 
@@ -388,3 +388,8 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Inspection-view actors. */
+export const inspectionViewsSuite: ConformanceSuite = {
+  layer: () => inspectionViewsLayer,
+}

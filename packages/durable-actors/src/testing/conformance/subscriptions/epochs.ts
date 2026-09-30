@@ -2,7 +2,7 @@ import { Effect, Fiber } from "effect"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
 import { CLAIM_LEASE } from "../outbox.ts"
-import { SubFollower, SubOrder } from "./actors.ts"
+import { SubFollower, SubOrder, type SubscriptionsFixture } from "./actors.ts"
 import {
   cursorRows,
   drain,
@@ -17,10 +17,10 @@ import {
 } from "./harness.ts"
 
 /** Unsubscribe, resubscribe, and control-row epochs of event subscriptions. */
-export const subscriptionEpochConformance: ReadonlyArray<ConformanceCase> = [
+export const subscriptionEpochConformance: ReadonlyArray<ConformanceCase<SubscriptionsFixture>> = [
   {
     name: "runs no handler for a delivery in flight when unsubscribe commits",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -49,7 +49,7 @@ export const subscriptionEpochConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps the newest epoch when subscribe and unsubscribe control rows are delivered out of order",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -84,7 +84,7 @@ export const subscriptionEpochConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: 'runs no stale-epoch delivery after unsubscribe and resubscribe with from: "start", and applies the new epoch from cursor 1',
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -125,7 +125,7 @@ export const subscriptionEpochConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "makes no change when a control row reruns at the same epoch after a crash",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -154,7 +154,7 @@ export const subscriptionEpochConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "registers a subscription once when the relay dies after the control claim, before the registration statement",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,

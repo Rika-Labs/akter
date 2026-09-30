@@ -5,7 +5,7 @@ import type { ActorRef } from "../../identity/caller.ts"
 import { decompress } from "../../runtime/storage/codec.ts"
 import { VERSION_KEY } from "../../state/migration.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 class Overflow extends Schema.TaggedError<Overflow>()("Overflow", { max: Schema.Int }) {}
 
@@ -304,3 +304,8 @@ export const reducerConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The reducer actors. */
+export const reducerSuite: ConformanceSuite = {
+  layer: () => reducerLayer,
+}

@@ -9,6 +9,7 @@ import type {
   ConformanceCase,
   ConformanceEnvironment,
   ConformanceServices,
+  ConformanceSuite,
 } from "../conformance.ts"
 
 export interface RetentionFixture {
@@ -234,7 +235,7 @@ const eventSequence = Effect.fnUntraced(function* (id: string) {
 }, Effect.orDie)
 
 /** Retention cases: pruning of receipts and events keeps expired ids rejected, outbox dedup intact, and sequences continuous. */
-export const retentionConformance: ReadonlyArray<ConformanceCase> = [
+export const retentionConformance: ReadonlyArray<ConformanceCase<RetentionFixture>> = [
   {
     name: "prunes receipts past keepReceipts and still rejects the expired id after pruning and restart",
     run: ({ expect, environment, fixture }) =>
@@ -242,7 +243,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const journal = yield* Journal.get("receipts")
-          const before = fixture.retention.adds
+          const before = fixture.adds
           const add = journal.Add(3)
           expect(yield* add).toBe(3)
           expect(yield* journal.Add(4)).toBe(7)
@@ -259,7 +260,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
             state: { total: 7 },
           })
           expect((yield* add.pipe(Effect.flip)).reason).toBeInstanceOf(CommandExpired)
-          expect(fixture.retention.adds - before).toBe(2)
+          expect(fixture.adds - before).toBe(2)
           expect(yield* journal.Total()).toBe(7)
         }),
       ),
@@ -293,7 +294,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
               .finally(() => first.dispose()),
           )
 
-          const adds = fixture.retention.adds
+          const adds = fixture.adds
           const second = environment.build()
 
           yield* Effect.promise(() =>
@@ -317,7 +318,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
               .finally(() => second.dispose()),
           )
 
-          expect(fixture.retention.adds).toBe(adds)
+          expect(fixture.adds).toBe(adds)
         }).pipe(Effect.ensuring(environment.restart)),
       ),
   },
@@ -330,7 +331,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           const sender = yield* Journal.get("sender")
           const receiver = yield* Journal.get("receiver")
           const bystander = yield* Journal.get("bystander")
-          const before = fixture.retention.receives
+          const before = fixture.receives
           yield* sender.Forward("receiver")
 
           const sql = yield* SqlClient.SqlClient
@@ -354,7 +355,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
           yield* test.advance(CLAIM_LEASE)
 
-          expect(fixture.retention.receives - before).toBe(1)
+          expect(fixture.receives - before).toBe(1)
           expect(yield* receiver.Total()).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
 
@@ -578,6 +579,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rejects a retry admitted before expiry when cleanup pruned the receipt before its turn",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 20_000,
     run: ({ expect, environment, fixture }) =>
@@ -586,7 +588,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const journal = yield* Journal.get("race")
-          const before = fixture.retention.adds
+          const before = fixture.adds
           const now = yield* databaseTime
           const id = `v1.${now - 58_500}.${now + 1_500}.0c2f3a55-5b8e-4d53-9a51-1f7b3d9f0c11`
 
@@ -612,7 +614,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           yield* delivering.release
           const failure = yield* Fiber.join(retry)
           expect(Schema.is(ActorError)(failure) && failure.reason).toBeInstanceOf(CommandExpired)
-          expect(fixture.retention.adds - before).toBe(1)
+          expect(fixture.adds - before).toBe(1)
           expect(yield* journal.Total()).toBe(1)
         }),
       ),
@@ -649,3 +651,9 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Retention actors. */
+export const retentionSuite: ConformanceSuite<RetentionFixture> = {
+  fixture: retentionFixture,
+  layer: retentionLayer,
+}

@@ -5,7 +5,7 @@ import { Actor, Actors, Intent } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { BATCH_CAP, MERGE_CAP } from "../../runtime/entity/mailbox.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 const marks = Actor.table(pgTable("batch_marks", { id: text("id").primaryKey() }))
 
@@ -515,3 +515,8 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The batch ledger actor. */
+export const batchesSuite: ConformanceSuite = {
+  layer: () => batchesLayer,
+}

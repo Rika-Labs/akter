@@ -3,15 +3,21 @@ import { Tenant } from "../../../index.ts"
 import { System } from "../../../identity/caller.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { OrderDelivery, SubFollower, SubOrder, THROWING_ROUTE } from "./actors.ts"
+import {
+  OrderDelivery,
+  SubFollower,
+  SubOrder,
+  THROWING_ROUTE,
+  type SubscriptionsFixture,
+} from "./actors.ts"
 import { drain, followerLog, handlerRuns, logOf, run, sourceRows } from "./harness.ts"
 import { CLAIM_LEASE } from "../outbox.ts"
 
 /** Tenant isolation, System attribution, and handler access of event subscriptions. */
-export const subscriptionAccessConformance: ReadonlyArray<ConformanceCase> = [
+export const subscriptionAccessConformance: ReadonlyArray<ConformanceCase<SubscriptionsFixture>> = [
   {
     name: "backs a routed row off with last_error when route throws, and holds its later events",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -37,7 +43,7 @@ export const subscriptionAccessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps equal source ids in two tenants apart",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -72,7 +78,7 @@ export const subscriptionAccessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "dies when a non-subscription System caller reaches a handler, and hides handlers from X.intents",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -111,20 +117,20 @@ export const subscriptionAccessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "records System subscription attribution on the delivery, and continues after the subscribing caller's access is revoked",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, fixture, access }) =>
       run(
         environment,
-        fixture.subscriptions,
+        fixture,
         Effect.gen(function* () {
           const test = yield* ActorTest
           yield* (yield* SubFollower.get("revoked-follower")).Follow({ source: "revoked-order" })
           yield* drain
           yield* (yield* SubOrder.get("revoked-order")).Place({ customerId: "v", amount: 1 })
-          fixture.allowed = false
-          yield* drain.pipe(Effect.ensuring(Effect.sync(() => (fixture.allowed = true))))
+          access.allowed = false
+          yield* drain.pipe(Effect.ensuring(Effect.sync(() => (access.allowed = true))))
 
           expect(yield* followerLog("revoked-follower")).toEqual(["revoked-order#1:OrderPlaced"])
-          expect(fixture.subscriptions.callers.get("revoked-order#1:OrderPlaced")).toEqual(
+          expect(fixture.callers.get("revoked-order#1:OrderPlaced")).toEqual(
             System.make({
               source: "subscription",
               ref: { tenant: test.tenant, actor: "SubOrder", id: "revoked-order" },

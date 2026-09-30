@@ -42,7 +42,7 @@ import type { ServeOptions } from "../../serve/layer.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
 import { buildServedApi, openApiDocument } from "../../serve/api.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 export class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
 
@@ -1255,7 +1255,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin",
-    run: ({ expect, environment }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const server = yield* serveHttp({ origins: ["https://app.example.com"] })
@@ -1626,3 +1626,8 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
 /** A declaration file names the unique symbols these actors inherit only through a module that exports them. */
 export type { NodeInspectSymbol, Unify }
+
+/** The actors `serveHttp` serves. */
+export const httpSuite: ConformanceSuite = {
+  layer: () => httpLayer,
+}

@@ -277,6 +277,7 @@ const killDuringTurn = (expect: ConformanceExpect, point: "beforeCommit" | "afte
 export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "merges commutative calls from three runners on the owner into one turn with one receipt per command id",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -365,6 +366,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "places each actor on exactly one of three runners, reachable through every runner",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -401,6 +403,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rolls back a killed runner's paused turn and retries it once on the next owner after lock expiry",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -408,6 +411,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "replays a killed runner's committed turn on the next owner instead of running it again",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -415,6 +419,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fails a stale activation's fence once another runner commits for the actor, then reloads",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -444,6 +449,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "runs a brand-new actor's first command once when two runners race it under one command id",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -493,6 +499,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "orders events gap-free when two real runners race for one actor",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -534,6 +541,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "restarts a killed runner, which serves its shards again",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -562,6 +570,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "serializes a 512-byte subject through a cross-runner command",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -593,6 +602,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "carries the largest supported principal as onBehalfOf through a relay-delivered intent between runners",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>

@@ -22,10 +22,11 @@ import type {
   ConformanceCase,
   ConformanceEnvironment,
   ConformanceServices,
+  ConformanceSuite,
 } from "../conformance.ts"
 import { requestDigest } from "../../serve/assertion/binding.ts"
 import { claimsFor, edgeKey, signAssertion, staticAuth } from "./assertions.ts"
-import { serveHttp } from "./http.ts"
+import { serveHttp, httpSuite } from "./http.ts"
 
 const Attachments = Actor.content("attachments")
 
@@ -247,7 +248,7 @@ const SECOND_KEY = {
 }
 
 /** Content-blob cases: grants, per-tenant deduplication, chunked storage up to 64 MiB, and refusal of unauthorized attaches. */
-export const contentConformance: ReadonlyArray<ConformanceCase> = [
+export const contentConformance: ReadonlyArray<ConformanceCase<ContentFixture>> = [
   {
     name: "refuses to attach by bare hash, by another tenant's grant, or by an expired grant, and reads nothing without a reference",
     run: ({ expect, environment }) =>
@@ -607,7 +608,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           const ref = yield* upload(bytes)
           yield* test.advance(COLLECTED_AFTER)
 
-          const paused = yield* pauseAt(fixture.content, "afterReferenceScan")
+          const paused = yield* pauseAt(fixture, "afterReferenceScan")
           const sweep = yield* internal.sweepContent.pipe(Effect.forkScoped)
           yield* paused.reached
 
@@ -616,12 +617,12 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           yield* doc.Attach({ name: "file", ref: regranted })
           yield* paused.release
           yield* Fiber.join(sweep)
-          yield* reset(fixture.content)
+          yield* reset(fixture)
 
           expect(regranted.hash).toBe(ref.hash)
           expect(yield* stored(ref.hash)).toEqual({ contents: 1, chunks: 1 })
           expect(yield* doc.Text("file")).toEqual(Option.some(decoder.decode(bytes)))
-        }).pipe(Effect.ensuring(reset(fixture.content))),
+        }).pipe(Effect.ensuring(reset(fixture))),
       ),
   },
   {
@@ -647,6 +648,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "never deletes content whose attach checked its grant just before expiry and commits up to commandTimeout later",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
@@ -667,7 +669,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
 
               yield* test.advance("59 minutes")
               yield* test.advance("59500 millis")
-              fixture.content.held = Deferred.await(gate)
+              fixture.held = Deferred.await(gate)
               const attach = yield* doc.AttachHeld({ name: "file", ref }).pipe(Effect.forkScoped)
               yield* Effect.sleep("300 millis")
 
@@ -681,12 +683,12 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
               expect(yield* doc.Text("file")).toEqual(Option.some(decoder.decode(bytes)))
             }).pipe(Effect.orDie),
           )
-        }).pipe(Effect.ensuring(reset(fixture.content))),
+        }).pipe(Effect.ensuring(reset(fixture))),
       ),
   },
   {
     name: "hands a fresh grant from one actor's reference to another actor's attach through Content.grant, and refuses a caller whose authorize denies <blob>.grant",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
@@ -705,11 +707,11 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
             Option.none(),
           )
 
-          fixture.denied.add("attachments.grant")
+          access.denied.add("attachments.grant")
 
           const denied = yield* Content.grant(Document, "handoff-source", Attachments, "file").pipe(
             Effect.flip,
-            Effect.ensuring(Effect.sync(() => fixture.denied.delete("attachments.grant"))),
+            Effect.ensuring(Effect.sync(() => access.denied.delete("attachments.grant"))),
           )
 
           expect(denied.reason).toEqual(Unauthorized.make({ code: "access_denied" }))
@@ -731,7 +733,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
             yield* doc.Attach({ name: "file", ref })
             yield* test.advance(COLLECTED_AFTER)
 
-            const paused = yield* pauseAt(fixture.content, "afterResolve")
+            const paused = yield* pauseAt(fixture, "afterResolve")
             const reading = yield* doc[read]("file").pipe(Effect.forkScoped)
             yield* paused.reached
             yield* doc.Detach("file")
@@ -741,7 +743,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
 
             expect(yield* Fiber.join(reading)).toEqual(Option.none())
           }
-        }).pipe(Effect.ensuring(reset(fixture.content))),
+        }).pipe(Effect.ensuring(reset(fixture))),
       ),
   },
   {
@@ -757,7 +759,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           yield* doc.Attach({ name: "file", ref })
           yield* test.advance(COLLECTED_AFTER)
 
-          const paused = yield* pauseAt(fixture.content, "beforeRaise")
+          const paused = yield* pauseAt(fixture, "beforeRaise")
 
           const granting = yield* Content.grant(Document, "race-grant", Attachments, "file").pipe(
             Effect.forkScoped,
@@ -769,7 +771,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
           yield* paused.release
 
           expect(yield* Fiber.join(granting)).toEqual(Option.none())
-        }).pipe(Effect.ensuring(reset(fixture.content))),
+        }).pipe(Effect.ensuring(reset(fixture))),
       ),
   },
   {
@@ -808,3 +810,11 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Content-blob actors; cases replace the fixture hook to pause one content operation. */
+export const contentSuite: ConformanceSuite<ContentFixture> = {
+  fixture: contentFixture,
+  layer: contentLayer,
+  uses: [httpSuite],
+  content: (fixture) => (point) => Effect.suspend(() => fixture.hook(point)),
+}

@@ -36,11 +36,11 @@ import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { Authenticated } from "../../serve/auth.ts"
-import { HttpWatched, serveHttp, tenantOf } from "./http.ts"
+import { HttpWatched, serveHttp, tenantOf, httpSuite } from "./http.ts"
 import { pauseReplay, replayedThrough, withReplica } from "./read-your-writes.ts"
 import type { Server } from "./http.ts"
 import { preparedForRowLevelSecurity } from "./rls.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
 
 class Said extends Actor.Event<Said>()("Said", { text: Schema.String }) {}
 
@@ -552,7 +552,7 @@ const expiring = Actor.auth.make((request) =>
   }),
 )
 
-const servedCases: ReadonlyArray<ConformanceCase> = [
+const servedCases: ReadonlyArray<ConformanceCase<WatchFixture>> = [
   {
     name: "serves a watch as server-sent events: the current result first, then one per change, each after the first carrying the version its rerun waited for",
     run: ({ expect, environment }) =>
@@ -636,7 +636,7 @@ const servedCases: ReadonlyArray<ConformanceCase> = [
   {
     name: "denies a watch at open with 403, and ends a running one with access_denied within reauthorizeEvery after revocation",
     timeoutMs: 60_000,
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
@@ -645,11 +645,11 @@ const servedCases: ReadonlyArray<ConformanceCase> = [
           const base = `/actors/HttpWatched/served-revoked`
           yield* post(server, `${base}/Post`, token)
 
-          fixture.denied.add("Level")
+          access.denied.add("Level")
 
           const denied = yield* server
             .send(`${base}/Level/watch`, { token })
-            .pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Level"))))
+            .pipe(Effect.ensuring(Effect.sync(() => access.denied.delete("Level"))))
 
           expect(denied.status).toBe(403)
           expect(yield* wireReason(denied.text)).toEqual({
@@ -659,12 +659,12 @@ const servedCases: ReadonlyArray<ConformanceCase> = [
 
           const watch = yield* watchOver(`${server.url}${base}/Level/watch`, { token })
           yield* watch.until(1)
-          fixture.denied.add("Level")
+          access.denied.add("Level")
           yield* test.advance("55 seconds")
 
           yield* watch
             .until(2)
-            .pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Level"))))
+            .pipe(Effect.ensuring(Effect.sync(() => access.denied.delete("Level"))))
           expect(watch.messages[1]?.event).toBe("end")
           expect(yield* wireReason(watch.messages[1]!.data)).toEqual({
             tag: "Unauthorized",
@@ -776,7 +776,7 @@ const servedCases: ReadonlyArray<ConformanceCase> = [
   },
 ]
 
-export const watchConformance: ReadonlyArray<ConformanceCase> = [
+export const watchConformance: ReadonlyArray<ConformanceCase<WatchFixture>> = [
   ...servedCases,
   {
     name: "sends the current result first, then a rerun after a turn that writes the state the query read",
@@ -793,7 +793,7 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
           yield* gauge.Bump(3)
           yield* watch.until(2)
           expect(watch.seen).toEqual([2, 5])
-          expect(runsOf(fixture.watch, "Total")).toBe(2)
+          expect(runsOf(fixture, "Total")).toBe(2)
         }),
       ),
   },
@@ -857,8 +857,8 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* totals.until(1)
           yield* asides.until(1)
-          const totalRuns = runsOf(fixture.watch, "Total")
-          const asideRuns = runsOf(fixture.watch, "Asides")
+          const totalRuns = runsOf(fixture, "Total")
+          const asideRuns = runsOf(fixture, "Asides")
 
           yield* gauge.Bump(0)
           yield* gauge.Say("unread")
@@ -867,9 +867,9 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
           yield* gauge.Idle()
           yield* Effect.sleep(QUIET)
 
-          expect(runsOf(fixture.watch, "Total")).toBe(totalRuns + 1)
+          expect(runsOf(fixture, "Total")).toBe(totalRuns + 1)
           expect(totals.seen).toEqual([1])
-          expect(runsOf(fixture.watch, "Asides")).toBe(asideRuns)
+          expect(runsOf(fixture, "Asides")).toBe(asideRuns)
           expect(asides.seen).toEqual([0])
 
           yield* gauge.Glance()
@@ -891,10 +891,10 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
           yield* watch.until(1)
           yield* gauge.Bump(1)
           yield* watch.until(2)
-          const before = runsOf(fixture.watch, "Gated")
+          const before = runsOf(fixture, "Gated")
 
           const release = yield* Deferred.make<void>()
-          fixture.watch.gate = Deferred.await(release)
+          fixture.gate = Deferred.await(release)
 
           yield* gauge.Bump(1)
           yield* Effect.sleep(QUIET)
@@ -902,14 +902,14 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
           yield* gauge.Bump(1)
           yield* gauge.Bump(1)
           yield* Effect.sleep(QUIET)
-          expect(runsOf(fixture.watch, "Gated")).toBe(before + 1)
+          expect(runsOf(fixture, "Gated")).toBe(before + 1)
 
-          fixture.watch.gate = Effect.void
+          fixture.gate = Effect.void
           yield* Deferred.succeed(release, undefined)
           yield* watch.until(4)
           yield* Effect.sleep(QUIET)
 
-          expect(runsOf(fixture.watch, "Gated")).toBe(before + 2)
+          expect(runsOf(fixture, "Gated")).toBe(before + 2)
           expect(watch.seen).toEqual([0, 1, 2, 5])
         }),
       ),
@@ -993,30 +993,30 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "denies a watch at open, ends it within reauthorizeEvery after revocation, and sends no result after the bound",
     timeoutMs: 60_000,
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const gauge = yield* Mirror.get("watch-revoked")
           yield* gauge.Bump(1)
 
-          fixture.denied.add("Total")
+          access.denied.add("Total")
 
           const refused = yield* gauge.Total.watch().pipe(
             Stream.runDrain,
             Effect.flip,
-            Effect.ensuring(Effect.sync(() => fixture.denied.delete("Total"))),
+            Effect.ensuring(Effect.sync(() => access.denied.delete("Total"))),
           )
 
           expect(reasonOf(refused)).toEqual(Unauthorized.make({ code: "access_denied" }))
 
           const watch = yield* observe(gauge.Total.watch())
           yield* watch.until(1)
-          fixture.denied.add("Total")
+          access.denied.add("Total")
           yield* test.advance("1500 millis")
 
           const revoked = yield* watch.failure.pipe(
-            Effect.ensuring(Effect.sync(() => fixture.denied.delete("Total"))),
+            Effect.ensuring(Effect.sync(() => access.denied.delete("Total"))),
           )
 
           expect(reasonOf(revoked)).toEqual(Unauthorized.make({ code: "access_denied" }))
@@ -1183,6 +1183,7 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "with row-level security on, reruns run as the role bound to the tenant on whichever server answers",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -1247,12 +1248,13 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "a watch held on runner A sees a turn committed on runner B",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.watch,
+        fixture,
         2,
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -1274,12 +1276,13 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "reruns after an owner killed between commit and flush",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.watch,
+        fixture,
         3,
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -1312,3 +1315,10 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Watched actors, served beside the HTTP actors. */
+export const watchSuite: ConformanceSuite<WatchFixture> = {
+  fixture: watchFixture,
+  layer: watchLayer,
+  uses: [httpSuite],
+}

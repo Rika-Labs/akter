@@ -20,6 +20,7 @@ afterAll(() => harness.dispose())
 
 const backend: ConformanceBackend = {
   independentConnections: false,
+  freshDatabases: true,
   services: BunCrypto.layer,
   httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>

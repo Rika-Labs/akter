@@ -8,7 +8,7 @@ import {
 } from "../../errors/actor.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
 import { InternalActors } from "../../runtime/actors.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import {
   Closed,
   Full,
@@ -22,6 +22,7 @@ import {
   serveHttp,
   tenantOf,
   TooMany,
+  httpSuite,
 } from "./http.ts"
 
 const baseFetch = globalThis.fetch.bind(globalThis)
@@ -1015,3 +1016,8 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Client cases call the served HTTP actors. */
+export const clientSuite: ConformanceSuite = {
+  uses: [httpSuite],
+}

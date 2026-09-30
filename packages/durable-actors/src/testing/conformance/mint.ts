@@ -13,7 +13,7 @@ import type { Mintable } from "../../contexts/command.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
 import { deriveMintId } from "../../identity/mint.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { enqueue, holding, transactions } from "./batches.ts"
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
@@ -834,3 +834,8 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Minted-id actors. */
+export const mintSuite: ConformanceSuite = {
+  layer: () => mintLayer,
+}

@@ -11,7 +11,7 @@ import { Actor, Intent, Unauthorized, User } from "../../index.ts"
 import { Inspector } from "../../runtime/index.ts"
 import * as Queries from "../../runtime/inspector/queries.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 class Noted extends Actor.Event<Noted>()("Noted", { body: Schema.String }) {}
 
@@ -626,3 +626,8 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Inspector actors. */
+export const inspectorSuite: ConformanceSuite = {
+  layer: () => inspectorLayer,
+}

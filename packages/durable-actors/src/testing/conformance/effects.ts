@@ -6,7 +6,7 @@ import { Actor, Caller, System } from "../../index.ts"
 import type { ExecutorContext } from "../../contexts/effect.ts"
 import { CommandId } from "../../identity/command.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 /** What the fake provider does on one call; calls past the plan succeed. */
 type ProviderStep = "ok" | "fail" | "die"
@@ -229,7 +229,7 @@ const attemptsOf = (fixture: EffectsFixture, id: string) =>
   fixture.attempts.filter((attempt) => attempt.ref.id === id)
 
 /** Effect cases: executors run only after the turn commits, results route to `onSuccess` once under the effect id, and declared failures, defects, and rolled-back commits discard performed effects. */
-export const effectsConformance: ReadonlyArray<ConformanceCase> = [
+export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> = [
   {
     name: "routes an executor's result to onSuccess once with the effect id as its command id",
     run: ({ expect, environment, fixture }) =>
@@ -239,14 +239,14 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           const author = yield* Author.get("route")
           yield* author.Post("hello spam")
           yield* test.advance(0)
-          const [attempt] = attemptsOf(fixture.effects, "route")
+          const [attempt] = attemptsOf(fixture, "route")
           const { routed } = yield* authorState("route")
 
-          expect(attemptsOf(fixture.effects, "route").length).toBe(1)
+          expect(attemptsOf(fixture, "route").length).toBe(1)
           expect(Schema.is(CommandId)(attempt?.effectId)).toBe(true)
           expect(attempt).toMatchObject({ attempt: 1, ref: author.ref })
           expect(attempt && Option.getOrUndefined(attempt.principal)).toEqual({ subject: "alice" })
-          expect(fixture.effects.sawDatabase).toBe(false)
+          expect(fixture.sawDatabase).toBe(false)
           expect(routed).toMatchObject([
             {
               flagged: true,
@@ -281,12 +281,12 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           const waiter = yield* author.Post("later").pipe(Effect.forkChild)
           yield* pause.reached
           yield* test.advance(0)
-          expect(attemptsOf(fixture.effects, "visibility")).toEqual([])
+          expect(attemptsOf(fixture, "visibility")).toEqual([])
           expect(yield* test.inspect(author.ref)).toMatchObject({ receipts: 0, effects: 0 })
           yield* pause.release
           yield* Fiber.join(waiter)
           yield* test.advance(0)
-          expect(attemptsOf(fixture.effects, "visibility").length).toBe(1)
+          expect(attemptsOf(fixture, "visibility").length).toBe(1)
           expect((yield* authorState("visibility")).routed.length).toBe(1)
         }),
       ),
@@ -309,7 +309,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.crashNext("beforeCommit")
           yield* author.Post("retried")
           yield* test.advance(0)
-          expect(attemptsOf(fixture.effects, "rollback").length).toBe(1)
+          expect(attemptsOf(fixture, "rollback").length).toBe(1)
           expect((yield* authorState("rollback")).routed.length).toBe(1)
           expect(yield* test.inspect(author.ref)).toMatchObject({
             receipts: 3,
@@ -332,14 +332,14 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 1, outbox: 0 })
           expect((yield* authorState("twice")).routed).toEqual([])
           yield* test.advance("1 minute")
-          const attempts = attemptsOf(fixture.effects, "twice")
+          const attempts = attemptsOf(fixture, "twice")
           const effectId = attempts[0]!.effectId
 
           expect(attempts.map(({ attempt, effectId }) => [attempt, effectId])).toEqual([
             [1, effectId],
             [2, effectId],
           ])
-          expect(fixture.effects.calls.get(effectId)).toBe(2)
+          expect(fixture.calls.get(effectId)).toBe(2)
           expect((yield* authorState("twice")).routed.map(({ commandId }) => commandId)).toEqual([
             effectId,
           ])
@@ -365,7 +365,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           yield* Fiber.join(draining)
           yield* test.advance("1 minute")
 
-          expect(attemptsOf(fixture.effects, "route-crash").length).toBe(1)
+          expect(attemptsOf(fixture, "route-crash").length).toBe(1)
           expect((yield* authorState("route-crash")).routed.length).toBe(1)
           expect(yield* test.receiptsFor(author.ref, "Moderated")).toBe(1)
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
@@ -382,12 +382,10 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.crashNext("beforeExecute")
           yield* author.Post("claimed")
           yield* test.advance(0)
-          expect(attemptsOf(fixture.effects, "before-execute")).toEqual([])
+          expect(attemptsOf(fixture, "before-execute")).toEqual([])
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 1 })
           yield* test.advance("1 minute")
-          expect(
-            attemptsOf(fixture.effects, "before-execute").map(({ attempt }) => attempt),
-          ).toEqual([2])
+          expect(attemptsOf(fixture, "before-execute").map(({ attempt }) => attempt)).toEqual([2])
           expect((yield* authorState("before-execute")).routed.length).toBe(1)
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
         }),
@@ -400,14 +398,14 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const author = yield* Author.get("exhausted")
-          fixture.effects.plan = ["fail", "fail"]
+          fixture.plan = ["fail", "fail"]
           yield* author.Post("doomed")
           yield* test.advance(0)
           yield* test.advance("1 second")
-          const [first] = attemptsOf(fixture.effects, "exhausted")
+          const [first] = attemptsOf(fixture, "exhausted")
           const { routed, dead } = yield* authorState("exhausted")
 
-          expect(attemptsOf(fixture.effects, "exhausted").length).toBe(2)
+          expect(attemptsOf(fixture, "exhausted").length).toBe(2)
           expect(routed).toEqual([])
           expect(dead).toMatchObject([
             {
@@ -435,21 +433,21 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const author = yield* Author.get("ambiguous")
-          fixture.effects.plan = ["fail"]
+          fixture.plan = ["fail"]
           yield* test.crashNext("afterExecute")
           yield* author.Post("unknown")
           yield* test.advance(0)
           yield* test.advance("1 second")
           expect((yield* authorState("ambiguous")).dead).toEqual([])
           yield* test.advance("1 minute")
-          const attempts = attemptsOf(fixture.effects, "ambiguous")
+          const attempts = attemptsOf(fixture, "ambiguous")
           const { dead } = yield* authorState("ambiguous")
 
-          expect(fixture.effects.calls.get(attempts[0]!.effectId)).toBe(1)
+          expect(fixture.calls.get(attempts[0]!.effectId)).toBe(1)
           expect(dead).toMatchObject([{ attempts: 2, ambiguous: true }])
           expect(dead[0]?.cause).toContain("without reporting an outcome")
 
-          fixture.effects.plan = ["die"]
+          fixture.plan = ["die"]
           yield* author.Ping("notify")
           yield* test.advance(0)
           expect(yield* deadLetters("ambiguous")).toEqual([
@@ -469,10 +467,10 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           const author = yield* Author.get("unroutable")
           yield* author.Gauge(1.5)
           yield* test.advance("1 hour")
-          const attempts = attemptsOf(fixture.effects, "unroutable")
+          const attempts = attemptsOf(fixture, "unroutable")
 
           expect(attempts.length).toBe(1)
-          expect(fixture.effects.calls.get(attempts[0]!.effectId)).toBe(1)
+          expect(fixture.calls.get(attempts[0]!.effectId)).toBe(1)
           expect(yield* test.receiptsFor(author.ref, "Measured")).toBe(0)
           expect(yield* deadLetters("unroutable")).toEqual([
             { effect: "Measure", attempts: 1, ambiguous: true },
@@ -498,10 +496,10 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
               WHERE tenant_id = ${test.tenant} AND actor_id = 'unroutable-retry' AND kind = 'effect'`,
           ).toEqual([{ attempts: 1, final_failure: true }])
           yield* test.advance("1 hour")
-          const attempts = attemptsOf(fixture.effects, "unroutable-retry")
+          const attempts = attemptsOf(fixture, "unroutable-retry")
 
           expect(attempts.map(({ attempt }) => attempt)).toEqual([1])
-          expect(fixture.effects.calls.get(attempts[0]!.effectId)).toBe(1)
+          expect(fixture.calls.get(attempts[0]!.effectId)).toBe(1)
           expect(yield* test.receiptsFor(author.ref, "Measured")).toBe(0)
           expect(yield* deadLetters("unroutable-retry")).toEqual([
             { effect: "Measure", attempts: 1, ambiguous: true },
@@ -523,9 +521,15 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
             "Effect capability escaped its turn",
           )
           yield* test.advance(0)
-          expect(attemptsOf(fixture.effects, "escape")).toEqual([])
+          expect(attemptsOf(fixture, "escape")).toEqual([])
           expect(yield* test.inspect(author.ref)).toMatchObject({ receipts: 1, effects: 0 })
         }),
       ),
   },
 ]
+
+/** The effect actors and their executors. */
+export const effectsSuite: ConformanceSuite<EffectsFixture> = {
+  fixture: effectsFixture,
+  layer: effectsLayer,
+}

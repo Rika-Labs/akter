@@ -2,6 +2,7 @@ import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { DateTime, Deferred, Duration, Effect, Option, Predicate, Schema } from "effect"
 import { Actor, Intent } from "../../../index.ts"
 import { CurrentCaller, Tenant } from "../../../identity/caller.ts"
+import type { ConformanceSuite } from "../../conformance.ts"
 
 export class Said extends Actor.Event<Said>()("Said", { text: Schema.String }) {}
 
@@ -239,3 +240,9 @@ export const connectionsLayer = (fixture: ConnectionsFixture) =>
   )
 
 export type { NodeInspectSymbol, Unify }
+
+/** The connection room. */
+export const connectionsSuite: ConformanceSuite<ConnectionsFixture> = {
+  fixture: connectionsFixture,
+  layer: connectionsLayer,
+}

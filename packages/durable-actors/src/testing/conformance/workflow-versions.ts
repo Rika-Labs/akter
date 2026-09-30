@@ -257,6 +257,7 @@ const rollingDeploy = (options: {
   readonly result: (id: string) => string
 }): ConformanceCase => ({
   requiresIndependentConnections: true,
+  requiresFreshDatabase: true,
   timeoutMs: 150_000,
   name: options.name,
   run: ({ expect, environment }) =>
@@ -340,6 +341,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   }),
   {
     name: "workflows: refuses startup when keepWorkflows is below the retry window",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -355,6 +357,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: records markers at start and reads 0 for executions older than the marker, across a restart",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -386,6 +389,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: refuses startup when a step in an open execution's start manifest is removed or renamed",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -405,6 +409,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: refuses startup when a marker leaves min..current",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -421,6 +426,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: refuses startup when min rises above 0 while an execution predates the marker",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -437,6 +443,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: refuses startup when a workflow member is removed",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -452,6 +459,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: refuses startup when a recorded step's result schema changes",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -467,6 +475,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: refuses startup when the workflow input schema changes",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -482,6 +491,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: refuses startup when an open execution's start manifest is missing",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -521,6 +531,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: accepts renaming a step's TypeScript value without changing its name, and skips the full check when the manifest is unchanged",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -546,6 +557,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: an unchanged startup still checks executions an older runner started since",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -579,6 +591,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: a step a newer deployment settles under its changed result schema doesn't strand the execution",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -637,6 +650,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: refuses a rollback that strands newer executions",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -659,6 +673,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: a runner lacking a start-manifest step leaves the execution suspended for a runner that has it",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -697,6 +712,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: a runner of an older deployment leaves an execution a newer deployment started with a changed result schema suspended",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -732,6 +748,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: a start restores its start manifest when retention pruned it under a still-serving runner",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -760,6 +777,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: retention still prunes finished executions after an actor type drops its last workflow",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -802,6 +820,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: retention keeps a manifest while an open execution started under it or it is the latest",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -828,6 +847,7 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     name: "workflow versions: the deploy check compares every actor type in the database, read-only",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {

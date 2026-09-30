@@ -15,7 +15,7 @@ import {
   type Scenario,
   type WorkflowEngineDriver,
 } from "../workflow-engine.ts"
-import { EngineProbe, Probe } from "./actors.ts"
+import { EngineProbe, Probe, type WorkflowsFixture } from "./actors.ts"
 
 /**
  * The shared engine suite's driver for the framework engine, on the
@@ -101,8 +101,8 @@ const frameworkDriver = (environment: ConformanceEnvironment) =>
   })
 
 /** The shared engine suite on the framework engine, plus its ours-only divergences. */
-export const engineConformance: ReadonlyArray<ConformanceCase> = [
-  ...engineCases.map((engineCase, index): ConformanceCase => ({
+export const engineConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
+  ...engineCases.map((engineCase, index): ConformanceCase<WorkflowsFixture> => ({
     name: `workflow engine: ${engineCase.name}`,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
@@ -112,7 +112,7 @@ export const engineConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* engineCase.run({
             driver,
-            fixture: fixture.workflows.engine,
+            fixture: fixture.engine,
             expect,
             key: `engine-${index}`,
           })

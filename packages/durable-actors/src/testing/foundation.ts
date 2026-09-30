@@ -19,6 +19,7 @@ import { compress, decompress } from "../runtime/storage/codec.ts"
 import { VERSION_KEY } from "../state/migration.ts"
 import { ActorTest, executeForTest } from "./actor-test.ts"
 import type { ConformanceCase } from "./conformance.ts"
+import type { ConformanceSuite } from "./conformance.ts"
 
 export interface RecordedDefect {
   readonly actor: string
@@ -65,34 +66,29 @@ export const foundationFixture = (): FoundationFixture => ({
  * removed defect hook, and the diagnostics of each delivery that timed out.
  */
 export const defectRecorder = (fixture: FoundationFixture) =>
-  Logger.layer(
-    [
-      Logger.make((options) => {
-        const message = Array.isArray(options.message) ? options.message[0] : options.message
-        const annotations = options.fiber.getRef(References.CurrentLogAnnotations)
+  Logger.make((options) => {
+    const message = Array.isArray(options.message) ? options.message[0] : options.message
+    const annotations = options.fiber.getRef(References.CurrentLogAnnotations)
 
-        if (message === "Delivery timed out")
-          fixture.timeouts.push({
-            actor: annotations["actor"],
-            id: annotations["id"],
-            commandId: annotations["commandId"],
-            activation: annotations["activation"],
-            turnSessions: annotations["turnSessions"],
-            restarting: annotations["restarting"],
-          })
+    if (message === "Delivery timed out")
+      fixture.timeouts.push({
+        actor: annotations["actor"],
+        id: annotations["id"],
+        commandId: annotations["commandId"],
+        activation: annotations["activation"],
+        turnSessions: annotations["turnSessions"],
+        restarting: annotations["restarting"],
+      })
 
-        if (message !== "Deterministic actor defect") return
+    if (message !== "Deterministic actor defect") return
 
-        fixture.defects.push({
-          actor: String(annotations["actor"]),
-          id: String(annotations["id"]),
-          command: String(annotations["command"]),
-          cause: Cause.pretty(options.cause),
-        })
-      }),
-    ],
-    { mergeWithExisting: true },
-  )
+    fixture.defects.push({
+      actor: String(annotations["actor"]),
+      id: String(annotations["id"]),
+      command: String(annotations["command"]),
+      cause: Cause.pretty(options.cause),
+    })
+  })
 
 const Ping = Actor.command("Ping", { output: Schema.String })
 
@@ -301,7 +297,7 @@ export const foundationLayer = (fixture: FoundationFixture) =>
   )
 
 /** Identity, admission, receipts, state migration, and blob cases every backend must pass. A receipt retry may wait for PGlite's busy connection, so its delivery deadline covers that wait as well as the RPC reply. */
-export const foundationConformance: ReadonlyArray<ConformanceCase> = [
+export const foundationConformance: ReadonlyArray<ConformanceCase<FoundationFixture>> = [
   {
     name: "resolves all identity modes without writes and receipts stateless commands",
     run: ({ environment, expect }) =>
@@ -360,10 +356,10 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             effects: 0,
           })
           const reject = actor.Create(false)
-          const before = fixture.foundation.creates
+          const before = fixture.creates
           expect(yield* reject.pipe(Effect.flip)).toBeInstanceOf(CreationRejected)
           expect(yield* reject.pipe(Effect.flip)).toBeInstanceOf(CreationRejected)
-          expect(fixture.foundation.creates - before).toBe(1)
+          expect(fixture.creates - before).toBe(1)
           expect(yield* test.inspect(actor.ref)).toEqual({
             generation: "1",
             state: {},
@@ -380,25 +376,27 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
-  ...(["beforeCommit", "afterCommit"] as const).map((point): ConformanceCase => ({
-    name: `keeps creation marker and receipt atomic across ${point} crash`,
-    run: ({ environment, expect, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const actor = yield* Created.get(`creation-${point}`)
-          const before = fixture.foundation.creates
-          yield* test.crashNext(point)
-          yield* actor.Create(true)
-          expect(fixture.foundation.creates - before).toBe(point === "beforeCommit" ? 2 : 1)
-          expect(yield* test.inspect(actor.ref)).toMatchObject({
-            state: { count: 23 },
-            receipts: 1,
-          })
-          expect(yield* actor.Read()).toBe(23)
-        }),
-      ),
-  })),
+  ...(["beforeCommit", "afterCommit"] as const).map(
+    (point): ConformanceCase<FoundationFixture> => ({
+      name: `keeps creation marker and receipt atomic across ${point} crash`,
+      run: ({ environment, expect, fixture }) =>
+        environment.run(
+          Effect.gen(function* () {
+            const test = yield* ActorTest
+            const actor = yield* Created.get(`creation-${point}`)
+            const before = fixture.creates
+            yield* test.crashNext(point)
+            yield* actor.Create(true)
+            expect(fixture.creates - before).toBe(point === "beforeCommit" ? 2 : 1)
+            expect(yield* test.inspect(actor.ref)).toMatchObject({
+              state: { count: 23 },
+              receipts: 1,
+            })
+            expect(yield* actor.Read()).toBe(23)
+          }),
+        ),
+    }),
+  ),
   {
     name: "retains creation and singleton receipt identity across runtime restart",
     run: ({ environment, expect }) =>
@@ -448,26 +446,26 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           const actor = yield* Small.get("bytes")
           expect(yield* actor.SetText("éé")).toBe("éé")
           const before = yield* test.inspect(actor.ref)
-          const defects = fixture.foundation.defects.length
+          const defects = fixture.defects.length
           const failure = yield* actor.SetText("ééa").pipe(Effect.exit)
           expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).toContain(
             "policy.maxStateBytes",
           )
           expect(yield* test.inspect(actor.ref)).toEqual(before)
-          expect(fixture.foundation.defects.length).toBe(defects + 1)
-          expect(fixture.foundation.defects.at(-1)).toMatchObject({
+          expect(fixture.defects.length).toBe(defects + 1)
+          expect(fixture.defects.at(-1)).toMatchObject({
             actor: "Small",
             id: "bytes",
             command: "SetText",
           })
-          expect(fixture.foundation.defects.at(-1)!.cause).toContain("policy.maxStateBytes")
+          expect(fixture.defects.at(-1)!.cause).toContain("policy.maxStateBytes")
           expect(yield* actor.SetText("abc")).toBe("abc")
           expect((yield* test.inspect(actor.ref)).generation).toBe(before.generation)
           const sql = yield* SqlClient.SqlClient
           yield* sql`UPDATE actor_state SET value = ${compress("13")} WHERE tenant_id = ${actor.ref.tenant} AND actor_type = 'Small' AND actor_id = 'bytes'`
           yield* test.invalidate(actor.ref)
           expect(Exit.isFailure(yield* actor.SetText("ok").pipe(Effect.exit))).toBe(true)
-          expect(fixture.foundation.defects.length).toBe(defects + 2)
+          expect(fixture.defects.length).toBe(defects + 2)
           expect(yield* test.inspect(actor.ref)).toMatchObject({ state: { text: 13 }, receipts: 2 })
         }),
       ),
@@ -562,7 +560,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* bound.system.Internal().pipe(Actor.commandId(id))).toEqual(expected)
           expect(yield* bound.system.Internal().pipe(Actor.commandId(id))).toEqual(expected)
           const actors = yield* Actors
-          const attempts = fixture.foundation.privateRuns
+          const attempts = fixture.privateRuns
 
           const denied = yield* executeForTest(
             Request.make({
@@ -575,7 +573,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(Outcome.guards.Defect(denied)).toBe(true)
-          expect(fixture.foundation.defects.at(-1)).toMatchObject({
+          expect(fixture.defects.at(-1)).toMatchObject({
             actor: "Private",
             command: "Internal",
           })
@@ -596,43 +594,47 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
                 }),
               ).pipe(Effect.flip),
             ).toMatchObject({ reason: { code: "receipt_access_denied" } })
-          expect(fixture.foundation.privateRuns).toBe(attempts)
+          expect(fixture.privateRuns).toBe(attempts)
           expect((yield* bound.inspect).receipts).toBe(2)
         }),
       ),
   },
-  ...(["execution timeout", "retryable SQL defect"] as const).map((failure): ConformanceCase => ({
-    name: `retries the same command after ${failure} without a partial commit`,
-    run: ({ environment, expect, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const actor = yield* Slow.get(failure)
-          const test = yield* ActorTest
-          expect(yield* actor.Read()).toBe(0)
-          const before = yield* test.inspect(actor.ref)
-          fixture.foundation.slowIds = []
-          fixture.foundation.slowFirst =
-            failure === "execution timeout"
-              ? Effect.never
-              : Effect.die(
-                  SqlError.SqlError.make({
-                    reason: SqlError.DeadlockError.make({ cause: new Error("injected deadlock") }),
-                  }),
-                )
-          const id = yield* (yield* Actors).mintCommandId
-          expect(yield* actor.Bump().pipe(Actor.commandId(id))).toBe(1)
-          expect(fixture.foundation.slowIds).toEqual([id, id])
-          expect(yield* test.inspect(actor.ref)).toEqual({
-            state: { count: 1 },
-            receipts: 2,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-            generation: String(Number(before.generation) + 1),
-          })
-        }),
-      ),
-  })),
+  ...(["execution timeout", "retryable SQL defect"] as const).map(
+    (failure): ConformanceCase<FoundationFixture> => ({
+      name: `retries the same command after ${failure} without a partial commit`,
+      run: ({ environment, expect, fixture }) =>
+        environment.run(
+          Effect.gen(function* () {
+            const actor = yield* Slow.get(failure)
+            const test = yield* ActorTest
+            expect(yield* actor.Read()).toBe(0)
+            const before = yield* test.inspect(actor.ref)
+            fixture.slowIds = []
+            fixture.slowFirst =
+              failure === "execution timeout"
+                ? Effect.never
+                : Effect.die(
+                    SqlError.SqlError.make({
+                      reason: SqlError.DeadlockError.make({
+                        cause: new Error("injected deadlock"),
+                      }),
+                    }),
+                  )
+            const id = yield* (yield* Actors).mintCommandId
+            expect(yield* actor.Bump().pipe(Actor.commandId(id))).toBe(1)
+            expect(fixture.slowIds).toEqual([id, id])
+            expect(yield* test.inspect(actor.ref)).toEqual({
+              state: { count: 1 },
+              receipts: 2,
+              events: 0,
+              outbox: 0,
+              effects: 0,
+              generation: String(Number(before.generation) + 1),
+            })
+          }),
+        ),
+    }),
+  ),
   {
     name: "delivery timeout stops waiting while the admitted command commits once",
     run: ({ environment, expect, fixture }) =>
@@ -641,11 +643,11 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
           const actor = yield* DeliveryActor.get("delivery")
           const reached = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
-          fixture.foundation.deliveryHold = Deferred.succeed(reached, undefined).pipe(
+          fixture.deliveryHold = Deferred.succeed(reached, undefined).pipe(
             Effect.andThen(Deferred.await(release)),
           )
-          fixture.foundation.deliveryRuns = 0
-          fixture.foundation.timeouts.length = 0
+          fixture.deliveryRuns = 0
+          fixture.timeouts.length = 0
           const id = yield* (yield* Actors).mintCommandId
           const pending = yield* actor.Bump().pipe(Actor.commandId(id), Effect.forkScoped)
           yield* Deferred.await(reached)
@@ -653,7 +655,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             reason: Timeout.make({ commandId: id }),
             isRetryable: true,
           })
-          expect(fixture.foundation.timeouts[0]).toMatchObject({
+          expect(fixture.timeouts[0]).toMatchObject({
             actor: actor.ref.actor,
             id: actor.ref.id,
             commandId: id,
@@ -661,7 +663,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             restarting: [],
           })
 
-          const sessions = fixture.foundation.timeouts[0]?.turnSessions
+          const sessions = fixture.timeouts[0]?.turnSessions
 
           if (sessions !== undefined) expect(sessions).toMatchObject({ leased: 1, waiting: 0 })
 
@@ -684,7 +686,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
               Effect.timeout("5 seconds"),
             )
           expect(yield* actor.Bump().pipe(Actor.commandId(id))).toBe(1)
-          expect(fixture.foundation.deliveryRuns).toBe(1)
+          expect(fixture.deliveryRuns).toBe(1)
           expect(yield* test.inspect(actor.ref)).toEqual({
             state: { count: 1 },
             receipts: 1,
@@ -697,3 +699,10 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Foundation actors; its logger records deterministic defects and delivery timeouts for the cases to read. */
+export const foundationSuite: ConformanceSuite<FoundationFixture> = {
+  fixture: foundationFixture,
+  layer: foundationLayer,
+  logger: defectRecorder,
+}

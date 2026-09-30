@@ -29,9 +29,10 @@ import {
   requestDigest,
 } from "../../serve/assertion/binding.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
-import type { ConformanceCase } from "../conformance.ts"
-import { gate, HttpRoom, receipts, runs, tenantOf } from "./http.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
+import { gate, HttpRoom, receipts, runs, tenantOf, httpSuite } from "./http.ts"
 import { endReason, opened, serveSockets, socket } from "./transports/wire.ts"
+import { transportsSuite } from "./transports/actors.ts"
 
 /**
  * The runner half of hosted assertions: a runner serving with
@@ -1375,3 +1376,8 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Assertion and edge cases call the served HTTP actors and the socket room. */
+export const assertionsSuite: ConformanceSuite = {
+  uses: [httpSuite, transportsSuite],
+}

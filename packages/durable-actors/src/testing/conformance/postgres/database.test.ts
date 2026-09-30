@@ -1,42 +1,55 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Clock, Config, Crypto, Effect, ManagedRuntime } from "effect"
-import { Pool } from "pg"
-import { afterAll, describe, expect, it } from "vitest"
-import { databaseName, dropDatabases, sweepStaleDatabases } from "./database.ts"
-
-const harness = ManagedRuntime.make(BunCrypto.layer)
-
-afterAll(() => harness.dispose())
+import { describe, expect, it } from "@effect/vitest"
+import { Clock, Config, Context, Crypto, Effect, Layer, Redacted } from "effect"
+import { PgClient } from "@effect/sql-pg"
+import { SqlClient } from "effect/unstable/sql"
+import { databaseName, disposableDatabase, sweepStaleDatabases } from "../../database.ts"
 
 /** Each `DROP DATABASE` waits for a checkpoint, which takes seconds on a shared server. */
 const DROPS_MS = 60_000
 
-describe("Postgres conformance databases", () => {
-  it("sweeps test databases older than an hour and keeps a live run's", { timeout: DROPS_MS }, () =>
-    harness.runPromise(
+describe("Postgres test databases", () => {
+  it.live(
+    "drops a disposable database with its scope and sweeps only databases older than an hour",
+    () =>
       Effect.gen(function* () {
-        const admin = new Pool({ connectionString: yield* Config.String("TEST_DATABASE_URL") })
-        const crypto = yield* Crypto.Crypto
-        const live = yield* databaseName(crypto, "isolated")
-        const uuid = (yield* crypto.randomUUIDv4).replaceAll("-", "")
-        const stale = `isolated_${(yield* Clock.currentTimeMillis) - 2 * 60 * 60 * 1000}_${uuid}`
+        const url = yield* Config.Redacted("TEST_DATABASE_URL")
+
+        const admin = Context.get(
+          yield* Layer.build(PgClient.layer({ url, maxConnections: 1 })),
+          SqlClient.SqlClient,
+        )
 
         const exists = (name: string) =>
-          Effect.promise(() =>
-            admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [name]),
-          ).pipe(Effect.map(({ rowCount }) => rowCount === 1))
+          admin`SELECT 1 FROM pg_database WHERE datname = ${name}`.pipe(
+            Effect.map((rows) => rows.length === 1),
+          )
 
-        yield* Effect.forEach([live, stale], (name) =>
-          Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
+        const nameOf = (database: Redacted.Redacted<string>) =>
+          new URL(Redacted.value(database)).pathname.slice(1)
+
+        const disposed = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const name = nameOf(yield* disposableDatabase({ url }))
+            expect(yield* exists(name)).toBe(true)
+
+            return name
+          }),
         )
-        yield* sweepStaleDatabases(admin)
+
+        expect(yield* exists(disposed)).toBe(false)
+
+        const live = yield* databaseName(yield* Crypto.Crypto, "isolated")
+        const uuid = (yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")
+        const stale = `isolated_${(yield* Clock.currentTimeMillis) - 2 * 60 * 60 * 1000}_${uuid}`
+
+        yield* Effect.forEach([live, stale], (name) => admin.unsafe(`CREATE DATABASE "${name}"`))
+        yield* sweepStaleDatabases(url)
 
         expect(yield* exists(stale)).toBe(false)
         expect(yield* exists(live)).toBe(true)
-
-        yield* dropDatabases({ admin, names: [live] })
-        yield* Effect.promise(() => admin.end())
-      }),
-    ),
+        yield* admin.unsafe(`DROP DATABASE "${live}" WITH (FORCE)`)
+      }).pipe(Effect.scoped, Effect.provide(BunCrypto.layer)),
+    DROPS_MS,
   )
 })

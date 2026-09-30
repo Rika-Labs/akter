@@ -331,6 +331,7 @@ const stateOf = (ref: ActorRef) =>
 export const cronConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "writes one tick per cron entry on the first committed turn, including a declared failure",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -362,6 +363,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "writes no tick for a turn rejected NotCreated",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -378,6 +380,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fires a due tick once as System cron and rewrites its row to the next scheduled time",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -409,6 +412,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "schedules a first tick from the time the first turn writes it, not from its admission",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -433,6 +437,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "retargets a pending tick to the entry's current command and fires it once",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -457,6 +462,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "advances a retargeted tick that already fired under its old command without firing it again",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -486,6 +492,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fires once after downtime inside the skip window and skips a tick older than it",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -510,6 +517,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rewrites a tick once after a crash between its receipt and the rewrite",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -538,6 +546,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fires a claimed tick once even after the actor stopped, and its handler rechecks state",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -559,6 +568,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rejects application intents that stage or cancel a $cron: key",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -580,6 +590,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "restores a missing entry's tick on the actor's next activation",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -604,6 +615,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "releases a tick whose entry left the policy and deletes it past the skip window",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -645,6 +657,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "writes a singleton's ticks in the default tenant at startup",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -665,6 +678,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "claims $cron: ticks only for actor types registered on the claiming runner",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -697,6 +711,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fires a wall-clock time skipped by a spring-forward gap once, at the first instant after the gap",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -724,6 +739,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fires a wall-clock time repeated by a fall-back transition once, at its first occurrence",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -753,6 +769,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps one expression in two zones as two entries that fire at their own times",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -786,6 +803,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fires a fixed interval at multiples of its length and once after downtime",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRuntime(
         environment,
@@ -874,6 +892,7 @@ const kill = (runner: number) =>
 export const cronClusterConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps one singleton tick row and fires one logical tick per scheduled time on three runners",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -908,6 +927,7 @@ export const cronClusterConformance: ReadonlyArray<ConformanceCase> = [
   ...(["afterClaim", "beforeOutboxDelete"] as const).map((point): ConformanceCase => ({
     name: `fires a tick once when the runner delivering it is killed at ${point}`,
     requiresIndependentConnections: true,
+    requiresFreshDatabase: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
       withCluster(
@@ -950,6 +970,7 @@ export const cronClusterConformance: ReadonlyArray<ConformanceCase> = [
   })),
   {
     name: "keeps a singleton's ticks firing after its runner is killed",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
