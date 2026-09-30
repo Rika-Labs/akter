@@ -922,6 +922,7 @@ export const layer = (options: Options) => {
         clock: frameworkClock,
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        createdBy: (actorType) => registrations.get(actorType)?.policy.createdBy !== undefined,
         wake: relay.wake,
         role: (yield* TenantScope).role,
       })

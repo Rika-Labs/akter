@@ -77,12 +77,17 @@ type ReferenceOf<T> = T extends Context.Reference<infer S> ? S : never
  * through the turn's own outbox statements under the caller the test runs as,
  * never a caller from the file, so a seed cannot carry authority. An effect
  * this runner has no executor for is refused, because it could never run.
+ * A seed marking created an actor type that declares no `policy.createdBy` is
+ * refused: that marker stays false for such a type, or declaring the policy
+ * later would treat the seeded actor as already created.
  */
 export const seedRuntime = (deps: {
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>
   readonly clock: ReferenceOf<typeof FrameworkClock>
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
   readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
+  /** Whether the actor type declares `policy.createdBy`. */
+  readonly createdBy: (actorType: string) => boolean
   readonly wake: Effect.Effect<void>
   readonly role: string | undefined
 }) =>
@@ -99,6 +104,13 @@ export const seedRuntime = (deps: {
       if (seed.actor.type !== ref.actor)
         return yield* Effect.die(
           new Error(`The seed is of ${seed.actor.type}, not ${ref.actor}: refusing to seed it`),
+        )
+
+      if (seed.created && !deps.createdBy(ref.actor))
+        return yield* Effect.die(
+          new Error(
+            `The seed marks ${ref.actor} created, but ${ref.actor} declares no policy.createdBy: refusing to seed it`,
+          ),
         )
 
       for (const { effect } of seed.effects)
