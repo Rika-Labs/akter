@@ -144,7 +144,7 @@ export const holding = Effect.fnUntraced(function* <A, E, R>(first: Effect.Effec
 })
 
 /** The transaction that committed each receipt of `ref`, by command id. */
-const transactions = Effect.fnUntraced(function* (ref: ActorRef) {
+export const transactions = Effect.fnUntraced(function* (ref: ActorRef) {
   const sql = yield* SqlClient.SqlClient
 
   const rows = yield* sql<{ command_id: string; tx: string }>`
