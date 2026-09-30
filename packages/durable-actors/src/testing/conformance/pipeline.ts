@@ -172,7 +172,22 @@ interface Relay {
   /** Drops every connection and refuses new ones, as an unreachable database would. */
   readonly cut: () => void
   readonly restore: () => void
+  /**
+   * Drops the connection that next sends `COMMIT` once the server has
+   * answered it with `COMMIT`, without passing that answer on: the transaction
+   * committed, and the client never learns it. Needs `prepare: false`, so the
+   * statement's text is on the wire.
+   */
+  readonly loseCommitReply: () => void
+  /** Connections dropped by `loseCommitReply` after their commit. */
+  readonly lostCommits: () => number
 }
+
+/** A `CommandComplete` message whose tag is `COMMIT`. */
+const COMMIT_COMPLETE = Buffer.concat([
+  Buffer.of(0x43, 0, 0, 0, 11),
+  new TextEncoder().encode("COMMIT\0"),
+])
 
 /**
  * A TCP relay in front of Postgres, for the turn pool unless a case routes
@@ -185,6 +200,8 @@ const relay = (url: URL, probe: Probe) =>
     Effect.callback<Relay>((resume) => {
       const sockets = new Set<Socket>()
       let refusing = false
+      let armed = false
+      let lost = 0
 
       const server = createServer((client) => {
         if (refusing) return void client.destroy()
@@ -195,6 +212,8 @@ const relay = (url: URL, probe: Probe) =>
         })
 
         let answered = true
+        let losing = false
+        let replies = Buffer.alloc(0)
 
         sockets.add(client)
         sockets.add(upstream)
@@ -206,12 +225,26 @@ const relay = (url: URL, probe: Probe) =>
             probe.sent.push(chunk)
           } else probe.sent[probe.sent.length - 1] = Buffer.concat([probe.sent.at(-1)!, chunk])
 
+          if (armed && chunk.includes("COMMIT")) {
+            armed = false
+            losing = true
+          }
+
           answered = false
           upstream.write(chunk)
         })
         upstream.on("data", (chunk: Buffer) => {
           answered = true
-          client.write(chunk)
+
+          if (!losing) return void client.write(chunk)
+
+          replies = Buffer.concat([replies, chunk])
+
+          if (!replies.includes(COMMIT_COMPLETE)) return
+
+          lost += 1
+          client.destroy()
+          upstream.destroy()
         })
 
         const end = () => {
@@ -242,6 +275,10 @@ const relay = (url: URL, probe: Probe) =>
             restore: () => {
               refusing = false
             },
+            loseCommitReply: () => {
+              armed = true
+            },
+            lostCommits: () => lost,
           }),
         )
       })
@@ -1150,6 +1187,37 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* Fiber.join(call)).toEqual(Option.some(3))
           expect(probe.handled - handled).toBe(2)
+          expect(yield* test.inspect(meter.ref)).toMatchObject({
+            state: { count: 3 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a turn whose COMMIT applied but whose reply was lost is answered from its receipt, never rerun or failed",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { prepare: false }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const meter = yield* Plain.get("lost-commit-reply")
+          expect(yield* meter.Add(1)).toBe(1)
+
+          const id = yield* (yield* Actors).mintCommandId
+          const handled = probe.handled
+          relayed.loseCommitReply()
+
+          const reply = yield* meter
+            .Add(2)
+            .pipe(Actor.commandId(id), Effect.timeoutOption("20 seconds"))
+
+          expect(relayed.lostCommits()).toBe(1)
+          expect(reply).toEqual(Option.some(3))
+          expect(probe.handled - handled).toBe(1)
+          expect(yield* meter.Add(2).pipe(Actor.commandId(id))).toBe(3)
+          expect(probe.handled - handled).toBe(1)
           expect(yield* test.inspect(meter.ref)).toMatchObject({
             state: { count: 3 },
             receipts: 2,

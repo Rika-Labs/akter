@@ -3,7 +3,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { summarize } from "../measure.ts"
 import { CronProbe } from "../probe/contract.ts"
 import { cronFires } from "../probe/layer.ts"
-import { type CaseResult, measure, type Scenario } from "../scenario.ts"
+import { type CaseResult, databaseNow, measure, type Scenario } from "../scenario.ts"
 
 const MINUTE = 60_000
 
@@ -11,16 +11,6 @@ const WORKERS = 64
 
 /** How the relay claim statement begins; stored query text is cut at 160 characters, before its `SKIP LOCKED`. */
 const RELAY_CLAIM = "WITH intent_candidates"
-
-const databaseNow = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
-
-  const [row] = yield* sql<{
-    readonly now: string
-  }>`SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
-
-  return Number(row!.now)
-}).pipe(Effect.orDie)
 
 /** Each actor's first tick since `from`, as lateness after `scheduled`. */
 const firstFires = (from: number, scheduled: number) => {
@@ -109,15 +99,14 @@ const scanMeanMs = (result: CaseResult) =>
 export const cron: Scenario = {
   name: "cron",
   description:
-    "Minutely policy.cron ticks on 10k (quick) or 100k actors falling due at one minute boundary: tick lateness p50/p99/max, drain time, and the relay claim statement's mean time.",
+    "Minutely policy.cron ticks on 10k (context.quick) or 100k actors falling due at one minute boundary: tick lateness p50/p99/max, drain time, and the relay claim statement's mean time.",
   multiRunner: true,
   run: (context) =>
     Effect.gen(function* () {
       if (context.backend.name !== "postgres") return []
 
-      const quick = context.profile === "quick"
-      const actors = quick ? 10_000 : 100_000
-      const repeats = quick ? 1 : 3
+      const actors = context.quick ? 10_000 : 100_000
+      const repeats = context.quick ? 1 : 3
       const lateness: Array<number> = []
       const rounds: Array<CaseResult & { readonly p99: number; readonly createMs: number }> = []
 
