@@ -70,7 +70,7 @@ An insert or upsert whose primary key belongs to another actor fails the turn as
 
 `access: "read"` adopts the table for reading only: `turn.rows(table)` and `read.rows(table)` are `ScopedRead`, filtered by the two mapped columns, with no mutation methods, and `group` refuses the table. The framework adds no column, record, or trigger, and the table needs only an index leading with `(tenant, actor)`.
 
-A writable adopted table starts only after `durable adopt observe`, and the runtime refuses it otherwise; see the [migrations guide](../operations/02-migrations.md#adopting-an-existing-schema). While a table is observed the actor is not authoritative, because other code still writes it.
+A writable adopted table starts only after `durable adopt observe`, and the runtime refuses it otherwise; see the [migrations guide](../operations/02-migrations.md#adopting-an-existing-schema). While a table is observed the actor is not authoritative, because other code still writes it; `durable adopt enforce` makes the database reject every other writer, and the runtime then runs the turns of that actor type as the `adoption.role` writer role.
 
 ## Scoped rows
 

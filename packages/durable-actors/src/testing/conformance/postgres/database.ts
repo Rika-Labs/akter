@@ -1,5 +1,5 @@
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Crypto, Effect, Layer, ManagedRuntime, Redacted, Schedule } from "effect"
+import { Clock, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schedule } from "effect"
 import type { Config } from "effect"
 import { Pool } from "pg"
 import type { ConformanceBackend, ConformanceDatabase } from "../../conformance.ts"
@@ -10,6 +10,62 @@ const copyDatabase = (admin: Pool, name: string, template: string) =>
     Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }),
   )
 
+/** A test database older than this belongs to no live run: runs are cut off well before it. */
+const STALE_AFTER_MS = 60 * 60 * 1000
+
+const NAMED = /^(?:actors|actors_template|isolated|restored)_(\d{13})_[0-9a-f]{32}$/
+
+/**
+ * A name for a test database that carries its creation time, so a later run
+ * on a shared server can tell a leftover from a live run's database.
+ */
+export const databaseName = Effect.fnUntraced(function* (crypto: Crypto.Crypto, prefix: string) {
+  const uuid = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")
+
+  return `${prefix}_${yield* Clock.currentTimeMillis}_${uuid}`
+})
+
+/**
+ * Drops `names` at once. Each `DROP DATABASE` waits for a checkpoint, and
+ * concurrent drops share one, so a suite's databases go in about the time of
+ * one drop instead of one checkpoint each.
+ */
+export const dropDatabases = ({
+  admin,
+  names,
+}: {
+  readonly admin: Pool
+  readonly names: ReadonlyArray<string>
+}) =>
+  Effect.forEach(
+    names,
+    (name) => Effect.promise(() => admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`)),
+    { concurrency: "unbounded", discard: true },
+  )
+
+/**
+ * Drops the test databases an earlier run left behind: a run that was killed,
+ * or whose suite teardown timed out, never dropped its own.
+ */
+export const sweepStaleDatabases = Effect.fnUntraced(function* (admin: Pool) {
+  const now = yield* Clock.currentTimeMillis
+
+  const { rows } = yield* Effect.promise(() =>
+    admin.query<{ datname: string }>("SELECT datname FROM pg_database"),
+  )
+
+  yield* dropDatabases({
+    admin,
+    names: rows
+      .map(({ datname }) => datname)
+      .filter((name) => {
+        const created = NAMED.exec(name)?.[1]
+
+        return created !== undefined && now - Number(created) > STALE_AFTER_MS
+      }),
+  })
+})
+
 const createDatabase = Effect.fnUntraced(function* (
   crypto: Crypto.Crypto,
   admin: Pool,
@@ -17,7 +73,7 @@ const createDatabase = Effect.fnUntraced(function* (
   prefix: string,
   template?: string,
 ) {
-  const name = `${prefix}_${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")}`
+  const name = yield* databaseName(crypto, prefix)
 
   if (template === undefined) yield* Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`))
   else yield* copyDatabase(admin, name, template).pipe(Effect.orDie)
@@ -124,7 +180,7 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
 
         const copy = Effect.fnUntraced(function* (database: Redacted.Redacted<string>) {
           const source = new URL(Redacted.value(database)).pathname.slice(1)
-          const name = `restored_${(yield* crypto.randomUUIDv4).replaceAll("-", "")}`
+          const name = yield* databaseName(crypto, "restored")
 
           yield* copyDatabase(admin, name, source)
           created.push(name)
@@ -144,10 +200,7 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
           connect,
           replica,
           close: Effect.gen(function* () {
-            for (const name of created)
-              yield* Effect.promise(() =>
-                admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`),
-              )
+            yield* dropDatabases({ admin, names: created })
             yield* Effect.promise(() => admin.end())
           }),
         }

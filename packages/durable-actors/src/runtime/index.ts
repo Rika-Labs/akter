@@ -66,6 +66,10 @@ export { adoptionStatus, formatAdoptionStatus } from "./adoption/status.ts"
 
 export type { AdoptionStatus } from "./adoption/status.ts"
 
+export { enforceAdoption, formatEnforce, releaseAdoption } from "./adoption/enforce.ts"
+
+export type { EnforceResult } from "./adoption/enforce.ts"
+
 export { FleetSetupRefused, rebuildFleetView, setupFleet } from "./fleet/setup.ts"
 
 export type { FleetSetup } from "./fleet/setup.ts"

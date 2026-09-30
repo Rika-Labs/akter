@@ -66,6 +66,15 @@
       }
     },
     {
+      "files": [
+        "packages/durable-actors/src/testing/conformance/*/harness.ts",
+        "packages/durable-actors/src/testing/conformance/transports/wire.ts"
+      ],
+      "rules": {
+        "effecttsgo/missing-pipeable-signature": "off"
+      }
+    },
+    {
       "files": ["packages/react/src/*.ts"],
       "rules": {
         "effecttsgo/async-function": "off",

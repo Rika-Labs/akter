@@ -16,6 +16,7 @@ import { isMintedId, provesMint } from "../../identity/mint.ts"
 import { parseChildId } from "../../identity/child.ts"
 import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
+import type { WriteSet } from "../connections/protocol.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
 import { compress, decompress, routingKey as routingKeyOf } from "../storage/codec.ts"
@@ -251,6 +252,8 @@ interface Plan {
   readonly replays: ReadonlySet<number>
   /** What the commit group writes, for the runner's growth metrics. */
   readonly written: Written
+  /** What the commit changes that a watched query may have read. */
+  readonly wrote: WriteSet
 }
 
 /** One `actor_receipts` row a batch commits. */
@@ -277,6 +280,8 @@ export interface Written {
 
 const nothingWritten: Written = { receipts: 0, events: 0, intents: 0, effects: 0 }
 
+const nothingWrote: WriteSet = { state: false, events: [], tables: [], blobs: [] }
+
 /** The activation as a batch's handlers find it: its fenced generation and state. */
 interface View {
   readonly generation: string | undefined
@@ -301,6 +306,8 @@ export interface Done {
   readonly written: Written
   /** The commit version each caller's later queries wait for. */
   readonly version: string
+  /** What the batch changed that a watched query may have read; nothing when it rolled back. */
+  readonly wrote: WriteSet
 }
 
 /**
@@ -449,9 +456,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
-  const { role } = yield* TenantScope
+  const scope = yield* TenantScope
   const { ref } = run.first[0]!.request
   const { tenant, actor, id } = ref
+
+  const role =
+    scope.role ?? (scope.adoption?.enforced.has(actor) === true ? scope.adoption.role : undefined)
 
   const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
 
@@ -614,6 +624,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       let events = 0
       let intents = 0
       let effects = 0
+      const eventTags = new Set<string>()
+      const tables = new Set<string>()
+      const blobs = new Set<string>()
       const replays = new Set<number>()
       const committed: Array<Omit<CommittedEvents, "emittedAtMs">> = []
       const emitted: Array<{ readonly emittedAtMs: number; readonly fed: boolean }> = []
@@ -818,6 +831,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         }
 
         events += result.events.length
+
+        for (const event of result.events) eventTags.add(event.tag)
+
+        for (const table of result.writes?.tables ?? []) tables.add(table)
+
+        for (const blob of result.writes?.blobs ?? []) blobs.add(blob)
         intents += result.outbox.intents.length
         effects += result.outbox.effects.length
 
@@ -894,6 +913,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           outbox: [],
           replays,
           written: nothingWritten,
+          wrote: nothingWrote,
         } satisfies Plan
 
       const writes: Array<Statement> = []
@@ -945,6 +965,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         outbox: outboxes,
         replays,
         written: { receipts: receipts.length, events, intents, effects },
+        wrote: {
+          state: dirty.size > 0 || removed.size > 0,
+          events: [...eventTags],
+          tables: [...tables],
+          blobs: [...blobs],
+        },
       } satisfies Plan
     })
 
@@ -997,6 +1023,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       replays: plan.replays,
       written: plan.writes === undefined ? nothingWritten : plan.written,
       version,
+      wrote: plan.writes === undefined ? nothingWrote : plan.wrote,
     })
 
     answering = false

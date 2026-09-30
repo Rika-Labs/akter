@@ -57,7 +57,7 @@ import { type Holder, type HeldActorType, connectionHolder } from "./connections
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
 import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
 import type { Owner } from "./connections/owner.ts"
-import { FEED_MEMBER } from "./connections/protocol.ts"
+import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { routingKey } from "./storage/codec.ts"
 import { recordedPlacement } from "./storage/placements.ts"
@@ -110,14 +110,23 @@ export interface Options {
     /**
      * What is being authorized: `command` for commands and reducers, `query`
      * for queries, `open` for a connection, `feed` for an event feed (with
-     * `command` set to the event tag), `reauthorize` for a live session's
+     * `command` set to the event tag), `watch` for a query watch (with
+     * `command` set to the query tag), `reauthorize` for a live session's
      * periodic check, and `content` for a content operation on the actor, with
      * `command` set to `<blob>.grant` or `<blob>.get`; hooks should deny kinds
      * they do not know.
      */
-    readonly kind: "command" | "query" | "open" | "stream" | "feed" | "reauthorize" | "content"
-    /** On `reauthorize`, what the session is: an `open` connection, a `stream`, or a `feed`. */
-    readonly of?: "open" | "stream" | "feed"
+    readonly kind:
+      | "command"
+      | "query"
+      | "open"
+      | "stream"
+      | "feed"
+      | "watch"
+      | "reauthorize"
+      | "content"
+    /** On `reauthorize`, what the session is: an `open` connection, a `stream`, a `feed`, or a `watch`. */
+    readonly of?: "open" | "stream" | "feed" | "watch"
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
@@ -217,6 +226,18 @@ export interface Options {
    * executors, and retention, keeps the connecting role, which the policies exempt.
    */
   readonly rowLevelSecurity?: {
+    readonly role: string
+  }
+  /**
+   * The writer role of enforced adopted tables. A turn of an actor type that
+   * owns one runs as `role`, which the table's guard trigger admits and every
+   * other login is refused, so it needs read and write on every framework and
+   * owned table and must own none of them. This login must be able to `SET
+   * ROLE` to it. Set together with `rowLevelSecurity`, both must name the same
+   * role, because a turn takes one role. The runtime refuses to start an
+   * enforced table without it.
+   */
+  readonly adoption?: {
     readonly role: string
   }
   /**
@@ -325,6 +346,8 @@ const PROGRESS_SEND_TIMEOUT = "5 seconds"
  *   retry like any delivery failure; it is not a defect.
  */
 export const layer = (options: Options) => {
+  const enforcedTypes = new Set<string>()
+
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
   ).make(options.retryWindowMs ?? 86_400_000)
@@ -506,11 +529,15 @@ export const layer = (options: Options) => {
           placement: registration.placement,
           routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
           hasResync: (member) =>
-            member === FEED_MEMBER || (registration.connections.get(member)?.hasResync ?? false),
+            member === FEED_MEMBER ||
+            isWatchMember(member) ||
+            (registration.connections.get(member)?.hasResync ?? false),
           hasMember: (member) =>
             member === FEED_MEMBER
               ? registration.feeds.size > 0
-              : registration.connections.has(member),
+              : isWatchMember(member)
+                ? registration.watches.has(watchedQuery(member))
+                : registration.connections.has(member),
           channel: {
             open: (request) =>
               connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
@@ -940,7 +967,7 @@ export const layer = (options: Options) => {
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
         wake: relay.wake,
-        role: (yield* TenantScope).role,
+        tenantScope: yield* TenantScope,
       })
 
       const seeding = seedRuntime({
@@ -949,7 +976,7 @@ export const layer = (options: Options) => {
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
         wake: relay.wake,
-        role: (yield* TenantScope).role,
+        tenantScope: yield* TenantScope,
       })
 
       const internalActors = InternalActors.of({
@@ -991,6 +1018,8 @@ export const layer = (options: Options) => {
           content,
           retryWindowMs,
           tableRole: options.rowLevelSecurity?.role,
+          adoptionRole: options.adoption?.role,
+          enforcedTypes,
           writerDeclarations,
           refreshPayloadWriters,
           subscriptions,
@@ -1008,6 +1037,7 @@ export const layer = (options: Options) => {
           allow,
           primary,
           replica,
+          holder,
         }),
         ...eventFeeds({
           registrations,
@@ -1166,6 +1196,17 @@ export const layer = (options: Options) => {
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
 
+      if (
+        options.rowLevelSecurity !== undefined &&
+        options.adoption !== undefined &&
+        options.rowLevelSecurity.role !== options.adoption.role
+      )
+        return yield* Effect.die(
+          new Error(
+            `rowLevelSecurity.role ${options.rowLevelSecurity.role} and adoption.role ${options.adoption.role} must name the same role: a turn takes one role`,
+          ),
+        )
+
       if (options.rowLevelSecurity !== undefined)
         yield* checkRowLevelSecurity(options.rowLevelSecurity.role)
 
@@ -1243,7 +1284,15 @@ export const layer = (options: Options) => {
       return runtime.pipe(
         Layer.provide(sharding),
         Layer.provide(lease),
-        Layer.provide(Layer.succeed(TenantScope, { role: options.rowLevelSecurity?.role })),
+        Layer.provide(
+          Layer.succeed(TenantScope, {
+            role: options.rowLevelSecurity?.role,
+            adoption:
+              options.adoption === undefined
+                ? undefined
+                : { role: options.adoption.role, enforced: enforcedTypes },
+          }),
+        ),
       )
     }),
   )

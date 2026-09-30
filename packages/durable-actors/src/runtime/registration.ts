@@ -57,6 +57,8 @@ export const actorRegistration = ({
   content,
   retryWindowMs,
   tableRole,
+  adoptionRole,
+  enforcedTypes,
   writerDeclarations,
   refreshPayloadWriters,
   subscriptions,
@@ -81,6 +83,10 @@ export const actorRegistration = ({
   readonly content: ReturnType<typeof tenantContent> | undefined
   readonly retryWindowMs: number
   readonly tableRole: string | undefined
+  /** The writer role of enforced adopted tables, when the runtime has one. */
+  readonly adoptionRole: string | undefined
+  /** Actor types whose turns take the writer role; filled as each type registers. */
+  readonly enforcedTypes: Set<string>
   readonly writerDeclarations: Array<PayloadDeclaration>
   readonly refreshPayloadWriters: Effect.Effect<void, SqlError.SqlError>
   readonly subscriptions: SubscriptionRelay
@@ -199,10 +205,12 @@ export const actorRegistration = ({
         yield* recordContentTurn(registration).pipe(Effect.provideContext(services), Effect.orDie)
       }
 
-      yield* checkTables(registration.name, registration.tables, tableRole).pipe(
-        Effect.provideContext(services),
-        Effect.orDie,
-      )
+      const enforces = yield* checkTables(registration.name, registration.tables, tableRole, {
+        role: adoptionRole,
+        writes: true,
+      }).pipe(Effect.provideContext(services), Effect.orDie)
+
+      if (enforces) enforcedTypes.add(registration.name)
 
       for (const table of registration.tables) checked.add(table)
 
@@ -265,7 +273,11 @@ export const actorRegistration = ({
 
       registrations.set(registration.name, registration)
 
-      if (registration.connections.size > 0 || registration.feeds.size > 0)
+      if (
+        registration.connections.size > 0 ||
+        registration.feeds.size > 0 ||
+        registration.watches.size > 0
+      )
         heldTypes.set(registration.name, heldType(registration))
 
       if (retained) sweepsWorkflows.add(registration.name)
@@ -302,10 +314,10 @@ export const actorRegistration = ({
 
       if (declaresContent(registration)) yield* requireContent(registration.name)
 
-      yield* checkTables(registration.name, registration.tables, tableRole).pipe(
-        Effect.provideContext(services),
-        Effect.orDie,
-      )
+      yield* checkTables(registration.name, registration.tables, tableRole, {
+        role: adoptionRole,
+        writes: false,
+      }).pipe(Effect.provideContext(services), Effect.orDie)
 
       for (const table of registration.tables) checked.add(table)
       yield* checkPayloadVersions(registration.name, registration.payloads)
