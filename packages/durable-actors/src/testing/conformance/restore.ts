@@ -2,6 +2,7 @@ import { Effect, Layer, Schedule, Schema, type Scope } from "effect"
 import { Actor, Actors, Intent } from "../../index.ts"
 import { type ActorError, CommandExpired } from "../../errors/actor.ts"
 import type { ActorRef } from "../../identity/caller.ts"
+import { RuntimeControl } from "../../runtime/drain.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type {
@@ -474,6 +475,25 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
                 ),
               )
 
+            /**
+             * Moves `runner` to v2 as a deploy does, draining it before it
+             * stops. A drain releases the deliveries its relay claimed; a
+             * killed runner would hold each claim for the whole claim lease,
+             * longer than this case waits for the old version's intent.
+             */
+            const roll = (runner: number) =>
+              Effect.gen(function* () {
+                expect(
+                  yield* on(
+                    runner,
+                    RuntimeControl.use((control) => control.drain({ deadline: "10 seconds" })),
+                  ),
+                ).toEqual({ outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 })
+                versions[runner] = "v2"
+                yield* cluster.restart(runner)
+                yield* cluster.ready
+              })
+
             const commandId = yield* on(
               0,
               Actors.use((actors) => actors.mintCommandId),
@@ -488,16 +508,12 @@ export const restoreConformance: ReadonlyArray<ConformanceCase> = [
               ),
             )
 
-            versions[0] = "v2"
-            yield* cluster.restart(0)
-            yield* cluster.ready
+            yield* roll(0)
             expect(yield* add(0, 5, commandId)).toBe(5)
             expect(yield* add(1, 5, commandId)).toBe(5)
             expect(yield* add(0, 1)).toBe(6)
 
-            versions[1] = "v2"
-            yield* cluster.restart(1)
-            yield* cluster.ready
+            yield* roll(1)
             expect(yield* add(1, 5, commandId)).toBe(5)
             expect(yield* add(1, 1)).toBe(7)
             expect(runs() - v1 - v2).toBe(3)
