@@ -106,10 +106,16 @@ const SINGLETON_WAKE_INTERVAL = Duration.seconds(1)
  * Cluster's lifetime of one entity, shared by every handler a defect restart
  * rebuilds within it.
  */
-const entityScope = () =>
-  Effect.serviceOption(
-    Context.Service<Scope.Scope>("effect/cluster/internal/CurrentActivationScope"),
-  )
+const entityScope = Effect.serviceOption(
+  Context.Service<Scope.Scope>("effect/cluster/internal/CurrentActivationScope"),
+).pipe(
+  Effect.flatMap(
+    Option.match({
+      onNone: () => Effect.die(new Error("Cluster provided no entity scope")),
+      onSome: Effect.succeed,
+    }),
+  ),
+)
 
 /**
  * The current handler's scope within each entity scope.
@@ -142,6 +148,54 @@ interface Waiting {
   /** Set once the request's `queued` hook has finished. */
   queued: boolean
 }
+
+/**
+ * Runs a batch under its logs and span: a lone command's turn span, a child
+ * of its caller's span, or a batch span linked to every caller's span.
+ */
+const withinTurnSpan =
+  (batch: ReadonlyArray<Waiting>) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+    const { request } = batch[0]!
+    const { ref } = request
+    const lone = batch.length === 1
+
+    return effect.pipe(
+      Effect.annotateLogs(
+        lone
+          ? {
+              actor: ref.actor,
+              id: ref.id,
+              tenant: ref.tenant,
+              command: request.command,
+              commandId: request.commandId,
+            }
+          : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
+      ),
+      Effect.withSpan(
+        lone ? SpanNames.turn(ref.actor, request.command) : SpanNames.batch(ref.actor),
+        {
+          kind: lone ? "server" : "internal",
+          attributes: lone
+            ? requestAttributes(request)
+            : {
+                "actor.tenant": ref.tenant,
+                "actor.id": ref.id,
+                "batch.size": batch.length,
+              },
+          parent: lone ? Context.getOrUndefined(batch[0]!.context, Tracer.ParentSpan) : undefined,
+          links: lone
+            ? []
+            : batch.flatMap(({ context }) => {
+                const span = Context.getOrUndefined(context, Tracer.ParentSpan)
+
+                return span === undefined ? [] : [{ span, attributes: {} }]
+              }),
+        },
+        { captureStackTrace: false },
+      ),
+    )
+  }
 
 /**
  * Defects that say nothing about the command: the activation restarts and
@@ -184,6 +238,47 @@ export const connectionEntity = (name: string) => {
 
   return entity
 }
+
+/**
+ * Writes a singleton's missing cron ticks, then keeps its default tenant's
+ * instance awake: one keeper re-wakes it every `SINGLETON_WAKE_INTERVAL`, or
+ * half the idle time if shorter, so it moves to a survivor with its shard.
+ */
+const keepSingletonAwake = Effect.fnUntraced(function* (
+  registration: Registration,
+  entity: ReturnType<typeof commandEntity>,
+  services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>,
+) {
+  const sharding = yield* Sharding.Sharding
+
+  const ref = ActorRef.make({
+    tenant: registration.tenant,
+    actor: registration.name,
+    id: "singleton",
+  })
+
+  yield* bootstrapTicks(
+    routingKey({ ref, placement: registration.placement }),
+    ref,
+    registration.cron,
+  ).pipe(Effect.provideContext(services), Effect.orDie)
+  const address = yield* encodeEntityId([registration.tenant, "singleton"]).pipe(Effect.orDie)
+  const client = (yield* sharding.makeClient(entity))(address)
+
+  const wakeInterval = Duration.min(
+    SINGLETON_WAKE_INTERVAL,
+    Duration.millis(registration.policy.idleMs / 2),
+  )
+
+  yield* sharding.registerSingleton(
+    registration.name,
+    client.Wake().pipe(
+      Effect.timeoutOrElse({ duration: wakeInterval, orElse: () => Effect.void }),
+      Effect.catchCause((cause) => Effect.logDebug("Singleton wake failed", cause)),
+      Effect.repeat(Schedule.spaced(wakeInterval)),
+    ),
+  )
+})
 
 /**
  * Registers an actor type's command entity with Cluster and starts its
@@ -276,6 +371,59 @@ export const registerActor = Effect.fnUntraced(function* (
     ? Option.getOrUndefined(yield* Effect.serviceOption(ShardLease))
     : undefined
 
+  /**
+   * Counts a handler of `entityId` as resident until its scope closes; a
+   * rebuilt handler can overlap its predecessor, hence the count.
+   */
+  const residentWhile = (entityId: string) =>
+    Effect.acquireRelease(
+      Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
+        Effect.andThen(count(Metrics.activationsStarted, typeAttributes, 1)),
+        Effect.andThen(Metric.modify(activations, 1)),
+      ),
+      () =>
+        Effect.sync(() => {
+          const left = resident.get(entityId)! - 1
+
+          if (left === 0) resident.delete(entityId)
+          else resident.set(entityId, left)
+        }).pipe(Effect.andThen(Metric.modify(activations, -1))),
+    )
+
+  /** Counts what a committed batch wrote. */
+  const countWritten = (done: Done) =>
+    Effect.gen(function* () {
+      yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
+      yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
+      yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
+      yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
+      yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
+    })
+
+  /**
+   * Records a deterministic defect in the defect log under its turn span's
+   * name and trace, and marks the span's outcome.
+   */
+  const recordDefect = (request: Request, cause: Cause.Cause<unknown>) =>
+    Effect.gen(function* () {
+      const span = yield* Effect.currentSpan.pipe(Effect.option)
+
+      yield* defects.record({
+        span: SpanNames.turn(request.ref.actor, request.command),
+        traceId: Option.isSome(span) ? span.value.traceId : "",
+        spanId: Option.isSome(span) ? span.value.spanId : "",
+        atMs: yield* Clock.currentTimeMillis,
+        tenant: request.ref.tenant,
+        actorType: request.ref.actor,
+        actorId: request.ref.id,
+        command: request.command,
+        commandId: request.commandId,
+        trigger: triggerOf(request),
+        cause: Cause.pretty(Cause.die(Cause.squash(cause))),
+      })
+      yield* Effect.annotateCurrentSpan({ "turn.outcome": "defect" })
+    })
+
   const leaseLostDefect = RetryTurn.make({
     message: "Singleton runner no longer holds its shard lock",
   })
@@ -285,14 +433,7 @@ export const registerActor = Effect.fnUntraced(function* (
   const register = sharding.registerEntity(
     entity,
     Effect.gen(function* () {
-      const activation = yield* entityScope().pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.die(new Error("Cluster provided no entity scope")),
-            onSome: Effect.succeed,
-          }),
-        ),
-      )
+      const activation = yield* entityScope
 
       const rebuilt = restarts.get(activation)
 
@@ -327,19 +468,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
       handlerScopes.set(activation, handler)
 
-      yield* Effect.acquireRelease(
-        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
-          Effect.andThen(count(Metrics.activationsStarted, typeAttributes, 1)),
-          Effect.andThen(Metric.modify(activations, 1)),
-        ),
-        () =>
-          Effect.sync(() => {
-            const left = resident.get(entityId)! - 1
-
-            if (left === 0) resident.delete(entityId)
-            else resident.set(entityId, left)
-          }).pipe(Effect.andThen(Metric.modify(activations, -1))),
-      ).pipe(Scope.provide(handler))
+      yield* residentWhile(entityId).pipe(Scope.provide(handler))
 
       const start = Effect.gen(function* () {
         const scope = yield* Scope.fork(handler)
@@ -526,11 +655,7 @@ export const registerActor = Effect.fnUntraced(function* (
             "turn.outcome": labels[0]!,
           })
 
-        yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
-        yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
-        yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
-        yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
-        yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
+        yield* countWritten(done)
 
         if (owner.hasProgress) {
           for (const [index, settled] of done.settled.entries())
@@ -562,7 +687,6 @@ export const registerActor = Effect.fnUntraced(function* (
         (batch: ReadonlyArray<Waiting>) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) => {
           const { request } = batch[0]!
-          const { ref } = request
           const lone = batch.length === 1
 
           return Effect.flatMap(Clock.currentTimeMillis, (started) =>
@@ -591,24 +715,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
                     const deterministic = !retryable(exit.cause)
 
-                    if (deterministic) {
-                      const span = yield* Effect.currentSpan.pipe(Effect.option)
-
-                      yield* defects.record({
-                        span: SpanNames.turn(ref.actor, request.command),
-                        traceId: Option.isSome(span) ? span.value.traceId : "",
-                        spanId: Option.isSome(span) ? span.value.spanId : "",
-                        atMs: yield* Clock.currentTimeMillis,
-                        tenant: ref.tenant,
-                        actorType: ref.actor,
-                        actorId: ref.id,
-                        command: request.command,
-                        commandId: request.commandId,
-                        trigger: triggerOf(request),
-                        cause: Cause.pretty(Cause.die(Cause.squash(exit.cause))),
-                      })
-                      yield* Effect.annotateCurrentSpan({ "turn.outcome": "defect" })
-                    }
+                    if (deterministic) yield* recordDefect(request, exit.cause)
 
                     yield* count(
                       Metrics.turns,
@@ -626,41 +733,7 @@ export const registerActor = Effect.fnUntraced(function* (
                   yield* record(Metrics.turnDuration, typeAttributes, elapsed)
                 }),
               ),
-              Effect.annotateLogs(
-                lone
-                  ? {
-                      actor: ref.actor,
-                      id: ref.id,
-                      tenant: ref.tenant,
-                      command: request.command,
-                      commandId: request.commandId,
-                    }
-                  : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
-              ),
-              Effect.withSpan(
-                lone ? SpanNames.turn(ref.actor, request.command) : SpanNames.batch(ref.actor),
-                {
-                  kind: lone ? "server" : "internal",
-                  attributes: lone
-                    ? requestAttributes(request)
-                    : {
-                        "actor.tenant": ref.tenant,
-                        "actor.id": ref.id,
-                        "batch.size": batch.length,
-                      },
-                  parent: lone
-                    ? Context.getOrUndefined(batch[0]!.context, Tracer.ParentSpan)
-                    : undefined,
-                  links: lone
-                    ? []
-                    : batch.flatMap(({ context }) => {
-                        const span = Context.getOrUndefined(context, Tracer.ParentSpan)
-
-                        return span === undefined ? [] : [{ span, attributes: {} }]
-                      }),
-                },
-                { captureStackTrace: false },
-              ),
+              withinTurnSpan(batch),
             ),
           )
         }
@@ -886,34 +959,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
   if (owner.hasStreams) yield* owner.watchStreams.pipe(Effect.forkScoped)
 
-  if (registration.singleton) {
-    const ref = ActorRef.make({
-      tenant: registration.tenant,
-      actor: registration.name,
-      id: "singleton",
-    })
-
-    yield* bootstrapTicks(routingKeyOf(ref), ref, registration.cron).pipe(
-      Effect.provideContext(services),
-      Effect.orDie,
-    )
-    const address = yield* encodeEntityId([registration.tenant, "singleton"]).pipe(Effect.orDie)
-    const client = (yield* sharding.makeClient(entity))(address)
-
-    const wakeInterval = Duration.min(
-      SINGLETON_WAKE_INTERVAL,
-      Duration.millis(registration.policy.idleMs / 2),
-    )
-
-    yield* sharding.registerSingleton(
-      registration.name,
-      client.Wake().pipe(
-        Effect.timeoutOrElse({ duration: wakeInterval, orElse: () => Effect.void }),
-        Effect.catchCause((cause) => Effect.logDebug("Singleton wake failed", cause)),
-        Effect.repeat(Schedule.spaced(wakeInterval)),
-      ),
-    )
-  }
+  if (registration.singleton) yield* keepSingletonAwake(registration, entity, services)
 
   return { isResident: (entityId: string) => resident.has(entityId), owner }
 })
