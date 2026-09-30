@@ -104,30 +104,25 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     refilledAt = now
   })
 
-  const tryToken = Effect.map(refill, () => {
-    if (tokens < 1) return false
-    tokens -= 1
+  /** Takes a token if one is free, or always when `borrow` is set, going into debt. */
+  const take = (borrow: boolean) =>
+    Effect.map(refill, () => {
+      if (tokens < 1 && !borrow) return false
+      tokens -= 1
 
-    return true
-  })
+      return true
+    })
+
+  const awaitBriefly = (fiber: Fiber.Fiber<void>) =>
+    Fiber.await(fiber).pipe(Effect.timeoutOption(PROGRESS_CLOSE_WAIT_MS), Effect.asVoid)
 
   const detached = (effect: Effect.Effect<void>) =>
-    effect.pipe(
-      Effect.ignoreCause,
-      Effect.forkIn(scope),
-      Effect.tap((fiber) =>
-        Fiber.await(fiber).pipe(Effect.timeoutOption(PROGRESS_CLOSE_WAIT_MS), Effect.asVoid),
-      ),
-    )
+    effect.pipe(Effect.ignoreCause, Effect.forkIn(scope), Effect.tap(awaitBriefly))
 
   const flushes = new Map<string, Fiber.Fiber<void>>()
 
-  const borrow = Effect.map(refill, () => {
-    tokens -= 1
-  })
-
   const token: Effect.Effect<void> = Effect.gen(function* () {
-    while (!(yield* tryToken)) yield* Effect.sleep(Math.ceil(((1 - tokens) * 1000) / perSecond))
+    while (!(yield* take(false))) yield* Effect.sleep(Math.ceil(((1 - tokens) * 1000) / perSecond))
   })
 
   const open = Effect.fnUntraced(function* (attempt: {
@@ -138,9 +133,12 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     readonly everyMs: number | undefined
     readonly leaseUntil: () => number
   }) {
-    if (sink === undefined || attempt.everyMs === undefined) return closedSlot
-
-    if (!sink.wants(attempt.ref.actor, attempt.effect)) return closedSlot
+    if (
+      sink === undefined ||
+      attempt.everyMs === undefined ||
+      !sink.wants(attempt.ref.actor, attempt.effect)
+    )
+      return closedSlot
     const everyMs = attempt.everyMs
     const signal = yield* Queue.sliding<void>(1)
     let seq = 0
@@ -176,8 +174,6 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
         yield* token
         const next = pending
         pending = undefined
-
-        if (next === undefined) continue
         sentAt = yield* Clock.currentTimeMillis
         inflight = next
         yield* send(next)
@@ -208,7 +204,7 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
 
               if (last === undefined) return Effect.void
 
-              return Effect.andThen(borrow, send(last))
+              return Effect.andThen(take(true), send(last))
             }),
           ),
           detached,
@@ -234,12 +230,7 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
       )
         return Effect.void
 
-      const last =
-        flush === undefined
-          ? Effect.void
-          : Fiber.await(flush).pipe(Effect.timeoutOption(PROGRESS_CLOSE_WAIT_MS), Effect.asVoid)
-
-      return last.pipe(
+      return (flush === undefined ? Effect.void : awaitBriefly(flush)).pipe(
         Effect.andThen(
           sink.closed({ ref: message.ref, effectId: message.effectId, attempt: message.attempt }),
         ),
