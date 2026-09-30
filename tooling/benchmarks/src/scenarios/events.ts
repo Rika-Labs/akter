@@ -17,8 +17,7 @@ export const events: Scenario = {
     "Turns emitting 0, 1, and 10 events; replay of the newest 10 events and of a whole stream; 64 concurrent tailing readers over 100 actors.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const turns = quick ? 300 : 2000
+      const turns = context.quick ? 300 : 2000
       const results: Array<CaseResult> = []
 
       for (const emitted of [0, 1, 10])
@@ -41,7 +40,7 @@ export const events: Scenario = {
           ),
         )
 
-      const stream = quick ? 1000 : 10_000
+      const stream = context.quick ? 1000 : 10_000
 
       results.push(
         ...(yield* context.withRuntime({}, (instruments) =>
@@ -55,12 +54,12 @@ export const events: Scenario = {
               parameters: { streamEvents: stream, replayedEvents: 10, workers: 1 },
               instruments,
               workers: 1,
-              operations: quick ? 300 : 3000,
+              operations: context.quick ? 300 : 3000,
               operation: () => probe.Replay(tail),
               listStatements: true,
             })
 
-            const replays = quick ? 20 : 100
+            const replays = context.quick ? 20 : 100
 
             const whole = yield* measure({
               name: `replay-all-${stream}`,
@@ -104,7 +103,7 @@ export const events: Scenario = {
               parameters: { actors, streamEvents: perActor, replayedEvents: 10, workers: 64 },
               instruments,
               workers: 64,
-              durationMs: quick ? 2000 : 10_000,
+              durationMs: context.quick ? 2000 : 10_000,
               operation: (index) =>
                 EventProbe.get(`tail-${index % actors}`).pipe(
                   Effect.flatMap((probe) => probe.Replay(tail)),

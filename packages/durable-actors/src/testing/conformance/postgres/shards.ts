@@ -10,6 +10,7 @@ import type { ConformanceGroup } from "../../conformance.ts"
  * replica.
  */
 export const shards = {
+  adoption: ["adoption"],
   capacity: ["capacity"],
   connections: ["connections"],
   cron: ["cron", "cronCluster"],

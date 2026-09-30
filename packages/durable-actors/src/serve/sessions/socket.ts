@@ -76,7 +76,7 @@ const isHello = (
 ): message is Extract<ClientWireMessage, { readonly t: "hello" }> => message.t === "hello"
 
 /** What `socketSession` needs to run one upgraded socket. */
-export interface SessionOptions {
+interface SessionOptions {
   /** The upgraded socket. */
   readonly socket: Socket.Socket
   /** The served connection member the session belongs to. */

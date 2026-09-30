@@ -10,6 +10,7 @@ import {
   controlProbeEffects,
   controlWaiters,
 } from "../probe/control.ts"
+import type { Instruments } from "../backend.ts"
 import { type CaseResult, measure, type Scenario, type ScenarioContext } from "../scenario.ts"
 
 const RUNNERS = 3
@@ -27,9 +28,7 @@ interface ClusterSettings {
 const withCluster = <A, E>(
   context: ScenarioContext,
   settings: ClusterSettings,
-  body: (
-    instruments: Parameters<Parameters<ScenarioContext["withRuntime"]>[1]>[0],
-  ) => Effect.Effect<A, E, ActorCluster>,
+  body: (instruments: Instruments | undefined) => Effect.Effect<A, E, ActorCluster>,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -153,8 +152,7 @@ export const effectConcurrency: Scenario = {
     Effect.gen(function* () {
       if (context.backend.name !== "postgres") return []
 
-      const quick = context.profile === "quick"
-      const actors = quick ? 100 : 1000
+      const actors = context.quick ? 100 : 1000
       const perActor = 10
       const results: Array<CaseResult> = []
 
@@ -221,7 +219,7 @@ export const effectConcurrency: Scenario = {
           ),
         )
 
-      const hotEffects = quick ? 100 : 1000
+      const hotEffects = context.quick ? 100 : 1000
 
       results.push(
         yield* withCluster(
@@ -280,7 +278,7 @@ export const effectConcurrency: Scenario = {
         ),
       )
 
-      const hangs = quick ? 100 : 1000
+      const hangs = context.quick ? 100 : 1000
 
       for (const [name, cancelCheck] of [
         ["cancel-default-check", undefined],
