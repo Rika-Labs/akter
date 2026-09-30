@@ -1,0 +1,159 @@
+{
+  "schema": 2,
+  "label": "small-compare-r1",
+  "note": "Small local comparison, not a certified run: Postgres 18.6 in OrbStack Docker --cpus=4 --memory=8g on 55433; bench process unconfined on a shared M-series Mac",
+  "profile": "quick",
+  "startedAt": "2026-09-30T02:18:56.662Z",
+  "finishedAt": "2026-09-30T02:19:11.286Z",
+  "git": {
+    "sha": "9c5c5003f091be1ef528a34e244d750506c3b254",
+    "shortSha": "9c5c500",
+    "branch": "HEAD",
+    "mainBase": "9c5c5003f091be1ef528a34e244d750506c3b254",
+    "dirty": false,
+    "merges": []
+  },
+  "backend": {
+    "name": "postgres",
+    "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "settings": {
+      "checkpoint_timeout": "300 s",
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": "100",
+      "max_wal_size": "1024 MB",
+      "shared_buffers": "16384 8kB",
+      "synchronous_commit": "on",
+      "wal_level": "replica",
+      "work_mem": "4096 kB"
+    },
+    "external": true
+  },
+  "runtime": {
+    "bun": "1.4.2",
+    "effect": "4.0.0-rc.116",
+    "pglite": "0.5.8"
+  },
+  "machine": {
+    "cpuModel": "Apple M5 Max",
+    "logicalCpus": 18,
+    "memoryGiB": 128,
+    "os": "Darwin 25.6.0",
+    "hostname": "dallens-mbp.lan",
+    "topology": "benchmark client and actor runtime on this machine; Postgres at BENCH_DATABASE_URL"
+  },
+  "scenarios": [
+    {
+      "name": "many-actors",
+      "description": "64 concurrent callers over 1k/10k/100k actors: first touch (create + activate each actor once), then uniform steady-state load (warm only while resident; see coldFraction), then a connection-pool sweep at 10k actors.",
+      "cases": [
+        {
+          "name": "first-touch-1000",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "pool": 10,
+            "maxResidentActors": 10000
+          },
+          "operations": 1000,
+          "elapsedMs": 7677,
+          "throughput": 130.3,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 1000,
+            "mean": 481.208,
+            "min": 10.288,
+            "p50": 502.124,
+            "p90": 889.243,
+            "p95": 986.394,
+            "p99": 1245.928,
+            "max": 1543.477
+          },
+          "statementsPerOperation": 10.03,
+          "roundTripsPerOperation": 2.03,
+          "statements": null,
+          "activity": {
+            "samples": 221,
+            "connections": {
+              "idle:Client/ClientRead": 11.2,
+              "active:LWLock/WALWrite": 5.77,
+              "idle in transaction:Client/ClientRead": 1.27,
+              "active:IO/WalSync": 0.86,
+              "active": 0.31,
+              "idle in transaction": 0.11,
+              "idle": 0.07,
+              "active:LWLock/BufferContent": 0.02,
+              "active:LWLock/LockManager": 0.01,
+              "active:Client/ClientRead": 0.01,
+              "active:Lock/extend": 0,
+              "idle:LWLock/BufferContent": 0
+            },
+            "peakConnections": 20
+          },
+          "cpu": {
+            "client": 44.4,
+            "server": null,
+            "clientMsPerOperation": 3.413,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "rssDeltaMiB": 197.3,
+            "heapDeltaMiB": 41.2,
+            "rssKiBPerActor": 202
+          }
+        },
+        {
+          "name": "steady-1000",
+          "parameters": {
+            "actors": 1000,
+            "workers": 64,
+            "pool": 10,
+            "hibernateAfterMs": 60000,
+            "maxResidentActors": 10000
+          },
+          "operations": 313,
+          "elapsedMs": 3700,
+          "throughput": 84.6,
+          "errors": 0,
+          "errorKinds": {},
+          "latencyMs": {
+            "count": 313,
+            "mean": 709.906,
+            "min": 63.995,
+            "p50": 741.248,
+            "p90": 912.877,
+            "p95": 970.098,
+            "p99": 1021.676,
+            "max": 1455.515
+          },
+          "statementsPerOperation": 8.03,
+          "roundTripsPerOperation": 2.03,
+          "statements": null,
+          "activity": {
+            "samples": 112,
+            "connections": {
+              "idle:Client/ClientRead": 10.62,
+              "active:LWLock/WALWrite": 7.2,
+              "active:IO/WalSync": 0.96,
+              "idle in transaction:Client/ClientRead": 0.92,
+              "active": 0.13,
+              "idle in transaction": 0.07,
+              "idle": 0.03
+            },
+            "peakConnections": 20
+          },
+          "cpu": {
+            "client": 25.1,
+            "server": null,
+            "clientMsPerOperation": 2.973,
+            "serverMsPerOperation": null
+          },
+          "extra": {
+            "coldFraction": 0
+          }
+        }
+      ]
+    }
+  ]
+}
