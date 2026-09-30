@@ -1,23 +1,18 @@
-import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 import { layer } from "./layer.ts"
 
-const authorize = () => Effect.succeed(true)
-
 describe("Actors.layer executor settings", () => {
   it("rejects a cancelCheck under 1 second and accepts one of at least 1 second", () => {
-    expect(() => layer({ authorize, executors: { cancelCheck: "500 millis" } })).toThrow(
+    expect(() => layer({ executors: { cancelCheck: "500 millis" } })).toThrow(
       "executors.cancelCheck must be at least 1 second",
     )
-    expect(() => layer({ authorize, executors: { cancelCheck: "1 second" } })).not.toThrow()
-    expect(() => layer({ authorize, executors: { lease: "3 seconds" } })).not.toThrow()
+    expect(() => layer({ executors: { cancelCheck: "1 second" } })).not.toThrow()
+    expect(() => layer({ executors: { lease: "3 seconds" } })).not.toThrow()
   })
 
   it("caps cancelCheck at a third of the lease, so a short lease cannot fall under 1 second", () => {
-    expect(() =>
-      layer({ authorize, executors: { lease: "3 seconds", cancelCheck: "1 hour" } }),
-    ).not.toThrow()
-    expect(() => layer({ authorize, executors: { lease: "2 seconds" } })).toThrow(
+    expect(() => layer({ executors: { lease: "3 seconds", cancelCheck: "1 hour" } })).not.toThrow()
+    expect(() => layer({ executors: { lease: "2 seconds" } })).toThrow(
       "executors.lease must be at least 3 seconds",
     )
   })

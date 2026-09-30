@@ -100,7 +100,6 @@ const runtime = Layer.unwrap(
     return live.pipe(
       Layer.provideMerge(
         Actors.layer({
-          authorize: () => Effect.succeed(true),
           relay: { poll: "200 millis", claimLease: "5 seconds" },
         }).pipe(Layer.provide(Layer.mergeAll(hooks, wiring))),
       ),

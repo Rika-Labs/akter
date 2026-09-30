@@ -133,11 +133,7 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
 
           const runtime = <A>(record: Effect.Effect<A, never, SqlClient.SqlClient>) =>
             Layer.build(
-              Layer.fresh(subOrderLayer).pipe(
-                Layer.provideMerge(
-                  ActorTest.layer({ database, authorize: () => Effect.succeed(true) }),
-                ),
-              ),
+              Layer.fresh(subOrderLayer).pipe(Layer.provideMerge(ActorTest.layer({ database }))),
             ).pipe(
               Effect.flatMap((context) => record.pipe(Effect.provideContext(context))),
               Effect.scoped,

@@ -12,14 +12,14 @@ import {
   Schema,
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
-import { Actor, Intent, User } from "../../index.ts"
+import { Actor, Intent } from "../../index.ts"
 import type { Cancelled } from "../../members/effect.ts"
 import type { PerformOptions } from "../../contexts/effect.ts"
 import type { Request } from "../../runtime/request.ts"
 import type { ActorRef } from "../../identity/caller.ts"
-import type { layer as runtimeLayer } from "../../runtime/layer.ts"
+import type { Options as RuntimeOptions } from "../../runtime/layer.ts"
 import { TurnHooks } from "../../runtime/turn/hooks.ts"
-import { wakeWaiting } from "../../runtime/turn/relay.ts"
+import { claimCapped, wakeWaiting } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -315,8 +315,6 @@ const runnerEffects = (fixture: EffectControlFixture, runner: number) => {
 /** The executors of the conformance environment's single runtime. */
 export const effectControlEffects = (fixture: EffectControlFixture) => runnerEffects(fixture, 0)
 
-type RuntimeOptions = Parameters<typeof runtimeLayer>[0]
-
 /** A poll far longer than any case, so only wakes after commit and `advance` claim rows. */
 const NO_POLL = { poll: "1 hour" } as const
 
@@ -346,7 +344,6 @@ const withCluster = <A, E>(
           actors: effectControlLayer,
           runnerActors: (runner) =>
             runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>,
-          as: User.make({ subject: "alice" }),
           relay: settings.relay,
           executors: settings.executors,
         }),
@@ -1055,6 +1052,106 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             due_at_ms::text AS due FROM actor_outbox WHERE routing_key = 8 AND intent_id = 'oldest'`
 
           expect(row).toEqual({ waiting: false, due: String(now) })
+        }),
+      ),
+  },
+  {
+    name: "never starts a younger capped row while an older attempt's lost lease is being renewed",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+
+          const group = {
+            routing_key: "9",
+            tenant_id: "claim-renew",
+            actor_type: "Controlled",
+            actor_id: "renewed",
+            command: "Serial",
+          }
+
+          const now = yield* Clock.currentTimeMillis
+          const renewedUntil = now + 60_000
+
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (9, 'claim-renew', 'Controlled', 'renewed')`
+
+          yield* sql`INSERT INTO actor_outbox ${sql.insert(
+            [
+              { intent_id: "oldest", running: true, waiting: false, attempts: 1, due: now - 1 },
+              { intent_id: "next", running: false, waiting: true, attempts: 0, due: now + 60_000 },
+            ].map(({ due, ...row }, index) => ({
+              ...row,
+              routing_key: 9,
+              kind: "effect",
+              bucket: 0,
+              due_at_ms: due,
+              scheduled_at_ms: now + index,
+              ready_at_ms: now + index,
+              tenant_id: "claim-renew",
+              actor_type: "Controlled",
+              actor_id: "renewed",
+              target_type: "Controlled",
+              target_id: "renewed",
+              command: "Serial",
+              payload: "{}",
+              caller: "{}",
+            })),
+          )}`
+
+          const locked = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+
+          const renewal = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`UPDATE actor_outbox SET due_at_ms = ${renewedUntil}
+                  WHERE routing_key = 9 AND intent_id = 'oldest' AND attempts = 1`
+                yield* Deferred.succeed(locked, undefined)
+                yield* Deferred.await(release)
+              }),
+            )
+            .pipe(Effect.forkChild)
+
+          yield* Deferred.await(locked)
+
+          const claim = yield* claimCapped({
+            sql,
+            now: sql`${now}::bigint`,
+            group,
+            cap: 1,
+            maxAttempts: 3,
+            permits: 1,
+            leaseMs: 60_000,
+          }).pipe(Effect.forkChild)
+
+          yield* eventually(
+            Effect.gen(function* () {
+              if (claim.pollUnsafe() !== undefined) return true
+
+              const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
+                FROM pg_stat_activity
+                WHERE datname = current_database() AND wait_event_type = 'Lock'`
+
+              return blocked!.n > 0
+            }).pipe(Effect.orDie),
+            "10 seconds",
+            "the claim to finish or wait on the renewal's row lock",
+          )
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(renewal)
+
+          expect((yield* Fiber.join(claim)).map(({ intent_id }) => intent_id)).toEqual([])
+
+          const rows = yield* sql<{ id: string; running: boolean; due: string }>`
+            SELECT intent_id AS id, running, due_at_ms::text AS due FROM actor_outbox
+            WHERE routing_key = 9 ORDER BY intent_id`
+
+          expect(rows).toEqual([
+            { id: "next", running: false, due: String(now + 60_000) },
+            { id: "oldest", running: true, due: String(renewedUntil) },
+          ])
         }),
       ),
   },

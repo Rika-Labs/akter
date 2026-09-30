@@ -151,6 +151,7 @@ import {
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
+import { accessConformance } from "./conformance/access.ts"
 import { adoptionConformance } from "./conformance/adoption.ts"
 import { rlsConformance } from "./conformance/rls.ts"
 import {
@@ -215,7 +216,9 @@ export interface ConformanceRegistrar {
   readonly skip: (name: string) => void
 }
 
-export type ConformanceDatabase = NonNullable<Parameters<typeof ActorTest.layer>[0]["database"]>
+export type ConformanceDatabase = NonNullable<
+  NonNullable<Parameters<typeof ActorTest.layer>[0]>["database"]
+>
 
 export interface ConformanceConnection {
   readonly query: (
@@ -1482,6 +1485,7 @@ const counterConformance: ReadonlyArray<ConformanceCase> = [
  */
 export const conformanceGroups = {
   foundation: foundationConformance,
+  access: accessConformance,
   admission: admissionConformance,
   http: httpConformance,
   protocols: protocolsConformance,

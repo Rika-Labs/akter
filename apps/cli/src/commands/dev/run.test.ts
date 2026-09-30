@@ -1,4 +1,4 @@
-import { Actor, User } from "@durable-actors/core"
+import { Actor } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { Context, Effect, Fiber, FileSystem, Layer, Schedule, Schema } from "effect"
@@ -14,6 +14,7 @@ const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
 const Tally = Actor.make("Tally", {
   key: Schema.String,
   state: Actor.state({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  access: Actor.access.public,
   api: { Add },
 })
 
@@ -29,7 +30,7 @@ const TallyLive = Tally.toLayer(
 )
 
 const runtime = TallyLive.pipe(
-  Layer.provideMerge(ActorTest.layer({ as: User.make({ subject: "alice" }) })),
+  Layer.provideMerge(ActorTest.layer()),
   Layer.provideMerge(BunCrypto.layer),
 )
 

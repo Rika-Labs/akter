@@ -1,7 +1,6 @@
 import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { Cause, Effect, Exit, Layer, Option, Predicate, Schedule, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { User } from "../../../index.ts"
 import { ActorError } from "../../../errors/actor.ts"
 import { type ActorRef, System } from "../../../identity/caller.ts"
 import {
@@ -151,7 +150,6 @@ export const withCluster = <A, E>(
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
           actors: connectionsLayer(fixture),
           runnerActors: () => connectionsEffects(fixture),
-          as: User.make({ subject: "alice" }),
         }),
       )
 

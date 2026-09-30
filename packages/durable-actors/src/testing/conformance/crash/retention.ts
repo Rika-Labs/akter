@@ -65,9 +65,7 @@ const runtime = Layer.unwrap(
     )
 
     return live.pipe(
-      Layer.provideMerge(
-        Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(Layer.provide(hooks)),
-      ),
+      Layer.provideMerge(Actors.layer().pipe(Layer.provide(hooks))),
       Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
     )
   }),

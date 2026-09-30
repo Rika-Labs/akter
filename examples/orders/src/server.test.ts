@@ -1,5 +1,4 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
@@ -40,9 +39,7 @@ const live = Layer.unwrap(
   Effect.gen(function* () {
     return OrdersLive.pipe(
       Layer.provide(ledger.layer),
-      Layer.provideMerge(
-        ActorTest.layer({ database: yield* database, as: User.make({ subject: "ada" }) }),
-      ),
+      Layer.provideMerge(ActorTest.layer({ database: yield* database })),
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)

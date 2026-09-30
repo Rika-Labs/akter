@@ -46,9 +46,7 @@ const live = Layer.unwrap(
     })
 
     return Tally.toLayer(Effect.succeed({})).pipe(
-      Layer.provideMerge(
-        Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(Layer.provide(hooks)),
-      ),
+      Layer.provideMerge(Actors.layer().pipe(Layer.provide(hooks))),
       Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
     )
   }),

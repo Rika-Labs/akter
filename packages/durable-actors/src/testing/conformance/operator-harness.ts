@@ -1,7 +1,7 @@
 import { Context, Crypto, Effect, Layer, Schema, type Scope } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
-import { type Actors, Unauthorized, User } from "../../index.ts"
+import { type Actors, Unauthorized } from "../../index.ts"
 import type { InternalActors } from "../../runtime/actors.ts"
 import { OperatorAuth } from "../../runtime/operators/auth.ts"
 import type { Capability } from "../../runtime/operators/grants.ts"
@@ -86,7 +86,6 @@ export const operatorHarness = <A, E>({
           Layer.provideMerge(
             ActorTest.layer({
               database,
-              as: User.make({ subject: "alice" }),
               retryWindowMs: 60_000,
             }),
           ),

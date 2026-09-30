@@ -10,13 +10,12 @@
  *   curl localhost:3000/reports/sales -H 'authorization: Bearer ada'
  */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
-import { Config, Effect, Layer, Schema } from "effect"
+import { Config, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { OrdersLive } from "./layer.ts"
 import { fakeLedger } from "./payments/ledger.ts"
-import { routes, TENANT } from "./server.ts"
+import { routes } from "./server.ts"
 
 /**
  * The orders runtime on Postgres with a fake payment provider in this process;
@@ -24,12 +23,7 @@ import { routes, TENANT } from "./server.ts"
  */
 const runtime = OrdersLive.pipe(
   Layer.provide(fakeLedger().layer),
-  Layer.provideMerge(
-    Actors.layer({
-      authorize: ({ caller, ref }) =>
-        Effect.succeed(Schema.is(User)(caller) && ref.tenant === TENANT),
-    }),
-  ),
+  Layer.provideMerge(Actors.layer()),
   Layer.provideMerge(
     Layer.unwrap(Effect.map(Config.Redacted("DATABASE_URL"), (url) => Database.postgres({ url }))),
   ),

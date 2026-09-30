@@ -378,6 +378,7 @@ const withCluster = <A, E>(
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
           actors: watchLayer(fixture),
           as: User.make({ subject: "alice" }),
+          authorize: () => Effect.succeed(true),
           holdersOnly,
         }),
       )
@@ -1201,6 +1202,7 @@ export const watchConformance: ReadonlyArray<ConformanceCase> = [
               shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
               actors: mirrorLayer,
               as: User.make({ subject: "alice" }),
+              authorize: () => Effect.succeed(true),
               rowLevelSecurity: { role },
             }).pipe(Layer.provide(Layer.succeed(Crypto.Crypto, crypto))),
           )

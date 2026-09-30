@@ -14,7 +14,7 @@ import {
 } from "effect"
 import { PrometheusMetrics } from "effect/unstable/observability"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, User } from "../../index.ts"
+import { Actor, Actors } from "../../index.ts"
 import { DefectLog } from "../../runtime/telemetry/defects.ts"
 import { Metrics } from "../../runtime/telemetry/metrics.ts"
 import { TelemetrySampler } from "../../runtime/telemetry/sampler.ts"
@@ -170,7 +170,6 @@ const withTelemetry = <A, E>(
           Layer.provideMerge(
             ActorTest.layer({
               database,
-              as: User.make({ subject: "alice" }),
               observability: { sampleEvery: "1 hour" },
             }),
           ),
@@ -284,7 +283,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
             "actor.id": "a1",
             "command.name": "Bump",
             "command.id": commandId,
-            "caller.kind": "User",
+            "caller.kind": "System",
             "turn.trigger": "command",
             "turn.outcome": "success",
             "turn.replayed": false,

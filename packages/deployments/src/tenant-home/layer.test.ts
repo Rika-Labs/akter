@@ -1,5 +1,4 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { migrate } from "@durable-actors/postgres/migrate"
 import {
@@ -54,7 +53,7 @@ class DatabaseUrl extends Context.Service<DatabaseUrl, Redacted.Redacted<string>
 const live = Layer.unwrap(
   Effect.gen(function* () {
     const url = yield* database
-    const test = ActorTest.layer({ database: url, as: User.make({ subject: "operator" }) })
+    const test = ActorTest.layer({ database: url })
 
     return Layer.mergeAll(
       TenantHomeCommands,
