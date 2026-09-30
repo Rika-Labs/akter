@@ -1,12 +1,23 @@
 import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  HttpRouter,
+  HttpServer,
+} from "effect/unstable/http"
+import { SqlClient } from "effect/unstable/sql"
+import {
   Cause,
+  Context,
   Crypto,
+  Deferred,
   Effect,
   Exit,
   Layer,
   ManagedRuntime,
   Option,
   Predicate,
+  Queue,
   Redacted,
   Schedule,
   Schema,
@@ -21,15 +32,25 @@ import {
   type ContentStore,
   CurrentCaller,
   System,
-  Tenant,
   User,
   type Access,
   type AccessRequest,
   Caller,
 } from "../../index.ts"
 import { Actors as PublicActors, InternalActors, Outcome, Request } from "../../handles/actors.ts"
-import { Actors, Database } from "../../runtime/index.ts"
+import {
+  Actors,
+  Database,
+  Inspector,
+  OperatorAuth,
+  Operators,
+  Telemetry,
+} from "../../runtime/index.ts"
 import type { RuntimeControl } from "../../runtime/drain.ts"
+import type { OperatorRuntime } from "../../runtime/operators/repair.ts"
+import type { DefectLog } from "../../runtime/telemetry/defects.ts"
+import { SUBPROTOCOL } from "../../serve/frames.ts"
+import { MCP_VERSION } from "../../serve/mcp/endpoint.ts"
 import { openFeed } from "../../serve/sessions/feed.ts"
 import { ActorTest, executeForTest, TEST_CONTENT_KEY } from "../actor-test.ts"
 import type {
@@ -102,9 +123,9 @@ const ledgerOf = (name: string, access?: Access) => {
           return turn.state.balance
         }),
         Whoami: Effect.fnUntraced(function* () {
-          const { caller } = yield* Ledger.Turn
+          const { caller, ref } = yield* Ledger.Turn
 
-          return `${yield* Tenant}/${caller._tag}/${subjectOf(caller)}`
+          return `${ref.tenant}/${caller._tag}/${subjectOf(caller)}`
         }),
         Seal: () => Effect.succeed("sealed"),
         Watch: { open: () => Effect.void, frame: () => Effect.void },
@@ -124,6 +145,9 @@ const ledgerOf = (name: string, access?: Access) => {
 }
 
 type Services =
+  | DefectLog
+  | OperatorRuntime
+  | SqlClient.SqlClient
   | PublicActors
   | InternalActors
   | RuntimeControl
@@ -254,6 +278,85 @@ const outcomes = (
   })
 
 const everyKind = (outcome: string) => Object.fromEntries(KINDS.map((kind) => [kind, outcome]))
+
+const MCP_VERSION_HEADERS = {
+  "content-type": "application/json",
+  "mcp-protocol-version": MCP_VERSION,
+  "mcp-method": "tools/call",
+}
+
+/** A served reply: its status and body text. */
+interface Reply {
+  readonly status: number
+  readonly text: string
+}
+
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
+
+const decodeMinted = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ commandId: Schema.String })),
+)
+
+/** Sends one request to the served app and reads its whole body, which a revoked session ends. */
+const fetchText = (
+  url: string,
+  init?: {
+    readonly method?: "GET" | "POST"
+    readonly headers?: Readonly<Record<string, string>>
+    readonly body?: unknown
+  },
+) =>
+  Effect.gen(function* () {
+    const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
+
+    const base = HttpClientRequest.make(init?.method ?? "GET")(url, {
+      headers: init?.headers ?? {},
+    })
+
+    const request =
+      init?.body === undefined
+        ? base
+        : HttpClientRequest.bodyText(
+            base,
+            yield* encodeJson(init.body).pipe(Effect.orDie),
+            "application/json",
+          )
+
+    const response = yield* client.execute(request)
+
+    return { status: response.status, text: yield* response.text } satisfies Reply
+  }).pipe(
+    Effect.orDie,
+    Effect.scoped,
+    Effect.timeoutOrElse({
+      duration: "30 seconds",
+      orElse: () => Effect.die(new Error(`${url} never finished`)),
+    }),
+  )
+
+/** Opens a WebSocket to a connection route, says hello, and collects messages until the session ends. */
+const socketMessages = (url: string) =>
+  Effect.gen(function* () {
+    const received = yield* Queue.unbounded<string>()
+    const closed = yield* Deferred.make<void>()
+    const ws = new WebSocket(url, SUBPROTOCOL)
+
+    ws.onopen = () => ws.send('{"t":"hello"}')
+    ws.onmessage = (event) => Queue.offerUnsafe(received, String(event.data))
+    ws.onclose = () => Deferred.doneUnsafe(closed, Effect.void)
+
+    yield* Deferred.await(closed).pipe(
+      Effect.timeoutOrElse({
+        duration: "30 seconds",
+        orElse: () => Effect.die(new Error(`${url} never closed`)),
+      }),
+      Effect.ensuring(Effect.sync(() => ws.close())),
+    )
+
+    return (yield* Queue.clear(received)).join("\n")
+  })
+
+const deniedReply = (reply: Reply) => reply.status === 403 || reply.text.includes("access_denied")
 
 /** Cases for the default caller and tenant, actor `access` policies, and the global `authorize` hook they combine with. */
 export const accessConformance: ReadonlyArray<ConformanceCase> = [
@@ -570,8 +673,7 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* whoami(publicServer, "AccessServedClosed")).toMatchObject({ status: 403 })
           expect(yield* whoami(publicServer, "AccessServedMine")).toMatchObject({ status: 403 })
           const anonymousReply = yield* whoami(publicServer, "AccessServedPublic")
-          expect(anonymousReply.status).toBe(200)
-          expect(anonymousReply.body).toContain("/Anonymous/")
+          expect(anonymousReply).toEqual({ status: 200, body: "default/Anonymous/" })
 
           expect(yield* whoami(tokenServer, "AccessServedClosed", `${tenant}:alice`)).toMatchObject(
             {
@@ -639,6 +741,157 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
           const bound = yield* test.actor(Ledger, "internal")
 
           expect(yield* bound.system.Seal()).toBe("sealed")
+        }),
+      )
+    },
+  },
+  {
+    name: "sees Anonymous, never System, on every served entry point under Actor.auth.none, and denies it by default",
+    timeoutMs: 120_000,
+    run: ({ expect, environment }) => {
+      const asked: Array<AccessRequest> = []
+
+      const closed = ledgerOf("AccessGuardClosed")
+
+      const open = ledgerOf("AccessGuardOpen", (request) => {
+        asked.push(request)
+
+        return (
+          isSystem(request.caller) ||
+          (isAnonymous(request.caller) && request.kind !== "reauthorize")
+        )
+      })
+
+      return deploy(
+        environment,
+        Layer.merge(closed.layer, open.layer),
+        {},
+        Effect.gen(function* () {
+          for (const Ledger of [closed.Ledger, open.Ledger])
+            yield* Effect.flatMap(Ledger.get("guard"), (ledger) => ledger.Post(1)).pipe(
+              Actor.tenant("default"),
+            )
+
+          asked.length = 0
+
+          const context = yield* Effect.context<Services>()
+
+          const app = Layer.mergeAll(
+            Actor.serve({
+              actors: [closed.Ledger, open.Ledger],
+              auth: Actor.auth.none,
+              basePath: "/api",
+              mcp: { path: "/mcp" },
+            }),
+            Operators.serve({ auth: OperatorAuth.tokens([]) }),
+            Telemetry.serve(),
+            Inspector.serve({ auth: Actor.auth.none }),
+          ).pipe(Layer.provide(Layer.succeedContext(context)))
+
+          const built = yield* Layer.build(
+            HttpRouter.serve(app, { disableLogger: true, disableListenLog: true }).pipe(
+              Layer.provideMerge(environment.httpServer),
+            ),
+          )
+
+          const address = Context.get(built, HttpServer.HttpServer).address
+
+          if (Predicate.isTagged(address, "UnixPathAddress"))
+            return yield* Effect.die(new Error("Expected a TCP address"))
+
+          const host = `127.0.0.1:${address.port}`
+          const api = `http://${host}/api`
+
+          const mint = fetchText(`${api}/command-ids`, { method: "POST" }).pipe(
+            Effect.flatMap(({ text }) => decodeMinted(text).pipe(Effect.orDie)),
+            Effect.map(({ commandId }) => commandId),
+          )
+
+          const entryPoints = (name: string) =>
+            Effect.gen(function* () {
+              const actor = `${api}/actors/${name}/guard`
+
+              return {
+                command: yield* fetchText(`${actor}/Whoami`, {
+                  method: "POST",
+                  headers: { "idempotency-key": yield* mint },
+                }),
+                query: yield* fetchText(`${actor}/Balance`, { method: "POST" }),
+                stream: yield* fetchText(`${actor}/Ticks`, { method: "POST" }),
+                feed: yield* fetchText(`${actor}/events?event=${Posted.identifier}&after=0`),
+                socket: {
+                  status: 0,
+                  text: yield* socketMessages(`ws://${host}/api/actors/${name}/guard/Watch`),
+                },
+                download: yield* fetchText(`${actor}/content/files/file`),
+                grant: yield* fetchText(`${actor}/content/files/file/grant`, { method: "POST" }),
+                mcp: yield* fetchText(`${api}/mcp`, {
+                  method: "POST",
+                  headers: { ...MCP_VERSION_HEADERS, "mcp-name": `${name}.Whoami` },
+                  body: {
+                    jsonrpc: "2.0",
+                    id: 1,
+                    method: "tools/call",
+                    params: {
+                      name: `${name}.Whoami`,
+                      arguments: { id: "guard", commandId: yield* mint },
+                      _meta: {
+                        "io.modelcontextprotocol/protocolVersion": MCP_VERSION,
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                      },
+                    },
+                  },
+                }),
+              }
+            })
+
+          const refused = yield* entryPoints("AccessGuardClosed")
+
+          expect(
+            Object.fromEntries(
+              Object.entries(refused).map(([entry, reply]) => [entry, deniedReply(reply)]),
+            ),
+          ).toEqual({
+            command: true,
+            query: true,
+            stream: true,
+            feed: true,
+            socket: true,
+            download: true,
+            grant: true,
+            mcp: true,
+          })
+
+          const served = yield* entryPoints("AccessGuardOpen")
+
+          expect(served.command).toEqual({
+            status: 200,
+            text: '"default/Anonymous/"',
+          })
+          expect(served.mcp.text).toContain("default/Anonymous/")
+          expect(served.query.status).toBe(200)
+          expect(served.stream.text).toContain("access_denied")
+          expect(served.feed.text).toContain("access_denied")
+          expect(served.socket.text).toContain("access_denied")
+
+          const operator = yield* fetchText(
+            `http://${host}/operator/actors/AccessGuardOpen/guard?tenant=default`,
+          )
+
+          expect(operator.status).toBe(401)
+          expect((yield* fetchText(`http://${host}/metrics`)).status).toBe(200)
+          expect((yield* fetchText(`http://${host}/inspector/overview`)).status).toBe(200)
+
+          expect(asked.filter(({ caller }) => !isAnonymous(caller))).toEqual([])
+          expect([...new Set(asked.map(({ kind }) => kind))].sort()).toEqual([
+            "command",
+            "content",
+            "feed",
+            "open",
+            "query",
+            "reauthorize",
+            "stream",
+          ])
         }),
       )
     },

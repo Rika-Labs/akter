@@ -1,4 +1,4 @@
-import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
+import { Actor, Anonymous, RetentionGap, UnknownCursor } from "@durable-actors/core"
 import { integer, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Effect, Result, Schema } from "effect"
 
@@ -86,4 +86,5 @@ export const Room = Actor.make("Room", {
   events: [MessagePosted],
   api: { Post, Close, Recent, History, React },
   policy: { keepReceipts: "7 days", keepEvents: "30 days" },
+  access: ({ caller }) => !Schema.is(Anonymous)(caller),
 })
