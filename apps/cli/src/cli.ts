@@ -2,6 +2,12 @@ import { Effect, Runtime } from "effect"
 import { CliError, Command } from "effect/unstable/cli"
 
 import { version } from "../package.json" with { type: "json" }
+import {
+  backfillCommand,
+  observeCommand,
+  planCommand,
+  statusCommand,
+} from "./commands/adopt/run.ts"
 import { discardCommand, retryCommand } from "./commands/dead-letters/repair.ts"
 import { listCommand as defectsListCommand } from "./commands/defects/list.ts"
 import { devCommand } from "./commands/dev/run.ts"
@@ -40,6 +46,11 @@ export const durable = Command.make("durable").pipe(
           payloadsCheckCommand,
           clearCommand,
         ]),
+        group(
+          "adopt",
+          "Adopt existing tables: plan, observe legacy writers, backfill, and check status",
+          [planCommand, observeCommand, backfillCommand, statusCommand],
+        ),
       ],
     },
     {

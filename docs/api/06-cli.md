@@ -9,11 +9,11 @@
 
 ## Exit statuses
 
-| Status | Meaning                                                                                                                                                                                                                                                                                                      |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0      | The command succeeded, or printed help, its version, or completions.                                                                                                                                                                                                                                         |
-| 1      | The command ran and reported a refusal: `workflows check` or `payloads check` found a deploy that would be refused, `payloads clear` left a version uncleared, or a runner refused an operator request (`Refused (<status>): <body>`).                                                                       |
-| 2      | Usage error: an unknown command or flag, a missing or invalid value, an entry module that cannot be loaded, an unreachable runner, a database `workflows check` or `payloads` cannot read, or a refused `tenants create`. An invalid invocation prints the command's help on stdout and the error on stderr. |
+| Status | Meaning                                                                                                                                                                                                                                                                                                                |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0      | The command succeeded, or printed help, its version, or completions.                                                                                                                                                                                                                                                   |
+| 1      | The command ran and reported a refusal: `workflows check` or `payloads check` found a deploy that would be refused, `payloads clear` left a version uncleared, `adopt plan` found a table problem or an `adopt` step was refused, or a runner refused an operator request (`Refused (<status>): <body>`).              |
+| 2      | Usage error: an unknown command or flag, a missing or invalid value, an entry module that cannot be loaded, an unreachable runner, a database `workflows check`, `payloads`, or `adopt` cannot read, or a refused `tenants create`. An invalid invocation prints the command's help on stdout and the error on stderr. |
 
 ## Global flags
 
@@ -39,6 +39,7 @@ Develop and deploy:
   dev          Run the entry's app locally with a read-only inspector at /_durable/inspector
   workflows    Check workflow changes against open executions
   payloads     Check and clear stored event and effect payload versions
+  adopt        Adopt existing tables: plan, observe legacy writers, backfill, and check status
 
 Operate a running deployment:
   defects          Read recent defects from runners
@@ -113,6 +114,72 @@ USAGE
 
 FLAGS
   --entry file             The entry module; it exports an `actors` array of actor definitions
+  --database-url string    The application's Postgres URL
+  --json                   Print the report as JSON
+```
+
+### `durable adopt plan`
+
+Plan adopting the entry's existing tables, with the SQL each needs; exit 1 while a table has a problem
+
+```text
+USAGE
+  durable adopt plan [flags]
+
+FLAGS
+  --entry file             The entry module; it exports an `actors` array of actor definitions
+  --database-url string    The application's Postgres URL
+  --json                   Print the report as JSON
+  --table string           Plan only this adopted table
+```
+
+### `durable adopt observe`
+
+Record which writers still write an adopted table, or report them with --report
+
+```text
+USAGE
+  durable adopt observe [flags] <table>
+
+ARGUMENTS
+  table string    The adopted table to observe
+
+FLAGS
+  --entry file             The entry module; it exports an `actors` array of actor definitions
+  --database-url string    The application's Postgres URL
+  --json                   Print the report as JSON
+  --report                 Report the writes recorded so far instead of starting to observe
+  --since string           With --report, only writes within this window, such as 7d
+  --clear                  With --report, clear the reported writes
+```
+
+### `durable adopt backfill`
+
+Fill routing_key on an observed table's rows, in batches
+
+```text
+USAGE
+  durable adopt backfill [flags] <table>
+
+ARGUMENTS
+  table string    The adopted table to backfill
+
+FLAGS
+  --entry file             The entry module; it exports an `actors` array of actor definitions
+  --database-url string    The application's Postgres URL
+  --json                   Print the report as JSON
+  --batch integer          Rows per pass (default 1000)
+```
+
+### `durable adopt status`
+
+Show each adopted table's mode and the rows left to backfill
+
+```text
+USAGE
+  durable adopt status [flags]
+
+FLAGS
   --database-url string    The application's Postgres URL
   --json                   Print the report as JSON
 ```

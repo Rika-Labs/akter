@@ -43,6 +43,7 @@
     },
     "apps/cli": {
       "name": "@durable-actors/cli",
+      "version": "0.1.0-alpha.0",
       "bin": {
         "durable": "./src/main.ts",
       },
@@ -55,6 +56,7 @@
       "devDependencies": {
         "@durable-actors/postgres": "workspace:*",
         "@types/pg": "8.23.1",
+        "drizzle-orm": "catalog:",
         "pg": "8.23.0",
         "vitest": "catalog:",
       },
@@ -383,9 +385,20 @@
     },
     "tooling/databases": {
       "name": "@durable-actors/databases",
+    },
+    "tooling/doc-checks": {
+      "name": "@durable-actors/doc-checks",
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
+        "drizzle-orm": "catalog:",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/bun": "1.4.2",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "tooling/oxlint": {
@@ -636,6 +649,8 @@
     "@durable-actors/databases": ["@durable-actors/databases@workspace:tooling/databases"],
 
     "@durable-actors/deployments": ["@durable-actors/deployments@workspace:packages/deployments"],
+
+    "@durable-actors/doc-checks": ["@durable-actors/doc-checks@workspace:tooling/doc-checks"],
 
     "@durable-actors/docs": ["@durable-actors/docs@workspace:apps/docs"],
 
