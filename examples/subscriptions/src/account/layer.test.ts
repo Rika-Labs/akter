@@ -16,7 +16,6 @@ import {
 import { SqlClient } from "effect/unstable/sql"
 import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
-import { authorize } from "./authorize.ts"
 import { Account, AccountId } from "./contract.ts"
 import { fakeGateway, ledger } from "./gateway.ts"
 import { AccountLive } from "./layer.ts"
@@ -52,11 +51,7 @@ const live = Layer.unwrap(
     return AccountLive.pipe(
       Layer.provide(fakeGateway(book)),
       Layer.provideMerge(
-        ActorTest.layer({
-          database: yield* database,
-          as: User.make({ subject: "ada" }),
-          authorize,
-        }),
+        ActorTest.layer({ database: yield* database, as: User.make({ subject: "ada" }) }),
       ),
     )
   }),

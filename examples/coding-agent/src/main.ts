@@ -5,16 +5,13 @@
  *   bun run start "add a --dry-run flag"
  */
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
-import { Config, Console, Effect, Layer, Option, Schema } from "effect"
+import { Config, Console, Effect, Layer, Option } from "effect"
 import { AgentId, CodingAgent } from "./coding-agent/contract.ts"
 import { CodingAgentLive } from "./coding-agent/layer.ts"
 import { fakeLayer, fakeSandboxes } from "./coding-agent/sandbox.ts"
 import { SandboxReaper } from "./sandbox-reaper/contract.ts"
 import { SandboxReaperLive } from "./sandbox-reaper/layer.ts"
-
-const tenant = "coding-agent-demo"
 
 const DatabaseLive = Layer.unwrap(
   Effect.map(
@@ -24,23 +21,13 @@ const DatabaseLive = Layer.unwrap(
 )
 
 /**
- * Runs the agent and reaper with a fake sandbox provider. Only the `demo` user
- * may call them; relay deliveries and workflow step commands skip the
- * authorize hook.
+ * Runs the agent and reaper with a fake sandbox provider. The demo calls them
+ * from this process, so it runs as the trusted process caller and needs no
+ * access policy; nothing is served.
  */
 const live = Layer.mergeAll(CodingAgentLive, SandboxReaperLive).pipe(
   Layer.provide(fakeLayer(fakeSandboxes())),
-  Layer.provideMerge(
-    Actors.layer({
-      authorize: ({ caller, ref, kind }) =>
-        Effect.succeed(
-          (kind === "command" || kind === "query") &&
-            ref.tenant === tenant &&
-            Schema.is(User)(caller) &&
-            caller.subject === "demo",
-        ),
-    }),
-  ),
+  Layer.provideMerge(Actors.layer()),
   Layer.provide(DatabaseLive),
   Layer.provide(BunCrypto.layer),
 )
@@ -57,7 +44,7 @@ const program = Effect.gen(function* () {
     yield* Console.log(`[${status}] ${prompt}\n  -> ${reply}`)
 
   yield* (yield* SandboxReaper.get()).Sweep()
-}).pipe(Actor.tenant(tenant), Actor.as(User.make({ subject: "demo" })))
+})
 
 Layer.effectDiscard(program).pipe(
   Layer.provide(live),

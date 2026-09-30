@@ -46,7 +46,6 @@ const withCluster = <A, E>(
             settings.withoutExecutors.includes(runner)
               ? Layer.empty
               : controlProbeEffects(PROVIDER_MS),
-          authorize: () => Effect.succeed(true),
           executors:
             settings.cancelCheck === undefined
               ? { concurrency: settings.concurrency }

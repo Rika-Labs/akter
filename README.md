@@ -81,9 +81,8 @@ export const CounterLive = Counter.toLayer(
 
 <!-- snippet file=src/main.ts
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
-import { Console, Effect, Layer, Schema } from "effect"
+import { Console, Effect, Layer } from "effect"
 import { Counter } from "./counter/contract.ts"
 import { CounterLive } from "./counter/layer.ts"
 const DatabaseLive = Database.pglite({ dataDir: "./.data" })
@@ -92,27 +91,20 @@ const DatabaseLive = Database.pglite({ dataDir: "./.data" })
 ```ts
 // src/main.ts: runtime wiring and one call
 const live = CounterLive.pipe(
-  Layer.provideMerge(
-    Actors.layer({
-      authorize: ({ caller, ref }) =>
-        Effect.succeed(Schema.is(User)(caller) && ref.tenant === "quickstart"),
-    }),
-  ),
+  Layer.provideMerge(Actors.layer()),
   Layer.provide(DatabaseLive), // Database.postgres with DATABASE_URL, else Database.pglite({ dataDir })
   Layer.provide(BunCrypto.layer),
 )
 
 const program = Effect.gen(function* () {
-  const counter = yield* Counter.get("visits").pipe(
-    Actor.tenant("quickstart"),
-    Actor.as(User.make({ subject: "you" })),
-  )
+  const counter = yield* Counter.get("visits")
+  const visits = yield* counter.Increment(1)
 
-  yield* Console.log(`visits: ${yield* counter.Increment(1)}`)
+  yield* Console.log(`visits: ${visits}`)
 })
 ```
 
-Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error, and [`examples/chat`](examples/chat) adds blobs, effects, and retention. [`examples/orders`](examples/orders) places orders inside an app with its own Postgres tables, mints a shipment actor per package, charges through an idempotent effect, and proves with a SIGKILL crash drill that no acknowledged order is lost and no payment is taken twice. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
+Code in your own process runs as the trusted `System` caller in the `"default"` tenant, so it names neither a caller nor a tenant. A served actor is closed to outside callers until it declares who may use it with `access` on `Actor.make`; `Actor.access.public` opens it to anyone, for demos. Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error, and [`examples/chat`](examples/chat) adds blobs, effects, and retention. [`examples/orders`](examples/orders) places orders inside an app with its own Postgres tables, mints a shipment actor per package, charges through an idempotent effect, and proves with a SIGKILL crash drill that no acknowledged order is lost and no payment is taken twice. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
 
 ## Why Effect for actors?
 

@@ -18,11 +18,12 @@ const state = Actor.state({
   blob: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
 })
 
-/** The measured actor, with every policy at its default. */
+/** The measured actor, with every policy at its default; open to the HTTP scenario's callers. */
 export const Probe = Actor.make("Probe", {
   key: Schema.NonEmptyString,
   state,
   api: { Add, Fill, Weigh, Peek },
+  access: Actor.access.public,
 })
 
 /** Hibernates quickly so a later turn measures a cold activation. */

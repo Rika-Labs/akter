@@ -34,6 +34,7 @@ export const ReducerProbe = Actor.make("ReducerProbe", {
   key: Schema.NonEmptyString,
   state,
   api: { Add, Tick },
+  access: Actor.access.public,
 })
 
 /** A reducer-only actor registers through `toLayer` with no handlers. */

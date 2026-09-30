@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor, Anonymous } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
 /** The count after an increment commits, so a browser can follow it over the event feed. */
@@ -39,11 +39,15 @@ export const Snapshot = Actor.make("Snapshot", {
   policy: { createdBy: Record },
 })
 
-/** A counter keyed by name, with an integer count that starts at zero. */
+/**
+ * A counter keyed by name, with an integer count that starts at zero. Anyone
+ * signed in may use it; a visitor without credentials may not.
+ */
 export const Counter = Actor.make("Counter", {
   key: Schema.NonEmptyString,
   state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   events: [Incremented],
   feeds: [Incremented],
   api: { Increment, Checkpoint, Double },
+  access: ({ caller }) => !Schema.is(Anonymous)(caller),
 })

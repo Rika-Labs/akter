@@ -77,11 +77,7 @@ export const orders: Scenario = {
               const services = yield* Layer.build(
                 OrdersLive.pipe(
                   Layer.provide(fakeLedger().layer),
-                  Layer.provideMerge(
-                    Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(
-                      Layer.provide(hooks),
-                    ),
-                  ),
+                  Layer.provideMerge(Actors.layer().pipe(Layer.provide(hooks))),
                   Layer.provideMerge(database.layer),
                   Layer.provide(BunCrypto.layer),
                   Layer.orDie,

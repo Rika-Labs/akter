@@ -18,7 +18,7 @@ Durable Actors should remove routine coordination work while naming every bounda
 - durable events with cursors;
 - workflows, cron, timers, and retryable effects with dead letters;
 - typed connections with hibernation and best-effort broadcast;
-- ambient caller attribution and tenant-aware placement;
+- caller and tenant attribution decided by the transport, with per-actor access policies, and tenant-aware placement;
 - embedded, served, and hosted operation with one model;
 - inspectable failure and recovery state.
 
