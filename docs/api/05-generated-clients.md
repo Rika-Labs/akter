@@ -27,15 +27,15 @@ Every command requires an `Idempotency-Key` header, the command id `v1.<issuedAt
 
 Error bodies are `{ _tag: "ActorError", reason, isRetryable, retryAfter? }`. Retry with the same id, never a new one:
 
-| Outcome                                                             | Retry with the same id?                   | Wait                                                 |
-| ------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------- |
-| `503 ActorUnavailable`, `503 RunnerAtCapacity`, `429 MailboxFull`   | yes                                       | `retryAfter` ms (`retry-after` in seconds), jittered |
-| `504 Timeout`                                                       | yes; the turn may have committed          | 0–250 ms of jitter                                   |
-| no response (network failure)                                       | yes; the outcome is unknown               | exponential, from 100 ms, capped at 5 s, with jitter |
-| `400 InvalidCommandId` with code `future`                           | yes, once `durable-now` passes `issuedAt` | until then                                           |
-| `401 Unauthorized` with code `expired`                              | once, with a fresh credential             | none                                                 |
-| `410 CommandExpired`                                                | no; surface it, never remint              | –                                                    |
-| `409`, other `400`, `401`, `403`, `404`, `413`, `415`, `422`, `500` | no                                        | –                                                    |
+| Outcome                                                             | Retry with the same id?                   | Wait                                                                                                              |
+| ------------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `503 ActorUnavailable`, `503 RunnerAtCapacity`, `429 MailboxFull`   | yes                                       | `retryAfter` ms (`retry-after` in seconds), jittered                                                              |
+| `504 Timeout`                                                       | yes; the turn may have committed          | 0–250 ms of jitter                                                                                                |
+| no response (network failure)                                       | yes; the outcome is unknown               | exponential, from 100 ms, capped at 5 s, with jitter                                                              |
+| `400 InvalidCommandId` with code `future`                           | yes, once `durable-now` passes `issuedAt` | until then, plus half the round trip of the `durable-now` sample, which bounds how far the estimate can run ahead |
+| `401 Unauthorized` with code `expired`                              | once, with a fresh credential             | none                                                                                                              |
+| `410 CommandExpired`                                                | no; surface it, never remint              | –                                                                                                                 |
+| `409`, other `400`, `401`, `403`, `404`, `413`, `415`, `422`, `500` | no                                        | –                                                                                                                 |
 
 Stop retrying once the id's `expiresAt` is less than a second away on the client's clock corrected by `durable-now`.
 

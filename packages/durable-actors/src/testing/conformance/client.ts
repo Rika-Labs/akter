@@ -537,6 +537,42 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "client retries a future id once the database clock passes it even when the refused request was slow to reach the server",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          const wire = recording()
+          const services = yield* Effect.context<never>()
+          let posts = 0
+
+          const rooms = HttpRoom.client({
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+            fetch: (input, init) => {
+              posts += urlOf(input).pathname.endsWith("/Post") ? 1 : 0
+
+              return posts === 1
+                ? Effect.runPromiseWith(services)(Effect.sleep(Duration.millis(300))).then(() =>
+                    wire.fetch(input, init),
+                  )
+                : wire.fetch(input, init)
+            },
+          })
+
+          const future = yield* server.mint(1_000)
+
+          const result = yield* settle(() =>
+            rooms.get("slow-future").Post({ text: "a" }, { commandId: future }),
+          )
+
+          expect(result).toEqual({ ok: true, value: 1 })
+          expect(keysOf(wire.commands("Post"))).toEqual([future, future])
+        }),
+      ),
+  },
+  {
     name: "client marks a self-minted id the server refused before any turn as never admitted",
     run: ({ expect, environment }) =>
       environment.run(
