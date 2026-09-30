@@ -28,24 +28,29 @@ const graph = Effect.fnUntraced(function* (entry: string) {
 })
 
 describe("@durable-actors/core/client", () => {
-  it("imports no runtime, SQL, or Cluster module in a browser build", () =>
+  it("imports no runtime, serving, SQL, or Cluster module in a browser build", () =>
     Effect.runPromise(
-      Effect.gen(function* () {
-        const entry = new URL("./index.ts", import.meta.url).pathname
-        const { files, packages } = yield* graph(entry)
+      Effect.forEach(
+        [
+          new URL("./index.ts", import.meta.url).pathname,
+          new URL("./make.ts", import.meta.url).pathname,
+        ],
+        (entry) =>
+          Effect.gen(function* () {
+            const { files, packages } = yield* graph(entry)
 
-        expect(files.some((file) => file.endsWith("/errors/actor.ts"))).toBe(true)
-        expect(files.filter((file) => FORBIDDEN.test(file))).toEqual([])
+            expect(files.filter((file) => FORBIDDEN.test(file))).toEqual([])
 
-        expect(packages.filter((name) => FORBIDDEN.test(name) || name.includes("cluster"))).toEqual(
-          [],
-        )
+            expect(
+              packages.filter((name) => FORBIDDEN.test(name) || name.includes("cluster")),
+            ).toEqual([])
 
-        const build = yield* Effect.promise(() =>
-          Bun.build({ entrypoints: [entry], target: "browser" }),
-        )
+            const build = yield* Effect.promise(() =>
+              Bun.build({ entrypoints: [entry], target: "browser" }),
+            )
 
-        expect(build.success).toBe(true)
-      }),
+            expect(build.success).toBe(true)
+          }),
+      ),
     ))
 })

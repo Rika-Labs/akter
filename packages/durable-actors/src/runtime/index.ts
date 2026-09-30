@@ -25,7 +25,7 @@ export {
 
 export type { AssertionOptions } from "../serve/assertion/verify.ts"
 
-export { actorErrorBody, closeCodeOf, statusOf } from "../serve/wire.ts"
+export { actorErrorBody, closeCodeOf, statusOf } from "../protocol/wire.ts"
 
 export { Database } from "./layer.ts"
 
