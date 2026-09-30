@@ -84,7 +84,8 @@ export const seedRuntime = (deps: {
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
   readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
   readonly wake: Effect.Effect<void>
-  readonly role: string | undefined
+  /** The tenant and adoption writer roles the operator's turns take, as the runtime's own turns do. */
+  readonly tenantScope: ReferenceOf<typeof TenantScope>
 }) =>
   Effect.fnUntraced(
     function* ({
@@ -183,7 +184,7 @@ export const seedRuntime = (deps: {
         Effect.catchIf(SqlError.isSqlError, Effect.die),
         Effect.provideService(FrameworkClock, deps.clock),
         Effect.provideService(OutboxRuntime, deps.outbox),
-        Effect.provideService(TenantScope, { role: deps.role }),
+        Effect.provideService(TenantScope, deps.tenantScope),
         Effect.provideContext(deps.services),
       ),
   )
