@@ -8,7 +8,7 @@
 - **Actor:** durable application boundary around an identity and its mutation authority.
 - **ActorRef:** serializable actor address containing actor name, tenant, and actor ID.
 - **Activation:** disposable in-memory process representation of an actor.
-- **Actor definition:** the one data object passed to `Actor.make`, with sections `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, `api`, `internal`, and `policy`.
+- **Actor definition:** the one data object passed to `Actor.make`, with sections `key`, `placement`, `state`, `tables`, `blobs`, `events`, `feeds`, `api`, `internal`, `createdBy`, `schedules`, `jobs`, `subscriptions`, `policy`, and `access`.
 - **Named actor:** actor whose `key` is an id schema, resolved with `X.get(id)`.
 - **Minted actor:** actor with no `key`; `X.create()` mints its id outside a turn, or `turn.mint` derives it inside the parent's turn (ADR 0025), and no row is written until its first turn. A parent-placed minted child's id wraps that UUIDv8 as `c1.<len>.<parent>.<uuid>`, and it has no `X.create()` (ADR 0033).
 - **Singleton:** actor with `key: Actor.singleton`, resolved with `X.get()`, and active at most once cluster-wide.
@@ -26,7 +26,7 @@
 - **Receipt:** durable record of one logical command identity and outcome; the only durable admission record of a direct command.
 - **Command ID:** client-minted idempotency identity reused across delivery retries.
 - **Event:** committed fact available for delivery or replay.
-- **Intent:** durable actor message, timer, workflow start, or effect obligation written to `actor_outbox` by a turn and delivered after commit.
+- **Intent:** durable actor message, timer, workflow start, or job obligation written to `actor_outbox` by a turn and delivered after commit.
 - **Outbox:** the actor-shard `actor_outbox` table that carries every intent; its relay delivers due rows as direct commands.
 - **Job:** external I/O declared with `Actor.job`, bound by an actor in `jobs`, staged by `turn.enqueue`, persisted with the turn, and executed after commit by `X.toJobLayer`; its result and dead letter reach the actor through the binding's `onSuccess` and `onDeadLetter` routes, and a cancelled keyed job's outcome through `onCancelled` (ADR 0024, M2.13). It is at least once, keyed for providers by its stable `jobId`.
 - **Internal command:** a command in the `internal` section, callable only by System callers.

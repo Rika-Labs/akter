@@ -5,7 +5,7 @@
 **Owner role:** API/SDK.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-`Actor.serve` with `openapi: { path: "/openapi.json" }` serves an OpenAPI 3.1 document (JSON Schema 2020-12) generated from the served actors. Any OpenAPI 3.1 generator can produce a client from it, for example:
+`Actors.serve` with `openapi: { path: "/openapi.json" }` serves an OpenAPI 3.1 document (JSON Schema 2020-12) generated from the served actors. Any OpenAPI 3.1 generator can produce a client from it, for example:
 
 ```sh
 curl -s localhost:3000/openapi.json > openapi.json
@@ -47,16 +47,16 @@ The Promise client and the Python runtime run one corpus of scripted exchanges, 
 
 The document's `securitySchemes` come from the server's auth provider, and every operation except `durable.protocol` lists them as alternatives, any one of which authenticates:
 
-| Scheme   | Provider                                                        | Send                                                   |
-| -------- | --------------------------------------------------------------- | ------------------------------------------------------ |
-| `bearer` | `Actor.auth.jwt` (`bearerFormat: JWT`), `Actor.auth.make`       | `authorization: Bearer <token>`                        |
-| `cookie` | `Actor.auth.make({ cookies: { name } })`, an `apiKey` in cookie | the cookie `name`, as a browser or cookie jar sends it |
+| Scheme   | Provider                                                  | Send                                                   |
+| -------- | --------------------------------------------------------- | ------------------------------------------------------ |
+| `bearer` | `Auth.jwt` (`bearerFormat: JWT`), `Auth.make`             | `authorization: Bearer <token>`                        |
+| `cookie` | `Auth.make({ cookies: { name } })`, an `apiKey` in cookie | the cookie `name`, as a browser or cookie jar sends it |
 
-A server under `Actor.auth.none` declares no schemes. Never put a credential in the URL. A `401` carries `www-authenticate: Bearer` whatever the scheme.
+A server under `Auth.none` declares no schemes. Never put a credential in the URL. A `401` carries `www-authenticate: Bearer` whatever the scheme.
 
 ## MCP
 
-`Actor.serve` with `mcp: { path: "/mcp" }` serves the same members as MCP tools, derived from the same OpenAPI document ([ADR 0060](../decisions/0060-generated-protocols-mcp-and-python-client.md)). The endpoint speaks MCP revision 2026-07-28 over Streamable HTTP and nothing earlier: send each JSON-RPC message as its own `POST` with `MCP-Protocol-Version`, `Mcp-Method`, and (for `tools/call`) `Mcp-Name` headers, and the protocol version and client capabilities in `params._meta`. Send the same credentials as any route.
+`Actors.serve` with `mcp: { path: "/mcp" }` serves the same members as MCP tools, derived from the same OpenAPI document ([ADR 0060](../decisions/0060-generated-protocols-mcp-and-python-client.md)). The endpoint speaks MCP revision 2026-07-28 over Streamable HTTP and nothing earlier: send each JSON-RPC message as its own `POST` with `MCP-Protocol-Version`, `Mcp-Method`, and (for `tools/call`) `Mcp-Name` headers, and the protocol version and client capabilities in `params._meta`. Send the same credentials as any route.
 
 - Tool names are operation ids, `<Actor>.<Member>`. `durable.commandIds` mints a command id.
 - Arguments: `id` (the actor's key; absent for a singleton), `commandId` (commands and reducers only), and `input`.

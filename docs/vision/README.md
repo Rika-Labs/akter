@@ -20,7 +20,7 @@ These documents state the settled v4 product intent: an Effect-native durable ac
 
 ## Through-line
 
-`Actor.make` is the one primitive. An actor owns identity and serialized mutation; keyed state and `OwnedTable` rows commit with receipts and events; workflows are actor members; cron, timers, and effects continue work; typed connections provide realtime behavior; `Actors.layer`, `Actor.serve`, and hosted runners provide embedded, served, and hosted operation.
+`Actor.make` is the one primitive. An actor owns identity and serialized mutation; keyed state and `OwnedTable` rows commit with receipts and events; workflows are actor members; schedules, timers, and jobs continue work; typed connections provide realtime behavior; `Actors.layer`, `Actors.serve`, and hosted runners provide embedded, served, and hosted operation.
 
 The product is actor-first. It does not split application behavior into unrelated infrastructure products, and it does not introduce an AI-specific surface. The reference examples—counter, chat, and coding agent—must prove the model end to end.
 

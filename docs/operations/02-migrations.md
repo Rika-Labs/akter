@@ -7,12 +7,12 @@
 
 ## Who owns which schema
 
-| Schema                                            | Changed by                                                                                                                         | Applied                                          |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| Framework tables (`actor_*`, the `durable` views) | the framework's numbered migrations (`runtime/database/migrations.ts`)                                                             | at boot, by every runtime's `Actors.layer`       |
-| Application tables                                | drizzle-kit migrations                                                                                                             | by the application, before `Actors.layer` starts |
-| Keyed actor state in `actor_state`                | the ordered chain in `Actor.state(fields, { migrations })`                                                                         | by the turn that next loads the actor            |
-| Stored event and effect payloads                  | `Actor.migration` chains on `Actor.Event` and `Actor.effect` ([ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)) | upcast on read, without rewriting                |
+| Schema                                            | Changed by                                                                                                                                                 | Applied                                          |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Framework tables (`actor_*`, the `durable` views) | the framework's numbered migrations (`runtime/database/migrations.ts`)                                                                                     | at boot, by every runtime's `Actors.layer`       |
+| Application tables                                | drizzle-kit migrations                                                                                                                                     | by the application, before `Actors.layer` starts |
+| Keyed actor state in `actor_state`                | the ordered chain in `Actor.state(fields, { migrations })`                                                                                                 | by the turn that next loads the actor            |
+| Stored event and job payloads                     | `Actor.migration` chains in the `migrations` option of `Actor.event` and `Actor.job` ([ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)) | upcast on read, without rewriting                |
 
 Separately, `packages/postgres` owns the hosted control-plane schema and `bin/migrate.ts`. The CLI has no `migrate` command; framework migrations run only at boot.
 
@@ -25,7 +25,7 @@ Separately, `packages/postgres` owns the hosted control-plane schema and `bin/mi
 - A runtime whose newest id is below the database's applies nothing and starts. So a runner of the previous release keeps starting, and serving, after a newer release migrated the database. Every framework migration must therefore leave the schema usable by the previous release's runtime (see the next section).
 - After migrating, startup refuses a database whose recorded protocol or retry window differs from the runtime's, or whose recorded placement of an actor type differs from its declaration. Those values bind stored command ids and routing keys, so changing them needs an explicit migration, never a rolling deploy.
 
-Event values and effect payloads also upcast on read. On several runners, a deploy that adds a step ships first with `writeVersion` set to the previous version, then without it. Shorten a chain only after `durable payloads check` passes; for events, run `durable payloads clear` first. Startup refuses a rollback past a recorded version.
+Event values and job payloads also upcast on read. On several runners, a deploy that adds a step ships first with `writeVersion` set to the previous version, then without it. Shorten a chain only after `durable payloads check` passes; for events, run `durable payloads clear` first. Startup refuses a rollback past a recorded version.
 
 Compressed schema-encoded state migrates lazily: a turn applies the actor's declared chain after it acquires the generation fence and before the handler runs, and commits the current shape on handler success. An unhandled declared failure discards the migration's writes with the rest of the business work while its failure receipt commits. Invalid chains fail at `Actor.make`; decode or upcast defects roll back the whole turn and record the cause in the turn span. A state migration never rewrites actors that are not loaded, so an old shape stays readable for as long as any actor holds it.
 
@@ -44,7 +44,7 @@ Use expand and contract whenever old and new runners overlap, which is every rol
 Contract only after both horizons have passed:
 
 - **Runners.** No runner of a release that reads the old shape is left, including one that could restart from an old image.
-- **Retained records.** Every record that holds the old shape is gone or rewritten: receipts until their ids expire and `keepReceipts` passes, events until `keepEvents` (and subscribers' holds) pass, pending outbox rows, intents, and effects until they settle, open workflow executions until they finish, and dead letters until they are repaired. A receipt must replay its outcome under newer code, and a pending intent must still decode when a newer runner delivers it.
+- **Retained records.** Every record that holds the old shape is gone or rewritten: receipts until their ids expire and `keepReceipts` passes, events until `keepEvents` (and subscribers' holds) pass, pending outbox rows, intents, and jobs until they settle, open workflow executions until they finish, and dead letters until they are repaired. A receipt must replay its outcome under newer code, and a pending intent must still decode when a newer runner delivers it.
 
 Take a backup before a contract phase and record it as the rollback boundary. There are no down migrations: before a contract, rolling back is a deploy of the previous release, because the expand left its schema intact; after a contract, rolling back is a [restore](04-backup-restore.md) of the backup taken before it.
 
@@ -65,7 +65,7 @@ Owned tables keep their owner's key columns, so a backfill never changes which a
 Framework migrations follow the same phases across framework releases:
 
 - A migration adds tables, nullable columns, columns with constant defaults (which Postgres adds without rewriting the table), and indexes. It never drops or renames anything the previous release reads.
-- A migration that must rewrite rows does so for rows that exist when it runs, as `0015_effect_control` fills its new effect columns, and the release's runtime must still accept rows the previous release writes afterwards.
+- A migration that must rewrite rows does so for rows that exist when it runs, as `0015_effect_control` fills its new job-control columns, and the release's runtime must still accept rows the previous release writes afterwards.
 - Every migration runs inside the boot transaction, so it cannot use `CREATE INDEX CONCURRENTLY`. An index on a large table holds its table lock for the build, which blocks turns, and its release notes must say so.
 - A contract of a framework column waits for the retained-record horizons above, because receipts, outbox rows, events, and workflow records outlive the release that wrote them.
 

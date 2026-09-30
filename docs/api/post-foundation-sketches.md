@@ -25,21 +25,21 @@ Ship: Effect.fn(function* (order) {
 
 ## Inspect and reproduce
 
-`durable inspect Chat/room-42` and `durable export Chat/room-42 --output room-42.seed` shipped, with `test.actor(Chat, "room-42", { seed: "room-42.seed" })` ([server API](01-server-api.md)). The baseline export is current actor state plus pending intents and effects; arbitrary past-turn rewind, and so a `--turns` option, requires a separately costed history feature.
+`durable inspect Chat/room-42` and `durable export Chat/room-42 --output room-42.seed` shipped, with `test.actor(Chat, "room-42", { seed: "room-42.seed" })` ([server API](01-server-api.md)). The baseline export is current actor state plus pending intents and jobs; arbitrary past-turn rewind, and so a `--turns` option, requires a separately costed history feature.
 
 ## Derive protocols
 
 ```ts
-Actor.serve({ actors: [ChatLive], auth: jwt(...), openapi: { path: "/openapi.json" }, mcp: { path: "/mcp" } })
+Actors.serve({ actors: [ChatLive], auth: Auth.jwt(...), openapi: { path: "/openapi.json" }, mcp: { path: "/mcp" } })
 // generated Python client: bun packages/python-client/src/main.ts <openapi.json> --out <dir>
 ```
 
-MCP (shipped as `serve({ mcp })`, described in [generating clients](05-generated-clients.md#mcp)) exposes only public members. A durable tool invocation requires a stable caller-supplied `commandId`; a transport event ID with no guaranteed retry stability is insufficient. The Python client (see [generating clients](05-generated-clients.md#python)) follows the same runtime schemas and expiry semantics as the TypeScript client.
+MCP (shipped as `Actors.serve({ mcp })`, described in [generating clients](05-generated-clients.md#mcp)) exposes only public members. A durable tool invocation requires a stable caller-supplied `commandId`; a transport event ID with no guaranteed retry stability is insufficient. The Python client (see [generating clients](05-generated-clients.md#python)) follows the same runtime schemas and expiry semantics as the TypeScript client.
 
 ## Serve cold
 
 ```ts
-export default Actor.serve.handler({ actors: [ChatLive], database: Database.postgres({ url }) })
+export default Actors.serve.handler({ actors: [ChatLive], database: Database.postgres({ url }) })
 ```
 
 The handler is illustrative. A persistent edge must wake runners, recover due work, and terminate or reconnect sockets after gateway failure. Benchmark warm and cold turns separately.

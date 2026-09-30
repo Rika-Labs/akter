@@ -5,7 +5,7 @@
 **Owner role:** API/runtime.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-Handlers take only their input. Each phase provides one typed context object as an Effect service on the actor definition, so a capability used in the wrong phase is a missing-service type error. The runtime remains the final authority even when TypeScript prevents invalid use. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
+Handlers take only their payload. Each phase provides one typed context object as an Effect service on the actor definition, so a capability used in the wrong phase is a missing-service type error. The runtime remains the final authority even when TypeScript prevents invalid use. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
 
 ```ts
 import { Actor, type ActorRef, type Caller } from "@durable-actors/core"
@@ -199,7 +199,7 @@ A runtime's transport holds each socket; the actor never does. A connection memb
 
 `read.follow(Event, { after })` exists only in stream handlers. It replays the committed events after the exclusive cursor, then emits each new event as its turn commits, with no gap or repeat between the two, and fails with `UnknownCursor` or `RetentionGap` like `read.events`. It requires `Actor.InStream`, which only stream handlers provide, so a query that follows leaves that requirement on its layer and does not compile into a runtime. A stream handler's `X.Read` otherwise matches a query's: `state` and `cursor` are the activation's committed state and event head when the subscription started, `events`, `rows`, `group`, and `blob` read committed data, and command or query calls from the handler are defects. The live part follows commits on the activation it runs on, so it ends with that activation; a subscriber that reconnects passes the last `cursor` it received as `after`. Each commit that emits events costs every following subscription one indexed read of `actor_events`, outside any turn.
 
-`read.progress(J, { jobId? })` exists only in stream handlers whose member lists `E` under `progress.effects` (elsewhere it dies with `Progress is only available in stream handlers`, and in a query it leaves `Actor.InStream` unsatisfied). It is a live `Stream` of `{ jobId, effect, attempt, seq, frame }` for this actor's effects of class `E`, from the moment of the call: `effect` is the performed effect, decoded, so a handler can filter by its input. It has no history, keeps only the newest 16 entries for a slow reader, and ends with the stream. The handler is the audience decision, since it runs as the subscriber.
+`read.progress(J, { jobId? })` exists only in stream handlers whose member lists `J` under `progress.jobs` (elsewhere it dies with `Progress is only available in stream handlers`, and in a query it leaves `Actor.InStream` unsatisfied). It is a live `Stream` of `{ jobId, job, attempt, seq, frame }` for this actor's jobs of class `J`, from the moment of the call: `job` is the enqueued job, decoded, so a handler can filter by its payload. It has no history, keeps only the newest 16 entries for a slow reader, and ends with the stream. The handler is the audience decision, since it runs as the subscriber.
 
 ## Activation-local values
 

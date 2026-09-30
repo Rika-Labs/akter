@@ -49,7 +49,7 @@ Dependency direction: `apps → packages → nothing app-ward`. `packages/durabl
 ## Naming contract
 
 - Package name is `@durable-actors/<directory basename>`, except the framework in `packages/durable-actors`, which is `@durable-actors/core` ([ADR 0029](../decisions/0029-licence-package-name-and-release-policy.md)). A name says what the package owns, never a layer.
-- Folders are kebab-case nouns with one responsibility. Forbidden: `core shared common utils helpers lib misc domain types internal`. Role-plural folders (`commands/ events/ queries/ workflows/ effects/ providers/`) are allowed inside a feature with two or more files.
+- Folders are kebab-case nouns with one responsibility. Forbidden: `core shared common utils helpers lib misc domain types internal`. Role-plural folders (`commands/ events/ queries/ workflows/ jobs/ providers/`) are allowed inside a feature with two or more files.
 - Files are kebab-case and named for an operation (`create.ts`) or a role (`contract.ts layer.ts queries.ts handler.ts repository.ts schema.ts errors.ts state.ts config.ts client.ts`). Never `<parent>-<x>.ts`, never `<x>-service.ts`.
 - A small actor is one module named for it, such as `counter.ts`, holding its `Actor.make` definition and its layers. Split it into an `<actor>/` folder with role files — `contract.ts` (the definition), `layer.ts` (`X.toLayer`), `queries.ts` (`X.toQueryLayer`), `jobs.ts` (`X.toJobLayer`), `workflows/` — when a responsibility needs its own module: a browser client or another process imports the definition without the handlers, an executor layer deploys separately, or one file no longer reads as one responsibility. Do not create empty role files.
 - `index.ts` exists only as a package or subpath entry and names real files; no `./*` wildcard exports.
@@ -61,7 +61,7 @@ Two checks implement this specification, each owning different rules. Per-file o
 ## Ways to run, mapped to the tree
 
 - **Embedded:** an application provides `Actors.layer` from `@durable-actors/core/runtime` and calls actors as Effects. `apps/api` runs this way.
-- **Served:** `Actor.serve` in its own process; the `docker/` images and a customer's BYO runner are this shape. There is no `apps/runner`: a managed runner is the customer's served container started by a `Deployment` actor effect.
+- **Served:** `Actors.serve` in its own process; the `docker/` images and a customer's BYO runner are this shape. There is no `apps/runner`: a managed runner is the customer's served container started by a `Deployment` actor job.
 - **Hosted:** the same layer on our runners behind `apps/edge`, with Neki as the database.
 
 ## Implemented, planned and published

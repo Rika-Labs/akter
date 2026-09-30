@@ -12,7 +12,7 @@ Durable Actors fits when the domain has many addressable things whose mutations 
 - durable commands and retry-safe receipts;
 - realtime connections and cursor-based events;
 - timers or recurring commands;
-- external effects that need retry and dead-letter recovery;
+- external calls that need retry and dead-letter recovery;
 - finite workflows owned by the same identity;
 - tenant-aware placement and caller attribution.
 
@@ -22,7 +22,7 @@ Typical identities include users, workspaces, rooms, documents, devices, agents,
 
 - Read-heavy systems fit when writes have clear actor ownership and SQL serves cross-actor reads.
 - Transient coordination fits with activation-local values when forgetting state after hibernation is acceptable.
-- Batch work fits when it belongs to an actor effect or workflow; independent bulk computation may need a separate compute system.
+- Batch work fits when it belongs to an actor job or workflow; independent bulk computation may need a separate compute system.
 - High throughput fits when it partitions across many actor identities rather than concentrating on one hot identity.
 
 ## Poor fit

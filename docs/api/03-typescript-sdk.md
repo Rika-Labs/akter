@@ -121,7 +121,7 @@ A call rejects with:
 - the declared error's class, for a declared failure, replayed identically on retry;
 - `ActorError` with the served reason (`CommandExpired`, `CommandConflict`, `InvalidCommandId`, `Unauthorized`, `NotCreated`, `MailboxFull`, `RunnerAtCapacity`, `ActorUnavailable`, `Timeout`, `InvalidInput`) and its `isRetryable` and `retryAfter`;
 - `ActorError` with `Timeout` when `timeoutInMs` or `signal` stops the wait. A command's `Timeout` carries its command id: the outcome is unknown and a retry with that id is safe. A query's, or a command's stopped before any id existed, has no `commandId`;
-- `ActorError` with `TransportError` for a response the server didn't describe: `network` for a failed fetch, `status` for a status without an envelope (retried for 408, 429, and 5xx), `decode` for a success body the output schema rejects, and `defect` for the server's opaque 500, which carries nothing but its status.
+- `ActorError` with `TransportError` for a response the server didn't describe: `network` for a failed fetch, `status` for a status without an envelope (retried for 408, 429, and 5xx), `decode` for a success body the `success` schema rejects, and `defect` for the server's opaque 500, which carries nothing but its status.
 
 `InvalidCommandId` from the client carries `neverAdmitted: true` only when the client minted the id itself, every attempt with it was answered with that refusal, and no other call with the id is still waiting, so no turn can have run under it. Only then is resending under a new id a retry rather than a second operation.
 
