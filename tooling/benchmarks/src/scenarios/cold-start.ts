@@ -81,7 +81,7 @@ export const coldStart: Scenario = {
     "Scale-to-zero serving: served command latency on a warm runner, then repeated drills that drain and stop the only runner, let intents come due with no runner, and time a new runner's /ready, first answered command, and delivery of every due intent from its start.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
+      const quick = context.quick
       const drills = quick ? 5 : 30
       const results: Array<CaseResult> = []
       const database = yield* context.backend.database({ maxConnections: DEFAULT_POOL })
