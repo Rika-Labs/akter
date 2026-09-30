@@ -165,7 +165,7 @@ export const singletonFailover: Scenario = {
     Effect.gen(function* () {
       if (context.backend.name !== "postgres") return []
 
-      const repeats = context.profile === "quick" ? 3 : 20
+      const repeats = context.quick ? 3 : 20
       const drills = yield* Effect.forEach(Array.from({ length: repeats }), () => drill(context))
 
       const pick = (key: "lockExpiredMs" | "takeoverMs" | "loopStartedMs" | "resumedMs") =>

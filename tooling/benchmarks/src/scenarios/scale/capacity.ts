@@ -27,9 +27,8 @@ export const capacity: Scenario = {
   description: `${WORKERS} concurrent callers on SleepyProbe actors with a small maxResidentActors: first touch and uniform steady state with as many actors as slots, then with ${OVERSUBSCRIPTION}x as many, where callers over the limit retry RunnerAtCapacity until an idle activation is evicted.`,
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const limit = quick ? 250 : 1000
-      const durationMs = quick ? 3000 : 20_000
+      const limit = context.quick ? 250 : 1000
+      const durationMs = context.quick ? 3000 : 20_000
       const results: Array<CaseResult> = []
 
       for (const [label, actors] of [

@@ -12,6 +12,7 @@ import {
 import { Cause, Effect, Exit } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, type Insert, type Row } from "../index.ts"
+import type { TurnRows } from "./owned.ts"
 import { labels, notes, tablesDdl } from "../testing/conformance/tables.ts"
 
 const migration = (schema: Parameters<typeof generateDrizzleJson>[0]) =>
@@ -148,4 +149,59 @@ describe("owned table declarations", () => {
       "one" | "all" | "count"
     >()
   })
+
+  it("adopts an existing table by adding only a nullable routing_key, keeping its keys and foreign keys", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const accounts = pgTable("adopted_accounts", { id: text("id").primaryKey() })
+
+        const invoices = pgTable("adopted_invoices", {
+          id: text("id").primaryKey(),
+          orgId: text("org_id").notNull(),
+          accountId: text("account_id").notNull(),
+          account: text("account").references(() => accounts.id),
+          amount: integer("amount").notNull(),
+        })
+
+        const rows = Actor.table(invoices, {
+          owner: { tenant: invoices.orgId, actor: invoices.accountId },
+        })
+
+        const ddl = (yield* migration({ accounts, rows })).join("\n").replaceAll(/\s+/g, " ")
+
+        expect(ddl).toContain(`"routing_key" bigint`)
+        expect(ddl).toContain(`"id" text PRIMARY KEY, "org_id" text NOT NULL`)
+        expect(ddl).toContain(`FOREIGN KEY ("account") REFERENCES "adopted_accounts"("id")`)
+        expect(ddl).toContain(`"amount" integer NOT NULL, "routing_key" bigint )`)
+        expect(ddl).not.toContain("durable_tenant")
+        expect(ddl).not.toContain(`"tenant_id"`)
+
+        expectTypeOf<keyof Row<typeof rows>>().toEqualTypeOf<
+          "id" | "orgId" | "accountId" | "account" | "amount"
+        >()
+        expectTypeOf<Insert<typeof rows>["amount"]>().toEqualTypeOf<number>()
+        expectTypeOf<Insert<typeof rows>>().not.toHaveProperty("routing_key")
+      }),
+    ))
+
+  it("gives a read-adopted table no mutation methods and adds no column", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const contacts = pgTable("adopted_contacts", {
+          id: text("id").primaryKey(),
+          tenant: text("tenant").notNull(),
+          owner: text("owner").notNull(),
+        })
+
+        const rows = Actor.table(contacts, {
+          owner: { tenant: contacts.tenant, actor: contacts.owner },
+          access: "read",
+        })
+
+        const ddl = (yield* migration({ rows })).join("\n")
+
+        expect(ddl).not.toContain("routing_key")
+        expectTypeOf<keyof TurnRows<typeof rows>>().toEqualTypeOf<"one" | "all" | "count">()
+      }),
+    ))
 })
