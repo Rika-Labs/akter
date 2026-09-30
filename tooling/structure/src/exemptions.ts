@@ -5,7 +5,6 @@
 export interface Exemption {
   readonly path: string
   readonly rule:
-    | "no-ui-package"
     | "tests-beside-sources"
     | "index-not-entry"
     | "wildcard-exports"
@@ -17,16 +16,10 @@ export interface Exemption {
 /** Every deviation from the structure rules, each with the reason it exists. */
 export const exemptions: ReadonlyArray<Exemption> = [
   {
-    path: "packages/ui",
-    rule: "no-ui-package",
-    reason:
-      "StyleX must be compiled by Babel before the console imports it, so ui stays a separate build unit until apps/console/src/build.ts runs the StyleX transform itself. Then it moves to apps/console/src/ui/<component>/{view,styles}.ts.",
-  },
-  {
     path: "tooling/oxlint/anti-slop",
-    rule: "structure-rules",
+    rule: "tests-beside-sources",
     reason:
-      "Vendored rule corpus (see ANTI-SLOP-LICENSE): upstream file layout, index modules and shared/ segments are kept intact so diffs against upstream stay reviewable.",
+      "Vendored rule corpus (see ANTI-SLOP-LICENSE) keeps upstream's layout: each rule's RuleTester file sits beside the rule, outside a src/ directory.",
   },
   {
     path: "research",

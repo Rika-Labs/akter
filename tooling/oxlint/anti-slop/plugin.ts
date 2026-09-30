@@ -16,10 +16,13 @@ import { noUnknownReturnsRule } from "./rules/no-unknown-returns.ts";
 import { noUnknownTypeAliasesRule } from "./rules/no-unknown-type-aliases.ts";
 import { noUnsafeDictionaryTypeRule } from "./rules/no-unsafe-dictionary-type.ts";
 import { noWidenThenAssertRule } from "./rules/no-widen-then-assert.ts";
-import { requireReadableSpacingRule } from "./rules/require-readable-spacing.ts";
-import { requireSafetyCommentForTypeAssertionRule } from "./rules/require-safety-comment-for-type-assertion.ts";
+import { noManualEffectErrorTagRule } from "./effect/rules/no-manual-effect-error-tag.ts";
+import { noManualTagComparisonRule } from "./effect/rules/no-manual-tag-comparison.ts";
+import { noManualTaggedConstructionRule } from "./effect/rules/no-manual-tagged-construction.ts";
+import { noServiceConstructorImportsRule } from "./effect/rules/no-service-constructor-imports.ts";
+import { preferEffectMatchRule } from "./effect/rules/prefer-effect-match.ts";
 
-/** Generic Oxlint rules that reject low-evidence and low-signal implementation patterns. */
+/** Generic and Effect Oxlint rules that reject low-evidence and low-signal implementation patterns. */
 const antiSlopPlugin = eslintCompatPlugin({
 	meta: { name: "anti-slop" },
 	rules: {
@@ -39,8 +42,11 @@ const antiSlopPlugin = eslintCompatPlugin({
 		"no-unknown-returns": noUnknownReturnsRule,
 		"no-unknown-type-aliases": noUnknownTypeAliasesRule,
 		"no-widen-then-assert": noWidenThenAssertRule,
-		"require-readable-spacing": requireReadableSpacingRule,
-		"require-safety-comment-for-type-assertion": requireSafetyCommentForTypeAssertionRule,
+		"no-manual-effect-error-tag": noManualEffectErrorTagRule,
+		"no-manual-tag-comparison": noManualTagComparisonRule,
+		"no-manual-tagged-construction": noManualTaggedConstructionRule,
+		"no-service-constructor-imports": noServiceConstructorImportsRule,
+		"prefer-effect-match": preferEffectMatchRule,
 	},
 });
 

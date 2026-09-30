@@ -4,10 +4,11 @@ import { Effect, FileSystem, Path, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
 import {
+  ExampleTitleInvalid,
   type GeneratedFile,
   generateFiles,
-  parseSnippets,
-  SnippetMarkerInvalid,
+  readExamples,
+  sketchDocuments,
   snippetSources,
 } from "./snippets.ts"
 
@@ -15,87 +16,59 @@ const repositoryRoot = new URL("../../..", import.meta.url).pathname
 
 const packageRoot = new URL("..", import.meta.url).pathname
 
-describe("parseSnippets", () => {
-  it("reads every TypeScript block as its own module and ignores other languages", () => {
-    const parsed = parseSnippets(
-      ["# Title", "", "```ts", "const a = 1", "```", "", "```sh", "bun x", "```"].join("\n"),
-    )
-
-    expect(parsed.snippets).toEqual([
-      { line: 3, file: undefined, prelude: "", code: "const a = 1" },
-    ])
-    expect(parsed.targets).toEqual([])
-  })
-
-  it("attaches a hidden prelude and module path from the comment above a block", () => {
-    const parsed = parseSnippets(
+describe("readExamples", () => {
+  it("reads each TypeScript fence as a module, titled or named by its line", () => {
+    const examples = readExamples(
       [
-        "<!-- snippet file=src/main.ts",
-        'import { Counter } from "./counter.ts"',
-        "-->",
+        "# Title",
         "",
-        "```ts",
-        "Counter.get()",
+        '```ts title="src/room.ts"',
+        "export const a = 1",
         "```",
+        "",
+        "```sh",
+        "bun x",
+        "```",
+        "~~~tsx",
+        'import { a } from "./src/room.ts"',
+        "~~~",
       ].join("\n"),
     )
 
-    expect(parsed.snippets).toEqual([
-      {
-        line: 5,
-        file: "src/main.ts",
-        prelude: 'import { Counter } from "./counter.ts"',
-        code: "Counter.get()",
-      },
+    expect(examples).toEqual([
+      { line: 3, path: "src/room.ts", code: "export const a = 1" },
+      { line: 10, path: "line-10.ts", code: 'import { a } from "./src/room.ts"' },
     ])
   })
 
-  it("records target blocks without checking them and reads standalone modules", () => {
-    const parsed = parseSnippets(
-      [
-        "<!-- snippet module=room/contract.ts",
-        "export const Room = 1",
-        "-->",
-        "<!-- snippet target -->",
-        "```ts",
-        "Actor.future()",
-        "```",
-      ].join("\n"),
+  it("does not read a TypeScript fence nested inside a longer Markdown fence", () => {
+    const examples = readExamples(
+      ["````md", "```ts", "not checked", "```", "````", "```ts", "checked", "```"].join("\n"),
     )
 
-    expect(parsed.snippets).toEqual([])
-    expect(parsed.targets).toEqual([5])
-    expect(parsed.modules).toEqual([
-      { line: 1, file: "room/contract.ts", code: "export const Room = 1" },
-    ])
+    expect(examples).toEqual([{ line: 6, path: "line-6.ts", code: "checked" }])
   })
 
-  it("rejects a marker that is not directly above a TypeScript block", () => {
-    expect(() => parseSnippets("<!-- snippet target -->\n\nprose\n\n```ts\nx\n```")).toThrow(
-      SnippetMarkerInvalid,
-    )
-    expect(() => parseSnippets("<!-- snippet target -->\n```sh\nx\n```")).toThrow(
-      SnippetMarkerInvalid,
-    )
-    expect(() => parseSnippets("<!-- snippet file=../escape.ts -->\n```ts\nx\n```")).toThrow(
-      SnippetMarkerInvalid,
-    )
-    expect(() => parseSnippets("<!-- snippet tagret -->\n```ts\nx\n```")).toThrow(
-      SnippetMarkerInvalid,
-    )
+  it("rejects a title outside the document directory, an unquoted title, and a reused title", () => {
+    expect(() => readExamples('```ts title="../escape.ts"\nx\n```')).toThrow(ExampleTitleInvalid)
+    expect(() => readExamples("```ts title=room.ts\nx\n```")).toThrow(ExampleTitleInvalid)
+    expect(() =>
+      readExamples('```ts title="room.ts"\nx\n```\n```ts title="room.ts"\ny\n```'),
+    ).toThrow(ExampleTitleInvalid)
   })
 
-  it("maps generated lines back to the document and leaves prelude lines unmapped", () => {
+  it("names generated files after the document and keeps the fence line for diagnostics", () => {
     const [file] = generateFiles({
       source: "docs/api/02-context.md",
-      parsed: parseSnippets(
-        ["<!-- snippet", "declare const x: number", "-->", "```ts", "x + 1", "```"].join("\n"),
-      ),
+      examples: readExamples("text\n```ts\nconst x: number = 1\n```"),
     })
 
-    expect(file?.path).toBe("docs__api__02-context/snippet-line-4.ts")
-    expect(file?.text).toBe("declare const x: number\nx + 1\nexport {}\n")
-    expect(file?.documentLines.slice(0, 2)).toEqual([undefined, 5])
+    expect(file).toEqual({
+      path: "docs__api__02-context/line-2.ts",
+      text: "const x: number = 1\n",
+      source: "docs/api/02-context.md",
+      line: 2,
+    })
   })
 })
 
@@ -114,21 +87,20 @@ layer(BunServices.layer)("documentation examples", (it) => {
         yield* fs.remove(outDir, { recursive: true, force: true })
         yield* fs.makeDirectory(outDir, { recursive: true })
 
-        const generated = new Map<
-          string,
-          { readonly source: string; readonly file: GeneratedFile }
-        >()
+        const generated = new Map<string, GeneratedFile>()
 
         for (const pattern of snippetSources)
           for (const source of new Bun.Glob(pattern).scanSync(repositoryRoot)) {
+            if (sketchDocuments.has(source)) continue
+
             const markdown = yield* fs.readFileString(path.join(repositoryRoot, source))
 
-            for (const file of generateFiles({ source, parsed: parseSnippets(markdown) })) {
+            for (const file of generateFiles({ source, examples: readExamples(markdown) })) {
               yield* fs.makeDirectory(path.dirname(path.join(outDir, file.path)), {
                 recursive: true,
               })
               yield* fs.writeFileString(path.join(outDir, file.path), file.text)
-              generated.set(file.path, { source, file })
+              generated.set(file.path, file)
             }
           }
 
@@ -138,7 +110,7 @@ layer(BunServices.layer)("documentation examples", (it) => {
           path.join(outDir, "tsconfig.json"),
           yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))({
             extends: path.relative(outDir, path.join(repositoryRoot, "tsconfig.json")),
-            compilerOptions: { noUnusedLocals: false },
+            compilerOptions: { moduleDetection: "force", noUnusedLocals: false },
             include: ["**/*.ts"],
           }),
         )
@@ -160,16 +132,11 @@ layer(BunServices.layer)("documentation examples", (it) => {
 
             if (match === null) return line
 
-            const entry = generated.get(match[1] ?? "")
+            const file = generated.get(match[1] ?? "")
 
-            if (entry === undefined) return line
-
-            const generatedLine = Number(match[2])
-            const documentLine = entry.file.documentLines[generatedLine - 1]
-
-            return documentLine === undefined
-              ? `${entry.source} (${entry.file.path} prelude line ${generatedLine}): ${match[4]}`
-              : `${entry.source}:${documentLine}: ${match[4]}`
+            return file === undefined
+              ? line
+              : `${file.source}:${file.line + Number(match[2])}: ${match[4]}`
           })
 
         expect(diagnostics).toEqual([])

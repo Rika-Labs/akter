@@ -1,4 +1,5 @@
-import { Effect, Schema } from "effect"
+import { Inspection } from "@durable-actors/core/client"
+import { Effect, Schema, Struct } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import {
   actorArgument,
@@ -25,50 +26,30 @@ const flags = {
 /** Parsed arguments of `inspect`. */
 export type InspectOptions = Command.Command.Config.Infer<typeof flags>
 
-const Decoded = Schema.Union([
-  Schema.Struct({ json: Schema.Json }),
-  Schema.Struct({ undecodable: Schema.String }),
-])
-
 /** The parts of the operator's actor page the human output prints. */
 export const ActorPage = Schema.Struct({
-  actor: Schema.Struct({
-    actorType: Schema.String,
-    actorId: Schema.String,
-    generation: Schema.Finite,
-    lastEventSequence: Schema.Finite,
-  }),
-  state: Schema.Array(Schema.Struct({ key: Schema.String, value: Schema.NullOr(Decoded) })),
+  actor: Inspection.ActorRow.mapFields(
+    Struct.pick(["actorType", "actorId", "generation", "lastEventSequence"]),
+  ),
+  state: Schema.Array(
+    Inspection.ActorDetail.fields.state.value.mapFields(Struct.pick(["key", "value"])),
+  ),
   receipts: Schema.Array(
-    Schema.Struct({
-      commandId: Schema.String,
-      command: Schema.String,
-      outcomeTag: Schema.NullOr(Schema.String),
-      outcome: Schema.optionalKey(Schema.NullOr(Decoded)),
-    }),
+    Inspection.OperatorActorDetail.fields.receipts.value.mapFields(
+      Struct.pick(["commandId", "command", "outcomeTag", "outcome"]),
+    ),
   ),
   deadLetters: Schema.Array(
-    Schema.Struct({
-      effectId: Schema.String,
-      effect: Schema.String,
-      attempts: Schema.Finite,
-      ambiguous: Schema.Boolean,
-      cause: Schema.String,
-    }),
+    Inspection.DeadLetterRow.mapFields(
+      Struct.pick(["effectId", "effect", "attempts", "ambiguous", "cause"]),
+    ),
   ),
-  totals: Schema.Struct({
-    receipts: Schema.Finite,
-    events: Schema.Finite,
-    outbox: Schema.Finite,
-    effects: Schema.Finite,
-    deadLetters: Schema.Finite,
-    workflows: Schema.Finite,
-  }),
+  totals: Inspection.ActorDetail.fields.totals,
 })
 
 const decodeActorPage = Schema.decodeUnknownEffect(ActorPage)
 
-const shown = (value: typeof Decoded.Type | null | undefined) =>
+const shown = (value: Inspection.Decoded | null | undefined) =>
   value === undefined
     ? "(outcome needs receipts.read)"
     : value === null
