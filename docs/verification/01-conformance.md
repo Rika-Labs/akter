@@ -38,6 +38,7 @@ The shared harness now exists: `conformance` is the named case list and `describ
 - `a bounded mailbox that is not resident reports RunnerAtCapacity, not MailboxFull`
 - `a resident bounded actor with a full mailbox still reports MailboxFull` (Postgres only, because the held turn occupies PGlite's single connection)
 - `a caller over capacity succeeds on retry once an idle actor hibernates`: 2 free slots. The third actor's command is retried until Cluster's idle sweep evicts one of the first two, and then it commits once.
+- `hibernates an idle actor within one idle sweep of its hibernateAfter when a type with a longer one registered first`: an actor type with the default 60-second `hibernateAfter` registers before one with 1 second, and a caller over capacity is admitted within 9 seconds once the 1-second actor idles. Before the fix the cluster's idle sweep took its first interval, 30 seconds, from the first type registered, so the caller failed `RunnerAtCapacity` at its 20-second `deliveryTimeout`.
 - `commits state and receipt, replays an identical command effect, and keeps its generation`
 - `rolls back declared failures and replays their class and payload without executing again`
 - `deduplicates concurrent deliveries and rejects changed input or command`
