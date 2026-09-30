@@ -4,6 +4,22 @@ import { describe, expect, it } from "vitest"
 const FORBIDDEN =
   /\/(runtime|sql|tables|serve|testing)\/|^(bun|node:|pg$|@effect\/platform-|@effect\/sql|drizzle|@electric-sql)/
 
+/**
+ * Packages a browser declaration must never load: SQL, Cluster and serving
+ * machinery, database drivers, and server platforms. Inert runtime tags and
+ * protocol constants stay allowed, so this judges packages, not folders.
+ */
+const SERVER_PACKAGE =
+  /^(bun$|bun:|node:|pg$|@electric-sql\/|@effect\/(sql|platform)-|effect\/unstable\/(sql|cluster|http|httpapi|rpc|process|socket)(\/|$)|drizzle-orm\/(effect-postgres|node-postgres|pglite|postgres-js|bun-sql)(\/|$))/
+
+const declaration = `import { Actor } from "../../src/index.ts"
+import { Schema } from "effect"
+
+export const Increment = Actor.command("Increment", { payload: Schema.Int, success: Schema.Int })
+
+export const Counter = Actor.make("BrowserCounter", { key: Schema.String, api: { Increment } })
+`
+
 const graph = Effect.fnUntraced(function* (entry: string) {
   const transpiler = new Bun.Transpiler({ loader: "ts" })
   const seen = new Set<string>()
@@ -53,4 +69,25 @@ describe("@durable-actors/core/client", () => {
           }),
       ),
     ))
+})
+
+describe("@durable-actors/core in a browser", () => {
+  it("builds the root entry and an actor declaration without server packages", () =>
+    Effect.gen(function* () {
+      const counter = new URL("../../.cache/browser/counter.ts", import.meta.url).pathname
+
+      yield* Effect.promise(() => Bun.write(counter, declaration))
+
+      for (const entry of [new URL("../index.ts", import.meta.url).pathname, counter]) {
+        const { packages } = yield* graph(entry)
+
+        expect(packages.filter((name) => SERVER_PACKAGE.test(name))).toEqual([])
+
+        const build = yield* Effect.promise(() =>
+          Bun.build({ entrypoints: [entry], target: "browser", minify: true }),
+        )
+
+        expect(build.success).toBe(true)
+      }
+    }).pipe(Effect.runPromise))
 })

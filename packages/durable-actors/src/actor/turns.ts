@@ -9,7 +9,7 @@ import type { AnyConnection } from "../members/connection.ts"
 import type { EventClass } from "../members/event.ts"
 import type { AnySubscription, SubscribeFrom } from "../members/subscription.ts"
 import type { InternalActors } from "../runtime/actors.ts"
-import { isCursor } from "../runtime/events/replay.ts"
+import { isCursor } from "../runtime/events/cursor.ts"
 import type {
   Broadcast,
   BusinessResult,
