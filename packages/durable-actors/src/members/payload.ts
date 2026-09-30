@@ -35,7 +35,7 @@ interface PayloadChain {
 }
 
 /** A stored value its chain cannot read; every read treats it as a defect, never a skip. */
-export class PayloadError extends Schema.TaggedError<PayloadError>()("PayloadError", {
+class PayloadError extends Schema.TaggedError<PayloadError>()("PayloadError", {
   message: Schema.String,
 }) {}
 
