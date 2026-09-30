@@ -13,7 +13,10 @@ export interface VersionRange {
 export interface StepEntry {
   readonly name: string
   readonly kind: StepIdentity["kind"]
-  readonly schemas: ReadonlyArray<ValueSchema>
+  /** An activity's payload schema; other kinds read none. */
+  readonly payload?: ValueSchema
+  /** The schemas of the value the step records: an activity's or race's success and error, a wait's event. */
+  readonly result: ReadonlyArray<ValueSchema>
   /** The event tag a wait observes. */
   readonly event?: string
 }

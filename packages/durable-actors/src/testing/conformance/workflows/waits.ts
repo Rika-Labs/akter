@@ -92,6 +92,73 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "workflows: a parked wait resolves by the event its sibling activity emits as that sibling finishes",
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const sql = yield* SqlClient.SqlClient
+          const gate = yield* Deferred.make<void>()
+          fixture.workflows.gates.set("sibling-gated", gate)
+          const ids = ["sibling-gated", "sibling-0", "sibling-1", "sibling-2", "sibling-3"]
+
+          const runs = yield* Effect.forEach(ids, (id) =>
+            Shipper.get(id).pipe(
+              Effect.flatMap((shipper) => shipper.Watch({ mode: "sibling", orderId: id })),
+            ),
+          )
+
+          yield* eventually(
+            Effect.gen(function* () {
+              const rows = yield* sql<{ step: string }>`SELECT step FROM actor_workflow_step
+                WHERE execution_id = ${runs[0]!.executionId} AND step = 'first' AND exit IS NULL`
+
+              return rows.length === 1 && fixture.workflows.runs.get("emit:sibling-gated") === 1
+            }).pipe(Effect.orDie),
+            "the wait to park beside the gated sibling",
+          )
+
+          yield* Deferred.succeed(gate, undefined)
+
+          const results = yield* Effect.forEach(runs, (run) => run.result, {
+            concurrency: "unbounded",
+          }).pipe(
+            Effect.timeoutOrElse({
+              duration: "60 seconds",
+              orElse: () => Effect.die(new Error("A run never resumed for its sibling's event")),
+            }),
+          )
+
+          expect(results).toEqual(ids.map(() => "paid-8|emitted"))
+
+          for (const [index, id] of ids.entries()) {
+            const [events] = yield* sql<{ count: number }>`SELECT count(*)::int AS count
+              FROM actor_events WHERE actor_type = 'Shipper' AND actor_id = ${id} AND event = 'Paid'`
+
+            const [leftover] = yield* sql<{ steps: number; timers: number }>`SELECT
+              (SELECT count(*)::int FROM actor_workflow_step
+                WHERE execution_id = ${runs[index]!.executionId}) AS steps,
+              (SELECT count(*)::int FROM actor_outbox
+                WHERE timer_key = ${`wf:${runs[index]!.executionId}`}) AS timers`
+
+            expect({ id, events: events!.count, ...leftover }).toEqual({
+              id,
+              events: 1,
+              steps: 0,
+              timers: 0,
+            })
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              fixture.workflows.gates.delete("sibling-gated")
+            }),
+          ),
+        ),
+      ),
+  },
+  {
     name: "workflows: resolves two sequential waits with two events",
     run: ({ expect, environment, fixture }) =>
       environment.run(

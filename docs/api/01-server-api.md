@@ -418,7 +418,7 @@ class ShippingFailed extends Schema.TaggedError<ShippingFailed>()("ShippingFaile
 class OutOfStock extends Schema.TaggedError<OutOfStock>()("OutOfStock", {}) {}
 const Paid = Actor.event("Paid", { orderId: Schema.String })
 declare const inventory: { readonly reserve: (order: typeof Order.Type) => Effect.Effect<string> }
-const input = { orderId: "o1", address: "1 Main St" }
+const address = "1 Main St"
 
 export const Ship = Actor.workflow("Ship", {
   payload: { orderId: OrderId, address: Address },
@@ -437,7 +437,10 @@ export const CoolOff = Ship.sleep("cool-off")
 export const AwaitPaid = Ship.wait("paid", Paid)
 export const FirstQuote = Ship.race("first-quote", { success: Quote })
 
-export const PlaceOrder = Actor.command("PlaceOrder", { success: Schema.String })
+export const PlaceOrder = Actor.command("PlaceOrder", {
+  payload: { orderId: OrderId, address: Address },
+  success: Schema.String,
+})
 
 export const Orders = Actor.make("Orders", {
   key: OrderId,
@@ -453,16 +456,16 @@ export const OrdersLive = Orders.toLayer({
     const paid = yield* AwaitPaid({ where: (e) => e.orderId === order.id, timeout: "1 day" }) // Option<Paid>
     return reservation
   }),
-  PlaceOrder: Effect.fn(function* () {
+  PlaceOrder: Effect.fn(function* (payload) {
     const turn = yield* Orders.Turn
     const later = yield* Orders.intents(turn.id)
-    return yield* later.Ship(input) // in a turn: the execution id
+    return yield* later.Ship(payload) // in a turn: the execution id
   }),
 })
 
 const outside = Effect.gen(function* () {
   const order = yield* Orders.get("o1")
-  const run = yield* order.Ship(input) // WorkflowRun<Label, ShippingFailed | OutOfStock>
+  const run = yield* order.Ship({ orderId: "o1", address }) // WorkflowRun<Label, ShippingFailed | OutOfStock>
   yield* run.poll // Option<Workflow.Result>
   yield* run.result // waits for completion
   yield* run.interrupt // idempotent, receipted

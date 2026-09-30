@@ -17,7 +17,7 @@ Ship: Effect.fn(function* (order) {
   yield* AwaitPaid({ timeout: "1 day" })
 })
 // on the member: versions: { "fraud-check": { current: 1 } }
-// export const Screen = Ship.step("fraud", { input: Order, success: Result })
+// export const Screen = Ship.step("fraud", { payload: Order, success: Result })
 // export const AwaitPaid = Ship.wait("paid", Paid)
 ```
 
