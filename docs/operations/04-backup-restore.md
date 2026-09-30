@@ -11,7 +11,7 @@ The backup unit is the deployment's relational database. It includes every tenan
 
 A backup must be **one mutually consistent snapshot of the whole database**. Any of these produces one:
 
-- `pg_dump --format=custom` of the database, which reads every table in one snapshot, even while the runners keep committing ([rehearsed](#online-pg_dump-and-point-in-time-recovery)); restore it with `pg_restore` into a new database;
+- `pg_dump --format=custom` of the database, which reads every table in one snapshot, even while the runners keep committing ([rehearsed](#online-pgdump-and-point-in-time-recovery)); restore it with `pg_restore` into a new database;
 - a base backup with WAL archiving, recovered to a single point in time (`recovery_target_name`, `recovery_target_time`, or `recovery_target_lsn`, with `recovery_target_action = 'promote'`), with the recovery server started with the source server's `max_connections`;
 - a provider's volume or instance snapshot.
 
