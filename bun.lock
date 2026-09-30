@@ -43,6 +43,7 @@
     },
     "apps/cli": {
       "name": "@durable-actors/cli",
+      "version": "0.1.0-alpha.0",
       "bin": {
         "durable": "./src/main.ts",
       },
