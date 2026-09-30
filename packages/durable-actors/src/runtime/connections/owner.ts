@@ -31,9 +31,9 @@ import {
   type OpenConnection,
   type Registration,
   type StoredProgress,
-} from "../../handles/actors.ts"
+} from "../members.ts"
 import { type ActorRef, Caller, type Principal, principal } from "../../identity/caller.ts"
-import type { ConnectionCommands } from "../../identity/command.ts"
+import type { ConnectionCommands } from "../../identity/connection.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { FrameworkClock } from "../turn/admission.ts"
@@ -43,29 +43,35 @@ import {
   emptyActivationCache,
 } from "../turn/execute.ts"
 import {
+  Committed,
   type Deliver,
   FEED_MEMBER,
   FeedFrame,
   HolderItem,
+  isWatchMember,
   StreamFailed,
   StreamItem,
+  watchedQuery,
+  watchMember,
+  type WriteSet,
 } from "./protocol.ts"
 import { HolderUnreachable, type Transport } from "./transport.ts"
+import { WatchTap } from "./watch.ts"
 
 /** Encoded bytes one connection's session may hold. */
 export const MAX_SESSION_BYTES = 16_384
 
 /** Open connections one actor may have per connection member. */
-export const MAX_MEMBER_CONNECTIONS = 10_000
+const MAX_MEMBER_CONNECTIONS = 10_000
 
 /** Open stream subscriptions one actor may have. */
-export const MAX_ACTOR_STREAMS = 256
+const MAX_ACTOR_STREAMS = 256
 
 /** Stream elements the owner holds for one subscriber before the handler waits. */
-export const STREAM_WINDOW = 256
+const STREAM_WINDOW = 256
 
 /** How long a stream's window may stay full before the subscription ends. */
-export const STREAM_STALL_MS = 30_000
+const STREAM_STALL_MS = 30_000
 
 /** Events one `read.follow` page reads at most. */
 const FOLLOW_PAGE = 1_000
@@ -242,6 +248,10 @@ const emptyResult: ConnectionResult = {
 const ended = (cause: SessionEnded["cause"], resync: boolean) =>
   SessionEnded.make({ cause, resync })
 
+/** Answers a database failure as `ActorUnavailable`, so the caller retries. */
+const sqlUnavailable = (cause: SqlError.SqlError) =>
+  Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) }))
+
 const unavailable = (message: string) =>
   ActorError.make({ reason: ActorUnavailable.make({ cause: new Error(message) }) })
 
@@ -308,7 +318,11 @@ export const activationOwner = ({
   readonly role: string | undefined
 }) => {
   const activations = new Map<string, Activation>()
-  const hasConnections = registration.connections.size > 0 || registration.feeds.size > 0
+
+  const hasConnections =
+    registration.connections.size > 0 ||
+    registration.feeds.size > 0 ||
+    registration.watches.size > 0
 
   const hasStreams = registration.streams.size > 0
 
@@ -332,6 +346,35 @@ export const activationOwner = ({
   }
 
   const encodeFeedFrame = Schema.encodeEffect(Schema.fromJsonString(FeedFrame))
+
+  const encodeCommitted = Schema.encodeEffect(Schema.fromJsonString(Committed))
+
+  /**
+   * The frame every watch of the actor receives after a commit, one broadcast
+   * per watchable query so each reaches its own connections. A commit that
+   * wrote nothing a query could have read sends none.
+   */
+  const watchBroadcasts = (activation: Activation, writes: WriteSet, version: string) =>
+    Effect.gen(function* () {
+      const nothing =
+        !writes.state &&
+        writes.events.length === 0 &&
+        writes.tables.length === 0 &&
+        writes.blobs.length === 0
+
+      if (nothing || registration.watches.size === 0 || (yield* WatchTap).dropsCommitted())
+        return []
+
+      if (![...(activation.rows?.values() ?? [])].some((row) => isWatchMember(row.member)))
+        return []
+
+      const frame = yield* encodeCommitted({ version, writes }).pipe(Effect.orDie)
+
+      return [...registration.watches].map((query): Broadcast => ({
+        member: watchMember(query),
+        frame,
+      }))
+    })
 
   /** A committed turn's feed events, broadcast to every open feed of the actor. */
   const feedBroadcasts = (committed: CommittedEvents) =>
@@ -855,8 +898,15 @@ export const activationOwner = ({
       request.connectionId,
       Effect.gen(function* () {
         const feed = request.member === FEED_MEMBER
+        const watch = isWatchMember(request.member)
 
-        if (feed ? registration.feeds.size === 0 : !registration.connections.has(request.member))
+        if (
+          feed
+            ? registration.feeds.size === 0
+            : watch
+              ? !registration.watches.has(watchedQuery(request.member))
+              : !registration.connections.has(request.member)
+        )
           return yield* Effect.die(new Error(`Unregistered connection ${request.member}`))
 
         yield* acquire(activation)
@@ -871,14 +921,6 @@ export const activationOwner = ({
             recovered: true,
           }
 
-        if (
-          [...activation.rows!.values()].filter((row) => row.member === request.member).length >=
-          MAX_MEMBER_CONNECTIONS
-        )
-          return yield* feed
-            ? ActorError.make({ reason: RunnerAtCapacity.make({}) })
-            : unavailable("Actor is at its connection limit for this member")
-
         const sql = yield* SqlClient.SqlClient
         const actor = yield* where(activation)
 
@@ -889,6 +931,21 @@ export const activationOwner = ({
           if (created?.created !== true)
             return yield* ActorError.make({ reason: NotCreated.make({}) })
         }
+
+        if (
+          watch &&
+          [...activation.rows!.values()].filter((row) => isWatchMember(row.member)).length >=
+            registration.policy.watch.maxPerActor
+        )
+          return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
+
+        if (
+          [...activation.rows!.values()].filter((row) => row.member === request.member).length >=
+          MAX_MEMBER_CONNECTIONS
+        )
+          return yield* feed
+            ? ActorError.make({ reason: RunnerAtCapacity.make({}) })
+            : unavailable("Actor is at its connection limit for this member")
 
         const baseline = activation.through
 
@@ -905,7 +962,7 @@ export const activationOwner = ({
         activation.rows!.set(request.connectionId, { ...row, frameSeq: 0, buffered: [] })
 
         const result = yield* (
-          feed
+          feed || watch
             ? Effect.succeed<ConnectionResult>(emptyResult)
             : run(
                 activation,
@@ -972,9 +1029,7 @@ export const activationOwner = ({
               activation.rows.delete(request.connectionId)
           }),
         ),
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
+        Effect.catchIf(SqlError.isSqlError, sqlUnavailable),
       ),
     )
 
@@ -994,15 +1049,50 @@ export const activationOwner = ({
       yield* setKeepAwake(activation)
     })
 
-  const owned = (activation: Activation, request: Address) => {
-    const row = activation.rows?.get(request.connectionId)
+  /**
+   * Runs `body` under the connection's lock with the activation fenced and
+   * its rows loaded, on the connection's row when the requesting holder still
+   * owns it. A database failure answers `ActorUnavailable`, so the holder retries.
+   */
+  const onOwnedRow = <A, E, R>(
+    activation: Activation,
+    request: Address,
+    body: (row: Row | undefined) => Effect.Effect<A, E, R>,
+  ) =>
+    withLock(
+      activation,
+      request.connectionId,
+      Effect.gen(function* () {
+        yield* acquire(activation)
+        yield* load(activation)
+        const row = activation.rows?.get(request.connectionId)
 
-    return row !== undefined &&
-      row.holder === request.holder &&
-      row.holderEpoch === request.holderEpoch
-      ? row
-      : undefined
-  }
+        return yield* body(
+          row !== undefined &&
+            row.holder === request.holder &&
+            row.holderEpoch === request.holderEpoch
+            ? row
+            : undefined,
+        )
+      }).pipe(Effect.catchIf(SqlError.isSqlError, sqlUnavailable)),
+    )
+
+  /** Whether a request's authorization has lapsed on the framework clock. */
+  const lapsed = (authorizedUntil: number) =>
+    Effect.gen(function* () {
+      const clock = yield* FrameworkClock
+
+      return (yield* Clock.currentTimeMillis) + clock.offsetMillis() >= authorizedUntil
+    })
+
+  /** Drops a connection the server ended and answers it `ServerClosed`. */
+  const serverClosed = (activation: Activation, connectionId: string) =>
+    Effect.gen(function* () {
+      yield* dropRows(activation, [connectionId])
+      yield* setKeepAwake(activation)
+
+      return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
+    })
 
   const frame = (
     activation: Activation,
@@ -1013,27 +1103,15 @@ export const activationOwner = ({
       readonly commands: ConnectionCommands
     },
   ) =>
-    withLock(
-      activation,
-      request.connectionId,
+    onOwnedRow(activation, request, (row) =>
       Effect.gen(function* () {
-        yield* acquire(activation)
-        yield* load(activation)
-        const row = owned(activation, request)
-
         if (row === undefined)
           return { _tag: "Closed" as const, ended: ended("ServerClosed", true) }
 
         if (request.seq <= row.frameSeq) return { _tag: "Acked" as const, ...identity(activation) }
 
-        const clock = yield* FrameworkClock
-
-        if ((yield* Clock.currentTimeMillis) + clock.offsetMillis() >= request.authorizedUntil) {
-          yield* dropRows(activation, [request.connectionId])
-          yield* setKeepAwake(activation)
-
-          return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
-        }
+        if (yield* lapsed(request.authorizedUntil))
+          return yield* serverClosed(activation, request.connectionId)
 
         return yield* Effect.gen(function* () {
           const result = yield* run(
@@ -1079,35 +1157,20 @@ export const activationOwner = ({
             frames: result.sends,
           })
 
-          if (result.close) {
-            yield* dropRows(activation, [request.connectionId])
-            yield* setKeepAwake(activation)
-
-            return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
-          }
+          if (result.close) return yield* serverClosed(activation, request.connectionId)
 
           return { _tag: "Acked" as const, ...identity(activation) }
         }).pipe(Effect.catchDefect(closeOnDefect(activation, request.connectionId)))
-      }).pipe(
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      ),
+      }),
     )
 
   const close = (activation: Activation, request: Address & { readonly cause: SessionEnded }) =>
-    withLock(
-      activation,
-      request.connectionId,
+    onOwnedRow(activation, request, (row) =>
       Effect.gen(function* () {
-        yield* acquire(activation)
-        yield* load(activation)
-        const row = owned(activation, request)
-
         if (row === undefined) return
 
         const result =
-          row.member === FEED_MEMBER
+          row.member === FEED_MEMBER || isWatchMember(row.member)
             ? undefined
             : yield* run(
                 activation,
@@ -1129,37 +1192,25 @@ export const activationOwner = ({
         yield* setKeepAwake(activation)
 
         if (result !== undefined) yield* flush(activation, result.broadcasts, activation.head)
-      }).pipe(
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      ),
+      }),
     )
 
   const resync = (
     activation: Activation,
     request: Address & { readonly after?: string | undefined; readonly authorizedUntil: number },
   ) =>
-    withLock(
-      activation,
-      request.connectionId,
+    onOwnedRow(activation, request, (row) =>
       Effect.gen(function* () {
-        yield* acquire(activation)
-        yield* load(activation)
-        const row = owned(activation, request)
-
         if (row === undefined) return { _tag: "Closed" as const, ended: ended("OwnerLost", true) }
 
-        const clock = yield* FrameworkClock
+        if (yield* lapsed(request.authorizedUntil))
+          return yield* serverClosed(activation, request.connectionId)
 
-        if ((yield* Clock.currentTimeMillis) + clock.offsetMillis() >= request.authorizedUntil) {
-          yield* dropRows(activation, [request.connectionId])
-          yield* setKeepAwake(activation)
-
-          return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
-        }
-
-        if (row.member === FEED_MEMBER || !registration.connections.get(row.member)!.hasResync)
+        if (
+          row.member === FEED_MEMBER ||
+          isWatchMember(row.member) ||
+          !registration.connections.get(row.member)!.hasResync
+        )
           return { _tag: "Replayed" as const, ...identity(activation) }
 
         return yield* Effect.gen(function* () {
@@ -1176,20 +1227,11 @@ export const activationOwner = ({
             replay: true,
           })
 
-          if (result.close) {
-            yield* dropRows(activation, [request.connectionId])
-            yield* setKeepAwake(activation)
-
-            return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
-          }
+          if (result.close) return yield* serverClosed(activation, request.connectionId)
 
           return { _tag: "Replayed" as const, ...identity(activation) }
         }).pipe(Effect.catchDefect(closeOnDefect(activation, request.connectionId)))
-      }).pipe(
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      ),
+      }),
     )
 
   const follow =
@@ -1307,11 +1349,7 @@ export const activationOwner = ({
           }),
         )
 
-        yield* acquire(activation).pipe(
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        )
+        yield* acquire(activation).pipe(Effect.catchIf(SqlError.isSqlError, sqlUnavailable))
 
         const sql = yield* SqlClient.SqlClient
 
@@ -1712,6 +1750,7 @@ export const activationOwner = ({
     closeProgress,
     progressClosed,
     feedBroadcasts,
+    watchBroadcasts,
     hibernate,
     subscribe,
     endStreams,

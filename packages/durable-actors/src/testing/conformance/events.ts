@@ -1,7 +1,7 @@
 import { DateTime, Deferred, Effect, Exit, Fiber, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, RetentionGap, System, UnknownCursor } from "../../index.ts"
-import { Request } from "../../handles/actors.ts"
+import { Request } from "../../runtime/request.ts"
 import { appendEvents } from "../../runtime/events/append.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
 import { ActorTest } from "../actor-test.ts"

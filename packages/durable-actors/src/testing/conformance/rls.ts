@@ -16,7 +16,8 @@ import {
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent, User } from "../../index.ts"
-import { InternalActors, Outcome, Request } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
+import { Outcome, Request } from "../../runtime/request.ts"
 import { migrate } from "../../runtime/database/migrations.ts"
 import { Database } from "../../runtime/layer.ts"
 import { OperatorRuntime } from "../../runtime/operators/repair.ts"
@@ -280,6 +281,10 @@ const prepared = (
 
     return { target, role, viewOwner }
   })
+
+/** A fresh database for `environment`, migrated with the owned tables and a new tenant role, as row-level security cases need. */
+export const preparedForRowLevelSecurity = (environment: ConformanceEnvironment) =>
+  prepared(environment)
 
 const runtimeOn = (target: Target, role: string, replica?: Redacted.Redacted<string>) =>
   Effect.gen(function* () {

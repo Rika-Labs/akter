@@ -14,7 +14,7 @@ import {
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Content, ContentRef, InvalidContentRef, Tenant, Unauthorized } from "../../index.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import { CHUNK_BYTES, MAX_CONTENT_BYTES } from "../../runtime/content/store.ts"
 import type { ContentPoint } from "../../runtime/turn/hooks.ts"
 import { ActorTest, TEST_CONTENT_KEY } from "../actor-test.ts"
