@@ -98,8 +98,50 @@ export const route = Effect.fnUntraced(function* (
   return Result.succeed({ region, urls })
 })
 
-const bodyOf = (request: Request) =>
-  Effect.promise(() => request.arrayBuffer()).pipe(Effect.map((buffer) => new Uint8Array(buffer)))
+/**
+ * The request body, or none when it is over `limit` bytes. A declared length
+ * over the limit is refused before any byte is read, and a streamed body is
+ * cancelled as soon as it passes the limit, so no client makes the edge hold
+ * more than one limit of body.
+ */
+const bodyOf = (request: Request, limit: number) =>
+  Effect.gen(function* () {
+    const body = request.body
+
+    if (Number(request.headers.get("content-length") ?? 0) > limit) return undefined
+
+    if (body === null) return new Uint8Array(0)
+
+    const read = yield* Stream.fromReadableStream({
+      evaluate: () => body,
+      onError: () => "unreadable" as const,
+    }).pipe(
+      Stream.runFoldEffect(
+        () => ({ size: 0, chunks: [] as Array<Uint8Array> }),
+        (acc, chunk) => {
+          const size = acc.size + chunk.byteLength
+
+          if (size > limit) return Effect.fail("too_large" as const)
+          acc.chunks.push(chunk)
+
+          return Effect.succeed({ size, chunks: acc.chunks })
+        },
+      ),
+      Effect.option,
+    )
+
+    if (Option.isNone(read)) return undefined
+
+    const bytes = new Uint8Array(read.value.size)
+    let offset = 0
+
+    for (const chunk of read.value.chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+
+    return bytes
+  })
 
 /**
  * Authenticates an HTTP request, signs an assertion bound to it, and forwards
@@ -138,10 +180,9 @@ export const forward = Effect.fnUntraced(function* (
   if (!HttpMethod.isHttpMethod(method))
     return yield* refusal(InvalidInput.make({ code: "unknown_route" }))
 
-  const body = yield* bodyOf(request)
+  const body = yield* bodyOf(request, edge.options.requestBytes)
 
-  if (body.byteLength > edge.options.requestBytes)
-    return yield* refusal(InvalidInput.make({ code: "too_large" }))
+  if (body === undefined) return yield* refusal(InvalidInput.make({ code: "too_large" }))
 
   const headers: Record<string, string> = {}
 
