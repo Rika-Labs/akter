@@ -64,12 +64,11 @@ export const mint: Scenario = {
     "turn.mint: parent turn cost at 0, 1, 10, and 100 minted children against plain intents, and time until every child exists against X.create() plus one command per child.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
       const dueAt = DateTime.toEpochMillis(yield* DateTime.now) + 86_400_000
 
       const operations = (count: number) =>
-        Math.max(20, Math.round((quick ? 10_000 : 100_000) / (count + 49)))
+        Math.max(20, Math.round((context.quick ? 10_000 : 100_000) / (count + 49)))
 
       for (const count of COUNTS) {
         results.push(

@@ -356,7 +356,6 @@ export const http: Scenario = {
     "Actor.serve over loopback HTTP/1.1 keep-alive and cleartext HTTP/2: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch, the @durable-actors/core/client Promise SDK (also with 1% response loss), and raw requests on one multiplexed HTTP/2 connection, then sequential commands with an ES256 JWT, an Ed25519 edge assertion signed per request, the largest allowed principal, and a 64 KiB payload over both protocols.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
       const callers = [
@@ -387,7 +386,7 @@ export const http: Scenario = {
                   parameters: { actors: 1, workers: 1, auth: "none", via, protocol },
                   instruments,
                   workers: 1,
-                  operations: quick ? 300 : 3000,
+                  operations: context.quick ? 300 : 3000,
                   operation: () => caller.command("hot", 1),
                   listStatements: true,
                 })
@@ -413,7 +412,7 @@ export const http: Scenario = {
                   parameters: { actors: 1, workers: 1, auth: "none", via, protocol },
                   instruments,
                   workers: 1,
-                  operations: quick ? 300 : 3000,
+                  operations: context.quick ? 300 : 3000,
                   operation: () => caller.query("read"),
                   listStatements: true,
                 })
@@ -439,7 +438,7 @@ export const http: Scenario = {
                   parameters: { actors, workers: 64, auth: "none", via, protocol },
                   instruments,
                   workers: 64,
-                  durationMs: quick ? 2000 : 10_000,
+                  durationMs: context.quick ? 2000 : 10_000,
                   operation: (index) => caller.command(`hot-${index % actors}`, 1),
                 })
               }),
@@ -454,7 +453,7 @@ export const http: Scenario = {
             Effect.gen(function* () {
               const served = yield* serve()
               const warmup = 100
-              const operations = quick ? 300 : 3000
+              const operations = context.quick ? 300 : 3000
               yield* load({
                 workers: 1,
                 operations: warmup,
@@ -513,7 +512,7 @@ export const http: Scenario = {
                 },
                 instruments,
                 workers: 1,
-                operations: quick ? 300 : 3000,
+                operations: context.quick ? 300 : 3000,
                 operation: () => served.reduce("reduced", visible),
               })
 
@@ -558,7 +557,7 @@ export const http: Scenario = {
                       parameters: { actors: 1, workers: 1, auth: auth.name, via, protocol },
                       instruments,
                       workers: 1,
-                      operations: quick ? 200 : 2000,
+                      operations: context.quick ? 200 : 2000,
                       operation: () => operation(served),
                       extra,
                     })

@@ -18,6 +18,16 @@ describe("DatabaseClock", () => {
     expect(clock.now()).toBe(local + 5_000)
   })
 
+  it("waits for a database time by the estimate's gap plus half its sample's round trip", () => {
+    const local = 1_000_000
+    const clock = new DatabaseClock(() => local)
+
+    clock.observe(local - 300, local, local + 5_000)
+
+    expect(clock.now()).toBe(local + 5_150)
+    expect(clock.untilReached(local + 5_500)).toBe(500)
+  })
+
   it("ignores a round trip too slow to say when the server stamped it", () => {
     const local = 1_000_000
     const clock = new DatabaseClock(() => local)
