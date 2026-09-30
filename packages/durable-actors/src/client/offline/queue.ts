@@ -390,7 +390,12 @@ export const openCommandQueue = <Output>(options: QueueOptions<Output>): Command
     }
 
     loaded = true
-    principal = yield* options.principal.pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+    principal = Option.getOrUndefined(
+      yield* options.principal.pipe(
+        Effect.asSome,
+        Effect.catchCause(() => Effect.succeedNone),
+      ),
+    )
     publish()
     drainQueued()
     yield* Effect.forkDetach(options.warm)
