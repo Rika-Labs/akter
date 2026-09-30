@@ -385,9 +385,6 @@
         "vitest": "catalog:",
       },
     },
-    "tooling/databases": {
-      "name": "@durable-actors/databases",
-    },
     "tooling/doc-checks": {
       "name": "@durable-actors/doc-checks",
       "dependencies": {
@@ -648,8 +645,6 @@
     "@durable-actors/counter": ["@durable-actors/counter@workspace:examples/counter"],
 
     "@durable-actors/create": ["@durable-actors/create@workspace:packages/create"],
-
-    "@durable-actors/databases": ["@durable-actors/databases@workspace:tooling/databases"],
 
     "@durable-actors/deployments": ["@durable-actors/deployments@workspace:packages/deployments"],
 
