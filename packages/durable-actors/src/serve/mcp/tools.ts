@@ -47,10 +47,10 @@ const REFERENCE = /"\$ref":"#\/components\/schemas\/([^"]+)"/g
 const REFERENCE_TARGET = '"$ref":"#/$defs/$1"'
 
 /** What a tool call's `input` argument carries. */
-export type ToolInput = "none" | "optional" | "required"
+type ToolInput = "none" | "optional" | "required"
 
 /** The served member a tool runs. */
-export interface ToolRoute {
+interface ToolRoute {
   readonly definition: ServedDefinition
   readonly member: ServedMember
 }
