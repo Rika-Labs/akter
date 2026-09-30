@@ -34,6 +34,12 @@ export type { StreamOptions } from "./sessions/stream.ts"
 
 export type { WatchOptions } from "./sessions/watch.ts"
 
+export { fleetClient } from "./fleet.ts"
+
+export type { FleetClient, FleetSubscribeOptions, FleetViewClient } from "./fleet.ts"
+
+export type { FleetFilter, FleetPage, FleetRow } from "../tables/fleet.ts"
+
 export type { Failure } from "./transport.ts"
 
 export {

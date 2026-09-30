@@ -11,6 +11,7 @@ import type { Swept } from "./storage/retention.ts"
 import type { BlobAccess, BlobScope } from "../state/blob.ts"
 import type { TableAccess, TableScope } from "../tables/owned.ts"
 import type { Executed, Outcome, Request } from "./request.ts"
+import type { FleetRequest } from "./fleet/subscribe.ts"
 import type {
   EffectRegistration,
   QueryRegistration,
@@ -105,6 +106,20 @@ export class InternalActors extends Context.Service<
       Stream.Stream<WatchResult, ActorError | { readonly failure: string }>,
       ActorError
     >
+    /**
+     * Subscribes to a fleet view for the caller's tenant: the effect
+     * authorizes it with `kind: "fleet"` and fails `RunnerAtCapacity` past
+     * the view's subscriptions on this runner. The stream starts with the
+     * current page, `{ asOf, stale, rows }` encoded as a watch result, then
+     * sends a page each time the view's state changed and its page differs;
+     * it ends `Unauthorized` once reauthorization is refused or the
+     * credential expires.
+     */
+    readonly fleet: (
+      request: FleetRequest,
+    ) => Effect.Effect<Stream.Stream<WatchResult, ActorError>, ActorError>
+    /** The fleet views this runtime registered, by name. */
+    readonly fleetViews: ReadonlySet<string>
     /**
      * Reads one execution's status like a query: `request.command` is the
      * workflow member, `request.payload` the execution id.

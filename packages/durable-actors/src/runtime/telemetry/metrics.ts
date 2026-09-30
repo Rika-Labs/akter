@@ -110,6 +110,22 @@ export const Metrics = {
     description:
       "Events past keepEvents that open workflow executions still hold back from retention, by actor_type.",
   }),
+  fleetLagBytes: Metric.gauge("durable-actors.fleet.lag_bytes", {
+    description:
+      "WAL bytes between the server's flush position and what the fleet maintainer has applied, by view; on the runner that maintains.",
+  }),
+  fleetLag: Metric.gauge("durable-actors.fleet.lag_ms", {
+    description:
+      "Time since the fleet maintainer last drained the change feed, by view; on the runner that maintains.",
+  }),
+  fleetGroupsRecomputed: Metric.counter("durable-actors.fleet.groups_recomputed", {
+    description: "Fleet view groups the maintainer recomputed, by view.",
+    incremental: true,
+  }),
+  fleetBatches: Metric.counter("durable-actors.fleet.batches", {
+    description: "Change-feed batches the fleet maintainer applied and advanced past.",
+    incremental: true,
+  }),
 } as const
 
 type Attributes = Readonly<Record<string, string>>

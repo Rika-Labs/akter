@@ -40,6 +40,7 @@ import { ActorRef, System } from "../../identity/caller.ts"
 import { type AuthProvider, type AuthRequest, Credential } from "../../serve/auth.ts"
 import type { ServeOptions } from "../../serve/layer.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
+import { buildServedApi, openApiDocument } from "../../serve/api.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
@@ -1571,6 +1572,53 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               "more than one credential documented as the same OpenAPI scheme",
             )
           }
+        }),
+      ),
+  },
+  {
+    name: "documents a served fleet view as GET /fleet/{View}, durable.fleet.<View>, with its group-key filters, limit, and x-durable-transport sse",
+    run: ({ expect }) =>
+      Effect.runPromise(
+        Effect.sync(() => {
+          const document = openApiDocument({
+            api: buildServedApi({
+              definitions: [],
+              fleet: [{ name: "OrdersByStatus", groupBy: ["status", "region"] }],
+              basePath: "/api",
+              content: false,
+            }),
+            auth: tokens,
+            title: "fleet",
+            version: "1",
+          }) as {
+            readonly paths: Record<
+              string,
+              Record<
+                string,
+                {
+                  readonly operationId: string
+                  readonly parameters: ReadonlyArray<{ readonly name: string; readonly in: string }>
+                  readonly responses: Record<string, { readonly content?: object }>
+                  readonly "x-durable-transport"?: string
+                }
+              >
+            >
+          }
+
+          const operation = document.paths["/api/fleet/OrdersByStatus"]?.["get"]
+
+          expect(operation?.operationId).toBe("durable.fleet.OrdersByStatus")
+          expect(operation?.["x-durable-transport"]).toBe("sse")
+          expect(
+            operation?.parameters
+              .filter((parameter) => parameter.in === "query")
+              .map((parameter) => parameter.name)
+              .sort(),
+          ).toEqual(["limit", "region", "status"])
+          expect(Object.keys(operation?.responses["200"]?.content ?? {})).toEqual([
+            "text/event-stream",
+          ])
+          expect(document.paths["/api/fleet/OrdersByStatus"]?.["post"]).toBe(undefined)
         }),
       ),
   },

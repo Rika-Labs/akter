@@ -680,7 +680,17 @@ The Playwright tests live in [`apps/e2e/react.e2e.ts`](../../apps/e2e/react.e2e.
 
 `tables/fleet.test.ts` covers the declaration: the derived table drizzle-kit generates, the definition hash, and the refused declarations. `apps/cli/src/commands/fleet/run.test.ts` runs `durable fleet setup` twice against Postgres and `rebuild` of an unknown view.
 
-Not yet covered: `Fleet.subscribe` (SSE, authorization, refresh, statement counts per poll) and its OpenAPI case, which ship in the second M6.3 pull request, and the `fleet` benchmark scenario (T15).
+`Fleet.subscribe` and the served route:
+
+- `fleet: subscribe sends the caller's tenant's page first, then a changed page after a commit, suppresses an identical page, and shows stale and asOf` (over `GET /fleet/OrdersByStatus` through `fleetClient`: another tenant's orders never appear; a commit brings a page with a greater `asOf`; a write to an archived order, which the view filters out, sends no page, so the next page is the following commit's; a poisoned view sends `stale: true` with its frozen rows, and a rebuild sends the ready page; a filtered, limited subscription gets only its groups).
+- `fleet: subscribe denies at open, ends within reauthorizeEvery after revocation, never returns another tenant's rows, and refuses a foreign origin, a tenant parameter, and an unregistered view` (`403 access_denied` at open; a revoked subscriber's iteration fails `Unauthorized` within the actor type's 1-second `reauthorizeEvery` plus 3 seconds; a tenant with no rows gets an empty page; `Origin` from another site is `403 origin_not_allowed`; `tenant_id`, a repeated key, and limits 0 and 1,001 are `400`; a view the server does not serve is `404`).
+- `fleet: with row-level security on, a subscription's page runs as the tenant role` (the in-process `Fleet.subscribe` reads the page; revoking the tenant role's `SELECT` on the derived table makes the next subscription fail with `permission denied`).
+- `fleet: one poll per view per runner regardless of subscriber count, and a page query only when the view changed` (the poll hook counts 2 to 4 polls in 3 seconds with one subscriber and with eight, and the page reruns are bounded by the polls).
+- In `conformance/http.ts`: `documents a served fleet view as GET /fleet/{View}, durable.fleet.<View>, with its group-key filters, limit, and x-durable-transport sse`.
+
+`packages/react` renders `useWatch` over a fleet client's `subscribe` on the server without fetching.
+
+Not yet covered: the `fleet` benchmark scenario (T15).
 
 ### Offline clients (M6.5)
 

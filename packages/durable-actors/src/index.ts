@@ -105,6 +105,10 @@ export type {
   AggregateKind,
   AnyFleetView,
   DerivedTable,
+  FleetFilter,
+  FleetOptions,
+  FleetPage,
+  FleetRow,
   FleetView,
 } from "./tables/fleet.ts"
 

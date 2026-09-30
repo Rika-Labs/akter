@@ -320,6 +320,49 @@ const watchEndpoint = (basePath: string, definition: ServedDefinition, member: S
     }
   })
 
+/** A refused fleet subscription; one that ends later sends an `end` message instead. */
+const FLEET_ERRORS = {
+  400: ["InvalidInput"],
+  401: ["Unauthorized"],
+  403: ["Unauthorized", "InvalidInput"],
+  503: ["ActorUnavailable", "RunnerAtCapacity"],
+} as const
+
+const fleetErrors = errorSchemas(FLEET_ERRORS, "Fleet")
+
+/**
+ * A fleet view is served over SSE for the caller's tenant: equality filters on
+ * its group keys and `limit` in the query, then `result` pages of
+ * `{ asOf, stale, rows }`.
+ */
+const fleetEndpoint = (
+  basePath: string,
+  view: { readonly name: string; readonly groupBy: ReadonlyArray<string> },
+) =>
+  HttpApiEndpoint.get(`fleet.${view.name}`, `${basePath}/fleet/${view.name}` as `/${string}`, {
+    query: {
+      ...Object.fromEntries(view.groupBy.map((key) => [key, Schema.optionalKey(Schema.String)])),
+      limit: Schema.optionalKey(Schema.String),
+    },
+    error: [...fleetErrors, defect],
+  }).annotate(OpenApi.Transform, (operation) => {
+    const { 204: _, ...refusals }: { readonly [status: string]: Schema.Json } =
+      operation.responses ?? {}
+
+    return {
+      ...operation,
+      responses: {
+        200: {
+          description:
+            "Server-sent events: `result` with `{ asOf, stale, rows }`, the caller's tenant's groups in group-key order, first at once and again whenever the view changed; an identical page is not sent. `end` carries the error that ended the subscription. A fleet subscription is state, not history, so there is no resume",
+          content: { "text/event-stream": { schema: { type: "string" } } },
+        },
+        ...refusals,
+      },
+      "x-durable-transport": "sse",
+    }
+  })
+
 const frameSchemas = (definition: ServedDefinition, connection: ServedConnection) =>
   Object.entries(frameParts(connection)).map(([part, schema]) =>
     schema.annotate({ identifier: frameSchemaName(definition, connection, part) }),
@@ -408,13 +451,15 @@ const UNAUTHENTICATED: ReadonlySet<string> = new Set([
 
 interface ServedRoutes {
   readonly definitions: ReadonlyArray<ServedDefinition>
+  /** The names and group keys of the fleet views served at `GET /fleet/{View}`. */
+  readonly fleet: ReadonlyArray<{ readonly name: string; readonly groupBy: ReadonlyArray<string> }>
   readonly basePath: string
   /** Whether the runtime serves content, so `POST /content` and the content routes exist. */
   readonly content: boolean
 }
 
 /** The `HttpApi` of the served actors: the protocol group, then one group per actor with members, connections, feed, content, and streams. */
-export const buildServedApi = ({ definitions, basePath, content }: ServedRoutes) => {
+export const buildServedApi = ({ definitions, fleet, basePath, content }: ServedRoutes) => {
   const groups: Array<HttpApiGroup.Constraint> = [
     HttpApiGroup.make(PROTOCOL_GROUP).add(
       HttpApiEndpoint.get("protocol", `${basePath}/protocol` as `/${string}`, {
@@ -432,6 +477,7 @@ export const buildServedApi = ({ definitions, basePath, content }: ServedRoutes)
         ],
       }),
       ...(content ? [uploadEndpoint(basePath)] : []),
+      ...fleet.map((view) => fleetEndpoint(basePath, view)),
     ),
   ]
 

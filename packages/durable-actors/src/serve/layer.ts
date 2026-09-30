@@ -68,6 +68,8 @@ import { cursorErrorBody, feedStream, MAX_FEED_FILTERS, openFeed } from "./sessi
 import { MAX_AWAITING_HELLO, socketSession } from "./sessions/socket.ts"
 import { streamResponse } from "./sessions/stream.ts"
 import { watchResponse } from "./sessions/watch.ts"
+import type { AnyFleetView } from "../tables/fleet.ts"
+import { FLEET_PAGE_DEFAULT, FLEET_PAGE_LIMIT } from "../client/fleet-page.ts"
 import {
   actorErrorBody,
   actorErrorResponse,
@@ -101,6 +103,12 @@ export interface ServeOptions<R> {
     readonly name?: string
     readonly version?: string
   }
+  /**
+   * Fleet views to serve at `GET /fleet/{View}` as server-sent events, for
+   * the caller's own tenant; each must be registered with the runtime's
+   * `fleet` option.
+   */
+  readonly fleet?: ReadonlyArray<AnyFleetView>
   /** Browser origins allowed besides the server's own. Requests without `Origin` are always served. */
   readonly origins?: ReadonlyArray<string>
   /** Size limits; each falls back to its default. */
@@ -370,6 +378,18 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
       const actors = yield* InternalActors
       const control = yield* RuntimeControl
+      const fleet = options.fleet ?? []
+
+      for (const view of fleet)
+        if (!actors.fleetViews.has(view.name))
+          return yield* Effect.die(
+            new Error(
+              `Actor.serve: fleet view ${view.name} is not registered; list it in the runtime's fleet option`,
+            ),
+          )
+
+      if (new Set(fleet.map(({ name }) => name)).size !== fleet.length)
+        return yield* Effect.die(new Error("Actor.serve: a fleet view is listed twice"))
 
       if (actors.retryWindowMs < MIN_RETRY_WINDOW_MS)
         return yield* Effect.die(
@@ -415,7 +435,13 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const contentStore = yield* Effect.serviceOption(ContentStore)
       const withCookies = readsCookies(options.auth)
       const withAssertion = options.auth.credentials.some(Credential.$is("Assertion"))
-      const api = buildServedApi({ definitions, basePath, content: Option.isSome(contentStore) })
+
+      const api = buildServedApi({
+        definitions,
+        fleet: fleet.map(({ name, groupBy }) => ({ name, groupBy })),
+        basePath,
+        content: Option.isSome(contentStore),
+      })
 
       const withProtocol = (
         request: HttpServerRequest.HttpServerRequest,
@@ -877,6 +903,52 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return results.pipe(watchResponse, eventStream)
         })
 
+      /**
+       * A fleet view's page for the caller's tenant: equality filters on group
+       * columns and `limit` from the query string, and no parameter names a
+       * tenant. A repeated or unknown parameter, or a limit outside 1 to
+       * 1,000, is refused before any read.
+       */
+      const fleetHandler = (view: AnyFleetView) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const query = new URL(request.url, "http://fleet").searchParams
+          const keys: ReadonlyArray<string> = view.groupBy
+          const filter: Record<string, string> = {}
+          let limit = FLEET_PAGE_DEFAULT
+
+          for (const name of new Set(query.keys())) {
+            const values = query.getAll(name)
+
+            if (values.length !== 1) return yield* invalidInput("decode")
+
+            if (name === "limit") {
+              limit = Number(values[0])
+
+              if (!Number.isInteger(limit) || limit < 1 || limit > FLEET_PAGE_LIMIT)
+                return yield* invalidInput("decode")
+            } else if (keys.includes(name)) filter[name] = values[0]!
+            else return yield* invalidInput("decode")
+          }
+
+          const authenticated = yield* authenticate(request)
+
+          yield* checkBinding(authenticated, request, empty)
+
+          const results = yield* actors.fleet({
+            view: view.name,
+            caller: authenticated.caller,
+            tenant: authenticated.tenant,
+            filter,
+            limit,
+            expiresAt:
+              authenticated.expiresAt === undefined
+                ? undefined
+                : DateTime.toEpochMillis(authenticated.expiresAt),
+          })
+
+          return results.pipe(watchResponse, eventStream)
+        })
+
       const awaiting = awaitingHello.get(actors) ?? { count: 0 }
       awaitingHello.set(actors, awaiting)
 
@@ -1125,6 +1197,8 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             connectionHandler(definition, connection),
           )
       }
+
+      for (const view of fleet) yield* route("GET", `/fleet/${view.name}`, fleetHandler(view))
 
       if (Option.isSome(contentStore)) {
         const store = contentStore.value

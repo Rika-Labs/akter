@@ -2,9 +2,11 @@ import { connect, createServer, type AddressInfo, type Socket } from "node:net"
 import { bigint, boolean, pgTable, text } from "drizzle-orm/pg-core"
 import {
   Cause,
+  Clock,
   Equal,
   Crypto,
   Option,
+  Predicate,
   Stream,
   Effect,
   Exit,
@@ -17,6 +19,13 @@ import {
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Fleet, User } from "../../index.ts"
+import { principal } from "../../identity/caller.ts"
+import { ActorError, Unauthorized } from "../../errors/actor.ts"
+import type { AccessRequest } from "../../policies/access.ts"
+import { fleetClient } from "../../client/fleet.ts"
+import { FleetHooks } from "../../runtime/fleet/maintainer.ts"
+import { grants } from "./rls.ts"
+import { serveHttp } from "./http.ts"
 import type { AnyFleetView } from "../../tables/fleet.ts"
 import { Database } from "../../runtime/layer.ts"
 import { checkFleet } from "../../runtime/fleet/checks.ts"
@@ -137,7 +146,20 @@ const FleetOrder = Actor.make("FleetOrder", {
   key: Schema.String,
   tables: [fleetOrders],
   api: { Put, Remove, PutThenRefuse },
+  policy: { reauthorizeEvery: "1 second" },
 })
+
+/** Subjects whose access the fleet cases revoke; the runtime's `authorize` refuses them. */
+const revoked = new Set<string>()
+
+/** Allows every caller but a revoked subject, as an application's hook would. */
+const authorize = (request: AccessRequest) =>
+  Effect.sync(() =>
+    Option.match(principal(request.caller), {
+      onNone: () => true,
+      onSome: ({ subject }) => !revoked.has(subject),
+    }),
+  )
 
 Actor.make("FleetSpread", { key: Schema.String, placement: "actor", tables: [spread], api: {} })
 
@@ -368,7 +390,9 @@ const fleetDatabase = (
 const withFleet = <A, E>(
   environment: ConformanceEnvironment,
   options: { readonly runners?: number; readonly views?: ReadonlyArray<AnyFleetView> },
-  body: (admin: SqlClient.SqlClient) => Effect.Effect<A, E, ActorCluster | Scope.Scope>,
+  body: (
+    admin: SqlClient.SqlClient,
+  ) => Effect.Effect<A, E, ActorCluster | Crypto.Crypto | Scope.Scope>,
 ) =>
   environment.run(
     Effect.gen(function* () {
@@ -381,7 +405,7 @@ const withFleet = <A, E>(
           shardLockExpiration: "3 seconds",
           actors: FleetOrderLive,
           as: User.make({ subject: "alice" }),
-          authorize: () => Effect.succeed(true),
+          authorize,
           fleet: options.views ?? [OrdersByStatus, OrdersByRegion],
         }),
       )
@@ -629,6 +653,55 @@ const turnStatements = (
       }).pipe(Effect.provideContext(context))
     }),
   )
+
+/** Pulls the next page of `pages` within `duration`, or dies naming what it waited for. */
+const nextPage = <A>(
+  pages: AsyncIterator<A>,
+  waiting: string,
+  duration: `${number} seconds` = "20 seconds",
+) =>
+  Effect.promise(() => pages.next()).pipe(
+    Effect.timeoutOrElse({
+      duration,
+      orElse: () => Effect.die(new Error(`No fleet page arrived: ${waiting}`)),
+    }),
+    Effect.flatMap((result) =>
+      result.done === true
+        ? Effect.die(new Error(`The fleet subscription ended: ${waiting}`))
+        : Effect.succeed(result.value),
+    ),
+  )
+
+/** The rows of `OrdersByStatus` a subscriber of `tenant` should see, in the served shape. */
+const servedByStatus = (model: Model, tenant: string): ReadonlyArray<Row> =>
+  expectedByStatus(model)
+    .filter((row) => row["tenant_id"] === tenant)
+    .map((row) => ({
+      status: row["status"]!,
+      orders: row["orders"]!,
+      total: Number(row["total"]),
+      low: Number(row["low"]),
+      high: Number(row["high"]),
+      mean: row["mean"]!,
+    }))
+
+/** Every message in the cause chain of an exit's failure, joined, to find the database's own words. */
+const causeMessages = (exit: Exit.Exit<unknown, unknown>) => {
+  const messages: Array<string> = []
+  let current: unknown = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+
+  while (Predicate.hasProperty(current, "cause") || current instanceof Error) {
+    if (current instanceof Error) messages.push(current.message)
+
+    current = Predicate.hasProperty(current, "reason")
+      ? current.reason
+      : Predicate.hasProperty(current, "cause")
+        ? current.cause
+        : undefined
+  }
+
+  return messages.join("\n")
+}
 
 const refusal = (exit: Exit.Exit<unknown, unknown>) =>
   Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : "no refusal"
@@ -1220,6 +1293,308 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
             expect(withViews).toBe(without)
           }).pipe(Effect.scoped, Effect.provideService(Crypto.Crypto, crypto)),
         ),
+      ),
+  },
+  {
+    name: "fleet: subscribe sends the caller's tenant's page first, then a changed page after a commit, suppresses an identical page, and shows stale and asOf",
+    requiresLogicalDecoding: true,
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment }) =>
+      withFleet(environment, {}, (admin) =>
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const tenant = cluster.tenant
+          const model: Model = new Map()
+
+          yield* place(model, order("a", "new", 10))
+          yield* place(model, order("b", "paid", 20))
+          yield* place(model, order("x", "new", 999), `${tenant}-other`)
+          yield* readyViews(expect, admin, ["OrdersByRegion", "OrdersByStatus"])
+          yield* settle(expect, byStatusRows(admin), expectedByStatus(model))
+
+          const server = yield* cluster.on(0)(
+            serveHttp({ actors: [], fleet: [OrdersByStatus, OrdersByRegion] }),
+          )
+
+          const client = fleetClient({
+            views: [OrdersByStatus],
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:alice` },
+          })
+
+          const pages = client.OrdersByStatus.subscribe()[Symbol.asyncIterator]()
+
+          yield* Effect.addFinalizer(() =>
+            Effect.promise(() => pages.return?.() ?? Promise.resolve(undefined)),
+          )
+
+          const first = yield* nextPage(pages, "the first page")
+          expect(first.rows).toEqual(servedByStatus(model, tenant))
+          expect(first.stale).toBe(false)
+          expect(first.asOf === null).toBe(false)
+
+          yield* place(model, order("a", "shipped", 10))
+          const changed = yield* nextPage(pages, "the page after a commit")
+          expect(changed.rows).toEqual(servedByStatus(model, tenant))
+          expect(BigInt(changed.asOf!) > BigInt(first.asOf!)).toBe(true)
+
+          yield* place(model, order("hidden", "new", 1, { archived: true }))
+          yield* place(model, order("c", "new", 5))
+          const afterIdentical = yield* nextPage(pages, "the page after an unrelated commit")
+          expect(afterIdentical.rows).toEqual(servedByStatus(model, tenant))
+
+          const frozen = servedByStatus(model, tenant)
+          const huge = 5_000_000_000_000_000_000n
+          yield* place(model, order("h1", "held", huge))
+          yield* place(model, order("h2", "held", huge))
+          const stale = yield* nextPage(pages, "the page of a poisoned view")
+          expect(stale.stale).toBe(true)
+          expect(stale.rows).toEqual(frozen)
+
+          yield* remove(model, "h1")
+          yield* rebuildFleetView("OrdersByStatus").pipe(
+            Effect.provideService(SqlClient.SqlClient, admin),
+            Effect.orDie,
+          )
+          const ready = yield* nextPage(pages, "the page once rebuilt")
+          expect(ready.stale).toBe(false)
+          expect(ready.rows).toEqual(servedByStatus(model, tenant))
+
+          const filtered = client.OrdersByStatus.subscribe({ status: "new" }, { limit: 1 })[
+            Symbol.asyncIterator
+          ]()
+
+          expect((yield* nextPage(filtered, "a filtered page")).rows).toEqual(
+            servedByStatus(model, tenant).filter((row) => row["status"] === "new"),
+          )
+          yield* Effect.promise(() => filtered.return?.() ?? Promise.resolve(undefined))
+        }),
+      ),
+  },
+  {
+    name: "fleet: subscribe denies at open, ends within reauthorizeEvery after revocation, never returns another tenant's rows, and refuses a foreign origin, a tenant parameter, and an unregistered view",
+    requiresLogicalDecoding: true,
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment }) =>
+      withFleet(environment, {}, (admin) =>
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const tenant = cluster.tenant
+          const model: Model = new Map()
+
+          yield* place(model, order("a", "new", 10))
+          yield* readyViews(expect, admin, ["OrdersByRegion", "OrdersByStatus"])
+          yield* settle(expect, byStatusRows(admin), expectedByStatus(model))
+
+          const server = yield* cluster.on(0)(serveHttp({ actors: [], fleet: [OrdersByStatus] }))
+          const path = "/fleet/OrdersByStatus"
+
+          revoked.add("mallory")
+          yield* Effect.addFinalizer(() => Effect.sync(() => revoked.clear()))
+
+          const deniedAtOpen = yield* server.send(path, {
+            method: "GET",
+            token: `${tenant}:mallory`,
+          })
+
+          expect(deniedAtOpen.status).toBe(403)
+          expect(deniedAtOpen.body).toMatchObject({ reason: { code: "access_denied" } })
+
+          const foreign = yield* server.send(path, {
+            method: "GET",
+            token: `${tenant}:alice`,
+            headers: { origin: "https://evil.example" },
+          })
+
+          expect(foreign.status).toBe(403)
+          expect(foreign.body).toMatchObject({ reason: { code: "origin_not_allowed" } })
+
+          for (const query of ["?tenant_id=x", "?limit=0", "?limit=1001", "?status=a&status=b"])
+            expect(
+              (yield* server.send(`${path}${query}`, { method: "GET", token: `${tenant}:alice` }))
+                .status,
+            ).toBe(400)
+
+          expect(
+            (yield* server.send("/fleet/OrdersByRegion", {
+              method: "GET",
+              token: `${tenant}:alice`,
+            })).status,
+          ).toBe(404)
+
+          const stranger = fleetClient({
+            views: [OrdersByStatus],
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}-stranger:alice` },
+          })
+            .OrdersByStatus.subscribe()
+            [Symbol.asyncIterator]()
+
+          expect((yield* nextPage(stranger, "a stranger's page")).rows).toEqual([])
+          yield* Effect.promise(() => stranger.return?.() ?? Promise.resolve(undefined))
+
+          const pages = fleetClient({
+            views: [OrdersByStatus],
+            baseUrl: server.url,
+            headers: { authorization: `Bearer ${tenant}:bob` },
+          })
+            .OrdersByStatus.subscribe()
+            [Symbol.asyncIterator]()
+
+          expect((yield* nextPage(pages, "bob's first page")).rows).toEqual(
+            servedByStatus(model, tenant),
+          )
+
+          const revokedAt = yield* Clock.currentTimeMillis
+          revoked.add("bob")
+
+          const ended = yield* Effect.tryPromise({
+            try: () => pages.next(),
+            catch: (error) => Option.liftPredicate(error, Schema.is(ActorError)),
+          }).pipe(Effect.flip, Effect.timeout("10 seconds"), Effect.orDie)
+
+          expect(Option.exists(ended, (error) => Schema.is(Unauthorized)(error.reason))).toBe(true)
+          expect((yield* Clock.currentTimeMillis) - revokedAt < 1_000 + 3_000).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "fleet: with row-level security on, a subscription's page runs as the tenant role",
+    requiresLogicalDecoding: true,
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { database, admin } = yield* fleetDatabase(environment)
+
+          const [random] = yield* admin<{
+            id: string
+          }>`SELECT substr(md5(random()::text), 1, 12) AS id`.pipe(Effect.orDie)
+
+          const role = `fleet_tenant_${random!.id}`
+          const viewOwner = `fleet_views_${random!.id}`
+
+          yield* migrate.pipe(Effect.provideService(SqlClient.SqlClient, admin), Effect.orDie)
+
+          for (const statement of grants({ role, viewOwner }))
+            yield* admin.unsafe(statement).pipe(Effect.orDie)
+
+          yield* Effect.addFinalizer(() =>
+            Effect.forEach(
+              [role, viewOwner],
+              (owner) =>
+                admin
+                  .unsafe(`REASSIGN OWNED BY ${owner} TO CURRENT_USER`)
+                  .pipe(
+                    Effect.andThen(admin.unsafe(`DROP OWNED BY ${owner}`)),
+                    Effect.andThen(admin.unsafe(`DROP ROLE ${owner}`)),
+                    Effect.ignore,
+                  ),
+              { discard: true },
+            ),
+          )
+
+          const context = yield* Layer.build(
+            FleetOrderLive.pipe(
+              Layer.provideMerge(
+                ActorTest.layer({
+                  database,
+                  authorize,
+                  rowLevelSecurity: { role },
+                  fleet: [OrdersByStatus, OrdersByRegion],
+                }),
+              ),
+            ),
+          )
+
+          const model: Model = new Map()
+
+          yield* Effect.gen(function* () {
+            const test = yield* ActorTest
+            const handle = yield* FleetOrder.get("a")
+            yield* handle.Put(order("a", "new", 10)).pipe(Effect.orDie)
+            record(model, test.tenant, order("a", "new", 10))
+            yield* readyViews(expect, admin, ["OrdersByRegion", "OrdersByStatus"])
+            yield* settle(expect, byStatusRows(admin), expectedByStatus(model))
+
+            const page = yield* Fleet.subscribe(OrdersByStatus).pipe(Stream.take(1), Stream.runHead)
+            expect(Option.getOrThrow(page).rows).toEqual(servedByStatus(model, test.tenant))
+
+            yield* admin
+              .unsafe(`REVOKE SELECT ON fleet_orders_by_status FROM ${role}`)
+              .pipe(Effect.orDie)
+
+            const refused = yield* Fleet.subscribe(OrdersByStatus).pipe(
+              Stream.take(1),
+              Stream.runHead,
+              Effect.exit,
+            )
+
+            expect(causeMessages(refused)).toContain("permission denied")
+          }).pipe(Effect.provideContext(context))
+        }),
+      ),
+  },
+  {
+    name: "fleet: one poll per view per runner regardless of subscriber count, and a page query only when the view changed",
+    requiresLogicalDecoding: true,
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { database, admin } = yield* fleetDatabase(environment)
+          const polls: Array<string> = []
+          const pages: Array<string> = []
+
+          const hooks = {
+            afterApply: Effect.void,
+            poll: (view: string) => Effect.sync(() => void polls.push(view)),
+            page: (view: string) => Effect.sync(() => void pages.push(view)),
+          }
+
+          const context = yield* Layer.build(
+            FleetOrderLive.pipe(
+              Layer.provideMerge(
+                ActorTest.layer({ database, authorize, fleet: [OrdersByStatus, OrdersByRegion] }),
+              ),
+            ),
+          ).pipe(Effect.provideService(FleetHooks, hooks))
+
+          yield* Effect.gen(function* () {
+            yield* readyViews(expect, admin, ["OrdersByRegion", "OrdersByStatus"])
+
+            const window = (subscribers: number) =>
+              Effect.gen(function* () {
+                const fibers = yield* Effect.forEach(
+                  Array.from({ length: subscribers }, (_, index) => index),
+                  () => Fleet.subscribe(OrdersByStatus).pipe(Stream.runDrain, Effect.forkChild),
+                )
+
+                yield* Effect.sleep("500 millis")
+                polls.length = 0
+                pages.length = 0
+                yield* Effect.sleep("3 seconds")
+                const counted = { polls: polls.length, pages: pages.length }
+                yield* Effect.forEach(fibers, Fiber.interrupt, { discard: true })
+
+                return counted
+              })
+
+            const one = yield* window(1)
+            const many = yield* window(8)
+
+            expect(one.polls >= 2 && one.polls <= 4).toBe(true)
+            expect(many.polls >= 2 && many.polls <= 4).toBe(true)
+            expect(Math.abs(many.polls - one.polls) <= 1).toBe(true)
+            expect(one.pages <= one.polls).toBe(true)
+            expect(many.pages <= many.polls * 8).toBe(true)
+            expect(polls.every((view) => view === "OrdersByStatus")).toBe(true)
+          }).pipe(Effect.provideContext(context))
+        }),
       ),
   },
   {

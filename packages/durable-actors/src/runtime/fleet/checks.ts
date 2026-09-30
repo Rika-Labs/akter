@@ -115,15 +115,22 @@ export const checkFleet = Effect.fnUntraced(function* (
 
     const derived = view.tableName.split(".").at(-1)!
 
-    const [owner] = yield* sql<{ owned_by_tenant: boolean }>`
+    const [owner] = yield* sql<{ owned_by_tenant: boolean; readable: boolean }>`
       SELECT ${tenantRole === undefined ? sql`false` : sql`pg_has_role(${tenantRole}, c.relowner, 'MEMBER')`}
-        AS owned_by_tenant
+        AS owned_by_tenant,
+        ${tenantRole === undefined ? sql`true` : sql`has_table_privilege(${tenantRole}, c.oid, 'SELECT')`}
+        AS readable
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = ${derivedSchema} AND c.relname = ${derived}`
 
     if (owner === undefined)
       return yield* refuse(
         `the derived table ${derivedSchema}.${derived} of ${view.name} does not exist; add ${view.name}.table to the drizzle-kit schema and apply its migration`,
+      )
+
+    if (!owner.readable)
+      return yield* refuse(
+        `the tenant role ${tenantRole} cannot read ${derivedSchema}.${derived}, which subscriptions read as that role; GRANT SELECT ON ${derivedSchema}.${derived} TO ${tenantRole}`,
       )
 
     if (owner.owned_by_tenant)
