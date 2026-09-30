@@ -690,7 +690,6 @@ export const registerActor = Effect.fnUntraced(function* (
         (batch: ReadonlyArray<Waiting>) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) => {
           const { request } = batch[0]!
-          const { ref } = request
           const lone = batch.length === 1
 
           return Effect.flatMap(Clock.currentTimeMillis, (started) =>
