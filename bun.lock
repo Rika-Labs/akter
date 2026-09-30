@@ -384,10 +384,6 @@
     },
     "tooling/databases": {
       "name": "@durable-actors/databases",
-      "dependencies": {
-        "@effect/platform-bun": "catalog:",
-        "effect": "catalog:",
-      },
     },
     "tooling/doc-checks": {
       "name": "@durable-actors/doc-checks",
